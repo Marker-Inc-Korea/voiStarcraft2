@@ -5443,6 +5443,13 @@ class _OperationSemanticTimelineReducer:
                 if isinstance(battlefield_operation, Mapping)
                 else {}
             )
+            projection_advances_monotonic_state = bool(
+                not battlefield_operation
+                or self._projection_matches_operation(
+                    operation,
+                    battlefield_operation,
+                )
+            )
             frame = self._operation_frame(
                 operation,
                 battlefield_operation,
@@ -5463,12 +5470,14 @@ class _OperationSemanticTimelineReducer:
                 (-1, ""),
             )
             if (
-                family_last_frame >= 0
+                projection_advances_monotonic_state
+                and family_last_frame >= 0
                 and (frame < 0 or frame < family_last_frame)
             ):
                 return False
             if (
-                generation == high_water
+                projection_advances_monotonic_state
+                and generation == high_water
                 and frame >= 0
                 and frame == last_frame
                 and last_fingerprint
@@ -5482,7 +5491,7 @@ class _OperationSemanticTimelineReducer:
                     for state_key, value in provisional_fingerprints.items()
                     if state_key[:3] != family_key
                 }
-            if frame >= 0:
+            if projection_advances_monotonic_state and frame >= 0:
                 provisional_frame[family_key] = max(
                     family_last_frame,
                     frame,
@@ -5503,6 +5512,22 @@ class _OperationSemanticTimelineReducer:
         incoming_execution = _mapping_child(
             incoming_intervention,
             "command_execution",
+        )
+        execution_owner_vector = deepcopy(
+            dict(
+                _mapping_child(
+                    _mapping_child(operation, "update"),
+                    "vector",
+                )
+                or _mapping_child(
+                    _mapping_child(operation, "compile_result"),
+                    "vector",
+                )
+                or _mapping_child(
+                    operation,
+                    "operation_console_execution_owner_vector",
+                )
+            )
         )
         execution_owner_update_id = str(
             operation.get(
@@ -5527,6 +5552,10 @@ class _OperationSemanticTimelineReducer:
         if execution_owner_update_id:
             merged["operation_console_execution_owner_update_id"] = (
                 execution_owner_update_id
+            )
+        if execution_owner_vector:
+            merged["operation_console_execution_owner_vector"] = (
+                execution_owner_vector
             )
         merged["requested_operation_generation"] = requested_high_water
         return merged
@@ -5602,6 +5631,10 @@ class _OperationSemanticTimelineReducer:
                 intervention,
                 "command_execution",
             ),
+            "operation_console_execution_owner_vector": _mapping_child(
+                operation,
+                "operation_console_execution_owner_vector",
+            ),
             "update": _mapping_child(operation, "update"),
             "family_evidence": operation.get("family_evidence", ()),
             "operation_convergence": _mapping_child(
@@ -5629,6 +5662,12 @@ class _OperationSemanticTimelineReducer:
     def _operation_vector(
         operation: Mapping[str, object],
     ) -> Mapping[str, object]:
+        execution_owner_vector = _mapping_child(
+            operation,
+            "operation_console_execution_owner_vector",
+        )
+        if execution_owner_vector:
+            return execution_owner_vector
         update_vector = _mapping_child(
             _mapping_child(operation, "update"),
             "vector",
@@ -5997,6 +6036,17 @@ class _OperationSemanticTimelineReducer:
             battlefield_operation,
             "operation_lifetime",
         )
+        projection_matches_operation = (
+            _OperationSemanticTimelineReducer
+            ._projection_matches_operation(
+                operation,
+                battlefield_operation,
+            )
+        )
+        projection_identity_valid = bool(
+            not battlefield_operation
+            or projection_matches_operation
+        )
         owner_count, required_count = (
             _OperationSemanticTimelineReducer._operation_force_counts(
                 operation,
@@ -6007,6 +6057,12 @@ class _OperationSemanticTimelineReducer:
             0,
             _int_or_none(convergence.get("represented_count")) or 0,
         )
+        if not projection_identity_valid:
+            owner_count = 0
+            required_count = max(
+                0,
+                _int_or_none(convergence.get("target_count")) or 0,
+            )
         requested_generation = max(
             generation,
             _int_or_none(
@@ -6014,9 +6070,17 @@ class _OperationSemanticTimelineReducer:
             )
             or generation,
         )
-        launch_decision = str(launch.get("decision", "") or "").lower()
+        launch_decision = (
+            str(launch.get("decision", "") or "").lower()
+            if projection_identity_valid
+            else ""
+        )
         blocker = str(
-            launch.get("blocker")
+            (
+                launch.get("blocker")
+                if projection_identity_valid
+                else ""
+            )
             or convergence.get("blocker")
             or execution.get("blocker_reason")
             or ""
@@ -6030,14 +6094,8 @@ class _OperationSemanticTimelineReducer:
             "disposition": disposition,
             "requested_generation": requested_generation,
             "update_id": update_id,
+            "projection_identity_valid": projection_identity_valid,
         }
-        projection_matches_operation = (
-            _OperationSemanticTimelineReducer
-            ._projection_matches_operation(
-                operation,
-                battlefield_operation,
-            )
-        )
         canonical_completion_identity = bool(
             projection_matches_operation
             and _int_or_none(completion.get("generation")) == generation
@@ -6064,12 +6122,22 @@ class _OperationSemanticTimelineReducer:
                     common,
                 )
             )
-        assigned = owner_count > 0 or execution_state in {
-            "queued_or_assigned",
-            "assigned",
-        }
+        assigned = bool(
+            (
+                projection_identity_valid
+                and owner_count > 0
+            )
+            or execution_state in {
+                "queued_or_assigned",
+                "assigned",
+            }
+        )
         if assigned:
-            if required_count > 0 and owner_count < required_count:
+            if (
+                projection_identity_valid
+                and required_count > 0
+                and owner_count < required_count
+            ):
                 candidates.append(
                     (
                         "partially_assigned",
@@ -6615,6 +6683,16 @@ class _OperationSemanticTimelineReducer:
                     if isinstance(battlefield_operation, Mapping)
                     else {}
                 )
+                projection_matches_operation = (
+                    self._projection_matches_operation(
+                        operation,
+                        battlefield_operation,
+                    )
+                )
+                projection_advances_monotonic_state = bool(
+                    not battlefield_operation
+                    or projection_matches_operation
+                )
                 frame = self._operation_frame(
                     operation,
                     battlefield_operation,
@@ -6634,11 +6712,13 @@ class _OperationSemanticTimelineReducer:
                     else -1
                 )
                 regressing = (
-                    family_last_frame >= 0
+                    projection_advances_monotonic_state
+                    and family_last_frame >= 0
                     and (frame < 0 or frame < family_last_frame)
                 )
                 conflicting_same_frame = bool(
-                    generation == high_water
+                    projection_advances_monotonic_state
+                    and generation == high_water
                     and state is not None
                     and frame >= 0
                     and frame == last_frame
@@ -6682,7 +6762,7 @@ class _OperationSemanticTimelineReducer:
                         requested_generation
                     )
                 last_frame = int(state["last_frame"])
-                if frame >= 0:
+                if projection_advances_monotonic_state and frame >= 0:
                     state["last_frame"] = max(last_frame, frame)
                     state["last_fingerprint"] = fingerprint
                     self._family_last_frame[family_key] = max(
@@ -6757,7 +6837,14 @@ class _OperationSemanticTimelineReducer:
                             technical.get("update_id", "") or ""
                         ),
                         "kind": kind,
-                        "game_frame": frame,
+                        "game_frame": (
+                            frame
+                            if technical.get(
+                                "projection_identity_valid"
+                            )
+                            is not False
+                            else last_frame
+                        ),
                         "owner_count": max(
                             0,
                             _int_or_none(
@@ -6779,12 +6866,6 @@ class _OperationSemanticTimelineReducer:
                     scope_events.append(event)
                 owner_count, required_count = (
                     self._operation_force_counts(
-                        operation,
-                        battlefield_operation,
-                    )
-                )
-                projection_matches_operation = (
-                    self._projection_matches_operation(
                         operation,
                         battlefield_operation,
                     )
@@ -10253,6 +10334,7 @@ var commandEventSource = null;
 var commandEventReconnectTimer = null;
 var commandEventHealthy = false;
 var commandEventAwaitingInitialSnapshot = false;
+var commandEventPollWonInitialHydration = false;
 var commandEventFailedSources = {};
 var fallbackPollingIntervals = [];
 var logBox = document.getElementById("log");
@@ -10373,6 +10455,7 @@ var tacticalRadio = {
   dedupe: {},
   planAnnouncements: {},
   frameHighWater: {},
+  timelineHighWater: {},
   scopeId: "",
   speechToken: 0,
   timerId: null,
@@ -11977,6 +12060,7 @@ function resetTacticalRadio(scopeId) {
   tacticalRadio.dedupe = {};
   tacticalRadio.planAnnouncements = {};
   tacticalRadio.frameHighWater = {};
+  tacticalRadio.timelineHighWater = {};
   tacticalRadio.captions = [];
   tacticalRadio.lastSpokenAt = { 0: 0, 1: 0, 2: 0 };
   renderTacticalRadioCaptions();
@@ -12544,10 +12628,26 @@ function tacticalLifecycleCallout(envelope, payload, scopeId, record) {
     operationId,
     generation
   ].join("|");
+  var timelineSeq = Number(payload.timeline_seq || 0);
+  var timelineHighWater = Number(
+    tacticalRadio.timelineHighWater[operationKey] || 0
+  );
+  var projectionIdentityValid = !(
+    payload.technical &&
+    payload.technical.projection_identity_valid === false
+  );
+  if (
+    Number.isFinite(timelineSeq) &&
+    timelineSeq > 0 &&
+    timelineSeq <= timelineHighWater
+  ) {
+    return null;
+  }
   var frameHighWater = Number(
     tacticalRadio.frameHighWater[operationKey] || -1
   );
   if (
+    projectionIdentityValid &&
     Number.isFinite(frame) &&
     frame >= 0 &&
     frameHighWater >= 0 &&
@@ -12555,7 +12655,11 @@ function tacticalLifecycleCallout(envelope, payload, scopeId, record) {
   ) {
     return null;
   }
-  if (Number.isFinite(frame) && frame >= 0) {
+  if (
+    projectionIdentityValid &&
+    Number.isFinite(frame) &&
+    frame >= 0
+  ) {
     tacticalRadio.frameHighWater[operationKey] = Math.max(
       frameHighWater,
       frame
@@ -12610,6 +12714,12 @@ function tacticalLifecycleCallout(envelope, payload, scopeId, record) {
     label = t("tacticalSubmittedCaption");
   } else {
     return null;
+  }
+  if (Number.isFinite(timelineSeq) && timelineSeq > 0) {
+    tacticalRadio.timelineHighWater[operationKey] = Math.max(
+      timelineHighWater,
+      timelineSeq
+    );
   }
   var identity = operationId + "#" + generation;
   var detail = reason && reason !== kind ? " · " + reason : "";
@@ -12670,18 +12780,41 @@ function hydrateTacticalRadioState(data) {
     var generation = Number(operation.operation_generation || 0);
     if (!operationId || generation <= 0) { return; }
     var key = [scopeId, operationId, generation].join("|");
-    var frame = commandConsoleTelemetryFrame(
-      commandOperationData(operation, data)
+    var operationData = commandOperationData(operation, data);
+    var projection = operationData &&
+      operationData.battlefield_operation;
+    var projectionIdentityValid = Boolean(
+      !projection ||
+      typeof projection !== "object" ||
+      !Object.keys(projection).length ||
+      operationCanonicalProjectionMatches(operationData)
     );
+    var frame = projectionIdentityValid
+      ? commandConsoleTelemetryFrame(operationData)
+      : -1;
     var timeline = Array.isArray(operation.semantic_timeline)
       ? operation.semantic_timeline
       : [];
+    var timelineSeq = 0;
     timeline.forEach(function(event) {
-      frame = Math.max(frame, Number(event.game_frame || -1));
+      if (
+        !event.technical ||
+        event.technical.projection_identity_valid !== false
+      ) {
+        frame = Math.max(frame, Number(event.game_frame || -1));
+      }
+      timelineSeq = Math.max(
+        timelineSeq,
+        Number(event.timeline_seq || 0)
+      );
     });
     tacticalRadio.frameHighWater[key] = Math.max(
       Number(tacticalRadio.frameHighWater[key] || -1),
       frame
+    );
+    tacticalRadio.timelineHighWater[key] = Math.max(
+      Number(tacticalRadio.timelineHighWater[key] || 0),
+      timelineSeq
     );
   });
 }
@@ -12773,6 +12906,7 @@ function resetEventCursorForBlackboard(directory) {
   if (commandEventBlackboardDir === normalized) { return false; }
   commandEventBlackboardDir = normalized;
   lastEventSeq = 0;
+  commandEventPollWonInitialHydration = false;
   return true;
 }
 
@@ -13050,7 +13184,12 @@ function applyServerEvent(event) {
   var payload = envelope.payload || {};
   if (eventType === "snapshot") {
     lastEventSeq = Number.isFinite(eventSeq) && eventSeq >= 0 ? eventSeq : 0;
-    applyEventSnapshot(payload);
+    if (commandEventPollWonInitialHydration) {
+      commandEventPollWonInitialHydration = false;
+      commandEventFailedSources = {};
+    } else {
+      applyEventSnapshot(payload);
+    }
     if (commandEventSource) {
       commandEventHealthy = true;
       refreshEventPollingFallback();
@@ -13124,6 +13263,7 @@ function connectEventChannel() {
     commandEventSource.close();
     commandEventSource = null;
   }
+  commandEventPollWonInitialHydration = false;
   commandEventAwaitingInitialSnapshot = true;
   startPollingFallback();
   var source = new window.EventSource(eventSourceUrl());
@@ -15891,6 +16031,23 @@ function reconcileOperationRecord(operation, parentData) {
     operationRecordKey(scopeId, operationId)
   );
   var record = operationRecordForCandidate(key, updateId);
+  var incomingProjection = data && data.battlefield_operation;
+  var projectionIdentityMismatch = Boolean(
+    incomingProjection &&
+    typeof incomingProjection === "object" &&
+    Object.keys(incomingProjection).length &&
+    !operationCanonicalProjectionMatches(data)
+  );
+  if (projectionIdentityMismatch) {
+    var acceptedProjectionData = record && record.data || {};
+    data = Object.assign({}, data, {
+      battlefield_operation:
+        acceptedProjectionData.battlefield_operation || {},
+      telemetry_frame: record
+        ? record.telemetryFrame
+        : -1
+    });
+  }
   var model = commandConsoleStageModel(data);
   var telemetryFrame = commandConsoleTelemetryFrame(data);
   var stageRank = commandConsoleStageRank(model);
@@ -18435,8 +18592,17 @@ function pollMicroMachineStatus() {
         microMachinePollActiveRequestSeq === requestSeq &&
         requestSeq >= microMachinePollAppliedSeq
       ) {
+        if (
+          hydrateOnly &&
+          !commandEventAwaitingInitialSnapshot
+        ) {
+          finishMicroMachinePoll(requestSeq);
+          return;
+        }
         microMachinePollAppliedSeq = requestSeq;
         if (hydrateOnly) {
+          commandEventAwaitingInitialSnapshot = false;
+          commandEventPollWonInitialHydration = true;
           hydrateTacticalRadioState(data);
         }
         safeRenderMicroMachineStatus(
@@ -19788,16 +19954,43 @@ function setupVoiceInput() {
     });
     return;
   }
-  recognition = new SpeechRecognition();
-  recognition.lang = currentLang === "en" ? "en-US" : (currentLang === "zh" ? "zh-CN" : "ko-KR");
-  recognition.interimResults = true;
-  recognition.continuous = false;
-  recognition.onstart = function () {
-    var startRequest = pendingVoiceRecognitionRequest || {
-      requestId: voiceRecognitionRequestSeq,
-      contextGeneration: microMachineBlackboardContextGeneration,
-      blackboardDirectory: currentEventBlackboardDirectory()
+  function createVoiceRecognition() {
+    var instance = new SpeechRecognition();
+    instance.lang = currentLang === "en"
+      ? "en-US"
+      : (currentLang === "zh" ? "zh-CN" : "ko-KR");
+    instance.interimResults = true;
+    instance.continuous = false;
+    instance.onstart = function () {
+      handleVoiceRecognitionStart(instance);
     };
+    return instance;
+  }
+  function retireVoiceRecognition(instance) {
+    if (recognition === instance) {
+      recognition = createVoiceRecognition();
+    }
+  }
+  function abortDetachedVoiceRecognition(instance) {
+    instance.onend = function () {};
+    instance.onerror = function () {};
+    instance.onresult = function () {};
+    if (typeof instance.abort === "function") {
+      instance.abort();
+    } else if (typeof instance.stop === "function") {
+      instance.stop();
+    }
+  }
+  function handleVoiceRecognitionStart(instance) {
+    var startRequest = pendingVoiceRecognitionRequest;
+    if (
+      recognition !== instance ||
+      !startRequest ||
+      startRequest.recognitionInstance !== instance
+    ) {
+      abortDetachedVoiceRecognition(instance);
+      return;
+    }
     pendingVoiceRecognitionRequest = null;
     if (
       startRequest.requestId !== voiceRecognitionRequestSeq ||
@@ -19808,15 +20001,8 @@ function setupVoiceInput() {
     ) {
       isRecording = false;
       setVoiceButtonRecordingState(false);
-      recognition.onend = function () {
-        isRecording = false;
-        setVoiceButtonRecordingState(false);
-      };
-      if (typeof recognition.abort === "function") {
-        recognition.abort();
-      } else if (typeof recognition.stop === "function") {
-        recognition.stop();
-      }
+      retireVoiceRecognition(instance);
+      abortDetachedVoiceRecognition(instance);
       return;
     }
     if (
@@ -19826,15 +20012,15 @@ function setupVoiceInput() {
       activeVoiceSession.state === "finalizing" &&
       voiceSessionContextIsCurrent(activeVoiceSession)
     ) {
-      if (typeof recognition.stop === "function") {
-        recognition.stop();
+      if (typeof instance.stop === "function") {
+        instance.stop();
       }
       return;
     }
     isRecording = true;
     setVoiceButtonRecordingState(true);
     var session = appendVoiceRecordingBubble();
-    recognition.onend = function () {
+    instance.onend = function () {
       isRecording = false;
       setVoiceButtonRecordingState(false);
       if (
@@ -19867,7 +20053,7 @@ function setupVoiceInput() {
         submitVoiceSession(session, fallbackText);
       }, VOICE_FINALIZATION_GRACE_MS);
     };
-    recognition.onerror = function () {
+    instance.onerror = function () {
       isRecording = false;
       setVoiceButtonRecordingState(false);
       clearVoiceFinalizationTimer(session);
@@ -19875,7 +20061,7 @@ function setupVoiceInput() {
       setLlmStatus("failed", "llmFailedLabel", t("voiceNoResult"));
       failVoiceSession(session, t("voiceTranscriptUnavailable"));
     };
-    recognition.onresult = function (event) {
+    instance.onresult = function (event) {
       if (
         !session ||
         session.error ||
@@ -19913,7 +20099,8 @@ function setupVoiceInput() {
         submitVoiceSession(session, session.finalText);
       }
     };
-  };
+  }
+  recognition = createVoiceRecognition();
   voiceButton.addEventListener("click", function () {
     if (isRecording) {
       recognition.stop();
@@ -19931,22 +20118,52 @@ function setupVoiceInput() {
     ) {
       return;
     }
-    recognition.lang = currentLang === "en" ? "en-US" : (currentLang === "zh" ? "zh-CN" : "ko-KR");
+    var recognitionInstance = recognition;
+    recognitionInstance.lang = currentLang === "en"
+      ? "en-US"
+      : (currentLang === "zh" ? "zh-CN" : "ko-KR");
     voiceRecognitionRequestSeq += 1;
     pendingVoiceRecognitionRequest = {
       requestId: voiceRecognitionRequestSeq,
       contextGeneration: microMachineBlackboardContextGeneration,
-      blackboardDirectory: currentEventBlackboardDirectory()
+      blackboardDirectory: currentEventBlackboardDirectory(),
+      recognitionInstance: recognitionInstance
     };
     var requestedRecognition = pendingVoiceRecognitionRequest;
+    recognitionInstance.onerror = function (error) {
+      if (pendingVoiceRecognitionRequest !== requestedRecognition) {
+        return;
+      }
+      pendingVoiceRecognitionRequest = null;
+      isRecording = false;
+      setVoiceButtonRecordingState(false);
+      retireVoiceRecognition(recognitionInstance);
+      setLlmStatus(
+        "failed",
+        "llmFailedLabel",
+        error && (error.message || error.error)
+          ? String(error.message || error.error)
+          : t("voiceNoResult")
+      );
+    };
+    recognitionInstance.onend = function () {
+      if (pendingVoiceRecognitionRequest !== requestedRecognition) {
+        return;
+      }
+      pendingVoiceRecognitionRequest = null;
+      isRecording = false;
+      setVoiceButtonRecordingState(false);
+      retireVoiceRecognition(recognitionInstance);
+    };
     try {
-      recognition.start();
+      recognitionInstance.start();
     } catch (error) {
       if (pendingVoiceRecognitionRequest === requestedRecognition) {
         pendingVoiceRecognitionRequest = null;
       }
       isRecording = false;
       setVoiceButtonRecordingState(false);
+      retireVoiceRecognition(recognitionInstance);
       setLlmStatus(
         "failed",
         "llmFailedLabel",
@@ -20622,15 +20839,6 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         snapshot_payload = self._authoritative_event_snapshot(
             blackboard_dir
         )
-        micromachine_status = snapshot_payload.get(
-            "micromachine_status"
-        )
-        if isinstance(micromachine_status, Mapping):
-            self._publish_new_operation_events(
-                micromachine_status,
-                blackboard_dir=blackboard_dir,
-                publish=False,
-            )
         snapshot_event = {
             "event_seq": snapshot_cursor,
             "event_type": "snapshot",
@@ -20837,6 +21045,8 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         blackboard_dir: str,
         publish: bool,
     ) -> None:
+        if not publish:
+            return
         server = self.server  # type: ignore[assignment]
         with server._event_source_lock:  # type: ignore[attr-defined]
             scope_id = str(
@@ -20873,25 +21083,24 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 if timeline_seq <= observed:
                     continue
                 latest = max(latest, timeline_seq)
-                if publish:
-                    server.publish_event(  # type: ignore[attr-defined]
-                        "operation_event",
-                        event,
-                        update_id=str(event.get("update_id", "") or ""),
-                        operation_id=str(
-                            event.get("operation_id", "") or ""
-                        ),
-                        generation=max(
-                            0,
-                            _web_event_int(event.get("generation"), 0),
-                        ),
-                        game_frame=_web_event_int(
-                            event.get("game_frame"),
-                            -1,
-                        ),
-                        blackboard_dir=blackboard_dir,
-                        blackboard_scope_id=scope_id,
-                    )
+                server.publish_event(  # type: ignore[attr-defined]
+                    "operation_event",
+                    event,
+                    update_id=str(event.get("update_id", "") or ""),
+                    operation_id=str(
+                        event.get("operation_id", "") or ""
+                    ),
+                    generation=max(
+                        0,
+                        _web_event_int(event.get("generation"), 0),
+                    ),
+                    game_frame=_web_event_int(
+                        event.get("game_frame"),
+                        -1,
+                    ),
+                    blackboard_dir=blackboard_dir,
+                    blackboard_scope_id=scope_id,
+                )
             server._observed_operation_event_seq[scope_id] = latest  # type: ignore[attr-defined]
 
     def _state_payload(self) -> dict[str, object]:

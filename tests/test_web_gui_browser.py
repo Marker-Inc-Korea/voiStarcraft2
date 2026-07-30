@@ -254,7 +254,7 @@ def _browser_fixture_page() -> str:
 
   window.setTimeout(function () {
     var recognition = window.__voiceQa.recognition;
-    recognition.start();
+    document.getElementById("voice-button").click();
     var session = activeVoiceSession;
     var stableNode = session.node;
     recognition.onresult({

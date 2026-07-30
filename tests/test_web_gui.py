@@ -1009,7 +1009,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertIn("micromachine_status", payload)
         self.assertTrue(payload["state"]["available"])
 
-    def test_operation_event_snapshot_hydration_advances_live_watermark(self):
+    def test_operation_event_snapshot_hydration_is_read_only(self):
         handler = object.__new__(web_gui._WebGuiRequestHandler)
         handler.server = self.server._http
         scope_id = "scope-operation-events"
@@ -1035,8 +1035,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             publish=False,
         )
         self.assertEqual(
-            1,
-            self.server._http._observed_operation_event_seq[scope_id],
+            0,
+            self.server._http._observed_operation_event_seq.get(
+                scope_id,
+                0,
+            ),
         )
         self.assertEqual(
             [],
@@ -1065,22 +1068,37 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         operation_events = [
             event
             for event in self.server._http.event_journal.events_after(0)
-            if event["event_type"] == "operation_event"
+            if (
+                event["event_type"] == "operation_event"
+                and event["blackboard_scope_id"] == scope_id
+            )
         ]
-        self.assertEqual(1, len(operation_events))
+        self.assertEqual(2, len(operation_events))
         self.assertEqual(
-            ["submitted"],
+            ["assigned", "submitted"],
             [event["payload"]["kind"] for event in operation_events],
         )
-        self.assertEqual("update-scout-alpha", operation_events[0]["update_id"])
-        self.assertEqual(1, operation_events[0]["generation"])
-        self.assertEqual(101, operation_events[0]["game_frame"])
+        self.assertEqual(
+            [1, 2],
+            [
+                event["payload"]["timeline_seq"]
+                for event in operation_events
+            ],
+        )
+        self.assertEqual(
+            "update-scout-alpha",
+            operation_events[1]["update_id"],
+        )
+        self.assertEqual(1, operation_events[1]["generation"])
+        self.assertEqual(101, operation_events[1]["game_frame"])
 
-    def test_authoritative_sse_snapshot_observes_embedded_lifecycle_without_replay(
+    def test_new_subscriber_snapshot_cannot_hide_lifecycle_from_existing_subscriber(
         self,
     ):
-        handler = object.__new__(web_gui._WebGuiRequestHandler)
-        handler.server = self.server._http
+        snapshot_handler = object.__new__(web_gui._WebGuiRequestHandler)
+        snapshot_handler.server = self.server._http
+        publisher_handler = object.__new__(web_gui._WebGuiRequestHandler)
+        publisher_handler.server = self.server._http
         scope_id = "scope-snapshot-lifecycle-high-water"
         first = {
             "timeline_seq": 1,
@@ -1097,15 +1115,15 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "blackboard_scope_id": scope_id,
             "operation_events": [first],
         }
-        handler._authoritative_event_snapshot = lambda _directory: {
+        snapshot_handler._authoritative_event_snapshot = lambda _directory: {
             "state": {"available": True},
             "history": {"events": [], "latest": 0},
             "micromachine_status": status,
         }
         written = []
-        handler._write_sse_event = written.append
+        snapshot_handler._write_sse_event = written.append
 
-        cursor = handler._write_authoritative_sse_snapshot(
+        cursor = snapshot_handler._write_authoritative_sse_snapshot(
             self.server._http.event_journal,
             "/tmp/snapshot-lifecycle",
             scope_id,
@@ -1114,8 +1132,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertEqual(self.server._http.event_journal.latest_seq, cursor)
         self.assertEqual("snapshot", written[0]["event_type"])
         self.assertEqual(
-            1,
-            self.server._http._observed_operation_event_seq[scope_id],
+            0,
+            self.server._http._observed_operation_event_seq.get(
+                scope_id,
+                0,
+            ),
         )
         self.assertEqual(
             [],
@@ -1133,7 +1154,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "game_frame": 201,
             "summary": "engagement observed",
         }
-        handler._publish_new_operation_events(
+        publisher_handler._publish_new_operation_events(
             {
                 "blackboard_scope_id": scope_id,
                 "operation_events": [first, second],
@@ -1144,12 +1165,15 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         operation_events = [
             event
             for event in self.server._http.event_journal.events_after(0)
-            if event["event_type"] == "operation_event"
+            if (
+                event["event_type"] == "operation_event"
+                and event["blackboard_scope_id"] == scope_id
+            )
         ]
-        self.assertEqual(1, len(operation_events))
+        self.assertEqual(2, len(operation_events))
         self.assertEqual(
-            "engagement_observed",
-            operation_events[0]["payload"]["kind"],
+            ["movement_observed", "engagement_observed"],
+            [event["payload"]["kind"] for event in operation_events],
         )
 
     def test_sse_snapshot_cut_does_not_block_publication_and_replays_newer_event(self):
@@ -8283,17 +8307,29 @@ class SessionLoopBridgeTest(unittest.TestCase):
     def test_operation_timeline_preserves_new_execution_owner_for_stale_intent(self):
         reducer = web_gui._OperationSemanticTimelineReducer()
         scope_id = "scope-stale-intent-new-execution"
-        reducer.observe(
-            semantic_operation_payload(
-                generation=1,
-                requested_generation=4,
-                frame=100,
-                operation_edit={
-                    "action": "reinforce",
-                    "resolution": "blocked",
-                    "blocker": "latest_intent_blocker",
+        accepted = semantic_operation_payload(
+            generation=1,
+            requested_generation=4,
+            frame=100,
+            operation_edit={
+                "action": "reinforce",
+                "resolution": "blocked",
+                "blocker": "latest_intent_blocker",
+            },
+        )
+        accepted["operations"][0]["update"] = {
+            "update_id": "update-flank-alpha-4",
+            "vector": {
+                "operation_id": "flank-alpha",
+                "generation": 1,
+                "tactical_task": {
+                    "task_type": "execute_ability",
+                    "ability": "yamato_cannon",
                 },
-            ),
+            },
+        }
+        reducer.observe(
+            accepted,
             blackboard_scope_id=scope_id,
         )
 
@@ -8372,6 +8408,16 @@ class SessionLoopBridgeTest(unittest.TestCase):
             ],
         )
         self.assertEqual(
+            "yamato_cannon",
+            operation["update"]["vector"]["tactical_task"]["ability"],
+        )
+        self.assertEqual(
+            "tactical_nuke",
+            operation["operation_console_execution_owner_vector"][
+                "tactical_task"
+            ]["ability"],
+        )
+        self.assertEqual(
             execution_owner_update_id,
             operation["battlefield_operation"]["identity"]["update_id"],
         )
@@ -8389,19 +8435,14 @@ class SessionLoopBridgeTest(unittest.TestCase):
             execution_owner_update_id,
             critical_failures[0]["update_id"],
         )
+        self.assertEqual(
+            "tactical_nuke",
+            critical_failures[0]["technical"]["ability"],
+        )
 
         wrong_owner_reducer = web_gui._OperationSemanticTimelineReducer()
         wrong_owner_reducer.observe(
-            semantic_operation_payload(
-                generation=1,
-                requested_generation=4,
-                frame=100,
-                operation_edit={
-                    "action": "reinforce",
-                    "resolution": "blocked",
-                    "blocker": "latest_intent_blocker",
-                },
-            ),
+            accepted,
             blackboard_scope_id=scope_id,
         )
         wrong_owner = deepcopy(incoming)
@@ -8425,7 +8466,7 @@ class SessionLoopBridgeTest(unittest.TestCase):
     ):
         reducer = web_gui._OperationSemanticTimelineReducer()
         scope_id = "scope-force-loss-projection-identity"
-        reducer.observe(
+        baseline = reducer.observe(
             semantic_operation_payload(
                 operation_id="identity-alpha",
                 generation=2,
@@ -8435,15 +8476,33 @@ class SessionLoopBridgeTest(unittest.TestCase):
             ),
             blackboard_scope_id=scope_id,
         )
+        baseline_seq = baseline["operation_event_latest_seq"]
         mismatched = semantic_operation_payload(
+            operation_id="identity-alpha",
+            generation=2,
+            frame=999,
+            owner_count=2,
+            required_count=4,
+        )
+        projection = mismatched["operations"][0]["battlefield_operation"]
+        projection["identity"]["update_id"] = "stale-projection-update"
+        canonical = semantic_operation_payload(
             operation_id="identity-alpha",
             generation=2,
             frame=201,
             owner_count=2,
             required_count=4,
         )
-        projection = mismatched["operations"][0]["battlefield_operation"]
-        projection["identity"]["update_id"] = "stale-projection-update"
+        self.assertTrue(
+            reducer._snapshot_operations_are_monotonic(
+                [
+                    mismatched["operations"][0],
+                    canonical["operations"][0],
+                ],
+                scope_id=scope_id,
+                session_epoch="1700000000000",
+            )
+        )
 
         result = reducer.observe(
             mismatched,
@@ -8454,13 +8513,24 @@ class SessionLoopBridgeTest(unittest.TestCase):
             "force_loss",
             [event["kind"] for event in result["operation_events"]],
         )
-        canonical = semantic_operation_payload(
-            operation_id="identity-alpha",
-            generation=2,
-            frame=202,
-            owner_count=2,
-            required_count=4,
+        mismatch_events = [
+            event
+            for event in result["operation_events"]
+            if event["timeline_seq"] > baseline_seq
+        ]
+        self.assertNotIn(
+            "partially_assigned",
+            [event["kind"] for event in mismatch_events],
         )
+        self.assertTrue(
+            all(event["game_frame"] <= 200 for event in mismatch_events)
+        )
+        family_key = (
+            scope_id,
+            "1700000000000",
+            "identity-alpha",
+        )
+        self.assertEqual(200, reducer._family_last_frame[family_key])
         canonical_result = reducer.observe(
             canonical,
             blackboard_scope_id=scope_id,
@@ -11036,6 +11106,14 @@ class FakeSpeechRecognition {
     this.pendingStart = false;
     if (this.onstart) { this.onstart(); }
   }
+  fireError(error) {
+    this.pendingStart = false;
+    if (this.onerror) { this.onerror({ error: error }); }
+  }
+  fireEnd() {
+    this.pendingStart = false;
+    if (this.onend) { this.onend(); }
+  }
   stop() {
     if (this.onend) { this.onend(); }
   }
@@ -13340,9 +13418,106 @@ const assert = require("assert");
     ],
     true
   );
-  commandEventAwaitingInitialSnapshot = false;
-  renderMicroMachineStatus(initialHydrationStatus);
+  assert.strictEqual(commandEventAwaitingInitialSnapshot, false);
+  assert.strictEqual(commandEventPollWonInitialHydration, true);
+  var pollWinnerStatusText =
+    nodes["micromachine-status"].textContent;
+  applyServerEvent({
+    type: "snapshot",
+    lastEventId: "804",
+    data: JSON.stringify({
+      event_seq: 804,
+      event_type: "snapshot",
+      blackboard_scope_id: SERVER_SCOPE_A,
+      payload: {
+        history: { events: [], latest: 0 },
+        micromachine_status: serverResult({
+          enabled: true,
+          status: "late-sse-snapshot-must-not-render",
+          dashboard: { telemetry: { frame: 1 } }
+        }, SERVER_SCOPE_A)
+      }
+    })
+  });
+  assert.strictEqual(commandEventPollWonInitialHydration, false);
+  assert.strictEqual(lastEventSeq, 804);
+  assert.strictEqual(
+    nodes["micromachine-status"].textContent,
+    pollWinnerStatusText
+  );
+  assert(
+    !nodes["micromachine-status"].textContent.includes(
+      "late-sse-snapshot-must-not-render"
+    )
+  );
   assert.strictEqual(tacticalRadio.captions.length, 0);
+
+  // If the SSE snapshot wins first, the older hydration-only poll is discarded.
+  commandEventAwaitingInitialSnapshot = true;
+  commandEventPollWonInitialHydration = false;
+  var staleHydrationPollStart = requests.length;
+  pollMicroMachineStatus();
+  var staleHydrationPoll = requests[staleHydrationPollStart];
+  var sseWinnerStatus = serverResult({
+    enabled: true,
+    status: "sse-snapshot-won",
+    dashboard: { telemetry: { frame: 804 } }
+  }, SERVER_SCOPE_A);
+  applyEventSnapshot({
+    micromachine_status: sseWinnerStatus
+  });
+  assert.strictEqual(commandEventAwaitingInitialSnapshot, false);
+  assert(nodes["micromachine-status"].textContent.includes("sse-snapshot-won"));
+  var appliedSeqAfterSseWinner = microMachinePollAppliedSeq;
+  var staleHydrationStatus = serverResult({
+    ok: true,
+    accepted: true,
+    status: "stale-hydration-must-not-render",
+    update_id: "stale-hydration-plan",
+    compile_result: {
+      status: "compiled",
+      update_id: "stale-hydration-plan",
+      vector: {
+        operations: [
+          {
+            operation_id: "stale-hydration-operation",
+            generation: 1,
+            composition_requirements: [
+              { unit_type: "TERRAN_MARINE", count: 1 }
+            ],
+            tactical_task: { task_type: "scout_with_units" },
+            target_intent: { target_type: "enemy_main" },
+            route_intent: { route_type: "direct" },
+            lifetime: { mode: "until_completed" }
+          }
+        ]
+      }
+    }
+  }, SERVER_SCOPE_A);
+  staleHydrationPoll.deferred.resolve(
+    response(200, staleHydrationStatus)
+  );
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(microMachinePollAppliedSeq, appliedSeqAfterSseWinner);
+  assert(nodes["micromachine-status"].textContent.includes("sse-snapshot-won"));
+  assert(
+    !nodes["micromachine-status"].textContent.includes(
+      "stale-hydration-must-not-render"
+    )
+  );
+  assert.strictEqual(
+    tacticalRadio.planAnnouncements[
+      [
+        SERVER_SCOPE_A,
+        "stale-hydration-plan",
+        "stale-hydration-operation",
+        1
+      ].join("|")
+    ],
+    undefined
+  );
+  assert.strictEqual(microMachinePollInFlight, false);
 
   nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-submit-scope-a";
   synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-submit-scope-a");
@@ -16383,13 +16558,62 @@ const assert = require("assert");
   assert.strictEqual(nodes["voice-button"].getAttribute("aria-label"), "음성 입력");
   var voiceRequestStart = requests.length;
 
+  // Async browser error/end before onstart release the single-flight slot.
+  voiceRecognition.deferStart = true;
+  nodes["voice-button"].dispatchEvent({ type: "click" });
+  assert(pendingVoiceRecognitionRequest);
+  var failedBeforeStartRecognition = voiceRecognition;
+  var voiceSessionSeqBeforeFailedStart = voiceSessionSeq;
+  var voiceSessionBeforeFailedStart = activeVoiceSession;
+  voiceRecognition.fireError("not-allowed");
+  assert.strictEqual(pendingVoiceRecognitionRequest, null);
+  assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "false");
+  assert(nodes["llm-status-message"].textContent.includes("not-allowed"));
+  assert.strictEqual(recognitionInstances.length, 2);
+  nodes["micromachine-blackboard-dir"].value =
+    "/tmp/voi-mm-voice-radio-after-error";
+  synchronizeMicroMachineBlackboardDirectory(
+    "/tmp/voi-mm-voice-radio-after-error"
+  );
+  failedBeforeStartRecognition.fireStart();
+  assert.strictEqual(voiceSessionSeq, voiceSessionSeqBeforeFailedStart);
+  assert.strictEqual(
+    activeVoiceSession,
+    voiceSessionBeforeFailedStart
+  );
+  voiceRecognition = recognitionInstances[recognitionInstances.length - 1];
+  voiceRecognition.deferStart = true;
+  nodes["voice-button"].dispatchEvent({ type: "click" });
+  assert(pendingVoiceRecognitionRequest);
+  failedBeforeStartRecognition.fireEnd();
+  assert(
+    pendingVoiceRecognitionRequest,
+    "a retired recognizer end cannot cancel the replacement start"
+  );
+  var endedBeforeStartRecognition = voiceRecognition;
+  voiceRecognition.fireEnd();
+  assert.strictEqual(pendingVoiceRecognitionRequest, null);
+  assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "false");
+  assert.strictEqual(recognitionInstances.length, 3);
+  endedBeforeStartRecognition.fireStart();
+  assert.strictEqual(voiceSessionSeq, voiceSessionSeqBeforeFailedStart);
+  assert.strictEqual(
+    activeVoiceSession,
+    voiceSessionBeforeFailedStart
+  );
+  voiceRecognition = recognitionInstances[recognitionInstances.length - 1];
+
   // A delayed browser onstart cannot create a session in a replacement scope.
   voiceRecognition.deferStart = true;
   var delayedVoiceSessionSeq = voiceSessionSeq;
   var voiceSessionBeforeDelayedStart = activeVoiceSession;
+  var delayedVoiceStartCalls = voiceRecognition.startCalls;
   nodes["voice-button"].dispatchEvent({ type: "click" });
   assert.strictEqual(voiceRecognition.pendingStart, true);
-  assert.strictEqual(voiceRecognition.startCalls, 1);
+  assert.strictEqual(
+    voiceRecognition.startCalls,
+    delayedVoiceStartCalls + 1
+  );
   var delayedVoiceRequest = pendingVoiceRecognitionRequest;
   nodes["micromachine-blackboard-dir"].value =
     "/tmp/voi-mm-voice-radio-delayed-next";
@@ -16402,17 +16626,30 @@ const assert = require("assert");
     delayedVoiceRequest,
     "a replacement scope cannot overwrite an unresolved browser start"
   );
-  assert.strictEqual(voiceRecognition.startCalls, 1);
+  assert.strictEqual(
+    voiceRecognition.startCalls,
+    delayedVoiceStartCalls + 1
+  );
   voiceRecognition.fireStart();
   assert.strictEqual(voiceSessionSeq, delayedVoiceSessionSeq);
   assert.strictEqual(activeVoiceSession, voiceSessionBeforeDelayedStart);
   assert.strictEqual(pendingVoiceRecognitionRequest, null);
   assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "false");
   assert.strictEqual(requests.length, voiceRequestStart);
+  assert.strictEqual(recognitionInstances.length, 4);
+  voiceRecognition = recognitionInstances[recognitionInstances.length - 1];
   voiceRecognition.deferStart = false;
+  delayedVoiceStartCalls = voiceRecognition.startCalls;
   nodes["voice-button"].dispatchEvent({ type: "click" });
-  assert.strictEqual(voiceRecognition.startCalls, 2);
-  assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "true");
+  assert.strictEqual(
+    voiceRecognition.startCalls,
+    delayedVoiceStartCalls + 1
+  );
+  assert.strictEqual(
+    nodes["voice-button"].getAttribute("aria-pressed"),
+    "true",
+    "the replacement recognizer must enter recording state"
+  );
   assert.strictEqual(
     activeVoiceSession.contextGeneration,
     microMachineBlackboardContextGeneration
@@ -16420,8 +16657,12 @@ const assert = require("assert");
   nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-voice-radio";
   synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-voice-radio");
 
-  voiceRecognition.start();
-  assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "true");
+  nodes["voice-button"].dispatchEvent({ type: "click" });
+  assert.strictEqual(
+    nodes["voice-button"].getAttribute("aria-pressed"),
+    "true",
+    "a scope reset must allow the next voice recording"
+  );
   assert.strictEqual(nodes["voice-button"].getAttribute("aria-label"), "녹음 중지");
   var firstVoiceSession = activeVoiceSession;
   var firstVoiceNode = firstVoiceSession.node;
@@ -16565,7 +16806,7 @@ const assert = require("assert");
 
   // Recognition errors remain on the same node and never submit.
   var errorRequestStart = requests.length;
-  voiceRecognition.start();
+  nodes["voice-button"].dispatchEvent({ type: "click" });
   assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "true");
   var errorVoiceSession = activeVoiceSession;
   var errorVoiceNode = errorVoiceSession.node;
@@ -16578,7 +16819,7 @@ const assert = require("assert");
 
   // Concurrent voice commands retain separate pending/result DOM identities.
   var concurrentRequestStart = requests.length;
-  voiceRecognition.start();
+  nodes["voice-button"].dispatchEvent({ type: "click" });
   var concurrentFirstSession = activeVoiceSession;
   var concurrentFirstNode = concurrentFirstSession.node;
   var concurrentFirstResult = [{ transcript: "첫 번째 정찰 작전" }];
@@ -16587,7 +16828,8 @@ const assert = require("assert");
     resultIndex: 0,
     results: [concurrentFirstResult]
   });
-  voiceRecognition.start();
+  voiceRecognition.onend();
+  nodes["voice-button"].dispatchEvent({ type: "click" });
   var concurrentSecondSession = activeVoiceSession;
   var concurrentSecondNode = concurrentSecondSession.node;
   var concurrentSecondResult = [{ transcript: "두 번째 방어 작전" }];
@@ -16596,6 +16838,7 @@ const assert = require("assert");
     resultIndex: 0,
     results: [concurrentSecondResult]
   });
+  voiceRecognition.onend();
   assert.strictEqual(requests.length, concurrentRequestStart + 2);
   assert.notStrictEqual(concurrentFirstNode, concurrentSecondNode);
   assert(concurrentFirstNode.textContent.includes("첫 번째 정찰 작전"));
@@ -16635,7 +16878,7 @@ const assert = require("assert");
   assert(concurrentSecondNode.textContent.includes("두 번째 작전 계획 확인"));
   assert(!concurrentSecondNode.textContent.includes("첫 번째 작전 계획 확인"));
 
-  voiceRecognition.start();
+  nodes["voice-button"].dispatchEvent({ type: "click" });
   var scopeResetSession = activeVoiceSession;
   var scopeResetResult = [{ transcript: "scope 전환 전 대기 명령" }];
   scopeResetResult.isFinal = true;
@@ -16655,7 +16898,7 @@ const assert = require("assert");
 
   // An unbound finalizing session cannot cross a blackboard scope boundary.
   var staleVoiceRequestStart = requests.length;
-  voiceRecognition.start();
+  nodes["voice-button"].dispatchEvent({ type: "click" });
   var staleFinalizingSession = activeVoiceSession;
   var staleVoiceSessionSeq = voiceSessionSeq;
   var staleInterimResult = [{ transcript: "이전 scope의 임시 정찰 명령" }];
@@ -16666,7 +16909,7 @@ const assert = require("assert");
   });
   voiceRecognition.onend();
   var staleFinalizationTimerIndex = timeoutCallbacks.length - 1;
-  voiceRecognition.start();
+  nodes["voice-button"].dispatchEvent({ type: "click" });
   assert.strictEqual(
     voiceSessionSeq,
     staleVoiceSessionSeq,
@@ -16695,7 +16938,7 @@ const assert = require("assert");
 
   // A scope change discovered inside submitCommanderText fails closed.
   var submitScopeVoiceRequestStart = requests.length;
-  voiceRecognition.start();
+  nodes["voice-button"].dispatchEvent({ type: "click" });
   var submitScopeVoiceSession = activeVoiceSession;
   nodes["micromachine-blackboard-dir"].value =
     "/tmp/voi-mm-voice-radio-submit-next";
@@ -16890,6 +17133,7 @@ const assert = require("assert");
   tacticalRadio.dedupe = {};
   tacticalRadio.captions = [];
   tacticalRadio.planAnnouncements = {};
+  tacticalRadio.timelineHighWater = {};
   renderTacticalRadioCaptions();
   spokenUtterances.length = 0;
   var hydrationOperation = operationResult(
@@ -16968,6 +17212,123 @@ const assert = require("assert");
       [SERVER_SCOPE_A, "hydrated-operation", 2].join("|")
     ],
     700
+  );
+  assert.strictEqual(
+    tacticalRadio.timelineHighWater[
+      [SERVER_SCOPE_A, "hydrated-operation", 2].join("|")
+    ],
+    700
+  );
+  var hydratedRecord = operationRecords[
+    operationRecordKey(SERVER_SCOPE_A, "hydrated-operation")
+  ];
+  assert(hydratedRecord);
+  var hydratedTimelineLength =
+    hydratedRecord.data.semantic_timeline.length;
+  applyOperationSemanticEvent(
+    {
+      event_seq: 901,
+      event_type: "operation_event",
+      update_id: "hydrated-update",
+      operation_id: "hydrated-operation",
+      generation: 2,
+      blackboard_scope_id: SERVER_SCOPE_A
+    },
+    Object.assign(
+      {
+        blackboard_scope_id: SERVER_SCOPE_A,
+        session_epoch: "1700000000000",
+        update_id: "hydrated-update",
+        requested_generation: 2
+      },
+      hydrationOperation.semantic_timeline[0]
+    )
+  );
+  assert.strictEqual(
+    hydratedRecord.data.semantic_timeline.length,
+    hydratedTimelineLength
+  );
+  assert.strictEqual(
+    tacticalRadio.captions.length,
+    0,
+    "snapshot lifecycle replay must remain silent"
+  );
+  assert.strictEqual(spokenUtterances.length, 0);
+  var foreignProjectionOperation = JSON.parse(
+    JSON.stringify(hydrationOperation)
+  );
+  foreignProjectionOperation.telemetry_frame = 999;
+  foreignProjectionOperation.battlefield_operation.identity.update_id =
+    "foreign-projection-update";
+  foreignProjectionOperation.battlefield_operation.identity.game_frame = 999;
+  foreignProjectionOperation.battlefield_operation.operation_ownership.owner_count = 1;
+  foreignProjectionOperation.battlefield_operation.operation_launch_policy.min_units = 4;
+  foreignProjectionOperation.semantic_timeline = [
+    {
+      timeline_seq: 701,
+      operation_id: "hydrated-operation",
+      generation: 2,
+      requested_generation: 2,
+      kind: "partially_assigned",
+      game_frame: 999,
+      summary: "foreign projection partial assignment",
+      technical: {
+        projection_identity_valid: false,
+        owner_count: 1,
+        required_count: 4
+      }
+    }
+  ];
+  var foreignProjectionStatus = serverResult({
+    status: "published",
+    operation_registry_authoritative: true,
+    operations: [foreignProjectionOperation]
+  }, SERVER_SCOPE_A);
+  hydrateTacticalRadioState(foreignProjectionStatus);
+  renderMicroMachineStatus(foreignProjectionStatus);
+  assert.strictEqual(hydratedRecord.telemetryFrame, 700);
+  assert.strictEqual(
+    tacticalRadio.frameHighWater[
+      [SERVER_SCOPE_A, "hydrated-operation", 2].join("|")
+    ],
+    700
+  );
+  applyOperationSemanticEvent(
+    {
+      event_seq: 902,
+      event_type: "operation_event",
+      update_id: "hydrated-update",
+      operation_id: "hydrated-operation",
+      generation: 2,
+      blackboard_scope_id: SERVER_SCOPE_A,
+      created_at_unix_ms: fakeNowMs
+    },
+    {
+      timeline_seq: 702,
+      blackboard_scope_id: SERVER_SCOPE_A,
+      session_epoch: "1700000000000",
+      update_id: "hydrated-update",
+      operation_id: "hydrated-operation",
+      generation: 2,
+      requested_generation: 2,
+      kind: "force_loss",
+      game_frame: 701,
+      owner_count: 2,
+      required_count: 4,
+      summary: "canonical force loss",
+      technical: {
+        projection_identity_valid: true,
+        previous_owner_count: 4,
+        owner_count: 2,
+        required_count: 4
+      }
+    }
+  );
+  assert(
+    tacticalRadio.captions.some(function(caption) {
+      return caption.caption.includes(t("tacticalForceLoss"));
+    }),
+    "a canonical force loss must survive a foreign high-frame projection"
   );
 
   // A new update cannot relabel an older full-registry operation as a plan.
@@ -17611,6 +17972,7 @@ var commandEventSource = null;
 var commandEventReconnectTimer = null;
 var commandEventHealthy = false;
 var commandEventAwaitingInitialSnapshot = false;
+var commandEventPollWonInitialHydration = false;
 var commandEventFailedSources = {};
 var fallbackPollingIntervals = [];
 var microMachinePollQueued = false;
