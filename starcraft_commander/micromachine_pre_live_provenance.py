@@ -1251,35 +1251,12 @@ def attest_github_source(
             "pull request base repository mismatch: "
             f"expected={normalized_repository} actual={pull_base_full_name!r}"
         )
-    comparison_base = _mapping(comparison.get("base_commit"))
-    comparison_head = _mapping(comparison.get("head_commit"))
-    comparison_merge_base = _mapping(comparison.get("merge_base_commit"))
-    _expect_server_value(
-        comparison_base,
-        "sha",
-        pull_base_sha,
-        "comparison.base_commit",
-        blockers,
+    _validate_comparison_ancestry(
+        comparison,
+        base_sha=pull_base_sha,
+        head_sha=expected_head_sha,
+        blockers=blockers,
     )
-    _expect_server_value(
-        comparison_head,
-        "sha",
-        expected_head_sha,
-        "comparison.head_commit",
-        blockers,
-    )
-    _expect_server_value(
-        comparison_merge_base,
-        "sha",
-        pull_base_sha,
-        "comparison.merge_base_commit",
-        blockers,
-    )
-    if comparison.get("status") != "ahead":
-        blockers.append(
-            "pull request head must descend from the authenticated main base: "
-            f"status={comparison.get('status')!r}"
-        )
     authority = {
         "scope": PRE_LIVE_CANDIDATE_AUTHORITY_SCOPE,
         "release_authoritative": False,
@@ -1387,20 +1364,17 @@ def attest_github_source(
         expected_repository_id=expected_repository_id,
         blockers=blockers,
     )
-    eligible_runs = [
-        candidate
-        for candidate in workflow_runs
-        if _workflow_run_matches_candidate(
-            candidate,
-            workflow_id=workflow_id,
-            workflow_path=AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH,
-            pull_id=pull_id,
-            pull_number=pull_number,
-            head_sha=expected_head_sha,
-            head_branch=pull_head_ref,
-            repository_id=expected_repository_id,
-        )
-    ]
+    eligible_runs = _eligible_workflow_runs(
+        workflow_runs,
+        current_run=workflow_run,
+        workflow_id=workflow_id,
+        workflow_path=AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH,
+        pull_id=pull_id,
+        pull_number=pull_number,
+        head_sha=expected_head_sha,
+        head_branch=pull_head_ref,
+        repository_id=expected_repository_id,
+    )
     if not eligible_runs:
         blockers.append("no applicable workflow run exists for the candidate head")
     else:
@@ -3053,31 +3027,12 @@ def attest_github_actions_emission_context(
         "pull_request.base.repo",
         blockers,
     )
-    _expect_server_value(
-        _mapping(comparison.get("base_commit")),
-        "sha",
-        pull_base_sha,
-        "comparison.base_commit",
-        blockers,
+    _validate_comparison_ancestry(
+        comparison,
+        base_sha=pull_base_sha,
+        head_sha=expected_head_sha,
+        blockers=blockers,
     )
-    _expect_server_value(
-        _mapping(comparison.get("merge_base_commit")),
-        "sha",
-        pull_base_sha,
-        "comparison.merge_base_commit",
-        blockers,
-    )
-    _expect_server_value(
-        _mapping(comparison.get("head_commit")),
-        "sha",
-        expected_head_sha,
-        "comparison.head_commit",
-        blockers,
-    )
-    if comparison.get("status") != "ahead":
-        blockers.append(
-            "pull request head must descend from the authenticated main base"
-        )
     _validate_workflow_pull_request_binding(
         run_pull_requests,
         label="workflow_run.pull_requests",
@@ -3108,20 +3063,17 @@ def attest_github_actions_emission_context(
         workflow_sha=workflow_sha,
         blockers=blockers,
     )
-    eligible_runs = [
-        candidate
-        for candidate in workflow_runs
-        if _workflow_run_matches_candidate(
-            candidate,
-            workflow_id=workflow_id,
-            workflow_path=AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH,
-            pull_id=pull_id,
-            pull_number=pull_number,
-            head_sha=expected_head_sha,
-            head_branch=pull_head_ref,
-            repository_id=AUTHORITATIVE_REPOSITORY_ID,
-        )
-    ]
+    eligible_runs = _eligible_workflow_runs(
+        workflow_runs,
+        current_run=run,
+        workflow_id=workflow_id,
+        workflow_path=AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH,
+        pull_id=pull_id,
+        pull_number=pull_number,
+        head_sha=expected_head_sha,
+        head_branch=pull_head_ref,
+        repository_id=AUTHORITATIVE_REPOSITORY_ID,
+    )
     if not eligible_runs:
         blockers.append("no applicable workflow run exists for the candidate head")
     else:
@@ -6076,12 +6028,107 @@ def _workflow_run_matches_candidate(
     )
 
 
+def _eligible_workflow_runs(
+    workflow_runs: Sequence[Mapping[str, object]],
+    *,
+    current_run: Mapping[str, object],
+    workflow_id: int,
+    workflow_path: str,
+    pull_id: int | None,
+    pull_number: int,
+    head_sha: str,
+    head_branch: str | None,
+    repository_id: int,
+) -> list[Mapping[str, object]]:
+    candidates: dict[int, Mapping[str, object]] = {}
+    for record in (*workflow_runs, current_run):
+        if not _workflow_run_matches_candidate(
+            record,
+            workflow_id=workflow_id,
+            workflow_path=workflow_path,
+            pull_id=pull_id,
+            pull_number=pull_number,
+            head_sha=head_sha,
+            head_branch=head_branch,
+            repository_id=repository_id,
+        ):
+            continue
+        run_id = record.get("id")
+        if isinstance(run_id, int) and not isinstance(run_id, bool):
+            candidates[run_id] = record
+    return list(candidates.values())
+
+
 def _workflow_run_order_key(record: Mapping[str, object]) -> tuple[int, int, int]:
     return (
         int(record["run_number"]),
         int(record["run_attempt"]),
         int(record["id"]),
     )
+
+
+def _validate_comparison_ancestry(
+    comparison: Mapping[str, object],
+    *,
+    base_sha: str | None,
+    head_sha: str,
+    blockers: list[str],
+) -> None:
+    _expect_server_value(
+        _mapping(comparison.get("base_commit")),
+        "sha",
+        base_sha,
+        "comparison.base_commit",
+        blockers,
+    )
+    _expect_server_value(
+        _mapping(comparison.get("merge_base_commit")),
+        "sha",
+        base_sha,
+        "comparison.merge_base_commit",
+        blockers,
+    )
+    status = comparison.get("status")
+    if status != "ahead":
+        blockers.append(
+            "pull request head must descend from the authenticated main base: "
+            f"status={status!r}"
+        )
+    ahead_by = comparison.get("ahead_by")
+    if (
+        isinstance(ahead_by, bool)
+        or not isinstance(ahead_by, int)
+        or ahead_by <= 0
+    ):
+        blockers.append(
+            "comparison.ahead_by must be a positive integer: "
+            f"actual={ahead_by!r}"
+        )
+    behind_by = comparison.get("behind_by")
+    if (
+        isinstance(behind_by, bool)
+        or not isinstance(behind_by, int)
+        or behind_by != 0
+    ):
+        blockers.append(
+            "comparison.behind_by must be zero: "
+            f"actual={behind_by!r}"
+        )
+    commits = comparison.get("commits")
+    if not isinstance(commits, list):
+        blockers.append("comparison.commits must be a list")
+    elif isinstance(ahead_by, int) and not isinstance(ahead_by, bool):
+        if 0 < ahead_by <= 250:
+            if len(commits) != ahead_by:
+                blockers.append(
+                    "comparison commit count mismatch: "
+                    f"ahead_by={ahead_by} commits={len(commits)}"
+                )
+            elif not commits or _mapping(commits[-1]).get("sha") != head_sha:
+                blockers.append(
+                    "comparison commits do not terminate at the pull-request head: "
+                    f"expected={head_sha!r}"
+                )
 
 
 def _validate_workflow_execution_identity(

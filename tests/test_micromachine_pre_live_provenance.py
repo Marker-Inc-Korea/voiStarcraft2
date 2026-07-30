@@ -228,9 +228,11 @@ class FakeGitHubAdapter:
         ]
         self.comparison = {
             "status": "ahead",
+            "ahead_by": 1,
+            "behind_by": 0,
             "base_commit": {"sha": BASE_SHA},
             "merge_base_commit": {"sha": BASE_SHA},
-            "head_commit": {"sha": head_sha},
+            "commits": [{"sha": head_sha}],
         }
         self.workflow_run = {
             "id": RUN_ID,
@@ -868,6 +870,41 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         )
         self.assertFalse(ambiguous["ok"], ambiguous)
 
+    def test_accepts_current_run_during_workflow_list_eventual_consistency(
+        self,
+    ) -> None:
+        adapter = FakeGitHubAdapter()
+        adapter.workflow_run["status"] = "in_progress"
+        adapter.workflow_run["conclusion"] = None
+        adapter.jobs[0]["status"] = "in_progress"
+        adapter.jobs[0]["conclusion"] = None
+        adapter.job["status"] = "in_progress"
+        adapter.job["conclusion"] = None
+        adapter.workflow_runs.clear()
+
+        report = attest_github_actions_emission_context(
+            adapter,
+            repository=REPOSITORY,
+            run_id=RUN_ID,
+            run_attempt=RUN_ATTEMPT,
+            expected_head_sha=HEAD_SHA,
+            workflow_ref=WORKFLOW_REF,
+            workflow_sha=WORKFLOW_SHA,
+        )
+
+        self.assertTrue(report["ok"], report)
+        self.assertEqual(RUN_ID, report["run_id"])
+        self.assertEqual("in_progress", report["job_status"])
+
+    def test_accepts_completed_source_when_workflow_list_lags(self) -> None:
+        adapter = FakeGitHubAdapter()
+        adapter.workflow_runs.clear()
+
+        report = self.attest(adapter)
+
+        self.assertTrue(report["ok"], report)
+        self.assertEqual(RUN_ID, report["source_ids"]["workflow_run_id"])
+
     def test_rejects_tampered_runner_workflow_identity(self) -> None:
         mutations = {
             "repository": (
@@ -984,9 +1021,15 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             "base ancestry": lambda adapter: adapter.comparison.update(
                 {"status": "diverged"}
             ),
+            "behind main": lambda adapter: adapter.comparison.update(
+                {"behind_by": 1}
+            ),
             "merge base": lambda adapter: adapter.comparison[
                 "merge_base_commit"
             ].update({"sha": "d" * 40}),
+            "head termination": lambda adapter: adapter.comparison[
+                "commits"
+            ][-1].update({"sha": "d" * 40}),
         }
         for name, mutate in mutations.items():
             with self.subTest(name=name):
@@ -4168,7 +4211,7 @@ def bind_adapter_to_build_fixture(
     config = fixture["config"]
     repository = fixture["repository"]
     adapter.workflow_runs = [dict(adapter.workflow_run)]
-    adapter.comparison["head_commit"]["sha"] = fixture["repository_commit"]
+    adapter.comparison["commits"][-1]["sha"] = fixture["repository_commit"]
     repository_paths: dict[str, object] = {}
     excluded = {
         "micromachine_dir",
