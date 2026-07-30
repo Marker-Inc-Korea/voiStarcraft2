@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -638,6 +639,30 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         self.assertIn("      actions: read\n", provenance_job)
         self.assertIn("      contents: read\n", provenance_job)
         self.assertIn("          persist-credentials: false\n", provenance_job)
+        job_blocks = [
+            match.group(0)
+            for match in re.finditer(
+                r"(?ms)^  [A-Za-z0-9_-]+:\n.*?(?=^  [A-Za-z0-9_-]+:\n|\Z)",
+                workflow.split("jobs:\n", 1)[1],
+            )
+            if "\n      - uses: actions/checkout@" in match.group(0)
+        ]
+        pull_request_job_blocks = [
+            block
+            for block in job_blocks
+            if "if: github.event_name == 'push'" not in block
+        ]
+        self.assertGreaterEqual(len(pull_request_job_blocks), 2)
+        for job_block in pull_request_job_blocks:
+            with self.subTest(job=job_block.split(":\n", 1)[0].strip()):
+                checkout_block = job_block.split(
+                    "      - uses: actions/checkout@",
+                    1,
+                )[1].split("\n      - ", 1)[0]
+                self.assertIn(
+                    "          persist-credentials: false",
+                    checkout_block,
+                )
         build_step = provenance_job.split(
             "      - name: Build exact MicroMachine integration\n",
             1,
