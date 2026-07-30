@@ -22162,8 +22162,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         cursor = after
         snapshot_admitted = True
         try:
-            replay_available, replay_events = journal.replay_batch(after)
-            if after == 0 or not replay_available:
+            if after == 0:
                 while True:
                     cursor = self._write_authoritative_sse_snapshot(
                         journal,
@@ -22191,20 +22190,40 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                         break
             else:
                 server = self.server  # type: ignore[assignment]
-                if server.admit_operation_event_scope(  # type: ignore[attr-defined]
-                    blackboard_scope_id
-                ):
-                    cursor, replay_events = (
-                        server.prepare_authoritative_operation_replay(  # type: ignore[attr-defined]
-                            blackboard_scope_id,
-                            snapshot_cursor=after,
+                cursor, replay_events = (
+                    server.prepare_authoritative_operation_replay(  # type: ignore[attr-defined]
+                        blackboard_scope_id,
+                        snapshot_cursor=after,
+                    )
+                )
+                replay_requires_snapshot = any(
+                    str(event.get("event_type", "") or "")
+                    == "operation_event"
+                    and str(
+                        event.get("blackboard_scope_id", "") or ""
+                    )
+                    == blackboard_scope_id
+                    for event in replay_events
+                )
+                if cursor != after or replay_requires_snapshot:
+                    cursor = self._write_authoritative_sse_snapshot(
+                        journal,
+                        blackboard_dir,
+                        blackboard_scope_id,
+                    )
+                    snapshot_admitted = bool(
+                        getattr(
+                            self,
+                            "_last_authoritative_snapshot_admitted",
+                            False,
                         )
                     )
-                cursor = self._write_visible_sse_events(
-                    replay_events,
-                    cursor=cursor,
-                    blackboard_scope_id=blackboard_scope_id,
-                )
+                else:
+                    cursor = self._write_visible_sse_events(
+                        replay_events,
+                        cursor=cursor,
+                        blackboard_scope_id=blackboard_scope_id,
+                    )
             self._write_sse_heartbeat()
             if once:
                 return
@@ -22303,36 +22322,22 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         )
         with source_lock:
             requested_scope_id = str(blackboard_scope_id or "")
-            status_read_succeeded = bool(
-                server.admit_operation_event_scope(  # type: ignore[attr-defined]
-                    requested_scope_id
+            status_read_succeeded = True
+            try:
+                micromachine_status = self._micromachine_status_payload(
+                    blackboard_dir
                 )
-            )
-            if not status_read_succeeded:
+            except Exception as error:  # noqa: BLE001 - snapshot remains usable.
+                status_read_succeeded = False
                 micromachine_status = {
                     "enabled": False,
-                    "status": "scope_capacity_rejected",
+                    "status": "source_error",
                     "blackboard_scope_id": requested_scope_id,
-                    "error": (
-                        "MicroMachine operation scope capacity is exhausted."
+                    "error": _redact_sensitive_text(
+                        error,
+                        normalize_whitespace=True,
                     ),
                 }
-            else:
-                try:
-                    micromachine_status = self._micromachine_status_payload(
-                        blackboard_dir
-                    )
-                except Exception as error:  # noqa: BLE001 - snapshot remains usable.
-                    status_read_succeeded = False
-                    micromachine_status = {
-                        "enabled": False,
-                        "status": "source_error",
-                        "blackboard_scope_id": requested_scope_id,
-                        "error": _redact_sensitive_text(
-                            error,
-                            normalize_whitespace=True,
-                        ),
-                    }
             status_scope_id = str(
                 micromachine_status.get("blackboard_scope_id")
                 or requested_scope_id
@@ -22366,6 +22371,22 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 }
             ):
                 status_read_succeeded = False
+            if (
+                status_read_succeeded
+                and not server.admit_operation_event_scope(  # type: ignore[attr-defined]
+                    requested_scope_id
+                )
+            ):
+                status_read_succeeded = False
+                micromachine_status = {
+                    "enabled": False,
+                    "status": "scope_capacity_rejected",
+                    "blackboard_scope_id": requested_scope_id,
+                    "error": (
+                        "MicroMachine operation scope capacity is exhausted."
+                    ),
+                }
+                status_scope_id = requested_scope_id
             source_materialized, _ = (
                 server.operation_event_source_cursor(  # type: ignore[attr-defined]
                     status_scope_id
@@ -22421,6 +22442,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 micromachine_status.get("blackboard_scope_id")
                 or blackboard_scope_id
             )
+            status_accepted = False
             if status_read_succeeded:
                 with server._event_source_lock:  # type: ignore[attr-defined]
                     status_accepted, accepted_status = (
@@ -22440,7 +22462,10 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 blackboard_dir,
                 micromachine_status=micromachine_status,
             )
-            if status_read_succeeded:
+            authoritative_status_admitted = bool(
+                status_read_succeeded and status_accepted
+            )
+            if authoritative_status_admitted:
                 snapshot_cursor, prepared_replay = (
                     server.prepare_authoritative_operation_replay(  # type: ignore[attr-defined]
                         status_scope_id,
@@ -22451,7 +22476,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 snapshot_cursor = snapshot_cut
                 prepared_replay = ()
             self._last_authoritative_snapshot_admitted = (
-                status_read_succeeded
+                authoritative_status_admitted
             )
             snapshot_event = {
                 "event_seq": snapshot_cursor,
@@ -22627,10 +22652,6 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 requested_scope = _micromachine_blackboard_scope_id(
                     blackboard_dir
                 )
-                if not server.admit_operation_event_scope(  # type: ignore[attr-defined]
-                    requested_scope
-                ):
-                    return
                 status = self._micromachine_status_payload(blackboard_dir)
                 scope = str(
                     status.get("blackboard_scope_id")
@@ -22646,7 +22667,13 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     in {
                         "operation_history_capacity_rejected",
                         "scope_capacity_rejected",
+                        "scope_identity_mismatch",
+                        "source_error",
                     }
+                ):
+                    return
+                if not server.admit_operation_event_scope(  # type: ignore[attr-defined]
+                    requested_scope
                 ):
                     return
                 with server._event_source_lock:  # type: ignore[attr-defined]
@@ -23242,22 +23269,6 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         requested_scope_id = _micromachine_blackboard_scope_id(
             blackboard_dir
         )
-        if not self.server.admit_operation_event_scope(  # type: ignore[attr-defined]
-            requested_scope_id
-        ):
-            self._send_json(
-                HTTPStatus.OK,
-                {
-                    "enabled": False,
-                    "status": "scope_capacity_rejected",
-                    "blackboard_dir": blackboard_dir,
-                    "blackboard_scope_id": requested_scope_id,
-                    "error": (
-                        "MicroMachine operation scope capacity is exhausted."
-                    ),
-                },
-            )
-            return
         try:
             payload = self._micromachine_status_payload(blackboard_dir)
             reported_scope_id = str(
