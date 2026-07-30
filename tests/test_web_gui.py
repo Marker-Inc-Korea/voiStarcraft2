@@ -1536,10 +1536,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             operation_events_after_advance[-1]["payload"]["kind"],
         )
 
-        history_retention = (
-            http_server._OPERATION_EVENT_SCOPE_HISTORY_RETENTION
-        )
-        for index in range(history_retention + 3):
+        for index in range(70):
             handler._publish_new_operation_events(
                 {
                     "blackboard_scope_id": f"history-scope-{index}",
@@ -1555,13 +1552,82 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 blackboard_dir=f"/tmp/history-scope-{index}",
                 publish=True,
             )
-        self.assertLessEqual(
-            len(http_server._observed_operation_event_high_water),
-            history_retention,
+        self.assertNotIn(
+            evicted_scope,
+            http_server._observed_operation_event_seq,
         )
-        self.assertLessEqual(
-            len(http_server._observed_operation_event_history_order),
-            history_retention,
+        self.assertEqual(
+            retention + 100,
+            http_server._observed_operation_event_high_water[
+                evicted_scope
+            ],
+        )
+
+        operation_events_before_retired_revisit = [
+            event
+            for event in http_server.event_journal.events_after(0)
+            if event["event_type"] == "operation_event"
+            and event["blackboard_scope_id"] == evicted_scope
+        ]
+        handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": evicted_scope,
+                "operation_events": [
+                    {
+                        "timeline_seq": 1,
+                        "operation_id": "operation-0",
+                        "generation": 1,
+                        "kind": "assigned",
+                    },
+                    {
+                        "timeline_seq": retention + 100,
+                        "operation_id": "operation-0",
+                        "generation": 1,
+                        "kind": "movement_observed",
+                    },
+                ],
+            },
+            blackboard_dir=f"/tmp/{evicted_scope}",
+            publish=True,
+        )
+        self.assertEqual(
+            operation_events_before_retired_revisit,
+            [
+                event
+                for event in http_server.event_journal.events_after(0)
+                if event["event_type"] == "operation_event"
+                and event["blackboard_scope_id"] == evicted_scope
+            ],
+        )
+
+        handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": evicted_scope,
+                "operation_events": [
+                    {
+                        "timeline_seq": retention + 101,
+                        "operation_id": "operation-0",
+                        "generation": 1,
+                        "kind": "engagement_observed",
+                    }
+                ],
+            },
+            blackboard_dir=f"/tmp/{evicted_scope}",
+            publish=True,
+        )
+        operation_events_after_retired_advance = [
+            event
+            for event in http_server.event_journal.events_after(0)
+            if event["event_type"] == "operation_event"
+            and event["blackboard_scope_id"] == evicted_scope
+        ]
+        self.assertEqual(
+            len(operation_events_before_retired_revisit) + 1,
+            len(operation_events_after_retired_advance),
+        )
+        self.assertEqual(
+            "engagement_observed",
+            operation_events_after_retired_advance[-1]["payload"]["kind"],
         )
 
     def test_sse_snapshot_survives_micromachine_source_failure(self):
@@ -8112,12 +8178,114 @@ class SessionLoopBridgeTest(unittest.TestCase):
             ],
         )
 
+        missing_identity = semantic_operation_payload(
+            operation_id="identity-alpha",
+            generation=2,
+            requested_generation=2,
+            frame=202,
+            movement=True,
+        )
+        missing_operation = missing_identity["operations"][0]
+        missing_operation["update_id"] = ""
+        missing_operation["compile_result"]["update_id"] = ""
+        missing_operation["intervention"]["command_execution"][
+            "command_id"
+        ] = ""
+        missing_operation["battlefield_operation"]["identity"][
+            "update_id"
+        ] = ""
+        missing_result = reducer.observe(
+            missing_identity,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            accepted_operation,
+            missing_result["operations"][0],
+        )
+
+        forged_request = semantic_operation_payload(
+            operation_id="identity-alpha",
+            generation=2,
+            requested_generation=3,
+            frame=203,
+            movement=True,
+        )
+        forged_result = reducer.observe(
+            forged_request,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            accepted_operation,
+            forged_result["operations"][0],
+        )
+
+        forged_cancellation = semantic_operation_payload(
+            operation_id="identity-alpha",
+            generation=2,
+            requested_generation=2,
+            frame=204,
+            execution_state="cancelled",
+        )
+        forged_execution = forged_cancellation["operations"][0][
+            "intervention"
+        ]["command_execution"]
+        forged_cancel_operation = forged_cancellation["operations"][0]
+        forged_cancel_update_id = "foreign-cancel-identity-alpha-2"
+        forged_cancel_operation["update_id"] = forged_cancel_update_id
+        forged_cancel_operation["compile_result"][
+            "update_id"
+        ] = forged_cancel_update_id
+        forged_cancel_operation["battlefield_operation"]["identity"][
+            "update_id"
+        ] = forged_cancel_update_id
+        forged_execution["command_id"] = forged_cancel_update_id
+        forged_execution["blocker_reason"] = "cancelled_by_policy"
+        forged_execution["terminal_cleanup"] = {
+            "action": "release_stop|cancelled_by_policy",
+            "frame": 204,
+            "operation_id": "identity-alpha",
+            "generation": 2,
+        }
+        forged_cancel_result = reducer.observe(
+            forged_cancellation,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            accepted_operation,
+            forged_cancel_result["operations"][0],
+        )
+
+        accepted_edit = reducer.observe(
+            semantic_operation_payload(
+                operation_id="identity-alpha",
+                generation=2,
+                requested_generation=3,
+                frame=205,
+                operation_edit={
+                    "action": "reinforce",
+                    "resolution": "blocked",
+                    "blocker": "awaiting_reinforcement",
+                },
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            3,
+            accepted_edit["operations"][0][
+                "requested_operation_generation"
+            ],
+        )
+        self.assertEqual(
+            "update-identity-alpha-3",
+            accepted_edit["operations"][0]["update_id"],
+        )
+
         advanced = reducer.observe(
             semantic_operation_payload(
                 operation_id="identity-alpha",
                 generation=3,
                 requested_generation=3,
-                frame=202,
+                frame=206,
                 movement=True,
             ),
             blackboard_scope_id=scope_id,
@@ -8744,6 +8912,11 @@ class SessionLoopBridgeTest(unittest.TestCase):
             semantic_operation_payload(
                 requested_generation=5,
                 frame=101,
+                operation_edit={
+                    "action": "reinforce",
+                    "resolution": "blocked",
+                    "blocker": "awaiting_reinforcement",
+                },
             ),
             blackboard_scope_id=scope_id,
         )
@@ -14930,6 +15103,96 @@ const assert = require("assert");
     )
   );
 
+  var missingIdentitySnapshot = operationResult(
+    "assault-bravo",
+    "missing-identity",
+    "missing identity must fail closed",
+    "attack",
+    1000,
+    "effect_observed",
+    observedExecutionStages(),
+    2
+  );
+  missingIdentitySnapshot.requested_operation_generation = 4;
+  missingIdentitySnapshot.update_id = "";
+  if (missingIdentitySnapshot.compile_result) {
+    missingIdentitySnapshot.compile_result.update_id = "";
+  }
+  missingIdentitySnapshot.update.update_id = "";
+  missingIdentitySnapshot.intervention.command_execution.command_id = "";
+  missingIdentitySnapshot.battlefield_operation.identity.update_id = "";
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [missingIdentitySnapshot]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.telemetryFrame, 331);
+  assert.strictEqual(
+    assaultRecord.updateId,
+    "parallel-update-b-edit-latest"
+  );
+  assert(
+    !assaultRecord.node.textContent.includes(
+      "missing identity must fail closed"
+    )
+  );
+
+  var forgedNewRequestSnapshot = operationResult(
+    "assault-bravo",
+    "foreign-request-without-edit",
+    "generation number alone is not an edit",
+    "attack",
+    1001,
+    "effect_observed",
+    observedExecutionStages(),
+    2
+  );
+  forgedNewRequestSnapshot.requested_operation_generation = 5;
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [forgedNewRequestSnapshot]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
+  assert.strictEqual(assaultRecord.telemetryFrame, 331);
+  assert(
+    !assaultRecord.node.textContent.includes(
+      "generation number alone is not an edit"
+    )
+  );
+
+  var forgedCancellationSnapshot = operationResult(
+    "assault-bravo",
+    "foreign-cancellation-owner",
+    "foreign cancellation must fail closed",
+    "attack",
+    1002,
+    "cancelled",
+    actionStages("attack").slice(0, 6),
+    2
+  );
+  forgedCancellationSnapshot.requested_operation_generation = 4;
+  forgedCancellationSnapshot.intervention.command_execution.blocker_reason =
+    "cancelled_by_policy";
+  forgedCancellationSnapshot.intervention.command_execution.terminal_cleanup = {
+    action: "release_stop|cancelled_by_policy",
+    frame: 1002,
+    operation_id: "assault-bravo",
+    generation: 2
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [forgedCancellationSnapshot]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.terminal, false);
+  assert.strictEqual(assaultRecord.telemetryFrame, 331);
+  assert(
+    !assaultRecord.node.textContent.includes(
+      "foreign cancellation must fail closed"
+    )
+  );
+
   var staleActiveRejectedEdit = operationResult(
     "assault-bravo",
     "parallel-update-b-edit-stale",
@@ -15042,6 +15305,9 @@ const assert = require("assert");
       "오래된 공격조 변경과 새 실행 세대"
     )
   );
+  var canonicalAssaultExecutionOwnerUpdateId =
+    assaultRecord.data.operation_console_execution_owner_update_id;
+  assert(canonicalAssaultExecutionOwnerUpdateId);
   assaultRecord.node.querySelectorAll("button")[0].dispatchEvent({
     type: "click"
   });
@@ -15088,7 +15354,7 @@ const assert = require("assert");
   // Cancellation remains active until matching release_stop cleanup arrives.
   var cancellationPending = operationResult(
     "assault-bravo",
-    "parallel-update-b-edit",
+    "parallel-update-b-edit-latest",
     "공격조를 마린 6기로 증원",
     "attack",
     340,
@@ -15096,6 +15362,12 @@ const assert = require("assert");
     actionStages("attack").slice(0, 6),
     3
   );
+  cancellationPending.operation_console_execution_owner_update_id =
+    canonicalAssaultExecutionOwnerUpdateId;
+  cancellationPending.intervention.command_execution.command_id =
+    canonicalAssaultExecutionOwnerUpdateId;
+  cancellationPending.battlefield_operation.identity.update_id =
+    canonicalAssaultExecutionOwnerUpdateId;
   cancellationPending.intervention.command_execution.blocker_reason =
     "cancelled_by_policy";
   cancellationPending.intervention.command_execution.terminal_cleanup = {};
@@ -15119,7 +15391,7 @@ const assert = require("assert");
 
   var verifiedCancellation = operationResult(
     "assault-bravo",
-    "parallel-update-b-edit",
+    "parallel-update-b-edit-latest",
     "공격조를 마린 6기로 증원",
     "attack",
     350,
@@ -15127,6 +15399,12 @@ const assert = require("assert");
     actionStages("attack").slice(0, 6),
     3
   );
+  verifiedCancellation.operation_console_execution_owner_update_id =
+    canonicalAssaultExecutionOwnerUpdateId;
+  verifiedCancellation.intervention.command_execution.command_id =
+    canonicalAssaultExecutionOwnerUpdateId;
+  verifiedCancellation.battlefield_operation.identity.update_id =
+    canonicalAssaultExecutionOwnerUpdateId;
   verifiedCancellation.intervention.command_execution.blocker_reason =
     "cancelled_by_policy";
   verifiedCancellation.intervention.command_execution.terminal_cleanup = {

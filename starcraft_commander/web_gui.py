@@ -5689,25 +5689,43 @@ class _OperationSemanticTimelineReducer:
         )
 
     @staticmethod
-    def _operation_update_id(
+    def _operation_request_update_id(
         operation: Mapping[str, object],
     ) -> str:
         update = _mapping_child(operation, "update")
         compile_result = _mapping_child(operation, "compile_result")
+        return str(
+            operation.get("update_id", "")
+            or update.get("update_id", "")
+            or compile_result.get("update_id", "")
+            or ""
+        )
+
+    @staticmethod
+    def _operation_execution_owner_update_id(
+        operation: Mapping[str, object],
+    ) -> str:
         execution = _mapping_child(
             _mapping_child(operation, "intervention"),
             "command_execution",
         )
         return str(
-            operation.get("update_id", "")
-            or update.get("update_id", "")
-            or compile_result.get("update_id", "")
-            or operation.get(
+            operation.get(
                 "operation_console_execution_owner_update_id",
                 "",
             )
             or execution.get("command_id", "")
             or ""
+        )
+
+    @classmethod
+    def _operation_update_id(
+        cls,
+        operation: Mapping[str, object],
+    ) -> str:
+        return (
+            cls._operation_request_update_id(operation)
+            or cls._operation_execution_owner_update_id(operation)
         )
 
     @classmethod
@@ -5729,16 +5747,31 @@ class _OperationSemanticTimelineReducer:
             or generation != generation_high_water
         ):
             return False
-        incoming_update_id = cls._operation_update_id(operation)
-        accepted_update_id = cls._operation_update_id(accepted)
-        if (
-            not incoming_update_id
-            or not accepted_update_id
-            or incoming_update_id == accepted_update_id
-        ):
+        incoming_request_id = cls._operation_request_update_id(operation)
+        incoming_owner_id = cls._operation_execution_owner_update_id(
+            operation
+        )
+        accepted_request_id = cls._operation_request_update_id(accepted)
+        accepted_owner_id = cls._operation_execution_owner_update_id(
+            accepted
+        )
+        accepted_ids = {
+            identity
+            for identity in (accepted_request_id, accepted_owner_id)
+            if identity
+        }
+        incoming_ids = {
+            identity
+            for identity in (incoming_request_id, incoming_owner_id)
+            if identity
+        }
+        if incoming_ids and incoming_ids.issubset(accepted_ids):
             return False
+        edit = _mapping_child(operation, "operation_edit")
         is_new_request = bool(
             requested_generation > requested_generation_high_water
+            and incoming_request_id
+            and str(edit.get("action", "") or "").strip()
         )
         execution = _mapping_child(
             _mapping_child(operation, "intervention"),
@@ -5747,12 +5780,29 @@ class _OperationSemanticTimelineReducer:
         execution_state = str(
             execution.get("state", "") or ""
         ).lower()
+        execution_generation = max(
+            0,
+            _int_or_none(
+                execution.get("operation_generation")
+                or execution.get("generation")
+            )
+            or 0,
+        )
         is_cancellation_transition = bool(
             execution_state in {"cancelled", "canceled"}
             and str(
                 execution.get("blocker_reason", "") or ""
             ).lower()
             == "cancelled_by_policy"
+            and incoming_owner_id
+            and incoming_owner_id == accepted_owner_id
+            and str(execution.get("operation_id", "") or "")
+            == str(operation.get("operation_id", "") or "")
+            and execution_generation == generation
+            and (
+                not incoming_request_id
+                or incoming_request_id in accepted_ids
+            )
         )
         return not (is_new_request or is_cancellation_transition)
 
@@ -15469,14 +15519,29 @@ function operationPayloadScopeId(operation, data) {
 }
 
 function operationPayloadUpdateId(operation) {
+  return String(
+    operationPayloadRequestUpdateId(operation) ||
+    operationPayloadExecutionOwnerUpdateId(operation) ||
+    ""
+  );
+}
+
+function operationPayloadRequestUpdateId(operation) {
   var update = (operation && operation.update) || {};
   var compileResult = (operation && operation.compile_result) || {};
-  var intervention = (operation && operation.intervention) || {};
-  var execution = intervention.command_execution || {};
   return String(
     operation && operation.update_id ||
     update.update_id ||
     compileResult.update_id ||
+    ""
+  );
+}
+
+function operationPayloadExecutionOwnerUpdateId(operation) {
+  var intervention = (operation && operation.intervention) || {};
+  var execution = intervention.command_execution || {};
+  return String(
+    operation && operation.operation_console_execution_owner_update_id ||
     execution.command_id ||
     ""
   );
@@ -16138,6 +16203,9 @@ function reconcileOperationRecord(operation, parentData) {
   var data = commandOperationData(operation, parentData);
   var operationId = String(data.operation_id || "");
   var updateId = operationPayloadUpdateId(operation);
+  var requestUpdateId = operationPayloadRequestUpdateId(operation);
+  var executionOwnerUpdateId =
+    operationPayloadExecutionOwnerUpdateId(operation);
   var scopeId = String(data.blackboard_scope_id || "");
   if (!operationId) { return null; }
   var key = String(
@@ -16207,27 +16275,68 @@ function reconcileOperationRecord(operation, parentData) {
   ) {
     latestRequestedOperationGeneration = 0;
   }
-  var sameGenerationForeignUpdate = Boolean(
+  var acceptedRequestUpdateId = String(record && record.updateId || "");
+  var acceptedExecutionOwnerUpdateId = String(
+    record && record.data &&
+      record.data.operation_console_execution_owner_update_id ||
+    acceptedRequestUpdateId ||
+    ""
+  );
+  var acceptedUpdateIds = {};
+  if (acceptedRequestUpdateId) {
+    acceptedUpdateIds[acceptedRequestUpdateId] = true;
+  }
+  if (acceptedExecutionOwnerUpdateId) {
+    acceptedUpdateIds[acceptedExecutionOwnerUpdateId] = true;
+  }
+  var incomingUpdateIds = [];
+  if (requestUpdateId) { incomingUpdateIds.push(requestUpdateId); }
+  if (
+    executionOwnerUpdateId &&
+    incomingUpdateIds.indexOf(executionOwnerUpdateId) < 0
+  ) {
+    incomingUpdateIds.push(executionOwnerUpdateId);
+  }
+  var sameGenerationUpdateIdentityAccepted = Boolean(
+    incomingUpdateIds.length &&
+    incomingUpdateIds.every(function(identity) {
+      return acceptedUpdateIds[identity] === true;
+    })
+  );
+  var sameGenerationUpdateIdentityRequired = Boolean(
     record &&
     record.operationGeneration > 0 &&
-    operationGeneration === record.operationGeneration &&
-    record.updateId &&
-    updateId &&
-    updateId !== record.updateId
+    operationGeneration === record.operationGeneration
   );
   var newerOperationRequest = Boolean(
-    requestedOperationGeneration > latestRequestedOperationGeneration
+    requestedOperationGeneration > latestRequestedOperationGeneration &&
+    requestUpdateId &&
+    hasEditPayload
   );
   var foreignExecution = (data.intervention || {}).command_execution || {};
+  var foreignExecutionGeneration = Number(
+    foreignExecution.operation_generation ||
+    foreignExecution.generation ||
+    0
+  );
   var sameGenerationCancellationTransition = Boolean(
     ["cancelled", "canceled"].indexOf(
       String(foreignExecution.state || "").toLowerCase()
     ) >= 0 &&
     String(foreignExecution.blocker_reason || "").toLowerCase() ===
-      "cancelled_by_policy"
+      "cancelled_by_policy" &&
+    executionOwnerUpdateId &&
+    executionOwnerUpdateId === acceptedExecutionOwnerUpdateId &&
+    String(foreignExecution.operation_id || "") === operationId &&
+    foreignExecutionGeneration === operationGeneration &&
+    (
+      !requestUpdateId ||
+      acceptedUpdateIds[requestUpdateId] === true
+    )
   );
   if (
-    sameGenerationForeignUpdate &&
+    sameGenerationUpdateIdentityRequired &&
+    !sameGenerationUpdateIdentityAccepted &&
     !newerOperationRequest &&
     !sameGenerationCancellationTransition
   ) {
@@ -20552,9 +20661,6 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
 
     daemon_threads = True
     _OPERATION_EVENT_SCOPE_RETENTION = 8
-    _OPERATION_EVENT_SCOPE_HISTORY_RETENTION = (
-        _OPERATION_EVENT_SCOPE_RETENTION * 8
-    )
 
     def __init__(
         self,
@@ -20577,7 +20683,6 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         self._observed_operation_event_seq: dict[str, int] = {}
         self._observed_operation_scope_order: deque[str] = deque()
         self._observed_operation_event_high_water: dict[str, int] = {}
-        self._observed_operation_event_history_order: deque[str] = deque()
         self._failed_event_sources: set[str] = set()
         self.shutdown_event = threading.Event()
         super().__init__(server_address, handler_class)
@@ -20666,19 +20771,12 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         scope_id: str,
         timeline_seq: int,
     ) -> None:
-        """Keep a bounded replay cursor beyond the active source-cache LRU."""
+        """Retain compact replay identity for the server process lifetime."""
 
         normalized_scope = str(scope_id or "")
         normalized_seq = max(0, int(timeline_seq))
         if not normalized_scope:
             return
-        try:
-            self._observed_operation_event_history_order.remove(
-                normalized_scope
-            )
-        except ValueError:
-            pass
-        self._observed_operation_event_history_order.append(normalized_scope)
         self._observed_operation_event_high_water[normalized_scope] = max(
             self._observed_operation_event_high_water.get(
                 normalized_scope,
@@ -20686,17 +20784,6 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
             ),
             normalized_seq,
         )
-        while (
-            len(self._observed_operation_event_history_order)
-            > self._OPERATION_EVENT_SCOPE_HISTORY_RETENTION
-        ):
-            retired_scope = (
-                self._observed_operation_event_history_order.popleft()
-            )
-            self._observed_operation_event_high_water.pop(
-                retired_scope,
-                None,
-            )
 
     def touch_operation_event_scope(self, scope_id: str) -> None:
         """Bound per-blackboard event cursors and their related caches."""
