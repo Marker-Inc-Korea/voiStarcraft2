@@ -3138,6 +3138,56 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 {failure["code"] for failure in report["failures"]},
             )
 
+    def test_source_swap_and_restore_during_build_transaction_is_rejected(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            write_micromachine_source_attestation(config)
+            source = config.micromachine_dir / "README.md"
+            original = source.with_name("README.original")
+            attacker = source.with_name("README.attacker")
+            expected_bytes = source.read_bytes()
+
+            source.rename(original)
+            attacker.write_text("compiler-window attacker bytes\n")
+            attacker.rename(source)
+            source.unlink()
+            original.rename(source)
+
+            self.assertEqual(expected_bytes, source.read_bytes())
+            with self.assertRaisesRegex(
+                ValueError,
+                "micromachine_source_build_transaction_mismatch",
+            ):
+                write_micromachine_build_attestation(config)
+
+    def test_s2client_build_root_swap_and_restore_during_link_is_rejected(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            write_micromachine_source_attestation(config)
+            build_root = config.resolved_s2client_build_dir
+            original = build_root.with_name("build-original")
+
+            build_root.rename(original)
+            shutil.copytree(original, build_root)
+            (build_root / "bin").mkdir(exist_ok=True)
+            (build_root / "bin" / "libsc2api.a").write_text(
+                "link-window attacker archive\n"
+            )
+            shutil.rmtree(build_root)
+            original.rename(build_root)
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "s2client_(source|build)_build_transaction_mismatch",
+            ):
+                write_micromachine_build_attestation(config)
+
     def test_runtime_bot_config_mutation_does_not_invalidate_binary_identity(
         self,
     ) -> None:

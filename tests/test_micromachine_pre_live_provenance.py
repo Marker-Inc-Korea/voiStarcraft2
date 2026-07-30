@@ -628,9 +628,24 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             f"  {AUTHORITATIVE_PROVENANCE_JOB_NAME}:\n",
             1,
         )[1].split("\n  micromachine-macos-contracts:\n", 1)[0]
-        self.assertIn("    if: github.event_name == 'pull_request'\n", provenance_job)
+        self.assertIn(
+            "    if: >-\n"
+            "      github.event_name == 'pull_request' &&\n"
+            "      github.event.pull_request.head.repo.id == "
+            "github.event.repository.id\n",
+            provenance_job,
+        )
         self.assertIn("      actions: read\n", provenance_job)
         self.assertIn("      contents: read\n", provenance_job)
+        self.assertIn("          persist-credentials: false\n", provenance_job)
+        build_step = provenance_job.split(
+            "      - name: Build exact MicroMachine integration\n",
+            1,
+        )[1].split(
+            "      - name: Emit canonical authenticated provenance bundle\n",
+            1,
+        )[0]
+        self.assertNotIn("GITHUB_TOKEN", build_step)
         self.assertIn(
             "  micromachine-macos-contracts:\n    if: github.event_name == 'push'\n",
             workflow,
@@ -3069,6 +3084,26 @@ class AggregateProvenanceTest(unittest.TestCase):
             release = require_release_authority(report)
             self.assertFalse(release["ok"], release)
             self.assertIn("qualification-only", " ".join(release["blockers"]))
+
+    def test_forged_standalone_release_mapping_is_never_authoritative(self) -> None:
+        release = require_release_authority(
+            {
+                "ok": True,
+                "status": "ready_for_live_qa",
+                "authority": {
+                    "scope": "release_post_merge",
+                    "release_authoritative": True,
+                },
+            }
+        )
+
+        self.assertFalse(release["ok"], release)
+        self.assertFalse(release["release_authoritative"])
+        self.assertEqual({}, release["authority"])
+        self.assertIn(
+            "authenticated post-merge release authority is not implemented",
+            " ".join(release["blockers"]),
+        )
 
     def test_forged_caller_success_cannot_override_server_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

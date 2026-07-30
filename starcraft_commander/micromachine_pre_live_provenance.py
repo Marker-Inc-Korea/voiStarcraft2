@@ -3879,24 +3879,24 @@ def attest_pre_live_provenance(
 def require_release_authority(
     evidence: Mapping[str, object],
 ) -> dict[str, object]:
-    """Reject candidate evidence before any release-gate field is evaluated."""
+    """Fail closed until the authenticated post-merge verifier is implemented."""
 
     authority = _mapping(evidence.get("authority"))
     scope = authority.get("scope")
-    release_authoritative = authority.get("release_authoritative")
-    blockers: list[str] = []
+    blockers = [
+        "authenticated post-merge release authority is not implemented; "
+        "raw evidence mappings cannot authorize a release"
+    ]
     if scope == PRE_LIVE_CANDIDATE_AUTHORITY_SCOPE:
         blockers.append(
             "candidate_pr evidence is qualification-only and cannot authorize a release"
         )
-    elif scope != "release_post_merge":
+    elif scope not in {None, "release_post_merge"}:
         blockers.append(f"unsupported release authority scope: {scope!r}")
-    if release_authoritative is not True:
-        blockers.append("release evidence is not marked release-authoritative")
     return _component_result(
         blockers,
-        authority=dict(authority),
-        release_authoritative=not blockers,
+        authority={},
+        release_authoritative=False,
     )
 
 

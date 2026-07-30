@@ -27,7 +27,8 @@ SANITIZED_GIT_ENV: Final[dict[str, str]] = {
     "PATH": "/usr/bin:/bin",
 }
 MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 71
-MICROMACHINE_SOURCE_ATTESTATION_SCHEMA_VERSION: Final[int] = 4
+MICROMACHINE_SOURCE_ATTESTATION_SCHEMA_VERSION: Final[int] = 5
+MICROMACHINE_BUILD_TRANSACTION_SCHEMA_VERSION: Final[int] = 1
 MICROMACHINE_RUNTIME_MUTABLE_PATHS: Final[tuple[str, ...]] = ("bin/BotConfig.txt",)
 MICROMACHINE_REQUIRED_NATIVE_TESTS: Final[dict[str, str]] = {
     "voi_operation_transfer_admission": "voi_operation_transfer_admission_test",
@@ -1701,6 +1702,7 @@ def write_micromachine_source_attestation(
         raise ValueError("cannot attest source state without git worktrees.")
     if s2client_build_state is None:
         raise ValueError("cannot attest missing s2client build state.")
+    build_transaction_before = _build_transaction_snapshot(config)
     payload = {
         "schema_version": MICROMACHINE_SOURCE_ATTESTATION_SCHEMA_VERSION,
         "stage": "source_attested",
@@ -1712,6 +1714,11 @@ def write_micromachine_source_attestation(
         "s2client_build_state_sha256": s2client_build_state,
         "micromachine_build_root": micromachine_build_root,
         "s2client_build_root": s2client_build_root,
+        "build_transaction": {
+            "before": build_transaction_before,
+            "after": None,
+            "stable": False,
+        },
     }
     _write_json_atomic(config.source_attestation_path, payload)
     return payload
@@ -1725,6 +1732,19 @@ def write_micromachine_build_attestation(
     source_attestation = _read_source_attestation(config.source_attestation_path)
     if source_attestation is None:
         raise ValueError("cannot finalize missing source attestation.")
+    build_transaction = source_attestation.get("build_transaction")
+    if not isinstance(build_transaction, Mapping):
+        raise ValueError("cannot finalize missing build transaction.")
+    build_transaction_before = build_transaction.get("before")
+    if not isinstance(build_transaction_before, Mapping):
+        raise ValueError("cannot finalize invalid build transaction.")
+    transaction_failures = _build_transaction_failures(
+        build_transaction_before,
+        _build_transaction_snapshot(config),
+    )
+    if transaction_failures:
+        codes = ", ".join(str(failure["code"]) for failure in transaction_failures)
+        raise ValueError(f"cannot finalize changed build transaction: {codes}")
     input_checksums = _source_attestation_input_checksums(config)
     missing_inputs = sorted(
         name for name, checksum in input_checksums.items() if checksum is None
@@ -1804,6 +1824,14 @@ def write_micromachine_build_attestation(
         raise ValueError(
             "cannot finalize missing or invalid native test artifacts: " + codes
         )
+    build_transaction_after = _build_transaction_snapshot(config)
+    transaction_failures = _build_transaction_failures(
+        build_transaction_before,
+        build_transaction_after,
+    )
+    if transaction_failures:
+        codes = ", ".join(str(failure["code"]) for failure in transaction_failures)
+        raise ValueError(f"cannot finalize changed build transaction: {codes}")
 
     payload = dict(source_attestation)
     payload.update(
@@ -1817,6 +1845,11 @@ def write_micromachine_build_attestation(
                 "build_input_identity": embedded_binary_identity,
             },
             "native_tests": native_tests,
+            "build_transaction": {
+                "before": dict(build_transaction_before),
+                "after": build_transaction_after,
+                "stable": True,
+            },
         }
     )
     _write_json_atomic(config.source_attestation_path, payload)
@@ -2923,7 +2956,223 @@ def _source_attestation_failures(
                 "actual": observed_s2_build_state,
             }
         )
+    build_transaction = source_attestation.get("build_transaction")
+    if not isinstance(build_transaction, Mapping):
+        failures.append(
+            {
+                "code": "invalid_source_attestation",
+                "source": "build_transaction",
+                "path": str(config.source_attestation_path),
+            }
+        )
+    else:
+        before = build_transaction.get("before")
+        after = build_transaction.get("after")
+        stage = source_attestation.get("stage")
+        if not isinstance(before, Mapping):
+            failures.append(
+                {
+                    "code": "invalid_source_attestation",
+                    "source": "build_transaction",
+                    "path": str(config.source_attestation_path),
+                }
+            )
+        elif stage == "source_attested":
+            if build_transaction.get("stable") is not False or after is not None:
+                failures.append(
+                    {
+                        "code": "invalid_source_attestation",
+                        "source": "build_transaction",
+                        "path": str(config.source_attestation_path),
+                    }
+                )
+            else:
+                failures.extend(_build_transaction_failures(before, before))
+        elif (
+            stage != "build_finalized"
+            or build_transaction.get("stable") is not True
+            or not isinstance(after, Mapping)
+        ):
+            failures.append(
+                {
+                    "code": "invalid_source_attestation",
+                    "source": "build_transaction",
+                    "path": str(config.source_attestation_path),
+                }
+            )
+        else:
+            failures.extend(_build_transaction_failures(before, after))
     return failures
+
+
+def _build_transaction_snapshot(
+    config: MicroMachineBuildIdentityConfig,
+) -> dict[str, object]:
+    components = {
+        "micromachine_source": _filesystem_metadata_identity(
+            config.micromachine_dir,
+            excluded_roots=(config.micromachine_build_dir,),
+            excluded_paths=MICROMACHINE_RUNTIME_MUTABLE_PATHS,
+        ),
+        "s2client_source": _filesystem_metadata_identity(
+            config.s2client_dir,
+            excluded_roots=(config.resolved_s2client_build_dir,),
+        ),
+        "s2client_build": _filesystem_metadata_identity(
+            config.resolved_s2client_build_dir,
+        ),
+    }
+    missing = sorted(name for name, value in components.items() if value is None)
+    if missing:
+        raise ValueError(
+            "cannot capture build transaction metadata: " + ", ".join(missing)
+        )
+    material = {
+        name: dict(value)
+        for name, value in components.items()
+        if isinstance(value, Mapping)
+    }
+    return {
+        "schema_version": MICROMACHINE_BUILD_TRANSACTION_SCHEMA_VERSION,
+        "components": material,
+        "identity": "sha256:" + _sha256_json(material),
+    }
+
+
+def _build_transaction_failures(
+    expected: Mapping[str, object],
+    actual: Mapping[str, object],
+) -> list[dict[str, object]]:
+    failures: list[dict[str, object]] = []
+    for side, snapshot in (("expected", expected), ("actual", actual)):
+        components = snapshot.get("components")
+        if (
+            snapshot.get("schema_version")
+            != MICROMACHINE_BUILD_TRANSACTION_SCHEMA_VERSION
+            or not isinstance(components, Mapping)
+            or snapshot.get("identity") != "sha256:" + _sha256_json(dict(components))
+        ):
+            failures.append(
+                {
+                    "code": "invalid_build_transaction",
+                    "side": side,
+                }
+            )
+    if failures:
+        return failures
+    expected_components = expected["components"]
+    actual_components = actual["components"]
+    assert isinstance(expected_components, Mapping)
+    assert isinstance(actual_components, Mapping)
+    for component in (
+        "micromachine_source",
+        "s2client_source",
+        "s2client_build",
+    ):
+        if expected_components.get(component) != actual_components.get(component):
+            failures.append(
+                {
+                    "code": f"{component}_build_transaction_mismatch",
+                    "expected": expected_components.get(component),
+                    "actual": actual_components.get(component),
+                }
+            )
+    return failures
+
+
+def _filesystem_metadata_identity(
+    root: Path,
+    *,
+    excluded_roots: Sequence[Path] = (),
+    excluded_paths: Sequence[str] = (),
+) -> dict[str, object] | None:
+    lexical_root = Path(os.path.abspath(root))
+    try:
+        root_stat = lexical_root.lstat()
+    except OSError:
+        return None
+    if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
+        return None
+
+    excluded_root_paths: list[str] = []
+    for excluded_root in excluded_roots:
+        lexical_excluded = Path(os.path.abspath(excluded_root))
+        try:
+            relative = lexical_excluded.relative_to(lexical_root).as_posix()
+        except ValueError:
+            return None
+        if not relative or relative == ".":
+            return None
+        excluded_root_paths.append(relative.strip("/"))
+    normalized_excluded_paths = tuple(
+        value.strip().strip("/")
+        for value in excluded_paths
+        if isinstance(value, str) and value.strip().strip("/")
+    )
+
+    def excluded(relative: str) -> bool:
+        normalized = relative.strip("/")
+        if not normalized:
+            return False
+        return any(
+            normalized == value or normalized.startswith(value + "/")
+            for value in (*excluded_root_paths, *normalized_excluded_paths)
+        )
+
+    entries: list[dict[str, object]] = []
+    pending = [lexical_root]
+    while pending:
+        candidate = pending.pop()
+        relative = (
+            "."
+            if candidate == lexical_root
+            else candidate.relative_to(lexical_root).as_posix()
+        )
+        if relative != "." and excluded(relative):
+            continue
+        try:
+            candidate_stat = candidate.lstat()
+        except OSError:
+            return None
+        mode = candidate_stat.st_mode
+        entry: dict[str, object] = {
+            "path": relative,
+            "device": candidate_stat.st_dev,
+            "inode": candidate_stat.st_ino,
+            "uid": candidate_stat.st_uid,
+            "mode": stat.S_IMODE(mode),
+            "kind": stat.S_IFMT(mode),
+            "size_bytes": candidate_stat.st_size,
+            "mtime_ns": candidate_stat.st_mtime_ns,
+            "ctime_ns": candidate_stat.st_ctime_ns,
+            "link_count": candidate_stat.st_nlink,
+        }
+        if stat.S_ISLNK(mode):
+            try:
+                entry["link_target"] = os.readlink(candidate)
+            except OSError:
+                return None
+        elif stat.S_ISDIR(mode):
+            try:
+                children = sorted(
+                    (Path(item.path) for item in os.scandir(candidate)),
+                    key=lambda path: path.name,
+                    reverse=True,
+                )
+            except OSError:
+                return None
+            pending.extend(children)
+        entries.append(entry)
+    entries.sort(key=lambda item: str(item["path"]))
+    material = {
+        "root": str(lexical_root),
+        "entries": entries,
+    }
+    return {
+        "root": str(lexical_root),
+        "entry_count": len(entries),
+        "manifest_sha256": "sha256:" + _sha256_json(material),
+    }
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
