@@ -468,6 +468,35 @@ def semantic_operation_payload(
     }
 
 
+def set_semantic_operation_identity(
+    payload,
+    *,
+    request_update_id=None,
+    execution_owner_update_id=None,
+):
+    """Set independent request and execution-owner identity channels."""
+
+    operation = payload["operations"][0]
+    request_id = str(
+        request_update_id
+        if request_update_id is not None
+        else operation.get("update_id", "")
+    )
+    owner_id = str(
+        execution_owner_update_id
+        if execution_owner_update_id is not None
+        else request_id
+    )
+    operation["update_id"] = request_id
+    operation["compile_result"]["update_id"] = request_id
+    if isinstance(operation.get("update"), dict):
+        operation["update"]["update_id"] = request_id
+    operation["operation_console_execution_owner_update_id"] = owner_id
+    operation["intervention"]["command_execution"]["command_id"] = owner_id
+    operation["battlefield_operation"]["identity"]["update_id"] = owner_id
+    return payload
+
+
 def contains_hangul(text):
     """Return whether the text contains at least one Hangul syllable."""
 
@@ -764,8 +793,12 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             events.append(fields)
         return events
 
-    def post_command(self, text):
-        body = json.dumps({"text": text}).encode("utf-8")
+    def post_command(self, text, request_id=""):
+        document = {"text": text}
+        if request_id:
+            document["request_id"] = request_id
+            document["operation_id"] = request_id
+        body = json.dumps(document).encode("utf-8")
         return self.request(
             "POST",
             "/api/command",
@@ -1628,6 +1661,176 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertEqual(
             "engagement_observed",
             operation_events_after_retired_advance[-1]["payload"]["kind"],
+        )
+
+    def test_operation_event_scope_history_fails_closed_at_retention_limit(
+        self,
+    ):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        http_server = self.server._http
+        active_retention = http_server._OPERATION_EVENT_SCOPE_RETENTION
+        history_retention = (
+            http_server._OPERATION_EVENT_SCOPE_HISTORY_RETENTION
+        )
+
+        for index in range(history_retention):
+            scope_id = f"bounded-history-scope-{index}"
+            handler._publish_new_operation_events(
+                {
+                    "blackboard_scope_id": scope_id,
+                    "operation_events": [
+                        {
+                            "timeline_seq": 1,
+                            "operation_id": f"bounded-operation-{index}",
+                            "generation": 1,
+                            "kind": "assigned",
+                        }
+                    ],
+                },
+                blackboard_dir=f"/tmp/{scope_id}",
+                publish=True,
+            )
+
+        self.assertEqual(
+            active_retention,
+            len(http_server._observed_operation_event_seq),
+        )
+        self.assertEqual(
+            active_retention,
+            len(http_server._observed_operation_scope_order),
+        )
+        self.assertEqual(
+            history_retention,
+            len(http_server._observed_operation_event_high_water),
+        )
+
+        event_count_before_novel_scope = len(
+            [
+                event
+                for event in http_server.event_journal.events_after(0)
+                if event["event_type"] == "operation_event"
+            ]
+        )
+        novel_scope = "bounded-history-scope-overflow"
+        handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": novel_scope,
+                "operation_events": [
+                    {
+                        "timeline_seq": 1,
+                        "operation_id": "overflow-operation",
+                        "generation": 1,
+                        "kind": "assigned",
+                    }
+                ],
+            },
+            blackboard_dir=f"/tmp/{novel_scope}",
+            publish=True,
+        )
+        self.assertEqual(
+            history_retention,
+            len(http_server._observed_operation_event_high_water),
+        )
+        self.assertNotIn(
+            novel_scope,
+            http_server._observed_operation_event_high_water,
+        )
+        self.assertNotIn(
+            novel_scope,
+            http_server._observed_operation_event_seq,
+        )
+        self.assertNotIn(
+            novel_scope,
+            http_server._observed_operation_scope_order,
+        )
+        self.assertEqual(
+            event_count_before_novel_scope,
+            len(
+                [
+                    event
+                    for event in http_server.event_journal.events_after(0)
+                    if event["event_type"] == "operation_event"
+                ]
+            ),
+        )
+
+        admitted_scope = "bounded-history-scope-0"
+        events_before_revisit = [
+            event
+            for event in http_server.event_journal.events_after(0)
+            if (
+                event["event_type"] == "operation_event"
+                and event["blackboard_scope_id"] == admitted_scope
+            )
+        ]
+        handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": admitted_scope,
+                "operation_events": [
+                    {
+                        "timeline_seq": 1,
+                        "operation_id": "bounded-operation-0",
+                        "generation": 1,
+                        "kind": "assigned",
+                    }
+                ],
+            },
+            blackboard_dir=f"/tmp/{admitted_scope}",
+            publish=True,
+        )
+        self.assertEqual(
+            events_before_revisit,
+            [
+                event
+                for event in http_server.event_journal.events_after(0)
+                if (
+                    event["event_type"] == "operation_event"
+                    and event["blackboard_scope_id"] == admitted_scope
+                )
+            ],
+        )
+
+        handler._publish_new_operation_events(
+            {
+                "blackboard_scope_id": admitted_scope,
+                "operation_events": [
+                    {
+                        "timeline_seq": 2,
+                        "operation_id": "bounded-operation-0",
+                        "generation": 1,
+                        "kind": "movement_observed",
+                    }
+                ],
+            },
+            blackboard_dir=f"/tmp/{admitted_scope}",
+            publish=True,
+        )
+        events_after_advance = [
+            event
+            for event in http_server.event_journal.events_after(0)
+            if (
+                event["event_type"] == "operation_event"
+                and event["blackboard_scope_id"] == admitted_scope
+            )
+        ]
+        self.assertEqual(
+            len(events_before_revisit) + 1,
+            len(events_after_advance),
+        )
+        self.assertEqual(
+            "movement_observed",
+            events_after_advance[-1]["payload"]["kind"],
+        )
+        self.assertEqual(
+            2,
+            http_server._observed_operation_event_high_water[
+                admitted_scope
+            ],
+        )
+        self.assertEqual(
+            history_retention,
+            len(http_server._observed_operation_event_high_water),
         )
 
     def test_sse_snapshot_survives_micromachine_source_failure(self):
@@ -6874,6 +7077,29 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertIsInstance(event["seq"], int)
         self.assertGreaterEqual(event["seq"], 1)
 
+    def test_legacy_command_preserves_exact_browser_request_correlation(self):
+        request_id = "pending-http-correlation-17"
+        status, _content_type, payload = self.post_command(
+            "상황 보고해줘",
+            request_id=request_id,
+        )
+        self.assertEqual(status, 202)
+        self.assertEqual(json.loads(payload.decode("utf-8")), {"accepted": True})
+
+        matched = self.poll_history_until(
+            lambda event: (
+                event.get("detail", {}).get("web_request_id")
+                == request_id
+            ),
+            "legacy outcome carrying the exact browser request identity",
+        )
+        event = matched[0]
+        self.assertEqual(request_id, event["request_id"])
+        self.assertEqual(
+            request_id,
+            event["detail"]["web_request_id"],
+        )
+
     def test_train_command_yields_executed_family_event(self):
         status, _content_type, _payload = self.post_command("SCV 계속 찍어")
         self.assertEqual(status, 202)
@@ -7103,6 +7329,18 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             ("empty text", json.dumps({"text": ""}).encode("utf-8")),
             ("blank text", json.dumps({"text": "   "}).encode("utf-8")),
             ("non-string text", json.dumps({"text": 42}).encode("utf-8")),
+            (
+                "non-string request id",
+                json.dumps(
+                    {"text": "상태확인", "request_id": 42}
+                ).encode("utf-8"),
+            ),
+            (
+                "blank request id",
+                json.dumps(
+                    {"text": "상태확인", "request_id": "   "}
+                ).encode("utf-8"),
+            ),
         )
         for label, body in bad_bodies:
             with self.subTest(label=label):
@@ -8255,7 +8493,7 @@ class SessionLoopBridgeTest(unittest.TestCase):
             forged_cancel_result["operations"][0],
         )
 
-        accepted_edit = reducer.observe(
+        accepted_edit_payload = set_semantic_operation_identity(
             semantic_operation_payload(
                 operation_id="identity-alpha",
                 generation=2,
@@ -8267,6 +8505,10 @@ class SessionLoopBridgeTest(unittest.TestCase):
                     "blocker": "awaiting_reinforcement",
                 },
             ),
+            execution_owner_update_id="update-identity-alpha-2",
+        )
+        accepted_edit = reducer.observe(
+            accepted_edit_payload,
             blackboard_scope_id=scope_id,
         )
         self.assertEqual(
@@ -8278,6 +8520,12 @@ class SessionLoopBridgeTest(unittest.TestCase):
         self.assertEqual(
             "update-identity-alpha-3",
             accepted_edit["operations"][0]["update_id"],
+        )
+        self.assertEqual(
+            "update-identity-alpha-2",
+            accepted_edit["operations"][0][
+                "operation_console_execution_owner_update_id"
+            ],
         )
 
         advanced = reducer.observe(
@@ -8297,6 +8545,251 @@ class SessionLoopBridgeTest(unittest.TestCase):
         self.assertEqual(
             "update-identity-alpha-3",
             advanced["operations"][0]["update_id"],
+        )
+
+    def test_operation_timeline_authenticates_split_identity_channels(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-split-identity-authentication"
+        owner_update_id = "update-split-alpha-3"
+        latest_request_update_id = "update-split-alpha-4"
+
+        reducer.observe(
+            semantic_operation_payload(
+                operation_id="split-alpha",
+                generation=2,
+                requested_generation=3,
+                frame=100,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        latest_request = set_semantic_operation_identity(
+            semantic_operation_payload(
+                operation_id="split-alpha",
+                generation=2,
+                requested_generation=4,
+                frame=101,
+                operation_edit={
+                    "action": "reinforce",
+                    "resolution": "blocked",
+                    "blocker": "latest_request_waiting",
+                },
+            ),
+            execution_owner_update_id=owner_update_id,
+        )
+        accepted = reducer.observe(
+            latest_request,
+            blackboard_scope_id=scope_id,
+        )
+        accepted_operation = deepcopy(accepted["operations"][0])
+        accepted_seq = accepted["operation_event_latest_seq"]
+        self.assertEqual(
+            latest_request_update_id,
+            accepted_operation["update_id"],
+        )
+        self.assertEqual(
+            owner_update_id,
+            accepted_operation[
+                "operation_console_execution_owner_update_id"
+            ],
+        )
+
+        channel_swap = set_semantic_operation_identity(
+            semantic_operation_payload(
+                operation_id="split-alpha",
+                generation=2,
+                requested_generation=4,
+                frame=102,
+                movement=True,
+            ),
+            request_update_id=owner_update_id,
+            execution_owner_update_id=owner_update_id,
+        )
+        swapped = reducer.observe(
+            channel_swap,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(accepted_operation, swapped["operations"][0])
+        self.assertEqual(accepted_seq, swapped["operation_event_latest_seq"])
+
+        arbitrary_edit = set_semantic_operation_identity(
+            semantic_operation_payload(
+                operation_id="split-alpha",
+                generation=2,
+                requested_generation=5,
+                frame=103,
+                movement=True,
+                operation_edit={
+                    "action": "not-a-real-operation-edit",
+                    "resolution": "blocked",
+                },
+            ),
+            execution_owner_update_id=owner_update_id,
+        )
+        arbitrary_result = reducer.observe(
+            arbitrary_edit,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            accepted_operation,
+            arbitrary_result["operations"][0],
+        )
+
+        forged_cancellation = set_semantic_operation_identity(
+            semantic_operation_payload(
+                operation_id="split-alpha",
+                generation=2,
+                requested_generation=5,
+                frame=104,
+                execution_state="cancelled",
+                operation_edit={
+                    "action": "cancel",
+                    "resolution": "applied",
+                },
+            ),
+            execution_owner_update_id="foreign-split-owner",
+        )
+        forged_execution = forged_cancellation["operations"][0][
+            "intervention"
+        ]["command_execution"]
+        forged_execution["blocker_reason"] = "cancelled_by_policy"
+        forged_execution["terminal_cleanup"] = {
+            "action": "release_stop|cancelled_by_policy",
+            "frame": 104,
+            "operation_id": "split-alpha",
+            "generation": 2,
+        }
+        forged_result = reducer.observe(
+            forged_cancellation,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            accepted_operation,
+            forged_result["operations"][0],
+        )
+
+        valid_cancellation = set_semantic_operation_identity(
+            semantic_operation_payload(
+                operation_id="split-alpha",
+                generation=2,
+                requested_generation=5,
+                frame=105,
+                execution_state="cancelled",
+                operation_edit={
+                    "action": "cancel",
+                    "resolution": "applied",
+                },
+            ),
+            execution_owner_update_id=owner_update_id,
+        )
+        valid_execution = valid_cancellation["operations"][0][
+            "intervention"
+        ]["command_execution"]
+        valid_execution["blocker_reason"] = "cancelled_by_policy"
+        valid_execution["terminal_cleanup"] = {
+            "action": "release_stop|cancelled_by_policy",
+            "frame": 105,
+            "operation_id": "split-alpha",
+            "generation": 2,
+        }
+        cancelled = reducer.observe(
+            valid_cancellation,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            5,
+            cancelled["operations"][0][
+                "requested_operation_generation"
+            ],
+        )
+        self.assertEqual(
+            "update-split-alpha-5",
+            cancelled["operations"][0]["update_id"],
+        )
+        self.assertEqual(
+            owner_update_id,
+            cancelled["operations"][0][
+                "operation_console_execution_owner_update_id"
+            ],
+        )
+
+    def test_operation_timeline_accepts_delayed_execution_owner_telemetry(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-delayed-owner-telemetry"
+        owner_update_id = "update-delayed-alpha-3"
+
+        reducer.observe(
+            semantic_operation_payload(
+                operation_id="delayed-alpha",
+                generation=2,
+                requested_generation=3,
+                frame=100,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        latest_request = set_semantic_operation_identity(
+            semantic_operation_payload(
+                operation_id="delayed-alpha",
+                generation=2,
+                requested_generation=4,
+                frame=101,
+                operation_edit={
+                    "action": "reinforce",
+                    "resolution": "blocked",
+                    "blocker": "latest_intent_waiting",
+                },
+            ),
+            execution_owner_update_id=owner_update_id,
+        )
+        reducer.observe(
+            latest_request,
+            blackboard_scope_id=scope_id,
+        )
+
+        delayed_owner_telemetry = set_semantic_operation_identity(
+            semantic_operation_payload(
+                operation_id="delayed-alpha",
+                generation=2,
+                requested_generation=3,
+                frame=102,
+                movement=True,
+                engagement=True,
+            ),
+            execution_owner_update_id=owner_update_id,
+        )
+        result = reducer.observe(
+            delayed_owner_telemetry,
+            blackboard_scope_id=scope_id,
+        )
+
+        operation = result["operations"][0]
+        self.assertEqual(102, operation["telemetry_frame"])
+        self.assertEqual(4, operation["requested_operation_generation"])
+        self.assertEqual("update-delayed-alpha-4", operation["update_id"])
+        self.assertEqual(
+            "latest_intent_waiting",
+            operation["operation_edit"]["blocker"],
+        )
+        self.assertEqual(
+            owner_update_id,
+            operation["operation_console_execution_owner_update_id"],
+        )
+        self.assertTrue(
+            operation["battlefield_operation"]["operation_completion"][
+                "movement_observed"
+            ]
+        )
+        self.assertTrue(
+            operation["battlefield_operation"]["operation_completion"][
+                "engagement_observed"
+            ]
+        )
+        self.assertTrue(
+            {"movement_observed", "engagement_observed"}.issubset(
+                {
+                    event["kind"]
+                    for event in result["operation_events"]
+                }
+            )
         )
 
     def test_operation_timeline_session_epoch_resets_generation_and_retained_state(self):
@@ -8908,7 +9401,7 @@ class SessionLoopBridgeTest(unittest.TestCase):
             reducer._requested_generation_high_water[family_key],
         )
 
-        accepted = reducer.observe(
+        accepted_payload = set_semantic_operation_identity(
             semantic_operation_payload(
                 requested_generation=5,
                 frame=101,
@@ -8918,6 +9411,10 @@ class SessionLoopBridgeTest(unittest.TestCase):
                     "blocker": "awaiting_reinforcement",
                 },
             ),
+            execution_owner_update_id="update-flank-alpha-4",
+        )
+        accepted = reducer.observe(
+            accepted_payload,
             blackboard_scope_id=scope_id,
         )
         self.assertEqual(
@@ -9281,6 +9778,15 @@ class SessionLoopBridgeTest(unittest.TestCase):
             bridge.submit_command(123)
         with self.assertRaises(ValueError):
             bridge.submit_command("   ")
+        with self.assertRaises(TypeError):
+            bridge.submit_correlated_command("상황 보고해줘", 123)
+        with self.assertRaises(ValueError):
+            bridge.submit_correlated_command("상황 보고해줘", "   ")
+        with self.assertRaises(ValueError):
+            bridge.submit_correlated_command(
+                "상황 보고해줘",
+                "x" * (web_gui.MAX_WEB_REQUEST_ID_CHARS + 1),
+            )
 
     def test_commands_record_sequential_history_events(self):
         session, _bot = build_dry_run_session()
@@ -9303,6 +9809,36 @@ class SessionLoopBridgeTest(unittest.TestCase):
         self.assertIn("read_only", statuses)
         self.assertTrue(EXECUTED_FAMILY_STATUSES.intersection(statuses))
         self.assertEqual(bridge.history_since(bridge.latest_seq()), ())
+
+    def test_correlated_commands_record_exact_request_identity(self):
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(session=session)
+        bridge.start()
+        self.addCleanup(bridge.stop)
+        requests = (
+            ("동일 명령", "pending-correlated-first"),
+            ("동일 명령", "pending-correlated-second"),
+        )
+        for text, request_id in requests:
+            bridge.submit_correlated_command(text, request_id)
+
+        deadline = time.monotonic() + POLL_DEADLINE_SECONDS
+        while time.monotonic() < deadline and bridge.latest_seq() < 2:
+            time.sleep(POLL_INTERVAL_SECONDS)
+
+        events = bridge.history_since(0)
+        self.assertEqual(2, len(events))
+        self.assertEqual(
+            [request_id for _text, request_id in requests],
+            [event["request_id"] for event in events],
+        )
+        self.assertEqual(
+            [request_id for _text, request_id in requests],
+            [
+                event["detail"]["web_request_id"]
+                for event in events
+            ],
+        )
 
     def test_micromachine_emergency_supersedes_inflight_publish_and_runs_next(self):
         started = threading.Event()
@@ -10999,7 +11535,7 @@ for (let index = 0; index < MAX_CHAT_EVENTS - 1; index += 1) {
 var recordingSession = appendVoiceRecordingBubble();
 var recordingNode = recordingSession.node;
 assert.strictEqual(logBox.querySelectorAll(".log-entry").length, MAX_CHAT_EVENTS);
-appendPendingCommand("상황 보고해줘");
+var firstPendingId = appendPendingCommand("상황 보고해줘");
 assert.strictEqual(pendingCommandCount(), 1);
 assert.strictEqual(logBox.getAttribute("aria-busy"), "true");
 assert(pendingStatus.textContent.includes("LLM 응답을 기다리는 중"));
@@ -11009,13 +11545,14 @@ assert.strictEqual(logBox.querySelector(".message-pending").getAttribute("role")
 assert.strictEqual(logBox.querySelectorAll(".log-entry").length, MAX_CHAT_EVENTS);
 assert.strictEqual(recordingNode.parentNode, logBox);
 assert.strictEqual(logBox.querySelector(".voice-wave").querySelectorAll("span").length, 5);
-appendPendingCommand("상황 보고해줘");
+var secondPendingId = appendPendingCommand("상황 보고해줘");
 assert.strictEqual(pendingCommandCount(), 2);
 assert(pendingStatus.textContent.includes("대기 중인 응답 2개"));
 assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 1);
 assert.strictEqual(recordingNode.parentNode, logBox);
 appendLog({
   seq: MAX_CHAT_EVENTS + 1,
+  request_id: firstPendingId,
   command_text: "상황 보고해줘",
   status: "read_only",
   narration: "현재 상태를 요약했습니다."
@@ -11027,6 +11564,7 @@ assert.strictEqual(logBox.querySelectorAll(".message-pending").length, 1);
 assert.strictEqual(recordingNode.parentNode, logBox);
 appendLog({
   seq: MAX_CHAT_EVENTS + 2,
+  request_id: secondPendingId,
   command_text: "상황 보고해줘",
   status: "read_only",
   narration: "두 번째 응답입니다."
@@ -11040,6 +11578,31 @@ removeVoiceRecordingBubble();
 assert.strictEqual(recordingNode.parentNode, null);
 assert(logBox.textContent.includes("현재 상태를 요약했습니다."));
 assert(logBox.textContent.includes("두 번째 응답입니다."));
+
+var stalledVoiceCount = MAX_CHAT_EVENTS + 12;
+for (let index = 0; index < stalledVoiceCount; index += 1) {
+  var stalledSession = appendVoiceRecordingBubble();
+  stalledSession.finalText = "지연 음성 명령 " + index;
+  stalledSession.submitted = true;
+  appendPendingCommand(stalledSession.finalText, stalledSession);
+  assert(
+    logBox.querySelectorAll(".log-entry").length <= MAX_CHAT_EVENTS,
+    "submitted voice nodes must obey the chat DOM retention bound"
+  );
+  assert(
+    Object.keys(voiceSessionsByPendingId).length <= MAX_CHAT_EVENTS,
+    "submitted voice session mappings must remain bounded"
+  );
+}
+assert.strictEqual(pendingCommandCount(), stalledVoiceCount);
+assert(
+  Object.keys(voiceSessionsByPendingId).length < stalledVoiceCount,
+  "trimmed voice nodes must release their session mapping"
+);
+assert.strictEqual(logBox.querySelectorAll(".log-entry").length, MAX_CHAT_EVENTS);
+assert.strictEqual(logBox.querySelectorAll(".message-pending").length, MAX_CHAT_EVENTS);
+assert(pendingAggregateNode);
+assert.strictEqual(pendingAggregateNode.parentNode, logBox);
 """
         with tempfile.NamedTemporaryFile("w", suffix=".js") as script_file:
             script_file.write(harness)
@@ -14227,6 +14790,68 @@ const assert = require("assert");
     return stages;
   }
 
+  var cancellationBaseline = operationResult(
+    "cancel-auth-alpha",
+    "cancel-auth-owner-1",
+    "취소 인증 기준 작전",
+    "attack",
+    190,
+    "queued_or_assigned",
+    observedExecutionStages().slice(0, 4),
+    1
+  );
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [cancellationBaseline]
+  }, OPERATION_SCOPE));
+  var cancellationRequest = operationResult(
+    "cancel-auth-alpha",
+    "cancel-auth-request-2",
+    "취소 인증 요청",
+    "attack",
+    191,
+    "cancelled",
+    actionStages("attack").slice(0, 6),
+    1
+  );
+  cancellationRequest.requested_operation_generation = 2;
+  cancellationRequest.operation_console_execution_owner_update_id =
+    "cancel-auth-owner-1";
+  cancellationRequest.intervention.command_execution.command_id =
+    "cancel-auth-owner-1";
+  cancellationRequest.battlefield_operation.identity.update_id =
+    "cancel-auth-owner-1";
+  cancellationRequest.operation_edit = {
+    action: "cancel",
+    resolution: "applied"
+  };
+  cancellationRequest.intervention.command_execution.blocker_reason =
+    "cancelled_by_policy";
+  cancellationRequest.intervention.command_execution.terminal_cleanup = {
+    action: "release_stop|cancelled_by_policy",
+    frame: 191,
+    operation_id: "cancel-auth-alpha",
+    generation: 1
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [cancellationRequest]
+  }, OPERATION_SCOPE));
+  var cancellationRecord = operationRecords[
+    operationRecordKey(OPERATION_SCOPE, "cancel-auth-alpha")
+  ];
+  assert.strictEqual(cancellationRecord.updateId, "cancel-auth-request-2");
+  assert.strictEqual(cancellationRecord.requestedOperationGeneration, 2);
+  assert.strictEqual(
+    cancellationRecord.data.operation_console_execution_owner_update_id,
+    "cancel-auth-owner-1"
+  );
+  assert.strictEqual(
+    cancellationRecord.data.intervention.command_execution.state,
+    "cancelled"
+  );
+  resetOperationConsoleRegistry();
+
   var foreignExecutionOperation = operationResult(
     "new-operation",
     "new-update",
@@ -15049,6 +15674,12 @@ const assert = require("assert");
     2
   );
   latestActiveRejectedEdit.requested_operation_generation = 4;
+  latestActiveRejectedEdit.operation_console_execution_owner_update_id =
+    "parallel-update-b-edit";
+  latestActiveRejectedEdit.intervention.command_execution.command_id =
+    "parallel-update-b-edit";
+  latestActiveRejectedEdit.battlefield_operation.identity.update_id =
+    "parallel-update-b-edit";
   latestActiveRejectedEdit.operation_edit = {
     action: "reinforce",
     before_composition: [
@@ -15068,6 +15699,158 @@ const assert = require("assert");
   assert.strictEqual(assaultRecord.terminal, false);
   assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
   assert(assaultRecord.node.textContent.includes("latest_active_edit_blocker"));
+
+  var channelSwapSnapshot = operationResult(
+    "assault-bravo",
+    "parallel-update-b-edit",
+    "request and owner channel swap must fail closed",
+    "attack",
+    1000,
+    "effect_observed",
+    observedExecutionStages(),
+    2
+  );
+  channelSwapSnapshot.requested_operation_generation = 4;
+  channelSwapSnapshot.operation_console_execution_owner_update_id =
+    "parallel-update-b-edit";
+  channelSwapSnapshot.intervention.command_execution.command_id =
+    "parallel-update-b-edit";
+  channelSwapSnapshot.battlefield_operation.identity.update_id =
+    "parallel-update-b-edit";
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [channelSwapSnapshot]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(
+    assaultRecord.updateId,
+    "parallel-update-b-edit-latest"
+  );
+  assert.strictEqual(assaultRecord.telemetryFrame, 331);
+  assert(
+    !assaultRecord.node.textContent.includes(
+      "request and owner channel swap must fail closed"
+    )
+  );
+
+  var arbitraryEditSnapshot = operationResult(
+    "assault-bravo",
+    "invalid-edit-request-5",
+    "arbitrary edit action must fail closed",
+    "attack",
+    1001,
+    "effect_observed",
+    observedExecutionStages(),
+    2
+  );
+  arbitraryEditSnapshot.requested_operation_generation = 5;
+  arbitraryEditSnapshot.operation_console_execution_owner_update_id =
+    "parallel-update-b-edit";
+  arbitraryEditSnapshot.intervention.command_execution.command_id =
+    "parallel-update-b-edit";
+  arbitraryEditSnapshot.battlefield_operation.identity.update_id =
+    "parallel-update-b-edit";
+  arbitraryEditSnapshot.operation_edit = {
+    action: "not-a-real-operation-edit",
+    resolution: "blocked"
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [arbitraryEditSnapshot]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
+  assert.strictEqual(assaultRecord.telemetryFrame, 331);
+
+  var forgedNewCancellation = operationResult(
+    "assault-bravo",
+    "forged-cancel-request-5",
+    "foreign owner cancellation must fail closed",
+    "attack",
+    1002,
+    "cancelled",
+    actionStages("attack").slice(0, 6),
+    2
+  );
+  forgedNewCancellation.requested_operation_generation = 5;
+  forgedNewCancellation.operation_console_execution_owner_update_id =
+    "foreign-cancel-owner";
+  forgedNewCancellation.intervention.command_execution.command_id =
+    "foreign-cancel-owner";
+  forgedNewCancellation.battlefield_operation.identity.update_id =
+    "foreign-cancel-owner";
+  forgedNewCancellation.operation_edit = {
+    action: "cancel",
+    resolution: "applied"
+  };
+  forgedNewCancellation.intervention.command_execution.blocker_reason =
+    "cancelled_by_policy";
+  forgedNewCancellation.intervention.command_execution.terminal_cleanup = {
+    action: "release_stop|cancelled_by_policy",
+    frame: 1002,
+    operation_id: "assault-bravo",
+    generation: 2
+  };
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [forgedNewCancellation]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.terminal, false);
+  assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
+  assert.strictEqual(assaultRecord.telemetryFrame, 331);
+
+  var delayedOwnerTelemetry = operationResult(
+    "assault-bravo",
+    "parallel-update-b-edit",
+    "execution owner telemetry",
+    "attack",
+    332,
+    "effect_observed",
+    observedExecutionStages(),
+    2
+  );
+  delayedOwnerTelemetry.requested_operation_generation = 2;
+  delayedOwnerTelemetry.operation_console_execution_owner_update_id =
+    "parallel-update-b-edit";
+  delayedOwnerTelemetry.intervention.command_execution.command_id =
+    "parallel-update-b-edit";
+  delayedOwnerTelemetry.battlefield_operation.identity.update_id =
+    "parallel-update-b-edit";
+  delayedOwnerTelemetry.battlefield_operation.operation_completion
+    .movement_observed = true;
+  delayedOwnerTelemetry.battlefield_operation.operation_completion
+    .engagement_observed = true;
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [delayedOwnerTelemetry]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.operationGeneration, 2);
+  assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
+  assert.strictEqual(assaultRecord.telemetryFrame, 332);
+  assert.strictEqual(
+    assaultRecord.updateId,
+    "parallel-update-b-edit-latest"
+  );
+  assert.strictEqual(assaultRecord.text, "공격조 편성을 다시 변경");
+  assert.strictEqual(
+    assaultRecord.data.operation_console_execution_owner_update_id,
+    "parallel-update-b-edit"
+  );
+  assert.strictEqual(
+    assaultRecord.data.intervention.command_execution.state,
+    "effect_observed"
+  );
+  assert.strictEqual(
+    assaultRecord.data.battlefield_operation.operation_completion
+      .engagement_observed,
+    true
+  );
+  assert(assaultRecord.node.textContent.includes("latest_active_edit_blocker"));
+  assert(
+    !assaultRecord.node.textContent.includes("execution owner telemetry")
+  );
 
   // A fully self-consistent foreign update may not replace the canonical
   // operation at the same active generation, even with a newer frame.
@@ -15091,7 +15874,7 @@ const assert = require("assert");
   assaultRecord = operationRecords[assaultKey];
   assert.strictEqual(assaultRecord.operationGeneration, 2);
   assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
-  assert.strictEqual(assaultRecord.telemetryFrame, 331);
+  assert.strictEqual(assaultRecord.telemetryFrame, 332);
   assert.strictEqual(
     assaultRecord.updateId,
     "parallel-update-b-edit-latest"
@@ -15126,7 +15909,7 @@ const assert = require("assert");
     operations: [missingIdentitySnapshot]
   }, OPERATION_SCOPE));
   assaultRecord = operationRecords[assaultKey];
-  assert.strictEqual(assaultRecord.telemetryFrame, 331);
+  assert.strictEqual(assaultRecord.telemetryFrame, 332);
   assert.strictEqual(
     assaultRecord.updateId,
     "parallel-update-b-edit-latest"
@@ -15154,7 +15937,7 @@ const assert = require("assert");
   }, OPERATION_SCOPE));
   assaultRecord = operationRecords[assaultKey];
   assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
-  assert.strictEqual(assaultRecord.telemetryFrame, 331);
+  assert.strictEqual(assaultRecord.telemetryFrame, 332);
   assert(
     !assaultRecord.node.textContent.includes(
       "generation number alone is not an edit"
@@ -15186,7 +15969,7 @@ const assert = require("assert");
   }, OPERATION_SCOPE));
   assaultRecord = operationRecords[assaultKey];
   assert.strictEqual(assaultRecord.terminal, false);
-  assert.strictEqual(assaultRecord.telemetryFrame, 331);
+  assert.strictEqual(assaultRecord.telemetryFrame, 332);
   assert(
     !assaultRecord.node.textContent.includes(
       "foreign cancellation must fail closed"
@@ -15221,7 +16004,7 @@ const assert = require("assert");
   }, OPERATION_SCOPE));
   assaultRecord = operationRecords[assaultKey];
   assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
-  assert.strictEqual(assaultRecord.telemetryFrame, 331);
+  assert.strictEqual(assaultRecord.telemetryFrame, 332);
   assert(assaultRecord.node.textContent.includes("latest_active_edit_blocker"));
   assert(
     !assaultRecord.node.textContent.includes(
@@ -15252,7 +16035,7 @@ const assert = require("assert");
   }, OPERATION_SCOPE));
   assaultRecord = operationRecords[assaultKey];
   assert.strictEqual(assaultRecord.requestedOperationGeneration, 4);
-  assert.strictEqual(assaultRecord.telemetryFrame, 331);
+  assert.strictEqual(assaultRecord.telemetryFrame, 332);
   assert(assaultRecord.node.textContent.includes("latest_active_edit_blocker"));
   assert(!assaultRecord.node.textContent.includes("오래된 승인 공격조 변경"));
 
@@ -15640,6 +16423,12 @@ const assert = require("assert");
     1
   );
   rejectedTerminalEdit.requested_operation_generation = 2;
+  rejectedTerminalEdit.operation_console_execution_owner_update_id =
+    "parallel-update-a";
+  rejectedTerminalEdit.intervention.command_execution.command_id =
+    "parallel-update-a";
+  rejectedTerminalEdit.battlefield_operation.identity.update_id =
+    "parallel-update-a";
   rejectedTerminalEdit.operation_edit = {
     action: "reinforce",
     before_composition: [
@@ -17026,6 +17815,79 @@ const assert = require("assert");
     0
   );
 
+  // Identical legacy voice commands require exact request correlation.
+  var duplicateVoiceText = "identical delayed voice order";
+  var firstDuplicateVoice = appendVoiceRecordingBubble();
+  firstDuplicateVoice.finalText = duplicateVoiceText;
+  firstDuplicateVoice.submitted = true;
+  var firstDuplicatePendingId = appendPendingCommand(
+    duplicateVoiceText,
+    firstDuplicateVoice
+  );
+  var secondDuplicateVoice = appendVoiceRecordingBubble();
+  secondDuplicateVoice.finalText = duplicateVoiceText;
+  secondDuplicateVoice.submitted = true;
+  var secondDuplicatePendingId = appendPendingCommand(
+    duplicateVoiceText,
+    secondDuplicateVoice
+  );
+  var duplicatePendingCount = pendingCommandCount();
+  appendLog({
+    seq: 50003,
+    command_text: duplicateVoiceText,
+    status: "read_only",
+    narration: "uncorrelated identical response"
+  });
+  assert.strictEqual(
+    pendingCommandCount(),
+    duplicatePendingCount,
+    "uncorrelated identical text must fail closed"
+  );
+  assert.strictEqual(
+    firstDuplicateVoice.node.querySelectorAll(".message-pending").length,
+    1
+  );
+  assert.strictEqual(
+    secondDuplicateVoice.node.querySelectorAll(".message-pending").length,
+    1
+  );
+  appendLog({
+    seq: 50004,
+    command_text: duplicateVoiceText,
+    status: "read_only",
+    narration: "second exact response",
+    detail: { web_request_id: secondDuplicatePendingId }
+  });
+  assert.strictEqual(
+    secondDuplicateVoice.node.querySelectorAll(".message-pending").length,
+    0
+  );
+  assert(secondDuplicateVoice.node.textContent.includes("second exact response"));
+  assert.strictEqual(
+    firstDuplicateVoice.node.querySelectorAll(".message-pending").length,
+    1
+  );
+  appendLog({
+    seq: 50005,
+    request_id: firstDuplicatePendingId,
+    command_text: duplicateVoiceText,
+    status: "read_only",
+    narration: "first exact response"
+  });
+  assert.strictEqual(
+    firstDuplicateVoice.node.querySelectorAll(".message-pending").length,
+    0
+  );
+  assert(firstDuplicateVoice.node.textContent.includes("first exact response"));
+  assert.strictEqual(
+    voiceSessionForPendingId(firstDuplicatePendingId),
+    null
+  );
+  assert.strictEqual(
+    voiceSessionForPendingId(secondDuplicatePendingId),
+    null
+  );
+
   // Voice keeps one DOM identity from interim transcript through pending/result.
   nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-voice-radio";
   synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-voice-radio");
@@ -17605,6 +18467,79 @@ const assert = require("assert");
   assert.strictEqual(
     tacticalRadio.captions[tacticalRadio.captions.length - 1].priority,
     3
+  );
+
+  var splitRadioScope = "split-radio-scope";
+  var splitRadioRecord = {
+    updateId: "split-radio-request-4",
+    operationGeneration: 2,
+    requestedOperationGeneration: 4,
+    data: {
+      operation_console_execution_owner_update_id: "split-radio-owner-3"
+    }
+  };
+  var ownerFailureCallout = tacticalLifecycleCallout(
+    {
+      update_id: "split-radio-owner-3",
+      created_at_unix_ms: fakeNowMs
+    },
+    {
+      timeline_seq: 1,
+      update_id: "split-radio-owner-3",
+      operation_id: "split-radio-operation",
+      generation: 2,
+      requested_generation: 4,
+      kind: "critical_ability_failure",
+      game_frame: 820,
+      summary: "tactical nuke target unavailable"
+    },
+    splitRadioScope,
+    splitRadioRecord
+  );
+  assert(ownerFailureCallout);
+  assert(
+    ownerFailureCallout.caption.includes(t("tacticalCriticalAbilityFailure"))
+  );
+  var requestLifecycleCallout = tacticalLifecycleCallout(
+    {
+      update_id: "split-radio-request-4",
+      created_at_unix_ms: fakeNowMs
+    },
+    {
+      timeline_seq: 2,
+      update_id: "split-radio-request-4",
+      operation_id: "split-radio-operation",
+      generation: 2,
+      requested_generation: 4,
+      kind: "engagement_observed",
+      game_frame: 821,
+      summary: "preserved owner engaged"
+    },
+    splitRadioScope,
+    splitRadioRecord
+  );
+  assert(requestLifecycleCallout);
+  assert(requestLifecycleCallout.caption.includes(t("tacticalEngaged")));
+  assert.strictEqual(
+    tacticalLifecycleCallout(
+      {
+        update_id: "split-radio-owner-3",
+        created_at_unix_ms: fakeNowMs
+      },
+      {
+        timeline_seq: 3,
+        update_id: "split-radio-owner-3",
+        operation_id: "split-radio-operation",
+        generation: 2,
+        requested_generation: 3,
+        kind: "movement_observed",
+        game_frame: 822,
+        summary: "stale requested generation"
+      },
+      splitRadioScope,
+      splitRadioRecord
+    ),
+    null
   );
 
   // Snapshot hydration seeds high-water state without replaying old audio.

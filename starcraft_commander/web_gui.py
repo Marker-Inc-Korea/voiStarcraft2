@@ -83,6 +83,7 @@ from starcraft_commander.micromachine_terran_capabilities import (
     operation_family_evidence,
 )
 from starcraft_commander.policy_modulation import (
+    MICROMACHINE_OPERATION_EDIT_ACTIONS,
     POLICY_MODULATION_TTL_MAX_SECONDS,
     POLICY_MODULATION_TTL_MIN_SECONDS,
     PolicyModulationSource,
@@ -4267,6 +4268,9 @@ WEB_GUI_STATUS_COLORS: Final[Mapping[str, str]] = {
 MAX_COMMAND_BODY_BYTES: Final[int] = 64 * 1024
 """Upper bound for one ``POST /api/command`` body; larger bodies are rejected."""
 
+MAX_WEB_REQUEST_ID_CHARS: Final[int] = 128
+"""Upper bound for browser-generated command correlation identities."""
+
 _BRIDGE_THREAD_NAME: Final[str] = "voiStarcraft2-web-gui-session-loop"
 """Daemon thread name for the bridge's asyncio loop (asserted clean in tests)."""
 
@@ -4666,6 +4670,14 @@ class _MicroMachineModulationRequest:
     accepted_at_unix_ns: int = 0
     acceptance_ordinal: int = 0
     publish_committed: bool = False
+
+
+@dataclass(frozen=True)
+class _CorrelatedWebCommand:
+    """One legacy commander utterance bound to its browser pending identity."""
+
+    text: str
+    request_id: str
 
 
 class _GuardedMicroMachineBackend:
@@ -5416,13 +5428,24 @@ class _OperationSemanticTimelineReducer:
             requested_high_water = (
                 self._requested_generation_high_water.get(family_key, 0)
             )
+            accepted = self._accepted_operations.get(family_key)
+            execution_owner_update = (
+                self._same_generation_execution_owner_update(
+                    operation,
+                    accepted,
+                    generation=generation,
+                    generation_high_water=high_water,
+                    requested_generation=requested_generation,
+                    requested_generation_high_water=requested_high_water,
+                )
+            )
             if (
                 requested_generation > 0
                 and requested_generation < requested_high_water
                 and generation <= high_water
+                and not execution_owner_update
             ):
                 return False
-            accepted = self._accepted_operations.get(family_key)
             if self._same_generation_update_conflicts(
                 operation,
                 accepted,
@@ -5434,7 +5457,10 @@ class _OperationSemanticTimelineReducer:
                 return False
             if (
                 requested_generation < requested_high_water
-                and generation > high_water
+                and (
+                    generation > high_water
+                    or execution_owner_update
+                )
                 and accepted is not None
             ):
                 operation = self._preserve_latest_requested_intent(
@@ -5728,6 +5754,60 @@ class _OperationSemanticTimelineReducer:
             or cls._operation_execution_owner_update_id(operation)
         )
 
+    @staticmethod
+    def _operation_edit_action(
+        operation: Mapping[str, object],
+    ) -> str:
+        action = str(
+            _mapping_child(operation, "operation_edit").get(
+                "action",
+                "",
+            )
+            or ""
+        ).strip()
+        return (
+            action
+            if action
+            and action in MICROMACHINE_OPERATION_EDIT_ACTIONS
+            else ""
+        )
+
+    @classmethod
+    def _same_generation_execution_owner_update(
+        cls,
+        operation: Mapping[str, object],
+        accepted: Mapping[str, object] | None,
+        *,
+        generation: int,
+        generation_high_water: int,
+        requested_generation: int,
+        requested_generation_high_water: int,
+    ) -> bool:
+        """Recognize delayed telemetry from the preserved execution owner."""
+
+        if (
+            accepted is None
+            or generation <= 0
+            or generation != generation_high_water
+            or requested_generation >= requested_generation_high_water
+        ):
+            return False
+        incoming_request_id = cls._operation_request_update_id(operation)
+        incoming_owner_id = cls._operation_execution_owner_update_id(
+            operation
+        )
+        accepted_request_id = cls._operation_request_update_id(accepted)
+        accepted_owner_id = cls._operation_execution_owner_update_id(
+            accepted
+        )
+        return bool(
+            accepted_request_id
+            and accepted_owner_id
+            and incoming_request_id
+            in {accepted_request_id, accepted_owner_id}
+            and incoming_owner_id == accepted_owner_id
+        )
+
     @classmethod
     def _same_generation_update_conflicts(
         cls,
@@ -5755,23 +5835,33 @@ class _OperationSemanticTimelineReducer:
         accepted_owner_id = cls._operation_execution_owner_update_id(
             accepted
         )
-        accepted_ids = {
-            identity
-            for identity in (accepted_request_id, accepted_owner_id)
-            if identity
-        }
-        incoming_ids = {
-            identity
-            for identity in (incoming_request_id, incoming_owner_id)
-            if identity
-        }
-        if incoming_ids and incoming_ids.issubset(accepted_ids):
+        exact_identity = bool(
+            accepted_request_id
+            and accepted_owner_id
+            and incoming_request_id == accepted_request_id
+            and incoming_owner_id == accepted_owner_id
+        )
+        if exact_identity:
             return False
-        edit = _mapping_child(operation, "operation_edit")
+        if cls._same_generation_execution_owner_update(
+            operation,
+            accepted,
+            generation=generation,
+            generation_high_water=generation_high_water,
+            requested_generation=requested_generation,
+            requested_generation_high_water=(
+                requested_generation_high_water
+            ),
+        ):
+            return False
+        edit_action = cls._operation_edit_action(operation)
         is_new_request = bool(
             requested_generation > requested_generation_high_water
             and incoming_request_id
-            and str(edit.get("action", "") or "").strip()
+            and incoming_request_id
+            not in {accepted_request_id, accepted_owner_id}
+            and incoming_owner_id == accepted_owner_id
+            and edit_action
         )
         execution = _mapping_child(
             _mapping_child(operation, "intervention"),
@@ -5788,7 +5878,7 @@ class _OperationSemanticTimelineReducer:
             )
             or 0,
         )
-        is_cancellation_transition = bool(
+        cancellation_identity_matches = bool(
             execution_state in {"cancelled", "canceled"}
             and str(
                 execution.get("blocker_reason", "") or ""
@@ -5799,12 +5889,22 @@ class _OperationSemanticTimelineReducer:
             and str(execution.get("operation_id", "") or "")
             == str(operation.get("operation_id", "") or "")
             and execution_generation == generation
-            and (
-                not incoming_request_id
-                or incoming_request_id in accepted_ids
-            )
         )
-        return not (is_new_request or is_cancellation_transition)
+        is_cancellation_transition = bool(
+            cancellation_identity_matches
+            and incoming_request_id == accepted_request_id
+        )
+        is_new_cancellation_request = bool(
+            cancellation_identity_matches
+            and is_new_request
+            and edit_action == "cancel"
+        )
+        if execution_state in {"cancelled", "canceled"}:
+            return not (
+                is_cancellation_transition
+                or is_new_cancellation_request
+            )
+        return not is_new_request
 
     @staticmethod
     def _operation_force_counts(
@@ -6775,6 +6875,18 @@ class _OperationSemanticTimelineReducer:
                     and requested_generation < requested_high_water
                 )
                 accepted = self._accepted_operations.get(family_key)
+                execution_owner_update = (
+                    self._same_generation_execution_owner_update(
+                        operation,
+                        accepted,
+                        generation=generation,
+                        generation_high_water=high_water,
+                        requested_generation=requested_generation,
+                        requested_generation_high_water=(
+                            requested_high_water
+                        ),
+                    )
+                )
                 if self._same_generation_update_conflicts(
                     operation,
                     accepted,
@@ -6789,13 +6901,17 @@ class _OperationSemanticTimelineReducer:
                 if (
                     stale_requested_generation
                     and generation <= high_water
+                    and not execution_owner_update
                 ):
                     if accepted is not None:
                         accepted_operations.append(deepcopy(accepted))
                     continue
                 if (
                     stale_requested_generation
-                    and generation > high_water
+                    and (
+                        generation > high_water
+                        or execution_owner_update
+                    )
                     and accepted is not None
                 ):
                     operation = self._preserve_latest_requested_intent(
@@ -7773,15 +7889,35 @@ class SessionLoopBridge:
     def submit_command(self, text: str) -> None:
         """Enqueue one utterance for sequential processing (non-blocking)."""
 
+        cleaned = self._validate_command_text(text)
+        self._accept_bridge_item(
+            cleaned,
+            priority=_BRIDGE_QUEUE_PRIORITY_NORMAL,
+        )
+
+    def submit_correlated_command(self, text: str, request_id: str) -> None:
+        """Enqueue one utterance with an exact browser request identity."""
+
+        cleaned = self._validate_command_text(text)
+        normalized_request_id = _normalize_web_request_id(request_id)
+        if not normalized_request_id:
+            raise ValueError("Web GUI request_id must be non-empty.")
+        self._accept_bridge_item(
+            _CorrelatedWebCommand(
+                text=cleaned,
+                request_id=normalized_request_id,
+            ),
+            priority=_BRIDGE_QUEUE_PRIORITY_NORMAL,
+        )
+
+    @staticmethod
+    def _validate_command_text(text: str) -> str:
         if not isinstance(text, str):
             raise TypeError("Web GUI command text must be a string.")
         cleaned = text.strip()
         if not cleaned:
             raise ValueError("Web GUI command text must be non-empty.")
-        self._accept_bridge_item(
-            cleaned,
-            priority=_BRIDGE_QUEUE_PRIORITY_NORMAL,
-        )
+        return cleaned
 
     def _accept_bridge_item(self, item: object, *, priority: int) -> None:
         """Atomically validate RUNNING state and schedule one accepted item."""
@@ -8602,6 +8738,12 @@ class SessionLoopBridge:
                     continue
                 executor.submit(self._process_one_micromachine_request, item)
                 continue
+            if isinstance(item, _CorrelatedWebCommand):
+                await self._process_one(
+                    item.text,
+                    web_request_id=item.request_id,
+                )
+                continue
             await self._process_one(str(item))
 
     def _process_one_micromachine_request(
@@ -8734,16 +8876,67 @@ class SessionLoopBridge:
                     entry["execution_status"] = execution_status
                 break
 
-    async def _process_one(self, text: str) -> None:
+    async def _process_one(
+        self,
+        text: str,
+        *,
+        web_request_id: str = "",
+    ) -> None:
         """Run one utterance through the session; never drop it silently."""
 
         try:
             outcomes = await self._session.process_text(text)
         except Exception as error:  # noqa: BLE001 - recorded honestly, never dropped.
-            self._history.record(_internal_error_outcome(text, error))
+            outcome = _internal_error_outcome(text, error)
+            self._history.record(
+                _correlate_web_outcome(outcome, web_request_id)
+                if web_request_id
+                else outcome
+            )
             return
         for outcome in outcomes:
-            self._history.record(outcome)
+            self._history.record(
+                _correlate_web_outcome(outcome, web_request_id)
+                if web_request_id
+                else outcome
+            )
+
+
+def _normalize_web_request_id(value: object) -> str:
+    """Validate one optional browser correlation identity."""
+
+    if value is None or value == "":
+        return ""
+    if not isinstance(value, str):
+        raise TypeError("Web GUI request_id must be a string.")
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("Web GUI request_id must be non-empty.")
+    if len(normalized) > MAX_WEB_REQUEST_ID_CHARS:
+        raise ValueError(
+            "Web GUI request_id exceeds "
+            f"{MAX_WEB_REQUEST_ID_CHARS} characters."
+        )
+    if any(character.isspace() or ord(character) < 33 for character in normalized):
+        raise ValueError(
+            "Web GUI request_id may not contain whitespace or control characters."
+        )
+    return normalized
+
+
+def _correlate_web_outcome(
+    outcome: object,
+    request_id: str,
+) -> dict[str, object]:
+    """Attach exact browser correlation without mutating session outcomes."""
+
+    document = _outcome_event(outcome)
+    detail = document.get("detail")
+    correlated_detail = dict(detail) if isinstance(detail, Mapping) else {}
+    correlated_detail["web_request_id"] = request_id
+    document["detail"] = correlated_detail
+    document["request_id"] = request_id
+    return document
 
 
 def _outcome_event(outcome: object) -> dict[str, object]:
@@ -11531,9 +11724,17 @@ function renderArchivedChatDetails(note) {
 function oldestTrimCandidate() {
   var entries = logBox.querySelectorAll(".log-entry");
   for (var i = 0; i < entries.length; i += 1) {
+    var voiceSession = voiceSessionForNode(entries[i]);
     if (
       entries[i] !== pendingAggregateNode &&
-      !voiceSessionForNode(entries[i])
+      !(
+        voiceSession &&
+        voiceSession.submitted !== true &&
+        (
+          voiceSession.state === "listening" ||
+          voiceSession.state === "finalizing"
+        )
+      )
     ) {
       return entries[i];
     }
@@ -11541,13 +11742,41 @@ function oldestTrimCandidate() {
   return null;
 }
 
+function retireVoiceSessionForTrim(entry) {
+  var session = voiceSessionForNode(entry);
+  if (!session) { return false; }
+  clearVoiceFinalizationTimer(session);
+  if (
+    session.pendingId &&
+    voiceSessionsByPendingId[session.pendingId] === session
+  ) {
+    delete voiceSessionsByPendingId[session.pendingId];
+  }
+  if (activeVoiceSession === session) {
+    activeVoiceSession = null;
+  }
+  session.state = session.pendingId ? "retired" : session.state;
+  session.node = null;
+  return Boolean(session.pendingId);
+}
+
 function trimChatLog() {
+  var retiredPendingVoice = false;
   while (logBox.querySelectorAll(".log-entry").length > MAX_CHAT_EVENTS) {
     var oldestEntry = oldestTrimCandidate();
     if (!oldestEntry) { break; }
     archiveTrimmedEntry(oldestEntry);
+    retiredPendingVoice = retireVoiceSessionForTrim(oldestEntry) ||
+      retiredPendingVoice;
     logBox.removeChild(oldestEntry);
     trimmedChatEvents += 1;
+  }
+  if (retiredPendingVoice) {
+    renderPendingAggregate("", true);
+    if (logBox.querySelectorAll(".log-entry").length > MAX_CHAT_EVENTS) {
+      trimChatLog();
+      return;
+    }
   }
   renderChatTrimNote();
 }
@@ -11583,13 +11812,11 @@ function renderStartupGuide() {
 }
 
 function appendLog(ev) {
-  var matchedVoiceSession = ev && ev.command_text
-    ? pendingVoiceSessionForCommand(ev.command_text)
-    : null;
+  var matchedVoiceSession = pendingVoiceSessionForHistoryEvent(ev);
   if (ev && typeof ev.seq === "number") {
     recentEvents.push(ev);
     compactRecentEventsIfNeeded();
-    removePendingForCommand(ev.command_text || "");
+    removePendingForHistoryEvent(ev);
   }
   if (matchedVoiceSession) {
     renderVoiceSessionTerminal(
@@ -11706,7 +11933,7 @@ function pendingCommandTexts() {
   return texts;
 }
 
-function renderPendingAggregate(latestText) {
+function renderPendingAggregate(latestText, skipTrim) {
   var texts = pendingCommandTexts();
   var entry = pendingAggregateNode ||
     document.getElementById(pendingAggregateId);
@@ -11764,7 +11991,7 @@ function renderPendingAggregate(latestText) {
   }
   botMessage.appendChild(typingIndicator);
   entry.appendChild(botMessage);
-  trimChatLog();
+  if (skipTrim !== true) { trimChatLog(); }
 }
 
 function clearPendingMicroMachinePlan() {
@@ -12011,6 +12238,32 @@ function pendingVoiceSessionForCommand(text) {
     if (session) { return session; }
   }
   return null;
+}
+
+function historyEventRequestId(ev) {
+  var detail = ev && ev.detail || {};
+  return String(
+    ev && ev.request_id ||
+    detail.web_request_id ||
+    ""
+  ).trim();
+}
+
+function uniquePendingIdForCommand(text) {
+  var pendingIds = pendingNodes[text] || [];
+  return pendingIds.length === 1 ? pendingIds[0] : "";
+}
+
+function pendingVoiceSessionForHistoryEvent(ev) {
+  if (!ev || typeof ev !== "object") { return null; }
+  var requestId = historyEventRequestId(ev);
+  if (requestId) {
+    return voiceSessionForPendingId(requestId);
+  }
+  var pendingId = uniquePendingIdForCommand(
+    String(ev.command_text || "")
+  );
+  return pendingId ? voiceSessionForPendingId(pendingId) : null;
 }
 
 function pendingVoiceSessionForPendingTexts() {
@@ -12751,9 +13004,18 @@ function operationEventMatchesRecordUpdate(envelope, payload, record) {
   var payloadUpdateId = String(
     payload && payload.update_id || ""
   );
-  var recordUpdateId = String(record && record.updateId || "");
+  var recordRequestUpdateId = String(
+    record && record.updateId || ""
+  );
+  var recordExecutionOwnerUpdateId = String(
+    record && record.data &&
+      record.data.operation_console_execution_owner_update_id ||
+    recordRequestUpdateId ||
+    ""
+  );
   if (
-    !recordUpdateId ||
+    !recordRequestUpdateId ||
+    !recordExecutionOwnerUpdateId ||
     (!envelopeUpdateId && !payloadUpdateId) ||
     (
       envelopeUpdateId &&
@@ -12763,7 +13025,11 @@ function operationEventMatchesRecordUpdate(envelope, payload, record) {
   ) {
     return false;
   }
-  return String(payloadUpdateId || envelopeUpdateId) === recordUpdateId;
+  var eventUpdateId = String(payloadUpdateId || envelopeUpdateId);
+  return (
+    eventUpdateId === recordRequestUpdateId ||
+    eventUpdateId === recordExecutionOwnerUpdateId
+  );
 }
 
 function tacticalLifecycleCallout(envelope, payload, scopeId, record) {
@@ -12773,12 +13039,20 @@ function tacticalLifecycleCallout(envelope, payload, scopeId, record) {
   var requestedGeneration = Number(
     payload && payload.requested_generation || generation
   );
+  var recordRequestedGeneration = Number(
+    record && (
+      record.requestedOperationGeneration ||
+      record.operationGeneration
+    ) ||
+    0
+  );
   if (
     !operationId ||
     generation <= 0 ||
-    requestedGeneration !== generation ||
+    requestedGeneration < generation ||
     !record ||
     Number(record.operationGeneration || 0) !== generation ||
+    requestedGeneration !== recordRequestedGeneration ||
     !operationEventMatchesRecordUpdate(envelope, payload, record)
   ) {
     return null;
@@ -12988,6 +13262,18 @@ function removePendingForCommand(text) {
   renderPendingAggregate();
   updateAssistantPendingState();
   return true;
+}
+
+function removePendingForHistoryEvent(ev) {
+  if (!ev || typeof ev !== "object") { return false; }
+  var requestId = historyEventRequestId(ev);
+  if (requestId) {
+    return removePendingById(requestId);
+  }
+  var pendingId = uniquePendingIdForCommand(
+    String(ev.command_text || "")
+  );
+  return pendingId ? removePendingById(pendingId) : false;
 }
 
 function removePendingById(pendingId) {
@@ -15547,6 +15833,23 @@ function operationPayloadExecutionOwnerUpdateId(operation) {
   );
 }
 
+function operationPayloadEditAction(operation) {
+  var edit = operation && operation.operation_edit || {};
+  var action = String(edit.action || "").trim();
+  var allowed = [
+    "create",
+    "update",
+    "resize",
+    "reinforce",
+    "retarget",
+    "transfer_in",
+    "transfer_out",
+    "cancel",
+    "restart"
+  ];
+  return allowed.indexOf(action) >= 0 ? action : "";
+}
+
 function operationPayloadOperationId(operation) {
   var update = (operation && operation.update) || {};
   var vector = update.vector || {};
@@ -16253,11 +16556,8 @@ function reconcileOperationRecord(operation, parentData) {
     requestedOperationGeneration = 0;
   }
   var editPayload = operationEditPayload(data);
-  var hasEditPayload = Boolean(
-    String(editPayload.action || "") ||
-    Number(editPayload.transferred_in_count || 0) > 0 ||
-    Number(editPayload.transferred_out_count || 0) > 0
-  );
+  var editAction = operationPayloadEditAction(data);
+  var hasEditPayload = Boolean(editAction);
   var rejectedEditPayload = Boolean(
     String(editPayload.resolution || "").toLowerCase() === "blocked" ||
     Boolean(editPayload.blocker)
@@ -16282,35 +16582,34 @@ function reconcileOperationRecord(operation, parentData) {
     acceptedRequestUpdateId ||
     ""
   );
-  var acceptedUpdateIds = {};
-  if (acceptedRequestUpdateId) {
-    acceptedUpdateIds[acceptedRequestUpdateId] = true;
-  }
-  if (acceptedExecutionOwnerUpdateId) {
-    acceptedUpdateIds[acceptedExecutionOwnerUpdateId] = true;
-  }
-  var incomingUpdateIds = [];
-  if (requestUpdateId) { incomingUpdateIds.push(requestUpdateId); }
-  if (
-    executionOwnerUpdateId &&
-    incomingUpdateIds.indexOf(executionOwnerUpdateId) < 0
-  ) {
-    incomingUpdateIds.push(executionOwnerUpdateId);
-  }
   var sameGenerationUpdateIdentityAccepted = Boolean(
-    incomingUpdateIds.length &&
-    incomingUpdateIds.every(function(identity) {
-      return acceptedUpdateIds[identity] === true;
-    })
+    acceptedRequestUpdateId &&
+    acceptedExecutionOwnerUpdateId &&
+    requestUpdateId === acceptedRequestUpdateId &&
+    executionOwnerUpdateId === acceptedExecutionOwnerUpdateId
   );
   var sameGenerationUpdateIdentityRequired = Boolean(
     record &&
     record.operationGeneration > 0 &&
     operationGeneration === record.operationGeneration
   );
+  var sameGenerationExecutionOwnerUpdate = Boolean(
+    sameGenerationUpdateIdentityRequired &&
+    requestedOperationGeneration < latestRequestedOperationGeneration &&
+    acceptedRequestUpdateId &&
+    acceptedExecutionOwnerUpdateId &&
+    (
+      requestUpdateId === acceptedRequestUpdateId ||
+      requestUpdateId === acceptedExecutionOwnerUpdateId
+    ) &&
+    executionOwnerUpdateId === acceptedExecutionOwnerUpdateId
+  );
   var newerOperationRequest = Boolean(
     requestedOperationGeneration > latestRequestedOperationGeneration &&
     requestUpdateId &&
+    requestUpdateId !== acceptedRequestUpdateId &&
+    requestUpdateId !== acceptedExecutionOwnerUpdateId &&
+    executionOwnerUpdateId === acceptedExecutionOwnerUpdateId &&
     hasEditPayload
   );
   var foreignExecution = (data.intervention || {}).command_execution || {};
@@ -16319,7 +16618,7 @@ function reconcileOperationRecord(operation, parentData) {
     foreignExecution.generation ||
     0
   );
-  var sameGenerationCancellationTransition = Boolean(
+  var cancellationIdentityMatches = Boolean(
     ["cancelled", "canceled"].indexOf(
       String(foreignExecution.state || "").toLowerCase()
     ) >= 0 &&
@@ -16328,35 +16627,53 @@ function reconcileOperationRecord(operation, parentData) {
     executionOwnerUpdateId &&
     executionOwnerUpdateId === acceptedExecutionOwnerUpdateId &&
     String(foreignExecution.operation_id || "") === operationId &&
-    foreignExecutionGeneration === operationGeneration &&
-    (
-      !requestUpdateId ||
-      acceptedUpdateIds[requestUpdateId] === true
-    )
+    foreignExecutionGeneration === operationGeneration
+  );
+  var sameGenerationCancellationTransition = Boolean(
+    cancellationIdentityMatches &&
+    requestUpdateId === acceptedRequestUpdateId
+  );
+  var newerCancellationRequest = Boolean(
+    cancellationIdentityMatches &&
+    newerOperationRequest &&
+    editAction === "cancel"
+  );
+  var cancellationState = (
+    ["cancelled", "canceled"].indexOf(
+      String(foreignExecution.state || "").toLowerCase()
+    ) >= 0
   );
   if (
     sameGenerationUpdateIdentityRequired &&
     !sameGenerationUpdateIdentityAccepted &&
-    !newerOperationRequest &&
-    !sameGenerationCancellationTransition
+    !sameGenerationExecutionOwnerUpdate &&
+    (
+      cancellationState
+        ? !sameGenerationCancellationTransition &&
+          !newerCancellationRequest
+        : !newerOperationRequest
+    )
   ) {
     return record;
   }
-  var staleEditPayload = Boolean(
+  var staleRequestedGeneration = Boolean(
     record &&
-    hasEditPayload &&
     requestedOperationGeneration > 0 &&
     requestedOperationGeneration < latestRequestedOperationGeneration
   );
   if (
-    staleEditPayload &&
-    operationGeneration <= record.operationGeneration
+    staleRequestedGeneration &&
+    operationGeneration <= record.operationGeneration &&
+    !sameGenerationExecutionOwnerUpdate
   ) {
     return record;
   }
   if (
-    staleEditPayload &&
-    operationGeneration > record.operationGeneration
+    staleRequestedGeneration &&
+    (
+      operationGeneration > record.operationGeneration ||
+      sameGenerationExecutionOwnerUpdate
+    )
   ) {
     var latestData = record.data || {};
     var executionOwnerUpdateId = String(
@@ -20170,7 +20487,11 @@ function submitCommanderText(text, options) {
   fetch("/api/command" + authQuery, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text: normalizedText })
+    body: JSON.stringify({
+      text: normalizedText,
+      request_id: legacyPendingId,
+      operation_id: legacyPendingId
+    })
   }).then(function () {
     pollHistory();
   }).catch(function (error) {
@@ -20661,6 +20982,7 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
 
     daemon_threads = True
     _OPERATION_EVENT_SCOPE_RETENTION = 8
+    _OPERATION_EVENT_SCOPE_HISTORY_RETENTION = 128
 
     def __init__(
         self,
@@ -20766,17 +21088,33 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
             )
             return True
 
+    def admit_operation_event_scope(self, scope_id: str) -> bool:
+        """Admit one replay cursor without allowing unbounded scope growth."""
+
+        normalized_scope = str(scope_id or "")
+        if not normalized_scope:
+            return False
+        if normalized_scope in self._observed_operation_event_high_water:
+            return True
+        if (
+            len(self._observed_operation_event_high_water)
+            >= self._OPERATION_EVENT_SCOPE_HISTORY_RETENTION
+        ):
+            return False
+        self._observed_operation_event_high_water[normalized_scope] = 0
+        return True
+
     def remember_operation_event_high_water(
         self,
         scope_id: str,
         timeline_seq: int,
-    ) -> None:
-        """Retain compact replay identity for the server process lifetime."""
+    ) -> bool:
+        """Retain a bounded replay cursor or fail closed for a novel scope."""
 
         normalized_scope = str(scope_id or "")
         normalized_seq = max(0, int(timeline_seq))
-        if not normalized_scope:
-            return
+        if not self.admit_operation_event_scope(normalized_scope):
+            return False
         self._observed_operation_event_high_water[normalized_scope] = max(
             self._observed_operation_event_high_water.get(
                 normalized_scope,
@@ -20784,6 +21122,7 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
             ),
             normalized_seq,
         )
+        return True
 
     def touch_operation_event_scope(self, scope_id: str) -> None:
         """Bound per-blackboard event cursors and their related caches."""
@@ -21329,6 +21668,8 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 status.get("blackboard_scope_id")
                 or _micromachine_blackboard_scope_id(blackboard_dir)
             )
+            if not server.admit_operation_event_scope(scope_id):  # type: ignore[attr-defined]
+                return
             server.touch_operation_event_scope(scope_id)  # type: ignore[attr-defined]
             raw_events = status.get("operation_events")
             events = (
@@ -21557,6 +21898,15 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             )
             return
         try:
+            web_request_id = _normalize_web_request_id(
+                document.get("request_id")
+            )
+        except (TypeError, ValueError) as error:
+            self._send_command_rejection(
+                f"request_id가 올바르지 않습니다: {error}"
+            )
+            return
+        try:
             llm_snapshot = dict(self._bridge.llm_settings_snapshot())
         except Exception as error:  # noqa: BLE001 - surfaced honestly as 500.
             self._send_internal_error(error)
@@ -21568,7 +21918,15 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             )
             return
         try:
-            self._bridge.submit_command(text.strip())
+            submit_correlated = getattr(
+                self._bridge,
+                "submit_correlated_command",
+                None,
+            )
+            if web_request_id and callable(submit_correlated):
+                submit_correlated(text.strip(), web_request_id)
+            else:
+                self._bridge.submit_command(text.strip())
         except RuntimeError:
             self._send_json(
                 HTTPStatus.SERVICE_UNAVAILABLE,
@@ -21586,6 +21944,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             return
         legacy_operation_id = str(
             document.get("operation_id", "")
+            or web_request_id
             or f"legacy-{uuid.uuid4().hex}"
         )
         self.server.publish_event(  # type: ignore[attr-defined]
@@ -21594,6 +21953,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 "command_text": text.strip(),
                 "status": "received",
                 "mode": COMMAND_MODE_LEGACY_COMMANDER,
+                "request_id": web_request_id,
             },
             operation_id=legacy_operation_id,
             generation=max(0, _web_event_int(document.get("generation"), 0)),
