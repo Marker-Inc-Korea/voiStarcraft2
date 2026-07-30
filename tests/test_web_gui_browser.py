@@ -110,6 +110,9 @@ def _browser_fixture_page() -> str:
           status: "published",
           update_id: "browser-voice-plan",
           blackboard_scope_id: "browser-voice-scope",
+          battlefield_projection_identity: {
+            session_epoch: "browser-voice-epoch"
+          },
           compile_result: {
             status: "compiled",
             update_id: "browser-voice-plan",

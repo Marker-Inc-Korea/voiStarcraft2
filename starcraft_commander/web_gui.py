@@ -1972,6 +1972,7 @@ def _micromachine_operation_status_payload(
             archived_operation_matches,
             key=lambda item: item[0],
         )
+        operation_telemetry_is_current = False
     active_operation_generation = operation_generation
     if (
         operation_telemetry is not None
@@ -5424,6 +5425,79 @@ class _OperationSemanticTimelineReducer:
         )
         return result
 
+    @staticmethod
+    def _overview_for_accepted_operations(
+        battlefield_overview: Mapping[str, object],
+        accepted_operations: Sequence[Mapping[str, object]],
+    ) -> dict[str, object]:
+        """Keep the authoritative overview aligned with admitted operations."""
+
+        accepted_ids = {
+            str(operation.get("operation_id", "") or "").strip()
+            for operation in accepted_operations
+            if str(operation.get("operation_id", "") or "").strip()
+        }
+        overview = deepcopy(dict(battlefield_overview))
+        raw_ownership = overview.get("operation_ownership")
+        ownership = [
+            deepcopy(dict(item))
+            for item in (
+                raw_ownership
+                if isinstance(raw_ownership, Sequence)
+                and not isinstance(
+                    raw_ownership,
+                    (str, bytes, bytearray),
+                )
+                else ()
+            )
+            if isinstance(item, Mapping)
+            and str(item.get("operation_id", "") or "").strip()
+            in accepted_ids
+        ]
+        overview["operation_ownership"] = ownership
+        overview["explicit_operation_owned_count"] = sum(
+            max(
+                0,
+                _int_or_none(
+                    _mapping_child(item, "operation_ownership").get(
+                        "owner_count"
+                    )
+                )
+                or 0,
+            )
+            for item in ownership
+        )
+        transfer_availability = overview.get("transfer_availability")
+        if isinstance(transfer_availability, Mapping):
+            transfer_payload = deepcopy(dict(transfer_availability))
+            raw_entries = transfer_payload.get("entries")
+            transfer_payload["entries"] = [
+                deepcopy(dict(item))
+                for item in (
+                    raw_entries
+                    if isinstance(raw_entries, Sequence)
+                    and not isinstance(
+                        raw_entries,
+                        (str, bytes, bytearray),
+                    )
+                    else ()
+                )
+                if isinstance(item, Mapping)
+                and str(item.get("source_owner_id", "") or "").strip()
+                in accepted_ids
+                and (
+                    not str(
+                        item.get("counterpart_operation_id", "") or ""
+                    ).strip()
+                    or str(
+                        item.get("counterpart_operation_id", "") or ""
+                    ).strip()
+                    in accepted_ids
+                )
+            ]
+            overview["transfer_availability"] = transfer_payload
+        return overview
+
     def _touch_family(
         self,
         family_key: tuple[str, str, str],
@@ -6967,10 +7041,6 @@ class _OperationSemanticTimelineReducer:
                 scope_id,
                 deque(maxlen=self._PER_SCOPE_RETENTION),
             )
-            if isinstance(battlefield_overview, Mapping):
-                self._scope_battlefield_overviews[scope_id] = deepcopy(
-                    dict(battlefield_overview)
-                )
             base_threats = self._base_threats(
                 battlefield_overview
                 if isinstance(battlefield_overview, Mapping)
@@ -7309,6 +7379,15 @@ class _OperationSemanticTimelineReducer:
             result["operation_summary"] = _micromachine_operation_summary(
                 accepted_operations
             )
+            if isinstance(battlefield_overview, Mapping):
+                accepted_overview = self._overview_for_accepted_operations(
+                    battlefield_overview,
+                    accepted_operations,
+                )
+                self._scope_battlefield_overviews[scope_id] = deepcopy(
+                    accepted_overview
+                )
+                result["battlefield_overview"] = accepted_overview
             result["operation_events"] = [
                 dict(event) for event in scope_events
             ]
@@ -13109,20 +13188,6 @@ function tacticalPlanSessionEpoch(data, operations, scopeId, updateId) {
   ) {
     return String(activeCommandConsoleRecord.sessionEpoch);
   }
-  if (
-    normalizedScope &&
-    operationConsoleScopeId === normalizedScope &&
-    operationConsoleSessionEpoch
-  ) {
-    return String(operationConsoleSessionEpoch);
-  }
-  if (
-    normalizedScope &&
-    tacticalRadio.scopeId === normalizedScope &&
-    tacticalRadio.sessionEpoch
-  ) {
-    return String(tacticalRadio.sessionEpoch);
-  }
   return "";
 }
 
@@ -13156,6 +13221,7 @@ function announceAcceptedTacticalPlan(data, source) {
     scopeId,
     updateId
   );
+  if (scopeId && !sessionEpoch) { return false; }
   ensureTacticalRadioScope(scopeId, sessionEpoch);
   var announced = false;
   var extraOperationCount = Math.max(

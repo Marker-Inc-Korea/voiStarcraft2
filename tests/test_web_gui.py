@@ -5527,7 +5527,28 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 "OperationDirector": {
                     "policy_update_id": update_id,
                     "operations": [],
-                    "pending_family_effects": [],
+                    "pending_family_effects": [
+                        {
+                            "update_id": update_id,
+                            "operation_id": "recon-alpha",
+                            "generation": 2,
+                            "family": "marine",
+                            "unit_type": "TERRAN_MARINE",
+                            "role": "scout",
+                            "action": "move",
+                            "required_effect": "movement_or_engagement",
+                            "attempt_generation": 1,
+                            "attempted_count": 1,
+                            "attempted_frame": 250,
+                            "submitted_count": 0,
+                            "submitted_frame": 0,
+                            "effect_kind": "",
+                            "effect_count": 0,
+                            "effect_frame": 0,
+                            "blocker_manager": "",
+                            "blocker": "",
+                        }
+                    ],
                 }
             },
         }
@@ -9066,6 +9087,21 @@ class SessionLoopBridgeTest(unittest.TestCase):
                 for event in advanced_active["operation_events"]
                 if event["operation_id"] == "active-beta"
             },
+        )
+        self.assertEqual(
+            ["active-beta"],
+            [
+                item["operation_id"]
+                for item in advanced_active["battlefield_overview"][
+                    "operation_ownership"
+                ]
+            ],
+        )
+        self.assertEqual(
+            4,
+            advanced_active["battlefield_overview"][
+                "explicit_operation_owned_count"
+            ],
         )
 
         foreign = set_semantic_operation_identity(
@@ -18740,6 +18776,9 @@ const assert = require("assert");
     accepted: true,
     status: "published",
     update_id: "production-plan-update",
+    battlefield_projection_identity: {
+      session_epoch: "production-plan-epoch"
+    },
     compile_result: {
       status: "compiled",
       update_id: "production-plan-update",
@@ -18773,7 +18812,8 @@ const assert = require("assert");
   );
   var productionRecord = {
     updateId: "production-plan-update",
-    operationGeneration: 4
+    operationGeneration: 4,
+    sessionEpoch: "production-plan-epoch"
   };
   announceOperationLifecycleEvent(
     { update_id: "production-plan-update", created_at_unix_ms: fakeNowMs },
@@ -19027,6 +19067,25 @@ const assert = require("assert");
         "epoch-plan-scope",
         "",
         "epoch-plan-update",
+        "epoch-plan-operation",
+        1
+      )
+    ],
+    undefined
+  );
+  var delayedEpochlessPlan = JSON.parse(JSON.stringify(epochlessPlan));
+  delayedEpochlessPlan.update_id = "epoch-plan-old-update";
+  delayedEpochlessPlan.compile_result.update_id = "epoch-plan-old-update";
+  assert.strictEqual(
+    announceAcceptedTacticalPlan(delayedEpochlessPlan, "direct"),
+    false
+  );
+  assert.strictEqual(
+    tacticalRadio.planAnnouncements[
+      tacticalRadioPlanAnnouncementKey(
+        "epoch-plan-scope",
+        "epoch-plan-current",
+        "epoch-plan-old-update",
         "epoch-plan-operation",
         1
       )
