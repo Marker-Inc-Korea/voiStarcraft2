@@ -639,6 +639,16 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         self.assertIn("      actions: read\n", provenance_job)
         self.assertIn("      contents: read\n", provenance_job)
         self.assertIn("          persist-credentials: false\n", provenance_job)
+        self.assertNotIn(
+            "      ROOT_DIR: ${{ runner.temp }}/voi-micromachine-runtime\n",
+            workflow,
+        )
+        self.assertEqual(
+            2,
+            workflow.count(
+                "      ROOT_DIR: /private/tmp/voi-micromachine-runtime\n"
+            ),
+        )
         job_blocks = [
             match.group(0)
             for match in re.finditer(

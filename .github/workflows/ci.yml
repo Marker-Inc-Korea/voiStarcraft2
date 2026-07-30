@@ -49,7 +49,7 @@ jobs:
       contents: read
     env:
       PYTHONDONTWRITEBYTECODE: "1"
-      ROOT_DIR: ${{ runner.temp }}/voi-micromachine-runtime
+      ROOT_DIR: /private/tmp/voi-micromachine-runtime
       BUILD_JOBS: "3"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -87,7 +87,7 @@ jobs:
     timeout-minutes: 60
     env:
       PYTHONDONTWRITEBYTECODE: "1"
-      ROOT_DIR: ${{ runner.temp }}/voi-micromachine-runtime
+      ROOT_DIR: /private/tmp/voi-micromachine-runtime
       BUILD_JOBS: "3"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
