@@ -1365,7 +1365,9 @@ def attest_github_source(
         blockers=blockers,
     )
     eligible_runs = _eligible_workflow_runs(
+        adapter,
         workflow_runs,
+        repository=normalized_repository,
         current_run=workflow_run,
         workflow_id=workflow_id,
         workflow_path=AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH,
@@ -1374,6 +1376,7 @@ def attest_github_source(
         head_sha=expected_head_sha,
         head_branch=pull_head_ref,
         repository_id=expected_repository_id,
+        blockers=blockers,
     )
     if not eligible_runs:
         blockers.append("no applicable workflow run exists for the candidate head")
@@ -3064,7 +3067,9 @@ def attest_github_actions_emission_context(
         blockers=blockers,
     )
     eligible_runs = _eligible_workflow_runs(
+        adapter,
         workflow_runs,
+        repository=normalized_repository,
         current_run=run,
         workflow_id=workflow_id,
         workflow_path=AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH,
@@ -3073,6 +3078,7 @@ def attest_github_actions_emission_context(
         head_sha=expected_head_sha,
         head_branch=pull_head_ref,
         repository_id=AUTHORITATIVE_REPOSITORY_ID,
+        blockers=blockers,
     )
     if not eligible_runs:
         blockers.append("no applicable workflow run exists for the candidate head")
@@ -6029,8 +6035,10 @@ def _workflow_run_matches_candidate(
 
 
 def _eligible_workflow_runs(
+    adapter: GitHubSourceAdapter,
     workflow_runs: Sequence[Mapping[str, object]],
     *,
+    repository: str,
     current_run: Mapping[str, object],
     workflow_id: int,
     workflow_path: str,
@@ -6039,9 +6047,44 @@ def _eligible_workflow_runs(
     head_sha: str,
     head_branch: str | None,
     repository_id: int,
+    blockers: list[str],
 ) -> list[Mapping[str, object]]:
     candidates: dict[int, Mapping[str, object]] = {}
-    for record in (*workflow_runs, current_run):
+    current_run_id = current_run.get("id")
+    for summary in workflow_runs:
+        if not _workflow_run_summary_matches_candidate(
+            summary,
+            workflow_id=workflow_id,
+            workflow_path=workflow_path,
+            head_sha=head_sha,
+            head_branch=head_branch,
+            repository_id=repository_id,
+        ):
+            continue
+        try:
+            run_id = _positive_id(summary.get("id"), "workflow_run.id")
+        except ValueError as exc:
+            blockers.append(f"listed workflow run is malformed: {exc}")
+            continue
+        if run_id == current_run_id:
+            record = current_run
+        else:
+            try:
+                record = adapter.get_workflow_run(repository, run_id)
+            except Exception as exc:
+                blockers.append(
+                    f"listed workflow run {run_id} hydration failed: {exc}"
+                )
+                continue
+        if (
+            record.get("id") != run_id
+            or record.get("run_number") != summary.get("run_number")
+            or record.get("run_attempt") != summary.get("run_attempt")
+        ):
+            blockers.append(
+                f"listed workflow run {run_id} hydration identity mismatch"
+            )
+            continue
         if not _workflow_run_matches_candidate(
             record,
             workflow_id=workflow_id,
@@ -6052,11 +6095,51 @@ def _eligible_workflow_runs(
             head_branch=head_branch,
             repository_id=repository_id,
         ):
+            blockers.append(
+                f"listed workflow run {run_id} failed direct candidate binding"
+            )
             continue
-        run_id = record.get("id")
-        if isinstance(run_id, int) and not isinstance(run_id, bool):
-            candidates[run_id] = record
+        candidates[run_id] = record
+    if _workflow_run_matches_candidate(
+        current_run,
+        workflow_id=workflow_id,
+        workflow_path=workflow_path,
+        pull_id=pull_id,
+        pull_number=pull_number,
+        head_sha=head_sha,
+        head_branch=head_branch,
+        repository_id=repository_id,
+    ):
+        current_id = current_run.get("id")
+        if isinstance(current_id, int) and not isinstance(current_id, bool):
+            candidates[current_id] = current_run
     return list(candidates.values())
+
+
+def _workflow_run_summary_matches_candidate(
+    record: Mapping[str, object],
+    *,
+    workflow_id: int,
+    workflow_path: str,
+    head_sha: str,
+    head_branch: str | None,
+    repository_id: int,
+) -> bool:
+    try:
+        _positive_id(record.get("id"), "workflow_run.id")
+        _positive_id(record.get("run_number"), "workflow_run.run_number")
+        _positive_id(record.get("run_attempt"), "workflow_run.run_attempt")
+    except ValueError:
+        return False
+    if (
+        record.get("workflow_id") != workflow_id
+        or record.get("path") != workflow_path
+        or record.get("event") != "pull_request"
+        or record.get("head_sha") != head_sha
+        or record.get("head_branch") != head_branch
+    ):
+        return False
+    return _mapping(record.get("head_repository")).get("id") == repository_id
 
 
 def _workflow_run_order_key(record: Mapping[str, object]) -> tuple[int, int, int]:

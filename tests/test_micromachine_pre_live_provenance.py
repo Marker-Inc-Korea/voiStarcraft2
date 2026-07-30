@@ -261,6 +261,7 @@ class FakeGitHubAdapter:
             "conclusion": "success",
         }
         self.workflow_runs = [dict(self.workflow_run)]
+        self.workflow_run_details = {RUN_ID: self.workflow_run}
         self.workflow = {
             "id": WORKFLOW_ID,
             "path": WORKFLOW_PATH,
@@ -380,7 +381,13 @@ class FakeGitHubAdapter:
         repository: str,
         run_id: int,
     ) -> dict[str, object]:
-        return self._result("workflow_run", self.workflow_run)
+        record = self.workflow_run_details.get(run_id)
+        if record is None:
+            raise GitHubSourceError(f"unknown workflow run: {run_id}")
+        return self._result(
+            "workflow_run",
+            record,
+        )
 
     def list_workflow_runs(
         self,
@@ -1051,11 +1058,87 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             }
         )
         adapter.workflow_runs.append(newer)
+        adapter.workflow_run_details[RUN_ID + 1] = newer
 
         report = self.attest(adapter)
 
         self.assertFalse(report["ok"], report)
         self.assertIn("stale", " ".join(report["blockers"]))
+        self.assertEqual(0, adapter.download_calls)
+
+    def test_hydrates_newer_run_when_list_record_omits_pull_requests(self) -> None:
+        adapter = FakeGitHubAdapter()
+        newer = dict(adapter.workflow_run)
+        newer.update(
+            {
+                "id": RUN_ID + 1,
+                "run_number": adapter.workflow_run["run_number"] + 1,
+                "run_attempt": 1,
+                "status": "completed",
+                "conclusion": "failure",
+            }
+        )
+        summary = dict(newer)
+        summary["pull_requests"] = []
+        adapter.workflow_runs.append(summary)
+        adapter.workflow_run_details[RUN_ID + 1] = newer
+
+        report = self.attest(adapter)
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn("stale", " ".join(report["blockers"]))
+        self.assertEqual(0, adapter.download_calls)
+
+    def test_rejects_listed_run_that_fails_direct_pr_binding(self) -> None:
+        adapter = FakeGitHubAdapter()
+        newer = dict(adapter.workflow_run)
+        newer.update(
+            {
+                "id": RUN_ID + 1,
+                "run_number": adapter.workflow_run["run_number"] + 1,
+                "run_attempt": 1,
+            }
+        )
+        summary = dict(newer)
+        summary["pull_requests"] = []
+        hydrated = dict(newer)
+        hydrated["pull_requests"] = []
+        adapter.workflow_runs.append(summary)
+        adapter.workflow_run_details[RUN_ID + 1] = hydrated
+
+        report = self.attest(adapter)
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn(
+            "failed direct candidate binding",
+            " ".join(report["blockers"]),
+        )
+        self.assertEqual(0, adapter.download_calls)
+
+    def test_rejects_hydrated_run_identity_mismatch(self) -> None:
+        adapter = FakeGitHubAdapter()
+        newer = dict(adapter.workflow_run)
+        newer.update(
+            {
+                "id": RUN_ID + 1,
+                "run_number": adapter.workflow_run["run_number"] + 1,
+                "run_attempt": 1,
+            }
+        )
+        summary = dict(newer)
+        summary["pull_requests"] = []
+        hydrated = dict(newer)
+        hydrated["run_number"] = newer["run_number"] + 1
+        adapter.workflow_runs.append(summary)
+        adapter.workflow_run_details[RUN_ID + 1] = hydrated
+
+        report = self.attest(adapter)
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn(
+            "hydration identity mismatch",
+            " ".join(report["blockers"]),
+        )
         self.assertEqual(0, adapter.download_calls)
 
     def test_rejects_artifact_without_exclusive_selected_job_window(self) -> None:
