@@ -21415,7 +21415,10 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         self._observed_operation_scope_order: deque[str] = deque()
         self._observed_operation_event_high_water: dict[str, int] = {}
         self._observed_operation_event_history_order: deque[str] = deque()
-        self._pending_operation_event_seqs: dict[str, set[int]] = {}
+        self._pending_operation_events: dict[
+            str,
+            dict[int, dict[str, object]],
+        ] = {}
         self._failed_event_sources: set[str] = set()
         self.shutdown_event = threading.Event()
         super().__init__(server_address, handler_class)
@@ -21538,11 +21541,37 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
             >= self._OPERATION_EVENT_SCOPE_HISTORY_RETENTION
         ):
             evicted = self._observed_operation_event_history_order.popleft()
-            if evicted in self._observed_operation_event_seq:
+            if (
+                evicted in self._observed_operation_event_seq
+                or self._pending_operation_events.get(evicted)
+            ):
                 self._observed_operation_event_history_order.append(evicted)
+                if all(
+                    scope in self._observed_operation_event_seq
+                    or self._pending_operation_events.get(scope)
+                    for scope in self._observed_operation_event_history_order
+                ):
+                    return False
                 continue
             self._observed_operation_event_high_water.pop(evicted, None)
-            self._pending_operation_event_seqs.pop(evicted, None)
+            cache_key = f"micromachine:{evicted}"
+            self._observed_payload_hashes.pop(cache_key, None)
+            self._observed_payload_identities.pop(cache_key, None)
+            self._observed_payload_snapshots.pop(cache_key, None)
+            source_key = f"micromachine_status:{evicted}"
+            self._observed_payload_hashes.pop(
+                f"source:{source_key}",
+                None,
+            )
+            self._observed_payload_identities.pop(
+                f"source:{source_key}",
+                None,
+            )
+            self._observed_payload_snapshots.pop(
+                f"source:{source_key}",
+                None,
+            )
+            self._failed_event_sources.discard(source_key)
         self._observed_operation_event_high_water[normalized_scope] = 0
         self._observed_operation_event_history_order.append(normalized_scope)
         return True
@@ -21644,19 +21673,19 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
     def remember_pending_operation_event(
         self,
         scope_id: str,
-        event_seq: int,
+        event: Mapping[str, object],
     ) -> None:
         """Retain lifecycle events until one SSE write succeeds."""
 
         normalized_scope = str(scope_id or "")
-        normalized_seq = max(0, int(event_seq))
+        normalized_seq = max(0, int(event.get("event_seq", 0)))
         if not normalized_scope or normalized_seq <= 0:
             return
         with self._event_source_lock:
-            self._pending_operation_event_seqs.setdefault(
+            self._pending_operation_events.setdefault(
                 normalized_scope,
-                set(),
-            ).add(normalized_seq)
+                {},
+            )[normalized_seq] = deepcopy(dict(event))
 
     def operation_event_snapshot_cursor(
         self,
@@ -21671,24 +21700,37 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         normalized_latest = max(0, int(latest_seq))
         normalized_oldest = max(1, int(oldest_seq))
         with self._event_source_lock:
-            pending = self._pending_operation_event_seqs.get(
+            pending = self._pending_operation_events.get(
                 normalized_scope
             )
             if not pending:
                 return normalized_latest
-            pending.intersection_update(
-                {
-                    seq
-                    for seq in pending
-                    if seq >= normalized_oldest
-                }
-            )
-            if not pending:
-                self._pending_operation_event_seqs.pop(
-                    normalized_scope,
-                    None,
+            expired = [
+                (seq, event)
+                for seq, event in sorted(pending.items())
+                if seq < normalized_oldest
+            ]
+            for seq, event in expired:
+                republished = self.event_journal.publish(
+                    str(event.get("event_type", "") or "operation_event"),
+                    (
+                        event.get("payload")
+                        if isinstance(event.get("payload"), Mapping)
+                        else {}
+                    ),
+                    update_id=str(event.get("update_id", "") or ""),
+                    operation_id=str(
+                        event.get("operation_id", "") or ""
+                    ),
+                    generation=max(
+                        0,
+                        int(event.get("generation", 0)),
+                    ),
+                    game_frame=int(event.get("game_frame", -1)),
+                    blackboard_scope_id=normalized_scope,
                 )
-                return normalized_latest
+                pending.pop(seq, None)
+                pending[int(republished["event_seq"])] = republished
             return min(normalized_latest, min(pending) - 1)
 
     def mark_operation_event_delivered(
@@ -21701,14 +21743,14 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         normalized_scope = str(scope_id or "")
         normalized_seq = max(0, int(event_seq))
         with self._event_source_lock:
-            pending = self._pending_operation_event_seqs.get(
+            pending = self._pending_operation_events.get(
                 normalized_scope
             )
             if not pending:
                 return
-            pending.discard(normalized_seq)
+            pending.pop(normalized_seq, None)
             if not pending:
-                self._pending_operation_event_seqs.pop(
+                self._pending_operation_events.pop(
                     normalized_scope,
                     None,
                 )
@@ -21735,32 +21777,6 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
                     evicted,
                     evicted_seq,
                 )
-                self._observed_payload_hashes.pop(
-                    f"micromachine:{evicted}",
-                    None,
-                )
-                self._observed_payload_identities.pop(
-                    f"micromachine:{evicted}",
-                    None,
-                )
-                self._observed_payload_snapshots.pop(
-                    f"micromachine:{evicted}",
-                    None,
-                )
-                source_key = f"micromachine_status:{evicted}"
-                self._observed_payload_hashes.pop(
-                    f"source:{source_key}",
-                    None,
-                )
-                self._observed_payload_identities.pop(
-                    f"source:{source_key}",
-                    None,
-                )
-                self._observed_payload_snapshots.pop(
-                    f"source:{source_key}",
-                    None,
-                )
-                self._failed_event_sources.discard(source_key)
 
     def begin_shutdown(self) -> None:
         """Signal active streams and wake their journal waits."""
@@ -22153,7 +22169,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 "blackboard_scope_id": blackboard_scope_id,
                 "payload": snapshot_payload,
             }
-            self._write_sse_event(snapshot_event)
+        self._write_sse_event(snapshot_event)
         return snapshot_cursor
 
     def _write_visible_sse_events(
@@ -22456,7 +22472,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 )
                 server.remember_pending_operation_event(  # type: ignore[attr-defined]
                     scope_id,
-                    int(published_event.get("event_seq", 0)),
+                    published_event,
                 )
             server._observed_operation_event_seq[scope_id] = latest  # type: ignore[attr-defined]
             server.remember_operation_event_high_water(  # type: ignore[attr-defined]
