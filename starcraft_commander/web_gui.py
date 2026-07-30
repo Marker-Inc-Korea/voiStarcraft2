@@ -5325,17 +5325,6 @@ class _OperationSemanticTimelineReducer:
             pass
         self._scope_epoch_history_order.append(scope_id)
         self._scope_epoch_history[scope_id] = session_epoch
-        while (
-            len(self._scope_epoch_history_order)
-            > self._SCOPE_EPOCH_HISTORY_RETENTION
-        ):
-            evicted_scope = self._scope_epoch_history_order.popleft()
-            if evicted_scope in self._scope_epochs:
-                self._scope_epoch_history_order.append(evicted_scope)
-                continue
-            self._scope_epoch_history.pop(evicted_scope, None)
-            self._retired_scope_epochs.pop(evicted_scope, None)
-            self._scope_battlefield_overviews.pop(evicted_scope, None)
 
     def _reset_scope_epoch(self, scope_id: str, session_epoch: str) -> None:
         previous_epoch = (
@@ -5344,7 +5333,7 @@ class _OperationSemanticTimelineReducer:
         )
         retired = self._retired_scope_epochs.setdefault(
             scope_id,
-            deque(maxlen=self._SCOPE_RETENTION),
+            deque(),
         )
         if previous_epoch and previous_epoch != session_epoch:
             try:
@@ -21386,6 +21375,7 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     _OPERATION_EVENT_SCOPE_RETENTION = 8
     _OPERATION_EVENT_SCOPE_HISTORY_RETENTION = 128
+    _PENDING_OPERATION_EVENT_RETENTION = 192
 
     def __init__(
         self,
@@ -21536,45 +21526,28 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
                 normalized_scope
             )
             return True
-        while (
+        if (
             len(self._observed_operation_event_high_water)
             >= self._OPERATION_EVENT_SCOPE_HISTORY_RETENTION
         ):
-            evicted = self._observed_operation_event_history_order.popleft()
-            if (
-                evicted in self._observed_operation_event_seq
-                or self._pending_operation_events.get(evicted)
-            ):
-                self._observed_operation_event_history_order.append(evicted)
-                if all(
-                    scope in self._observed_operation_event_seq
-                    or self._pending_operation_events.get(scope)
-                    for scope in self._observed_operation_event_history_order
-                ):
-                    return False
-                continue
-            self._observed_operation_event_high_water.pop(evicted, None)
-            cache_key = f"micromachine:{evicted}"
-            self._observed_payload_hashes.pop(cache_key, None)
-            self._observed_payload_identities.pop(cache_key, None)
-            self._observed_payload_snapshots.pop(cache_key, None)
-            source_key = f"micromachine_status:{evicted}"
-            self._observed_payload_hashes.pop(
-                f"source:{source_key}",
-                None,
-            )
-            self._observed_payload_identities.pop(
-                f"source:{source_key}",
-                None,
-            )
-            self._observed_payload_snapshots.pop(
-                f"source:{source_key}",
-                None,
-            )
-            self._failed_event_sources.discard(source_key)
+            return False
         self._observed_operation_event_high_water[normalized_scope] = 0
         self._observed_operation_event_history_order.append(normalized_scope)
         return True
+
+    def can_admit_operation_event_scope(self, scope_id: str) -> bool:
+        """Check capacity without materializing a cold source cursor."""
+
+        normalized_scope = str(scope_id or "")
+        if not normalized_scope:
+            return False
+        with self._event_source_lock:
+            return bool(
+                normalized_scope
+                in self._observed_operation_event_high_water
+                or len(self._observed_operation_event_high_water)
+                < self._OPERATION_EVENT_SCOPE_HISTORY_RETENTION
+            )
 
     def remember_operation_event_high_water(
         self,
@@ -21678,82 +21651,78 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         """Retain lifecycle events until one SSE write succeeds."""
 
         normalized_scope = str(scope_id or "")
-        normalized_seq = max(0, int(event.get("event_seq", 0)))
-        if not normalized_scope or normalized_seq <= 0:
+        payload = event.get("payload")
+        timeline_seq = (
+            _web_event_int(payload.get("timeline_seq"), 0)
+            if isinstance(payload, Mapping)
+            else 0
+        )
+        pending_key = timeline_seq or max(
+            0,
+            int(event.get("event_seq", 0)),
+        )
+        if not normalized_scope or pending_key <= 0:
             return
         with self._event_source_lock:
-            self._pending_operation_events.setdefault(
+            pending = self._pending_operation_events.setdefault(
                 normalized_scope,
                 {},
-            )[normalized_seq] = deepcopy(dict(event))
+            )
+            pending[pending_key] = deepcopy(dict(event))
+            while len(pending) > self._PENDING_OPERATION_EVENT_RETENTION:
+                pending.pop(min(pending), None)
 
-    def operation_event_snapshot_cursor(
+    def prepare_authoritative_operation_replay(
         self,
         scope_id: str,
         *,
-        latest_seq: int,
-        oldest_seq: int,
-    ) -> int:
-        """Keep undelivered lifecycle events newer than the snapshot cursor."""
+        snapshot_cursor: int,
+    ) -> tuple[int, tuple[dict[str, object], ...]]:
+        """Prepare a subscriber-local replay independent of journal retention."""
 
         normalized_scope = str(scope_id or "")
-        normalized_latest = max(0, int(latest_seq))
-        normalized_oldest = max(1, int(oldest_seq))
+        normalized_cursor = max(0, int(snapshot_cursor))
         with self._event_source_lock:
-            pending = self._pending_operation_events.get(
-                normalized_scope
+            replay_available, retained = self.event_journal.replay_batch(
+                normalized_cursor
             )
-            if not pending:
-                return normalized_latest
-            expired = [
-                (seq, event)
-                for seq, event in sorted(pending.items())
-                if seq < normalized_oldest
+            effective_cursor = (
+                normalized_cursor
+                if replay_available
+                else self.event_journal.latest_seq
+            )
+            pending = self._pending_operation_events.get(
+                normalized_scope,
+                {},
+            )
+            retained_events = [
+                dict(event)
+                for event in (retained if replay_available else ())
             ]
-            for seq, event in expired:
-                republished = self.event_journal.publish(
-                    str(event.get("event_type", "") or "operation_event"),
-                    (
-                        event.get("payload")
-                        if isinstance(event.get("payload"), Mapping)
-                        else {}
-                    ),
-                    update_id=str(event.get("update_id", "") or ""),
-                    operation_id=str(
-                        event.get("operation_id", "") or ""
-                    ),
-                    generation=max(
-                        0,
-                        int(event.get("generation", 0)),
-                    ),
-                    game_frame=int(event.get("game_frame", -1)),
-                    blackboard_scope_id=normalized_scope,
+            retained_pending_keys = {
+                _web_event_int(event["payload"].get("timeline_seq"), 0)
+                for event in retained_events
+                if (
+                    str(event.get("event_type", "") or "")
+                    == "operation_event"
+                    and str(
+                        event.get("blackboard_scope_id", "") or ""
+                    )
+                    == normalized_scope
+                    and isinstance(event.get("payload"), Mapping)
                 )
-                pending.pop(seq, None)
-                pending[int(republished["event_seq"])] = republished
-            return min(normalized_latest, min(pending) - 1)
-
-    def mark_operation_event_delivered(
-        self,
-        scope_id: str,
-        event_seq: int,
-    ) -> None:
-        """A successful SSE event write satisfies the pending replay."""
-
-        normalized_scope = str(scope_id or "")
-        normalized_seq = max(0, int(event_seq))
-        with self._event_source_lock:
-            pending = self._pending_operation_events.get(
-                normalized_scope
+            }
+            historical_pending = []
+            for pending_key, event in sorted(pending.items()):
+                if pending_key in retained_pending_keys:
+                    continue
+                replay_event = deepcopy(dict(event))
+                replay_event["event_seq"] = effective_cursor
+                historical_pending.append(replay_event)
+            return (
+                effective_cursor,
+                tuple((*historical_pending, *retained_events)),
             )
-            if not pending:
-                return
-            pending.pop(normalized_seq, None)
-            if not pending:
-                self._pending_operation_events.pop(
-                    normalized_scope,
-                    None,
-                )
 
     def touch_operation_event_scope(self, scope_id: str) -> None:
         """Bound per-blackboard event cursors and their related caches."""
@@ -22089,6 +22058,21 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 micromachine_status.get("blackboard_scope_id")
                 or blackboard_scope_id
             )
+            if (
+                status_read_succeeded
+                and not server.can_admit_operation_event_scope(  # type: ignore[attr-defined]
+                    status_scope_id
+                )
+            ):
+                status_read_succeeded = False
+                micromachine_status = {
+                    "enabled": False,
+                    "status": "scope_capacity_rejected",
+                    "blackboard_scope_id": status_scope_id,
+                    "error": (
+                        "MicroMachine operation scope capacity is exhausted."
+                    ),
+                }
             source_materialized, _ = (
                 server.operation_event_source_cursor(  # type: ignore[attr-defined]
                     status_scope_id
@@ -22149,14 +22133,15 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                             publish=True,
                         )
                     micromachine_status = accepted_status
-            snapshot_cursor = server.operation_event_snapshot_cursor(  # type: ignore[attr-defined]
-                status_scope_id,
-                latest_seq=snapshot_cut,
-                oldest_seq=journal.oldest_seq,
-            )
             snapshot_payload = self._authoritative_event_snapshot(
                 blackboard_dir,
                 micromachine_status=micromachine_status,
+            )
+            snapshot_cursor, prepared_replay = (
+                server.prepare_authoritative_operation_replay(  # type: ignore[attr-defined]
+                    status_scope_id,
+                    snapshot_cursor=snapshot_cut,
+                )
             )
             snapshot_event = {
                 "event_seq": snapshot_cursor,
@@ -22170,7 +22155,11 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 "payload": snapshot_payload,
             }
         self._write_sse_event(snapshot_event)
-        return snapshot_cursor
+        return self._write_visible_sse_events(
+            prepared_replay,
+            cursor=snapshot_cursor,
+            blackboard_scope_id=blackboard_scope_id,
+        )
 
     def _write_visible_sse_events(
         self,
@@ -22190,12 +22179,6 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             if event_scope_id and event_scope_id != blackboard_scope_id:
                 continue
             self._write_sse_event(event)
-            if str(event.get("event_type", "") or "") == "operation_event":
-                server = self.server  # type: ignore[assignment]
-                server.mark_operation_event_delivered(  # type: ignore[attr-defined]
-                    event_scope_id or blackboard_scope_id,
-                    int(event.get("event_seq", 0)),
-                )
         return next_cursor
 
     def _resolved_micromachine_blackboard_dir(
@@ -22338,6 +22321,12 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     or blackboard_dir
                 )
                 with server._event_source_lock:  # type: ignore[attr-defined]
+                    if not server.can_admit_operation_event_scope(  # type: ignore[attr-defined]
+                        scope
+                    ):
+                        raise RuntimeError(
+                            "MicroMachine operation scope capacity is exhausted."
+                        )
                     status_published = server.publish_changed_snapshot(  # type: ignore[attr-defined]
                         f"micromachine:{scope}",
                         "micromachine_status",

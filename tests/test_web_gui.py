@@ -1450,7 +1450,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             ["snapshot", "operation_event"],
             [event["event_type"] for event in written],
         )
-        self.assertNotIn(
+        self.assertIn(
             scope_id,
             self.server._http._pending_operation_events,
         )
@@ -1550,7 +1550,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             ["snapshot", "operation_event"],
             [event["event_type"] for event in written],
         )
-        self.assertNotIn(
+        self.assertIn(
             scope_id,
             self.server._http._pending_operation_events,
         )
@@ -1559,7 +1559,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         handler = object.__new__(web_gui._WebGuiRequestHandler)
         handler.server = self.server._http
         server = self.server._http
-        journal = web_gui._WebEventJournal(retention=3)
+        journal = web_gui._WebEventJournal(retention=2)
         original_journal = server.event_journal
         server.event_journal = journal
         self.addCleanup(setattr, server, "event_journal", original_journal)
@@ -1583,13 +1583,27 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "game_frame": 371,
             "summary": "engagement observed",
         }
+        third = {
+            **first,
+            "timeline_seq": 3,
+            "kind": "target_reached",
+            "game_frame": 372,
+            "summary": "target reached",
+        }
+        fourth = {
+            **first,
+            "timeline_seq": 4,
+            "kind": "completed",
+            "game_frame": 373,
+            "summary": "completed",
+        }
         baseline_status = {
             "blackboard_scope_id": scope_id,
             "operation_events": [first],
         }
         current_status = {
             "blackboard_scope_id": scope_id,
-            "operation_events": [first, second],
+            "operation_events": [first, second, third, fourth],
         }
         statuses = iter((baseline_status, current_status))
         handler._micromachine_status_payload = (
@@ -1612,7 +1626,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 blackboard_dir,
                 scope_id,
             )
-        for index in range(3):
+        for index in range(2):
             server.publish_event(
                 "command_received",
                 {"command_text": f"rollover-{index}"},
@@ -1642,9 +1656,106 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             for event in written
             if event["event_type"] == "operation_event"
         ]
-        self.assertEqual(1, len(lifecycle))
-        self.assertEqual(2, lifecycle[0]["payload"]["timeline_seq"])
-        self.assertNotIn(scope_id, server._pending_operation_events)
+        self.assertEqual(
+            [2, 3, 4],
+            [
+                event["payload"]["timeline_seq"]
+                for event in lifecycle
+            ],
+        )
+        self.assertIn(scope_id, server._pending_operation_events)
+
+    def test_each_new_subscriber_receives_recent_operation_lifecycle(self):
+        first_handler = object.__new__(web_gui._WebGuiRequestHandler)
+        first_handler.server = self.server._http
+        second_handler = object.__new__(web_gui._WebGuiRequestHandler)
+        second_handler.server = self.server._http
+        server = self.server._http
+        scope_id = "scope-independent-subscriber-replay"
+        blackboard_dir = "/tmp/independent-subscriber-replay"
+        first = {
+            "timeline_seq": 1,
+            "operation_id": "subscriber-alpha",
+            "generation": 1,
+            "requested_generation": 1,
+            "update_id": "update-subscriber-alpha",
+            "kind": "movement_observed",
+            "game_frame": 380,
+            "summary": "movement observed",
+        }
+        second = {
+            **first,
+            "timeline_seq": 2,
+            "kind": "engagement_observed",
+            "game_frame": 381,
+            "summary": "engagement observed",
+        }
+        baseline_status = {
+            "blackboard_scope_id": scope_id,
+            "operation_events": [first],
+        }
+        current_status = {
+            "blackboard_scope_id": scope_id,
+            "operation_events": [first, second],
+        }
+        first_handler._publish_new_operation_events(
+            baseline_status,
+            blackboard_dir=blackboard_dir,
+            publish=True,
+        )
+        first_handler._publish_new_operation_events(
+            current_status,
+            blackboard_dir=blackboard_dir,
+            publish=True,
+        )
+
+        def configure(handler, written):
+            handler._micromachine_status_payload = (
+                lambda _directory: current_status
+            )
+            handler._authoritative_event_snapshot = (
+                lambda _directory, **kwargs: {
+                    "state": {"available": True},
+                    "history": {"events": [], "latest": 0},
+                    "micromachine_status": kwargs[
+                        "micromachine_status"
+                    ],
+                }
+            )
+            handler._write_sse_event = written.append
+
+        first_written = []
+        second_written = []
+        configure(first_handler, first_written)
+        configure(second_handler, second_written)
+
+        first_handler._write_authoritative_sse_snapshot(
+            server.event_journal,
+            blackboard_dir,
+            scope_id,
+        )
+        for index in range(web_gui.WEB_GUI_EVENT_RETENTION):
+            server.publish_event(
+                "command_received",
+                {"command_text": f"subscriber-rollover-{index}"},
+            )
+        second_handler._write_authoritative_sse_snapshot(
+            server.event_journal,
+            blackboard_dir,
+            scope_id,
+        )
+
+        for written in (first_written, second_written):
+            lifecycle = [
+                event
+                for event in written
+                if event["event_type"] == "operation_event"
+            ]
+            self.assertEqual(1, len(lifecycle))
+            self.assertEqual(
+                2,
+                lifecycle[0]["payload"]["timeline_seq"],
+            )
 
     def test_snapshot_socket_write_does_not_hold_scope_source_lock(self):
         snapshot_handler = object.__new__(web_gui._WebGuiRequestHandler)
@@ -2272,7 +2383,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             ],
         )
 
-    def test_sse_snapshot_restarts_when_concurrent_events_roll_past_retention(self):
+    def test_sse_snapshot_advances_cut_when_events_roll_past_retention(self):
         original = self.bridge.micromachine_status
         self.server._http.event_journal = web_gui._WebEventJournal(
             retention=2
@@ -2323,7 +2434,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             for event in self.parse_sse_events(stream)
             if event["event"] == "snapshot"
         ]
-        self.assertGreaterEqual(len(snapshots), 2)
+        self.assertEqual(1, len(snapshots))
         self.assertEqual(
             self.server._http.event_journal.latest_seq,
             snapshots[-1]["data"]["event_seq"],
@@ -2739,7 +2850,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             server._OPERATION_EVENT_SCOPE_HISTORY_RETENTION,
         )
 
-    def test_operation_event_scope_history_evicts_oldest_inactive_cursor(
+    def test_operation_event_scope_capacity_rejects_novel_scope_atomically(
         self,
     ):
         handler = object.__new__(web_gui._WebGuiRequestHandler)
@@ -2781,13 +2892,6 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             len(http_server._observed_operation_event_high_water),
         )
 
-        event_count_before_novel_scope = len(
-            [
-                event
-                for event in http_server.event_journal.events_after(0)
-                if event["event_type"] == "operation_event"
-            ]
-        )
         novel_scope = "bounded-history-scope-overflow"
         handler._publish_new_operation_events(
             {
@@ -2808,110 +2912,61 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             history_retention,
             len(http_server._observed_operation_event_high_water),
         )
-        self.assertIn(
+        self.assertNotIn(
             novel_scope,
             http_server._observed_operation_event_high_water,
         )
-        self.assertIn(
+        self.assertNotIn(
             novel_scope,
             http_server._observed_operation_event_seq,
         )
-        self.assertIn(
+        self.assertNotIn(
             novel_scope,
             http_server._observed_operation_scope_order,
         )
-        self.assertEqual(
-            event_count_before_novel_scope,
-            len(
-                [
-                    event
-                    for event in http_server.event_journal.events_after(0)
-                    if event["event_type"] == "operation_event"
-                ]
-            ),
-        )
-
-        admitted_scope = "bounded-history-scope-0"
         self.assertNotIn(
-            admitted_scope,
-            http_server._observed_operation_event_high_water,
-        )
-        events_before_revisit = [
-            event
-            for event in http_server.event_journal.events_after(0)
-            if (
-                event["event_type"] == "operation_event"
-                and event["blackboard_scope_id"] == admitted_scope
-            )
-        ]
-        handler._publish_new_operation_events(
-            {
-                "blackboard_scope_id": admitted_scope,
-                "operation_events": [
-                    {
-                        "timeline_seq": 1,
-                        "operation_id": "bounded-operation-0",
-                        "generation": 1,
-                        "kind": "assigned",
-                    }
-                ],
-            },
-            blackboard_dir=f"/tmp/{admitted_scope}",
-            publish=True,
-        )
-        events_after_forgotten_revisit = [
-            event
-            for event in http_server.event_journal.events_after(0)
-            if (
-                event["event_type"] == "operation_event"
-                and event["blackboard_scope_id"] == admitted_scope
-            )
-        ]
-        self.assertEqual(
-            len(events_before_revisit),
-            len(events_after_forgotten_revisit),
+            f"micromachine:{novel_scope}",
+            http_server._observed_payload_snapshots,
         )
 
-        handler._publish_new_operation_events(
-            {
-                "blackboard_scope_id": admitted_scope,
-                "operation_events": [
-                    {
-                        "timeline_seq": 2,
-                        "operation_id": "bounded-operation-0",
-                        "generation": 1,
-                        "kind": "movement_observed",
-                    }
-                ],
-            },
-            blackboard_dir=f"/tmp/{admitted_scope}",
-            publish=True,
-        )
-        events_after_advance = [
-            event
-            for event in http_server.event_journal.events_after(0)
-            if (
-                event["event_type"] == "operation_event"
-                and event["blackboard_scope_id"] == admitted_scope
-            )
-        ]
-        self.assertEqual(
-            len(events_after_forgotten_revisit) + 1,
-            len(events_after_advance),
-        )
-        self.assertEqual(
-            "movement_observed",
-            events_after_advance[-1]["payload"]["kind"],
-        )
-        self.assertEqual(
-            2,
-            http_server._observed_operation_event_high_water[
-                admitted_scope
+        handler._micromachine_status_payload = lambda _directory: {
+            "blackboard_scope_id": novel_scope,
+            "operation_events": [
+                {
+                    "timeline_seq": 2,
+                    "operation_id": "overflow-operation",
+                    "generation": 1,
+                    "kind": "movement_observed",
+                }
             ],
+        }
+        handler._authoritative_event_snapshot = (
+            lambda _directory, **kwargs: {
+                "state": {"available": True},
+                "history": {"events": [], "latest": 0},
+                "micromachine_status": kwargs["micromachine_status"],
+            }
         )
+        written = []
+        handler._write_sse_event = written.append
+        handler._write_authoritative_sse_snapshot(
+            http_server.event_journal,
+            f"/tmp/{novel_scope}",
+            novel_scope,
+        )
+
+        rejected = written[0]["payload"]["micromachine_status"]
         self.assertEqual(
-            history_retention,
-            len(http_server._observed_operation_event_high_water),
+            "scope_capacity_rejected",
+            rejected["status"],
+        )
+        self.assertNotIn(
+            f"micromachine:{novel_scope}",
+            http_server._observed_payload_snapshots,
+        )
+        self.assertNotIn(
+            novel_scope,
+            http_server._pending_operation_events,
         )
 
     def test_sse_snapshot_survives_micromachine_source_failure(self):
@@ -10308,6 +10363,66 @@ class SessionLoopBridgeTest(unittest.TestCase):
             [event["kind"] for event in delayed["operation_events"]],
         )
 
+    def test_operation_timeline_epoch_high_water_survives_scope_churn(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        scope_id = "scope-retired-session-history"
+        reducer.observe(
+            semantic_operation_payload(
+                frame=111,
+                session_epoch=111,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        current = reducer.observe(
+            semantic_operation_payload(
+                frame=10,
+                session_epoch=222,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        for index in range(
+            reducer._SCOPE_EPOCH_HISTORY_RETENTION + 5
+        ):
+            reducer.observe(
+                semantic_operation_payload(
+                    operation_id=f"history-operation-{index}",
+                    frame=20 + index,
+                    session_epoch=1000 + index,
+                ),
+                blackboard_scope_id=f"history-scope-{index}",
+            )
+
+        delayed = reducer.observe(
+            semantic_operation_payload(
+                frame=999,
+                session_epoch=111,
+                movement=True,
+                engagement=True,
+                target_reached=True,
+                terminal=True,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+
+        self.assertEqual(
+            222,
+            delayed["battlefield_overview"]["identity"][
+                "session_epoch"
+            ],
+        )
+        self.assertEqual(
+            10,
+            delayed["operations"][0]["telemetry_frame"],
+        )
+        self.assertNotIn(
+            "completed",
+            [event["kind"] for event in delayed["operation_events"]],
+        )
+        self.assertEqual(
+            "222",
+            reducer._scope_epoch_history[scope_id],
+        )
+
     def test_operation_timeline_standing_operation_is_not_completed_by_activity(self):
         reducer = web_gui._OperationSemanticTimelineReducer()
         result = reducer.observe(
@@ -11036,9 +11151,9 @@ class SessionLoopBridgeTest(unittest.TestCase):
             len(reducer._family_order),
             reducer._GLOBAL_OPERATION_HISTORY_RETENTION,
         )
-        self.assertLessEqual(
+        self.assertEqual(
+            reducer._SCOPE_RETENTION + 3,
             len(reducer._scope_epoch_history),
-            reducer._SCOPE_EPOCH_HISTORY_RETENTION,
         )
 
     def test_operation_timeline_scope_lru_revisit_emits_only_new_transition(self):
