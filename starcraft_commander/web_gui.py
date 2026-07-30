@@ -18759,22 +18759,32 @@ function microMachineStatusIdentityIsAdmitted(data) {
   var sessionEpoch = operationPayloadSessionEpoch(data, operations);
   var epochAuthoritative =
     data.operation_registry_authoritative !== false;
+  var currentScope = String(
+    operationConsoleScopeId ||
+    activeCommandConsoleRecord.scopeId ||
+    ""
+  );
+  var currentEpoch = String(
+    operationConsoleSessionEpoch ||
+    activeCommandConsoleRecord.sessionEpoch ||
+    ""
+  );
   if (sessionEpoch && !epochAuthoritative) {
     return false;
   }
   if (
-    operationConsoleScopeId &&
+    currentScope &&
     scopeId &&
-    operationConsoleScopeId !== scopeId
+    currentScope !== scopeId
   ) {
     return false;
   }
   if (
-    operationConsoleSessionEpoch &&
+    currentEpoch &&
     sessionEpoch &&
-    operationConsoleSessionEpoch !== sessionEpoch &&
+    currentEpoch !== sessionEpoch &&
     operationSessionEpochIsStale(
-      operationConsoleSessionEpoch,
+      currentEpoch,
       sessionEpoch
     )
   ) {

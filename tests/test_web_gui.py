@@ -21520,6 +21520,72 @@ const assert = require("assert");
   assert.strictEqual(tacticalRadio.scopeId, admittedRadioScope);
   assert.strictEqual(tacticalRadio.sessionEpoch, admittedRadioEpoch);
 
+  // A cold operation registry still inherits the active command identity.
+  var savedOperationRecords = operationRecords;
+  var savedOperationRecordOrder = operationRecordOrder;
+  var savedOperationConsoleScopeId = operationConsoleScopeId;
+  var savedOperationConsoleSessionEpoch = operationConsoleSessionEpoch;
+  var savedSelectedOperationKey = selectedOperationKey;
+  var savedActiveCommandConsoleRecord = activeCommandConsoleRecord;
+  operationRecords = {};
+  operationRecordOrder = [];
+  operationConsoleScopeId = "";
+  operationConsoleSessionEpoch = "";
+  selectedOperationKey = "";
+  activeCommandConsoleRecord = Object.assign(
+    {},
+    activeCommandConsoleRecord,
+    {
+      scopeId: SERVER_SCOPE_A,
+      sessionEpoch: "1700000000000"
+    }
+  );
+  renderMicroMachineStatus(serverResult({
+    ok: true,
+    accepted: true,
+    status: "published",
+    update_id: "cold-foreign-plan-update",
+    compile_result: {
+      status: "compiled",
+      update_id: "cold-foreign-plan-update",
+      vector: foreignPlanOperation.update.vector
+    },
+    operations: [foreignPlanOperation],
+    modulation_results: [
+      {
+        ok: true,
+        accepted: true,
+        status: "published",
+        update_id: "cold-foreign-plan-update",
+        compile_result: {
+          status: "compiled",
+          update_id: "cold-foreign-plan-update",
+          vector: foreignPlanOperation.update.vector
+        },
+        operations: [foreignPlanOperation]
+      }
+    ]
+  }, "cold-foreign-plan-scope"));
+  assert.strictEqual(operationConsoleScopeId, "");
+  assert.strictEqual(operationConsoleSessionEpoch, "");
+  assert.strictEqual(Object.keys(operationRecords).length, 0);
+  assert.strictEqual(
+    tacticalRadio.captions.length,
+    captionsBeforeRejectedPlan
+  );
+  assert.strictEqual(
+    spokenUtterances.length,
+    speechBeforeRejectedPlan
+  );
+  assert.strictEqual(tacticalRadio.scopeId, admittedRadioScope);
+  assert.strictEqual(tacticalRadio.sessionEpoch, admittedRadioEpoch);
+  operationRecords = savedOperationRecords;
+  operationRecordOrder = savedOperationRecordOrder;
+  operationConsoleScopeId = savedOperationConsoleScopeId;
+  operationConsoleSessionEpoch = savedOperationConsoleSessionEpoch;
+  selectedOperationKey = savedSelectedOperationKey;
+  activeCommandConsoleRecord = savedActiveCommandConsoleRecord;
+
   var stalePlanOperation = JSON.parse(
     JSON.stringify(currentRegistryOperation)
   );
