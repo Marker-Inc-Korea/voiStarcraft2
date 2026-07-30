@@ -1197,6 +1197,16 @@ def _micromachine_operation_entry_for_request(
             active["active_generation"] = candidate.get("generation")
             active["requested_generation"] = operation_generation
             active["edit_rejected"] = True
+            execution_owner_update_id = str(
+                candidate.get("policy_update_id", "")
+                or candidate.get("active_update_id", "")
+                or candidate.get("update_id", "")
+                or ""
+            ).strip()
+            if execution_owner_update_id:
+                active[
+                    "operation_console_execution_owner_update_id"
+                ] = execution_owner_update_id
             return active
     exact = entries.get((operation_id, operation_generation))
     if exact is not None:
@@ -1228,14 +1238,21 @@ def _micromachine_operation_telemetry_document(
     ).strip()
     if not update_id:
         return {}, None
+    edit_rejected_for_request = bool(
+        entry.get("edit_rejected") is True
+        and str(
+            entry.get("edit_rejected_update_id", "") or ""
+        ).strip()
+        == update_id
+    )
     director_matches_update = director_update_id == update_id
-    if director_matches_update:
+    if director_matches_update or edit_rejected_for_request:
         entry_update_ids = {
             str(entry.get(key, "") or "").strip()
             for key in ("update_id", "policy_update_id", "active_update_id")
             if str(entry.get(key, "") or "").strip()
         }
-        if any(
+        if not edit_rejected_for_request and any(
             entry_update_id != update_id
             for entry_update_id in entry_update_ids
         ):
@@ -1288,6 +1305,20 @@ def _micromachine_operation_telemetry_document(
         ):
             issued_at_frame = int(active_received_frame)
         deadline_frame = 0
+    execution_owner_update_id = str(
+        scoped_entry.get(
+            "operation_console_execution_owner_update_id",
+            "",
+        )
+        or scoped_entry.get("policy_update_id", "")
+        or scoped_entry.get("active_update_id", "")
+        or scoped_entry.get("update_id", "")
+        or update_id
+    ).strip()
+    if execution_owner_update_id:
+        scoped_entry[
+            "operation_console_execution_owner_update_id"
+        ] = execution_owner_update_id
     snapshot_frame = (
         int(scoped_entry.get("_snapshot_frame"))
         if type(scoped_entry.get("_snapshot_frame")) is int
@@ -1295,7 +1326,7 @@ def _micromachine_operation_telemetry_document(
     )
     family_evidence = operation_family_evidence(
         scoped_entry,
-        expected_update_id=update_id,
+        expected_update_id=execution_owner_update_id,
         expected_operation_id=operation_id,
         expected_generation=evidence_generation,
         issued_at_frame=max(0, issued_at_frame),
@@ -1312,8 +1343,9 @@ def _micromachine_operation_telemetry_document(
     active_ids = _string_list(
         telemetry_document.get("active_modulation_ids", ())
     )
-    if update_id and update_id not in active_ids:
-        active_ids.append(update_id)
+    for active_update_id in (update_id, execution_owner_update_id):
+        if active_update_id and active_update_id not in active_ids:
+            active_ids.append(active_update_id)
     return (
         {
             "frame": frame,
@@ -1908,11 +1940,26 @@ def _micromachine_operation_status_payload(
         active_operation_generation = int(
             operation_telemetry["active_generation"]
         )
+    execution_owner_update_id = str(
+        operation_telemetry.get(
+            "operation_console_execution_owner_update_id",
+            "",
+        )
+        if isinstance(operation_telemetry, Mapping)
+        else ""
+    ).strip() or update_id
+    execution_owner_vector = dict(
+        _mapping_child(operation_telemetry or {}, "operation_vector")
+        or _mapping_child(operation_telemetry or {}, "vector")
+        or operation_vector
+    )
+    execution_owner_vector["operation_id"] = operation_id
+    execution_owner_vector["generation"] = active_operation_generation
     current_family_evidence = (
         list(
             operation_family_evidence(
                 operation_telemetry,
-                expected_update_id=update_id,
+                expected_update_id=execution_owner_update_id,
                 expected_operation_id=operation_id,
                 expected_generation=active_operation_generation,
             )
@@ -1938,7 +1985,7 @@ def _micromachine_operation_status_payload(
             continue
         for row in operation_family_evidence(
             archived_operation,
-            expected_update_id=update_id,
+            expected_update_id=execution_owner_update_id,
             expected_operation_id=operation_id,
             expected_generation=active_operation_generation,
         ):
@@ -1959,7 +2006,7 @@ def _micromachine_operation_status_payload(
                     *archived_family_evidence,
                 ]
             },
-            expected_update_id=update_id,
+            expected_update_id=execution_owner_update_id,
             expected_operation_id=operation_id,
             expected_generation=active_operation_generation,
         )
@@ -2059,8 +2106,11 @@ def _micromachine_operation_status_payload(
         current_family_evidence
         or operation_requires_ability_evidence
     ) and operation_telemetry_document.get("_pending_only") is not True:
+        execution_owner_update = dict(operation_update)
+        execution_owner_update["update_id"] = execution_owner_update_id
+        execution_owner_update["vector"] = execution_owner_vector
         strict_operation_execution = _micromachine_strict_operation_execution(
-            operation_update,
+            execution_owner_update,
             operation_id=operation_id,
             operation_generation=active_operation_generation,
             operation_telemetry_document=operation_telemetry_document,
@@ -2073,7 +2123,7 @@ def _micromachine_operation_status_payload(
         ):
             fallback_execution = strict_operation_execution
     command_execution = _micromachine_operation_command_execution(
-        update_id=update_id,
+        update_id=execution_owner_update_id,
         operation_id=operation_id,
         operation_generation=active_operation_generation,
         operation_telemetry=operation_telemetry or {},
@@ -2259,6 +2309,10 @@ def _micromachine_operation_status_payload(
         "operation_generation": active_operation_generation,
         "requested_operation_generation": operation_generation,
         "update_id": update_id,
+        "operation_console_execution_owner_update_id": (
+            execution_owner_update_id
+        ),
+        "operation_console_execution_owner_vector": execution_owner_vector,
         "command_text": command_text,
         "mission": _micromachine_operation_mission(operation_update),
         "active": active,
@@ -2346,7 +2400,14 @@ def _attach_battlefield_operation_projections(
     attached: list[dict[str, object]] = []
     for operation in operations:
         item = dict(operation)
-        update_id = str(item.get("update_id", "") or "").strip()
+        update_id = str(
+            item.get(
+                "operation_console_execution_owner_update_id",
+                "",
+            )
+            or item.get("update_id", "")
+            or ""
+        ).strip()
         operation_id = str(item.get("operation_id", "") or "").strip()
         generation = item.get("operation_generation")
         projection = (
@@ -5178,6 +5239,10 @@ class _OperationSemanticTimelineReducer:
             tuple[str, str, str],
             dict[str, object],
         ] = {}
+        self._retired_operation_identities: dict[
+            tuple[str, str, str],
+            dict[str, object],
+        ] = {}
         self._scope_events: dict[str, deque[dict[str, object]]] = {}
         self._scope_epochs: dict[str, str] = {}
         self._retired_scope_epochs: dict[str, deque[str]] = {}
@@ -5352,7 +5417,31 @@ class _OperationSemanticTimelineReducer:
     ) -> None:
         """Drop active projection state while retaining semantic high-water."""
 
-        self._accepted_operations.pop(family_key, None)
+        accepted = self._accepted_operations.pop(family_key, None)
+        if accepted is not None:
+            self._retired_operation_identities[family_key] = {
+                "operation_id": str(
+                    accepted.get("operation_id", "") or ""
+                ),
+                "operation_generation": max(
+                    0,
+                    _int_or_none(
+                        accepted.get("operation_generation")
+                    )
+                    or 0,
+                ),
+                "requested_operation_generation": max(
+                    0,
+                    _int_or_none(
+                        accepted.get("requested_operation_generation")
+                    )
+                    or 0,
+                ),
+                "update_id": self._operation_request_update_id(accepted),
+                "operation_console_execution_owner_update_id": (
+                    self._operation_execution_owner_update_id(accepted)
+                ),
+            }
         families = self._scope_families.get(family_key[0])
         if families is not None:
             try:
@@ -5368,6 +5457,7 @@ class _OperationSemanticTimelineReducer:
         self._requested_generation_high_water.pop(family_key, None)
         self._family_last_frame.pop(family_key, None)
         self._accepted_operations.pop(family_key, None)
+        self._retired_operation_identities.pop(family_key, None)
         self._states = {
             key: value
             for key, value in self._states.items()
@@ -5418,6 +5508,11 @@ class _OperationSemanticTimelineReducer:
                 continue
             family_key = (scope_id, session_epoch, operation_id)
             high_water = provisional_generation.get(family_key, 0)
+            if (
+                family_key in self._retired_operation_identities
+                and generation <= high_water
+            ):
+                return False
             requested_generation = max(
                 generation,
                 _int_or_none(
@@ -6857,6 +6952,11 @@ class _OperationSemanticTimelineReducer:
                 family_key = (scope_id, session_epoch, operation_id)
                 incoming_family_keys.add(family_key)
                 high_water = self._generation_high_water.get(family_key, 0)
+                if (
+                    family_key in self._retired_operation_identities
+                    and generation <= high_water
+                ):
+                    continue
                 requested_generation = max(
                     generation,
                     _int_or_none(
@@ -7153,6 +7253,7 @@ class _OperationSemanticTimelineReducer:
                     dict(event) for event in state["events"]
                 ]
                 accepted = deepcopy(operation)
+                self._retired_operation_identities.pop(family_key, None)
                 self._accepted_operations[family_key] = accepted
                 accepted_operations.append(deepcopy(accepted))
             if payload.get("operation_registry_authoritative") is True:
@@ -10686,6 +10787,8 @@ var TACTICAL_RADIO_MAX_QUEUE = 8;
 var TACTICAL_RADIO_MAX_CAPTION_HISTORY = 20;
 var TACTICAL_RADIO_MAX_SPEECH_CHARS = 180;
 var TACTICAL_RADIO_MAX_PLAN_OPERATIONS = 3;
+var TACTICAL_RADIO_MAX_PLAN_IDENTITIES = 256;
+var TACTICAL_RADIO_MAX_OPERATION_HIGH_WATER = 256;
 var VOICE_FINALIZATION_GRACE_MS = 350;
 var TACTICAL_RADIO_PRIORITY_INTERVAL_MS = {
   0: 0,
@@ -10785,9 +10888,12 @@ var tacticalRadio = {
   captions: [],
   dedupe: {},
   planAnnouncements: {},
+  planAnnouncementOrder: [],
   frameHighWater: {},
   timelineHighWater: {},
+  operationHighWaterOrder: [],
   scopeId: "",
+  sessionEpoch: "",
   speechToken: 0,
   timerId: null,
   lastSpokenAt: { 0: 0, 1: 0, 2: 0 }
@@ -11746,6 +11852,10 @@ function retireVoiceSessionForTrim(entry) {
   var session = voiceSessionForNode(entry);
   if (!session) { return false; }
   clearVoiceFinalizationTimer(session);
+  var retiredPendingId = String(session.pendingId || "");
+  if (retiredPendingId) {
+    removePendingById(retiredPendingId);
+  }
   if (
     session.pendingId &&
     voiceSessionsByPendingId[session.pendingId] === session
@@ -11757,7 +11867,7 @@ function retireVoiceSessionForTrim(entry) {
   }
   session.state = session.pendingId ? "retired" : session.state;
   session.node = null;
-  return Boolean(session.pendingId);
+  return Boolean(retiredPendingId);
 }
 
 function trimChatLog() {
@@ -12445,30 +12555,106 @@ function cancelTacticalRadioSpeechAndQueue() {
   interruptTacticalRadioSpeech();
 }
 
-function resetTacticalRadio(scopeId) {
+function resetTacticalRadio(scopeId, sessionEpoch) {
   cancelTacticalRadioSpeechAndQueue();
   tacticalRadio.scopeId = String(scopeId || "");
+  tacticalRadio.sessionEpoch = String(sessionEpoch || "");
   tacticalRadio.dedupe = {};
   tacticalRadio.planAnnouncements = {};
+  tacticalRadio.planAnnouncementOrder = [];
   tacticalRadio.frameHighWater = {};
   tacticalRadio.timelineHighWater = {};
+  tacticalRadio.operationHighWaterOrder = [];
   tacticalRadio.captions = [];
   tacticalRadio.lastSpokenAt = { 0: 0, 1: 0, 2: 0 };
   renderTacticalRadioCaptions();
   renderTacticalRadioState();
 }
 
-function ensureTacticalRadioScope(scopeId) {
+function ensureTacticalRadioScope(scopeId, sessionEpoch) {
   var normalized = String(scopeId || "");
+  var normalizedEpoch = String(sessionEpoch || "");
   if (!normalized) { return true; }
   if (!tacticalRadio.scopeId) {
     tacticalRadio.scopeId = normalized;
+    tacticalRadio.sessionEpoch = normalizedEpoch;
     return true;
   }
-  if (tacticalRadio.scopeId !== normalized) {
-    resetTacticalRadio(normalized);
+  if (
+    tacticalRadio.scopeId !== normalized ||
+    (
+      normalizedEpoch &&
+      tacticalRadio.sessionEpoch &&
+      tacticalRadio.sessionEpoch !== normalizedEpoch
+    )
+  ) {
+    resetTacticalRadio(normalized, normalizedEpoch);
+  } else if (!tacticalRadio.sessionEpoch && normalizedEpoch) {
+    tacticalRadio.sessionEpoch = normalizedEpoch;
   }
   return true;
+}
+
+function rememberBoundedTacticalRadioValue(
+  registry,
+  order,
+  key,
+  value,
+  maximum
+) {
+  var normalizedKey = String(key || "");
+  if (!normalizedKey) { return; }
+  var existingIndex = order.indexOf(normalizedKey);
+  if (existingIndex >= 0) { order.splice(existingIndex, 1); }
+  order.push(normalizedKey);
+  registry[normalizedKey] = value;
+  while (order.length > maximum) {
+    delete registry[order.shift()];
+  }
+}
+
+function tacticalRadioOperationKey(scopeId, sessionEpoch, operationId, generation) {
+  return [
+    String(scopeId || ""),
+    String(sessionEpoch || ""),
+    String(operationId || ""),
+    String(generation || 0)
+  ].join("|");
+}
+
+function tacticalRadioPlanAnnouncementKey(
+  scopeId,
+  sessionEpoch,
+  updateId,
+  operationId,
+  generation
+) {
+  return [
+    String(scopeId || ""),
+    String(sessionEpoch || ""),
+    String(updateId || ""),
+    String(operationId || ""),
+    String(generation || 0)
+  ].join("|");
+}
+
+function rememberTacticalRadioHighWater(key, frame, timelineSeq) {
+  rememberBoundedTacticalRadioValue(
+    tacticalRadio.frameHighWater,
+    tacticalRadio.operationHighWaterOrder,
+    key,
+    Math.max(Number(tacticalRadio.frameHighWater[key] || -1), frame),
+    TACTICAL_RADIO_MAX_OPERATION_HIGH_WATER
+  );
+  tacticalRadio.timelineHighWater[key] = Math.max(
+    Number(tacticalRadio.timelineHighWater[key] || 0),
+    timelineSeq
+  );
+  Object.keys(tacticalRadio.timelineHighWater).forEach(function(candidate) {
+    if (tacticalRadio.operationHighWaterOrder.indexOf(candidate) < 0) {
+      delete tacticalRadio.timelineHighWater[candidate];
+    }
+  });
 }
 
 function tacticalRadioDedupeExpired(now) {
@@ -12546,7 +12732,7 @@ function speakNextTacticalRadioCallout() {
   );
   utterance.lang = currentLang === "en"
     ? "en-US"
-    : (currentLang === "zh" ? "en-US" : "ko-KR");
+    : (currentLang === "zh" ? "zh-CN" : "ko-KR");
   var speechToken = tacticalRadio.speechToken + 1;
   tacticalRadio.speechToken = speechToken;
   tacticalRadio.current = callout;
@@ -12887,7 +13073,8 @@ function announceAcceptedTacticalPlan(data, source) {
     compileResult.blackboard_scope_id ||
     ""
   );
-  ensureTacticalRadioScope(scopeId);
+  var sessionEpoch = operationPayloadSessionEpoch(data, data.operations || []);
+  ensureTacticalRadioScope(scopeId, sessionEpoch);
   var updateId = String(
     data.update_id ||
     compileResult.update_id ||
@@ -12900,17 +13087,19 @@ function announceAcceptedTacticalPlan(data, source) {
     operations.length - TACTICAL_RADIO_MAX_PLAN_OPERATIONS
   );
   operations.forEach(function(operation, index) {
-    var operationKey = [
+    var operationKey = tacticalRadioOperationKey(
       scopeId,
+      sessionEpoch,
       operation.operationId,
       operation.generation
-    ].join("|");
-    var announcementKey = [
+    );
+    var announcementKey = tacticalRadioPlanAnnouncementKey(
       scopeId,
+      sessionEpoch,
       updateId,
       operation.operationId,
       operation.generation
-    ].join("|");
+    );
     if (tacticalRadio.planAnnouncements[announcementKey]) { return; }
     var detail = t("tacticalOperationIdentity") + " " +
       operation.operationId + "#" + operation.generation + " · " +
@@ -12942,7 +13131,13 @@ function announceAcceptedTacticalPlan(data, source) {
       source: source || "submission"
     });
     if (queued) {
-      tacticalRadio.planAnnouncements[announcementKey] = true;
+      rememberBoundedTacticalRadioValue(
+        tacticalRadio.planAnnouncements,
+        tacticalRadio.planAnnouncementOrder,
+        announcementKey,
+        true,
+        TACTICAL_RADIO_MAX_PLAN_IDENTITIES
+      );
       announced = true;
     }
   });
@@ -12967,7 +13162,8 @@ function seedAcceptedTacticalPlanAnnouncements(data) {
     compileResult.blackboard_scope_id ||
     ""
   );
-  ensureTacticalRadioScope(scopeId);
+  var sessionEpoch = operationPayloadSessionEpoch(data, data.operations || []);
+  ensureTacticalRadioScope(scopeId, sessionEpoch);
   var updateId = String(
     data.update_id ||
     compileResult.update_id ||
@@ -12975,14 +13171,20 @@ function seedAcceptedTacticalPlanAnnouncements(data) {
   );
   if (!updateId) { return; }
   operations.forEach(function(operation) {
-    tacticalRadio.planAnnouncements[
-      [
-        scopeId,
-        updateId,
-        operation.operationId,
-        operation.generation
-      ].join("|")
-    ] = true;
+    var announcementKey = tacticalRadioPlanAnnouncementKey(
+      scopeId,
+      sessionEpoch,
+      updateId,
+      operation.operationId,
+      operation.generation
+    );
+    rememberBoundedTacticalRadioValue(
+      tacticalRadio.planAnnouncements,
+      tacticalRadio.planAnnouncementOrder,
+      announcementKey,
+      true,
+      TACTICAL_RADIO_MAX_PLAN_IDENTITIES
+    );
   });
 }
 
@@ -13058,11 +13260,18 @@ function tacticalLifecycleCallout(envelope, payload, scopeId, record) {
     return null;
   }
   var frame = Number(payload.game_frame);
-  var operationKey = [
+  var sessionEpoch = String(
+    payload && payload.session_epoch ||
+    record && record.sessionEpoch ||
+    operationConsoleSessionEpoch ||
+    ""
+  );
+  var operationKey = tacticalRadioOperationKey(
     scopeId,
+    sessionEpoch,
     operationId,
     generation
-  ].join("|");
+  );
   var timelineSeq = Number(payload.timeline_seq || 0);
   var timelineHighWater = Number(
     tacticalRadio.timelineHighWater[operationKey] || 0
@@ -13095,9 +13304,10 @@ function tacticalLifecycleCallout(envelope, payload, scopeId, record) {
     Number.isFinite(frame) &&
     frame >= 0
   ) {
-    tacticalRadio.frameHighWater[operationKey] = Math.max(
-      frameHighWater,
-      frame
+    rememberTacticalRadioHighWater(
+      operationKey,
+      Math.max(frameHighWater, frame),
+      timelineHighWater
     );
   }
   var reason = normalizedTacticalReason(payload);
@@ -13151,9 +13361,10 @@ function tacticalLifecycleCallout(envelope, payload, scopeId, record) {
     return null;
   }
   if (Number.isFinite(timelineSeq) && timelineSeq > 0) {
-    tacticalRadio.timelineHighWater[operationKey] = Math.max(
-      timelineHighWater,
-      timelineSeq
+    rememberTacticalRadioHighWater(
+      operationKey,
+      Number(tacticalRadio.frameHighWater[operationKey] || -1),
+      Math.max(timelineHighWater, timelineSeq)
     );
   }
   var identity = operationId + "#" + generation;
@@ -13179,7 +13390,13 @@ function tacticalLifecycleCallout(envelope, payload, scopeId, record) {
 }
 
 function announceOperationLifecycleEvent(envelope, payload, scopeId, record) {
-  ensureTacticalRadioScope(scopeId);
+  ensureTacticalRadioScope(
+    scopeId,
+    payload && payload.session_epoch ||
+      record && record.sessionEpoch ||
+      operationConsoleSessionEpoch ||
+      ""
+  );
   var callout = tacticalLifecycleCallout(
     envelope,
     payload,
@@ -13209,12 +13426,18 @@ function hydrateTacticalRadioState(data) {
   if (!scopeId && operations.length) {
     scopeId = operationPayloadScopeId(operations[0], data);
   }
-  ensureTacticalRadioScope(scopeId);
+  var sessionEpoch = operationPayloadSessionEpoch(data, operations);
+  ensureTacticalRadioScope(scopeId, sessionEpoch);
   operations.forEach(function(operation) {
     var operationId = operationPayloadOperationId(operation);
     var generation = Number(operation.operation_generation || 0);
     if (!operationId || generation <= 0) { return; }
-    var key = [scopeId, operationId, generation].join("|");
+    var key = tacticalRadioOperationKey(
+      scopeId,
+      sessionEpoch,
+      operationId,
+      generation
+    );
     var operationData = commandOperationData(operation, data);
     var projection = operationData &&
       operationData.battlefield_operation;
@@ -13243,14 +13466,7 @@ function hydrateTacticalRadioState(data) {
         Number(event.timeline_seq || 0)
       );
     });
-    tacticalRadio.frameHighWater[key] = Math.max(
-      Number(tacticalRadio.frameHighWater[key] || -1),
-      frame
-    );
-    tacticalRadio.timelineHighWater[key] = Math.max(
-      Number(tacticalRadio.timelineHighWater[key] || 0),
-      timelineSeq
-    );
+    rememberTacticalRadioHighWater(key, frame, timelineSeq);
   });
 }
 
@@ -20492,17 +20708,42 @@ function submitCommanderText(text, options) {
       request_id: legacyPendingId,
       operation_id: legacyPendingId
     })
+  }).then(function (response) {
+    return response.text().then(function (text) {
+      var data = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch (error) {
+        data = {};
+      }
+      if (!response.ok) {
+        throw new Error(
+          String(data.error || ("HTTP " + String(response.status || 0)))
+        );
+      }
+      return data;
+    });
   }).then(function () {
     pollHistory();
   }).catch(function (error) {
     var failedVoiceSession = voiceSessionForPendingId(legacyPendingId);
+    var failureMessage = error && error.message
+      ? error.message
+      : t("voiceTranscriptUnavailable");
     removePendingById(legacyPendingId);
     if (failedVoiceSession) {
       renderVoiceSessionTerminal(
         failedVoiceSession,
         "blocked",
-        error && error.message ? error.message : t("voiceTranscriptUnavailable")
+        failureMessage
       );
+    } else {
+      appendLog({
+        request_id: legacyPendingId,
+        command_text: normalizedText,
+        status: "blocked",
+        narration: failureMessage
+      });
     }
   });
   if (input) {
@@ -20590,9 +20831,20 @@ function setupVoiceInput() {
     isRecording = true;
     setVoiceButtonRecordingState(true);
     var session = appendVoiceRecordingBubble();
+    session.recognitionInstance = instance;
+    function voiceRecognitionOwnsSession() {
+      return Boolean(
+        session &&
+        session.recognitionInstance === instance &&
+        activeVoiceSession === session &&
+        !session.invalidated
+      );
+    }
     instance.onend = function () {
+      if (!voiceRecognitionOwnsSession()) { return; }
       isRecording = false;
       setVoiceButtonRecordingState(false);
+      retireVoiceRecognition(instance);
       if (
         !session ||
         session.error ||
@@ -20624,8 +20876,10 @@ function setupVoiceInput() {
       }, VOICE_FINALIZATION_GRACE_MS);
     };
     instance.onerror = function () {
+      if (!voiceRecognitionOwnsSession()) { return; }
       isRecording = false;
       setVoiceButtonRecordingState(false);
+      retireVoiceRecognition(instance);
       clearVoiceFinalizationTimer(session);
       if (!voiceSessionContextIsCurrent(session)) { return; }
       setLlmStatus("failed", "llmFailedLabel", t("voiceNoResult"));
@@ -20633,6 +20887,7 @@ function setupVoiceInput() {
     };
     instance.onresult = function (event) {
       if (
+        !voiceRecognitionOwnsSession() ||
         !session ||
         session.error ||
         session.submitted ||
@@ -21005,6 +21260,7 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         self._observed_operation_event_seq: dict[str, int] = {}
         self._observed_operation_scope_order: deque[str] = deque()
         self._observed_operation_event_high_water: dict[str, int] = {}
+        self._observed_operation_event_history_order: deque[str] = deque()
         self._failed_event_sources: set[str] = set()
         self.shutdown_event = threading.Event()
         super().__init__(server_address, handler_class)
@@ -21095,13 +21351,27 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         if not normalized_scope:
             return False
         if normalized_scope in self._observed_operation_event_high_water:
+            try:
+                self._observed_operation_event_history_order.remove(
+                    normalized_scope
+                )
+            except ValueError:
+                pass
+            self._observed_operation_event_history_order.append(
+                normalized_scope
+            )
             return True
-        if (
+        while (
             len(self._observed_operation_event_high_water)
             >= self._OPERATION_EVENT_SCOPE_HISTORY_RETENTION
         ):
-            return False
+            evicted = self._observed_operation_event_history_order.popleft()
+            if evicted in self._observed_operation_event_seq:
+                self._observed_operation_event_history_order.append(evicted)
+                continue
+            self._observed_operation_event_high_water.pop(evicted, None)
         self._observed_operation_event_high_water[normalized_scope] = 0
+        self._observed_operation_event_history_order.append(normalized_scope)
         return True
 
     def remember_operation_event_high_water(

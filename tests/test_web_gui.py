@@ -1663,7 +1663,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             operation_events_after_retired_advance[-1]["payload"]["kind"],
         )
 
-    def test_operation_event_scope_history_fails_closed_at_retention_limit(
+    def test_operation_event_scope_history_evicts_oldest_inactive_cursor(
         self,
     ):
         handler = object.__new__(web_gui._WebGuiRequestHandler)
@@ -1732,20 +1732,20 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             history_retention,
             len(http_server._observed_operation_event_high_water),
         )
-        self.assertNotIn(
+        self.assertIn(
             novel_scope,
             http_server._observed_operation_event_high_water,
         )
-        self.assertNotIn(
+        self.assertIn(
             novel_scope,
             http_server._observed_operation_event_seq,
         )
-        self.assertNotIn(
+        self.assertIn(
             novel_scope,
             http_server._observed_operation_scope_order,
         )
         self.assertEqual(
-            event_count_before_novel_scope,
+            event_count_before_novel_scope + 1,
             len(
                 [
                     event
@@ -1756,6 +1756,10 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         )
 
         admitted_scope = "bounded-history-scope-0"
+        self.assertNotIn(
+            admitted_scope,
+            http_server._observed_operation_event_high_water,
+        )
         events_before_revisit = [
             event
             for event in http_server.event_journal.events_after(0)
@@ -1779,16 +1783,17 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             blackboard_dir=f"/tmp/{admitted_scope}",
             publish=True,
         )
+        events_after_forgotten_revisit = [
+            event
+            for event in http_server.event_journal.events_after(0)
+            if (
+                event["event_type"] == "operation_event"
+                and event["blackboard_scope_id"] == admitted_scope
+            )
+        ]
         self.assertEqual(
-            events_before_revisit,
-            [
-                event
-                for event in http_server.event_journal.events_after(0)
-                if (
-                    event["event_type"] == "operation_event"
-                    and event["blackboard_scope_id"] == admitted_scope
-                )
-            ],
+            len(events_before_revisit) + 1,
+            len(events_after_forgotten_revisit),
         )
 
         handler._publish_new_operation_events(
@@ -1815,7 +1820,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             )
         ]
         self.assertEqual(
-            len(events_before_revisit) + 1,
+            len(events_after_forgotten_revisit) + 1,
             len(events_after_advance),
         )
         self.assertEqual(
@@ -2548,6 +2553,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 },
                 {
                     "update_id": "update-c",
+                    "operation_console_execution_owner_update_id": "update-a",
                     "operation_id": "shared-operation",
                     "operation_generation": 3,
                 },
@@ -2563,7 +2569,10 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "update-b",
             attached[1]["battlefield_operation"]["identity"]["update_id"],
         )
-        self.assertIsNone(attached[2]["battlefield_operation"])
+        self.assertEqual(
+            "update-a",
+            attached[2]["battlefield_operation"]["identity"]["update_id"],
+        )
 
     def test_real_filesystem_status_preserves_battlefield_overview(self):
         from starcraft_commander.micromachine_runtime import (
@@ -5227,6 +5236,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
 
     def test_rejected_higher_generation_edit_uses_active_generation_telemetry(self):
         update_id = "rejected-operation-edit"
+        execution_owner_update_id = "active-recon-alpha-owner"
         dashboard = {
             "active_updates": [
                 {
@@ -5264,6 +5274,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                         {
                             "operation_id": "recon-alpha",
                             "generation": 1,
+                            "policy_update_id": execution_owner_update_id,
                             "status": "MOVING",
                             "received_frame": 100,
                             "assigned_frame": 120,
@@ -5286,7 +5297,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     ],
                     "pending_family_effects": [
                         {
-                            "update_id": update_id,
+                            "update_id": execution_owner_update_id,
                             "operation_id": "recon-alpha",
                             "generation": 1,
                             "family": "marine",
@@ -5354,7 +5365,16 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         )
         self.assertEqual(1, operation["operation_generation"])
         self.assertEqual(2, operation["requested_operation_generation"])
+        self.assertEqual(update_id, operation["update_id"])
+        self.assertEqual(
+            execution_owner_update_id,
+            operation["operation_console_execution_owner_update_id"],
+        )
         execution = operation["intervention"]["command_execution"]
+        self.assertEqual(
+            execution_owner_update_id,
+            execution["command_id"],
+        )
         self.assertEqual(1, execution["operation_generation"])
         self.assertEqual("effect_observed", execution["state"])
         self.assertFalse(execution["failed"])
@@ -5368,6 +5388,10 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertIn("effect_observed", successful_stages)
         self.assertEqual(1, len(operation["family_evidence"]))
         self.assertEqual(1, operation["family_evidence"][0]["generation"])
+        self.assertEqual(
+            execution_owner_update_id,
+            operation["family_evidence"][0]["update_id"],
+        )
         self.assertEqual("effect", operation["family_evidence"][0]["stage"])
 
     def test_micromachine_operation_flat_zero_frames_are_not_success(self):
@@ -8792,6 +8816,69 @@ class SessionLoopBridgeTest(unittest.TestCase):
             )
         )
 
+    def test_operation_timeline_retirement_keeps_identity_tombstone(self):
+        reducer = web_gui._OperationSemanticTimelineReducer()
+        reducer._PER_SCOPE_OPERATION_RETENTION = 1
+        scope_id = "scope-retired-family-identity"
+
+        reducer.observe(
+            semantic_operation_payload(
+                operation_id="retired-alpha",
+                generation=1,
+                frame=100,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        active = reducer.observe(
+            semantic_operation_payload(
+                operation_id="active-beta",
+                generation=1,
+                frame=101,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            ["active-beta"],
+            [item["operation_id"] for item in active["operations"]],
+        )
+        self.assertIn(
+            (scope_id, "1700000000000", "retired-alpha"),
+            reducer._retired_operation_identities,
+        )
+
+        foreign = set_semantic_operation_identity(
+            semantic_operation_payload(
+                operation_id="retired-alpha",
+                generation=1,
+                frame=102,
+                movement=True,
+            ),
+            request_update_id="foreign-retired-alpha",
+            execution_owner_update_id="foreign-retired-alpha",
+        )
+        rejected = reducer.observe(
+            foreign,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            ["active-beta"],
+            [item["operation_id"] for item in rejected["operations"]],
+        )
+
+        advanced = reducer.observe(
+            semantic_operation_payload(
+                operation_id="retired-alpha",
+                generation=2,
+                frame=103,
+                movement=True,
+            ),
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            2,
+            advanced["operations"][0]["operation_generation"],
+        )
+
     def test_operation_timeline_session_epoch_resets_generation_and_retained_state(self):
         reducer = web_gui._OperationSemanticTimelineReducer()
         first = reducer.observe(
@@ -11594,15 +11681,28 @@ for (let index = 0; index < stalledVoiceCount; index += 1) {
     "submitted voice session mappings must remain bounded"
   );
 }
-assert.strictEqual(pendingCommandCount(), stalledVoiceCount);
+assert(
+  pendingCommandCount() <= MAX_CHAT_EVENTS,
+  "trimmed pending identities must obey the chat retention bound"
+);
+assert(
+  Object.keys(pendingNodes).length <= MAX_CHAT_EVENTS,
+  "trimmed pending command buckets must obey the chat retention bound"
+);
+assert.strictEqual(
+  Object.keys(pendingNodes).reduce(function(total, text) {
+    return total + pendingNodes[text].length;
+  }, 0),
+  pendingCommandCount()
+);
 assert(
   Object.keys(voiceSessionsByPendingId).length < stalledVoiceCount,
   "trimmed voice nodes must release their session mapping"
 );
 assert.strictEqual(logBox.querySelectorAll(".log-entry").length, MAX_CHAT_EVENTS);
 assert.strictEqual(logBox.querySelectorAll(".message-pending").length, MAX_CHAT_EVENTS);
-assert(pendingAggregateNode);
-assert.strictEqual(pendingAggregateNode.parentNode, logBox);
+assert.strictEqual(pendingAggregateNode, null);
+assert.strictEqual(logBox.getAttribute("aria-busy"), "true");
 """
         with tempfile.NamedTemporaryFile("w", suffix=".js") as script_file:
             script_file.write(harness)
@@ -14309,12 +14409,13 @@ const assert = require("assert");
   assert.strictEqual(tacticalRadio.captions.length, 0);
   assert.strictEqual(
     tacticalRadio.planAnnouncements[
-      [
+      tacticalRadioPlanAnnouncementKey(
         SERVER_SCOPE_A,
+        "",
         "historical-initial-plan",
         "historical-initial-operation",
         3
-      ].join("|")
+      )
     ],
     true
   );
@@ -14408,12 +14509,13 @@ const assert = require("assert");
   );
   assert.strictEqual(
     tacticalRadio.planAnnouncements[
-      [
+      tacticalRadioPlanAnnouncementKey(
         SERVER_SCOPE_A,
+        "",
         "stale-hydration-plan",
         "stale-hydration-operation",
         1
-      ].join("|")
+      )
     ],
     undefined
   );
@@ -17998,6 +18100,7 @@ const assert = require("assert");
   synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-voice-radio");
 
   nodes["voice-button"].dispatchEvent({ type: "click" });
+  voiceRecognition = recognition;
   assert.strictEqual(
     nodes["voice-button"].getAttribute("aria-pressed"),
     "true",
@@ -18147,6 +18250,7 @@ const assert = require("assert");
   // Recognition errors remain on the same node and never submit.
   var errorRequestStart = requests.length;
   nodes["voice-button"].dispatchEvent({ type: "click" });
+  voiceRecognition = recognition;
   assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "true");
   var errorVoiceSession = activeVoiceSession;
   var errorVoiceNode = errorVoiceSession.node;
@@ -18160,6 +18264,8 @@ const assert = require("assert");
   // Concurrent voice commands retain separate pending/result DOM identities.
   var concurrentRequestStart = requests.length;
   nodes["voice-button"].dispatchEvent({ type: "click" });
+  voiceRecognition = recognition;
+  var concurrentRetiredRecognition = voiceRecognition;
   var concurrentFirstSession = activeVoiceSession;
   var concurrentFirstNode = concurrentFirstSession.node;
   var concurrentFirstResult = [{ transcript: "첫 번째 정찰 작전" }];
@@ -18170,8 +18276,23 @@ const assert = require("assert");
   });
   voiceRecognition.onend();
   nodes["voice-button"].dispatchEvent({ type: "click" });
+  voiceRecognition = recognition;
   var concurrentSecondSession = activeVoiceSession;
   var concurrentSecondNode = concurrentSecondSession.node;
+  var retiredLateResult = [{ transcript: "종료된 인식기의 늦은 명령" }];
+  retiredLateResult.isFinal = true;
+  concurrentRetiredRecognition.onresult({
+    resultIndex: 0,
+    results: [retiredLateResult]
+  });
+  assert.strictEqual(
+    requests.length,
+    concurrentRequestStart + 1,
+    "a retired recognizer cannot submit into the replacement session"
+  );
+  assert(
+    !concurrentSecondNode.textContent.includes("종료된 인식기의 늦은 명령")
+  );
   var concurrentSecondResult = [{ transcript: "두 번째 방어 작전" }];
   concurrentSecondResult.isFinal = true;
   voiceRecognition.onresult({
@@ -18219,6 +18340,7 @@ const assert = require("assert");
   assert(!concurrentSecondNode.textContent.includes("첫 번째 작전 계획 확인"));
 
   nodes["voice-button"].dispatchEvent({ type: "click" });
+  voiceRecognition = recognition;
   var scopeResetSession = activeVoiceSession;
   var scopeResetResult = [{ transcript: "scope 전환 전 대기 명령" }];
   scopeResetResult.isFinal = true;
@@ -18239,6 +18361,7 @@ const assert = require("assert");
   // An unbound finalizing session cannot cross a blackboard scope boundary.
   var staleVoiceRequestStart = requests.length;
   nodes["voice-button"].dispatchEvent({ type: "click" });
+  voiceRecognition = recognition;
   var staleFinalizingSession = activeVoiceSession;
   var staleVoiceSessionSeq = voiceSessionSeq;
   var staleInterimResult = [{ transcript: "이전 scope의 임시 정찰 명령" }];
@@ -18279,6 +18402,7 @@ const assert = require("assert");
   // A scope change discovered inside submitCommanderText fails closed.
   var submitScopeVoiceRequestStart = requests.length;
   nodes["voice-button"].dispatchEvent({ type: "click" });
+  voiceRecognition = recognition;
   var submitScopeVoiceSession = activeVoiceSession;
   nodes["micromachine-blackboard-dir"].value =
     "/tmp/voi-mm-voice-radio-submit-next";
@@ -18406,11 +18530,12 @@ const assert = require("assert");
     }
   }, SERVER_SCOPE_A);
   announceAcceptedTacticalPlan(productionPlan, "status");
-  var canonicalPlanKey = [
+  var canonicalPlanKey = tacticalRadioOperationKey(
     SERVER_SCOPE_A,
+    tacticalRadio.sessionEpoch,
     "production-plan-alpha",
     4
-  ].join("|");
+  );
   assert(
     tacticalRadio.queue.some(function(item) {
       return item.operationKey === canonicalPlanKey &&
@@ -18542,6 +18667,148 @@ const assert = require("assert");
     null
   );
 
+  // Session epochs isolate lifecycle high-water for restarted runtimes.
+  resetTacticalRadio("epoch-radio-scope", "epoch-one");
+  var epochRadioRecord = {
+    updateId: "epoch-radio-update",
+    operationGeneration: 1,
+    requestedOperationGeneration: 1,
+    sessionEpoch: "epoch-one",
+    data: {}
+  };
+  assert.strictEqual(
+    announceOperationLifecycleEvent(
+      {
+        update_id: "epoch-radio-update",
+        created_at_unix_ms: fakeNowMs
+      },
+      {
+        timeline_seq: 900,
+        session_epoch: "epoch-one",
+        update_id: "epoch-radio-update",
+        operation_id: "epoch-radio-operation",
+        generation: 1,
+        requested_generation: 1,
+        kind: "movement_observed",
+        game_frame: 900,
+        summary: "old runtime movement"
+      },
+      "epoch-radio-scope",
+      epochRadioRecord
+    ),
+    true
+  );
+  var oldEpochRadioKey = tacticalRadioOperationKey(
+    "epoch-radio-scope",
+    "epoch-one",
+    "epoch-radio-operation",
+    1
+  );
+  assert.strictEqual(tacticalRadio.frameHighWater[oldEpochRadioKey], 900);
+  epochRadioRecord.sessionEpoch = "epoch-two";
+  assert.strictEqual(
+    announceOperationLifecycleEvent(
+      {
+        update_id: "epoch-radio-update",
+        created_at_unix_ms: fakeNowMs
+      },
+      {
+        timeline_seq: 1,
+        session_epoch: "epoch-two",
+        update_id: "epoch-radio-update",
+        operation_id: "epoch-radio-operation",
+        generation: 1,
+        requested_generation: 1,
+        kind: "movement_observed",
+        game_frame: 1,
+        summary: "restarted runtime movement"
+      },
+      "epoch-radio-scope",
+      epochRadioRecord
+    ),
+    true
+  );
+  var newEpochRadioKey = tacticalRadioOperationKey(
+    "epoch-radio-scope",
+    "epoch-two",
+    "epoch-radio-operation",
+    1
+  );
+  assert.strictEqual(tacticalRadio.frameHighWater[oldEpochRadioKey], undefined);
+  assert.strictEqual(tacticalRadio.frameHighWater[newEpochRadioKey], 1);
+
+  // Tactical Radio registries remain bounded during long sessions.
+  resetTacticalRadio("bounded-radio-scope", "bounded-radio-epoch");
+  for (
+    var planIdentityIndex = 0;
+    planIdentityIndex < TACTICAL_RADIO_MAX_PLAN_IDENTITIES + 40;
+    planIdentityIndex += 1
+  ) {
+    rememberBoundedTacticalRadioValue(
+      tacticalRadio.planAnnouncements,
+      tacticalRadio.planAnnouncementOrder,
+      "bounded-plan-" + planIdentityIndex,
+      true,
+      TACTICAL_RADIO_MAX_PLAN_IDENTITIES
+    );
+  }
+  assert.strictEqual(
+    Object.keys(tacticalRadio.planAnnouncements).length,
+    TACTICAL_RADIO_MAX_PLAN_IDENTITIES
+  );
+  assert.strictEqual(
+    tacticalRadio.planAnnouncementOrder.length,
+    TACTICAL_RADIO_MAX_PLAN_IDENTITIES
+  );
+  assert.strictEqual(
+    tacticalRadio.planAnnouncements["bounded-plan-0"],
+    undefined
+  );
+  for (
+    var highWaterIndex = 0;
+    highWaterIndex < TACTICAL_RADIO_MAX_OPERATION_HIGH_WATER + 40;
+    highWaterIndex += 1
+  ) {
+    rememberTacticalRadioHighWater(
+      "bounded-operation-" + highWaterIndex,
+      highWaterIndex,
+      highWaterIndex + 1
+    );
+  }
+  assert.strictEqual(
+    Object.keys(tacticalRadio.frameHighWater).length,
+    TACTICAL_RADIO_MAX_OPERATION_HIGH_WATER
+  );
+  assert.strictEqual(
+    Object.keys(tacticalRadio.timelineHighWater).length,
+    TACTICAL_RADIO_MAX_OPERATION_HIGH_WATER
+  );
+  assert.strictEqual(
+    tacticalRadio.operationHighWaterOrder.length,
+    TACTICAL_RADIO_MAX_OPERATION_HIGH_WATER
+  );
+  assert.strictEqual(
+    tacticalRadio.frameHighWater["bounded-operation-0"],
+    undefined
+  );
+
+  // Chinese Tactical Radio speech uses the Chinese locale.
+  resetTacticalRadio("zh-radio-scope", "zh-radio-epoch");
+  spokenUtterances.length = 0;
+  currentLang = "zh";
+  assert(queueTacticalRadioCallout({
+    priority: 0,
+    caption: "紧急撤退",
+    speech: "紧急撤退",
+    dedupeKey: "zh-radio-speech",
+    createdAt: fakeNowMs
+  }));
+  assert.strictEqual(spokenUtterances.length, 1);
+  assert.strictEqual(spokenUtterances[0].lang, "zh-CN");
+  currentLang = "ko";
+  cancelTacticalRadioSpeechAndQueue();
+  resetTacticalRadio(SERVER_SCOPE_A, "1700000000000");
+
   // Snapshot hydration seeds high-water state without replaying old audio.
   cancelTacticalRadioSpeechAndQueue();
   tacticalRadio.dedupe = {};
@@ -18609,12 +18876,13 @@ const assert = require("assert");
   assert.strictEqual(tacticalRadio.captions.length, 0);
   assert.strictEqual(
     tacticalRadio.planAnnouncements[
-      [
+      tacticalRadioPlanAnnouncementKey(
         SERVER_SCOPE_A,
+        "1700000000000",
         "hydrated-plan-update",
         "hydrated-plan-operation",
         5
-      ].join("|")
+      )
     ],
     true
   );
@@ -18623,13 +18891,23 @@ const assert = require("assert");
   assert.strictEqual(tacticalRadio.captions.length, 0);
   assert.strictEqual(
     tacticalRadio.frameHighWater[
-      [SERVER_SCOPE_A, "hydrated-operation", 2].join("|")
+      tacticalRadioOperationKey(
+        SERVER_SCOPE_A,
+        "1700000000000",
+        "hydrated-operation",
+        2
+      )
     ],
     700
   );
   assert.strictEqual(
     tacticalRadio.timelineHighWater[
-      [SERVER_SCOPE_A, "hydrated-operation", 2].join("|")
+      tacticalRadioOperationKey(
+        SERVER_SCOPE_A,
+        "1700000000000",
+        "hydrated-operation",
+        2
+      )
     ],
     700
   );
@@ -18703,7 +18981,12 @@ const assert = require("assert");
   assert.strictEqual(hydratedRecord.telemetryFrame, 700);
   assert.strictEqual(
     tacticalRadio.frameHighWater[
-      [SERVER_SCOPE_A, "hydrated-operation", 2].join("|")
+      tacticalRadioOperationKey(
+        SERVER_SCOPE_A,
+        "1700000000000",
+        "hydrated-operation",
+        2
+      )
     ],
     700
   );
@@ -18829,12 +19112,13 @@ const assert = require("assert");
   );
   assert.strictEqual(
     tacticalRadio.planAnnouncements[
-      [
+      tacticalRadioPlanAnnouncementKey(
         SERVER_SCOPE_A,
+        "1700000000000",
         "current-registry-update",
         "prior-registry-operation",
         1
-      ].join("|")
+      )
     ],
     undefined
   );
@@ -18999,6 +19283,60 @@ const assert = require("assert");
   assert(nodes["tactical-radio-status"].textContent.includes("지원하지"));
   tacticalRadio.supported = true;
   renderTacticalRadioState();
+
+  // Legacy HTTP failures terminate pending UI instead of looking successful.
+  var originalPollState = pollState;
+  pollState = function () { return Promise.resolve(null); };
+  llmConfigured = true;
+  setCommandMode(COMMAND_MODE_LEGACY_COMMANDER);
+  var legacyConflictRequestStart = requests.length;
+  var legacyConflictPendingId = submitCommanderText(
+    "legacy conflict order",
+    { input: nodes["command-input"] }
+  );
+  assert(legacyConflictPendingId);
+  assert.strictEqual(pendingCommandCount(), 1);
+  assert.strictEqual(logBox.getAttribute("aria-busy"), "true");
+  requests[legacyConflictRequestStart].deferred.resolve(
+    response(409, { error: "legacy conflict" })
+  );
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(pendingCommandCount(), 0);
+  assert.strictEqual(logBox.getAttribute("aria-busy"), "false");
+  assert(logBox.textContent.includes("legacy conflict"));
+
+  var legacyUnavailableVoice = appendVoiceRecordingBubble();
+  legacyUnavailableVoice.finalText = "legacy unavailable voice order";
+  var legacyUnavailableRequestStart = requests.length;
+  var legacyUnavailablePendingId = submitCommanderText(
+    legacyUnavailableVoice.finalText,
+    {
+      input: nodes["command-input"],
+      voiceSession: legacyUnavailableVoice,
+      preserveFocus: true
+    }
+  );
+  assert(legacyUnavailablePendingId);
+  assert.strictEqual(pendingCommandCount(), 1);
+  requests[legacyUnavailableRequestStart].deferred.resolve(
+    response(503, { error: "legacy runtime unavailable" })
+  );
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(pendingCommandCount(), 0);
+  assert.strictEqual(logBox.getAttribute("aria-busy"), "false");
+  assert.strictEqual(
+    voiceSessionForPendingId(legacyUnavailablePendingId),
+    null
+  );
+  assert(
+    legacyUnavailableVoice.node.textContent.includes(
+      "legacy runtime unavailable"
+    )
+  );
+  setCommandMode(COMMAND_MODE_MICROMACHINE);
+  pollState = originalPollState;
 
   nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-operation-cards-next";
   synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-operation-cards-next");
