@@ -14267,12 +14267,14 @@ const assert = require("assert");
       event_type: "operation_event",
       event_seq: operationEventSeq,
       blackboard_scope_id: OPERATION_SCOPE,
+      update_id: "parallel-update-a",
       operation_id: "recon-alpha",
       generation: 1,
       payload: {
         timeline_seq: 302,
         blackboard_scope_id: OPERATION_SCOPE,
         session_epoch: "1700000000000",
+        update_id: "parallel-update-a",
         operation_id: "recon-alpha",
         generation: 1,
         kind: "engagement_observed",
@@ -17078,6 +17080,7 @@ const assert = require("assert");
     })
   );
   var productionRecord = {
+    updateId: "production-plan-update",
     operationGeneration: 4
   };
   announceOperationLifecycleEvent(
@@ -17430,6 +17433,52 @@ const assert = require("assert");
     operationRecordKey(SERVER_SCOPE_A, "hydrated-operation")
   ];
   assert(hydratedRecord);
+  var captionsBeforeForeignUpdate = tacticalRadio.captions.length;
+  var timelineBeforeForeignUpdate =
+    hydratedRecord.data.semantic_timeline.length;
+  var foreignUpdateEnvelope = {
+    event_seq: 903,
+    event_type: "operation_event",
+    update_id: "foreign-hydrated-update",
+    operation_id: "hydrated-operation",
+    generation: 2,
+    blackboard_scope_id: SERVER_SCOPE_A,
+    created_at_unix_ms: fakeNowMs
+  };
+  var foreignUpdatePayload = {
+    timeline_seq: 703,
+    blackboard_scope_id: SERVER_SCOPE_A,
+    session_epoch: "1700000000000",
+    update_id: "foreign-hydrated-update",
+    operation_id: "hydrated-operation",
+    generation: 2,
+    requested_generation: 2,
+    kind: "engagement_observed",
+    game_frame: 702,
+    summary: "foreign update must not alter canonical operation",
+    technical: { engagement_observed: true }
+  };
+  assert.strictEqual(
+    announceOperationLifecycleEvent(
+      foreignUpdateEnvelope,
+      foreignUpdatePayload,
+      SERVER_SCOPE_A,
+      hydratedRecord
+    ),
+    false
+  );
+  applyOperationSemanticEvent(
+    foreignUpdateEnvelope,
+    foreignUpdatePayload
+  );
+  assert.strictEqual(
+    hydratedRecord.data.semantic_timeline.length,
+    timelineBeforeForeignUpdate
+  );
+  assert.strictEqual(
+    tacticalRadio.captions.length,
+    captionsBeforeForeignUpdate
+  );
   var captionsBeforeStale = tacticalRadio.captions.length;
   announceOperationLifecycleEvent(
     { update_id: "hydrated-update", created_at_unix_ms: fakeNowMs },
@@ -17475,6 +17524,17 @@ const assert = require("assert");
     },
     SERVER_SCOPE_A,
     hydratedRecord
+  );
+  assert.strictEqual(
+    queueTacticalRadioCallout({
+      priority: 3,
+      caption: "old P3 replay",
+      speech: "",
+      dedupeKey: "old-p3-replay",
+      createdAt: fakeNowMs - 15001,
+      fromReplay: true
+    }),
+    false
   );
   assert.strictEqual(tacticalRadio.captions.length, captionsBeforeStale);
   [

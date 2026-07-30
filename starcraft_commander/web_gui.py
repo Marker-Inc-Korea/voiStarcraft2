@@ -10372,7 +10372,7 @@ var TACTICAL_RADIO_REPLAY_MAX_AGE_MS = {
   0: 8000,
   1: 15000,
   2: 12000,
-  3: 0
+  3: 15000
 };
 var trimmedChatEvents = 0;
 var recentEvents = [];
@@ -12606,6 +12606,28 @@ function normalizedTacticalReason(payload) {
   ).trim().toLowerCase().replace(/\\s+/g, " ");
 }
 
+function operationEventMatchesRecordUpdate(envelope, payload, record) {
+  var envelopeUpdateId = String(
+    envelope && envelope.update_id || ""
+  );
+  var payloadUpdateId = String(
+    payload && payload.update_id || ""
+  );
+  var recordUpdateId = String(record && record.updateId || "");
+  if (
+    !recordUpdateId ||
+    (!envelopeUpdateId && !payloadUpdateId) ||
+    (
+      envelopeUpdateId &&
+      payloadUpdateId &&
+      envelopeUpdateId !== payloadUpdateId
+    )
+  ) {
+    return false;
+  }
+  return String(payloadUpdateId || envelopeUpdateId) === recordUpdateId;
+}
+
 function tacticalLifecycleCallout(envelope, payload, scopeId, record) {
   var kind = String(payload && payload.kind || "").toLowerCase();
   var operationId = String(payload && payload.operation_id || "");
@@ -12618,7 +12640,8 @@ function tacticalLifecycleCallout(envelope, payload, scopeId, record) {
     generation <= 0 ||
     requestedGeneration !== generation ||
     !record ||
-    Number(record.operationGeneration || 0) !== generation
+    Number(record.operationGeneration || 0) !== generation ||
+    !operationEventMatchesRecordUpdate(envelope, payload, record)
   ) {
     return null;
   }
@@ -13160,6 +13183,9 @@ function applyOperationSemanticEvent(envelope, payload) {
     operationRecordKey(scopeId, operationId)
   ];
   if (!record || Number(record.operationGeneration || 0) !== generation) {
+    return;
+  }
+  if (!operationEventMatchesRecordUpdate(envelope, payload, record)) {
     return;
   }
   record.data = Object.assign({}, record.data || {}, {
