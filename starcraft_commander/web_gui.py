@@ -21399,7 +21399,11 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         self.auth_token = auth_token
         self.event_journal = event_journal or _WebEventJournal()
         self._event_source_lock = threading.RLock()
-        self._operation_status_read_lock = threading.Lock()
+        self._operation_status_locks_guard = threading.Lock()
+        self._operation_status_locks: WeakValueDictionary[
+            str,
+            threading.Lock,
+        ] = WeakValueDictionary()
         self._observed_history_seq = 0
         self._observed_payload_hashes: dict[str, str] = {}
         self._observed_payload_identities: dict[
@@ -21410,10 +21414,22 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         self._observed_operation_scope_order: deque[str] = deque()
         self._observed_operation_event_high_water: dict[str, int] = {}
         self._observed_operation_event_history_order: deque[str] = deque()
-        self._operation_event_snapshot_baselines: dict[str, int] = {}
         self._failed_event_sources: set[str] = set()
         self.shutdown_event = threading.Event()
         super().__init__(server_address, handler_class)
+
+    def operation_status_lock(
+        self,
+        blackboard_dir: str,
+    ) -> threading.Lock:
+        """Return one weakly retained source coordinator lock per blackboard."""
+
+        key = os.path.realpath(os.path.abspath(blackboard_dir))
+        with self._operation_status_locks_guard:
+            return self._operation_status_locks.setdefault(
+                key,
+                threading.Lock(),
+            )
 
     def publish_event(
         self,
@@ -21542,68 +21558,53 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
             ),
             normalized_seq,
         )
-        if normalized_seq > 0:
-            self._operation_event_snapshot_baselines.pop(
-                normalized_scope,
-                None,
-            )
         return True
 
-    def remember_operation_event_snapshot_baseline(
+    def operation_event_source_cursor(
         self,
         scope_id: str,
-        timeline_seq: int,
-    ) -> bool:
-        """Retain the earliest subscriber snapshot cut without publishing it."""
+    ) -> tuple[bool, int]:
+        """Return whether one scope has a materialized source cursor."""
 
         normalized_scope = str(scope_id or "")
         if not normalized_scope:
-            return False
-        normalized_seq = max(0, int(timeline_seq))
+            return False, 0
         with self._event_source_lock:
-            if (
-                normalized_scope in self._observed_operation_event_seq
-                or self._observed_operation_event_high_water.get(
-                    normalized_scope,
-                    0,
+            if normalized_scope in self._observed_operation_event_seq:
+                return (
+                    True,
+                    int(
+                        self._observed_operation_event_seq[
+                            normalized_scope
+                        ]
+                    ),
                 )
-                > 0
-            ):
-                return False
-            existing = self._operation_event_snapshot_baselines.get(
-                normalized_scope
-            )
-            if existing is None:
-                while (
-                    len(self._operation_event_snapshot_baselines)
-                    >= self._OPERATION_EVENT_SCOPE_HISTORY_RETENTION
-                ):
-                    oldest = next(
-                        iter(self._operation_event_snapshot_baselines)
-                    )
-                    self._operation_event_snapshot_baselines.pop(
-                        oldest,
-                        None,
-                    )
-                self._operation_event_snapshot_baselines[
-                    normalized_scope
-                ] = normalized_seq
-            else:
-                self._operation_event_snapshot_baselines[
-                    normalized_scope
-                ] = min(existing, normalized_seq)
-            return True
+            if normalized_scope in self._observed_operation_event_high_water:
+                return (
+                    True,
+                    int(
+                        self._observed_operation_event_high_water[
+                            normalized_scope
+                        ]
+                    ),
+                )
+            return False, 0
 
-    def consume_operation_event_snapshot_baseline(
+    def snapshot_payload_regresses(
         self,
-        scope_id: str,
-    ) -> int | None:
-        """Consume the baseline that separates hydration from live events."""
+        cache_key: str,
+        payload: Mapping[str, object],
+    ) -> bool:
+        """Reject a stale source read without mutating snapshot caches."""
 
+        incoming = _web_snapshot_order_identity(payload)
+        if incoming is None:
+            return False
         with self._event_source_lock:
-            return self._operation_event_snapshot_baselines.pop(
-                str(scope_id or ""),
-                None,
+            previous = self._observed_payload_identities.get(cache_key)
+            return bool(
+                previous is not None
+                and _web_snapshot_identity_regresses(previous, incoming)
             )
 
     def touch_operation_event_scope(self, scope_id: str) -> None:
@@ -21646,7 +21647,6 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
                     None,
                 )
                 self._failed_event_sources.discard(source_key)
-                self._operation_event_snapshot_baselines.pop(evicted, None)
 
     def begin_shutdown(self) -> None:
         """Signal active streams and wake their journal waits."""
@@ -21931,17 +21931,22 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         blackboard_scope_id: str,
     ) -> int:
         server = self.server  # type: ignore[assignment]
-        # Cut the journal before any source read so direct publications remain
-        # replayable. MicroMachine refresh reads use a separate narrow lock;
-        # the status returned under that lock becomes this source's hydration
-        # baseline, and later lifecycle events are published after the cursor.
+        # Direct journal publications after this cut remain replayable. A cold
+        # operation source is materialized once without journal publication;
+        # the second read and every warm read commit only timeline_seq values
+        # newer than that scope-local source cursor.
         snapshot_cursor = journal.latest_seq
-        with server._operation_status_read_lock:  # type: ignore[attr-defined]
+        source_lock = server.operation_status_lock(  # type: ignore[attr-defined]
+            blackboard_dir
+        )
+        with source_lock:
+            status_read_succeeded = True
             try:
                 micromachine_status = self._micromachine_status_payload(
                     blackboard_dir
                 )
             except Exception as error:  # noqa: BLE001 - snapshot remains usable.
+                status_read_succeeded = False
                 micromachine_status = {
                     "enabled": False,
                     "status": "source_error",
@@ -21954,49 +21959,78 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 micromachine_status.get("blackboard_scope_id")
                 or blackboard_scope_id
             )
-            raw_operation_events = micromachine_status.get(
-                "operation_events"
-            )
-            operation_events = (
-                raw_operation_events
-                if isinstance(raw_operation_events, Sequence)
-                and not isinstance(
-                    raw_operation_events,
-                    (str, bytes, bytearray),
+            source_materialized, _ = (
+                server.operation_event_source_cursor(  # type: ignore[attr-defined]
+                    status_scope_id
                 )
-                else ()
             )
-            snapshot_operation_latest = max(
-                (
-                    _web_event_int(
-                        event.get("timeline_seq"),
-                        0,
+            if status_read_succeeded and not source_materialized:
+                # First materialization is historical hydration. It advances
+                # the source cursor but emits no lifecycle event.
+                self._publish_new_operation_events(
+                    micromachine_status,
+                    blackboard_dir=blackboard_dir,
+                    publish=True,
+                )
+                try:
+                    candidate_status = self._micromachine_status_payload(
+                        blackboard_dir
                     )
-                    for event in operation_events
-                    if isinstance(event, Mapping)
-                ),
-                default=0,
+                except Exception:  # noqa: BLE001 - retain the materialized cut.
+                    candidate_status = micromachine_status
+                candidate_scope_id = str(
+                    candidate_status.get("blackboard_scope_id")
+                    or blackboard_scope_id
+                )
+                first_identity = _web_snapshot_order_identity(
+                    micromachine_status
+                )
+                candidate_identity = _web_snapshot_order_identity(
+                    candidate_status
+                )
+                if (
+                    candidate_scope_id == status_scope_id
+                    and not (
+                        first_identity is not None
+                        and candidate_identity is not None
+                        and _web_snapshot_identity_regresses(
+                            first_identity,
+                            candidate_identity,
+                        )
+                    )
+                ):
+                    micromachine_status = candidate_status
+            status_scope_id = str(
+                micromachine_status.get("blackboard_scope_id")
+                or blackboard_scope_id
             )
-            server.remember_operation_event_snapshot_baseline(  # type: ignore[attr-defined]
-                status_scope_id,
-                snapshot_operation_latest,
+            if status_read_succeeded:
+                with server._event_source_lock:  # type: ignore[attr-defined]
+                    if not server.snapshot_payload_regresses(  # type: ignore[attr-defined]
+                        f"micromachine:{status_scope_id}",
+                        micromachine_status,
+                    ):
+                        self._publish_new_operation_events(
+                            micromachine_status,
+                            blackboard_dir=blackboard_dir,
+                            publish=True,
+                        )
+            snapshot_payload = self._authoritative_event_snapshot(
+                blackboard_dir,
+                micromachine_status=micromachine_status,
             )
-        snapshot_payload = self._authoritative_event_snapshot(
-            blackboard_dir,
-            micromachine_status=micromachine_status,
-        )
-        snapshot_event = {
-            "event_seq": snapshot_cursor,
-            "event_type": "snapshot",
-            "created_at_unix_ms": int(time.time() * 1000),
-            "update_id": "",
-            "operation_id": "",
-            "generation": 0,
-            "game_frame": -1,
-            "blackboard_scope_id": blackboard_scope_id,
-            "payload": snapshot_payload,
-        }
-        self._write_sse_event(snapshot_event)
+            snapshot_event = {
+                "event_seq": snapshot_cursor,
+                "event_type": "snapshot",
+                "created_at_unix_ms": int(time.time() * 1000),
+                "update_id": "",
+                "operation_id": "",
+                "generation": 0,
+                "game_frame": -1,
+                "blackboard_scope_id": blackboard_scope_id,
+                "payload": snapshot_payload,
+            }
+            self._write_sse_event(snapshot_event)
         return snapshot_cursor
 
     def _write_visible_sse_events(
@@ -22148,30 +22182,34 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 },
             )
         try:
-            with server._operation_status_read_lock:  # type: ignore[attr-defined]
+            source_lock = server.operation_status_lock(  # type: ignore[attr-defined]
+                blackboard_dir
+            )
+            with source_lock:
                 status = self._micromachine_status_payload(blackboard_dir)
-            scope = str(
-                status.get("blackboard_scope_id")
-                or status.get("blackboard_dir")
-                or blackboard_dir
-            )
-            status_published = server.publish_changed_snapshot(  # type: ignore[attr-defined]
-                f"micromachine:{scope}",
-                "micromachine_status",
-                status,
-                blackboard_dir=blackboard_dir,
-            )
-            if status_published:
-                self._publish_new_operation_events(
-                    status,
-                    blackboard_dir=blackboard_dir,
-                    publish=True,
+                scope = str(
+                    status.get("blackboard_scope_id")
+                    or status.get("blackboard_dir")
+                    or blackboard_dir
                 )
-            server.publish_source_recovered(  # type: ignore[attr-defined]
-                f"micromachine_status:{scope}",
-                "micromachine_status",
-                blackboard_dir=blackboard_dir,
-            )
+                with server._event_source_lock:  # type: ignore[attr-defined]
+                    status_published = server.publish_changed_snapshot(  # type: ignore[attr-defined]
+                        f"micromachine:{scope}",
+                        "micromachine_status",
+                        status,
+                        blackboard_dir=blackboard_dir,
+                    )
+                    if status_published:
+                        self._publish_new_operation_events(
+                            status,
+                            blackboard_dir=blackboard_dir,
+                            publish=True,
+                        )
+                server.publish_source_recovered(  # type: ignore[attr-defined]
+                    f"micromachine_status:{scope}",
+                    "micromachine_status",
+                    blackboard_dir=blackboard_dir,
+                )
         except Exception as error:  # noqa: BLE001 - stream remains available.
             scope_id = _micromachine_blackboard_scope_id(blackboard_dir)
             server.publish_source_error(  # type: ignore[attr-defined]
@@ -22224,32 +22262,23 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 and not isinstance(raw_events, (str, bytes, bytearray))
                 else []
             )
-            snapshot_baseline = (
-                server.consume_operation_event_snapshot_baseline(  # type: ignore[attr-defined]
-                    scope_id
-                )
-            )
             if first_scope_observation:
-                if snapshot_baseline is None:
-                    snapshot_baseline = max(
-                        (
-                            _web_event_int(
-                                event.get("timeline_seq"),
-                                0,
-                            )
-                            for event in events
-                        ),
-                        default=0,
-                    )
-                    server._observed_operation_event_seq[scope_id] = (  # type: ignore[attr-defined]
-                        snapshot_baseline
-                    )
-                    server.remember_operation_event_high_water(  # type: ignore[attr-defined]
-                        scope_id,
-                        snapshot_baseline,
-                    )
-                    return
-                observed = snapshot_baseline
+                observed = max(
+                    (
+                        _web_event_int(
+                            event.get("timeline_seq"),
+                            0,
+                        )
+                        for event in events
+                    ),
+                    default=0,
+                )
+                server._observed_operation_event_seq[scope_id] = observed  # type: ignore[attr-defined]
+                server.remember_operation_event_high_water(  # type: ignore[attr-defined]
+                    scope_id,
+                    observed,
+                )
+                return
             else:
                 observed = int(
                     max(
