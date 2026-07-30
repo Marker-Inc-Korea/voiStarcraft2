@@ -2328,6 +2328,56 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             server._observed_payload_snapshots,
         )
 
+    def test_unadmitted_source_errors_do_not_grow_cache_or_evict_replay(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        server = self.server._http
+        server.event_journal = web_gui._WebEventJournal()
+        handler._state_payload = lambda: {"available": True}
+
+        def failed_status(_directory, **_kwargs):
+            raise RuntimeError("untrusted status source failed")
+
+        handler._micromachine_status_payload = failed_status
+        legitimate = server.publish_event(
+            "command_received",
+            {"status": "received", "command_text": "preserve replay"},
+            update_id="legitimate-replay-update",
+        )
+        handler._refresh_event_sources("/tmp/unadmitted-error-warmup")
+        failed_before = set(server._failed_event_sources)
+        hashes_before = dict(server._observed_payload_hashes)
+        snapshots_before = deepcopy(server._observed_payload_snapshots)
+        journal_latest_before = server.event_journal.latest_seq
+
+        for index in range(600):
+            handler._refresh_event_sources(
+                f"/tmp/unadmitted-source-error-{index}"
+            )
+
+        self.assertEqual(
+            {},
+            server._observed_operation_event_high_water,
+        )
+        self.assertEqual(failed_before, server._failed_event_sources)
+        self.assertEqual(hashes_before, server._observed_payload_hashes)
+        self.assertEqual(
+            snapshots_before,
+            server._observed_payload_snapshots,
+        )
+        self.assertEqual(
+            journal_latest_before,
+            server.event_journal.latest_seq,
+        )
+        replay_available, replay_events = server.event_journal.replay_batch(
+            int(legitimate["event_seq"]) - 1
+        )
+        self.assertTrue(replay_available)
+        self.assertEqual(
+            "command_received",
+            replay_events[0]["event_type"],
+        )
+
     def test_status_endpoint_does_not_consume_replay_scope_capacity(self):
         server = self.server._http
         for index in range(

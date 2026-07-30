@@ -22805,26 +22805,27 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 )
         except Exception as error:  # noqa: BLE001 - stream remains available.
             scope_id = _micromachine_blackboard_scope_id(blackboard_dir)
+            if not server.has_admitted_operation_event_scope(  # type: ignore[attr-defined]
+                scope_id
+            ):
+                return
             error_text = _redact_sensitive_text(
                 error,
                 normalize_whitespace=True,
             )
-            if server.has_admitted_operation_event_scope(  # type: ignore[attr-defined]
-                scope_id
-            ):
-                server.publish_changed_snapshot(  # type: ignore[attr-defined]
-                    f"micromachine:{scope_id}",
-                    "micromachine_status",
-                    {
-                        "enabled": False,
-                        "status": "source_error",
-                        "blackboard_dir": blackboard_dir,
-                        "blackboard_scope_id": scope_id,
-                        "operation_registry_authoritative": False,
-                        "error": error_text,
-                    },
-                    blackboard_dir=blackboard_dir,
-                )
+            server.publish_changed_snapshot(  # type: ignore[attr-defined]
+                f"micromachine:{scope_id}",
+                "micromachine_status",
+                {
+                    "enabled": False,
+                    "status": "source_error",
+                    "blackboard_dir": blackboard_dir,
+                    "blackboard_scope_id": scope_id,
+                    "operation_registry_authoritative": False,
+                    "error": error_text,
+                },
+                blackboard_dir=blackboard_dir,
+            )
             server.publish_source_error(  # type: ignore[attr-defined]
                 f"micromachine_status:{scope_id}",
                 "micromachine_status",
