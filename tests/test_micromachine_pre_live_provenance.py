@@ -632,8 +632,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         self.assertIn("      actions: read\n", provenance_job)
         self.assertIn("      contents: read\n", provenance_job)
         self.assertIn(
-            "  micromachine-macos-contracts:\n"
-            "    if: github.event_name == 'push'\n",
+            "  micromachine-macos-contracts:\n    if: github.event_name == 'push'\n",
             workflow,
         )
         self.assertNotIn("contents: write", workflow)
