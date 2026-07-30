@@ -21410,10 +21410,12 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
             str,
             tuple[str, int, int],
         ] = {}
+        self._observed_payload_snapshots: dict[str, dict[str, object]] = {}
         self._observed_operation_event_seq: dict[str, int] = {}
         self._observed_operation_scope_order: deque[str] = deque()
         self._observed_operation_event_high_water: dict[str, int] = {}
         self._observed_operation_event_history_order: deque[str] = deque()
+        self._pending_operation_event_seqs: dict[str, set[int]] = {}
         self._failed_event_sources: set[str] = set()
         self.shutdown_event = threading.Event()
         super().__init__(server_address, handler_class)
@@ -21495,6 +21497,10 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
             self._observed_payload_hashes[cache_key] = digest
             if identity is not None:
                 self._observed_payload_identities[cache_key] = identity
+            if isinstance(safe_payload, Mapping):
+                self._observed_payload_snapshots[cache_key] = deepcopy(
+                    dict(safe_payload)
+                )
             update_id, operation_id, generation, game_frame = (
                 _web_event_identity(payload)
             )
@@ -21536,6 +21542,7 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
                 self._observed_operation_event_history_order.append(evicted)
                 continue
             self._observed_operation_event_high_water.pop(evicted, None)
+            self._pending_operation_event_seqs.pop(evicted, None)
         self._observed_operation_event_high_water[normalized_scope] = 0
         self._observed_operation_event_history_order.append(normalized_scope)
         return True
@@ -21590,22 +21597,121 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
                 )
             return False, 0
 
-    def snapshot_payload_regresses(
+    def authoritative_snapshot_payload(
         self,
         cache_key: str,
         payload: Mapping[str, object],
-    ) -> bool:
-        """Reject a stale source read without mutating snapshot caches."""
+    ) -> tuple[bool, dict[str, object]]:
+        """Accept one source snapshot or return the last accepted payload."""
 
+        safe_payload = _redact_json_ready(payload)
+        if not isinstance(safe_payload, Mapping):
+            safe_payload = {"value": safe_payload}
+        normalized_payload = dict(safe_payload)
+        serialized = json.dumps(
+            normalized_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
         incoming = _web_snapshot_order_identity(payload)
-        if incoming is None:
-            return False
         with self._event_source_lock:
             previous = self._observed_payload_identities.get(cache_key)
-            return bool(
-                previous is not None
+            if (
+                incoming is not None
+                and previous is not None
                 and _web_snapshot_identity_regresses(previous, incoming)
+            ):
+                accepted = self._observed_payload_snapshots.get(cache_key)
+                if accepted is not None:
+                    return False, deepcopy(accepted)
+                return (
+                    False,
+                    {
+                        "enabled": False,
+                        "status": "stale_source_rejected",
+                    },
+                )
+            self._observed_payload_hashes[cache_key] = digest
+            if incoming is not None:
+                self._observed_payload_identities[cache_key] = incoming
+            self._observed_payload_snapshots[cache_key] = deepcopy(
+                normalized_payload
             )
+            return True, deepcopy(normalized_payload)
+
+    def remember_pending_operation_event(
+        self,
+        scope_id: str,
+        event_seq: int,
+    ) -> None:
+        """Retain lifecycle events until one SSE write succeeds."""
+
+        normalized_scope = str(scope_id or "")
+        normalized_seq = max(0, int(event_seq))
+        if not normalized_scope or normalized_seq <= 0:
+            return
+        with self._event_source_lock:
+            self._pending_operation_event_seqs.setdefault(
+                normalized_scope,
+                set(),
+            ).add(normalized_seq)
+
+    def operation_event_snapshot_cursor(
+        self,
+        scope_id: str,
+        *,
+        latest_seq: int,
+        oldest_seq: int,
+    ) -> int:
+        """Keep undelivered lifecycle events newer than the snapshot cursor."""
+
+        normalized_scope = str(scope_id or "")
+        normalized_latest = max(0, int(latest_seq))
+        normalized_oldest = max(1, int(oldest_seq))
+        with self._event_source_lock:
+            pending = self._pending_operation_event_seqs.get(
+                normalized_scope
+            )
+            if not pending:
+                return normalized_latest
+            pending.intersection_update(
+                {
+                    seq
+                    for seq in pending
+                    if seq >= normalized_oldest
+                }
+            )
+            if not pending:
+                self._pending_operation_event_seqs.pop(
+                    normalized_scope,
+                    None,
+                )
+                return normalized_latest
+            return min(normalized_latest, min(pending) - 1)
+
+    def mark_operation_event_delivered(
+        self,
+        scope_id: str,
+        event_seq: int,
+    ) -> None:
+        """A successful SSE event write satisfies the pending replay."""
+
+        normalized_scope = str(scope_id or "")
+        normalized_seq = max(0, int(event_seq))
+        with self._event_source_lock:
+            pending = self._pending_operation_event_seqs.get(
+                normalized_scope
+            )
+            if not pending:
+                return
+            pending.discard(normalized_seq)
+            if not pending:
+                self._pending_operation_event_seqs.pop(
+                    normalized_scope,
+                    None,
+                )
 
     def touch_operation_event_scope(self, scope_id: str) -> None:
         """Bound per-blackboard event cursors and their related caches."""
@@ -21637,12 +21743,20 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
                     f"micromachine:{evicted}",
                     None,
                 )
+                self._observed_payload_snapshots.pop(
+                    f"micromachine:{evicted}",
+                    None,
+                )
                 source_key = f"micromachine_status:{evicted}"
                 self._observed_payload_hashes.pop(
                     f"source:{source_key}",
                     None,
                 )
                 self._observed_payload_identities.pop(
+                    f"source:{source_key}",
+                    None,
+                )
+                self._observed_payload_snapshots.pop(
                     f"source:{source_key}",
                     None,
                 )
@@ -21935,7 +22049,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         # operation source is materialized once without journal publication;
         # the second read and every warm read commit only timeline_seq values
         # newer than that scope-local source cursor.
-        snapshot_cursor = journal.latest_seq
+        snapshot_cut = journal.latest_seq
         source_lock = server.operation_status_lock(  # type: ignore[attr-defined]
             blackboard_dir
         )
@@ -22006,15 +22120,24 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             )
             if status_read_succeeded:
                 with server._event_source_lock:  # type: ignore[attr-defined]
-                    if not server.snapshot_payload_regresses(  # type: ignore[attr-defined]
-                        f"micromachine:{status_scope_id}",
-                        micromachine_status,
-                    ):
+                    status_accepted, accepted_status = (
+                        server.authoritative_snapshot_payload(  # type: ignore[attr-defined]
+                            f"micromachine:{status_scope_id}",
+                            micromachine_status,
+                        )
+                    )
+                    if status_accepted:
                         self._publish_new_operation_events(
                             micromachine_status,
                             blackboard_dir=blackboard_dir,
                             publish=True,
                         )
+                    micromachine_status = accepted_status
+            snapshot_cursor = server.operation_event_snapshot_cursor(  # type: ignore[attr-defined]
+                status_scope_id,
+                latest_seq=snapshot_cut,
+                oldest_seq=journal.oldest_seq,
+            )
             snapshot_payload = self._authoritative_event_snapshot(
                 blackboard_dir,
                 micromachine_status=micromachine_status,
@@ -22051,6 +22174,12 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             if event_scope_id and event_scope_id != blackboard_scope_id:
                 continue
             self._write_sse_event(event)
+            if str(event.get("event_type", "") or "") == "operation_event":
+                server = self.server  # type: ignore[assignment]
+                server.mark_operation_event_delivered(  # type: ignore[attr-defined]
+                    event_scope_id or blackboard_scope_id,
+                    int(event.get("event_seq", 0)),
+                )
         return next_cursor
 
     def _resolved_micromachine_blackboard_dir(
@@ -22307,7 +22436,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 if timeline_seq <= observed:
                     continue
                 latest = max(latest, timeline_seq)
-                server.publish_event(  # type: ignore[attr-defined]
+                published_event = server.publish_event(  # type: ignore[attr-defined]
                     "operation_event",
                     event,
                     update_id=str(event.get("update_id", "") or ""),
@@ -22324,6 +22453,10 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     ),
                     blackboard_dir=blackboard_dir,
                     blackboard_scope_id=scope_id,
+                )
+                server.remember_pending_operation_event(  # type: ignore[attr-defined]
+                    scope_id,
+                    int(published_event.get("event_seq", 0)),
                 )
             server._observed_operation_event_seq[scope_id] = latest  # type: ignore[attr-defined]
             server.remember_operation_event_high_water(  # type: ignore[attr-defined]

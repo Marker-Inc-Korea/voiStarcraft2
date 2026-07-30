@@ -1379,18 +1379,15 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "game_frame": 351,
             "summary": "engagement observed",
         }
-        statuses = iter(
-            (
-                {
-                    "blackboard_scope_id": scope_id,
-                    "operation_events": [first],
-                },
-                {
-                    "blackboard_scope_id": scope_id,
-                    "operation_events": [first, second],
-                },
-            )
-        )
+        baseline_status = {
+            "blackboard_scope_id": scope_id,
+            "operation_events": [first],
+        }
+        current_status = {
+            "blackboard_scope_id": scope_id,
+            "operation_events": [first, second],
+        }
+        statuses = iter((baseline_status, current_status))
 
         def status(_directory):
             return next(statuses)
@@ -1423,6 +1420,40 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 for event in operation_events
             ],
         )
+        snapshot_handler._micromachine_status_payload = (
+            lambda _directory: current_status
+        )
+        snapshot_handler._authoritative_event_snapshot = (
+            lambda _directory, **kwargs: {
+                "state": {"available": True},
+                "history": {"events": [], "latest": 0},
+                "micromachine_status": kwargs["micromachine_status"],
+            }
+        )
+        written = []
+        snapshot_handler._write_sse_event = written.append
+        cursor = snapshot_handler._write_authoritative_sse_snapshot(
+            self.server._http.event_journal,
+            blackboard_dir,
+            scope_id,
+        )
+        replay_available, replay_events = (
+            self.server._http.event_journal.replay_batch(cursor)
+        )
+        self.assertTrue(replay_available)
+        snapshot_handler._write_visible_sse_events(
+            replay_events,
+            cursor=cursor,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            ["snapshot", "operation_event"],
+            [event["event_type"] for event in written],
+        )
+        self.assertNotIn(
+            scope_id,
+            self.server._http._pending_operation_event_seqs,
+        )
 
     def test_failed_snapshot_write_does_not_absorb_post_cut_event(self):
         snapshot_handler = object.__new__(web_gui._WebGuiRequestHandler)
@@ -1447,18 +1478,15 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "game_frame": 361,
             "summary": "engagement observed",
         }
-        statuses = iter(
-            (
-                {
-                    "blackboard_scope_id": scope_id,
-                    "operation_events": [first],
-                },
-                {
-                    "blackboard_scope_id": scope_id,
-                    "operation_events": [first, second],
-                },
-            )
-        )
+        baseline_status = {
+            "blackboard_scope_id": scope_id,
+            "operation_events": [first],
+        }
+        current_status = {
+            "blackboard_scope_id": scope_id,
+            "operation_events": [first, second],
+        }
+        statuses = iter((baseline_status, current_status))
 
         snapshot_handler._micromachine_status_payload = (
             lambda _directory: next(statuses)
@@ -1498,6 +1526,33 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 event["payload"]["timeline_seq"]
                 for event in operation_events
             ],
+        )
+        snapshot_handler._micromachine_status_payload = (
+            lambda _directory: current_status
+        )
+        written = []
+        snapshot_handler._write_sse_event = written.append
+        cursor = snapshot_handler._write_authoritative_sse_snapshot(
+            self.server._http.event_journal,
+            blackboard_dir,
+            scope_id,
+        )
+        replay_available, replay_events = (
+            self.server._http.event_journal.replay_batch(cursor)
+        )
+        self.assertTrue(replay_available)
+        snapshot_handler._write_visible_sse_events(
+            replay_events,
+            cursor=cursor,
+            blackboard_scope_id=scope_id,
+        )
+        self.assertEqual(
+            ["snapshot", "operation_event"],
+            [event["event_type"] for event in written],
+        )
+        self.assertNotIn(
+            scope_id,
+            self.server._http._pending_operation_event_seqs,
         )
 
     def test_concurrent_refresh_uses_actual_snapshot_scope_cut(self):
@@ -1655,6 +1710,72 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 event["payload"]["timeline_seq"]
                 for event in server.event_journal.events_after(0)
                 if event["event_type"] == "operation_event"
+            ],
+        )
+
+    def test_regressive_authoritative_snapshot_uses_last_accepted_status(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.server = self.server._http
+        server = self.server._http
+        scope_id = "scope-regressive-authoritative-snapshot"
+        blackboard_dir = "/tmp/regressive-authoritative-snapshot"
+
+        def status(generation, frame):
+            return {
+                "blackboard_scope_id": scope_id,
+                "battlefield_overview": {
+                    "identity": {
+                        "session_epoch": "1700000000000",
+                        "generation": generation,
+                        "game_frame": frame,
+                    }
+                },
+                "operation_events": [],
+            }
+
+        accepted = status(2, 200)
+        stale = status(1, 100)
+        self.assertTrue(
+            server.publish_changed_snapshot(
+                f"micromachine:{scope_id}",
+                "micromachine_status",
+                accepted,
+                blackboard_dir=blackboard_dir,
+            )
+        )
+        handler._publish_new_operation_events(
+            accepted,
+            blackboard_dir=blackboard_dir,
+            publish=True,
+        )
+        handler._micromachine_status_payload = (
+            lambda _directory: deepcopy(stale)
+        )
+        handler._authoritative_event_snapshot = (
+            lambda _directory, **kwargs: {
+                "state": {"available": True},
+                "history": {"events": [], "latest": 0},
+                "micromachine_status": kwargs["micromachine_status"],
+            }
+        )
+        written = []
+        handler._write_sse_event = written.append
+
+        handler._write_authoritative_sse_snapshot(
+            server.event_journal,
+            blackboard_dir,
+            scope_id,
+        )
+
+        identity = written[0]["payload"]["micromachine_status"][
+            "battlefield_overview"
+        ]["identity"]
+        self.assertEqual(2, identity["generation"])
+        self.assertEqual(200, identity["game_frame"])
+        self.assertEqual(
+            ("1700000000000", 2, 200),
+            server._observed_payload_identities[
+                f"micromachine:{scope_id}"
             ],
         )
 
@@ -2058,9 +2179,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 handler._refresh_event_sources,
                 "/tmp/source-refresh-high-water",
             )
-            newer_future.result(timeout=3)
+            time.sleep(0.05)
+            self.assertFalse(newer_future.done())
             release_first.set()
             older_future.result(timeout=3)
+            newer_future.result(timeout=3)
 
         published = [
             event["payload"]
@@ -2068,10 +2191,19 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             if event["event_type"] == "micromachine_status"
             and event["payload"].get("blackboard_scope_id") == scope_id
         ]
-        self.assertEqual(1, len(published))
+        self.assertEqual(2, len(published))
+        self.assertEqual(
+            [1, 2],
+            [
+                payload["battlefield_overview"]["identity"][
+                    "generation"
+                ]
+                for payload in published
+            ],
+        )
         self.assertEqual(
             2,
-            published[0]["battlefield_overview"]["identity"][
+            published[-1]["battlefield_overview"]["identity"][
                 "generation"
             ],
         )
