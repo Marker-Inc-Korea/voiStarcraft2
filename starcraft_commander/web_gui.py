@@ -21399,6 +21399,7 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         self.auth_token = auth_token
         self.event_journal = event_journal or _WebEventJournal()
         self._event_source_lock = threading.RLock()
+        self._operation_status_read_lock = threading.Lock()
         self._observed_history_seq = 0
         self._observed_payload_hashes: dict[str, str] = {}
         self._observed_payload_identities: dict[
@@ -21410,8 +21411,6 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         self._observed_operation_event_high_water: dict[str, int] = {}
         self._observed_operation_event_history_order: deque[str] = deque()
         self._operation_event_snapshot_baselines: dict[str, int] = {}
-        self._operation_event_snapshot_reservations: dict[str, int] = {}
-        self._operation_event_retry_scopes: set[str] = set()
         self._failed_event_sources: set[str] = set()
         self.shutdown_event = threading.Event()
         super().__init__(server_address, handler_class)
@@ -21595,131 +21594,6 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
                 ] = min(existing, normalized_seq)
             return True
 
-    def begin_operation_event_snapshot(self, scope_id: str) -> bool:
-        """Reserve a first-scope hydration cut before the slow source read."""
-
-        normalized_scope = str(scope_id or "")
-        if not normalized_scope:
-            return False
-        with self._event_source_lock:
-            if (
-                normalized_scope in self._observed_operation_event_seq
-                or self._observed_operation_event_high_water.get(
-                    normalized_scope,
-                    0,
-                )
-                > 0
-            ):
-                return False
-            if (
-                normalized_scope
-                not in self._operation_event_snapshot_reservations
-                and len(self._operation_event_snapshot_reservations)
-                >= self._OPERATION_EVENT_SCOPE_HISTORY_RETENTION
-            ):
-                return False
-            self._operation_event_snapshot_reservations[normalized_scope] = (
-                self._operation_event_snapshot_reservations.get(
-                    normalized_scope,
-                    0,
-                )
-                + 1
-            )
-            return True
-
-    def complete_operation_event_snapshot(
-        self,
-        scope_id: str,
-        timeline_seq: int,
-    ) -> bool:
-        """Finalize one reserved hydration cut without advancing live cursors."""
-
-        normalized_scope = str(scope_id or "")
-        if not normalized_scope:
-            return False
-        with self._event_source_lock:
-            reservations = self._operation_event_snapshot_reservations.get(
-                normalized_scope,
-                0,
-            )
-            if reservations <= 0:
-                return False
-            remembered = self.remember_operation_event_snapshot_baseline(
-                normalized_scope,
-                timeline_seq,
-            )
-            if reservations == 1:
-                self._operation_event_snapshot_reservations.pop(
-                    normalized_scope,
-                    None,
-                )
-            else:
-                self._operation_event_snapshot_reservations[
-                    normalized_scope
-                ] = reservations - 1
-            return remembered
-
-    def abort_operation_event_snapshot(self, scope_id: str) -> bool:
-        """Release one failed hydration cut without manufacturing a baseline."""
-
-        normalized_scope = str(scope_id or "")
-        if not normalized_scope:
-            return False
-        with self._event_source_lock:
-            reservations = self._operation_event_snapshot_reservations.get(
-                normalized_scope,
-                0,
-            )
-            if reservations <= 0:
-                return False
-            if reservations == 1:
-                self._operation_event_snapshot_reservations.pop(
-                    normalized_scope,
-                    None,
-                )
-            else:
-                self._operation_event_snapshot_reservations[
-                    normalized_scope
-                ] = reservations - 1
-            return True
-
-    def operation_event_snapshot_pending(self, scope_id: str) -> bool:
-        """Return whether a first-scope snapshot still owns the hydration cut."""
-
-        with self._event_source_lock:
-            return (
-                self._operation_event_snapshot_reservations.get(
-                    str(scope_id or ""),
-                    0,
-                )
-                > 0
-            )
-
-    def any_operation_event_snapshot_pending(self) -> bool:
-        """Return whether any first-scope hydration cut is still being read."""
-
-        with self._event_source_lock:
-            return bool(self._operation_event_snapshot_reservations)
-
-    def mark_operation_event_retry(self, scope_id: str) -> None:
-        """Retry extraction after a concurrent first-scope snapshot completes."""
-
-        normalized_scope = str(scope_id or "")
-        with self._event_source_lock:
-            if (
-                normalized_scope
-                and self._operation_event_snapshot_reservations
-            ):
-                self._operation_event_retry_scopes.add(normalized_scope)
-
-    def operation_event_retry_pending(self, scope_id: str) -> bool:
-        with self._event_source_lock:
-            return str(scope_id or "") in self._operation_event_retry_scopes
-
-    def clear_operation_event_retry(self, scope_id: str) -> None:
-        with self._event_source_lock:
-            self._operation_event_retry_scopes.discard(str(scope_id or ""))
-
     def consume_operation_event_snapshot_baseline(
         self,
         scope_id: str,
@@ -21773,8 +21647,6 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
                 )
                 self._failed_event_sources.discard(source_key)
                 self._operation_event_snapshot_baselines.pop(evicted, None)
-                self._operation_event_snapshot_reservations.pop(evicted, None)
-                self._operation_event_retry_scopes.discard(evicted)
 
     def begin_shutdown(self) -> None:
         """Signal active streams and wake their journal waits."""
@@ -22058,91 +21930,74 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         blackboard_dir: str,
         blackboard_scope_id: str,
     ) -> int:
-        # Cut the journal cursor before potentially slow bridge/filesystem
-        # reads. Events published while the snapshot is built remain strictly
-        # newer than this cursor and are replayed after the snapshot.
+        server = self.server  # type: ignore[assignment]
+        # Cut the journal before any source read so direct publications remain
+        # replayable. MicroMachine refresh reads use a separate narrow lock;
+        # the status returned under that lock becomes this source's hydration
+        # baseline, and later lifecycle events are published after the cursor.
         snapshot_cursor = journal.latest_seq
-        snapshot_reserved = (
-            self.server.begin_operation_event_snapshot(  # type: ignore[attr-defined]
-                blackboard_scope_id
-            )
-        )
-        snapshot_completed = False
-        try:
-            snapshot_payload = self._authoritative_event_snapshot(
-                blackboard_dir
-            )
-            micromachine_status = snapshot_payload.get(
-                "micromachine_status"
-            )
-            status_scope_id = blackboard_scope_id
-            snapshot_operation_latest = 0
-            if isinstance(micromachine_status, Mapping):
-                status_scope_id = str(
-                    micromachine_status.get("blackboard_scope_id")
-                    or blackboard_scope_id
+        with server._operation_status_read_lock:  # type: ignore[attr-defined]
+            try:
+                micromachine_status = self._micromachine_status_payload(
+                    blackboard_dir
                 )
-                raw_operation_events = micromachine_status.get(
-                    "operation_events"
-                )
-                operation_events = (
-                    raw_operation_events
-                    if isinstance(raw_operation_events, Sequence)
-                    and not isinstance(
-                        raw_operation_events,
-                        (str, bytes, bytearray),
-                    )
-                    else ()
-                )
-                snapshot_operation_latest = max(
-                    (
-                        _web_event_int(
-                            event.get("timeline_seq"),
-                            0,
-                        )
-                        for event in operation_events
-                        if isinstance(event, Mapping)
+            except Exception as error:  # noqa: BLE001 - snapshot remains usable.
+                micromachine_status = {
+                    "enabled": False,
+                    "status": "source_error",
+                    "error": _redact_sensitive_text(
+                        error,
+                        normalize_whitespace=True,
                     ),
-                    default=0,
+                }
+            status_scope_id = str(
+                micromachine_status.get("blackboard_scope_id")
+                or blackboard_scope_id
+            )
+            raw_operation_events = micromachine_status.get(
+                "operation_events"
+            )
+            operation_events = (
+                raw_operation_events
+                if isinstance(raw_operation_events, Sequence)
+                and not isinstance(
+                    raw_operation_events,
+                    (str, bytes, bytearray),
                 )
-            with self.server._event_source_lock:  # type: ignore[attr-defined]
-                if snapshot_reserved:
-                    snapshot_completed = (
-                        self.server.complete_operation_event_snapshot(  # type: ignore[attr-defined]
-                            blackboard_scope_id,
-                            (
-                                snapshot_operation_latest
-                                if status_scope_id == blackboard_scope_id
-                                else 0
-                            ),
-                        )
+                else ()
+            )
+            snapshot_operation_latest = max(
+                (
+                    _web_event_int(
+                        event.get("timeline_seq"),
+                        0,
                     )
-                if (
-                    status_scope_id != blackboard_scope_id
-                    or not snapshot_reserved
-                ):
-                    self.server.remember_operation_event_snapshot_baseline(  # type: ignore[attr-defined]
-                        status_scope_id,
-                        snapshot_operation_latest,
-                    )
-            snapshot_event = {
-                "event_seq": snapshot_cursor,
-                "event_type": "snapshot",
-                "created_at_unix_ms": int(time.time() * 1000),
-                "update_id": "",
-                "operation_id": "",
-                "generation": 0,
-                "game_frame": -1,
-                "blackboard_scope_id": blackboard_scope_id,
-                "payload": snapshot_payload,
-            }
-            self._write_sse_event(snapshot_event)
-            return snapshot_cursor
-        finally:
-            if snapshot_reserved and not snapshot_completed:
-                self.server.abort_operation_event_snapshot(  # type: ignore[attr-defined]
-                    blackboard_scope_id
-                )
+                    for event in operation_events
+                    if isinstance(event, Mapping)
+                ),
+                default=0,
+            )
+            server.remember_operation_event_snapshot_baseline(  # type: ignore[attr-defined]
+                status_scope_id,
+                snapshot_operation_latest,
+            )
+        snapshot_payload = self._authoritative_event_snapshot(
+            blackboard_dir,
+            micromachine_status=micromachine_status,
+        )
+        snapshot_event = {
+            "event_seq": snapshot_cursor,
+            "event_type": "snapshot",
+            "created_at_unix_ms": int(time.time() * 1000),
+            "update_id": "",
+            "operation_id": "",
+            "generation": 0,
+            "game_frame": -1,
+            "blackboard_scope_id": blackboard_scope_id,
+            "payload": snapshot_payload,
+        }
+        self._write_sse_event(snapshot_event)
+        return snapshot_cursor
 
     def _write_visible_sse_events(
         self,
@@ -22181,6 +22036,8 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
     def _authoritative_event_snapshot(
         self,
         blackboard_dir: str,
+        *,
+        micromachine_status: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         try:
             snapshot = self._state_payload()
@@ -22212,24 +22069,25 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     normalize_whitespace=True,
                 ),
             }
-        try:
-            micromachine_status = self._micromachine_status_payload(
-                blackboard_dir
-            )
-        except Exception as error:  # noqa: BLE001 - snapshot remains usable.
-            micromachine_status = {
-                "enabled": False,
-                "status": "source_error",
-                "error": _redact_sensitive_text(
-                    error,
-                    normalize_whitespace=True,
-                ),
-            }
+        if micromachine_status is None:
+            try:
+                micromachine_status = self._micromachine_status_payload(
+                    blackboard_dir
+                )
+            except Exception as error:  # noqa: BLE001 - snapshot remains usable.
+                micromachine_status = {
+                    "enabled": False,
+                    "status": "source_error",
+                    "error": _redact_sensitive_text(
+                        error,
+                        normalize_whitespace=True,
+                    ),
+                }
         return {
             "snapshot_reason": "initial_or_replay_unavailable",
             "state": snapshot,
             "history": history_payload,
-            "micromachine_status": micromachine_status,
+            "micromachine_status": dict(micromachine_status),
         }
 
     def _refresh_event_sources(self, blackboard_dir: str) -> None:
@@ -22290,7 +22148,8 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 },
             )
         try:
-            status = self._micromachine_status_payload(blackboard_dir)
+            with server._operation_status_read_lock:  # type: ignore[attr-defined]
+                status = self._micromachine_status_payload(blackboard_dir)
             scope = str(
                 status.get("blackboard_scope_id")
                 or status.get("blackboard_dir")
@@ -22302,9 +22161,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 status,
                 blackboard_dir=blackboard_dir,
             )
-            if status_published or server.operation_event_retry_pending(  # type: ignore[attr-defined]
-                scope
-            ):
+            if status_published:
                 self._publish_new_operation_events(
                     status,
                     blackboard_dir=blackboard_dir,
@@ -22353,15 +22210,6 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 and scope_id
                 not in server._observed_operation_event_high_water  # type: ignore[attr-defined]
             )
-            if (
-                server.operation_event_snapshot_pending(scope_id)  # type: ignore[attr-defined]
-                or (
-                    first_scope_observation
-                    and server.any_operation_event_snapshot_pending()  # type: ignore[attr-defined]
-                )
-            ):
-                server.mark_operation_event_retry(scope_id)  # type: ignore[attr-defined]
-                return
             if not server.admit_operation_event_scope(scope_id):  # type: ignore[attr-defined]
                 return
             server.touch_operation_event_scope(scope_id)  # type: ignore[attr-defined]
@@ -22400,7 +22248,6 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                         scope_id,
                         snapshot_baseline,
                     )
-                    server.clear_operation_event_retry(scope_id)  # type: ignore[attr-defined]
                     return
                 observed = snapshot_baseline
             else:
@@ -22454,7 +22301,6 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 scope_id,
                 latest,
             )
-            server.clear_operation_event_retry(scope_id)  # type: ignore[attr-defined]
 
     def _state_payload(self) -> dict[str, object]:
         snapshot = self._bridge.state_snapshot()
