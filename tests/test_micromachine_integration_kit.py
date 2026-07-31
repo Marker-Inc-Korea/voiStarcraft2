@@ -1545,6 +1545,10 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "multiDestinationProjection",
             "reserve-charlie",
             "no_transferable_units",
+            "kVoiBattlefieldMaximumJsonSafeInteger",
+            "(1ULL << 53) - 1ULL",
+            "value &= kVoiBattlefieldMaximumJsonSafeInteger",
+            "<= kVoiBattlefieldMaximumJsonSafeInteger",
         ):
             with self.subTest(contract=contract):
                 self.assertIn(contract, patch)

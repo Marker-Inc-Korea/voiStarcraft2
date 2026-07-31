@@ -367,3 +367,50 @@ diff --git a/tests/battlefield_projection_test.cpp b/tests/battlefield_projectio
  
  	return failures == 0 ? 0 : 1;
  }
+diff --git a/src/voi_runtime_identity.hpp b/src/voi_runtime_identity.hpp
+--- a/src/voi_runtime_identity.hpp
++++ b/src/voi_runtime_identity.hpp
+@@ -95,6 +95,9 @@ inline std::uint64_t voiMixBattlefieldSessionComponent(
+ 	return value ^ (value >> 31);
+ }
+ 
++constexpr std::uint64_t kVoiBattlefieldMaximumJsonSafeInteger =
++	(1ULL << 53) - 1ULL;
++
+ inline std::uint64_t voiComposeBattlefieldSessionIdentity(
+ 	std::uint64_t wallClockNanoseconds,
+ 	std::uint64_t processId,
+@@ -107,6 +110,7 @@ inline std::uint64_t voiComposeBattlefieldSessionIdentity(
+ 		value ^ processId);
+ 	value = voiMixBattlefieldSessionComponent(
+ 		value ^ processNonce);
++	value &= kVoiBattlefieldMaximumJsonSafeInteger;
+ 	return value == 0 ? 1 : value;
+ }
+ 
+diff --git a/tests/battlefield_projection_test.cpp b/tests/battlefield_projection_test.cpp
+--- a/tests/battlefield_projection_test.cpp
++++ b/tests/battlefield_projection_test.cpp
+@@ -157,6 +157,9 @@ int main()
+ 	CHECK(voiCurrentBattlefieldSessionEpoch() > 1);
+ 	CHECK(
+ 		voiCurrentBattlefieldSessionEpoch()
++		<= kVoiBattlefieldMaximumJsonSafeInteger);
++	CHECK(
++		voiCurrentBattlefieldSessionEpoch()
+ 		== voiCurrentBattlefieldSessionEpoch());
+ 	const std::uint64_t equalTimestamp =
+ 		1700000000000000000ULL;
+@@ -172,6 +175,12 @@ int main()
+ 			7001);
+ 	CHECK(firstProcessIdentity > 0);
+ 	CHECK(secondProcessIdentity > 0);
++	CHECK(
++		firstProcessIdentity
++		<= kVoiBattlefieldMaximumJsonSafeInteger);
++	CHECK(
++		secondProcessIdentity
++		<= kVoiBattlefieldMaximumJsonSafeInteger);
+ 	CHECK(firstProcessIdentity != secondProcessIdentity);
+ 	CHECK(
+ 		voiNextBattlefieldSessionEpoch(

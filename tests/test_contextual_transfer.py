@@ -37,7 +37,7 @@ from starcraft_commander.web_gui import (
 )
 
 
-SESSION_EPOCH = 1_700_000_000_000
+SESSION_EPOCH = 9_007_199_254_740_991
 PROJECTION_FRAME = 140
 
 
@@ -503,6 +503,13 @@ class ContextualTransferAdmissionTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             ContextualTransferRequest.from_mapping(
                 {**payload, "action": "execute_ability"}
+            )
+        with self.assertRaisesRegex(
+            ValueError,
+            "session_epoch must be an integer between 1 and 9007199254740991",
+        ):
+            ContextualTransferRequest.from_mapping(
+                {**payload, "session_epoch": 9_007_199_254_740_992}
             )
 
     def test_mixed_semantic_composition_fails_closed(self):

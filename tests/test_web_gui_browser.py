@@ -592,7 +592,7 @@ def _contextual_transfer_browser_fixture_page() -> str:
       identity: {
         update_id: "browser-transfer-update",
         scope: "operation:" + operationId,
-        session_epoch: 1700000000000,
+        session_epoch: 9007199254740991,
         operation_id: operationId,
         generation: generation,
         stage: "assigned",
@@ -745,7 +745,7 @@ def _contextual_transfer_browser_fixture_page() -> str:
       status: "published",
       blackboard_scope_id: "browser-transfer-scope",
       battlefield_projection_identity: {
-        session_epoch: 1700000000000,
+        session_epoch: 9007199254740991,
         game_frame: 140
       },
       battlefield_projection_fingerprint: "c".repeat(64),
@@ -753,7 +753,7 @@ def _contextual_transfer_browser_fixture_page() -> str:
         schema_version: 2,
         authority: "micromachine_cpp",
         identity: {
-          session_epoch: 1700000000000,
+          session_epoch: 9007199254740991,
           game_frame: 140
         },
         operation_ownership: [
@@ -828,7 +828,7 @@ def _contextual_transfer_browser_fixture_page() -> str:
         body.protected_minimum === 2 &&
         body.source_minimum === 2 &&
         body.blackboard_scope_id === "browser-transfer-scope" &&
-        body.session_epoch === 1700000000000 &&
+        body.session_epoch === 9007199254740991 &&
         body.projection_frame === 140 &&
         body.projection_fingerprint === "c".repeat(64));
       mark("allowlist", forbiddenFields.every(function (field) {
@@ -913,14 +913,14 @@ def _contextual_transfer_browser_fixture_page() -> str:
         status: "published",
         blackboard_scope_id: "browser-transfer-scope",
         battlefield_projection_identity: {
-          session_epoch: 1700000000000,
+          session_epoch: 9007199254740991,
           game_frame: 141
         },
         battlefield_projection_fingerprint: "d".repeat(64),
         battlefield_overview: {
           authority: "micromachine_cpp",
           identity: {
-            session_epoch: 1700000000000,
+            session_epoch: 9007199254740991,
             game_frame: 141
           },
           operation_ownership: [
