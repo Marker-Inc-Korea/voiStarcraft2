@@ -1,0 +1,791 @@
+diff --git a/src/CCBot.cpp b/src/CCBot.cpp
+--- a/src/CCBot.cpp
++++ b/src/CCBot.cpp
+@@ -1,5 +1,6 @@
+ #include "CCBot.h"
+ #include "Util.h"
++#include "voi_atomic_telemetry.hpp"
+ 
+ #include <cstdlib>
+ #include <fstream>
+@@ -276,12 +277,7 @@ void CCBot::writeVoiBootstrapTelemetry(const std::string & status) const
+ 		}
+ 	}
+ 	const std::string telemetryPath = std::string(sharedDir) + "/latest_telemetry.json";
+-	std::ofstream telemetry(telemetryPath);
+-	if (!telemetry.good())
+-	{
+-		return;
+-	}
+-
++	std::stringstream telemetry;
+ 	telemetry
+ 		<< "{"
+ 		<< "\"protocol_version\":\"voi-mm-bridge/v1\","
+@@ -313,6 +308,7 @@ void CCBot::writeVoiBootstrapTelemetry(const std::string & status) const
+ 		<< "},"
+ 		<< "\"active_modulation_ids\":[],"
+ 		<< "\"last_failure\":\"bootstrap_waiting\"}\n";
++	voiWriteTelemetrySnapshotAtomically(telemetryPath, telemetry.str());
+ }
+ 
+ void CCBot::maybeSeedVoiBootstrapStart()
+diff --git a/src/voi_atomic_telemetry.hpp b/src/voi_atomic_telemetry.hpp
+new file mode 100644
+--- /dev/null
++++ b/src/voi_atomic_telemetry.hpp
+@@ -0,0 +1,235 @@
++#pragma once
++
++#include <atomic>
++#include <cerrno>
++#include <cstddef>
++#include <fcntl.h>
++#include <string>
++#include <unistd.h>
++
++struct VoiAtomicTelemetrySystemCalls
++{
++	int openDirectory(const char * path) const
++	{
++		return ::open(
++			path,
++			O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
++	}
++
++	int openDirectoryAt(
++		int directoryDescriptor,
++		const char * name) const
++	{
++		return ::openat(
++			directoryDescriptor,
++			name,
++			O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
++	}
++
++	int openFileAt(
++		int directoryDescriptor,
++		const char * name,
++		int flags,
++		mode_t mode) const
++	{
++		return ::openat(directoryDescriptor, name, flags, mode);
++	}
++
++	ssize_t writeFile(
++		int descriptor,
++		const void * data,
++		std::size_t size) const
++	{
++		return ::write(descriptor, data, size);
++	}
++
++	int closeDescriptor(int descriptor) const
++	{
++		return ::close(descriptor);
++	}
++
++	int renameFileAt(
++		int directoryDescriptor,
++		const char * from,
++		const char * to) const
++	{
++		return ::renameat(
++			directoryDescriptor,
++			from,
++			directoryDescriptor,
++			to);
++	}
++
++	int removeFileAt(
++		int directoryDescriptor,
++		const char * name) const
++	{
++		return ::unlinkat(directoryDescriptor, name, 0);
++	}
++};
++
++inline bool voiSplitTelemetryPath(
++	const std::string & path,
++	std::string & directory,
++	std::string & name)
++{
++	const std::string::size_type separator = path.find_last_of('/');
++	if (separator == std::string::npos)
++	{
++		directory = ".";
++		name = path;
++	}
++	else
++	{
++		directory = separator == 0 ? "/" : path.substr(0, separator);
++		name = path.substr(separator + 1);
++	}
++	return !name.empty() && name != "." && name != "..";
++}
++
++template <typename FileOperations>
++inline int voiOpenTelemetryDirectoryWithoutSymlinks(
++	const std::string & directory,
++	FileOperations & operations)
++{
++	const bool absolute =
++		!directory.empty() && directory.front() == '/';
++	int descriptor =
++		operations.openDirectory(absolute ? "/" : ".");
++	if (descriptor < 0)
++	{
++		return -1;
++	}
++
++	std::string::size_type offset = absolute ? 1 : 0;
++	while (offset < directory.size())
++	{
++		const std::string::size_type separator =
++			directory.find('/', offset);
++		const std::string component = directory.substr(
++			offset,
++			separator == std::string::npos
++				? std::string::npos
++				: separator - offset);
++		offset = separator == std::string::npos
++			? directory.size()
++			: separator + 1;
++		if (component.empty() || component == ".")
++		{
++			continue;
++		}
++		if (component == "..")
++		{
++			operations.closeDescriptor(descriptor);
++			return -1;
++		}
++		const int childDescriptor =
++			operations.openDirectoryAt(
++				descriptor,
++				component.c_str());
++		operations.closeDescriptor(descriptor);
++		if (childDescriptor < 0)
++		{
++			return -1;
++		}
++		descriptor = childDescriptor;
++	}
++	return descriptor;
++}
++
++template <typename FileOperations>
++inline bool voiWriteTelemetrySnapshotAtomicallyWithOperations(
++	const std::string & path,
++	const std::string & payload,
++	FileOperations & operations)
++{
++	std::string directory;
++	std::string name;
++	if (!voiSplitTelemetryPath(path, directory, name))
++	{
++		return false;
++	}
++
++	const int directoryDescriptor =
++		voiOpenTelemetryDirectoryWithoutSymlinks(
++			directory,
++			operations);
++	if (directoryDescriptor < 0)
++	{
++		return false;
++	}
++
++	static std::atomic<unsigned long> sequence(0);
++	const std::string temporaryName =
++		name
++		+ ".tmp."
++		+ std::to_string(static_cast<unsigned long>(::getpid()))
++		+ "."
++		+ std::to_string(sequence.fetch_add(1));
++	const int descriptor = operations.openFileAt(
++		directoryDescriptor,
++		temporaryName.c_str(),
++		O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
++		0600);
++	if (descriptor < 0)
++	{
++		operations.closeDescriptor(directoryDescriptor);
++		return false;
++	}
++
++	std::size_t written = 0;
++	while (written < payload.size())
++	{
++		const ssize_t result = operations.writeFile(
++			descriptor,
++			payload.data() + written,
++			payload.size() - written);
++		if (result > 0)
++		{
++			written += static_cast<std::size_t>(result);
++			continue;
++		}
++		if (result < 0 && errno == EINTR)
++		{
++			continue;
++		}
++		operations.closeDescriptor(descriptor);
++		operations.removeFileAt(
++			directoryDescriptor,
++			temporaryName.c_str());
++		operations.closeDescriptor(directoryDescriptor);
++		return false;
++	}
++	if (operations.closeDescriptor(descriptor) != 0)
++	{
++		operations.removeFileAt(
++			directoryDescriptor,
++			temporaryName.c_str());
++		operations.closeDescriptor(directoryDescriptor);
++		return false;
++	}
++	if (operations.renameFileAt(
++			directoryDescriptor,
++			temporaryName.c_str(),
++			name.c_str()) != 0)
++	{
++		operations.removeFileAt(
++			directoryDescriptor,
++			temporaryName.c_str());
++		operations.closeDescriptor(directoryDescriptor);
++		return false;
++	}
++	operations.closeDescriptor(directoryDescriptor);
++	return true;
++}
++
++inline bool voiWriteTelemetrySnapshotAtomically(
++	const std::string & path,
++	const std::string & payload)
++{
++	VoiAtomicTelemetrySystemCalls operations;
++	return voiWriteTelemetrySnapshotAtomicallyWithOperations(
++		path,
++		payload,
++		operations);
++}
+diff --git a/src/voi_family_effect_lifecycle.hpp b/src/voi_family_effect_lifecycle.hpp
+--- a/src/voi_family_effect_lifecycle.hpp
++++ b/src/voi_family_effect_lifecycle.hpp
+@@ -1,9 +1,10 @@
+ #pragma once
+ 
++#include "voi_atomic_telemetry.hpp"
++
+ #include <algorithm>
+ #include <cstddef>
+ #include <cstdint>
+-#include <fstream>
+ #include <map>
+ #include <set>
+ #include <string>
+@@ -596,17 +597,10 @@ inline bool voiWriteAuthoritativeTelemetryFile(
+ 	const std::string & payload,
+ 	Acknowledge acknowledge)
+ {
+-	std::ofstream telemetry(path.c_str());
+-	if (!telemetry.good())
+-	{
+-		return false;
+-	}
+-	telemetry << payload;
+-	telemetry.close();
+-	if (telemetry.fail())
++	if (!voiWriteTelemetrySnapshotAtomically(path, payload))
+ 	{
+ 		return false;
+ 	}
+ 	acknowledge();
+ 	return true;
+ }
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -60,3 +60,26 @@ add_test(
+     NAME voi_battlefield_projection_ndebug
+     COMMAND voi_battlefield_projection_ndebug_test
+ )
++
++add_executable(
++    voi_atomic_telemetry_test
++    atomic_telemetry_test.cpp
++)
++target_include_directories(
++    voi_atomic_telemetry_test
++    PRIVATE
++    "${PROJECT_SOURCE_DIR}/src"
++)
++target_compile_definitions(
++    voi_atomic_telemetry_test
++    PRIVATE
++    NDEBUG
++)
++target_link_libraries(
++    voi_atomic_telemetry_test
++    pthread
++)
++add_test(
++    NAME voi_atomic_telemetry
++    COMMAND voi_atomic_telemetry_test
++)
+diff --git a/tests/atomic_telemetry_test.cpp b/tests/atomic_telemetry_test.cpp
+new file mode 100644
+--- /dev/null
++++ b/tests/atomic_telemetry_test.cpp
+@@ -0,0 +1,450 @@
++#include "voi_atomic_telemetry.hpp"
++
++#include <atomic>
++#include <cstdio>
++#include <dirent.h>
++#include <fstream>
++#include <iterator>
++#include <string>
++#include <sys/stat.h>
++#include <thread>
++#include <vector>
++
++namespace
++{
++int fail(const char * expression, int line)
++{
++	std::fprintf(
++		stderr,
++		"atomic telemetry contract failed at line %d: %s\n",
++		line,
++		expression);
++	return 1;
++}
++
++#define REQUIRE(expression) \
++	do \
++	{ \
++		if (!(expression)) \
++		{ \
++			return fail(#expression, __LINE__); \
++		} \
++	} while (false)
++
++std::string readFile(const std::string & path)
++{
++	std::ifstream input(path.c_str(), std::ios::binary);
++	return std::string(
++		std::istreambuf_iterator<char>(input),
++		std::istreambuf_iterator<char>());
++}
++
++bool writeFile(
++	const std::string & path,
++	const std::string & payload)
++{
++	std::ofstream output(path.c_str(), std::ios::binary);
++	if (!output.good())
++	{
++		return false;
++	}
++	output << payload;
++	output.close();
++	return !output.fail();
++}
++
++bool temporaryFilesFor(
++	const std::string & path,
++	std::vector<std::string> & matches)
++{
++	DIR * directory = ::opendir(".");
++	if (directory == nullptr)
++	{
++		return false;
++	}
++	const std::string prefix = path + ".tmp.";
++	while (const dirent * entry = ::readdir(directory))
++	{
++		const std::string name(entry->d_name);
++		if (name.find(prefix) == 0)
++		{
++			matches.push_back(name);
++		}
++	}
++	return ::closedir(directory) == 0;
++}
++
++struct InterruptingShortWriteOperations
++	: VoiAtomicTelemetrySystemCalls
++{
++	bool interrupted = false;
++	bool shortened = false;
++
++	ssize_t writeFile(
++		int descriptor,
++		const void * data,
++		std::size_t size)
++	{
++		if (!interrupted)
++		{
++			interrupted = true;
++			errno = EINTR;
++			return -1;
++		}
++		if (!shortened && size > 7)
++		{
++			shortened = true;
++			return VoiAtomicTelemetrySystemCalls::writeFile(
++				descriptor,
++				data,
++				7);
++		}
++		return VoiAtomicTelemetrySystemCalls::writeFile(
++			descriptor,
++			data,
++			size);
++	}
++};
++
++struct DeterministicOverlapOperations
++	: VoiAtomicTelemetrySystemCalls
++{
++	std::atomic<bool> & partialWriteEntered;
++	std::atomic<bool> & releaseWrite;
++	std::atomic<bool> & readerCompletedDuringWrite;
++	bool blocked = false;
++
++	DeterministicOverlapOperations(
++		std::atomic<bool> & entered,
++		std::atomic<bool> & release,
++		std::atomic<bool> & readerCompleted)
++		: partialWriteEntered(entered)
++		, releaseWrite(release)
++		, readerCompletedDuringWrite(readerCompleted)
++	{
++	}
++
++	ssize_t writeFile(
++		int descriptor,
++		const void * data,
++		std::size_t size)
++	{
++		if (!blocked && size > 1)
++		{
++			const ssize_t result =
++				VoiAtomicTelemetrySystemCalls::writeFile(
++					descriptor,
++					data,
++					1);
++			if (result != 1)
++			{
++				return result;
++			}
++			blocked = true;
++			partialWriteEntered.store(true);
++			while (!releaseWrite.load())
++			{
++				std::this_thread::yield();
++			}
++			if (!readerCompletedDuringWrite.load())
++			{
++				errno = EIO;
++				return -1;
++			}
++			return 1;
++		}
++		return VoiAtomicTelemetrySystemCalls::writeFile(
++			descriptor,
++			data,
++			size);
++	}
++};
++
++struct OpenFailureOperations : VoiAtomicTelemetrySystemCalls
++{
++	int flags = 0;
++	mode_t mode = 0;
++
++	int openFileAt(
++		int,
++		const char *,
++		int requestedFlags,
++		mode_t requestedMode)
++	{
++		flags = requestedFlags;
++		mode = requestedMode;
++		errno = EACCES;
++		return -1;
++	}
++};
++
++struct WriteFailureOperations : VoiAtomicTelemetrySystemCalls
++{
++	ssize_t writeFile(int, const void *, std::size_t)
++	{
++		errno = EIO;
++		return -1;
++	}
++};
++
++struct CloseFailureOperations : VoiAtomicTelemetrySystemCalls
++{
++	int dataDescriptor = -1;
++	bool failed = false;
++
++	int openFileAt(
++		int directoryDescriptor,
++		const char * name,
++		int flags,
++		mode_t mode)
++	{
++		dataDescriptor =
++			VoiAtomicTelemetrySystemCalls::openFileAt(
++				directoryDescriptor,
++				name,
++				flags,
++				mode);
++		return dataDescriptor;
++	}
++
++	int closeDescriptor(int descriptor)
++	{
++		if (descriptor == dataDescriptor && !failed)
++		{
++			failed = true;
++			VoiAtomicTelemetrySystemCalls::closeDescriptor(
++				descriptor);
++			errno = EIO;
++			return -1;
++		}
++		return VoiAtomicTelemetrySystemCalls::closeDescriptor(
++			descriptor);
++	}
++};
++
++struct RenameFailureOperations : VoiAtomicTelemetrySystemCalls
++{
++	int renameFileAt(int, const char *, const char *)
++	{
++		errno = EIO;
++		return -1;
++	}
++};
++}
++
++int main()
++{
++	const std::string path = "voi_atomic_telemetry_test.json";
++	std::remove(path.c_str());
++
++	const std::string first =
++		"{\"frame\":1,\"payload\":\""
++		+ std::string(1024 * 512, 'a')
++		+ "\"}\n";
++	const std::string second =
++		"{\"frame\":2,\"payload\":\""
++		+ std::string(1024 * 512, 'b')
++		+ "\"}\n";
++	REQUIRE(voiWriteTelemetrySnapshotAtomically(path, first));
++
++	std::atomic<bool> partialWriteEntered(false);
++	std::atomic<bool> releaseWrite(false);
++	std::atomic<bool> readerCompletedDuringWrite(false);
++	std::atomic<bool> overlappingWriteSucceeded(false);
++	DeterministicOverlapOperations overlapOperations(
++		partialWriteEntered,
++		releaseWrite,
++		readerCompletedDuringWrite);
++	std::thread overlappingWriter([&]() {
++		overlappingWriteSucceeded.store(
++			voiWriteTelemetrySnapshotAtomicallyWithOperations(
++				path,
++				second,
++				overlapOperations));
++	});
++	while (!partialWriteEntered.load())
++	{
++		std::this_thread::yield();
++	}
++	const std::string observedDuringPartialWrite = readFile(path);
++	REQUIRE(observedDuringPartialWrite == first);
++	readerCompletedDuringWrite.store(true);
++	releaseWrite.store(true);
++	overlappingWriter.join();
++	REQUIRE(overlappingWriteSucceeded.load());
++	REQUIRE(readFile(path) == second);
++
++	std::atomic<bool> readerReady(false);
++	std::atomic<bool> startReader(false);
++	std::atomic<bool> running(true);
++	std::atomic<bool> invalidObservation(false);
++	std::atomic<unsigned long> observations(0);
++	std::thread reader([&]() {
++		readerReady.store(true);
++		while (!startReader.load())
++		{
++			std::this_thread::yield();
++		}
++		while (running.load())
++		{
++			const std::string observed = readFile(path);
++			observations.fetch_add(1);
++			if (observed != first && observed != second)
++			{
++				invalidObservation.store(true);
++				return;
++			}
++		}
++	});
++	while (!readerReady.load())
++	{
++		std::this_thread::yield();
++	}
++	startReader.store(true);
++	while (observations.load() == 0)
++	{
++		std::this_thread::yield();
++	}
++	for (int index = 0; index < 200; ++index)
++	{
++		REQUIRE(voiWriteTelemetrySnapshotAtomically(
++			path,
++			index % 2 == 0 ? second : first));
++		std::this_thread::yield();
++	}
++	running.store(false);
++	reader.join();
++	REQUIRE(observations.load() > 0);
++	REQUIRE(!invalidObservation.load());
++	std::vector<std::string> temporaryFiles;
++	REQUIRE(temporaryFilesFor(path, temporaryFiles));
++	REQUIRE(temporaryFiles.empty());
++
++	const std::string interruptedPath =
++		"voi_atomic_telemetry_interrupted.json";
++	InterruptingShortWriteOperations interruptedOperations;
++	REQUIRE(voiWriteTelemetrySnapshotAtomicallyWithOperations(
++		interruptedPath,
++		second,
++		interruptedOperations));
++	REQUIRE(interruptedOperations.interrupted);
++	REQUIRE(interruptedOperations.shortened);
++	REQUIRE(readFile(interruptedPath) == second);
++	temporaryFiles.clear();
++	REQUIRE(temporaryFilesFor(interruptedPath, temporaryFiles));
++	REQUIRE(temporaryFiles.empty());
++	REQUIRE(std::remove(interruptedPath.c_str()) == 0);
++
++	OpenFailureOperations openFailureOperations;
++	REQUIRE(!voiWriteTelemetrySnapshotAtomicallyWithOperations(
++		"voi_atomic_telemetry_open_failure.json",
++		first,
++		openFailureOperations));
++	REQUIRE((openFailureOperations.flags & O_EXCL) != 0);
++	REQUIRE((openFailureOperations.flags & O_NOFOLLOW) != 0);
++	REQUIRE((openFailureOperations.flags & O_CLOEXEC) != 0);
++	REQUIRE(openFailureOperations.mode == 0600);
++
++	const std::string writeFailurePath =
++		"voi_atomic_telemetry_write_failure.json";
++	REQUIRE(writeFile(writeFailurePath, first));
++	WriteFailureOperations writeFailureOperations;
++	REQUIRE(!voiWriteTelemetrySnapshotAtomicallyWithOperations(
++		writeFailurePath,
++		second,
++		writeFailureOperations));
++	REQUIRE(readFile(writeFailurePath) == first);
++	temporaryFiles.clear();
++	REQUIRE(temporaryFilesFor(writeFailurePath, temporaryFiles));
++	REQUIRE(temporaryFiles.empty());
++	REQUIRE(std::remove(writeFailurePath.c_str()) == 0);
++
++	const std::string closeFailurePath =
++		"voi_atomic_telemetry_close_failure.json";
++	REQUIRE(writeFile(closeFailurePath, first));
++	CloseFailureOperations closeFailureOperations;
++	REQUIRE(!voiWriteTelemetrySnapshotAtomicallyWithOperations(
++		closeFailurePath,
++		second,
++		closeFailureOperations));
++	REQUIRE(closeFailureOperations.failed);
++	REQUIRE(readFile(closeFailurePath) == first);
++	temporaryFiles.clear();
++	REQUIRE(temporaryFilesFor(closeFailurePath, temporaryFiles));
++	REQUIRE(temporaryFiles.empty());
++	REQUIRE(std::remove(closeFailurePath.c_str()) == 0);
++
++	const std::string renameFailurePath =
++		"voi_atomic_telemetry_rename_failure.json";
++	REQUIRE(writeFile(renameFailurePath, first));
++	RenameFailureOperations renameFailureOperations;
++	REQUIRE(!voiWriteTelemetrySnapshotAtomicallyWithOperations(
++		renameFailurePath,
++		second,
++		renameFailureOperations));
++	REQUIRE(readFile(renameFailurePath) == first);
++	temporaryFiles.clear();
++	REQUIRE(temporaryFilesFor(renameFailurePath, temporaryFiles));
++	REQUIRE(temporaryFiles.empty());
++	REQUIRE(std::remove(renameFailurePath.c_str()) == 0);
++
++	const std::string victimPath =
++		"voi_atomic_telemetry_victim.json";
++	const std::string symlinkPath =
++		"voi_atomic_telemetry_symlink.json";
++	REQUIRE(writeFile(victimPath, first));
++	std::remove(symlinkPath.c_str());
++	REQUIRE(::symlink(victimPath.c_str(), symlinkPath.c_str()) == 0);
++	REQUIRE(voiWriteTelemetrySnapshotAtomically(symlinkPath, second));
++	REQUIRE(readFile(victimPath) == first);
++	REQUIRE(readFile(symlinkPath) == second);
++	REQUIRE(std::remove(symlinkPath.c_str()) == 0);
++	REQUIRE(std::remove(victimPath.c_str()) == 0);
++
++	const std::string directoryPath = "voi_atomic_telemetry_directory";
++	const std::string directoryLink =
++		"voi_atomic_telemetry_directory_link";
++	std::remove(directoryLink.c_str());
++	::rmdir(directoryPath.c_str());
++	REQUIRE(::mkdir(directoryPath.c_str(), 0700) == 0);
++	REQUIRE(::symlink(directoryPath.c_str(), directoryLink.c_str()) == 0);
++	REQUIRE(!voiWriteTelemetrySnapshotAtomically(
++		directoryLink + "/latest.json",
++		first));
++	REQUIRE(!voiWriteTelemetrySnapshotAtomically(
++		directoryLink + "//latest.json",
++		first));
++	REQUIRE(std::remove(directoryLink.c_str()) == 0);
++	REQUIRE(::rmdir(directoryPath.c_str()) == 0);
++
++	const std::string outerDirectory =
++		"voi_atomic_telemetry_outer";
++	const std::string nestedDirectory =
++		"voi_atomic_telemetry_nested";
++	const std::string nestedLink =
++		outerDirectory + "/linked";
++	std::remove(nestedLink.c_str());
++	::rmdir(outerDirectory.c_str());
++	::rmdir(nestedDirectory.c_str());
++	REQUIRE(::mkdir(outerDirectory.c_str(), 0700) == 0);
++	REQUIRE(::mkdir(nestedDirectory.c_str(), 0700) == 0);
++	REQUIRE(::symlink(
++		("../" + nestedDirectory).c_str(),
++		nestedLink.c_str()) == 0);
++	REQUIRE(!voiWriteTelemetrySnapshotAtomically(
++		nestedLink + "/latest.json",
++		first));
++	REQUIRE(std::remove(nestedLink.c_str()) == 0);
++	REQUIRE(::rmdir(outerDirectory.c_str()) == 0);
++	REQUIRE(::rmdir(nestedDirectory.c_str()) == 0);
++
++	REQUIRE(!voiWriteTelemetrySnapshotAtomically(
++		".",
++		"{\"frame\":3}\n"));
++	temporaryFiles.clear();
++	REQUIRE(temporaryFilesFor(".", temporaryFiles));
++	REQUIRE(temporaryFiles.empty());
++
++	REQUIRE(std::remove(path.c_str()) == 0);
++	return 0;
++}

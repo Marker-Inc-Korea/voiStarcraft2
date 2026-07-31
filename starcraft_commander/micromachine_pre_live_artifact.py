@@ -25,6 +25,8 @@ from typing import Final, cast
 
 from starcraft_commander.micromachine_build_identity import (
     MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
+    MICROMACHINE_REQUIRED_NATIVE_TESTS,
+    canonical_micromachine_ctest_registry,
 )
 
 
@@ -175,6 +177,7 @@ _CTEST_EVIDENCE_KEYS: Final[frozenset[str]] = frozenset(
         "test_names",
         "test_executables",
         "test_manifest_sha256",
+        "registry_sha256",
         "stdout_sha256",
         "stderr_sha256",
     }
@@ -190,13 +193,9 @@ _CTEST_EXECUTABLE_KEYS: Final[frozenset[str]] = frozenset(
         "stderr_sha256",
     }
 )
-_REQUIRED_CTEST_EXECUTABLES: Final[dict[str, str]] = {
-    "voi_operation_transfer_admission": "voi_operation_transfer_admission_test",
-    "voi_runtime_convergence": "voi_runtime_convergence_test",
-    "voi_family_effect_lifecycle": "voi_family_effect_lifecycle_test",
-    "voi_battlefield_projection": "voi_battlefield_projection_test",
-    "voi_battlefield_projection_ndebug": "voi_battlefield_projection_ndebug_test",
-}
+_REQUIRED_CTEST_EXECUTABLES: Final[dict[str, str]] = dict(
+    MICROMACHINE_REQUIRED_NATIVE_TESTS
+)
 
 
 @dataclass(frozen=True)
@@ -272,7 +271,7 @@ MicroMachinePreLiveArtifactLimits = PreLiveArtifactLimits
 
 @dataclass(frozen=True)
 class PreLiveBuildAdmissionSnapshot:
-    """Immutable bytes and source mode accepted by schema-71 admission."""
+    """Immutable bytes and source mode accepted by schema-72 admission."""
 
     build_report_bytes: bytes
     binary_bytes: bytes
@@ -730,6 +729,12 @@ def verify_pre_live_artifact_bundle(
             ctest_bytes = captured_members.get(cast(str, build["ctest_member"]))
             if ctest_bytes is not None:
                 _validate_ctest_evidence_binding(
+                    ctest_bytes,
+                    blockers,
+                )
+            if report_bytes is not None and ctest_bytes is not None:
+                _validate_build_report_ctest_registry_binding(
+                    report_bytes,
                     ctest_bytes,
                     blockers,
                 )
@@ -1394,7 +1399,7 @@ def _validate_builder_admission_snapshot(
 ) -> None:
     admitted_roles = (
         (
-            "schema-71 build report",
+            "schema-72 build report",
             metadata.build_report_member,
             snapshot.build_report_bytes,
             snapshot.build_report_sha256,
@@ -2767,7 +2772,7 @@ def _validate_build_report_binding(
             blockers,
             "build_report_failed",
             "$.build_report.ok",
-            "build report must record an accepted schema-71 build",
+            "build report must record an accepted schema-72 build",
         )
     _require_equal(
         report.get("failures"),
@@ -3059,6 +3064,128 @@ def _validate_ctest_evidence_binding(
     _validate_ctest_evidence_payload(payload, blockers)
 
 
+def _validate_build_report_ctest_registry_binding(
+    report_bytes: bytes,
+    ctest_bytes: bytes,
+    blockers: list[dict[str, object]],
+) -> None:
+    local_blockers: list[dict[str, object]] = []
+    report = _parse_json(report_bytes, local_blockers, "$.build_report")
+    ctest = _parse_json(ctest_bytes, local_blockers, "$.ctest_evidence")
+    blockers.extend(local_blockers)
+    if not isinstance(report, Mapping) or not isinstance(ctest, Mapping):
+        return
+    observed = report.get("observed")
+    native_tests = (
+        observed.get("native_tests") if isinstance(observed, Mapping) else None
+    )
+    report_tests = (
+        native_tests.get("tests") if isinstance(native_tests, Mapping) else None
+    )
+    evidence_tests = ctest.get("test_executables")
+    if not isinstance(report_tests, Mapping) or not isinstance(
+        evidence_tests, Mapping
+    ):
+        _add_blocker(
+            blockers,
+            "ctest_build_report_binding_missing",
+            "$.build_report.observed.native_tests.tests",
+            "Build report and CTest evidence must expose native-test artifacts",
+        )
+    else:
+        for name in sorted(_REQUIRED_CTEST_EXECUTABLES):
+            report_descriptor = report_tests.get(name)
+            evidence_descriptor = evidence_tests.get(name)
+            if not isinstance(report_descriptor, Mapping) or not isinstance(
+                evidence_descriptor, Mapping
+            ):
+                _add_blocker(
+                    blockers,
+                    "ctest_build_report_binding_missing",
+                    f"$.build_report.observed.native_tests.tests.{name}",
+                    "Each required native test must be present in both artifacts",
+                )
+                continue
+            _require_equal(
+                evidence_descriptor.get("path"),
+                report_descriptor.get("path"),
+                f"$.ctest_evidence.test_executables.{name}.path",
+                blockers,
+            )
+            _require_equal(
+                evidence_descriptor.get("sha256"),
+                report_descriptor.get("sha256"),
+                f"$.ctest_evidence.test_executables.{name}.sha256",
+                blockers,
+            )
+
+    report_ctest = (
+        native_tests.get("ctest") if isinstance(native_tests, Mapping) else None
+    )
+    if not isinstance(report_ctest, Mapping):
+        _add_blocker(
+            blockers,
+            "ctest_build_report_binding_missing",
+            "$.build_report.observed.native_tests.ctest",
+            "Build report must bind the CTest executable used by the evidence",
+        )
+    else:
+        _require_equal(
+            ctest.get("ctest_executable"),
+            report_ctest.get("path"),
+            "$.ctest_evidence.ctest_executable",
+            blockers,
+        )
+        _require_equal(
+            ctest.get("ctest_executable_sha256"),
+            report_ctest.get("sha256"),
+            "$.ctest_evidence.ctest_executable_sha256",
+            blockers,
+        )
+
+    registry = (
+        native_tests.get("registry") if isinstance(native_tests, Mapping) else None
+    )
+    report_registry_sha256 = (
+        registry.get("sha256") if isinstance(registry, Mapping) else None
+    )
+    evidence_registry_sha256 = ctest.get("registry_sha256")
+    _require_equal(
+        evidence_registry_sha256,
+        report_registry_sha256,
+        "$.ctest_evidence.registry_sha256",
+        blockers,
+    )
+    checksums = report.get("checksums")
+    checksum_registry_sha256 = (
+        checksums.get("native_test_registry_sha256")
+        if isinstance(checksums, Mapping)
+        else None
+    )
+    _require_equal(
+        evidence_registry_sha256,
+        checksum_registry_sha256,
+        "$.build_report.checksums.native_test_registry_sha256",
+        blockers,
+    )
+    report_manifest_sha256 = (
+        native_tests.get("manifest_sha256")
+        if isinstance(native_tests, Mapping)
+        else None
+    )
+    checksum_manifest_sha256 = (
+        checksums.get("native_test_manifest_sha256")
+        if isinstance(checksums, Mapping)
+        else None
+    )
+    _require_equal(
+        report_manifest_sha256,
+        checksum_manifest_sha256,
+        "$.build_report.checksums.native_test_manifest_sha256",
+        blockers,
+    )
+
+
 def _validate_ctest_evidence_payload(
     payload: Mapping[str, object],
     blockers: list[dict[str, object]],
@@ -3083,7 +3210,12 @@ def _validate_ctest_evidence_payload(
         blockers,
         exact_int=True,
     )
-    for key, expected in (("passed", 5), ("total", 5), ("failures", 0)):
+    required_count = len(_REQUIRED_CTEST_EXECUTABLES)
+    for key, expected in (
+        ("passed", required_count),
+        ("total", required_count),
+        ("failures", 0),
+    ):
         _require_equal(
             payload.get(key),
             expected,
@@ -3109,7 +3241,7 @@ def _validate_ctest_evidence_payload(
             blockers,
             "ctest_identity_mismatch",
             "$.ctest_evidence.test_names",
-            "CTest evidence must contain the exact five required tests",
+            "CTest evidence must contain the exact required tests",
             expected=expected_names,
             actual=names,
         )
@@ -3168,7 +3300,7 @@ def _validate_ctest_evidence_payload(
                 blockers,
                 "ctest_executable_set_mismatch",
                 "$.ctest_evidence.test_executables",
-                "CTest executable evidence must bind the exact five tests",
+                "CTest executable evidence must bind the exact required tests",
                 expected=expected_names,
                 actual=sorted(str(name) for name in executable_names),
             )
@@ -3250,6 +3382,24 @@ def _validate_ctest_evidence_payload(
             payload.get("test_manifest_sha256"),
             expected_manifest_identity,
             "$.ctest_evidence.test_manifest_sha256",
+            blockers,
+        )
+        registry_paths = {
+            name: str(cast(Mapping[str, object], executables[name]).get("path"))
+            for name in expected_names
+            if isinstance(executables.get(name), Mapping)
+            and isinstance(
+                cast(Mapping[str, object], executables[name]).get("path"),
+                str,
+            )
+        }
+        expected_registry_identity = canonical_micromachine_ctest_registry(
+            registry_paths
+        ).get("sha256")
+        _require_equal(
+            payload.get("registry_sha256"),
+            expected_registry_identity,
+            "$.ctest_evidence.registry_sha256",
             blockers,
         )
 

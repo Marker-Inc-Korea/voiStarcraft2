@@ -28,6 +28,7 @@ from starcraft_commander.micromachine_build_identity import (
     REPO_ROOT as BUILD_IDENTITY_REPO_ROOT,
     MicroMachineBuildIdentityConfig,
     build_micromachine_build_identity,
+    canonical_micromachine_ctest_registry,
     write_micromachine_build_attestation,
     write_micromachine_embedded_build_identity_header,
     write_micromachine_source_attestation,
@@ -1650,7 +1651,7 @@ class BuildBindingTest(unittest.TestCase):
                 " ".join(report["blockers"]),
             )
 
-    def test_rebuilds_schema_71_identity_and_exact_five_ctests(self) -> None:
+    def test_rebuilds_schema_72_identity_and_exact_six_ctests(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = make_build_fixture(Path(directory))
 
@@ -1663,8 +1664,12 @@ class BuildBindingTest(unittest.TestCase):
 
             self.assertTrue(report["ok"], report)
             self.assertEqual(fixture["report"]["identity"], report["current_identity"])
-            self.assertEqual(5, report["ctest"]["passed"])
-            self.assertEqual(5, report["ctest"]["total"])
+            self.assertEqual(6, report["ctest"]["passed"])
+            self.assertEqual(6, report["ctest"]["total"])
+            self.assertEqual(
+                fixture["report"]["checksums"]["native_test_registry_sha256"],
+                report["ctest"]["registry_sha256"],
+            )
 
     def test_rejects_missing_corrupt_and_wrong_schema_reports(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1850,7 +1855,7 @@ class BuildBindingTest(unittest.TestCase):
             subprocess.CompletedProcess(
                 [],
                 1,
-                stdout="80% tests passed, 1 tests failed out of 5\n",
+                stdout="83% tests passed, 1 tests failed out of 6\n",
                 stderr="failed\n",
             ),
             subprocess.CompletedProcess([], 0, stdout="", stderr=""),
@@ -1864,8 +1869,8 @@ class BuildBindingTest(unittest.TestCase):
                 [],
                 0,
                 stdout=(
-                    "100% tests passed, 0 tests failed out of 5\n"
-                    "80% tests passed, 1 tests failed out of 5\n"
+                    "100% tests passed, 0 tests failed out of 6\n"
+                    "83% tests passed, 1 tests failed out of 6\n"
                 ),
                 stderr="",
             ),
@@ -1949,6 +1954,7 @@ class BuildBindingTest(unittest.TestCase):
                                 "voi_family_effect_lifecycle_test",
                                 "voi_battlefield_projection_test",
                                 "voi_battlefield_projection_ndebug_test",
+                                "voi_atomic_telemetry_test",
                             )
                         )
                     ]
@@ -1968,7 +1974,7 @@ class BuildBindingTest(unittest.TestCase):
             )
             self.assertFalse(wrong_identity["ok"], wrong_identity)
             self.assertIn(
-                "CTest test identity mismatch",
+                "CTest registry identity mismatch",
                 " ".join(wrong_identity["blockers"]),
             )
 
@@ -2025,7 +2031,66 @@ class BuildBindingTest(unittest.TestCase):
             )
 
             self.assertFalse(result["ok"], result)
-            self.assertIn("unexpected arguments", " ".join(result["blockers"]))
+            self.assertIn(
+                "CTest registry discovery returned an invalid test",
+                " ".join(result["blockers"]),
+            )
+
+    def test_rejects_noncanonical_ctest_registry_command_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = make_build_fixture(Path(directory))
+            build_dir = fixture["config"].micromachine_build_dir.resolve()
+            aliases = {
+                "missing parent alias": (
+                    build_dir
+                    / "bin"
+                    / "missing"
+                    / ".."
+                    / "voi_atomic_telemetry_test"
+                ),
+                "symlink directory alias": (
+                    build_dir / "linked-bin" / "voi_atomic_telemetry_test"
+                ),
+            }
+            (build_dir / "linked-bin").symlink_to(
+                build_dir / "bin",
+                target_is_directory=True,
+            )
+
+            for name, alias in aliases.items():
+                with self.subTest(name=name):
+
+                    def aliased_registry(
+                        *args: object,
+                        _alias: Path = alias,
+                        **kwargs: object,
+                    ) -> subprocess.CompletedProcess:
+                        discovered = passing_ctest(*args, **kwargs)
+                        if "--show-only=json-v1" not in args[0]:
+                            return discovered
+                        payload = json.loads(discovered.stdout)
+                        for test in payload["tests"]:
+                            if test["name"] == "voi_atomic_telemetry":
+                                test["command"] = [str(_alias)]
+                        return subprocess.CompletedProcess(
+                            args[0],
+                            0,
+                            stdout=json.dumps(payload),
+                            stderr="",
+                        )
+
+                    result = attest_build_binding(
+                        fixture["report_path"],
+                        repository_dir=fixture["repository"],
+                        expected_repository_commit=fixture["repository_commit"],
+                        command_runner=aliased_registry,
+                    )
+
+                    self.assertFalse(result["ok"], result)
+                    self.assertIn(
+                        "CTest registry identity mismatch",
+                        " ".join(result["blockers"]),
+                    )
 
     def test_ctest_executes_pinned_tests_during_original_path_swap(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2110,6 +2175,10 @@ class BuildBindingTest(unittest.TestCase):
                             "voi_battlefield_projection_ndebug",
                             "voi_battlefield_projection_ndebug_test",
                         ),
+                        (
+                            "voi_atomic_telemetry",
+                            "voi_atomic_telemetry_test",
+                        ),
                     )
                 ]
             }
@@ -2119,7 +2188,7 @@ class BuildBindingTest(unittest.TestCase):
                 f"  printf '%s\\n' '{json.dumps(discovered)}'\n"
                 "else\n"
                 "  printf '%s\\n' "
-                "'100% tests passed, 0 tests failed out of 5'\n"
+                "'100% tests passed, 0 tests failed out of 6'\n"
                 "fi\n"
                 "exit 0\n"
             )
@@ -2151,13 +2220,29 @@ class BuildBindingTest(unittest.TestCase):
             shadow = root / "shadow"
             shadow.mkdir()
             fake_ctest = shadow / "ctest"
+            build_dir = fixture["config"].micromachine_build_dir.resolve()
+            discovered = {
+                "tests": [
+                    {
+                        "name": name,
+                        "command": [str(build_dir / "bin" / executable)],
+                    }
+                    for name, executable in sorted(
+                        MICROMACHINE_REQUIRED_NATIVE_TESTS.items()
+                    )
+                ]
+            }
             fake_ctest.write_text(
                 "#!/bin/sh\n"
-                "printf '%s\\n' '100% tests passed, 0 tests failed out of 5'\n"
+                'if [ "$3" = "--show-only=json-v1" ]; then\n'
+                f"  printf '%s\\n' '{json.dumps(discovered)}'\n"
+                "else\n"
+                "  printf '%s\\n' "
+                "'100% tests passed, 0 tests failed out of 6'\n"
+                "fi\n"
                 "exit 0\n"
             )
             fake_ctest.chmod(0o755)
-            build_dir = fixture["config"].micromachine_build_dir
             (build_dir / "CMakeCache.txt").write_text(
                 f"CMAKE_CTEST_COMMAND:INTERNAL={fake_ctest.resolve()}\n"
             )
@@ -3166,7 +3251,10 @@ class ReplayLedgerTest(unittest.TestCase):
             "current_identity": "sha256:" + "2" * 64,
             "binary_sha256": "3" * 64,
             "repository_inputs": {"digest": "sha256:" + "4" * 64},
-            "ctest": {"test_manifest_sha256": "sha256:" + "5" * 64},
+            "ctest": {
+                "test_manifest_sha256": "sha256:" + "5" * 64,
+                "registry_sha256": "sha256:" + "c" * 64,
+            },
         }
         producer_policy = {
             "ok": True,
@@ -4029,6 +4117,18 @@ def make_build_fixture(root: Path) -> dict[str, Any]:
         executable = config.binary_path.parent / executable_name
         executable.write_text(f"#!/bin/sh\n# native-test:{test_name}\nexit 0\n")
         executable.chmod(0o755)
+    (build_dir / "CTestTestfile.cmake").write_text(
+        "\n".join(
+            (
+                f"add_test([=[{test_name}]=] "
+                f"[=[{(config.binary_path.parent / executable_name).resolve()}]=])"
+            )
+            for test_name, executable_name in sorted(
+                MICROMACHINE_REQUIRED_NATIVE_TESTS.items()
+            )
+        )
+        + "\n"
+    )
     write_micromachine_source_attestation(config)
     write_micromachine_build_attestation(config)
     report = build_micromachine_build_identity(config)
@@ -4090,6 +4190,7 @@ def passing_ctest(*args: object, **kwargs: object) -> subprocess.CompletedProces
                 "voi_battlefield_projection_ndebug",
                 "voi_battlefield_projection_ndebug_test",
             ),
+            ("voi_atomic_telemetry", "voi_atomic_telemetry_test"),
         ):
             tests.append(
                 {
@@ -4106,7 +4207,7 @@ def passing_ctest(*args: object, **kwargs: object) -> subprocess.CompletedProces
     return subprocess.CompletedProcess(
         argv,
         0,
-        stdout="100% tests passed, 0 tests failed out of 5\n",
+        stdout="100% tests passed, 0 tests failed out of 6\n",
         stderr="",
     )
 
@@ -4199,6 +4300,8 @@ def make_source_artifact_bundle(
         }
     )
     report_identity = "sha256:" + "a" * 64
+    ctest_payload = make_ctest_evidence(Path("/fixture/build"))
+    native_tests = make_build_report_native_tests(ctest_payload)
     report = canonical_json_bytes(
         {
             "schema_version": MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
@@ -4208,6 +4311,11 @@ def make_source_artifact_bundle(
             "observed": {
                 "binary_sha256": hashlib.sha256(binary).hexdigest(),
                 "embedded_build_input_identity": repository_input_identity,
+                "native_tests": native_tests,
+            },
+            "checksums": {
+                "native_test_registry_sha256": ctest_payload["registry_sha256"],
+                "native_test_manifest_sha256": native_tests["manifest_sha256"],
             },
         }
     )
@@ -4232,7 +4340,7 @@ def make_source_artifact_bundle(
             "stderr_sha256": hashlib.sha256(b"").hexdigest(),
         }
     )
-    ctest = canonical_ctest_evidence_bytes(make_ctest_evidence(Path("/fixture/build")))
+    ctest = canonical_ctest_evidence_bytes(ctest_payload)
     metadata = PreLiveArtifactMetadata(
         authority_scope="candidate_pr",
         release_authoritative=False,
@@ -4435,13 +4543,7 @@ def make_ctest_evidence(build_dir: Path) -> dict[str, object]:
     if ctest_candidate is None:
         raise AssertionError("ctest is required by the provenance fixture")
     ctest_path = Path(ctest_candidate).resolve()
-    executable_names = {
-        "voi_operation_transfer_admission": "voi_operation_transfer_admission_test",
-        "voi_runtime_convergence": "voi_runtime_convergence_test",
-        "voi_family_effect_lifecycle": "voi_family_effect_lifecycle_test",
-        "voi_battlefield_projection": "voi_battlefield_projection_test",
-        "voi_battlefield_projection_ndebug": "voi_battlefield_projection_ndebug_test",
-    }
+    executable_names = dict(MICROMACHINE_REQUIRED_NATIVE_TESTS)
     test_executables = {
         name: {
             "path": str((build_dir / "bin" / executable).resolve()),
@@ -4479,8 +4581,8 @@ def make_ctest_evidence(build_dir: Path) -> dict[str, object]:
         "ctest_executable": str(ctest_path),
         "ctest_executable_sha256": hashlib.sha256(ctest_path.read_bytes()).hexdigest(),
         "returncode": 0,
-        "passed": 5,
-        "total": 5,
+        "passed": len(executable_names),
+        "total": len(executable_names),
         "failures": 0,
         "test_names": sorted(executable_names),
         "test_executables": test_executables,
@@ -4488,10 +4590,43 @@ def make_ctest_evidence(build_dir: Path) -> dict[str, object]:
             "sha256:"
             + hashlib.sha256(canonical_json_bytes(test_executables)).hexdigest()
         ),
+        "registry_sha256": canonical_micromachine_ctest_registry(
+            {
+                name: descriptor["path"]
+                for name, descriptor in test_executables.items()
+            }
+        )["sha256"],
         "stdout_sha256": hashlib.sha256(
-            b"100% tests passed, 0 tests failed out of 5\n"
+            b"100% tests passed, 0 tests failed out of 6\n"
         ).hexdigest(),
         "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+    }
+
+
+def make_build_report_native_tests(
+    ctest_payload: dict[str, object],
+) -> dict[str, object]:
+    test_executables = ctest_payload["test_executables"]
+    assert isinstance(test_executables, dict)
+    tests = {
+        name: {
+            "path": descriptor["path"],
+            "sha256": descriptor["sha256"],
+            "size_bytes": len(f"synthetic:{name}".encode()),
+        }
+        for name, descriptor in test_executables.items()
+    }
+    return {
+        "ctest": {
+            "path": ctest_payload["ctest_executable"],
+            "sha256": ctest_payload["ctest_executable_sha256"],
+            "size_bytes": Path(str(ctest_payload["ctest_executable"])).stat().st_size,
+        },
+        "registry": {
+            "sha256": ctest_payload["registry_sha256"],
+        },
+        "tests": tests,
+        "manifest_sha256": "sha256:" + ("d" * 64),
     }
 
 

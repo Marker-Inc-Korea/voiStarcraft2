@@ -32,6 +32,7 @@ from starcraft_commander.micromachine_build_identity import (
     REPO_ROOT as BUILD_IDENTITY_REPO_ROOT,
     MicroMachineBuildIdentityConfig,
     build_micromachine_build_identity,
+    canonical_micromachine_ctest_registry,
     inspect_git_worktree_state,
     micromachine_build_identity_admission_error,
 )
@@ -109,7 +110,7 @@ _CTEST_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
     r"(?m)^\s*(\d+)%\s+tests passed,\s+(\d+)\s+tests failed out of\s+(\d+)\s*$"
 )
 _CTEST_FRACTION_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?im)^\s*5/5\s+tests passed\s*$"
+    r"(?im)^\s*(\d+)/(\d+)\s+tests passed\s*$"
 )
 _CMAKE_CTEST_COMMAND_RE: Final[re.Pattern[str]] = re.compile(
     r"(?m)^CMAKE_CTEST_COMMAND:INTERNAL=(.+)$"
@@ -121,6 +122,7 @@ _BUILD_SCRIPT_UPSTREAM_COMMIT_RE: Final[re.Pattern[str]] = re.compile(
 _REQUIRED_CTEST_COMMANDS: Final[dict[str, str]] = dict(
     MICROMACHINE_REQUIRED_NATIVE_TESTS
 )
+_REQUIRED_CTEST_COUNT: Final[int] = len(_REQUIRED_CTEST_COMMANDS)
 _EXTERNAL_BUILD_PATH_FIELDS: Final[frozenset[str]] = frozenset(
     {
         "micromachine_dir",
@@ -1890,7 +1892,7 @@ def attest_build_binding(
     command_runner: CommandRunner = subprocess.run,
     git_runner: CommandRunner = subprocess.run,
 ) -> dict[str, object]:
-    """Bind schema-71 inputs to one commit and run the exact five CTests."""
+    """Bind schema-72 inputs to one commit and run the exact required CTests."""
 
     blockers: list[str] = []
     path = Path(report_path).absolute()
@@ -1950,10 +1952,10 @@ def attest_build_binding(
                             f"actual={recorded.get('schema_version')!r}"
                         )
                     elif recorded.get("ok") is not True:
-                        blockers.append("schema-71 build report is not accepted")
+                        blockers.append("schema-72 build report is not accepted")
                     elif recorded.get("failures") != []:
                         blockers.append(
-                            "schema-71 build report contains recorded failures"
+                            "schema-72 build report contains recorded failures"
                         )
                     elif upstream_commit_policy.get("ok") is True:
                         try:
@@ -1984,6 +1986,7 @@ def attest_build_binding(
         "test_names": [],
         "test_executables": {},
         "test_manifest_sha256": None,
+        "registry_sha256": None,
         "stdout_sha256": None,
         "stderr_sha256": None,
     }
@@ -2068,6 +2071,32 @@ def attest_build_binding(
                 )
                 if ctest_result["ok"] is not True:
                     blockers.extend(cast(list[str], ctest_result["blockers"]))
+                current_observed = current.get("observed")
+                current_native_tests = (
+                    current_observed.get("native_tests")
+                    if isinstance(current_observed, Mapping)
+                    else None
+                )
+                current_registry = (
+                    current_native_tests.get("registry")
+                    if isinstance(current_native_tests, Mapping)
+                    else None
+                )
+                expected_registry_sha256 = (
+                    current_registry.get("sha256")
+                    if isinstance(current_registry, Mapping)
+                    else None
+                )
+                if (
+                    ctest_result.get("registry_sha256")
+                    != expected_registry_sha256
+                ):
+                    blockers.append(
+                        "CTest registry digest differs from the schema-72 "
+                        "build identity: "
+                        f"expected={expected_registry_sha256!r} "
+                        f"actual={ctest_result.get('registry_sha256')!r}"
+                    )
                 try:
                     current_after_ctest = build_micromachine_build_identity(config)
                 except Exception as exc:
@@ -3632,6 +3661,7 @@ def canonical_replay_digest(
         "binary_sha256": build_binding.get("binary_sha256"),
         "repository_inputs_sha256": repository_inputs.get("digest"),
         "ctest_manifest_sha256": ctest.get("test_manifest_sha256"),
+        "ctest_registry_sha256": ctest.get("registry_sha256"),
         "producer_id": producer_policy.get("producer_id"),
         "producer_policy_sha256": producer_policy.get("policy_sha256"),
         "producer_argv_sha256": producer_policy.get("argv_sha256"),
@@ -3657,6 +3687,7 @@ def canonical_replay_digest(
         "binary_sha256",
         "repository_inputs_sha256",
         "ctest_manifest_sha256",
+        "ctest_registry_sha256",
         "producer_id",
         "producer_policy_sha256",
         "producer_argv_sha256",
@@ -4748,6 +4779,7 @@ def _run_ctest(
             test_names=[],
             test_executables={},
             test_manifest_sha256=None,
+            registry_sha256=None,
             stdout_sha256=None,
             stderr_sha256=None,
         )
@@ -4797,9 +4829,82 @@ def _run_ctest(
     stdout = ""
     stderr = ""
     test_names: list[str] = []
+    registry_paths: dict[str, str] = {}
     test_executables: dict[str, dict[str, object]] = {}
     pinned_test_paths: dict[str, Path] = {}
     original_test_snapshots: dict[str, tuple[int, int, int, int, str]] = {}
+    if not blockers:
+        try:
+            registered = command_runner(
+                list(discovery_argv),
+                cwd=str(build_dir),
+                check=False,
+                capture_output=True,
+                text=True,
+                shell=False,
+                env=dict(SANITIZED_TEST_ENV),
+            )
+            registry_returncode = int(registered.returncode)
+            registry_stdout = _as_text(registered.stdout)
+            registry_stderr = _as_text(registered.stderr)
+        except Exception as exc:
+            blockers.append(f"CTest registry discovery failed: {exc}")
+        else:
+            if registry_returncode != 0:
+                blockers.append(
+                    f"CTest registry discovery exited with code {registry_returncode}"
+                )
+            try:
+                registry_payload = json.loads(registry_stdout)
+            except json.JSONDecodeError as exc:
+                blockers.append(
+                    f"CTest registry discovery returned malformed JSON: {exc}"
+                )
+            else:
+                registered_tests = (
+                    registry_payload.get("tests")
+                    if isinstance(registry_payload, Mapping)
+                    else None
+                )
+                if not isinstance(registered_tests, list):
+                    blockers.append(
+                        "CTest registry discovery did not return a tests list"
+                    )
+                else:
+                    for test in registered_tests:
+                        if not isinstance(test, Mapping):
+                            blockers.append(
+                                "CTest registry discovery returned a non-object test"
+                            )
+                            continue
+                        name = test.get("name")
+                        command = test.get("command")
+                        if (
+                            not isinstance(name, str)
+                            or not isinstance(command, list)
+                            or len(command) != 1
+                            or not isinstance(command[0], str)
+                            or name in registry_paths
+                        ):
+                            blockers.append(
+                                "CTest registry discovery returned an invalid test"
+                            )
+                            continue
+                        registry_paths[name] = command[0]
+                    expected_registry_paths = {
+                        name: str((build_dir / "bin" / executable).resolve())
+                        for name, executable in _REQUIRED_CTEST_COMMANDS.items()
+                    }
+                    if registry_paths != expected_registry_paths:
+                        blockers.append(
+                            "CTest registry identity mismatch: "
+                            f"expected={expected_registry_paths} "
+                            f"actual={registry_paths}"
+                        )
+                    else:
+                        test_names = sorted(registry_paths)
+            if registry_stderr:
+                blockers.append("CTest registry discovery wrote to stderr")
     for name, executable_name in sorted(_REQUIRED_CTEST_COMMANDS.items()):
         command_path = (build_dir / "bin" / executable_name).resolve()
         if (
@@ -4888,6 +4993,7 @@ def _run_ctest(
                 if not isinstance(tests, list):
                     blockers.append("CTest discovery did not return a tests list")
                 else:
+                    pinned_test_names: list[str] = []
                     for test in tests:
                         if not isinstance(test, Mapping):
                             blockers.append(
@@ -4904,7 +5010,7 @@ def _run_ctest(
                         ):
                             blockers.append("CTest discovery returned an invalid test")
                             continue
-                        test_names.append(name)
+                        pinned_test_names.append(name)
                         if len(command) != 1:
                             blockers.append(
                                 f"CTest command contains unexpected arguments: {name}"
@@ -4921,11 +5027,11 @@ def _run_ctest(
                                 f"CTest command mismatch for {name}: "
                                 f"expected={expected_path} actual={command_path}"
                             )
-                    if set(test_names) != set(_REQUIRED_CTEST_COMMANDS):
+                    if set(pinned_test_names) != set(_REQUIRED_CTEST_COMMANDS):
                         blockers.append(
                             "CTest test identity mismatch: "
                             f"expected={sorted(_REQUIRED_CTEST_COMMANDS)} "
-                            f"actual={sorted(test_names)}"
+                            f"actual={sorted(pinned_test_names)}"
                         )
             if discovery_stderr:
                 blockers.append("CTest discovery wrote to stderr")
@@ -4953,13 +5059,17 @@ def _run_ctest(
     combined = stdout + "\n" + stderr
     summaries = _CTEST_SUMMARY_RE.findall(combined)
     fractions = _CTEST_FRACTION_RE.findall(combined)
-    exact_five = summaries == [("100", "0", "5")] or (
-        not summaries and len(fractions) == 1
+    required_count = str(_REQUIRED_CTEST_COUNT)
+    exact_required = summaries == [("100", "0", required_count)] or (
+        not summaries and fractions == [(required_count, required_count)]
     )
     if returncode is not None and returncode != 0:
         blockers.append(f"ctest exited with code {returncode}")
-    if not exact_five:
-        blockers.append("ctest did not report an exact 5/5 pass")
+    if not exact_required:
+        blockers.append(
+            "ctest did not report an exact "
+            f"{_REQUIRED_CTEST_COUNT}/{_REQUIRED_CTEST_COUNT} pass"
+        )
     try:
         _, ctest_snapshot_after = _read_regular_file_snapshot(
             ctest_path,
@@ -5019,6 +5129,11 @@ def _run_ctest(
         if test_executables
         else None
     )
+    registry_sha256 = (
+        canonical_micromachine_ctest_registry(registry_paths).get("sha256")
+        if registry_paths
+        else None
+    )
     result = _component_result(
         blockers,
         schema_version=1,
@@ -5027,14 +5142,23 @@ def _run_ctest(
         ctest_executable=str(ctest_path),
         ctest_executable_sha256=ctest_sha256_before,
         returncode=returncode,
-        passed=5 if exact_five and direct_passed == 5 else direct_passed,
-        total=5,
-        failures=0 if exact_five and direct_passed == 5 else 5 - direct_passed,
+        passed=(
+            _REQUIRED_CTEST_COUNT
+            if exact_required and direct_passed == _REQUIRED_CTEST_COUNT
+            else direct_passed
+        ),
+        total=_REQUIRED_CTEST_COUNT,
+        failures=(
+            0
+            if exact_required and direct_passed == _REQUIRED_CTEST_COUNT
+            else _REQUIRED_CTEST_COUNT - direct_passed
+        ),
         test_names=sorted(test_names),
         test_executables={
             name: test_executables[name] for name in sorted(test_executables)
         },
         test_manifest_sha256=test_manifest_sha256,
+        registry_sha256=registry_sha256,
         stdout_sha256=hashlib.sha256(stdout.encode()).hexdigest(),
         stderr_sha256=hashlib.sha256(stderr.encode()).hexdigest(),
     )

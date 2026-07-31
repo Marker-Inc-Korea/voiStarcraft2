@@ -12,6 +12,7 @@ from starcraft_commander.micromachine_build_identity import (
     MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
     MICROMACHINE_REQUIRED_NATIVE_TESTS,
     MicroMachineBuildIdentityConfig,
+    _ctest_registry_attestation,
     build_argument_parser,
     build_micromachine_build_identity,
     build_runtime_workspace_identity,
@@ -27,7 +28,7 @@ from starcraft_commander.micromachine_build_identity import (
 
 class MicroMachineBuildIdentityTest(unittest.TestCase):
     def test_live_admission_requires_the_supported_schema(self) -> None:
-        self.assertEqual(71, MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION)
+        self.assertEqual(72, MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION)
         passing = {
             "schema_version": MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
             "identity": "sha256:fixture",
@@ -100,6 +101,18 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             )
             self.assertTrue(str(report["identity"]).startswith("sha256:"))
             self.assertEqual(report["identity"], read_build_identity(output))
+            self.assertIn(
+                "micromachine_atomic_telemetry_publication_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                "micromachine_atomic_telemetry_publication_patch_sha256",
+                report["checksums"],
+            )
+            self.assertIn(
+                "native_test_registry_sha256",
+                report["checksums"],
+            )
             self.assertIn(
                 "micromachine_operation_state_patch",
                 report["paths"],
@@ -2247,6 +2260,14 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             Path(args.micromachine_battlefield_identity_transfer_integrity_patch).name,
         )
 
+    def test_atomic_telemetry_cli_defaults_to_patch_0072(self) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0072-atomic-telemetry-publication.patch",
+            Path(args.micromachine_atomic_telemetry_publication_patch).name,
+        )
+
     def test_operation_edit_ownership_handoff_patch_changes_identity(
         self,
     ) -> None:
@@ -2814,6 +2835,106 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                     if failure["code"] == "missing_required_build_input"
                 },
             )
+
+    def test_atomic_telemetry_patch_changes_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            checksum = "micromachine_atomic_telemetry_publication_patch_sha256"
+
+            config.micromachine_atomic_telemetry_publication_patch.write_text(
+                "changed atomic telemetry publication\n"
+            )
+            second = build_micromachine_build_identity(config)
+
+            self.assertTrue(first["ok"], first)
+            self.assertFalse(second["ok"], second)
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+
+    def test_missing_atomic_telemetry_patch_marks_identity_not_ok(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_atomic_telemetry_publication_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"], report)
+            self.assertIn(
+                "micromachine_atomic_telemetry_publication_patch_sha256",
+                {
+                    failure.get("checksum")
+                    for failure in report["failures"]
+                    if failure["code"] == "missing_required_build_input"
+                },
+            )
+
+    def test_ctest_registry_rejects_noncanonical_command_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            build_dir = Path(directory).resolve()
+            ctest_path = build_dir / "ctest"
+            canonical_paths = {
+                name: str(build_dir / "bin" / executable)
+                for name, executable in MICROMACHINE_REQUIRED_NATIVE_TESTS.items()
+            }
+            cases = {
+                "missing parent alias": (
+                    build_dir
+                    / "bin"
+                    / "missing"
+                    / ".."
+                    / MICROMACHINE_REQUIRED_NATIVE_TESTS["voi_atomic_telemetry"]
+                ),
+                "symlink directory alias": (
+                    build_dir
+                    / "linked-bin"
+                    / MICROMACHINE_REQUIRED_NATIVE_TESTS["voi_atomic_telemetry"]
+                ),
+            }
+            (build_dir / "bin").mkdir()
+            (build_dir / "linked-bin").symlink_to(
+                build_dir / "bin",
+                target_is_directory=True,
+            )
+
+            for name, alias in cases.items():
+                with self.subTest(name=name):
+                    registry = {
+                        "tests": [
+                            {
+                                "name": test_name,
+                                "command": [
+                                    str(alias)
+                                    if test_name == "voi_atomic_telemetry"
+                                    else canonical_paths[test_name]
+                                ],
+                            }
+                            for test_name in sorted(canonical_paths)
+                        ]
+                    }
+                    registry_json = json.dumps(registry, separators=(",", ":"))
+                    ctest_path.write_text(
+                        "#!/bin/sh\n"
+                        f"printf '%s\\n' {json.dumps(registry_json)}\n"
+                        "exit 0\n"
+                    )
+                    ctest_path.chmod(0o755)
+
+                    attestation, failures = _ctest_registry_attestation(
+                        ctest_path=ctest_path,
+                        build_dir=build_dir,
+                    )
+
+                    self.assertIsNone(attestation)
+                    self.assertIn(
+                        "ctest_registry_identity_mismatch",
+                        {failure["code"] for failure in failures},
+                    )
 
     def test_operation_production_review_closure_patch_changes_identity(
         self,
@@ -3543,6 +3664,9 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         micromachine_battlefield_identity_transfer_integrity_patch = (
             root / "micromachine-battlefield-identity-transfer-integrity.patch"
         )
+        micromachine_atomic_telemetry_publication_patch = (
+            root / "micromachine-atomic-telemetry-publication.patch"
+        )
         s2client_patch = root / "s2client.patch"
         hook_manifest = root / "HOOK_MANIFEST.json"
         map_pool = root / "MICROMACHINE_MAP_POOL.json"
@@ -3619,6 +3743,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             micromachine_authoritative_battlefield_ownership_readiness_patch,
             micromachine_battlefield_projection_review_closure_patch,
             micromachine_battlefield_identity_transfer_integrity_patch,
+            micromachine_atomic_telemetry_publication_patch,
             s2client_patch,
             hook_manifest,
             map_pool,
@@ -3831,6 +3956,9 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             micromachine_battlefield_identity_transfer_integrity_patch=(
                 micromachine_battlefield_identity_transfer_integrity_patch
             ),
+            micromachine_atomic_telemetry_publication_patch=(
+                micromachine_atomic_telemetry_publication_patch
+            ),
             s2client_patch=s2client_patch,
             hook_manifest=hook_manifest,
             map_pool=map_pool,
@@ -3844,7 +3972,27 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             )
             fixture_ctest = build_dir / "tools" / "ctest"
             fixture_ctest.parent.mkdir(parents=True, exist_ok=True)
-            fixture_ctest.write_text("#!/bin/sh\nexit 0\n")
+            registry = {
+                "tests": [
+                    {
+                        "name": test_name,
+                        "command": [
+                            str((build_dir / "bin" / executable_name).resolve())
+                        ],
+                    }
+                    for test_name, executable_name in sorted(
+                        MICROMACHINE_REQUIRED_NATIVE_TESTS.items()
+                    )
+                ]
+            }
+            registry_json = json.dumps(registry, separators=(",", ":"))
+            fixture_ctest.write_text(
+                "#!/bin/sh\n"
+                'if [ "${3:-}" = "--show-only=json-v1" ]; then\n'
+                f"  printf '%s\\n' {json.dumps(registry_json)}\n"
+                "fi\n"
+                "exit 0\n"
+            )
             fixture_ctest.chmod(0o755)
             (build_dir / "CMakeCache.txt").write_text(
                 f"CMAKE_CTEST_COMMAND:INTERNAL={fixture_ctest.resolve()}\n"
