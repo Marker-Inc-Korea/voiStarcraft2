@@ -2874,6 +2874,44 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 },
             )
 
+    def test_atomic_telemetry_native_test_requires_its_canonical_artifact(
+        self,
+    ) -> None:
+        for mutation in ("missing", "renamed"):
+            with self.subTest(mutation=mutation):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    config = self.build_config(root, binary=True)
+                    executable = (
+                        config.micromachine_build_dir
+                        / "bin"
+                        / MICROMACHINE_REQUIRED_NATIVE_TESTS[
+                            "voi_atomic_telemetry"
+                        ]
+                    )
+                    if mutation == "missing":
+                        executable.unlink()
+                    else:
+                        executable.rename(
+                            executable.with_name(
+                                "voi_atomic_telemetry_test.renamed"
+                            )
+                        )
+
+                    report = build_micromachine_build_identity(config)
+
+                    self.assertFalse(report["ok"], report)
+                    self.assertIn(
+                        (
+                            "missing_or_invalid_native_test",
+                            "voi_atomic_telemetry",
+                        ),
+                        {
+                            (failure["code"], failure.get("test"))
+                            for failure in report["failures"]
+                        },
+                    )
+
     def test_ctest_registry_rejects_noncanonical_command_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             build_dir = Path(directory).resolve()

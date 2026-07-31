@@ -1750,6 +1750,76 @@ class BuildBindingTest(unittest.TestCase):
                 report["ctest"]["registry_sha256"],
             )
 
+    def test_rejects_missing_atomic_telemetry_artifact_before_ctest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = make_build_fixture(Path(directory))
+            atomic_test = (
+                fixture["config"].micromachine_build_dir
+                / "bin"
+                / MICROMACHINE_REQUIRED_NATIVE_TESTS["voi_atomic_telemetry"]
+            )
+            atomic_test.unlink()
+            ctest_calls: list[object] = []
+
+            def forbidden_ctest(
+                *args: object,
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess:
+                ctest_calls.append(args)
+                return passing_ctest(*args, **kwargs)
+
+            report = attest_build_binding(
+                fixture["report_path"],
+                repository_dir=fixture["repository"],
+                expected_repository_commit=fixture["repository_commit"],
+                command_runner=forbidden_ctest,
+            )
+
+            self.assertFalse(report["ok"], report)
+            self.assertEqual([], ctest_calls)
+            self.assertIn(
+                "missing_or_invalid_native_test",
+                " ".join(report["blockers"]),
+            )
+            self.assertIn("voi_atomic_telemetry", " ".join(report["blockers"]))
+
+    def test_rejects_independently_renamed_atomic_telemetry_artifact(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = make_build_fixture(Path(directory))
+            atomic_test = (
+                fixture["config"].micromachine_build_dir
+                / "bin"
+                / MICROMACHINE_REQUIRED_NATIVE_TESTS["voi_atomic_telemetry"]
+            )
+            atomic_test.rename(
+                atomic_test.with_name("voi_atomic_telemetry_test.renamed")
+            )
+            ctest_calls: list[object] = []
+
+            def forbidden_ctest(
+                *args: object,
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess:
+                ctest_calls.append(args)
+                return passing_ctest(*args, **kwargs)
+
+            report = attest_build_binding(
+                fixture["report_path"],
+                repository_dir=fixture["repository"],
+                expected_repository_commit=fixture["repository_commit"],
+                command_runner=forbidden_ctest,
+            )
+
+            self.assertFalse(report["ok"], report)
+            self.assertEqual([], ctest_calls)
+            self.assertIn(
+                "missing_or_invalid_native_test",
+                " ".join(report["blockers"]),
+            )
+            self.assertIn("voi_atomic_telemetry", " ".join(report["blockers"]))
+
     def test_rejects_missing_corrupt_and_wrong_schema_reports(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
