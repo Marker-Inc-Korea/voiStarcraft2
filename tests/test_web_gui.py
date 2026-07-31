@@ -19054,6 +19054,64 @@ const assert = require("assert");
   await flushPromises();
   await flushPromises();
 
+  var destinationBravoButton = typedTransferButtons.find(function(button) {
+    var choiceId = button.getAttribute("data-contextual-choice-id");
+    var stored = contextualTransferChoiceRecords[choiceId];
+    return stored && stored.payload.destination_operation_id ===
+      "destination-bravo";
+  });
+  assert(destinationBravoButton);
+  var operationCountBeforeRejectedTransfer =
+    Object.keys(operationRecords).length;
+  var sourceRecordBeforeRejectedTransfer = operationRecords[assaultKey];
+  var sourceNodeBeforeRejectedTransfer =
+    sourceRecordBeforeRejectedTransfer.node;
+  var rejectedTransferRequestStart = requests.length;
+  destinationBravoButton.dispatchEvent({
+    type: "click",
+    preventDefault: function() {}
+  });
+  assert.strictEqual(
+    requests.length,
+    rejectedTransferRequestStart + 1
+  );
+  requests[rejectedTransferRequestStart].deferred.resolve(response(409, {
+    accepted: false,
+    status: "rejected",
+    blocker: {
+      code: "projection_frame_mismatch",
+      message: "The battlefield projection frame changed."
+    },
+    consumption_status: "not_published"
+  }));
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(
+    Object.keys(operationRecords).length,
+    operationCountBeforeRejectedTransfer
+  );
+  assert.strictEqual(
+    operationRecords[assaultKey],
+    sourceRecordBeforeRejectedTransfer
+  );
+  assert.strictEqual(
+    operationRecords[assaultKey].node,
+    sourceNodeBeforeRejectedTransfer
+  );
+  assert.strictEqual(
+    operationRecords[assaultKey].disposition,
+    "active"
+  );
+  assert.strictEqual(
+    destinationBravoButton.getAttribute("aria-disabled"),
+    "false"
+  );
+  assert(
+    nodes["micromachine-status"].textContent.includes(
+      "The battlefield projection frame changed."
+    )
+  );
+
   // A newer generation edits the existing card instead of creating a duplicate.
   var editedAssault = operationResult(
     "assault-bravo",

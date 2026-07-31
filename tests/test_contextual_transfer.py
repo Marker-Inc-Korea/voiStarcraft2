@@ -10,6 +10,7 @@ import json
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 from starcraft_commander.contextual_transfer import (
     ContextualTransferRejectedError,
@@ -29,6 +30,8 @@ from starcraft_commander.micromachine_runtime import (
 from starcraft_commander.web_gui import (
     SessionLoopBridge,
     WebGuiServer,
+    _ContextualTransferReplay,
+    _ContextualTransferReplayCapacityError,
     _MicroMachineValidatedRuntimeSnapshot,
     _micromachine_blackboard_scope_id,
 )
@@ -691,6 +694,120 @@ class ContextualTransferBridgeTest(unittest.TestCase):
             )
             self.assertEqual(1, resolver_calls)
             self.assertEqual(before + 1, _archive_count(backend))
+
+    def test_replay_cache_scans_past_inflight_entries_and_stays_bounded(self):
+        bridge = SessionLoopBridge(session=_UnusedSession())
+        root = "/tmp/contextual-transfer-replay-bound"
+        with bridge._contextual_transfer_replay_lock:
+            for index in range(300):
+                future = concurrent.futures.Future()
+                if 1 <= index <= 44:
+                    future.set_result({"ok": True, "result_id": str(index)})
+                key = (root, f"request-{index}")
+                bridge._contextual_transfer_replays[key] = (
+                    _ContextualTransferReplay(
+                        payload_fingerprint=f"fingerprint-{index}",
+                        future=future,
+                    )
+                )
+                bridge._contextual_transfer_replay_order.append(key)
+
+            bridge._prune_contextual_transfer_replays(target_size=256)
+
+            self.assertEqual(256, len(bridge._contextual_transfer_replays))
+            self.assertEqual(
+                256,
+                len(bridge._contextual_transfer_replay_order),
+            )
+            self.assertIn(
+                (root, "request-0"),
+                bridge._contextual_transfer_replays,
+            )
+
+    def test_full_inflight_replay_cache_rejects_new_identity(self):
+        with tempfile.TemporaryDirectory() as root:
+            status = _status(root)
+            request = _request(
+                status,
+                request_id="voi-ctx-request-over-capacity",
+            )
+            bridge = SessionLoopBridge(
+                session=_UnusedSession(),
+                micromachine_blackboard_dir=root,
+            )
+            with bridge._contextual_transfer_replay_lock:
+                for index in range(256):
+                    key = (root, f"inflight-{index}")
+                    bridge._contextual_transfer_replays[key] = (
+                        _ContextualTransferReplay(
+                            payload_fingerprint=f"fingerprint-{index}",
+                            future=concurrent.futures.Future(),
+                        )
+                    )
+                    bridge._contextual_transfer_replay_order.append(key)
+
+            with self.assertRaises(
+                _ContextualTransferReplayCapacityError
+            ):
+                bridge.submit_micromachine_contextual_transfer(
+                    request,
+                    blackboard_dir=root,
+                    status_resolver=lambda: deepcopy(status),
+                )
+
+            self.assertEqual(256, len(bridge._contextual_transfer_replays))
+
+    def test_prepublication_timeout_releases_identity_for_retry(self):
+        with tempfile.TemporaryDirectory() as root:
+            status = _status(root)
+            request = _request(
+                status,
+                request_id="voi-ctx-request-timeout-retry",
+            )
+            bridge = SessionLoopBridge(
+                session=_UnusedSession(),
+                micromachine_blackboard_dir=root,
+            )
+            accepted_requests = []
+
+            def accept(request_record):
+                accepted_requests.append(request_record)
+                if len(accepted_requests) == 2:
+                    request_record.future.set_result(
+                        {"ok": True, "result_id": "retry-result"}
+                    )
+
+            with (
+                mock.patch(
+                    "starcraft_commander.web_gui."
+                    "_MICROMACHINE_REQUEST_TIMEOUT_SECONDS",
+                    0.01,
+                ),
+                mock.patch.object(
+                    bridge,
+                    "_accept_micromachine_request",
+                    side_effect=accept,
+                ),
+            ):
+                with self.assertRaises(concurrent.futures.TimeoutError):
+                    bridge.submit_micromachine_contextual_transfer(
+                        request,
+                        blackboard_dir=root,
+                        status_resolver=lambda: deepcopy(status),
+                    )
+                result = bridge.submit_micromachine_contextual_transfer(
+                    request,
+                    blackboard_dir=root,
+                    status_resolver=lambda: deepcopy(status),
+                )
+
+            self.assertEqual("retry-result", result["result_id"])
+            self.assertEqual(2, len(accepted_requests))
+            self.assertTrue(accepted_requests[0].cancel_event.is_set())
+            self.assertEqual(
+                1,
+                len(bridge._contextual_transfer_replay_order),
+            )
 
 
 class _ValidatedStatusLauncher:

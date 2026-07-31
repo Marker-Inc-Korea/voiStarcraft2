@@ -4392,6 +4392,7 @@ _STOP_SENTINEL: Final[object] = object()
 """Internal queue sentinel asking the bridge worker loop to exit."""
 
 _MICROMACHINE_REQUEST_TIMEOUT_SECONDS: Final[float] = 30.0
+_CONTEXTUAL_TRANSFER_REPLAY_LIMIT: Final[int] = 256
 """Maximum HTTP wait for one queued MicroMachine modulation submission."""
 
 _MICROMACHINE_SYNC_PUBLISH_DEADLINE_SECONDS: Final[float] = 25.0
@@ -4762,6 +4763,10 @@ class _MicroMachinePublishCancelledError(RuntimeError):
 
 class _ContextualTransferIdentityMismatchError(ValueError):
     """Raised when one replay identity is reused for a different choice."""
+
+
+class _ContextualTransferReplayCapacityError(RuntimeError):
+    """Raised when every bounded replay slot is still in flight."""
 
 
 @dataclass
@@ -8518,6 +8523,16 @@ class SessionLoopBridge:
                     )
                 future = replay.future
             else:
+                self._prune_contextual_transfer_replays(
+                    target_size=_CONTEXTUAL_TRANSFER_REPLAY_LIMIT - 1
+                )
+                if (
+                    len(self._contextual_transfer_replays)
+                    >= _CONTEXTUAL_TRANSFER_REPLAY_LIMIT
+                ):
+                    raise _ContextualTransferReplayCapacityError(
+                        "contextual_transfer_replay_capacity"
+                    )
                 future = concurrent.futures.Future()
                 replay = _ContextualTransferReplay(
                     payload_fingerprint=payload_fingerprint,
@@ -8525,7 +8540,6 @@ class SessionLoopBridge:
                 )
                 self._contextual_transfer_replays[replay_key] = replay
                 self._contextual_transfer_replay_order.append(replay_key)
-                self._prune_contextual_transfer_replays()
                 request = _MicroMachineModulationRequest(
                     text=(
                         "Canonical contextual transfer "
@@ -8554,9 +8568,10 @@ class SessionLoopBridge:
                 self._accept_micromachine_request(request)
             except Exception:
                 with self._contextual_transfer_replay_lock:
-                    current = self._contextual_transfer_replays.get(replay_key)
-                    if current is replay:
-                        del self._contextual_transfer_replays[replay_key]
+                    self._forget_contextual_transfer_replay(
+                        replay_key,
+                        replay,
+                    )
                 raise
         try:
             return future.result(timeout=_MICROMACHINE_REQUEST_TIMEOUT_SECONDS)
@@ -8565,21 +8580,57 @@ class SessionLoopBridge:
                 with self._micromachine_request_lock:
                     if not request.publish_committed:
                         request.cancel_event.set()
-                        future.cancel()
+                        if not future.done():
+                            future.set_exception(
+                                concurrent.futures.TimeoutError(
+                                    "contextual transfer request timed out"
+                                )
+                            )
+                        with self._contextual_transfer_replay_lock:
+                            self._forget_contextual_transfer_replay(
+                                replay_key,
+                                replay,
+                            )
                 if request.publish_committed:
                     return future.result()
             raise
 
-    def _prune_contextual_transfer_replays(self) -> None:
-        while len(self._contextual_transfer_replay_order) > 256:
+    def _forget_contextual_transfer_replay(
+        self,
+        replay_key: tuple[str, str],
+        replay: _ContextualTransferReplay,
+    ) -> None:
+        if self._contextual_transfer_replays.get(replay_key) is replay:
+            del self._contextual_transfer_replays[replay_key]
+        self._contextual_transfer_replay_order = deque(
+            key
+            for key in self._contextual_transfer_replay_order
+            if key != replay_key
+        )
+
+    def _prune_contextual_transfer_replays(
+        self,
+        *,
+        target_size: int = _CONTEXTUAL_TRANSFER_REPLAY_LIMIT,
+    ) -> None:
+        retained: deque[tuple[str, str]] = deque()
+        seen: set[tuple[str, str]] = set()
+        while self._contextual_transfer_replay_order:
             replay_key = self._contextual_transfer_replay_order.popleft()
+            if replay_key in seen:
+                continue
+            seen.add(replay_key)
             replay = self._contextual_transfer_replays.get(replay_key)
             if replay is None:
                 continue
-            if not replay.future.done():
-                self._contextual_transfer_replay_order.append(replay_key)
-                break
-            del self._contextual_transfer_replays[replay_key]
+            if (
+                len(self._contextual_transfer_replays) > target_size
+                and replay.future.done()
+            ):
+                del self._contextual_transfer_replays[replay_key]
+                continue
+            retained.append(replay_key)
+        self._contextual_transfer_replay_order = retained
 
     def submit_micromachine_modulation_background(
         self,
@@ -18342,7 +18393,7 @@ function operationResolutionCommand(action, record) {
   return definition.command(record.operationId);
 }
 
-function submitContextualTransferChoice(choiceId, record) {
+function submitContextualTransferChoice(choiceId) {
   var stored = contextualTransferChoiceRecords[String(choiceId || "")];
   if (!stored || !stored.payload) {
     return Promise.reject(
@@ -18353,12 +18404,6 @@ function submitContextualTransferChoice(choiceId, record) {
     return stored.promise;
   }
   var payload = JSON.parse(JSON.stringify(stored.payload));
-  var displayText = [
-    payload.source_operation_id,
-    "→",
-    payload.destination_operation_id,
-    "×" + payload.requested_count
-  ].join(" ");
   stored.inFlight = true;
   var statusNode = document.getElementById("micromachine-status");
   if (statusNode) {
@@ -18388,11 +18433,6 @@ function submitContextualTransferChoice(choiceId, record) {
     .catch(function(error) {
       stored.inFlight = false;
       stored.promise = null;
-      renderOperationFailure(
-        displayText,
-        error,
-        record && record.operationId || payload.source_operation_id
-      );
       if (statusNode) {
         statusNode.textContent = t("microMachineFailed") + ": " + error.message;
       }
@@ -18510,8 +18550,7 @@ function renderOperationResolutionActions(record, data) {
       if (choice.contextualTransfer && choice.choiceId) {
         button.setAttribute("aria-disabled", "true");
         submitContextualTransferChoice(
-          choice.choiceId,
-          record
+          choice.choiceId
         ).catch(function() {
           button.setAttribute("aria-disabled", "false");
         });
@@ -24281,6 +24320,25 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                         "message": (
                             "request_id was already bound to a different "
                             "contextual transfer payload."
+                        ),
+                    },
+                    "consumption_status": "not_published",
+                },
+            )
+            return
+        except _ContextualTransferReplayCapacityError:
+            self._send_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {
+                    "accepted": False,
+                    "status": "busy",
+                    "request_id": str(document.get("request_id", "") or ""),
+                    "choice_id": str(document.get("choice_id", "") or ""),
+                    "blocker": {
+                        "code": "contextual_transfer_replay_capacity",
+                        "message": (
+                            "All contextual transfer replay slots are still "
+                            "in flight; retry after one request completes."
                         ),
                     },
                     "consumption_status": "not_published",
