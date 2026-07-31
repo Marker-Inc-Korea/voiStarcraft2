@@ -55,7 +55,6 @@ PRODUCER_POLICY_SCHEMA_VERSION: Final[int] = 1
 AUTHORITATIVE_REPOSITORY: Final[str] = "Marker-Inc-Korea/voiStarcraft2"
 AUTHORITATIVE_REPOSITORY_ID: Final[int] = 1_266_216_251
 AUTHORITATIVE_BASE_BRANCH: Final[str] = "main"
-AUTHORITATIVE_PROVENANCE_ISSUE_NUMBER: Final[int] = 138
 AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH: Final[str] = ".github/workflows/ci.yml"
 AUTHORITATIVE_PROVENANCE_JOB_NAME: Final[str] = "pre-live-provenance"
 AUTHORITATIVE_REPLAY_REF_PREFIX: Final[str] = "refs/tags/voi-pre-live-replay/"
@@ -1017,12 +1016,6 @@ def attest_github_source(
             allow_slug=True,
         )
         issue_number = _positive_id(issue_number, "issue_number")
-        if issue_number != AUTHORITATIVE_PROVENANCE_ISSUE_NUMBER:
-            raise ValueError(
-                "issue_number must identify the authenticated provenance issue: "
-                f"expected={AUTHORITATIVE_PROVENANCE_ISSUE_NUMBER} "
-                f"actual={issue_number}"
-            )
         pull_number = _positive_id(pull_number, "pull_number")
         run_id = _positive_id(run_id, "run_id")
         run_attempt = _positive_id(run_attempt, "run_attempt")
@@ -1165,22 +1158,16 @@ def attest_github_source(
         )
     if expected_pull_state == "open" and pull_request.get("merged_at") is not None:
         blockers.append("open pull request unexpectedly has merged_at")
-    matching_closing_issues = [
-        candidate
-        for candidate in closing_issues
-        if candidate.get("databaseId") == issue_id
-        and candidate.get("number") == issue_number
-        and _mapping(candidate.get("repository")).get("databaseId")
-        == expected_repository_id
-        and str(
-            _mapping(candidate.get("repository")).get("nameWithOwner", "")
-        ).casefold()
-        == normalized_repository.casefold()
-    ]
-    if len(matching_closing_issues) != 1:
+    closing_issue_id, closing_issue_number = _single_repository_closing_issue(
+        closing_issues,
+        repository=normalized_repository,
+        repository_id=expected_repository_id,
+        blockers=blockers,
+    )
+    if closing_issue_id != issue_id or closing_issue_number != issue_number:
         blockers.append(
-            "GitHub closingIssuesReferences does not uniquely bind the "
-            f"authenticated issue #{AUTHORITATIVE_PROVENANCE_ISSUE_NUMBER}"
+            "GitHub closingIssuesReferences does not bind the selected "
+            f"authenticated issue #{issue_number}"
         )
     pull_head = _mapping(pull_request.get("head"))
     pull_head_sha = pull_head.get("sha")
@@ -2985,21 +2972,47 @@ def attest_github_actions_emission_context(
     )
     if pull_request.get("merged_at") is not None:
         blockers.append("candidate pull request is already merged")
-    matching_closing_issues = [
-        candidate
-        for candidate in closing_issues
-        if candidate.get("number") == AUTHORITATIVE_PROVENANCE_ISSUE_NUMBER
-        and _mapping(candidate.get("repository")).get("databaseId")
-        == AUTHORITATIVE_REPOSITORY_ID
-        and str(
-            _mapping(candidate.get("repository")).get("nameWithOwner", "")
-        ).casefold()
-        == normalized_repository.casefold()
-    ]
-    if len(matching_closing_issues) != 1:
-        blockers.append(
-            "GitHub closingIssuesReferences does not bind the provenance issue"
-        )
+    closing_issue_id, closing_issue_number = _single_repository_closing_issue(
+        closing_issues,
+        repository=normalized_repository,
+        repository_id=AUTHORITATIVE_REPOSITORY_ID,
+        blockers=blockers,
+    )
+    closing_issue_state: str | None = None
+    if closing_issue_number is not None:
+        try:
+            closing_issue = adapter.get_issue(
+                normalized_repository,
+                closing_issue_number,
+            )
+        except Exception as exc:
+            blockers.append(f"GitHub closing issue lookup failed: {exc}")
+        else:
+            _expect_server_value(
+                closing_issue,
+                "id",
+                closing_issue_id,
+                "closing_issue",
+                blockers,
+            )
+            _expect_server_value(
+                closing_issue,
+                "number",
+                closing_issue_number,
+                "closing_issue",
+                blockers,
+            )
+            closing_issue_state = _server_string(
+                closing_issue,
+                "state",
+                "closing_issue",
+                blockers,
+            )
+            if closing_issue_state != "open":
+                blockers.append(
+                    "closing issue state mismatch: "
+                    f"expected='open' actual={closing_issue_state!r}"
+                )
     pull_head = _mapping(pull_request.get("head"))
     _expect_server_value(
         pull_head,
@@ -3207,6 +3220,9 @@ def attest_github_actions_emission_context(
         job_name=job_name,
         job_status=job_status,
         head_sha=expected_head_sha,
+        closing_issue_id=closing_issue_id,
+        closing_issue_number=closing_issue_number,
+        closing_issue_state=closing_issue_state,
         authority=authority,
     )
 
@@ -6029,6 +6045,53 @@ def _positive_id(value: object, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{name} must be a positive integer")
     return value
+
+
+def _single_repository_closing_issue(
+    closing_issues: Sequence[Mapping[str, object]],
+    *,
+    repository: str,
+    repository_id: int,
+    blockers: list[str],
+) -> tuple[int | None, int | None]:
+    if len(closing_issues) != 1:
+        blockers.append(
+            "GitHub closingIssuesReferences must bind exactly one issue in "
+            f"{repository}: actual={len(closing_issues)}"
+        )
+        return None, None
+    candidate = closing_issues[0]
+    if not isinstance(candidate, Mapping):
+        blockers.append("GitHub closing issue reference must be an object")
+        return None, None
+    issue_id = _server_positive_id(
+        candidate.get("databaseId"),
+        "closing_issue.databaseId",
+        blockers,
+    )
+    issue_number = _server_positive_id(
+        candidate.get("number"),
+        "closing_issue.number",
+        blockers,
+    )
+    issue_repository = _mapping(candidate.get("repository"))
+    _expect_server_value(
+        issue_repository,
+        "databaseId",
+        repository_id,
+        "closing_issue.repository",
+        blockers,
+    )
+    observed_repository = issue_repository.get("nameWithOwner")
+    if (
+        not isinstance(observed_repository, str)
+        or observed_repository.casefold() != repository.casefold()
+    ):
+        blockers.append(
+            "closing_issue.repository.nameWithOwner mismatch: "
+            f"expected={repository!r} actual={observed_repository!r}"
+        )
+    return issue_id, issue_number
 
 
 def _server_positive_id(

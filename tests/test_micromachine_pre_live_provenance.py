@@ -995,11 +995,18 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             " ".join(report["blockers"]),
         )
 
-        unrelated = attest_github_source(
+    def test_accepts_exactly_one_dynamic_closing_issue(self) -> None:
+        adapter = FakeGitHubAdapter()
+        adapter.issue.update({"id": 143, "number": 143})
+        adapter.closing_issues[0].update(
+            {"databaseId": 143, "number": 143}
+        )
+
+        report = attest_github_source(
             adapter,
             repository=REPOSITORY,
             expected_repository_id=AUTHORITATIVE_REPOSITORY_ID,
-            issue_number=77,
+            issue_number=143,
             pull_number=137,
             run_id=RUN_ID,
             run_attempt=RUN_ATTEMPT,
@@ -1007,8 +1014,37 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             artifact_id=ARTIFACT_ID,
             expected_head_sha=HEAD_SHA,
         )
-        self.assertFalse(unrelated["ok"], unrelated)
-        self.assertIn("expected=138", " ".join(unrelated["blockers"]))
+
+        self.assertTrue(report["ok"], report)
+        self.assertEqual(143, report["source_ids"]["issue_number"])
+
+    def test_rejects_multiple_foreign_or_mismatched_closing_issues(self) -> None:
+        mutations = {
+            "multiple": lambda adapter: adapter.closing_issues.append(
+                dict(adapter.closing_issues[0])
+            ),
+            "foreign repository id": lambda adapter: adapter.closing_issues[0][
+                "repository"
+            ].update({"databaseId": 999}),
+            "foreign repository name": lambda adapter: adapter.closing_issues[0][
+                "repository"
+            ].update({"nameWithOwner": "attacker/other"}),
+            "mismatched issue": lambda adapter: adapter.closing_issues[0].update(
+                {"databaseId": 77, "number": 77}
+            ),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                adapter = FakeGitHubAdapter()
+                mutate(adapter)
+
+                report = self.attest(adapter)
+
+                self.assertFalse(report["ok"], report)
+                self.assertIn(
+                    "closing",
+                    " ".join(report["blockers"]).casefold(),
+                )
 
     def test_accepts_server_closing_relationship_without_body_keyword(self) -> None:
         adapter = FakeGitHubAdapter()
@@ -2328,6 +2364,91 @@ class BuildBindingTest(unittest.TestCase):
 
 
 class GitHubActionsBundleEmissionTest(unittest.TestCase):
+    def test_emitter_accepts_dynamic_single_closing_issue(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = make_build_fixture(root / "fixture")
+            adapter = FakeGitHubAdapter(
+                head_sha=fixture["repository_commit"],
+            )
+            adapter.issue.update({"id": 143, "number": 143})
+            adapter.closing_issues[0].update(
+                {"databaseId": 143, "number": 143}
+            )
+
+            report = emit_github_actions_pre_live_bundle(
+                adapter=adapter,
+                repository_dir=fixture["repository"],
+                expected_commit=fixture["repository_commit"],
+                run_id=RUN_ID,
+                run_attempt=RUN_ATTEMPT,
+                workflow_ref=WORKFLOW_REF,
+                workflow_sha=WORKFLOW_SHA,
+                build_report_path=fixture["report_path"],
+                expected_build_dir=fixture["config"].micromachine_build_dir,
+                output_path=root / GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME,
+                producer_id="fixture_producer",
+                ctest_runner=passing_ctest,
+            )
+
+            self.assertTrue(report["ok"], report)
+            self.assertEqual(143, report["github_context"]["closing_issue_id"])
+            self.assertEqual(
+                143,
+                report["github_context"]["closing_issue_number"],
+            )
+            self.assertEqual(
+                "open",
+                report["github_context"]["closing_issue_state"],
+            )
+
+    def test_emitter_rejects_ambiguous_or_foreign_closing_issue(self) -> None:
+        mutations = {
+            "missing": lambda adapter: adapter.closing_issues.clear(),
+            "multiple": lambda adapter: adapter.closing_issues.append(
+                dict(adapter.closing_issues[0])
+            ),
+            "foreign repository id": lambda adapter: adapter.closing_issues[0][
+                "repository"
+            ].update({"databaseId": 999}),
+            "foreign repository name": lambda adapter: adapter.closing_issues[0][
+                "repository"
+            ].update({"nameWithOwner": "attacker/other"}),
+            "closed": lambda adapter: adapter.issue.update({"state": "closed"}),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    fixture = make_build_fixture(root / "fixture")
+                    adapter = FakeGitHubAdapter(
+                        head_sha=fixture["repository_commit"],
+                    )
+                    mutate(adapter)
+
+                    report = emit_github_actions_pre_live_bundle(
+                        adapter=adapter,
+                        repository_dir=fixture["repository"],
+                        expected_commit=fixture["repository_commit"],
+                        run_id=RUN_ID,
+                        run_attempt=RUN_ATTEMPT,
+                        workflow_ref=WORKFLOW_REF,
+                        workflow_sha=WORKFLOW_SHA,
+                        build_report_path=fixture["report_path"],
+                        expected_build_dir=(
+                            fixture["config"].micromachine_build_dir
+                        ),
+                        output_path=root / GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME,
+                        producer_id="fixture_producer",
+                        ctest_runner=passing_ctest,
+                    )
+
+                    self.assertFalse(report["ok"], report)
+                    self.assertIn(
+                        "closing",
+                        " ".join(report["blockers"]).casefold(),
+                    )
+
     def test_emitter_output_is_the_bundle_consumed_by_production_verifier(
         self,
     ) -> None:
