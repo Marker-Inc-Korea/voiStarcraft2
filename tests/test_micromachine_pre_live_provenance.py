@@ -3175,6 +3175,55 @@ class LocalProducerTest(unittest.TestCase):
                 report["stdout_sha256"],
             )
 
+    def test_producer_timestamps_use_monotonic_elapsed_time(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            root.mkdir()
+            init_git_repo(root)
+            cwd = root / "producer"
+            cwd.mkdir()
+            executable = cwd / "fixture-producer"
+            executable.write_text("#!/bin/sh\n")
+            executable.chmod(0o700)
+            output = cwd / "evidence.json"
+            producer_argv = (str(executable), "fixture-producer")
+
+            def runner(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
+                output.write_bytes(b'{"evidence":true}\n')
+                return subprocess.CompletedProcess(args[0], 0, stdout=b"", stderr=b"")
+
+            with (
+                mock.patch.object(
+                    provenance_module,
+                    "_utc_now",
+                    return_value="2026-07-31T00:00:04.000000Z",
+                ) as utc_now,
+                mock.patch.object(
+                    provenance_module.time,
+                    "monotonic",
+                    side_effect=(100.0, 104.0),
+                ),
+            ):
+                report = run_local_producer(
+                    repository_dir=root,
+                    cwd=cwd,
+                    argv=producer_argv,
+                    allowed_argv=(producer_argv,),
+                    output_artifact=output,
+                    command_runner=runner,
+                )
+
+            self.assertTrue(report["ok"], report)
+            self.assertEqual(1, utc_now.call_count)
+            self.assertEqual(
+                "2026-07-31T00:00:04.000000Z",
+                report["started_at"],
+            )
+            self.assertEqual(
+                "2026-07-31T00:00:08Z",
+                report["ended_at"],
+            )
+
     def test_rejects_ambient_python_module_launcher_policy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = make_build_fixture(Path(directory))

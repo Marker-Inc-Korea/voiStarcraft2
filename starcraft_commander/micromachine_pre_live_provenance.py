@@ -17,12 +17,13 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import fields
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Final, Protocol, cast
 
@@ -2469,6 +2470,7 @@ def run_local_producer(
 
     blockers: list[str] = []
     started_at = _utc_now()
+    started_monotonic = time.monotonic()
     root = Path(repository_dir).resolve()
     working_dir = Path(cwd).resolve()
     raw_output_path = Path(output_artifact)
@@ -2756,7 +2758,13 @@ def run_local_producer(
             continue
         if snapshot_after != snapshot_before:
             blockers.append(f"authenticated producer file changed: {source}")
-    ended_at = _utc_now()
+    started_timestamp = _parse_utc(started_at)
+    if started_timestamp is None:
+        raise RuntimeError("internal producer start timestamp is invalid")
+    elapsed_seconds = max(0.0, time.monotonic() - started_monotonic)
+    ended_at = _format_utc(
+        started_timestamp + timedelta(seconds=elapsed_seconds)
+    )
     return _component_result(
         blockers,
         producer=(Path(normalized_argv[0]).name if normalized_argv else None),
