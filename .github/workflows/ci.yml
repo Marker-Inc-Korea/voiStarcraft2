@@ -6,6 +6,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   unit-contracts:
     runs-on: ubuntu-latest
@@ -14,8 +17,10 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
         with:
           enable-cache: true
       - name: Set up Python
@@ -30,13 +35,63 @@ jobs:
           bash -n integrations/micromachine/scripts/soak_macos_local.sh
           bash -n integrations/micromachine/scripts/soak_matrix_macos_local.sh
 
-  micromachine-macos-contracts:
+  pre-live-provenance:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.id == github.event.repository.id
+    needs:
+      - unit-contracts
+    name: pre-live-provenance
     runs-on: macos-14
     timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      ROOT_DIR: /private/tmp/voi-micromachine-runtime
+      BUILD_JOBS: "3"
     steps:
-      - uses: actions/checkout@v4
-      - name: Build cumulative MicroMachine integration contracts
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Build exact MicroMachine integration
+        run: integrations/micromachine/scripts/build_macos_local.sh
+      - name: Emit canonical authenticated provenance bundle
         env:
-          ROOT_DIR: ${{ runner.temp }}/voi-micromachine-runtime
-          BUILD_JOBS: "3"
+          GITHUB_TOKEN: ${{ github.token }}
+          VOI_RELEASE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/pre-live"
+          python3 -B -m starcraft_commander.micromachine_pre_live_provenance \
+            --emit-github-actions-bundle \
+            "${RUNNER_TEMP}/pre-live/pre-live-provenance.zip" \
+            "${ROOT_DIR}/MicroMachine/build-latest-api/voi_build_identity.json" \
+            "${ROOT_DIR}/MicroMachine/build-latest-api"
+      - name: Upload canonical authenticated provenance bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pre-live
+          path: ${{ runner.temp }}/pre-live/pre-live-provenance.zip
+          compression-level: 0
+          if-no-files-found: error
+
+  micromachine-macos-contracts:
+    if: github.event_name == 'push'
+    needs:
+      - unit-contracts
+    runs-on: macos-14
+    timeout-minutes: 60
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      ROOT_DIR: /private/tmp/voi-micromachine-runtime
+      BUILD_JOBS: "3"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Build exact MicroMachine integration
         run: integrations/micromachine/scripts/build_macos_local.sh

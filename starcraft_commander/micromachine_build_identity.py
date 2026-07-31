@@ -8,6 +8,7 @@ import json
 import os
 import stat
 import subprocess
+import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -15,10 +16,28 @@ from typing import Final
 
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
+TRUSTED_GIT_EXECUTABLE: Final[str] = "/usr/bin/git"
+SANITIZED_GIT_ENV: Final[dict[str, str]] = {
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_NO_REPLACE_OBJECTS": "1",
+    "GIT_TERMINAL_PROMPT": "0",
+    "LANG": "C",
+    "LC_ALL": "C",
+    "PATH": "/usr/bin:/bin",
+}
 MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 71
-MICROMACHINE_RUNTIME_MUTABLE_PATHS: Final[tuple[str, ...]] = (
-    "bin/BotConfig.txt",
-)
+MICROMACHINE_SOURCE_ATTESTATION_SCHEMA_VERSION: Final[int] = 5
+MICROMACHINE_BUILD_TRANSACTION_SCHEMA_VERSION: Final[int] = 1
+MICROMACHINE_RUNTIME_MUTABLE_PATHS: Final[tuple[str, ...]] = ("bin/BotConfig.txt",)
+MICROMACHINE_REQUIRED_NATIVE_TESTS: Final[dict[str, str]] = {
+    "voi_operation_transfer_admission": "voi_operation_transfer_admission_test",
+    "voi_runtime_convergence": "voi_runtime_convergence_test",
+    "voi_family_effect_lifecycle": "voi_family_effect_lifecycle_test",
+    "voi_battlefield_projection": "voi_battlefield_projection_test",
+    "voi_battlefield_projection_ndebug": "voi_battlefield_projection_ndebug_test",
+}
+CMAKE_CTEST_COMMAND_PREFIX: Final[str] = "CMAKE_CTEST_COMMAND:INTERNAL="
 DEFAULT_MICROMACHINE_COMMIT: Final[str] = "eb893161371dab975a0a7e600f9e250ac03ec1ef"
 DEFAULT_S2CLIENT_COMMIT: Final[str] = "614acc00abb5355e4c94a1b0279b46e9d845b7ce"
 DEFAULT_MICROMACHINE_PATCH: Final[Path] = (
@@ -175,9 +194,7 @@ DEFAULT_MICROMACHINE_BOUNDED_PLACEMENT_QUERY_CACHE_PATCH: Final[Path] = (
     / "patches"
     / "0022-bounded-placement-query-cache.patch"
 )
-DEFAULT_MICROMACHINE_PRODUCTION_FACILITY_STABILITY_TANK_RECOVERY_PATCH: Final[
-    Path
-] = (
+DEFAULT_MICROMACHINE_PRODUCTION_FACILITY_STABILITY_TANK_RECOVERY_PATCH: Final[Path] = (
     REPO_ROOT
     / "integrations"
     / "micromachine"
@@ -305,18 +322,14 @@ DEFAULT_MICROMACHINE_STANDING_PRODUCTION_CONTINUITY_CLOSURE_PATCH: Final[Path] =
     / "patches"
     / "0040-standing-production-continuity-closure.patch"
 )
-DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_CASTER_PRODUCTION_PRIORITY_PATCH: Final[
-    Path
-] = (
+DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_CASTER_PRODUCTION_PRIORITY_PATCH: Final[Path] = (
     REPO_ROOT
     / "integrations"
     / "micromachine"
     / "patches"
     / "0041-explicit-ability-caster-production-priority.patch"
 )
-DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_OBSERVATION_CONFIRMATION_PATCH: Final[
-    Path
-] = (
+DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_OBSERVATION_CONFIRMATION_PATCH: Final[Path] = (
     REPO_ROOT
     / "integrations"
     / "micromachine"
@@ -393,27 +406,21 @@ DEFAULT_MICROMACHINE_PARALLEL_OPERATIONS_INGAME_HUD_PATCH: Final[Path] = (
     / "patches"
     / "0052-parallel-operations-ingame-hud.patch"
 )
-DEFAULT_MICROMACHINE_PARALLEL_OPERATION_LIFECYCLE_REVIEW_CLOSURE_PATCH: Final[
-    Path
-] = (
+DEFAULT_MICROMACHINE_PARALLEL_OPERATION_LIFECYCLE_REVIEW_CLOSURE_PATCH: Final[Path] = (
     REPO_ROOT
     / "integrations"
     / "micromachine"
     / "patches"
     / "0053-parallel-operation-lifecycle-review-closure.patch"
 )
-DEFAULT_MICROMACHINE_AUTHORITATIVE_PARALLEL_OPERATION_LIFECYCLE_PATCH: Final[
-    Path
-] = (
+DEFAULT_MICROMACHINE_AUTHORITATIVE_PARALLEL_OPERATION_LIFECYCLE_PATCH: Final[Path] = (
     REPO_ROOT
     / "integrations"
     / "micromachine"
     / "patches"
     / "0054-authoritative-parallel-operation-lifecycle.patch"
 )
-DEFAULT_MICROMACHINE_OPERATION_PRODUCTION_OWNERSHIP_RESTORE_PROOF_PATCH: Final[
-    Path
-] = (
+DEFAULT_MICROMACHINE_OPERATION_PRODUCTION_OWNERSHIP_RESTORE_PROOF_PATCH: Final[Path] = (
     REPO_ROOT
     / "integrations"
     / "micromachine"
@@ -568,15 +575,11 @@ class MicroMachineBuildIdentityConfig:
     s2client_commit: str = DEFAULT_S2CLIENT_COMMIT
     micromachine_patch: Path = DEFAULT_MICROMACHINE_PATCH
     micromachine_tactical_patch: Path = DEFAULT_MICROMACHINE_TACTICAL_PATCH
-    micromachine_production_fix_patch: Path = (
-        DEFAULT_MICROMACHINE_PRODUCTION_FIX_PATCH
-    )
+    micromachine_production_fix_patch: Path = DEFAULT_MICROMACHINE_PRODUCTION_FIX_PATCH
     micromachine_operation_state_patch: Path = (
         DEFAULT_MICROMACHINE_OPERATION_STATE_PATCH
     )
-    micromachine_addon_recovery_patch: Path = (
-        DEFAULT_MICROMACHINE_ADDON_RECOVERY_PATCH
-    )
+    micromachine_addon_recovery_patch: Path = DEFAULT_MICROMACHINE_ADDON_RECOVERY_PATCH
     micromachine_grounded_addon_candidate_patch: Path = (
         DEFAULT_MICROMACHINE_GROUNDED_ADDON_CANDIDATE_PATCH
     )
@@ -805,6 +808,14 @@ def build_micromachine_build_identity(
 ) -> dict[str, object]:
     """Create a machine-readable identity report without modifying worktrees."""
 
+    micromachine_build_root = _secure_directory_root_identity(
+        config.micromachine_build_dir,
+        source_root=config.micromachine_dir,
+    )
+    s2client_build_root = _secure_directory_root_identity(
+        config.resolved_s2client_build_dir,
+        source_root=config.s2client_dir,
+    )
     observed_micro = _git_head(config.micromachine_dir)
     observed_s2 = _git_head(config.s2client_dir)
     observed_micro_source_state = _git_source_state_sha256(
@@ -816,10 +827,12 @@ def build_micromachine_build_identity(
         config.s2client_dir,
         excluded_roots=(config.resolved_s2client_build_dir,),
     )
-    observed_s2_build_state = _directory_state_sha256(
-        config.resolved_s2client_build_dir
+    observed_s2_build_state = (
+        _directory_state_sha256(config.resolved_s2client_build_dir)
+        if s2client_build_root is not None
+        else None
     )
-    binary_exists = config.binary_path.exists()
+    binary_exists = micromachine_build_root is not None and config.binary_path.exists()
     binary_is_regular = (
         binary_exists
         and not config.binary_path.is_symlink()
@@ -829,6 +842,27 @@ def build_micromachine_build_identity(
     binary_sha256 = _sha256_file(config.binary_path) if binary_is_regular else None
     binary_size = config.binary_path.stat().st_size if binary_is_regular else None
     failures: list[dict[str, object]] = []
+    if micromachine_build_root is None:
+        failures.append(
+            {
+                "code": "invalid_micromachine_build_root",
+                "path": str(config.micromachine_build_dir),
+            }
+        )
+        native_test_attestation = None
+        native_test_failures: list[dict[str, object]] = []
+    else:
+        native_test_attestation, native_test_failures = (
+            _native_test_artifact_attestation(config)
+        )
+    failures.extend(native_test_failures)
+    if s2client_build_root is None:
+        failures.append(
+            {
+                "code": "invalid_s2client_build_root",
+                "path": str(config.resolved_s2client_build_dir),
+            }
+        )
     if observed_micro is None:
         failures.append(
             {
@@ -933,14 +967,10 @@ def build_micromachine_build_identity(
             )
         ),
         "micromachine_addon_query_footprint_validation_patch_sha256": (
-            _sha256_file(
-                config.micromachine_addon_query_footprint_validation_patch
-            )
+            _sha256_file(config.micromachine_addon_query_footprint_validation_patch)
         ),
         "micromachine_authoritative_addon_placement_query_patch_sha256": (
-            _sha256_file(
-                config.micromachine_authoritative_addon_placement_query_patch
-            )
+            _sha256_file(config.micromachine_authoritative_addon_placement_query_patch)
         ),
         "micromachine_authoritative_addon_execution_patch_sha256": _sha256_file(
             config.micromachine_authoritative_addon_execution_patch
@@ -957,9 +987,7 @@ def build_micromachine_build_identity(
             )
         ),
         "micromachine_offensive_sweep_self_base_exclusion_patch_sha256": (
-            _sha256_file(
-                config.micromachine_offensive_sweep_self_base_exclusion_patch
-            )
+            _sha256_file(config.micromachine_offensive_sweep_self_base_exclusion_patch)
         ),
         "micromachine_bounded_placement_query_cache_patch_sha256": _sha256_file(
             config.micromachine_bounded_placement_query_cache_patch
@@ -970,14 +998,10 @@ def build_micromachine_build_identity(
             )
         ),
         "micromachine_balanced_composition_wave_production_patch_sha256": (
-            _sha256_file(
-                config.micromachine_balanced_composition_wave_production_patch
-            )
+            _sha256_file(config.micromachine_balanced_composition_wave_production_patch)
         ),
         "micromachine_exact_composition_production_unblock_patch_sha256": (
-            _sha256_file(
-                config.micromachine_exact_composition_production_unblock_patch
-            )
+            _sha256_file(config.micromachine_exact_composition_production_unblock_patch)
         ),
         "micromachine_continuous_combat_production_relaunch_patch_sha256": (
             _sha256_file(
@@ -990,9 +1014,7 @@ def build_micromachine_build_identity(
             )
         ),
         "micromachine_startup_telemetry_initialization_patch_sha256": (
-            _sha256_file(
-                config.micromachine_startup_telemetry_initialization_patch
-            )
+            _sha256_file(config.micromachine_startup_telemetry_initialization_patch)
         ),
         "micromachine_gas_worker_completion_cap_patch_sha256": (
             _sha256_file(config.micromachine_gas_worker_completion_cap_patch)
@@ -1024,24 +1046,16 @@ def build_micromachine_build_identity(
             )
         ),
         "micromachine_tactical_nuke_command_hierarchy_patch_sha256": (
-            _sha256_file(
-                config.micromachine_tactical_nuke_command_hierarchy_patch
-            )
+            _sha256_file(config.micromachine_tactical_nuke_command_hierarchy_patch)
         ),
         "micromachine_location_intent_target_lock_patch_sha256": (
-            _sha256_file(
-                config.micromachine_location_intent_target_lock_patch
-            )
+            _sha256_file(config.micromachine_location_intent_target_lock_patch)
         ),
         "micromachine_explicit_terran_ability_execution_patch_sha256": (
-            _sha256_file(
-                config.micromachine_explicit_terran_ability_execution_patch
-            )
+            _sha256_file(config.micromachine_explicit_terran_ability_execution_patch)
         ),
         "micromachine_explicit_scout_command_epoch_patch_sha256": (
-            _sha256_file(
-                config.micromachine_explicit_scout_command_epoch_patch
-            )
+            _sha256_file(config.micromachine_explicit_scout_command_epoch_patch)
         ),
         "micromachine_standing_production_continuity_closure_patch_sha256": (
             _sha256_file(
@@ -1064,14 +1078,10 @@ def build_micromachine_build_identity(
             )
         ),
         "micromachine_explicit_ability_attempt_lifecycle_patch_sha256": (
-            _sha256_file(
-                config.micromachine_explicit_ability_attempt_lifecycle_patch
-            )
+            _sha256_file(config.micromachine_explicit_ability_attempt_lifecycle_patch)
         ),
         "micromachine_explicit_ability_review_closure_patch_sha256": (
-            _sha256_file(
-                config.micromachine_explicit_ability_review_closure_patch
-            )
+            _sha256_file(config.micromachine_explicit_ability_review_closure_patch)
         ),
         "micromachine_authoritative_addon_runtime_clearance_patch_sha256": (
             _sha256_file(
@@ -1079,9 +1089,7 @@ def build_micromachine_build_identity(
             )
         ),
         "micromachine_banshee_unit_specific_cloak_command_patch_sha256": (
-            _sha256_file(
-                config.micromachine_banshee_unit_specific_cloak_command_patch
-            )
+            _sha256_file(config.micromachine_banshee_unit_specific_cloak_command_patch)
         ),
         "micromachine_allied_cloak_observation_confirmation_patch_sha256": (
             _sha256_file(
@@ -1089,9 +1097,7 @@ def build_micromachine_build_identity(
             )
         ),
         "micromachine_explicit_ability_caster_ownership_patch_sha256": (
-            _sha256_file(
-                config.micromachine_explicit_ability_caster_ownership_patch
-            )
+            _sha256_file(config.micromachine_explicit_ability_caster_ownership_patch)
         ),
         "micromachine_explicit_ability_staging_single_flight_patch_sha256": (
             _sha256_file(
@@ -1102,9 +1108,7 @@ def build_micromachine_build_identity(
             config.micromachine_all_terran_combat_scouts_patch
         ),
         "micromachine_parallel_operations_ingame_hud_patch_sha256": (
-            _sha256_file(
-                config.micromachine_parallel_operations_ingame_hud_patch
-            )
+            _sha256_file(config.micromachine_parallel_operations_ingame_hud_patch)
         ),
         "micromachine_parallel_operation_lifecycle_review_closure_patch_sha256": (
             _sha256_file(
@@ -1122,39 +1126,25 @@ def build_micromachine_build_identity(
             )
         ),
         "micromachine_embedded_build_input_identity_patch_sha256": (
-            _sha256_file(
-                config.micromachine_embedded_build_input_identity_patch
-            )
+            _sha256_file(config.micromachine_embedded_build_input_identity_patch)
         ),
         "micromachine_tech_gas_before_second_barracks_patch_sha256": (
-            _sha256_file(
-                config.micromachine_tech_gas_before_second_barracks_patch
-            )
+            _sha256_file(config.micromachine_tech_gas_before_second_barracks_patch)
         ),
         "micromachine_operation_production_review_closure_patch_sha256": (
-            _sha256_file(
-                config.micromachine_operation_production_review_closure_patch
-            )
+            _sha256_file(config.micromachine_operation_production_review_closure_patch)
         ),
         "micromachine_production_fifo_zero_owner_cleanup_patch_sha256": (
-            _sha256_file(
-                config.micromachine_production_fifo_zero_owner_cleanup_patch
-            )
+            _sha256_file(config.micromachine_production_fifo_zero_owner_cleanup_patch)
         ),
         "micromachine_operation_edit_ownership_handoff_patch_sha256": (
-            _sha256_file(
-                config.micromachine_operation_edit_ownership_handoff_patch
-            )
+            _sha256_file(config.micromachine_operation_edit_ownership_handoff_patch)
         ),
         "micromachine_operation_edit_review_closure_patch_sha256": (
-            _sha256_file(
-                config.micromachine_operation_edit_review_closure_patch
-            )
+            _sha256_file(config.micromachine_operation_edit_review_closure_patch)
         ),
         "micromachine_operation_transfer_atomic_admission_patch_sha256": (
-            _sha256_file(
-                config.micromachine_operation_transfer_atomic_admission_patch
-            )
+            _sha256_file(config.micromachine_operation_transfer_atomic_admission_patch)
         ),
         "micromachine_operation_transfer_runtime_preservation_patch_sha256": (
             _sha256_file(
@@ -1220,9 +1210,7 @@ def build_micromachine_build_identity(
     expected_build_input_identity = _build_input_identity(checksums)
     embedded_header_identity = _read_embedded_build_identity_header(config)
     embedded_binary_identity = (
-        _read_binary_build_input_identity(config)
-        if binary_is_executable
-        else None
+        _read_binary_build_input_identity(config) if binary_is_executable else None
     )
     if embedded_header_identity != expected_build_input_identity:
         failures.append(
@@ -1263,12 +1251,13 @@ def build_micromachine_build_identity(
                 observed_micro_source_state=observed_micro_source_state,
                 observed_s2_source_state=observed_s2_source_state,
                 observed_s2_build_state=observed_s2_build_state,
+                observed_micromachine_build_root=micromachine_build_root,
+                observed_s2client_build_root=s2client_build_root,
             )
         )
         binary_attestation = source_attestation.get("binary")
-        if (
-            source_attestation.get("stage") != "build_finalized"
-            or not isinstance(binary_attestation, Mapping)
+        if source_attestation.get("stage") != "build_finalized" or not isinstance(
+            binary_attestation, Mapping
         ):
             failures.append(
                 {
@@ -1281,9 +1270,7 @@ def build_micromachine_build_identity(
                 "path": binary_attestation.get("path"),
                 "sha256": binary_attestation.get("sha256"),
                 "size_bytes": binary_attestation.get("size_bytes"),
-                "build_input_identity": binary_attestation.get(
-                    "build_input_identity"
-                ),
+                "build_input_identity": binary_attestation.get("build_input_identity"),
             }
             observed_binary = {
                 "path": str(config.binary_path.resolve()),
@@ -1300,6 +1287,18 @@ def build_micromachine_build_identity(
                         "path": str(config.source_attestation_path),
                     }
                 )
+        attested_native_tests = source_attestation.get("native_tests")
+        if native_test_attestation is None:
+            pass
+        elif attested_native_tests != native_test_attestation:
+            failures.append(
+                {
+                    "code": "native_test_attestation_mismatch",
+                    "expected": attested_native_tests,
+                    "actual": native_test_attestation,
+                    "path": str(config.source_attestation_path),
+                }
+            )
 
     checksums["source_attestation_sha256"] = _sha256_file(
         config.source_attestation_path
@@ -1307,6 +1306,11 @@ def build_micromachine_build_identity(
     checksums["micromachine_source_state_sha256"] = observed_micro_source_state
     checksums["s2client_source_state_sha256"] = observed_s2_source_state
     checksums["s2client_build_state_sha256"] = observed_s2_build_state
+    checksums["native_test_manifest_sha256"] = (
+        native_test_attestation.get("manifest_sha256")
+        if native_test_attestation is not None
+        else None
+    )
     identity_material = {
         "micromachine_commit": config.micromachine_commit,
         "s2client_commit": config.s2client_commit,
@@ -1334,6 +1338,9 @@ def build_micromachine_build_identity(
             "binary_size_bytes": binary_size,
             "binary_executable": binary_is_executable,
             "embedded_build_input_identity": embedded_binary_identity,
+            "native_tests": native_test_attestation,
+            "micromachine_build_root": micromachine_build_root,
+            "s2client_build_root": s2client_build_root,
         },
         "paths": {
             "micromachine_dir": str(config.micromachine_dir),
@@ -1583,15 +1590,9 @@ def micromachine_build_identity_admission_error(
             f"expected={expected_schema} actual={current_schema!r}"
         )
     if recorded.get("ok") is not True:
-        return (
-            "recorded build identity is not ok: "
-            f"{recorded.get('failures')}"
-        )
+        return f"recorded build identity is not ok: {recorded.get('failures')}"
     if current.get("ok") is not True:
-        return (
-            "current build identity is not ok: "
-            f"{current.get('failures')}"
-        )
+        return f"current build identity is not ok: {current.get('failures')}"
     if recorded.get("identity") != current.get("identity"):
         return (
             "stale build identity: "
@@ -1617,7 +1618,9 @@ def build_runtime_workspace_identity(repo_root: Path | str) -> dict[str, object]
             if path.is_file() and "__pycache__" not in path.parts
         )
     files = []
-    for path in sorted(set(candidates), key=lambda item: item.relative_to(root).as_posix()):
+    for path in sorted(
+        set(candidates), key=lambda item: item.relative_to(root).as_posix()
+    ):
         checksum = _sha256_file(path)
         if checksum is None:
             raise ValueError(f"cannot hash runtime workspace source: {path}")
@@ -1668,6 +1671,16 @@ def write_micromachine_source_attestation(
             f"header: expected={expected_input_identity} "
             f"actual={embedded_header_identity}"
         )
+    micromachine_build_root = _secure_directory_root_identity(
+        config.micromachine_build_dir,
+        source_root=config.micromachine_dir,
+    )
+    s2client_build_root = _secure_directory_root_identity(
+        config.resolved_s2client_build_dir,
+        source_root=config.s2client_dir,
+    )
+    if micromachine_build_root is None or s2client_build_root is None:
+        raise ValueError("cannot attest linked, external, or missing build roots.")
     micromachine_source_state = _git_source_state_sha256(
         config.micromachine_dir,
         excluded_roots=(config.micromachine_build_dir,),
@@ -1677,9 +1690,7 @@ def write_micromachine_source_attestation(
         config.s2client_dir,
         excluded_roots=(config.resolved_s2client_build_dir,),
     )
-    s2client_build_state = _directory_state_sha256(
-        config.resolved_s2client_build_dir
-    )
+    s2client_build_state = _directory_state_sha256(config.resolved_s2client_build_dir)
     micromachine_commit = _git_head(config.micromachine_dir)
     s2client_commit = _git_head(config.s2client_dir)
     if (
@@ -1691,8 +1702,9 @@ def write_micromachine_source_attestation(
         raise ValueError("cannot attest source state without git worktrees.")
     if s2client_build_state is None:
         raise ValueError("cannot attest missing s2client build state.")
+    build_transaction_before = _build_transaction_snapshot(config)
     payload = {
-        "schema_version": 3,
+        "schema_version": MICROMACHINE_SOURCE_ATTESTATION_SCHEMA_VERSION,
         "stage": "source_attested",
         "micromachine_commit": micromachine_commit,
         "s2client_commit": s2client_commit,
@@ -1700,6 +1712,13 @@ def write_micromachine_source_attestation(
         "micromachine_source_state_sha256": micromachine_source_state,
         "s2client_source_state_sha256": s2client_source_state,
         "s2client_build_state_sha256": s2client_build_state,
+        "micromachine_build_root": micromachine_build_root,
+        "s2client_build_root": s2client_build_root,
+        "build_transaction": {
+            "before": build_transaction_before,
+            "after": None,
+            "stable": False,
+        },
     }
     _write_json_atomic(config.source_attestation_path, payload)
     return payload
@@ -1713,6 +1732,19 @@ def write_micromachine_build_attestation(
     source_attestation = _read_source_attestation(config.source_attestation_path)
     if source_attestation is None:
         raise ValueError("cannot finalize missing source attestation.")
+    build_transaction = source_attestation.get("build_transaction")
+    if not isinstance(build_transaction, Mapping):
+        raise ValueError("cannot finalize missing build transaction.")
+    build_transaction_before = build_transaction.get("before")
+    if not isinstance(build_transaction_before, Mapping):
+        raise ValueError("cannot finalize invalid build transaction.")
+    transaction_failures = _build_transaction_failures(
+        build_transaction_before,
+        _build_transaction_snapshot(config),
+    )
+    if transaction_failures:
+        codes = ", ".join(str(failure["code"]) for failure in transaction_failures)
+        raise ValueError(f"cannot finalize changed build transaction: {codes}")
     input_checksums = _source_attestation_input_checksums(config)
     missing_inputs = sorted(
         name for name, checksum in input_checksums.items() if checksum is None
@@ -1731,6 +1763,14 @@ def write_micromachine_build_attestation(
         )
     observed_micro = _git_head(config.micromachine_dir)
     observed_s2 = _git_head(config.s2client_dir)
+    observed_micromachine_build_root = _secure_directory_root_identity(
+        config.micromachine_build_dir,
+        source_root=config.micromachine_dir,
+    )
+    observed_s2client_build_root = _secure_directory_root_identity(
+        config.resolved_s2client_build_dir,
+        source_root=config.s2client_dir,
+    )
     observed_micro_source_state = _git_source_state_sha256(
         config.micromachine_dir,
         excluded_roots=(config.micromachine_build_dir,),
@@ -1752,6 +1792,8 @@ def write_micromachine_build_attestation(
         observed_micro_source_state=observed_micro_source_state,
         observed_s2_source_state=observed_s2_source_state,
         observed_s2_build_state=observed_s2_build_state,
+        observed_micromachine_build_root=observed_micromachine_build_root,
+        observed_s2client_build_root=observed_s2client_build_root,
     )
     if source_failures:
         codes = ", ".join(str(failure["code"]) for failure in source_failures)
@@ -1776,17 +1818,37 @@ def write_micromachine_build_attestation(
             f"identity: expected={expected_input_identity} "
             f"actual={embedded_binary_identity}"
         )
+    native_tests, native_test_failures = _native_test_artifact_attestation(config)
+    if native_tests is None:
+        codes = ", ".join(str(failure["code"]) for failure in native_test_failures)
+        raise ValueError(
+            "cannot finalize missing or invalid native test artifacts: " + codes
+        )
+    build_transaction_after = _build_transaction_snapshot(config)
+    transaction_failures = _build_transaction_failures(
+        build_transaction_before,
+        build_transaction_after,
+    )
+    if transaction_failures:
+        codes = ", ".join(str(failure["code"]) for failure in transaction_failures)
+        raise ValueError(f"cannot finalize changed build transaction: {codes}")
 
     payload = dict(source_attestation)
     payload.update(
         {
-            "schema_version": 3,
+            "schema_version": MICROMACHINE_SOURCE_ATTESTATION_SCHEMA_VERSION,
             "stage": "build_finalized",
             "binary": {
                 "path": str(binary_path.resolve()),
                 "sha256": binary_sha256,
                 "size_bytes": binary_path.stat().st_size,
                 "build_input_identity": embedded_binary_identity,
+            },
+            "native_tests": native_tests,
+            "build_transaction": {
+                "before": dict(build_transaction_before),
+                "after": build_transaction_after,
+                "stable": True,
             },
         }
     )
@@ -1844,15 +1906,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--micromachine-grounded-production-observed-targeting-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_GROUNDED_PRODUCTION_OBSERVED_TARGETING_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_GROUNDED_PRODUCTION_OBSERVED_TARGETING_PATCH),
     )
     parser.add_argument(
         "--micromachine-exact-composition-production-progress-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_EXACT_COMPOSITION_PRODUCTION_PROGRESS_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_EXACT_COMPOSITION_PRODUCTION_PROGRESS_PATCH),
     )
     parser.add_argument(
         "--micromachine-production-resource-operation-persistence-patch",
@@ -1870,21 +1928,15 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--micromachine-production-staging-observed-operation-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_PRODUCTION_STAGING_OBSERVED_OPERATION_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_PRODUCTION_STAGING_OBSERVED_OPERATION_PATCH),
     )
     parser.add_argument(
         "--micromachine-addon-query-footprint-validation-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_ADDON_QUERY_FOOTPRINT_VALIDATION_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_ADDON_QUERY_FOOTPRINT_VALIDATION_PATCH),
     )
     parser.add_argument(
         "--micromachine-authoritative-addon-placement-query-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_AUTHORITATIVE_ADDON_PLACEMENT_QUERY_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_AUTHORITATIVE_ADDON_PLACEMENT_QUERY_PATCH),
     )
     parser.add_argument(
         "--micromachine-authoritative-addon-execution-patch",
@@ -1906,9 +1958,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--micromachine-offensive-sweep-self-base-exclusion-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_OFFENSIVE_SWEEP_SELF_BASE_EXCLUSION_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_OFFENSIVE_SWEEP_SELF_BASE_EXCLUSION_PATCH),
     )
     parser.add_argument(
         "--micromachine-bounded-placement-query-cache-patch",
@@ -1922,33 +1972,23 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--micromachine-balanced-composition-wave-production-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_BALANCED_COMPOSITION_WAVE_PRODUCTION_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_BALANCED_COMPOSITION_WAVE_PRODUCTION_PATCH),
     )
     parser.add_argument(
         "--micromachine-exact-composition-production-unblock-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_EXACT_COMPOSITION_PRODUCTION_UNBLOCK_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_EXACT_COMPOSITION_PRODUCTION_UNBLOCK_PATCH),
     )
     parser.add_argument(
         "--micromachine-continuous-combat-production-relaunch-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_CONTINUOUS_COMBAT_PRODUCTION_RELAUNCH_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_CONTINUOUS_COMBAT_PRODUCTION_RELAUNCH_PATCH),
     )
     parser.add_argument(
         "--micromachine-resource-throughput-expansion-backoff-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_RESOURCE_THROUGHPUT_EXPANSION_BACKOFF_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_RESOURCE_THROUGHPUT_EXPANSION_BACKOFF_PATCH),
     )
     parser.add_argument(
         "--micromachine-startup-telemetry-initialization-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_STARTUP_TELEMETRY_INITIALIZATION_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_STARTUP_TELEMETRY_INITIALIZATION_PATCH),
     )
     parser.add_argument(
         "--micromachine-gas-worker-completion-cap-patch",
@@ -1976,45 +2016,31 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--micromachine-semantic-operation-production-closure-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_SEMANTIC_OPERATION_PRODUCTION_CLOSURE_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_SEMANTIC_OPERATION_PRODUCTION_CLOSURE_PATCH),
     )
     parser.add_argument(
         "--micromachine-adaptive-pressure-stable-operation-key-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_ADAPTIVE_PRESSURE_STABLE_OPERATION_KEY_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_ADAPTIVE_PRESSURE_STABLE_OPERATION_KEY_PATCH),
     )
     parser.add_argument(
         "--micromachine-tactical-nuke-command-hierarchy-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_TACTICAL_NUKE_COMMAND_HIERARCHY_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_TACTICAL_NUKE_COMMAND_HIERARCHY_PATCH),
     )
     parser.add_argument(
         "--micromachine-location-intent-target-lock-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_LOCATION_INTENT_TARGET_LOCK_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_LOCATION_INTENT_TARGET_LOCK_PATCH),
     )
     parser.add_argument(
         "--micromachine-explicit-terran-ability-execution-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_EXPLICIT_TERRAN_ABILITY_EXECUTION_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_EXPLICIT_TERRAN_ABILITY_EXECUTION_PATCH),
     )
     parser.add_argument(
         "--micromachine-explicit-scout-command-epoch-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_EXPLICIT_SCOUT_COMMAND_EPOCH_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_EXPLICIT_SCOUT_COMMAND_EPOCH_PATCH),
     )
     parser.add_argument(
         "--micromachine-standing-production-continuity-closure-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_STANDING_PRODUCTION_CONTINUITY_CLOSURE_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_STANDING_PRODUCTION_CONTINUITY_CLOSURE_PATCH),
     )
     parser.add_argument(
         "--micromachine-explicit-ability-caster-production-priority-patch",
@@ -2030,51 +2056,35 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--micromachine-explicit-ability-production-isolation-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_PRODUCTION_ISOLATION_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_PRODUCTION_ISOLATION_PATCH),
     )
     parser.add_argument(
         "--micromachine-explicit-ability-attempt-lifecycle-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_ATTEMPT_LIFECYCLE_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_ATTEMPT_LIFECYCLE_PATCH),
     )
     parser.add_argument(
         "--micromachine-explicit-ability-review-closure-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_REVIEW_CLOSURE_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_REVIEW_CLOSURE_PATCH),
     )
     parser.add_argument(
         "--micromachine-authoritative-addon-runtime-clearance-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_AUTHORITATIVE_ADDON_RUNTIME_CLEARANCE_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_AUTHORITATIVE_ADDON_RUNTIME_CLEARANCE_PATCH),
     )
     parser.add_argument(
         "--micromachine-banshee-unit-specific-cloak-command-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_BANSHEE_UNIT_SPECIFIC_CLOAK_COMMAND_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_BANSHEE_UNIT_SPECIFIC_CLOAK_COMMAND_PATCH),
     )
     parser.add_argument(
         "--micromachine-allied-cloak-observation-confirmation-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_ALLIED_CLOAK_OBSERVATION_CONFIRMATION_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_ALLIED_CLOAK_OBSERVATION_CONFIRMATION_PATCH),
     )
     parser.add_argument(
         "--micromachine-explicit-ability-caster-ownership-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_CASTER_OWNERSHIP_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_CASTER_OWNERSHIP_PATCH),
     )
     parser.add_argument(
         "--micromachine-explicit-ability-staging-single-flight-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_EXPLICIT_ABILITY_STAGING_SINGLE_FLIGHT_PATCH),
     )
     parser.add_argument(
         "--micromachine-all-terran-combat-scouts-patch",
@@ -2082,9 +2092,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--micromachine-parallel-operations-ingame-hud-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_PARALLEL_OPERATIONS_INGAME_HUD_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_PARALLEL_OPERATIONS_INGAME_HUD_PATCH),
     )
     parser.add_argument(
         "--micromachine-parallel-operation-lifecycle-review-closure-patch",
@@ -2106,51 +2114,35 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--micromachine-embedded-build-input-identity-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_EMBEDDED_BUILD_INPUT_IDENTITY_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_EMBEDDED_BUILD_INPUT_IDENTITY_PATCH),
     )
     parser.add_argument(
         "--micromachine-tech-gas-before-second-barracks-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_TECH_GAS_BEFORE_SECOND_BARRACKS_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_TECH_GAS_BEFORE_SECOND_BARRACKS_PATCH),
     )
     parser.add_argument(
         "--micromachine-operation-production-review-closure-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_OPERATION_PRODUCTION_REVIEW_CLOSURE_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_OPERATION_PRODUCTION_REVIEW_CLOSURE_PATCH),
     )
     parser.add_argument(
         "--micromachine-production-fifo-zero-owner-cleanup-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_PRODUCTION_FIFO_ZERO_OWNER_CLEANUP_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_PRODUCTION_FIFO_ZERO_OWNER_CLEANUP_PATCH),
     )
     parser.add_argument(
         "--micromachine-operation-edit-ownership-handoff-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_OPERATION_EDIT_OWNERSHIP_HANDOFF_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_OPERATION_EDIT_OWNERSHIP_HANDOFF_PATCH),
     )
     parser.add_argument(
         "--micromachine-operation-edit-review-closure-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_OPERATION_EDIT_REVIEW_CLOSURE_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_OPERATION_EDIT_REVIEW_CLOSURE_PATCH),
     )
     parser.add_argument(
         "--micromachine-operation-transfer-atomic-admission-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_OPERATION_TRANSFER_ATOMIC_ADMISSION_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_OPERATION_TRANSFER_ATOMIC_ADMISSION_PATCH),
     )
     parser.add_argument(
         "--micromachine-operation-transfer-runtime-preservation-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_OPERATION_TRANSFER_RUNTIME_PRESERVATION_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_OPERATION_TRANSFER_RUNTIME_PRESERVATION_PATCH),
     )
     parser.add_argument(
         "--micromachine-operation-transfer-transactional-closure-patch",
@@ -2160,9 +2152,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--micromachine-operation-transfer-final-review-closure-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_OPERATION_TRANSFER_FINAL_REVIEW_CLOSURE_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_OPERATION_TRANSFER_FINAL_REVIEW_CLOSURE_PATCH),
     )
     parser.add_argument(
         "--micromachine-operation-transfer-idempotence-active-evidence-patch",
@@ -2178,9 +2168,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--micromachine-all-terran-harass-capability-evidence-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_ALL_TERRAN_HARASS_CAPABILITY_EVIDENCE_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_ALL_TERRAN_HARASS_CAPABILITY_EVIDENCE_PATCH),
     )
     parser.add_argument(
         "--micromachine-authoritative-battlefield-ownership-readiness-patch",
@@ -2190,15 +2178,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--micromachine-battlefield-projection-review-closure-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_BATTLEFIELD_PROJECTION_REVIEW_CLOSURE_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_BATTLEFIELD_PROJECTION_REVIEW_CLOSURE_PATCH),
     )
     parser.add_argument(
         "--micromachine-battlefield-identity-transfer-integrity-patch",
-        default=str(
-            DEFAULT_MICROMACHINE_BATTLEFIELD_IDENTITY_TRANSFER_INTEGRITY_PATCH
-        ),
+        default=str(DEFAULT_MICROMACHINE_BATTLEFIELD_IDENTITY_TRANSFER_INTEGRITY_PATCH),
     )
     parser.add_argument("--s2client-patch", default=str(DEFAULT_S2CLIENT_PATCH))
     parser.add_argument("--hook-manifest", default=str(DEFAULT_HOOK_MANIFEST))
@@ -2232,236 +2216,236 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
-    if not args.micromachine_dir or not args.s2client_dir or not args.micromachine_build_dir:
-        raise SystemExit("--micromachine-dir, --s2client-dir, and --micromachine-build-dir are required.")
-    config = MicroMachineBuildIdentityConfig(
-            micromachine_dir=Path(args.micromachine_dir),
-            s2client_dir=Path(args.s2client_dir),
-            micromachine_build_dir=Path(args.micromachine_build_dir),
-            s2client_build_dir=(
-                Path(args.s2client_build_dir)
-                if args.s2client_build_dir
-                else None
-            ),
-            micromachine_commit=args.micromachine_commit,
-            s2client_commit=args.s2client_commit,
-            micromachine_patch=Path(args.micromachine_patch),
-            micromachine_tactical_patch=Path(args.micromachine_tactical_patch),
-            micromachine_production_fix_patch=Path(
-                args.micromachine_production_fix_patch
-            ),
-            micromachine_operation_state_patch=Path(
-                args.micromachine_operation_state_patch
-            ),
-            micromachine_addon_recovery_patch=Path(
-                args.micromachine_addon_recovery_patch
-            ),
-            micromachine_grounded_addon_candidate_patch=Path(
-                args.micromachine_grounded_addon_candidate_patch
-            ),
-            micromachine_guaranteed_producer_grounding_patch=Path(
-                args.micromachine_guaranteed_producer_grounding_patch
-            ),
-            micromachine_emergency_land_query_fallback_patch=Path(
-                args.micromachine_emergency_land_query_fallback_patch
-            ),
-            micromachine_grounded_production_observed_targeting_patch=Path(
-                args.micromachine_grounded_production_observed_targeting_patch
-            ),
-            micromachine_exact_composition_production_progress_patch=Path(
-                args.micromachine_exact_composition_production_progress_patch
-            ),
-            micromachine_production_resource_operation_persistence_patch=Path(
-                args.micromachine_production_resource_operation_persistence_patch
-            ),
-            micromachine_live_operation_unblock_patch=Path(
-                args.micromachine_live_operation_unblock_patch
-            ),
-            micromachine_stable_flank_stage_latch_patch=Path(
-                args.micromachine_stable_flank_stage_latch_patch
-            ),
-            micromachine_production_staging_observed_operation_patch=Path(
-                args.micromachine_production_staging_observed_operation_patch
-            ),
-            micromachine_addon_query_footprint_validation_patch=Path(
-                args.micromachine_addon_query_footprint_validation_patch
-            ),
-            micromachine_authoritative_addon_placement_query_patch=Path(
-                args.micromachine_authoritative_addon_placement_query_patch
-            ),
-            micromachine_authoritative_addon_execution_patch=Path(
-                args.micromachine_authoritative_addon_execution_patch
-            ),
-            micromachine_continuous_army_macro_patch=Path(
-                args.micromachine_continuous_army_macro_patch
-            ),
-            micromachine_continuous_army_economy_scaling_patch=Path(
-                args.micromachine_continuous_army_economy_scaling_patch
-            ),
-            micromachine_standing_composition_reinforcement_waves_patch=Path(
-                args.micromachine_standing_composition_reinforcement_waves_patch
-            ),
-            micromachine_offensive_sweep_self_base_exclusion_patch=Path(
-                args.micromachine_offensive_sweep_self_base_exclusion_patch
-            ),
-            micromachine_bounded_placement_query_cache_patch=Path(
-                args.micromachine_bounded_placement_query_cache_patch
-            ),
-            micromachine_production_facility_stability_tank_recovery_patch=Path(
-                args.micromachine_production_facility_stability_tank_recovery_patch
-            ),
-            micromachine_balanced_composition_wave_production_patch=Path(
-                args.micromachine_balanced_composition_wave_production_patch
-            ),
-            micromachine_exact_composition_production_unblock_patch=Path(
-                args.micromachine_exact_composition_production_unblock_patch
-            ),
-            micromachine_continuous_combat_production_relaunch_patch=Path(
-                args.micromachine_continuous_combat_production_relaunch_patch
-            ),
-            micromachine_resource_throughput_expansion_backoff_patch=Path(
-                args.micromachine_resource_throughput_expansion_backoff_patch
-            ),
-            micromachine_startup_telemetry_initialization_patch=Path(
-                args.micromachine_startup_telemetry_initialization_patch
-            ),
-            micromachine_gas_worker_completion_cap_patch=Path(
-                args.micromachine_gas_worker_completion_cap_patch
-            ),
-            micromachine_stable_offensive_sweep_target_patch=Path(
-                args.micromachine_stable_offensive_sweep_target_patch
-            ),
-            micromachine_adaptive_support_composition_patch=Path(
-                args.micromachine_adaptive_support_composition_patch
-            ),
-            micromachine_operation_scoped_adaptive_combat_closure_patch=Path(
-                args.micromachine_operation_scoped_adaptive_combat_closure_patch
-            ),
-            micromachine_review_closure_operation_identity_full_composition_patch=Path(
-                args.micromachine_review_closure_operation_identity_full_composition_patch
-            ),
-            micromachine_semantic_operation_production_closure_patch=Path(
-                args.micromachine_semantic_operation_production_closure_patch
-            ),
-            micromachine_adaptive_pressure_stable_operation_key_patch=Path(
-                args.micromachine_adaptive_pressure_stable_operation_key_patch
-            ),
-            micromachine_tactical_nuke_command_hierarchy_patch=Path(
-                args.micromachine_tactical_nuke_command_hierarchy_patch
-            ),
-            micromachine_location_intent_target_lock_patch=Path(
-                args.micromachine_location_intent_target_lock_patch
-            ),
-            micromachine_explicit_terran_ability_execution_patch=Path(
-                args.micromachine_explicit_terran_ability_execution_patch
-            ),
-            micromachine_explicit_scout_command_epoch_patch=Path(
-                args.micromachine_explicit_scout_command_epoch_patch
-            ),
-            micromachine_standing_production_continuity_closure_patch=Path(
-                args.micromachine_standing_production_continuity_closure_patch
-            ),
-            micromachine_explicit_ability_caster_production_priority_patch=Path(
-                args.micromachine_explicit_ability_caster_production_priority_patch
-            ),
-            micromachine_explicit_ability_observation_confirmation_patch=Path(
-                args.micromachine_explicit_ability_observation_confirmation_patch
-            ),
-            micromachine_explicit_ability_production_isolation_patch=Path(
-                args.micromachine_explicit_ability_production_isolation_patch
-            ),
-            micromachine_explicit_ability_attempt_lifecycle_patch=Path(
-                args.micromachine_explicit_ability_attempt_lifecycle_patch
-            ),
-            micromachine_explicit_ability_review_closure_patch=Path(
-                args.micromachine_explicit_ability_review_closure_patch
-            ),
-            micromachine_authoritative_addon_runtime_clearance_patch=Path(
-                args.micromachine_authoritative_addon_runtime_clearance_patch
-            ),
-            micromachine_banshee_unit_specific_cloak_command_patch=Path(
-                args.micromachine_banshee_unit_specific_cloak_command_patch
-            ),
-            micromachine_allied_cloak_observation_confirmation_patch=Path(
-                args.micromachine_allied_cloak_observation_confirmation_patch
-            ),
-            micromachine_explicit_ability_caster_ownership_patch=Path(
-                args.micromachine_explicit_ability_caster_ownership_patch
-            ),
-            micromachine_explicit_ability_staging_single_flight_patch=Path(
-                args.micromachine_explicit_ability_staging_single_flight_patch
-            ),
-            micromachine_all_terran_combat_scouts_patch=Path(
-                args.micromachine_all_terran_combat_scouts_patch
-            ),
-            micromachine_parallel_operations_ingame_hud_patch=Path(
-                args.micromachine_parallel_operations_ingame_hud_patch
-            ),
-            micromachine_parallel_operation_lifecycle_review_closure_patch=Path(
-                args.micromachine_parallel_operation_lifecycle_review_closure_patch
-            ),
-            micromachine_authoritative_parallel_operation_lifecycle_patch=Path(
-                args.micromachine_authoritative_parallel_operation_lifecycle_patch
-            ),
-            micromachine_operation_production_ownership_restore_proof_patch=Path(
-                args.micromachine_operation_production_ownership_restore_proof_patch
-            ),
-            micromachine_embedded_build_input_identity_patch=Path(
-                args.micromachine_embedded_build_input_identity_patch
-            ),
-            micromachine_tech_gas_before_second_barracks_patch=Path(
-                args.micromachine_tech_gas_before_second_barracks_patch
-            ),
-            micromachine_operation_production_review_closure_patch=Path(
-                args.micromachine_operation_production_review_closure_patch
-            ),
-            micromachine_production_fifo_zero_owner_cleanup_patch=Path(
-                args.micromachine_production_fifo_zero_owner_cleanup_patch
-            ),
-            micromachine_operation_edit_ownership_handoff_patch=Path(
-                args.micromachine_operation_edit_ownership_handoff_patch
-            ),
-            micromachine_operation_edit_review_closure_patch=Path(
-                args.micromachine_operation_edit_review_closure_patch
-            ),
-            micromachine_operation_transfer_atomic_admission_patch=Path(
-                args.micromachine_operation_transfer_atomic_admission_patch
-            ),
-            micromachine_operation_transfer_runtime_preservation_patch=Path(
-                args.micromachine_operation_transfer_runtime_preservation_patch
-            ),
-            micromachine_operation_transfer_transactional_closure_patch=Path(
-                args.micromachine_operation_transfer_transactional_closure_patch
-            ),
-            micromachine_operation_transfer_final_review_closure_patch=Path(
-                args.micromachine_operation_transfer_final_review_closure_patch
-            ),
-            micromachine_operation_transfer_idempotence_active_evidence_patch=Path(
-                args.micromachine_operation_transfer_idempotence_active_evidence_patch
-            ),
-            micromachine_runtime_convergence_defense_placement_information_patch=Path(
-                args.micromachine_runtime_convergence_defense_placement_information_patch
-            ),
-            micromachine_all_terran_harass_capability_evidence_patch=Path(
-                args.micromachine_all_terran_harass_capability_evidence_patch
-            ),
-            micromachine_authoritative_battlefield_ownership_readiness_patch=Path(
-                args.micromachine_authoritative_battlefield_ownership_readiness_patch
-            ),
-            micromachine_battlefield_projection_review_closure_patch=Path(
-                args.micromachine_battlefield_projection_review_closure_patch
-            ),
-            micromachine_battlefield_identity_transfer_integrity_patch=Path(
-                args.micromachine_battlefield_identity_transfer_integrity_patch
-            ),
-            s2client_patch=Path(args.s2client_patch),
-            hook_manifest=Path(args.hook_manifest),
-            map_pool=Path(args.map_pool),
-            blackboard_header=Path(args.blackboard_header),
-            source_attestation=(
-                Path(args.source_attestation) if args.source_attestation else None
-            ),
+    if (
+        not args.micromachine_dir
+        or not args.s2client_dir
+        or not args.micromachine_build_dir
+    ):
+        raise SystemExit(
+            "--micromachine-dir, --s2client-dir, and --micromachine-build-dir are required."
         )
+    config = MicroMachineBuildIdentityConfig(
+        micromachine_dir=Path(args.micromachine_dir),
+        s2client_dir=Path(args.s2client_dir),
+        micromachine_build_dir=Path(args.micromachine_build_dir),
+        s2client_build_dir=(
+            Path(args.s2client_build_dir) if args.s2client_build_dir else None
+        ),
+        micromachine_commit=args.micromachine_commit,
+        s2client_commit=args.s2client_commit,
+        micromachine_patch=Path(args.micromachine_patch),
+        micromachine_tactical_patch=Path(args.micromachine_tactical_patch),
+        micromachine_production_fix_patch=Path(args.micromachine_production_fix_patch),
+        micromachine_operation_state_patch=Path(
+            args.micromachine_operation_state_patch
+        ),
+        micromachine_addon_recovery_patch=Path(args.micromachine_addon_recovery_patch),
+        micromachine_grounded_addon_candidate_patch=Path(
+            args.micromachine_grounded_addon_candidate_patch
+        ),
+        micromachine_guaranteed_producer_grounding_patch=Path(
+            args.micromachine_guaranteed_producer_grounding_patch
+        ),
+        micromachine_emergency_land_query_fallback_patch=Path(
+            args.micromachine_emergency_land_query_fallback_patch
+        ),
+        micromachine_grounded_production_observed_targeting_patch=Path(
+            args.micromachine_grounded_production_observed_targeting_patch
+        ),
+        micromachine_exact_composition_production_progress_patch=Path(
+            args.micromachine_exact_composition_production_progress_patch
+        ),
+        micromachine_production_resource_operation_persistence_patch=Path(
+            args.micromachine_production_resource_operation_persistence_patch
+        ),
+        micromachine_live_operation_unblock_patch=Path(
+            args.micromachine_live_operation_unblock_patch
+        ),
+        micromachine_stable_flank_stage_latch_patch=Path(
+            args.micromachine_stable_flank_stage_latch_patch
+        ),
+        micromachine_production_staging_observed_operation_patch=Path(
+            args.micromachine_production_staging_observed_operation_patch
+        ),
+        micromachine_addon_query_footprint_validation_patch=Path(
+            args.micromachine_addon_query_footprint_validation_patch
+        ),
+        micromachine_authoritative_addon_placement_query_patch=Path(
+            args.micromachine_authoritative_addon_placement_query_patch
+        ),
+        micromachine_authoritative_addon_execution_patch=Path(
+            args.micromachine_authoritative_addon_execution_patch
+        ),
+        micromachine_continuous_army_macro_patch=Path(
+            args.micromachine_continuous_army_macro_patch
+        ),
+        micromachine_continuous_army_economy_scaling_patch=Path(
+            args.micromachine_continuous_army_economy_scaling_patch
+        ),
+        micromachine_standing_composition_reinforcement_waves_patch=Path(
+            args.micromachine_standing_composition_reinforcement_waves_patch
+        ),
+        micromachine_offensive_sweep_self_base_exclusion_patch=Path(
+            args.micromachine_offensive_sweep_self_base_exclusion_patch
+        ),
+        micromachine_bounded_placement_query_cache_patch=Path(
+            args.micromachine_bounded_placement_query_cache_patch
+        ),
+        micromachine_production_facility_stability_tank_recovery_patch=Path(
+            args.micromachine_production_facility_stability_tank_recovery_patch
+        ),
+        micromachine_balanced_composition_wave_production_patch=Path(
+            args.micromachine_balanced_composition_wave_production_patch
+        ),
+        micromachine_exact_composition_production_unblock_patch=Path(
+            args.micromachine_exact_composition_production_unblock_patch
+        ),
+        micromachine_continuous_combat_production_relaunch_patch=Path(
+            args.micromachine_continuous_combat_production_relaunch_patch
+        ),
+        micromachine_resource_throughput_expansion_backoff_patch=Path(
+            args.micromachine_resource_throughput_expansion_backoff_patch
+        ),
+        micromachine_startup_telemetry_initialization_patch=Path(
+            args.micromachine_startup_telemetry_initialization_patch
+        ),
+        micromachine_gas_worker_completion_cap_patch=Path(
+            args.micromachine_gas_worker_completion_cap_patch
+        ),
+        micromachine_stable_offensive_sweep_target_patch=Path(
+            args.micromachine_stable_offensive_sweep_target_patch
+        ),
+        micromachine_adaptive_support_composition_patch=Path(
+            args.micromachine_adaptive_support_composition_patch
+        ),
+        micromachine_operation_scoped_adaptive_combat_closure_patch=Path(
+            args.micromachine_operation_scoped_adaptive_combat_closure_patch
+        ),
+        micromachine_review_closure_operation_identity_full_composition_patch=Path(
+            args.micromachine_review_closure_operation_identity_full_composition_patch
+        ),
+        micromachine_semantic_operation_production_closure_patch=Path(
+            args.micromachine_semantic_operation_production_closure_patch
+        ),
+        micromachine_adaptive_pressure_stable_operation_key_patch=Path(
+            args.micromachine_adaptive_pressure_stable_operation_key_patch
+        ),
+        micromachine_tactical_nuke_command_hierarchy_patch=Path(
+            args.micromachine_tactical_nuke_command_hierarchy_patch
+        ),
+        micromachine_location_intent_target_lock_patch=Path(
+            args.micromachine_location_intent_target_lock_patch
+        ),
+        micromachine_explicit_terran_ability_execution_patch=Path(
+            args.micromachine_explicit_terran_ability_execution_patch
+        ),
+        micromachine_explicit_scout_command_epoch_patch=Path(
+            args.micromachine_explicit_scout_command_epoch_patch
+        ),
+        micromachine_standing_production_continuity_closure_patch=Path(
+            args.micromachine_standing_production_continuity_closure_patch
+        ),
+        micromachine_explicit_ability_caster_production_priority_patch=Path(
+            args.micromachine_explicit_ability_caster_production_priority_patch
+        ),
+        micromachine_explicit_ability_observation_confirmation_patch=Path(
+            args.micromachine_explicit_ability_observation_confirmation_patch
+        ),
+        micromachine_explicit_ability_production_isolation_patch=Path(
+            args.micromachine_explicit_ability_production_isolation_patch
+        ),
+        micromachine_explicit_ability_attempt_lifecycle_patch=Path(
+            args.micromachine_explicit_ability_attempt_lifecycle_patch
+        ),
+        micromachine_explicit_ability_review_closure_patch=Path(
+            args.micromachine_explicit_ability_review_closure_patch
+        ),
+        micromachine_authoritative_addon_runtime_clearance_patch=Path(
+            args.micromachine_authoritative_addon_runtime_clearance_patch
+        ),
+        micromachine_banshee_unit_specific_cloak_command_patch=Path(
+            args.micromachine_banshee_unit_specific_cloak_command_patch
+        ),
+        micromachine_allied_cloak_observation_confirmation_patch=Path(
+            args.micromachine_allied_cloak_observation_confirmation_patch
+        ),
+        micromachine_explicit_ability_caster_ownership_patch=Path(
+            args.micromachine_explicit_ability_caster_ownership_patch
+        ),
+        micromachine_explicit_ability_staging_single_flight_patch=Path(
+            args.micromachine_explicit_ability_staging_single_flight_patch
+        ),
+        micromachine_all_terran_combat_scouts_patch=Path(
+            args.micromachine_all_terran_combat_scouts_patch
+        ),
+        micromachine_parallel_operations_ingame_hud_patch=Path(
+            args.micromachine_parallel_operations_ingame_hud_patch
+        ),
+        micromachine_parallel_operation_lifecycle_review_closure_patch=Path(
+            args.micromachine_parallel_operation_lifecycle_review_closure_patch
+        ),
+        micromachine_authoritative_parallel_operation_lifecycle_patch=Path(
+            args.micromachine_authoritative_parallel_operation_lifecycle_patch
+        ),
+        micromachine_operation_production_ownership_restore_proof_patch=Path(
+            args.micromachine_operation_production_ownership_restore_proof_patch
+        ),
+        micromachine_embedded_build_input_identity_patch=Path(
+            args.micromachine_embedded_build_input_identity_patch
+        ),
+        micromachine_tech_gas_before_second_barracks_patch=Path(
+            args.micromachine_tech_gas_before_second_barracks_patch
+        ),
+        micromachine_operation_production_review_closure_patch=Path(
+            args.micromachine_operation_production_review_closure_patch
+        ),
+        micromachine_production_fifo_zero_owner_cleanup_patch=Path(
+            args.micromachine_production_fifo_zero_owner_cleanup_patch
+        ),
+        micromachine_operation_edit_ownership_handoff_patch=Path(
+            args.micromachine_operation_edit_ownership_handoff_patch
+        ),
+        micromachine_operation_edit_review_closure_patch=Path(
+            args.micromachine_operation_edit_review_closure_patch
+        ),
+        micromachine_operation_transfer_atomic_admission_patch=Path(
+            args.micromachine_operation_transfer_atomic_admission_patch
+        ),
+        micromachine_operation_transfer_runtime_preservation_patch=Path(
+            args.micromachine_operation_transfer_runtime_preservation_patch
+        ),
+        micromachine_operation_transfer_transactional_closure_patch=Path(
+            args.micromachine_operation_transfer_transactional_closure_patch
+        ),
+        micromachine_operation_transfer_final_review_closure_patch=Path(
+            args.micromachine_operation_transfer_final_review_closure_patch
+        ),
+        micromachine_operation_transfer_idempotence_active_evidence_patch=Path(
+            args.micromachine_operation_transfer_idempotence_active_evidence_patch
+        ),
+        micromachine_runtime_convergence_defense_placement_information_patch=Path(
+            args.micromachine_runtime_convergence_defense_placement_information_patch
+        ),
+        micromachine_all_terran_harass_capability_evidence_patch=Path(
+            args.micromachine_all_terran_harass_capability_evidence_patch
+        ),
+        micromachine_authoritative_battlefield_ownership_readiness_patch=Path(
+            args.micromachine_authoritative_battlefield_ownership_readiness_patch
+        ),
+        micromachine_battlefield_projection_review_closure_patch=Path(
+            args.micromachine_battlefield_projection_review_closure_patch
+        ),
+        micromachine_battlefield_identity_transfer_integrity_patch=Path(
+            args.micromachine_battlefield_identity_transfer_integrity_patch
+        ),
+        s2client_patch=Path(args.s2client_patch),
+        hook_manifest=Path(args.hook_manifest),
+        map_pool=Path(args.map_pool),
+        blackboard_header=Path(args.blackboard_header),
+        source_attestation=(
+            Path(args.source_attestation) if args.source_attestation else None
+        ),
+    )
     if args.write_embedded_identity_header:
         write_micromachine_embedded_build_identity_header(config)
         if (
@@ -2497,6 +2481,130 @@ def _sha256_file(path: Path) -> str | None:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _regular_executable_evidence(path: Path) -> dict[str, object] | None:
+    try:
+        resolved = path.resolve(strict=True)
+        file_stat = path.lstat()
+    except OSError:
+        return None
+    if (
+        path.is_symlink()
+        or resolved != path.absolute()
+        or not stat.S_ISREG(file_stat.st_mode)
+        or not os.access(path, os.X_OK)
+    ):
+        return None
+    checksum = _sha256_file(path)
+    if checksum is None:
+        return None
+    return {
+        "path": str(resolved),
+        "sha256": checksum,
+        "size_bytes": file_stat.st_size,
+    }
+
+
+def _native_test_artifact_attestation(
+    config: MicroMachineBuildIdentityConfig,
+) -> tuple[dict[str, object] | None, list[dict[str, object]]]:
+    failures: list[dict[str, object]] = []
+    build_root = _secure_directory_root_identity(
+        config.micromachine_build_dir,
+        source_root=config.micromachine_dir,
+    )
+    if build_root is None:
+        return (
+            None,
+            [
+                {
+                    "code": "invalid_micromachine_build_root",
+                    "path": str(config.micromachine_build_dir),
+                }
+            ],
+        )
+    build_dir = Path(str(build_root["path"]))
+    cache_path = build_dir / "CMakeCache.txt"
+    cache_sha256 = _sha256_file(cache_path)
+    ctest_path: Path | None = None
+    if cache_sha256 is None or cache_path.is_symlink():
+        failures.append(
+            {
+                "code": "missing_or_invalid_cmake_cache",
+                "path": str(cache_path),
+            }
+        )
+    else:
+        try:
+            cache_lines = cache_path.read_text().splitlines()
+        except (OSError, UnicodeDecodeError):
+            cache_lines = []
+        ctest_values = [
+            line[len(CMAKE_CTEST_COMMAND_PREFIX) :].strip()
+            for line in cache_lines
+            if line.startswith(CMAKE_CTEST_COMMAND_PREFIX)
+        ]
+        if len(ctest_values) != 1:
+            failures.append(
+                {
+                    "code": "invalid_cmake_ctest_binding",
+                    "path": str(cache_path),
+                }
+            )
+        else:
+            candidate = Path(ctest_values[0])
+            if not candidate.is_absolute() or candidate.name != "ctest":
+                failures.append(
+                    {
+                        "code": "invalid_cmake_ctest_binding",
+                        "path": str(candidate),
+                    }
+                )
+            else:
+                ctest_path = candidate
+
+    ctest_evidence = (
+        _regular_executable_evidence(ctest_path) if ctest_path is not None else None
+    )
+    if ctest_path is not None and ctest_evidence is None:
+        failures.append(
+            {
+                "code": "missing_or_invalid_ctest_executable",
+                "path": str(ctest_path),
+            }
+        )
+
+    native_tests: dict[str, object] = {}
+    for name, executable_name in sorted(MICROMACHINE_REQUIRED_NATIVE_TESTS.items()):
+        executable_path = build_dir / "bin" / executable_name
+        evidence = _regular_executable_evidence(executable_path)
+        if evidence is None:
+            failures.append(
+                {
+                    "code": "missing_or_invalid_native_test",
+                    "test": name,
+                    "path": str(executable_path),
+                }
+            )
+            continue
+        native_tests[name] = evidence
+
+    if failures:
+        return None, failures
+    material = {
+        "cmake_cache": {
+            "path": str(cache_path.resolve()),
+            "sha256": cache_sha256,
+            "size_bytes": cache_path.stat().st_size,
+        },
+        "ctest": ctest_evidence,
+        "tests": native_tests,
+    }
+    return {
+        **material,
+        "manifest_sha256": "sha256:" + _sha256_json(material),
+    }, []
 
 
 def _sha256_json(payload: Mapping[str, object]) -> str:
@@ -2550,10 +2658,7 @@ def write_micromachine_embedded_build_identity_header(
             + ", ".join(missing_inputs)
         )
     identity = _build_input_identity(input_checksums)
-    header = (
-        "#pragma once\n"
-        f"#define VOI_BUILD_INPUT_IDENTITY {json.dumps(identity)}\n"
-    )
+    header = f"#pragma once\n#define VOI_BUILD_INPUT_IDENTITY {json.dumps(identity)}\n"
     path = config.embedded_build_identity_header_path
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp")
@@ -2585,15 +2690,75 @@ def _read_embedded_build_identity_header(
 def _read_binary_build_input_identity(
     config: MicroMachineBuildIdentityConfig,
 ) -> str | None:
+    descriptor: int | None = None
+    snapshot_path: Path | None = None
+    before_stat: os.stat_result | None = None
+    before_digest: str | None = None
     try:
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(config.binary_path, flags)
+        before_stat = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before_stat.st_mode)
+            or stat.S_IMODE(before_stat.st_mode) & 0o111 == 0
+        ):
+            return None
+        before_digest = _sha256_open_descriptor(descriptor)
+        snapshot_path = _write_private_executable_snapshot(
+            descriptor,
+            directory=config.binary_path.parent,
+        )
         completed = subprocess.run(
             [str(config.binary_path), "--voi-build-input-identity"],
+            executable=str(snapshot_path),
             check=False,
             capture_output=True,
             text=True,
             timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
+        return None
+    finally:
+        if (
+            descriptor is not None
+            and before_stat is not None
+            and before_digest is not None
+        ):
+            try:
+                after_stat = os.fstat(descriptor)
+                after_digest = _sha256_open_descriptor(descriptor)
+                path_stat = config.binary_path.lstat()
+                path_digest = _sha256_file(config.binary_path)
+                stable = (
+                    before_stat.st_dev,
+                    before_stat.st_ino,
+                    before_stat.st_size,
+                    before_digest,
+                ) == (
+                    after_stat.st_dev,
+                    after_stat.st_ino,
+                    after_stat.st_size,
+                    after_digest,
+                ) and (
+                    not stat.S_ISLNK(path_stat.st_mode)
+                    and path_stat.st_dev == before_stat.st_dev
+                    and path_stat.st_ino == before_stat.st_ino
+                    and path_stat.st_size == before_stat.st_size
+                    and path_digest == before_digest
+                )
+            except OSError:
+                stable = False
+            os.close(descriptor)
+        else:
+            stable = False
+        if snapshot_path is not None:
+            try:
+                snapshot_path.unlink()
+            except OSError:
+                stable = False
+    if not stable:
         return None
     if completed.returncode != 0:
         return None
@@ -2602,6 +2767,57 @@ def _read_binary_build_input_identity(
         return None
     identity = lines[0]
     return identity if identity.startswith("sha256:") else None
+
+
+def _write_private_executable_snapshot(
+    source_descriptor: int,
+    *,
+    directory: Path,
+) -> Path:
+    """Materialize exact descriptor bytes where macOS can execute them."""
+
+    destination_descriptor, destination_name = tempfile.mkstemp(
+        prefix=".voi-authenticated-executable-",
+        dir=directory,
+    )
+    destination = Path(destination_name)
+    try:
+        os.fchmod(destination_descriptor, 0o500)
+        source_offset = os.lseek(source_descriptor, 0, os.SEEK_CUR)
+        try:
+            os.lseek(source_descriptor, 0, os.SEEK_SET)
+            while chunk := os.read(source_descriptor, 1024 * 1024):
+                offset = 0
+                while offset < len(chunk):
+                    offset += os.write(destination_descriptor, chunk[offset:])
+            os.fsync(destination_descriptor)
+        finally:
+            os.lseek(source_descriptor, source_offset, os.SEEK_SET)
+        destination_stat = os.fstat(destination_descriptor)
+        source_stat = os.fstat(source_descriptor)
+        if (
+            not stat.S_ISREG(destination_stat.st_mode)
+            or destination_stat.st_size != source_stat.st_size
+        ):
+            raise OSError("authenticated executable snapshot is incomplete")
+    except Exception:
+        os.close(destination_descriptor)
+        destination.unlink(missing_ok=True)
+        raise
+    os.close(destination_descriptor)
+    return destination
+
+
+def _sha256_open_descriptor(descriptor: int) -> str:
+    current_offset = os.lseek(descriptor, 0, os.SEEK_CUR)
+    try:
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        digest = hashlib.sha256()
+        while chunk := os.read(descriptor, 1024 * 1024):
+            digest.update(chunk)
+        return digest.hexdigest()
+    finally:
+        os.lseek(descriptor, current_offset, os.SEEK_SET)
 
 
 def _read_source_attestation(path: Path) -> Mapping[str, object] | None:
@@ -2624,9 +2840,14 @@ def _source_attestation_failures(
     observed_micro_source_state: str | None,
     observed_s2_source_state: str | None,
     observed_s2_build_state: str | None,
+    observed_micromachine_build_root: Mapping[str, object] | None,
+    observed_s2client_build_root: Mapping[str, object] | None,
 ) -> list[dict[str, object]]:
     failures: list[dict[str, object]] = []
-    if source_attestation.get("schema_version") != 3:
+    if (
+        source_attestation.get("schema_version")
+        != MICROMACHINE_SOURCE_ATTESTATION_SCHEMA_VERSION
+    ):
         failures.append(
             {
                 "code": "invalid_source_attestation",
@@ -2634,6 +2855,34 @@ def _source_attestation_failures(
                 "path": str(config.source_attestation_path),
             }
         )
+    for name, expected, actual in (
+        (
+            "micromachine",
+            source_attestation.get("micromachine_build_root"),
+            observed_micromachine_build_root,
+        ),
+        (
+            "s2client",
+            source_attestation.get("s2client_build_root"),
+            observed_s2client_build_root,
+        ),
+    ):
+        if not isinstance(expected, Mapping):
+            failures.append(
+                {
+                    "code": "invalid_source_attestation",
+                    "source": f"{name}_build_root",
+                    "path": str(config.source_attestation_path),
+                }
+            )
+        elif actual is None or dict(expected) != dict(actual):
+            failures.append(
+                {
+                    "code": f"{name}_build_root_mismatch",
+                    "expected": dict(expected),
+                    "actual": dict(actual) if actual is not None else None,
+                }
+            )
     if source_attestation.get("build_input_identity") != expected_input_identity:
         failures.append(
             {
@@ -2707,7 +2956,223 @@ def _source_attestation_failures(
                 "actual": observed_s2_build_state,
             }
         )
+    build_transaction = source_attestation.get("build_transaction")
+    if not isinstance(build_transaction, Mapping):
+        failures.append(
+            {
+                "code": "invalid_source_attestation",
+                "source": "build_transaction",
+                "path": str(config.source_attestation_path),
+            }
+        )
+    else:
+        before = build_transaction.get("before")
+        after = build_transaction.get("after")
+        stage = source_attestation.get("stage")
+        if not isinstance(before, Mapping):
+            failures.append(
+                {
+                    "code": "invalid_source_attestation",
+                    "source": "build_transaction",
+                    "path": str(config.source_attestation_path),
+                }
+            )
+        elif stage == "source_attested":
+            if build_transaction.get("stable") is not False or after is not None:
+                failures.append(
+                    {
+                        "code": "invalid_source_attestation",
+                        "source": "build_transaction",
+                        "path": str(config.source_attestation_path),
+                    }
+                )
+            else:
+                failures.extend(_build_transaction_failures(before, before))
+        elif (
+            stage != "build_finalized"
+            or build_transaction.get("stable") is not True
+            or not isinstance(after, Mapping)
+        ):
+            failures.append(
+                {
+                    "code": "invalid_source_attestation",
+                    "source": "build_transaction",
+                    "path": str(config.source_attestation_path),
+                }
+            )
+        else:
+            failures.extend(_build_transaction_failures(before, after))
     return failures
+
+
+def _build_transaction_snapshot(
+    config: MicroMachineBuildIdentityConfig,
+) -> dict[str, object]:
+    components = {
+        "micromachine_source": _filesystem_metadata_identity(
+            config.micromachine_dir,
+            excluded_roots=(config.micromachine_build_dir,),
+            excluded_paths=MICROMACHINE_RUNTIME_MUTABLE_PATHS,
+        ),
+        "s2client_source": _filesystem_metadata_identity(
+            config.s2client_dir,
+            excluded_roots=(config.resolved_s2client_build_dir,),
+        ),
+        "s2client_build": _filesystem_metadata_identity(
+            config.resolved_s2client_build_dir,
+        ),
+    }
+    missing = sorted(name for name, value in components.items() if value is None)
+    if missing:
+        raise ValueError(
+            "cannot capture build transaction metadata: " + ", ".join(missing)
+        )
+    material = {
+        name: dict(value)
+        for name, value in components.items()
+        if isinstance(value, Mapping)
+    }
+    return {
+        "schema_version": MICROMACHINE_BUILD_TRANSACTION_SCHEMA_VERSION,
+        "components": material,
+        "identity": "sha256:" + _sha256_json(material),
+    }
+
+
+def _build_transaction_failures(
+    expected: Mapping[str, object],
+    actual: Mapping[str, object],
+) -> list[dict[str, object]]:
+    failures: list[dict[str, object]] = []
+    for side, snapshot in (("expected", expected), ("actual", actual)):
+        components = snapshot.get("components")
+        if (
+            snapshot.get("schema_version")
+            != MICROMACHINE_BUILD_TRANSACTION_SCHEMA_VERSION
+            or not isinstance(components, Mapping)
+            or snapshot.get("identity") != "sha256:" + _sha256_json(dict(components))
+        ):
+            failures.append(
+                {
+                    "code": "invalid_build_transaction",
+                    "side": side,
+                }
+            )
+    if failures:
+        return failures
+    expected_components = expected["components"]
+    actual_components = actual["components"]
+    assert isinstance(expected_components, Mapping)
+    assert isinstance(actual_components, Mapping)
+    for component in (
+        "micromachine_source",
+        "s2client_source",
+        "s2client_build",
+    ):
+        if expected_components.get(component) != actual_components.get(component):
+            failures.append(
+                {
+                    "code": f"{component}_build_transaction_mismatch",
+                    "expected": expected_components.get(component),
+                    "actual": actual_components.get(component),
+                }
+            )
+    return failures
+
+
+def _filesystem_metadata_identity(
+    root: Path,
+    *,
+    excluded_roots: Sequence[Path] = (),
+    excluded_paths: Sequence[str] = (),
+) -> dict[str, object] | None:
+    lexical_root = Path(os.path.abspath(root))
+    try:
+        root_stat = lexical_root.lstat()
+    except OSError:
+        return None
+    if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
+        return None
+
+    excluded_root_paths: list[str] = []
+    for excluded_root in excluded_roots:
+        lexical_excluded = Path(os.path.abspath(excluded_root))
+        try:
+            relative = lexical_excluded.relative_to(lexical_root).as_posix()
+        except ValueError:
+            return None
+        if not relative or relative == ".":
+            return None
+        excluded_root_paths.append(relative.strip("/"))
+    normalized_excluded_paths = tuple(
+        value.strip().strip("/")
+        for value in excluded_paths
+        if isinstance(value, str) and value.strip().strip("/")
+    )
+
+    def excluded(relative: str) -> bool:
+        normalized = relative.strip("/")
+        if not normalized:
+            return False
+        return any(
+            normalized == value or normalized.startswith(value + "/")
+            for value in (*excluded_root_paths, *normalized_excluded_paths)
+        )
+
+    entries: list[dict[str, object]] = []
+    pending = [lexical_root]
+    while pending:
+        candidate = pending.pop()
+        relative = (
+            "."
+            if candidate == lexical_root
+            else candidate.relative_to(lexical_root).as_posix()
+        )
+        if relative != "." and excluded(relative):
+            continue
+        try:
+            candidate_stat = candidate.lstat()
+        except OSError:
+            return None
+        mode = candidate_stat.st_mode
+        entry: dict[str, object] = {
+            "path": relative,
+            "device": candidate_stat.st_dev,
+            "inode": candidate_stat.st_ino,
+            "uid": candidate_stat.st_uid,
+            "mode": stat.S_IMODE(mode),
+            "kind": stat.S_IFMT(mode),
+            "size_bytes": candidate_stat.st_size,
+            "mtime_ns": candidate_stat.st_mtime_ns,
+            "ctime_ns": candidate_stat.st_ctime_ns,
+            "link_count": candidate_stat.st_nlink,
+        }
+        if stat.S_ISLNK(mode):
+            try:
+                entry["link_target"] = os.readlink(candidate)
+            except OSError:
+                return None
+        elif stat.S_ISDIR(mode):
+            try:
+                children = sorted(
+                    (Path(item.path) for item in os.scandir(candidate)),
+                    key=lambda path: path.name,
+                    reverse=True,
+                )
+            except OSError:
+                return None
+            pending.extend(children)
+        entries.append(entry)
+    entries.sort(key=lambda item: str(item["path"]))
+    material = {
+        "root": str(lexical_root),
+        "entries": entries,
+    }
+    return {
+        "root": str(lexical_root),
+        "entry_count": len(entries),
+        "manifest_sha256": "sha256:" + _sha256_json(material),
+    }
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
@@ -2722,10 +3187,11 @@ def _git_head(path: Path) -> str | None:
         return None
     try:
         completed = subprocess.run(
-            ["git", "-C", str(path), "rev-parse", "HEAD"],
+            [TRUSTED_GIT_EXECUTABLE, "-C", str(path), "rev-parse", "HEAD"],
             check=True,
             capture_output=True,
             text=True,
+            env=dict(SANITIZED_GIT_ENV),
         )
     except (OSError, subprocess.CalledProcessError):
         return None
@@ -2739,6 +3205,71 @@ def _git_source_state_sha256(
     excluded_roots: Sequence[Path] = (),
     excluded_paths: Sequence[str] = (),
 ) -> str | None:
+    inspection = inspect_git_worktree_state(
+        path,
+        excluded_roots=excluded_roots,
+        excluded_paths=excluded_paths,
+    )
+    if inspection is None:
+        return None
+    if inspection.get("unsafe_symlink_entries"):
+        return None
+    digest = inspection.get("digest")
+    return digest if isinstance(digest, str) and digest else None
+
+
+def _secure_directory_root_identity(
+    path: Path,
+    *,
+    source_root: Path,
+) -> dict[str, object] | None:
+    lexical_path = Path(os.path.abspath(path))
+    lexical_source_root = Path(os.path.abspath(source_root))
+    try:
+        lexical_path.relative_to(lexical_source_root)
+    except ValueError:
+        return None
+    current = lexical_path
+    while True:
+        try:
+            file_stat = current.lstat()
+        except OSError:
+            return None
+        if stat.S_ISLNK(file_stat.st_mode):
+            return None
+        if current == lexical_source_root:
+            break
+        parent = current.parent
+        if parent == current:
+            return None
+        current = parent
+    try:
+        root_stat = lexical_path.stat()
+        resolved_path = lexical_path.resolve(strict=True)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(root_stat.st_mode):
+        return None
+    root_mode = stat.S_IMODE(root_stat.st_mode)
+    if root_stat.st_uid != os.getuid() or root_mode & 0o022:
+        return None
+    return {
+        "path": str(resolved_path),
+        "device": root_stat.st_dev,
+        "inode": root_stat.st_ino,
+        "uid": root_stat.st_uid,
+        "mode": root_mode,
+    }
+
+
+def inspect_git_worktree_state(
+    path: Path,
+    *,
+    excluded_roots: Sequence[Path] = (),
+    excluded_paths: Sequence[str] = (),
+) -> dict[str, object] | None:
+    """Hash HEAD and actual worktree bytes without trusting index stat hints."""
+
     if not (path / ".git").exists():
         return None
     normalized_excluded_paths = tuple(
@@ -2746,97 +3277,295 @@ def _git_source_state_sha256(
         for item in excluded_paths
         if isinstance(item, str) and item.strip().strip("/")
     )
-    diff_command = [
-        "git",
-        "-C",
-        str(path),
-        "diff",
-        "--binary",
-        "HEAD",
-        "--",
-        ".",
-    ]
-    diff_command.extend(
-        f":(exclude){relative_path}"
-        for relative_path in normalized_excluded_paths
-    )
+    lexical_root = Path(os.path.abspath(path))
+    resolved_root = path.resolve()
+    excluded_root_paths: list[str] = []
+    resolved_excluded_roots: list[Path] = []
+    for root in excluded_roots:
+        lexical_excluded_root = Path(os.path.abspath(root))
+        try:
+            relative_root = lexical_excluded_root.relative_to(lexical_root)
+        except ValueError:
+            return None
+        if (
+            _secure_directory_root_identity(
+                lexical_excluded_root,
+                source_root=lexical_root,
+            )
+            is None
+        ):
+            return None
+        normalized_root = relative_root.as_posix().strip("/")
+        if not normalized_root:
+            return None
+        excluded_root_paths.append(normalized_root)
+        resolved_excluded_roots.append(lexical_excluded_root.resolve(strict=False))
+
+    def excluded(relative_path: str) -> bool:
+        normalized = relative_path.strip("/")
+        if any(
+            normalized == item or normalized.startswith(item + "/")
+            for item in normalized_excluded_paths
+        ):
+            return True
+        return any(
+            normalized == root or normalized.startswith(root + "/")
+            for root in excluded_root_paths
+        )
+
     try:
-        tracked = subprocess.run(
-            diff_command,
+        object_format = subprocess.run(
+            [
+                TRUSTED_GIT_EXECUTABLE,
+                "-C",
+                str(resolved_root),
+                "rev-parse",
+                "--show-object-format",
+            ],
             check=True,
             capture_output=True,
+            text=True,
+            env=dict(SANITIZED_GIT_ENV),
+        ).stdout.strip()
+        tree_output = subprocess.run(
+            [
+                TRUSTED_GIT_EXECUTABLE,
+                "-C",
+                str(resolved_root),
+                "ls-tree",
+                "-r",
+                "-z",
+                "--full-tree",
+                "HEAD",
+            ],
+            check=True,
+            capture_output=True,
+            env=dict(SANITIZED_GIT_ENV),
         ).stdout
         untracked_output = subprocess.run(
             [
-                "git",
+                TRUSTED_GIT_EXECUTABLE,
                 "-C",
-                str(path),
+                str(resolved_root),
                 "ls-files",
                 "--others",
-                "--exclude-standard",
                 "-z",
             ],
             check=True,
             capture_output=True,
+            env=dict(SANITIZED_GIT_ENV),
+        ).stdout
+        index_flags_output = subprocess.run(
+            [
+                TRUSTED_GIT_EXECUTABLE,
+                "-C",
+                str(resolved_root),
+                "ls-files",
+                "-v",
+                "-z",
+            ],
+            check=True,
+            capture_output=True,
+            env=dict(SANITIZED_GIT_ENV),
         ).stdout
     except (OSError, subprocess.CalledProcessError):
         return None
+    if object_format not in {"sha1", "sha256"}:
+        return None
 
-    digest = hashlib.sha256()
-    digest.update(tracked)
-    resolved_excluded_roots = tuple(root.resolve() for root in excluded_roots)
+    tracked_manifest: list[dict[str, object]] = []
+    dirty_entries: list[str] = []
+    unsafe_symlink_entries: list[str] = []
+    for raw_entry in filter(None, tree_output.split(b"\0")):
+        try:
+            raw_metadata, raw_path = raw_entry.split(b"\t", 1)
+            raw_mode, raw_type, raw_object_id = raw_metadata.split(b" ", 2)
+        except ValueError:
+            return None
+        relative_path = raw_path.decode("utf-8", errors="surrogateescape")
+        candidate = resolved_root / relative_path
+        if excluded(relative_path):
+            continue
+        mode = raw_mode.decode("ascii", errors="strict")
+        entry_type = raw_type.decode("ascii", errors="strict")
+        expected_object_id = raw_object_id.decode("ascii", errors="strict")
+        actual_object_id: str | None = None
+        actual_mode: str | None = None
+        try:
+            file_stat = candidate.lstat()
+            if mode == "120000" and stat.S_ISLNK(file_stat.st_mode):
+                link_target = os.readlink(candidate)
+                payload = link_target.encode(
+                    "utf-8",
+                    errors="surrogateescape",
+                )
+                actual_mode = "120000"
+                resolved_target = (candidate.parent / link_target).resolve(strict=False)
+                try:
+                    resolved_target.relative_to(resolved_root)
+                except ValueError:
+                    unsafe_symlink_entries.append(
+                        f"outside-source-root:{relative_path}"
+                    )
+                else:
+                    if any(
+                        resolved_target == excluded_root
+                        or resolved_target.is_relative_to(excluded_root)
+                        for excluded_root in resolved_excluded_roots
+                    ):
+                        unsafe_symlink_entries.append(
+                            f"excluded-root-target:{relative_path}"
+                        )
+            elif entry_type == "blob" and stat.S_ISREG(file_stat.st_mode):
+                payload = candidate.read_bytes()
+                actual_mode = "100755" if file_stat.st_mode & 0o111 else "100644"
+            else:
+                payload = b""
+        except OSError:
+            payload = b""
+        if actual_mode is not None:
+            object_payload = b"blob " + str(len(payload)).encode() + b"\0" + payload
+            actual_object_id = hashlib.new(object_format, object_payload).hexdigest()
+        clean = actual_mode == mode and actual_object_id == expected_object_id
+        if not clean:
+            dirty_entries.append(f"tracked:{relative_path}")
+        tracked_manifest.append(
+            {
+                "path": relative_path,
+                "mode": mode,
+                "expected_object_id": expected_object_id,
+                "actual_mode": actual_mode,
+                "actual_object_id": actual_object_id,
+            }
+        )
+
+    untracked_manifest: list[dict[str, object]] = []
     for raw_path in sorted(filter(None, untracked_output.split(b"\0"))):
         relative_path = raw_path.decode("utf-8", errors="surrogateescape")
-        normalized_relative_path = relative_path.strip("/")
-        if any(
-            normalized_relative_path == excluded
-            or normalized_relative_path.startswith(excluded + "/")
-            for excluded in normalized_excluded_paths
-        ):
+        candidate = resolved_root / relative_path
+        if excluded(relative_path):
             continue
-        candidate = path / relative_path
-        resolved_candidate = candidate.resolve()
-        if any(
-            resolved_candidate == excluded
-            or resolved_candidate.is_relative_to(excluded)
-            for excluded in resolved_excluded_roots
-        ):
-            continue
-        if not candidate.is_file():
-            continue
-        digest.update(b"\0untracked\0")
-        digest.update(raw_path)
-        digest.update(b"\0")
         try:
-            with candidate.open("rb") as handle:
-                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                    digest.update(chunk)
+            file_stat = candidate.lstat()
+            if stat.S_ISLNK(file_stat.st_mode):
+                link_target = os.readlink(candidate)
+                dirty_entries.append(f"untracked-special:{relative_path}")
+                untracked_manifest.append(
+                    {
+                        "path": relative_path,
+                        "kind": "symlink",
+                        "target": link_target,
+                    }
+                )
+                continue
+            if not stat.S_ISREG(file_stat.st_mode):
+                dirty_entries.append(f"untracked-special:{relative_path}")
+                untracked_manifest.append(
+                    {
+                        "path": relative_path,
+                        "kind": "special",
+                        "mode": stat.S_IFMT(file_stat.st_mode),
+                    }
+                )
+                continue
+            checksum = _sha256_file(candidate)
         except OSError:
             return None
-    return digest.hexdigest()
+        if checksum is None:
+            return None
+        dirty_entries.append(f"untracked:{relative_path}")
+        untracked_manifest.append(
+            {
+                "path": relative_path,
+                "sha256": checksum,
+                "size_bytes": file_stat.st_size,
+            }
+        )
+
+    index_override_entries: list[str] = []
+    for raw_entry in filter(None, index_flags_output.split(b"\0")):
+        if len(raw_entry) < 3 or raw_entry[1:2] != b" ":
+            return None
+        tag = raw_entry[:1].decode("ascii", errors="strict")
+        relative_path = raw_entry[2:].decode(
+            "utf-8",
+            errors="surrogateescape",
+        )
+        if excluded(relative_path):
+            continue
+        if tag == "S" or tag.islower():
+            index_override_entries.append(f"{tag}:{relative_path}")
+
+    material = {
+        "object_format": object_format,
+        "tracked": tracked_manifest,
+        "untracked": untracked_manifest,
+        "index_overrides": sorted(index_override_entries),
+        "unsafe_symlinks": sorted(unsafe_symlink_entries),
+    }
+    return {
+        "digest": _sha256_json(material),
+        "dirty_entries": sorted(set(dirty_entries)),
+        "index_override_entries": sorted(index_override_entries),
+        "unsafe_symlink_entries": sorted(unsafe_symlink_entries),
+        "tracked_count": len(tracked_manifest),
+        "untracked_count": len(untracked_manifest),
+    }
 
 
 def _directory_state_sha256(path: Path) -> str | None:
-    if not path.exists() or not path.is_dir():
+    if not path.exists() or not path.is_dir() or path.is_symlink():
         return None
     try:
-        files = sorted(
-            candidate
-            for candidate in path.rglob("*")
-            if candidate.is_file() and not candidate.is_symlink()
-        )
         digest = hashlib.sha256()
-        for candidate in files:
-            relative_path = candidate.relative_to(path).as_posix().encode(
-                "utf-8",
-                errors="surrogateescape",
-            )
-            digest.update(b"\0file\0")
-            digest.update(relative_path)
-            digest.update(b"\0")
-            with candidate.open("rb") as handle:
-                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                    digest.update(chunk)
+
+        def hash_directory(directory: Path) -> bool:
+            with os.scandir(directory) as entries:
+                ordered = sorted(entries, key=lambda entry: entry.name)
+            for entry in ordered:
+                candidate = Path(entry.path)
+                file_stat = entry.stat(follow_symlinks=False)
+                relative_path = (
+                    candidate.relative_to(path)
+                    .as_posix()
+                    .encode(
+                        "utf-8",
+                        errors="surrogateescape",
+                    )
+                )
+                mode = stat.S_IMODE(file_stat.st_mode)
+                if stat.S_ISDIR(file_stat.st_mode):
+                    digest.update(b"\0directory\0")
+                    digest.update(relative_path)
+                    digest.update(b"\0")
+                    digest.update(str(mode).encode())
+                    if not hash_directory(candidate):
+                        return False
+                elif stat.S_ISREG(file_stat.st_mode):
+                    digest.update(b"\0file\0")
+                    digest.update(relative_path)
+                    digest.update(b"\0")
+                    digest.update(str(mode).encode())
+                    digest.update(b"\0")
+                    with candidate.open("rb") as handle:
+                        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                            digest.update(chunk)
+                elif stat.S_ISLNK(file_stat.st_mode):
+                    digest.update(b"\0symlink\0")
+                    digest.update(relative_path)
+                    digest.update(b"\0")
+                    digest.update(
+                        os.readlink(candidate).encode(
+                            "utf-8",
+                            errors="surrogateescape",
+                        )
+                    )
+                else:
+                    return False
+            return True
+
+        if not hash_directory(path):
+            return None
         return digest.hexdigest()
     except OSError:
         return None
@@ -2844,13 +3573,25 @@ def _directory_state_sha256(path: Path) -> str | None:
 
 def _read_report(path: Path) -> dict[str, object]:
     if not path.exists():
-        return {"identity": "unrecorded", "ok": False, "failures": [{"code": "missing_build_identity_report"}]}
+        return {
+            "identity": "unrecorded",
+            "ok": False,
+            "failures": [{"code": "missing_build_identity_report"}],
+        }
     try:
         payload = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
-        return {"identity": "unrecorded", "ok": False, "failures": [{"code": "invalid_build_identity_report"}]}
+        return {
+            "identity": "unrecorded",
+            "ok": False,
+            "failures": [{"code": "invalid_build_identity_report"}],
+        }
     if not isinstance(payload, dict):
-        return {"identity": "unrecorded", "ok": False, "failures": [{"code": "invalid_build_identity_report"}]}
+        return {
+            "identity": "unrecorded",
+            "ok": False,
+            "failures": [{"code": "invalid_build_identity_report"}],
+        }
     return payload
 
 

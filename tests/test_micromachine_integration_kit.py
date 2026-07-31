@@ -5878,7 +5878,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             ),
         )
         self.assertIn(
-            'ctest --test-dir "${MICROMACHINE_BUILD_DIR}" --output-on-failure',
+            '"${CTEST_COMMAND}" --test-dir "${MICROMACHINE_BUILD_DIR}" '
+            "--output-on-failure",
             build_script,
         )
         for script_name, script in (

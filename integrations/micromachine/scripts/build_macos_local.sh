@@ -104,6 +104,26 @@ canonical_checkout_path() {
   printf '%s/%s\n' "$(canonical_checkout_path "${parent}")" "${base}"
 }
 
+resolve_regular_executable() {
+  python3 -c '
+import os
+import stat
+import sys
+from pathlib import Path
+
+candidate = Path(sys.argv[1])
+label = sys.argv[2]
+try:
+    resolved = candidate.resolve(strict=True)
+    mode = resolved.lstat().st_mode
+except OSError as exc:
+    raise SystemExit(f"Cannot resolve {label} executable {candidate}: {exc}")
+if not stat.S_ISREG(mode) or not os.access(resolved, os.X_OK):
+    raise SystemExit(f"{label} executable is not a regular executable: {resolved}")
+print(resolved)
+' "$1" "$2"
+}
+
 require_disposable_checkout_mutation() {
   local checkout_dir="$1"
   local expected_root="$2"
@@ -159,6 +179,52 @@ prepare_git_checkout() {
     git clone "${repo_url}" "${checkout_dir}"
   fi
 }
+
+require_secure_build_root() {
+  python3 -c '
+import os
+import stat
+import sys
+from pathlib import Path
+
+build = Path(os.path.abspath(sys.argv[1]))
+source = Path(os.path.abspath(sys.argv[2]))
+report = Path(os.path.abspath(sys.argv[3]))
+label = sys.argv[4]
+try:
+    build.relative_to(source)
+except ValueError:
+    raise SystemExit(f"{label} build root escapes source checkout: {build}")
+try:
+    report.relative_to(build)
+except ValueError:
+    raise SystemExit(f"{label} report escapes build root: {report}")
+for target in (source, build, report):
+    current = target
+    while True:
+        if os.path.lexists(current):
+            mode = current.lstat().st_mode
+            if stat.S_ISLNK(mode):
+                raise SystemExit(f"{label} path contains a symlink: {current}")
+        if current == source or current.parent == current:
+            break
+        current = current.parent
+' "$1" "$2" "$3" "$4"
+}
+
+require_secure_build_root \
+  "${S2CLIENT_BUILD_DIR}" \
+  "${S2CLIENT_DIR}" \
+  "${S2CLIENT_BUILD_DIR}/CMakeCache.txt" \
+  "s2client"
+require_secure_build_root \
+  "${MICROMACHINE_BUILD_DIR}" \
+  "${MICROMACHINE_DIR}" \
+  "${MICROMACHINE_BUILD_IDENTITY_REPORT}" \
+  "MicroMachine"
+if [[ "${VOI_BUILD_PREFLIGHT_ONLY:-0}" == "1" ]]; then
+  exit 0
+fi
 
 mkdir -p "${ROOT_DIR}"
 require_disposable_checkout_mutation "${S2CLIENT_DIR}" "${ROOT_DIR}" "mutate"
@@ -335,10 +401,18 @@ git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whi
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${BATTLEFIELD_IDENTITY_TRANSFER_INTEGRITY_PATCH_FILE}"
 cp "${BLACKBOARD_HEADER_FILE}" "${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"
 
+require_secure_build_root \
+  "${MICROMACHINE_BUILD_DIR}" \
+  "${MICROMACHINE_DIR}" \
+  "${MICROMACHINE_BUILD_IDENTITY_REPORT}" \
+  "MicroMachine"
 rm -f \
   "${MICROMACHINE_BUILD_IDENTITY_REPORT}" \
   "${MICROMACHINE_BUILD_DIR}/voi_source_attestation.json" \
   "${MICROMACHINE_BUILD_DIR}/bin/MicroMachine"
+mkdir -p "${MICROMACHINE_BUILD_DIR}"
+CTEST_COMMAND="${CTEST_COMMAND:-$(command -v ctest)}"
+CTEST_COMMAND="$(resolve_regular_executable "${CTEST_COMMAND}" "CTest")"
 
 python3 -m starcraft_commander.micromachine_build_identity \
   --micromachine-dir "${MICROMACHINE_DIR}" \
@@ -365,6 +439,7 @@ python3 -m starcraft_commander.micromachine_build_identity \
 
 cmake -S "${MICROMACHINE_DIR}" -B "${MICROMACHINE_BUILD_DIR}" \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+  -DCMAKE_CTEST_COMMAND:INTERNAL="${CTEST_COMMAND}" \
   -DSC2Api_INCLUDE_DIR="${S2CLIENT_DIR}/include" \
   -DSC2Api_Proto_INCLUDE_DIR="${S2CLIENT_BUILD_DIR}/generated" \
   -DSC2Api_Protobuf_INCLUDE_DIR="${S2CLIENT_DIR}/contrib/protobuf/src" \
@@ -375,7 +450,7 @@ cmake -S "${MICROMACHINE_DIR}" -B "${MICROMACHINE_BUILD_DIR}" \
   -DSC2Api_CIVETWEB_LIB="${S2CLIENT_BUILD_DIR}/bin/libcivetweb.a" \
   -DSC2Api_PROTOBUF_LIB="${S2CLIENT_BUILD_DIR}/bin/libprotobuf.a"
 cmake --build "${MICROMACHINE_BUILD_DIR}" --parallel "${BUILD_JOBS:-8}"
-ctest --test-dir "${MICROMACHINE_BUILD_DIR}" --output-on-failure
+"${CTEST_COMMAND}" --test-dir "${MICROMACHINE_BUILD_DIR}" --output-on-failure
 
 python3 -m starcraft_commander.micromachine_build_identity \
   --micromachine-dir "${MICROMACHINE_DIR}" \
