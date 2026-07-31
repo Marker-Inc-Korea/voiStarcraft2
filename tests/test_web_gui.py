@@ -18775,7 +18775,7 @@ const assert = require("assert");
     return button.getAttribute("data-operation-resolution") === "wait_for_full_force";
   });
   var unsafeTransferButton = unsafeResolutionButtons.find(function(button) {
-    return button.getAttribute("data-operation-resolution") === "transfer_two_units";
+    return Boolean(button.getAttribute("data-contextual-choice-id"));
   });
   assert.strictEqual(unsafeResolutionButtons.length, 3);
   assert.strictEqual(unsafePartialButton.getAttribute("aria-disabled"), "true");
@@ -18796,9 +18796,9 @@ const assert = require("assert");
   });
   assert.strictEqual(requests.length, unsafeRequestCount);
   unsafeTransferButton.focus();
-  assert.strictEqual(
-    document.activeElement.getAttribute("data-operation-resolution"),
-    "transfer_two_units"
+  assert(
+    document.activeElement.getAttribute("data-contextual-choice-id")
+      .indexOf("voi-ctx-") === 0
   );
 
   var safeResolutionAssault = operationResult(
@@ -18855,6 +18855,204 @@ const assert = require("assert");
   assert(safeResolutionText.includes("assault-bravo"));
   assert(safeResolutionText.includes("권위 안전 판정을 통과한"));
   assert(!safeResolutionText.includes("launch_partial"));
+
+  // One source with multiple destinations preserves the exact clicked
+  // canonical endpoint in the typed request without exposing it in DOM data.
+  var typedTransferSource = operationResult(
+    "assault-bravo",
+    "parallel-update-b",
+    "병력 이관 source",
+    "attack",
+    329,
+    "action_issued",
+    actionStages("attack").slice(0, 6)
+  );
+  typedTransferSource.battlefield_operation.operation_launch_policy.min_units = 2;
+  typedTransferSource.battlefield_operation.operation_launch_policy.max_units = 4;
+  typedTransferSource.battlefield_operation.operation_ownership.owner_count = 4;
+  var destinationBravoProjection = JSON.parse(JSON.stringify(
+    typedTransferSource.battlefield_operation
+  ));
+  destinationBravoProjection.operation_id = "destination-bravo";
+  destinationBravoProjection.generation = 3;
+  destinationBravoProjection.identity.operation_id = "destination-bravo";
+  destinationBravoProjection.identity.generation = 3;
+  destinationBravoProjection.operation_launch_policy.min_units = 1;
+  destinationBravoProjection.operation_ownership.owner_count = 4;
+  var destinationCharlieProjection = JSON.parse(JSON.stringify(
+    destinationBravoProjection
+  ));
+  destinationCharlieProjection.operation_id = "destination-charlie";
+  destinationCharlieProjection.generation = 7;
+  destinationCharlieProjection.identity.operation_id = "destination-charlie";
+  destinationCharlieProjection.identity.generation = 7;
+  destinationCharlieProjection.operation_ownership.owner_count = 3;
+  function typedTransferEntry(destinationId, destinationGeneration) {
+    return {
+      source_owner_id: "assault-bravo",
+      source_owner_count: 4,
+      protected_minimum: 2,
+      transferable_count: 2,
+      transfer_safe: true,
+      atomic_runtime_blocker: "",
+      recommended_resolution_choices: ["transfer_two_units"],
+      safety_evidence: {
+        protected_minimum_respected: true,
+        atomic_revalidation_required: true
+      },
+      atomic_revalidation_inputs: {
+        source_owner_id: "assault-bravo",
+        counterpart_operation_id: destinationId,
+        requested_source_generation: 1,
+        requested_counterpart_generation: destinationGeneration,
+        source_active: true,
+        destination_active: true,
+        ownership_integrity: true,
+        operation_assignments_match: true,
+        squad_assignments_match: true,
+        action_assignments_match: true,
+        role_assignments_match: true,
+        atomic_revalidation_ready: true
+      }
+    };
+  }
+  renderOperationConsole(serverResult({
+    status: "published",
+    battlefield_projection_identity: {
+      session_epoch: 1700000000000,
+      game_frame: 329
+    },
+    battlefield_projection_fingerprint: "b".repeat(64),
+    battlefield_overview: {
+      authority: "micromachine_cpp",
+      identity: {
+        session_epoch: 1700000000000,
+        game_frame: 329
+      },
+      operation_ownership: [
+        typedTransferSource.battlefield_operation,
+        destinationBravoProjection,
+        destinationCharlieProjection
+      ],
+      transfer_availability: {
+        atomic_revalidation_required: true,
+        entries: [
+          typedTransferEntry("destination-bravo", 3),
+          typedTransferEntry("destination-charlie", 7)
+        ]
+      }
+    },
+    operations: [typedTransferSource]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  var typedTransferButtons = assaultRecord.node.querySelector(
+    ".operation-resolution-actions"
+  ).querySelectorAll("button");
+  assert.strictEqual(typedTransferButtons.length, 2);
+  assert.strictEqual(
+    assaultRecord.node.querySelector(".operation-card-actions")
+      .querySelectorAll("button").length,
+    5
+  );
+  assert.strictEqual(
+    assaultRecord.node.querySelectorAll(".operation-stage").length,
+    4
+  );
+  assert.strictEqual(
+    nodes["operation-list"].querySelectorAll(".operation-lane").length,
+    4
+  );
+  var destinationCharlieButton = typedTransferButtons.find(function(button) {
+    var choiceId = button.getAttribute("data-contextual-choice-id");
+    var stored = contextualTransferChoiceRecords[choiceId];
+    return stored && stored.payload.destination_operation_id ===
+      "destination-charlie";
+  });
+  assert(destinationCharlieButton);
+  var destinationCharlieChoiceId = destinationCharlieButton.getAttribute(
+    "data-contextual-choice-id"
+  );
+  assert(destinationCharlieChoiceId.indexOf("voi-ctx-choice-") === 0);
+  [
+    "data-source-operation-id",
+    "data-destination-operation-id",
+    "data-source-generation",
+    "data-destination-generation",
+    "data-requested-count",
+    "data-unit-tags"
+  ].forEach(function(attribute) {
+    assert.strictEqual(
+      destinationCharlieButton.getAttribute(attribute),
+      null
+    );
+  });
+  var typedTransferRequestStart = requests.length;
+  destinationCharlieButton.dispatchEvent({
+    type: "click",
+    preventDefault: function() {}
+  });
+  destinationCharlieButton.dispatchEvent({
+    type: "click",
+    preventDefault: function() {}
+  });
+  assert.strictEqual(requests.length, typedTransferRequestStart + 1);
+  var typedTransferRequest = requests[typedTransferRequestStart];
+  assert.strictEqual(
+    typedTransferRequest.url,
+    "/api/micromachine/contextual-transfer"
+  );
+  var typedTransferBody = JSON.parse(typedTransferRequest.options.body);
+  assert.strictEqual(typedTransferBody.choice_id, destinationCharlieChoiceId);
+  assert.strictEqual(
+    typedTransferBody.request_id,
+    contextualTransferChoiceRecords[destinationCharlieChoiceId]
+      .payload.request_id
+  );
+  assert.strictEqual(typedTransferBody.action, "transfer_two_units");
+  assert.strictEqual(typedTransferBody.source_operation_id, "assault-bravo");
+  assert.strictEqual(
+    typedTransferBody.destination_operation_id,
+    "destination-charlie"
+  );
+  assert.strictEqual(typedTransferBody.source_generation, 1);
+  assert.strictEqual(typedTransferBody.destination_generation, 7);
+  assert.strictEqual(typedTransferBody.requested_count, 2);
+  assert.strictEqual(typedTransferBody.protected_minimum, 2);
+  assert.strictEqual(typedTransferBody.source_minimum, 2);
+  assert.strictEqual(typedTransferBody.blackboard_scope_id, OPERATION_SCOPE);
+  assert.strictEqual(typedTransferBody.session_epoch, 1700000000000);
+  assert.strictEqual(typedTransferBody.projection_frame, 329);
+  assert.strictEqual(
+    typedTransferBody.projection_fingerprint,
+    "b".repeat(64)
+  );
+  [
+    "text",
+    "provider_output",
+    "unit_tag",
+    "unit_tags",
+    "selected_unit_tags",
+    "frame_script",
+    "keyboard"
+  ].forEach(function(field) {
+    assert.strictEqual(typedTransferBody[field], undefined);
+  });
+  typedTransferRequest.deferred.resolve(response(202, {
+    ok: true,
+    accepted: true,
+    status: "published",
+    result_id: "typed-transfer-result",
+    contextual_transfer: {
+      choice_id: destinationCharlieChoiceId,
+      request_id: typedTransferBody.request_id,
+      source_operation_id: "assault-bravo",
+      destination_operation_id: "destination-charlie",
+      requested_count: 2,
+      stage: "published"
+    }
+  }));
+  await flushPromises();
+  await flushPromises();
 
   // A newer generation edits the existing card instead of creating a duplicate.
   var editedAssault = operationResult(

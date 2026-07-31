@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import os
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pathlib
 import shutil
 import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import unittest
 
 from starcraft_commander.web_gui import render_web_gui_page
@@ -480,6 +482,376 @@ def _browser_fixture_page() -> str:
     return page.replace("</body>", scenario + "\n</body>", 1)
 
 
+def _contextual_transfer_browser_fixture_page() -> str:
+    prelude = r"""
+<script>
+(function () {
+  window.__transferQa = {
+    contextualRequests: [],
+    modulationRequests: 0
+  };
+
+  function response(payload, status) {
+    var responseStatus = status || 200;
+    var serialized = JSON.stringify(payload);
+    return Promise.resolve({
+      ok: responseStatus >= 200 && responseStatus < 300,
+      status: responseStatus,
+      statusText: "",
+      json: function () { return Promise.resolve(payload); },
+      text: function () { return Promise.resolve(serialized); }
+    });
+  }
+
+  window.fetch = function (url, options) {
+    var route = String(url || "").split("?")[0];
+    if (route === "/api/micromachine/contextual-transfer") {
+      window.__transferQa.contextualRequests.push({
+        url: String(url || ""),
+        options: options || {}
+      });
+      var body = JSON.parse(String(options && options.body || "{}"));
+      return response({
+        ok: true,
+        accepted: true,
+        status: "published",
+        result_id: "browser-transfer-result",
+        contextual_transfer: {
+          choice_id: body.choice_id,
+          request_id: body.request_id,
+          action: body.action,
+          source_operation_id: body.source_operation_id,
+          destination_operation_id: body.destination_operation_id,
+          requested_count: body.requested_count,
+          stage: "published"
+        }
+      }, 202);
+    }
+    if (route === "/api/micromachine/modulate") {
+      window.__transferQa.modulationRequests += 1;
+      return response({ error: "natural-language path must not run" }, 500);
+    }
+    if (route === "/api/llm") {
+      return response({ configured: false, provider: "openai", model: "" });
+    }
+    if (route === "/api/history") {
+      return response({ events: [], latest: 0 });
+    }
+    if (route === "/api/state") {
+      return response({
+        available: true,
+        game_time_seconds: 0,
+        standing_orders: []
+      });
+    }
+    if (route === "/api/runtime/status") {
+      return response({ running: false, status: "idle" });
+    }
+    if (route === "/api/micromachine/status") {
+      return response({
+        status: "idle",
+        blackboard_dir: "/tmp/browser-transfer-blackboard",
+        blackboard_scope_id: "browser-transfer-scope",
+        operations: []
+      });
+    }
+    return response({});
+  };
+
+  class FakeEventSource {
+    constructor() {
+      this.listeners = {};
+    }
+    addEventListener(name, handler) {
+      this.listeners[name] = handler;
+    }
+    close() {}
+  }
+
+  Object.defineProperty(window, "EventSource", {
+    configurable: true,
+    value: FakeEventSource
+  });
+  window.setInterval = function () { return 0; };
+  window.clearInterval = function () {};
+})();
+</script>
+"""
+    scenario = r"""
+<script>
+(function () {
+  function mark(name, value) {
+    document.documentElement.setAttribute(
+      "data-qa-" + name,
+      value ? "true" : "false"
+    );
+  }
+
+  function projection(operationId, generation, ownerCount, minimum) {
+    return {
+      identity: {
+        update_id: "browser-transfer-update",
+        scope: "operation:" + operationId,
+        session_epoch: 1700000000000,
+        operation_id: operationId,
+        generation: generation,
+        stage: "assigned",
+        game_frame: 140
+      },
+      operation_id: operationId,
+      generation: generation,
+      operation_route: {
+        requested_route_type: "direct",
+        applied_route_type: "direct",
+        location_intent: "enemy_natural",
+        target_type: "enemy_expansion",
+        resolved_target_label: "enemy natural",
+        target_x: 120,
+        target_y: 44,
+        target_evidence: "observed_enemy_structure"
+      },
+      operation_lifetime: {
+        mode: "until_completed",
+        completion_state: "active",
+        completion_conditions: ["target_reached"],
+        duration_seconds: 300,
+        issued_at_frame: 100,
+        deadline_frame: 4600,
+        standing: false,
+        completed: false,
+        completion_reason: "",
+        completed_frame: 0
+      },
+      operation_ownership: {
+        owner_count: ownerCount,
+        integrity_status: "valid"
+      },
+      operation_launch_policy: {
+        min_units: minimum,
+        max_units: ownerCount,
+        allow_partial_requested: false,
+        strict_scope: true,
+        partial_launch_allowed: false,
+        partial_launch_safe: false,
+        launch_count: ownerCount,
+        missing_count: 0,
+        decision: "launch",
+        blocker: "",
+        recommended_choices: [],
+        safety_evidence: {}
+      },
+      operation_completion: {
+        movement_observed: false,
+        engagement_observed: false,
+        target_reached: false,
+        terminal: false,
+        state: "active",
+        reason: "",
+        frame: 0,
+        generation: generation
+      }
+    };
+  }
+
+  function transferEntry(destinationId, destinationGeneration) {
+    return {
+      source_owner_id: "source-alpha",
+      source_owner_count: 4,
+      protected_minimum: 2,
+      transferable_count: 2,
+      transfer_safe: true,
+      atomic_runtime_blocker: "",
+      recommended_resolution_choices: ["transfer_two_units"],
+      safety_evidence: {
+        protected_minimum_respected: true,
+        atomic_revalidation_required: true
+      },
+      atomic_revalidation_inputs: {
+        source_owner_id: "source-alpha",
+        counterpart_operation_id: destinationId,
+        requested_source_generation: 5,
+        requested_counterpart_generation: destinationGeneration,
+        source_active: true,
+        destination_active: true,
+        ownership_integrity: true,
+        operation_assignments_match: true,
+        squad_assignments_match: true,
+        action_assignments_match: true,
+        role_assignments_match: true,
+        atomic_revalidation_ready: true
+      }
+    };
+  }
+
+  window.setTimeout(function () {
+    var sourceProjection = projection("source-alpha", 5, 4, 2);
+    var destinationBravo = projection("destination-bravo", 3, 4, 1);
+    var destinationCharlie = projection("destination-charlie", 7, 3, 1);
+    var sourceOperation = {
+      operation_id: "source-alpha",
+      operation_generation: 5,
+      update_id: "browser-transfer-update",
+      command_text: "병력 이관 source",
+      mission: "attack",
+      transport_status: "published",
+      consumption_status: "consumed",
+      telemetry_frame: 140,
+      disposition: "active",
+      operation_convergence: {
+        target_count: 4,
+        represented_count: 4,
+        missing_count: 0,
+        blocker: "",
+        requirements: []
+      },
+      battlefield_operation: sourceProjection,
+      semantic_timeline: [],
+      update: {
+        update_id: "browser-transfer-update",
+        vector: {
+          goal: "병력 이관 source",
+          operation_id: "source-alpha"
+        }
+      },
+      intervention: {
+        telemetry_frame: 140,
+        command_execution: {
+          command_id: "browser-transfer-update",
+          operation_id: "source-alpha",
+          operation_generation: 5,
+          state: "queued_or_assigned",
+          completed: false,
+          failed: false,
+          expired: false,
+          stages: [
+            { name: "parsed", ok: true, manager: "CommandGateway" },
+            { name: "reduced", ok: true, manager: "PolicyReducer" },
+            {
+              name: "consumed_by_manager",
+              ok: true,
+              manager: "CombatCommander"
+            },
+            {
+              name: "queued_or_assigned",
+              ok: true,
+              manager: "CombatCommander",
+              evidence: { assigned_unit_count: 4 }
+            }
+          ]
+        }
+      }
+    };
+    renderOperationConsole({
+      status: "published",
+      blackboard_scope_id: "browser-transfer-scope",
+      battlefield_projection_identity: {
+        session_epoch: 1700000000000,
+        game_frame: 140
+      },
+      battlefield_projection_fingerprint: "c".repeat(64),
+      battlefield_overview: {
+        schema_version: 2,
+        authority: "micromachine_cpp",
+        identity: {
+          session_epoch: 1700000000000,
+          game_frame: 140
+        },
+        operation_ownership: [
+          sourceProjection,
+          destinationBravo,
+          destinationCharlie
+        ],
+        transfer_availability: {
+          atomic_revalidation_required: true,
+          entries: [
+            transferEntry("destination-bravo", 3),
+            transferEntry("destination-charlie", 7)
+          ]
+        }
+      },
+      operations: [sourceOperation]
+    });
+
+    var card = document.querySelector(".operation-card");
+    var transferButtons = Array.from(
+      card.querySelectorAll("[data-contextual-choice-id]")
+    );
+    var destinationButton = transferButtons.find(function (button) {
+      return button.textContent.indexOf("destination-charlie") !== -1;
+    });
+    var choiceId = destinationButton &&
+      destinationButton.getAttribute("data-contextual-choice-id");
+    var opaqueDom = Boolean(
+      destinationButton &&
+      choiceId &&
+      choiceId.indexOf("voi-ctx-choice-") === 0 &&
+      !destinationButton.hasAttribute("data-source-operation-id") &&
+      !destinationButton.hasAttribute("data-destination-operation-id") &&
+      !destinationButton.hasAttribute("data-source-generation") &&
+      !destinationButton.hasAttribute("data-destination-generation") &&
+      !destinationButton.hasAttribute("data-unit-tags")
+    );
+    if (destinationButton) {
+      destinationButton.click();
+      destinationButton.click();
+    }
+
+    window.setTimeout(function () {
+      var requests = window.__transferQa.contextualRequests;
+      var typedRequest = requests[0] || {};
+      var body = JSON.parse(String(
+        typedRequest.options && typedRequest.options.body || "{}"
+      ));
+      var forbiddenFields = [
+        "text",
+        "provider_output",
+        "unit_tag",
+        "unit_tags",
+        "selected_unit_tags",
+        "frame_script",
+        "keyboard"
+      ];
+      mark("complete", true);
+      mark("exactly-once", requests.length === 1);
+      mark("typed-endpoint",
+        String(typedRequest.url || "") ===
+          "/api/micromachine/contextual-transfer");
+      mark("destination",
+        body.source_operation_id === "source-alpha" &&
+        body.destination_operation_id === "destination-charlie");
+      mark("identity",
+        body.choice_id === choiceId &&
+        String(body.request_id || "").indexOf("voi-ctx-request-") === 0 &&
+        body.source_generation === 5 &&
+        body.destination_generation === 7 &&
+        body.requested_count === 2 &&
+        body.protected_minimum === 2 &&
+        body.source_minimum === 2 &&
+        body.blackboard_scope_id === "browser-transfer-scope" &&
+        body.session_epoch === 1700000000000 &&
+        body.projection_frame === 140 &&
+        body.projection_fingerprint === "c".repeat(64));
+      mark("allowlist", forbiddenFields.every(function (field) {
+        return body[field] === undefined;
+      }));
+      mark("opaque-dom", opaqueDom);
+      mark("llm-bypassed", window.__transferQa.modulationRequests === 0);
+      mark("original-ux",
+        document.querySelectorAll("[data-operation-lane]").length === 4 &&
+        card.querySelectorAll(".operation-stage").length === 4 &&
+        card.querySelectorAll("[data-operation-action]").length === 5);
+    }, 80);
+  }, 80);
+})();
+</script>
+"""
+    page = render_web_gui_page(
+        micromachine_blackboard_dir="/tmp/browser-transfer-blackboard"
+    )
+    page = page.replace("<script>", prelude + "\n<script>", 1)
+    return page.replace("</body>", scenario + "\n</body>", 1)
+
+
 class WebGuiRealBrowserTest(unittest.TestCase):
     def test_voice_tactical_loop_in_real_chrome_desktop_and_mobile(self) -> None:
         chrome = _chrome_executable()
@@ -558,6 +930,101 @@ class WebGuiRealBrowserTest(unittest.TestCase):
                             result.stdout,
                             marker,
                         )
+
+    def test_contextual_transfer_click_in_real_chrome_on_localhost(self) -> None:
+        chrome = _chrome_executable()
+        if chrome is None:
+            self.skipTest("Chrome/Chromium is not installed")
+
+        page = _contextual_transfer_browser_fixture_page()
+        expected_markers = (
+            "complete",
+            "exactly-once",
+            "typed-endpoint",
+            "destination",
+            "identity",
+            "allowlist",
+            "opaque-dom",
+            "llm-bypassed",
+            "original-ux",
+        )
+
+        class FixtureHandler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                if self.path not in {"/", "/index.html"}:
+                    self.send_error(404)
+                    return
+                body = page.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), FixtureHandler)
+        thread = threading.Thread(
+            target=server.serve_forever,
+            name="contextual-transfer-browser-fixture",
+            daemon=True,
+        )
+        thread.start()
+
+        def stop_fixture_server() -> None:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        self.addCleanup(stop_fixture_server)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            profile = pathlib.Path(temporary_directory) / "profile"
+            command = [
+                chrome,
+                "--headless=new",
+                "--disable-gpu",
+                "--disable-dev-shm-usage",
+                "--no-first-run",
+                "--no-default-browser-check",
+                f"--user-data-dir={profile}",
+                "--window-size=1440,1100",
+                "--virtual-time-budget=1800",
+                "--dump-dom",
+                f"http://127.0.0.1:{server.server_port}/",
+            ]
+            result = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        if (
+            sys.platform == "darwin"
+            and result.returncode != 0
+            and not result.stdout
+            and (
+                "sandbox_parameters_mac.mm" in result.stderr
+                or result.returncode in (-6, -5, 134)
+            )
+        ):
+            self.skipTest("The local macOS sandbox blocks headless Chrome")
+        self.assertEqual(
+            result.returncode,
+            0,
+            textwrap.shorten(
+                result.stderr or result.stdout,
+                width=2000,
+                placeholder="...",
+            ),
+        )
+        for marker in expected_markers:
+            self.assertIn(
+                f'data-qa-{marker}="true"',
+                result.stdout,
+                marker,
+            )
 
 
 if __name__ == "__main__":
