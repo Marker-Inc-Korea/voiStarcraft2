@@ -1549,6 +1549,10 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "(1ULL << 53) - 1ULL",
             "value &= kVoiBattlefieldMaximumJsonSafeInteger",
             "<= kVoiBattlefieldMaximumJsonSafeInteger",
+            "if (processEpoch > previous",
+            "wrappedMaximumSafeEpoch",
+            "rejectedUnsafeProcessEpoch",
+            "kVoiBattlefieldMaximumJsonSafeInteger + 1",
         ):
             with self.subTest(contract=contract):
                 self.assertIn(contract, patch)

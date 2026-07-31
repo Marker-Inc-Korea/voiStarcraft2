@@ -414,3 +414,78 @@ diff --git a/tests/battlefield_projection_test.cpp b/tests/battlefield_projectio
  	CHECK(firstProcessIdentity != secondProcessIdentity);
  	CHECK(
  		voiNextBattlefieldSessionEpoch(
+diff --git a/src/voi_battlefield_projection.hpp b/src/voi_battlefield_projection.hpp
+--- a/src/voi_battlefield_projection.hpp
++++ b/src/voi_battlefield_projection.hpp
+@@ -17,12 +17,15 @@ inline std::uint64_t voiNextBattlefieldSessionEpoch(
+ 	std::uint64_t previous,
+ 	std::uint64_t processEpoch = 0)
+ {
+-	if (processEpoch > previous)
++	if (processEpoch > previous
++		&& processEpoch
++			<= kVoiBattlefieldMaximumJsonSafeInteger)
+ 	{
+ 		return processEpoch;
+ 	}
+-	return previous == std::numeric_limits<std::uint64_t>::max()
+-		? previous
++	return previous
++		>= kVoiBattlefieldMaximumJsonSafeInteger
++		? 1
+ 		: previous + 1;
+ }
+ 
+diff --git a/tests/battlefield_projection_test.cpp b/tests/battlefield_projection_test.cpp
+--- a/tests/battlefield_projection_test.cpp
++++ b/tests/battlefield_projection_test.cpp
+@@ -182,10 +182,47 @@ int main()
+ 		secondProcessIdentity
+ 		<= kVoiBattlefieldMaximumJsonSafeInteger);
+ 	CHECK(firstProcessIdentity != secondProcessIdentity);
++	const auto reachedMaximumSafeEpoch =
++		voiNextBattlefieldSessionEpoch(
++			kVoiBattlefieldMaximumJsonSafeInteger - 1,
++			kVoiBattlefieldMaximumJsonSafeInteger - 1);
+ 	CHECK(
++		reachedMaximumSafeEpoch
++		== kVoiBattlefieldMaximumJsonSafeInteger);
++	CHECK(reachedMaximumSafeEpoch > 0);
++	CHECK(
++		reachedMaximumSafeEpoch
++		<= kVoiBattlefieldMaximumJsonSafeInteger);
++	CHECK(
++		reachedMaximumSafeEpoch
++		!= kVoiBattlefieldMaximumJsonSafeInteger - 1);
++	const auto wrappedMaximumSafeEpoch =
+ 		voiNextBattlefieldSessionEpoch(
+-			std::numeric_limits<std::uint64_t>::max())
+-		== std::numeric_limits<std::uint64_t>::max());
++			kVoiBattlefieldMaximumJsonSafeInteger,
++			kVoiBattlefieldMaximumJsonSafeInteger);
++	CHECK(wrappedMaximumSafeEpoch == 1);
++	CHECK(wrappedMaximumSafeEpoch > 0);
++	CHECK(
++		wrappedMaximumSafeEpoch
++		<= kVoiBattlefieldMaximumJsonSafeInteger);
++	CHECK(
++		wrappedMaximumSafeEpoch
++		!= kVoiBattlefieldMaximumJsonSafeInteger);
++	CHECK(
++		voiNextBattlefieldSessionEpoch(
++			kVoiBattlefieldMaximumJsonSafeInteger,
++			kVoiBattlefieldMaximumJsonSafeInteger)
++		== wrappedMaximumSafeEpoch);
++	const auto rejectedUnsafeProcessEpoch =
++		voiNextBattlefieldSessionEpoch(
++			41,
++			kVoiBattlefieldMaximumJsonSafeInteger + 1);
++	CHECK(rejectedUnsafeProcessEpoch == 42);
++	CHECK(rejectedUnsafeProcessEpoch > 0);
++	CHECK(
++		rejectedUnsafeProcessEpoch
++		<= kVoiBattlefieldMaximumJsonSafeInteger);
++	CHECK(rejectedUnsafeProcessEpoch != 41);
+ 	const auto runtimeIdentity =
+ 		voiParseRuntimeInstanceIdentity(
+ 			"0123456789abcdef0123456789abcdef");
