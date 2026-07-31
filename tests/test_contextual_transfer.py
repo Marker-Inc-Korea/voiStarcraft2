@@ -759,6 +759,7 @@ class ContextualTransferBridgeTest(unittest.TestCase):
 
     def test_prepublication_timeout_releases_identity_for_retry(self):
         with tempfile.TemporaryDirectory() as root:
+            _backend, _update = _initialize_blackboard(root)
             status = _status(root)
             request = _request(
                 status,
@@ -768,32 +769,42 @@ class ContextualTransferBridgeTest(unittest.TestCase):
                 session=_UnusedSession(),
                 micromachine_blackboard_dir=root,
             )
-            accepted_requests = []
+            bridge.start()
+            self.addCleanup(bridge.stop)
+            original_enqueue = bridge._enqueue_bridge_item
+            enqueued_requests = []
 
-            def accept(request_record):
-                accepted_requests.append(request_record)
-                if len(accepted_requests) == 2:
-                    request_record.future.set_result(
-                        {"ok": True, "result_id": "retry-result"}
-                    )
+            def enqueue(loop, queue, request_record, *, priority):
+                enqueued_requests.append(request_record)
+                if len(enqueued_requests) == 1:
+                    return
+                original_enqueue(
+                    loop,
+                    queue,
+                    request_record,
+                    priority=priority,
+                )
 
-            with (
-                mock.patch(
+            with mock.patch.object(
+                bridge,
+                "_enqueue_bridge_item",
+                side_effect=enqueue,
+            ):
+                with mock.patch(
                     "starcraft_commander.web_gui."
                     "_MICROMACHINE_REQUEST_TIMEOUT_SECONDS",
                     0.01,
-                ),
-                mock.patch.object(
-                    bridge,
-                    "_accept_micromachine_request",
-                    side_effect=accept,
-                ),
-            ):
-                with self.assertRaises(concurrent.futures.TimeoutError):
-                    bridge.submit_micromachine_contextual_transfer(
-                        request,
-                        blackboard_dir=root,
-                        status_resolver=lambda: deepcopy(status),
+                ):
+                    with self.assertRaises(concurrent.futures.TimeoutError):
+                        bridge.submit_micromachine_contextual_transfer(
+                            request,
+                            blackboard_dir=root,
+                            status_resolver=lambda: deepcopy(status),
+                        )
+                with bridge._micromachine_request_lock:
+                    self.assertNotIn(
+                        request.request_id,
+                        bridge._micromachine_requests,
                     )
                 result = bridge.submit_micromachine_contextual_transfer(
                     request,
@@ -801,9 +812,9 @@ class ContextualTransferBridgeTest(unittest.TestCase):
                     status_resolver=lambda: deepcopy(status),
                 )
 
-            self.assertEqual("retry-result", result["result_id"])
-            self.assertEqual(2, len(accepted_requests))
-            self.assertTrue(accepted_requests[0].cancel_event.is_set())
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(2, len(enqueued_requests))
+            self.assertTrue(enqueued_requests[0].cancel_event.is_set())
             self.assertEqual(
                 1,
                 len(bridge._contextual_transfer_replay_order),
@@ -898,6 +909,63 @@ class ContextualTransferHTTPTest(unittest.TestCase):
                 "request_identity_mismatch",
                 mismatch["blocker"]["code"],
             )
+
+    def test_typed_http_endpoint_immediately_retries_prepublication_timeout(self):
+        with tempfile.TemporaryDirectory() as root:
+            _backend, _update = _initialize_blackboard(root)
+            status = _status(root)
+            request = _request(
+                status,
+                request_id="voi-ctx-request-http-timeout-retry",
+            )
+            bridge = SessionLoopBridge(
+                session=_UnusedSession(),
+                micromachine_blackboard_dir=root,
+            )
+            bridge.micromachine_status_for_runtime = (
+                lambda **_kwargs: deepcopy(status)
+            )
+            bridge.start()
+            server = WebGuiServer(bridge=bridge, port=0)
+            server._micromachine_launcher = _ValidatedStatusLauncher(root)
+            server.start()
+            self.addCleanup(server.stop)
+            self.addCleanup(bridge.stop)
+            payload = {**request.to_dict(), "blackboard_dir": root}
+            original_enqueue = bridge._enqueue_bridge_item
+            enqueue_count = 0
+
+            def enqueue(loop, queue, request_record, *, priority):
+                nonlocal enqueue_count
+                enqueue_count += 1
+                if enqueue_count == 1:
+                    return
+                original_enqueue(
+                    loop,
+                    queue,
+                    request_record,
+                    priority=priority,
+                )
+
+            with mock.patch.object(
+                bridge,
+                "_enqueue_bridge_item",
+                side_effect=enqueue,
+            ):
+                with mock.patch(
+                    "starcraft_commander.web_gui."
+                    "_MICROMACHINE_REQUEST_TIMEOUT_SECONDS",
+                    0.01,
+                ):
+                    timeout_status, timeout = self._post(server, payload)
+                retry_status, retry = self._post(server, payload)
+
+            self.assertEqual(503, timeout_status)
+            self.assertFalse(timeout["accepted"])
+            self.assertIn("timed out", timeout["error"])
+            self.assertEqual(202, retry_status)
+            self.assertTrue(retry["accepted"], retry)
+            self.assertEqual(2, enqueue_count)
 
     def test_typed_http_endpoint_rejects_raw_control_fields(self):
         with tempfile.TemporaryDirectory() as root:

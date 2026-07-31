@@ -8578,7 +8578,8 @@ class SessionLoopBridge:
         except concurrent.futures.TimeoutError:
             if request is not None:
                 with self._micromachine_request_lock:
-                    if not request.publish_committed:
+                    publish_committed = request.publish_committed
+                    if not publish_committed:
                         request.cancel_event.set()
                         if not future.done():
                             future.set_exception(
@@ -8586,12 +8587,21 @@ class SessionLoopBridge:
                                     "contextual transfer request timed out"
                                 )
                             )
+                        if (
+                            self._micromachine_requests.get(
+                                request.update_id or ""
+                            )
+                            is request
+                        ):
+                            del self._micromachine_requests[
+                                request.update_id or ""
+                            ]
                         with self._contextual_transfer_replay_lock:
                             self._forget_contextual_transfer_replay(
                                 replay_key,
                                 replay,
                             )
-                if request.publish_committed:
+                if publish_committed:
                     return future.result()
             raise
 
@@ -18141,30 +18151,68 @@ function contextualTransferOpaqueHash(value) {
 
 function rememberContextualTransferChoice(payload) {
   var choiceId = String(payload && payload.choice_id || "");
-  if (!choiceId) { return; }
-  if (!contextualTransferChoiceRecords[choiceId]) {
-    contextualTransferChoiceOrder.push(choiceId);
-  }
-  var existing = contextualTransferChoiceRecords[choiceId] || {};
-  contextualTransferChoiceRecords[choiceId] = {
-    payload: payload,
-    inFlight: existing.inFlight === true,
-    promise: existing.promise || null
-  };
-  while (
-    contextualTransferChoiceOrder.length >
-    CONTEXTUAL_TRANSFER_CHOICE_MAXIMUM
-  ) {
-    var retired = contextualTransferChoiceOrder.shift();
+  if (!choiceId) { return false; }
+  var synchronizedOrder = [];
+  var synchronizedIds = {};
+  contextualTransferChoiceOrder.forEach(function(candidateId) {
+    var normalizedId = String(candidateId || "");
     if (
-      retired &&
-      contextualTransferChoiceRecords[retired] &&
-      contextualTransferChoiceRecords[retired].inFlight !== true
+      normalizedId &&
+      contextualTransferChoiceRecords[normalizedId] &&
+      !synchronizedIds[normalizedId]
     ) {
+      synchronizedIds[normalizedId] = true;
+      synchronizedOrder.push(normalizedId);
+    }
+  });
+  Object.keys(contextualTransferChoiceRecords).forEach(function(candidateId) {
+    if (!synchronizedIds[candidateId]) {
+      synchronizedIds[candidateId] = true;
+      synchronizedOrder.push(candidateId);
+    }
+  });
+  contextualTransferChoiceOrder = synchronizedOrder;
+  var existing = contextualTransferChoiceRecords[choiceId];
+  if (!existing) {
+    while (
+      Object.keys(contextualTransferChoiceRecords).length >=
+      CONTEXTUAL_TRANSFER_CHOICE_MAXIMUM
+    ) {
+      var retiredIndex = -1;
+      for (
+        var index = 0;
+        index < contextualTransferChoiceOrder.length;
+        index += 1
+      ) {
+        var candidate = contextualTransferChoiceOrder[index];
+        if (
+          contextualTransferChoiceRecords[candidate] &&
+          contextualTransferChoiceRecords[candidate].inFlight !== true
+        ) {
+          retiredIndex = index;
+          break;
+        }
+      }
+      if (retiredIndex < 0) {
+        return false;
+      }
+      var retired = contextualTransferChoiceOrder.splice(
+        retiredIndex,
+        1
+      )[0];
       delete contextualTransferChoiceRecords[retired];
     }
+    contextualTransferChoiceOrder.push(choiceId);
   }
+  contextualTransferChoiceRecords[choiceId] = {
+    payload: payload,
+    inFlight: existing && existing.inFlight === true,
+    promise: existing && existing.promise || null
+  };
+  return true;
 }
+
+var CONTEXTUAL_TRANSFER_CHOICE_CAPACITY_REJECTED = {};
 
 function operationContextualTransferPayload(data, entry, action) {
   var overview = data && data.battlefield_overview || {};
@@ -18254,7 +18302,9 @@ function operationContextualTransferPayload(data, entry, action) {
   payload.blackboard_dir = blackboardInput
     ? String(blackboardInput.value || "").trim()
     : "";
-  rememberContextualTransferChoice(payload);
+  if (!rememberContextualTransferChoice(payload)) {
+    return CONTEXTUAL_TRANSFER_CHOICE_CAPACITY_REJECTED;
+  }
   return payload;
 }
 
@@ -18349,6 +18399,12 @@ function operationResolutionChoices(data) {
         entry,
         action
       );
+      if (
+        contextualTransfer ===
+        CONTEXTUAL_TRANSFER_CHOICE_CAPACITY_REJECTED
+      ) {
+        return;
+      }
       var transferSafe = Boolean(
         canonicalIdentity &&
         operationIdSafe &&

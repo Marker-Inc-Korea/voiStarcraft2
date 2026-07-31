@@ -368,6 +368,11 @@
       "path": "patches/0072-atomic-telemetry-publication.patch",
       "order": 72,
       "scope": "publish bootstrap and authoritative telemetry as complete same-directory rename snapshots, acknowledge family effects only after successful publication, clean failed temporary files, and register concurrent no-partial-read CTest coverage"
+    },
+    {
+      "path": "patches/0073-contextual-transfer-choice-projection.patch",
+      "order": 73,
+      "scope": "project one deterministic contextual transfer availability entry per active source and destination operation pair, preserve both endpoint generations without source-key overwrite, cap availability by source minimum and destination capacity, and emit safe transfer recommendations with native regression coverage"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {

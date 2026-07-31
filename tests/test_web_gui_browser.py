@@ -840,6 +840,139 @@ def _contextual_transfer_browser_fixture_page() -> str:
         document.querySelectorAll("[data-operation-lane]").length === 4 &&
         card.querySelectorAll(".operation-stage").length === 4 &&
         card.querySelectorAll("[data-operation-action]").length === 5);
+
+      contextualTransferChoiceRecords = {};
+      contextualTransferChoiceOrder = [];
+      for (var evictionIndex = 0; evictionIndex < 256; evictionIndex += 1) {
+        var evictionChoiceId = "voi-ctx-choice-eviction-" + evictionIndex;
+        contextualTransferChoiceRecords[evictionChoiceId] = {
+          payload: { choice_id: evictionChoiceId },
+          inFlight: evictionIndex !== 1,
+          promise: evictionIndex !== 1 ? {} : null
+        };
+        contextualTransferChoiceOrder.push(evictionChoiceId);
+      }
+      var newEvictionChoiceId = "voi-ctx-choice-eviction-new";
+      var rememberedEvictionChoice = rememberContextualTransferChoice({
+        choice_id: newEvictionChoiceId
+      });
+      mark("cache-oldest-eligible-evicted",
+        rememberedEvictionChoice === true &&
+        Boolean(contextualTransferChoiceRecords[
+          "voi-ctx-choice-eviction-0"
+        ]) &&
+        contextualTransferChoiceRecords[
+          "voi-ctx-choice-eviction-1"
+        ] === undefined &&
+        Boolean(contextualTransferChoiceRecords[newEvictionChoiceId]) &&
+        contextualTransferChoiceOrder[0] ===
+          "voi-ctx-choice-eviction-0" &&
+        contextualTransferChoiceOrder[
+          contextualTransferChoiceOrder.length - 1
+        ] === newEvictionChoiceId &&
+        Object.keys(contextualTransferChoiceRecords).length === 256 &&
+        contextualTransferChoiceOrder.length === 256);
+
+      contextualTransferChoiceRecords = {};
+      contextualTransferChoiceOrder = [];
+      for (var index = 0; index < 256; index += 1) {
+        var inFlightChoiceId = "voi-ctx-choice-inflight-" + index;
+        contextualTransferChoiceRecords[inFlightChoiceId] = {
+          payload: { choice_id: inFlightChoiceId },
+          inFlight: true,
+          promise: {}
+        };
+        contextualTransferChoiceOrder.push(inFlightChoiceId);
+      }
+      var capacitySourceProjection = projection(
+        "capacity-source",
+        11,
+        4,
+        2
+      );
+      var capacityDestinationProjection = projection(
+        "capacity-destination",
+        13,
+        3,
+        1
+      );
+      var capacityOperation = JSON.parse(JSON.stringify(sourceOperation));
+      capacityOperation.operation_id = "capacity-source";
+      capacityOperation.operation_generation = 11;
+      capacityOperation.update_id = "browser-capacity-update";
+      capacityOperation.battlefield_operation = capacitySourceProjection;
+      capacityOperation.update.update_id = "browser-capacity-update";
+      capacityOperation.update.vector.operation_id = "capacity-source";
+      capacityOperation.intervention.command_execution.command_id =
+        "browser-capacity-update";
+      capacityOperation.intervention.command_execution.operation_id =
+        "capacity-source";
+      capacityOperation.intervention.command_execution.operation_generation =
+        11;
+      renderOperationConsole({
+        status: "published",
+        blackboard_scope_id: "browser-transfer-scope",
+        battlefield_projection_identity: {
+          session_epoch: 1700000000000,
+          game_frame: 141
+        },
+        battlefield_projection_fingerprint: "d".repeat(64),
+        battlefield_overview: {
+          authority: "micromachine_cpp",
+          identity: {
+            session_epoch: 1700000000000,
+            game_frame: 141
+          },
+          operation_ownership: [
+            capacitySourceProjection,
+            capacityDestinationProjection
+          ],
+          transfer_availability: {
+            atomic_revalidation_required: true,
+            entries: [{
+              source_owner_id: "capacity-source",
+              source_owner_count: 4,
+              protected_minimum: 2,
+              transferable_count: 2,
+              transfer_safe: true,
+              atomic_runtime_blocker: "",
+              recommended_resolution_choices: ["transfer_two_units"],
+              safety_evidence: {
+                protected_minimum_respected: true,
+                atomic_revalidation_required: true
+              },
+              atomic_revalidation_inputs: {
+                source_owner_id: "capacity-source",
+                counterpart_operation_id: "capacity-destination",
+                requested_source_generation: 11,
+                requested_counterpart_generation: 13,
+                source_active: true,
+                destination_active: true,
+                ownership_integrity: true,
+                operation_assignments_match: true,
+                squad_assignments_match: true,
+                action_assignments_match: true,
+                role_assignments_match: true,
+                atomic_revalidation_ready: true
+              }
+            }]
+          }
+        },
+        operations: [capacityOperation]
+      });
+      var capacityRecord = operationRecords[
+        operationRecordKey("browser-transfer-scope", "capacity-source")
+      ];
+      var uniqueChoiceOrder = new Set(contextualTransferChoiceOrder);
+      mark("cache-bounded",
+        Object.keys(contextualTransferChoiceRecords).length === 256 &&
+        contextualTransferChoiceOrder.length === 256 &&
+        uniqueChoiceOrder.size === 256);
+      mark("cache-fail-closed",
+        Boolean(capacityRecord) &&
+        capacityRecord.node.querySelectorAll(
+          "[data-contextual-choice-id]"
+        ).length === 0);
     }, 80);
   }, 80);
 })();
@@ -947,6 +1080,9 @@ class WebGuiRealBrowserTest(unittest.TestCase):
             "opaque-dom",
             "llm-bypassed",
             "original-ux",
+            "cache-oldest-eligible-evicted",
+            "cache-bounded",
+            "cache-fail-closed",
         )
 
         class FixtureHandler(BaseHTTPRequestHandler):

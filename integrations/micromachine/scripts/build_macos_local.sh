@@ -83,6 +83,7 @@ AUTHORITATIVE_BATTLEFIELD_OWNERSHIP_READINESS_PATCH_FILE="${REPO_ROOT}/integrati
 BATTLEFIELD_PROJECTION_REVIEW_CLOSURE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0070-battlefield-projection-review-closure.patch"
 BATTLEFIELD_IDENTITY_TRANSFER_INTEGRITY_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0071-battlefield-identity-transfer-integrity.patch"
 ATOMIC_TELEMETRY_PUBLICATION_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0072-atomic-telemetry-publication.patch"
+CONTEXTUAL_TRANSFER_CHOICE_PROJECTION_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0073-contextual-transfer-choice-projection.patch"
 S2CLIENT_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0001-s2client-macos-launchservices.patch"
 BLACKBOARD_HEADER_FILE="${REPO_ROOT}/integrations/micromachine/voi_policy_blackboard.hpp"
 HOOK_MANIFEST_FILE="${REPO_ROOT}/integrations/micromachine/HOOK_MANIFEST.json"
@@ -402,6 +403,8 @@ git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whi
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${BATTLEFIELD_IDENTITY_TRANSFER_INTEGRITY_PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${ATOMIC_TELEMETRY_PUBLICATION_PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${ATOMIC_TELEMETRY_PUBLICATION_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${CONTEXTUAL_TRANSFER_CHOICE_PROJECTION_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${CONTEXTUAL_TRANSFER_CHOICE_PROJECTION_PATCH_FILE}"
 cp "${BLACKBOARD_HEADER_FILE}" "${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"
 
 require_secure_build_root \
@@ -437,6 +440,7 @@ python3 -m starcraft_commander.micromachine_build_identity \
   --micromachine-battlefield-projection-review-closure-patch "${BATTLEFIELD_PROJECTION_REVIEW_CLOSURE_PATCH_FILE}" \
   --micromachine-battlefield-identity-transfer-integrity-patch "${BATTLEFIELD_IDENTITY_TRANSFER_INTEGRITY_PATCH_FILE}" \
   --micromachine-atomic-telemetry-publication-patch "${ATOMIC_TELEMETRY_PUBLICATION_PATCH_FILE}" \
+  --micromachine-contextual-transfer-choice-projection-patch "${CONTEXTUAL_TRANSFER_CHOICE_PROJECTION_PATCH_FILE}" \
   --hook-manifest "${HOOK_MANIFEST_FILE}" \
   --write-embedded-identity-header \
   --initialize-source-attestation
@@ -535,6 +539,7 @@ python3 -m starcraft_commander.micromachine_build_identity \
   --micromachine-battlefield-projection-review-closure-patch "${BATTLEFIELD_PROJECTION_REVIEW_CLOSURE_PATCH_FILE}" \
   --micromachine-battlefield-identity-transfer-integrity-patch "${BATTLEFIELD_IDENTITY_TRANSFER_INTEGRITY_PATCH_FILE}" \
   --micromachine-atomic-telemetry-publication-patch "${ATOMIC_TELEMETRY_PUBLICATION_PATCH_FILE}" \
+  --micromachine-contextual-transfer-choice-projection-patch "${CONTEXTUAL_TRANSFER_CHOICE_PROJECTION_PATCH_FILE}" \
   --s2client-patch "${S2CLIENT_PATCH_FILE}" \
   --hook-manifest "${HOOK_MANIFEST_FILE}" \
   --finalize-build-attestation \
