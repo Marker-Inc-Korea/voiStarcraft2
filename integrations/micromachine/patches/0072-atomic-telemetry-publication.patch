@@ -338,17 +338,21 @@ diff --git a/tests/atomic_telemetry_test.cpp b/tests/atomic_telemetry_test.cpp
 new file mode 100644
 --- /dev/null
 +++ b/tests/atomic_telemetry_test.cpp
-@@ -0,0 +1,450 @@
+@@ -0,0 +1,550 @@
 +#include "voi_atomic_telemetry.hpp"
 +
 +#include <atomic>
++#include <cerrno>
 +#include <cstdio>
++#include <cstdlib>
 +#include <dirent.h>
 +#include <fstream>
 +#include <iterator>
++#include <limits.h>
 +#include <string>
 +#include <sys/stat.h>
 +#include <thread>
++#include <unistd.h>
 +#include <vector>
 +
 +namespace
@@ -414,6 +418,99 @@ new file mode 100644
 +	}
 +	return ::closedir(directory) == 0;
 +}
++
++bool removeTree(const std::string & path)
++{
++	DIR * directory = ::opendir(path.c_str());
++	if (directory == nullptr)
++	{
++		return errno == ENOENT;
++	}
++	bool removed = true;
++	while (const dirent * entry = ::readdir(directory))
++	{
++		const std::string name(entry->d_name);
++		if (name == "." || name == "..")
++		{
++			continue;
++		}
++		const std::string child = path + "/" + name;
++		struct stat status;
++		if (::lstat(child.c_str(), &status) != 0)
++		{
++			if (errno != ENOENT)
++			{
++				removed = false;
++			}
++			continue;
++		}
++		if (S_ISDIR(status.st_mode))
++		{
++			removed = removeTree(child) && removed;
++		}
++		else if (std::remove(child.c_str()) != 0 && errno != ENOENT)
++		{
++			removed = false;
++		}
++	}
++	if (::closedir(directory) != 0)
++	{
++		removed = false;
++	}
++	if (::rmdir(path.c_str()) != 0 && errno != ENOENT)
++	{
++		removed = false;
++	}
++	return removed;
++}
++
++struct ScopedTestDirectory
++{
++	std::string previousPath;
++	std::string testPath;
++	bool active = false;
++
++	ScopedTestDirectory()
++	{
++		char previous[PATH_MAX];
++		if (::getcwd(previous, sizeof(previous)) == nullptr)
++		{
++			return;
++		}
++		char pattern[] = "/tmp/voi_atomic_telemetry_test.XXXXXX";
++		char * created = ::mkdtemp(pattern);
++		if (created == nullptr)
++		{
++			return;
++		}
++		previousPath = previous;
++		testPath = created;
++		if (::chdir(testPath.c_str()) != 0)
++		{
++			removeTree(testPath);
++			testPath.clear();
++			return;
++		}
++		active = true;
++	}
++
++	~ScopedTestDirectory()
++	{
++		if (active)
++		{
++			::chdir(previousPath.c_str());
++		}
++		if (!testPath.empty())
++		{
++			removeTree(testPath);
++		}
++	}
++
++	bool ready() const
++	{
++		return active;
++	}
++};
 +
 +struct InterruptingShortWriteOperations
 +	: VoiAtomicTelemetrySystemCalls
@@ -575,6 +672,9 @@ new file mode 100644
 +
 +int main()
 +{
++	ScopedTestDirectory testDirectory;
++	REQUIRE(testDirectory.ready());
++
 +	const std::string path = "voi_atomic_telemetry_test.json";
 +	std::remove(path.c_str());
 +

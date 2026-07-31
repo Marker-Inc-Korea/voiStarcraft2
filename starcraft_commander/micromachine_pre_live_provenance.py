@@ -39,6 +39,7 @@ from starcraft_commander.micromachine_build_identity import (
 from starcraft_commander.micromachine_pre_live_artifact import (
     GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME,
     PRE_LIVE_CANDIDATE_AUTHORITY_SCOPE,
+    PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION,
     PreLiveArtifactMetadata,
     PreLiveBuildAdmissionSnapshot,
     build_pre_live_artifact_bundle,
@@ -1257,6 +1258,12 @@ def attest_github_source(
             "head_ref": pull_head_ref,
             "head_repository_id": pull_head_repository_id,
         },
+        "closing_issue": {
+            "repository_full_name": normalized_repository,
+            "repository_database_id": repository_id,
+            "database_id": issue_id,
+            "number": issue_number,
+        },
     }
 
     _expect_server_value(workflow_run, "id", run_id, "workflow_run", blockers)
@@ -1701,6 +1708,9 @@ def attest_github_source(
                 manifest = _mapping(artifact_bundle.get("manifest"))
                 manifest_authority = _mapping(manifest.get("authority"))
                 manifest_pull_request = _mapping(manifest_authority.get("pull_request"))
+                manifest_closing_issue = _mapping(
+                    manifest_authority.get("closing_issue")
+                )
                 manifest_repository = _mapping(manifest.get("repository"))
                 manifest_workflow = _mapping(manifest.get("workflow"))
                 manifest_run = _mapping(manifest.get("run"))
@@ -1766,6 +1776,22 @@ def attest_github_source(
                     "authority.pull_request.head_repository_id": (
                         manifest_pull_request.get("head_repository_id"),
                         pull_head_repository_id,
+                    ),
+                    "authority.closing_issue.repository_full_name": (
+                        manifest_closing_issue.get("repository_full_name"),
+                        normalized_repository,
+                    ),
+                    "authority.closing_issue.repository_database_id": (
+                        manifest_closing_issue.get("repository_database_id"),
+                        repository_id,
+                    ),
+                    "authority.closing_issue.database_id": (
+                        manifest_closing_issue.get("database_id"),
+                        issue_id,
+                    ),
+                    "authority.closing_issue.number": (
+                        manifest_closing_issue.get("number"),
+                        issue_number,
                     ),
                     "repository.full_name": (
                         manifest_repository.get("full_name"),
@@ -1961,7 +1987,7 @@ def attest_build_binding(
                             )
 
     ctest_result: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION,
         "argv": None,
         "discovery_argv": None,
         "ctest_executable": None,
@@ -3205,6 +3231,12 @@ def attest_github_actions_emission_context(
             "head_ref": pull_head_ref,
             "head_repository_id": pull_head_repository_id,
         },
+        "closing_issue": {
+            "repository_full_name": normalized_repository,
+            "repository_database_id": repository_id,
+            "database_id": closing_issue_id,
+            "number": closing_issue_number,
+        },
     }
     return _component_result(
         blockers,
@@ -3559,6 +3591,7 @@ def _assemble_github_actions_pre_live_bundle(
     }
     authority = _mapping(source_context.get("authority"))
     pull_request = _mapping(authority.get("pull_request"))
+    closing_issue = _mapping(authority.get("closing_issue"))
     metadata = PreLiveArtifactMetadata(
         authority_scope=str(authority.get("scope")),
         release_authoritative=bool(authority.get("release_authoritative")),
@@ -3568,6 +3601,14 @@ def _assemble_github_actions_pre_live_bundle(
         pull_request_head_sha=str(pull_request.get("head_sha")),
         pull_request_head_ref=str(pull_request.get("head_ref")),
         pull_request_head_repository_id=int(pull_request.get("head_repository_id")),
+        closing_issue_repository_full_name=str(
+            closing_issue.get("repository_full_name")
+        ),
+        closing_issue_repository_database_id=int(
+            closing_issue.get("repository_database_id")
+        ),
+        closing_issue_database_id=int(closing_issue.get("database_id")),
+        closing_issue_number=int(closing_issue.get("number")),
         repository_full_name=str(source_context["repository"]),
         repository_database_id=int(source_context["repository_id"]),
         repository_commit=expected_commit,
@@ -3663,6 +3704,10 @@ def canonical_replay_digest(
     material = {
         "repository": github_source.get("repository"),
         "repository_id": source_ids.get("repository_id"),
+        "closing_issue_repository": github_source.get("repository"),
+        "closing_issue_repository_id": source_ids.get("repository_id"),
+        "closing_issue_id": source_ids.get("issue_id"),
+        "closing_issue_number": source_ids.get("issue_number"),
         "workflow_run_id": source_ids.get("workflow_run_id"),
         "workflow_id": source_ids.get("workflow_id"),
         "run_attempt": source_ids.get("run_attempt"),
@@ -3689,6 +3734,10 @@ def canonical_replay_digest(
     required = {
         "repository",
         "repository_id",
+        "closing_issue_repository",
+        "closing_issue_repository_id",
+        "closing_issue_id",
+        "closing_issue_number",
         "workflow_run_id",
         "workflow_id",
         "run_attempt",
@@ -3732,6 +3781,17 @@ def attest_artifact_local_bindings(
     manifest = _mapping(artifact_bundle.get("manifest"))
     role_evidence = _mapping(artifact_bundle.get("role_evidence"))
     bundled_provenance = _mapping(role_evidence.get("producer_provenance"))
+    bundled_provenance_authority = _mapping(
+        bundled_provenance.get("authority")
+    )
+    bundled_provenance_closing_issue = _mapping(
+        bundled_provenance_authority.get("closing_issue")
+    )
+    manifest_authority = _mapping(manifest.get("authority"))
+    manifest_closing_issue = _mapping(
+        manifest_authority.get("closing_issue")
+    )
+    source_ids = _mapping(github_source.get("source_ids"))
     build = _mapping(manifest.get("build"))
     producer = _mapping(manifest.get("producer"))
     artifact = _mapping(manifest.get("artifact"))
@@ -3769,6 +3829,26 @@ def attest_artifact_local_bindings(
         "producer.provenance.exit_code": local_execution.get("exit_code"),
         "producer.provenance.stdout_sha256": local_execution.get("stdout_sha256"),
         "producer.provenance.stderr_sha256": local_execution.get("stderr_sha256"),
+        "authority.closing_issue.repository_full_name": github_source.get(
+            "repository"
+        ),
+        "authority.closing_issue.repository_database_id": source_ids.get(
+            "repository_id"
+        ),
+        "authority.closing_issue.database_id": source_ids.get("issue_id"),
+        "authority.closing_issue.number": source_ids.get("issue_number"),
+        "producer.provenance.authority.closing_issue.repository_full_name": (
+            github_source.get("repository")
+        ),
+        "producer.provenance.authority.closing_issue.repository_database_id": (
+            source_ids.get("repository_id")
+        ),
+        "producer.provenance.authority.closing_issue.database_id": (
+            source_ids.get("issue_id")
+        ),
+        "producer.provenance.authority.closing_issue.number": source_ids.get(
+            "issue_number"
+        ),
         "artifact.sha256": local_artifact.get("sha256"),
     }
     actual = {
@@ -3786,6 +3866,28 @@ def attest_artifact_local_bindings(
         "producer.provenance.exit_code": bundled_provenance.get("exit_code"),
         "producer.provenance.stdout_sha256": bundled_provenance.get("stdout_sha256"),
         "producer.provenance.stderr_sha256": bundled_provenance.get("stderr_sha256"),
+        "authority.closing_issue.repository_full_name": (
+            manifest_closing_issue.get("repository_full_name")
+        ),
+        "authority.closing_issue.repository_database_id": (
+            manifest_closing_issue.get("repository_database_id")
+        ),
+        "authority.closing_issue.database_id": manifest_closing_issue.get(
+            "database_id"
+        ),
+        "authority.closing_issue.number": manifest_closing_issue.get("number"),
+        "producer.provenance.authority.closing_issue.repository_full_name": (
+            bundled_provenance_closing_issue.get("repository_full_name")
+        ),
+        "producer.provenance.authority.closing_issue.repository_database_id": (
+            bundled_provenance_closing_issue.get("repository_database_id")
+        ),
+        "producer.provenance.authority.closing_issue.database_id": (
+            bundled_provenance_closing_issue.get("database_id")
+        ),
+        "producer.provenance.authority.closing_issue.number": (
+            bundled_provenance_closing_issue.get("number")
+        ),
         "artifact.sha256": artifact.get("sha256"),
     }
     for label in sorted(expected):
@@ -4783,7 +4885,7 @@ def _run_ctest(
     except (OSError, ValueError) as exc:
         return _component_result(
             [f"ctest executable could not be authenticated: {exc}"],
-            schema_version=1,
+            schema_version=PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION,
             argv=None,
             discovery_argv=None,
             ctest_executable=None,
@@ -5152,7 +5254,7 @@ def _run_ctest(
     )
     result = _component_result(
         blockers,
-        schema_version=1,
+        schema_version=PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION,
         argv=list(argv),
         discovery_argv=list(discovery_argv),
         ctest_executable=str(ctest_path),

@@ -68,6 +68,7 @@ from starcraft_commander.micromachine_pre_live_provenance import (
 )
 from starcraft_commander.micromachine_pre_live_artifact import (
     GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME,
+    PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION,
     PreLiveArtifactMetadata,
     build_pre_live_artifact_bundle,
     canonical_ctest_evidence_bytes,
@@ -98,6 +99,8 @@ def candidate_authority(
     pull_number: int = 137,
     head_ref: str = "issue-138-authenticated-prelive-provenance",
     head_repository_id: int = AUTHORITATIVE_REPOSITORY_ID,
+    issue_id: int = 2,
+    issue_number: int = 138,
 ) -> dict[str, object]:
     return {
         "scope": "candidate_pr",
@@ -109,6 +112,12 @@ def candidate_authority(
             "head_sha": head_sha,
             "head_ref": head_ref,
             "head_repository_id": head_repository_id,
+        },
+        "closing_issue": {
+            "repository_full_name": REPOSITORY,
+            "repository_database_id": AUTHORITATIVE_REPOSITORY_ID,
+            "database_id": issue_id,
+            "number": issue_number,
         },
     }
 
@@ -1001,6 +1010,14 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         adapter.closing_issues[0].update(
             {"databaseId": 143, "number": 143}
         )
+        adapter.artifact_bytes = make_source_artifact_bundle(
+            HEAD_SHA,
+            issue_id=143,
+            issue_number=143,
+        )
+        adapter.artifact["digest"] = (
+            "sha256:" + hashlib.sha256(adapter.artifact_bytes).hexdigest()
+        )
 
         report = attest_github_source(
             adapter,
@@ -1017,6 +1034,32 @@ class GitHubSourceAttestationTest(unittest.TestCase):
 
         self.assertTrue(report["ok"], report)
         self.assertEqual(143, report["source_ids"]["issue_number"])
+
+    def test_rejects_artifact_rebound_to_a_different_closing_issue(self) -> None:
+        adapter = FakeGitHubAdapter()
+        adapter.issue.update({"id": 143, "number": 143})
+        adapter.closing_issues[0].update(
+            {"databaseId": 143, "number": 143}
+        )
+
+        report = attest_github_source(
+            adapter,
+            repository=REPOSITORY,
+            expected_repository_id=AUTHORITATIVE_REPOSITORY_ID,
+            issue_number=143,
+            pull_number=137,
+            run_id=RUN_ID,
+            run_attempt=RUN_ATTEMPT,
+            job_id=JOB_ID,
+            artifact_id=ARTIFACT_ID,
+            expected_head_sha=HEAD_SHA,
+        )
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn(
+            "authority.closing_issue",
+            " ".join(report["blockers"]),
+        )
 
     def test_rejects_multiple_foreign_or_mismatched_closing_issues(self) -> None:
         mutations = {
@@ -3360,6 +3403,8 @@ class ReplayLedgerTest(unittest.TestCase):
             "artifact_sha256": "1" * 64,
             "source_ids": {
                 "repository_id": AUTHORITATIVE_REPOSITORY_ID,
+                "issue_id": 2,
+                "issue_number": 138,
                 "workflow_run_id": RUN_ID,
                 "workflow_id": WORKFLOW_ID,
                 "run_attempt": RUN_ATTEMPT,
@@ -3426,6 +3471,21 @@ class ReplayLedgerTest(unittest.TestCase):
                         local_execution,
                     ),
                 )
+        changed_issue_source = dict(github_source)
+        changed_issue_source["source_ids"] = {
+            **github_source["source_ids"],
+            "issue_id": 143,
+            "issue_number": 143,
+        }
+        self.assertNotEqual(
+            first,
+            canonical_replay_digest(
+                changed_issue_source,
+                build_binding,
+                producer_policy,
+                local_execution,
+            ),
+        )
         missing_workflow_sha = dict(github_source)
         missing_workflow_sha.pop("workflow_sha")
         with self.assertRaises(ValueError):
@@ -4381,6 +4441,8 @@ def make_source_artifact_bundle(
     producer_ended_at: str = "2026-07-30T00:03:00Z",
     pull_id: int = 3,
     pull_number: int = 137,
+    issue_id: int = 2,
+    issue_number: int = 138,
     workflow_ref: str = WORKFLOW_REF,
     workflow_sha: str = WORKFLOW_SHA,
 ) -> bytes:
@@ -4388,6 +4450,8 @@ def make_source_artifact_bundle(
         head_sha,
         pull_id=pull_id,
         pull_number=pull_number,
+        issue_id=issue_id,
+        issue_number=issue_number,
     )
     binary = b"fixture-micromachine-binary"
     repository_input_identity = "sha256:" + "e" * 64
@@ -4471,6 +4535,10 @@ def make_source_artifact_bundle(
         pull_request_head_sha=head_sha,
         pull_request_head_ref="issue-138-authenticated-prelive-provenance",
         pull_request_head_repository_id=AUTHORITATIVE_REPOSITORY_ID,
+        closing_issue_repository_full_name=REPOSITORY,
+        closing_issue_repository_database_id=AUTHORITATIVE_REPOSITORY_ID,
+        closing_issue_database_id=issue_id,
+        closing_issue_number=issue_number,
         repository_full_name=REPOSITORY,
         repository_database_id=AUTHORITATIVE_REPOSITORY_ID,
         repository_commit=head_sha,
@@ -4614,6 +4682,10 @@ def bind_adapter_to_build_fixture(
         pull_request_head_sha=fixture["repository_commit"],
         pull_request_head_ref="issue-138-authenticated-prelive-provenance",
         pull_request_head_repository_id=AUTHORITATIVE_REPOSITORY_ID,
+        closing_issue_repository_full_name=REPOSITORY,
+        closing_issue_repository_database_id=AUTHORITATIVE_REPOSITORY_ID,
+        closing_issue_database_id=2,
+        closing_issue_number=138,
         repository_full_name=REPOSITORY,
         repository_database_id=AUTHORITATIVE_REPOSITORY_ID,
         repository_commit=fixture["repository_commit"],
@@ -4686,7 +4758,7 @@ def make_ctest_evidence(build_dir: Path) -> dict[str, object]:
         for name, executable in sorted(executable_names.items())
     }
     return {
-        "schema_version": 1,
+        "schema_version": PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION,
         "argv": [
             str(ctest_path),
             "--test-dir",

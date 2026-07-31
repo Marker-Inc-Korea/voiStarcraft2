@@ -31,8 +31,8 @@ from starcraft_commander.micromachine_build_identity import (
 
 
 PRE_LIVE_ARTIFACT_SCHEMA: Final[str] = "voi.micromachine.pre_live.artifact_bundle"
-PRE_LIVE_ARTIFACT_SCHEMA_VERSION: Final[int] = 2
-PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION: Final[int] = 1
+PRE_LIVE_ARTIFACT_SCHEMA_VERSION: Final[int] = 3
+PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION: Final[int] = 2
 PRE_LIVE_CANDIDATE_AUTHORITY_SCOPE: Final[str] = "candidate_pr"
 PRE_LIVE_ARTIFACT_MANIFEST_NAME: Final[str] = "manifest.json"
 GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME: Final[str] = "pre-live-provenance.zip"
@@ -95,7 +95,13 @@ _ROOT_KEYS: Final[frozenset[str]] = frozenset(
     }
 )
 _AUTHORITY_KEYS: Final[frozenset[str]] = frozenset(
-    {"scope", "release_authoritative", "event", "pull_request"}
+    {
+        "scope",
+        "release_authoritative",
+        "event",
+        "pull_request",
+        "closing_issue",
+    }
 )
 _AUTHORITY_PULL_REQUEST_KEYS: Final[frozenset[str]] = frozenset(
     {
@@ -104,6 +110,14 @@ _AUTHORITY_PULL_REQUEST_KEYS: Final[frozenset[str]] = frozenset(
         "head_sha",
         "head_ref",
         "head_repository_id",
+    }
+)
+_AUTHORITY_CLOSING_ISSUE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "repository_full_name",
+        "repository_database_id",
+        "database_id",
+        "number",
     }
 )
 _REPOSITORY_KEYS: Final[frozenset[str]] = frozenset(
@@ -238,6 +252,10 @@ class PreLiveArtifactMetadata:
     pull_request_head_sha: str
     pull_request_head_ref: str
     pull_request_head_repository_id: int
+    closing_issue_repository_full_name: str
+    closing_issue_repository_database_id: int
+    closing_issue_database_id: int
+    closing_issue_number: int
     repository_full_name: str
     repository_database_id: int
     repository_commit: str
@@ -1000,6 +1018,7 @@ def _coerce_metadata(
         )
     authority = _required_mapping(metadata, "authority")
     authority_pull_request = _required_mapping(authority, "pull_request")
+    authority_closing_issue = _required_mapping(authority, "closing_issue")
     repository = _required_mapping(metadata, "repository")
     workflow = _required_mapping(metadata, "workflow")
     run = _required_mapping(metadata, "run")
@@ -1012,6 +1031,11 @@ def _coerce_metadata(
         authority_pull_request,
         _AUTHORITY_PULL_REQUEST_KEYS,
         "metadata.authority.pull_request",
+    )
+    _require_builder_keys(
+        authority_closing_issue,
+        _AUTHORITY_CLOSING_ISSUE_KEYS,
+        "metadata.authority.closing_issue",
     )
     _require_builder_keys(repository, _REPOSITORY_KEYS, "metadata.repository")
     _require_builder_keys(workflow, _WORKFLOW_KEYS, "metadata.workflow")
@@ -1076,6 +1100,22 @@ def _coerce_metadata(
         pull_request_head_repository_id=cast(
             int,
             authority_pull_request.get("head_repository_id"),
+        ),
+        closing_issue_repository_full_name=cast(
+            str,
+            authority_closing_issue.get("repository_full_name"),
+        ),
+        closing_issue_repository_database_id=cast(
+            int,
+            authority_closing_issue.get("repository_database_id"),
+        ),
+        closing_issue_database_id=cast(
+            int,
+            authority_closing_issue.get("database_id"),
+        ),
+        closing_issue_number=cast(
+            int,
+            authority_closing_issue.get("number"),
         ),
         repository_full_name=cast(str, repository.get("full_name")),
         repository_database_id=cast(int, repository.get("database_id")),
@@ -1189,6 +1229,32 @@ def _validate_metadata(
         "$.authority.pull_request.head_repository_id",
         blockers,
     )
+    if (
+        _REPOSITORY_RE.fullmatch(
+            metadata.closing_issue_repository_full_name
+        )
+        is None
+    ):
+        _invalid_field(
+            blockers,
+            "$.authority.closing_issue.repository_full_name",
+            "closing issue repository full name must be owner/name",
+        )
+    _require_positive_int(
+        metadata.closing_issue_repository_database_id,
+        "$.authority.closing_issue.repository_database_id",
+        blockers,
+    )
+    _require_positive_int(
+        metadata.closing_issue_database_id,
+        "$.authority.closing_issue.database_id",
+        blockers,
+    )
+    _require_positive_int(
+        metadata.closing_issue_number,
+        "$.authority.closing_issue.number",
+        blockers,
+    )
     if _REPOSITORY_RE.fullmatch(metadata.repository_full_name) is None:
         _invalid_field(
             blockers,
@@ -1226,6 +1292,30 @@ def _validate_metadata(
             "authority_repository_id_mismatch",
             "$.authority.pull_request.head_repository_id",
             "pull-request head repository must be the attested repository",
+        )
+    if (
+        isinstance(metadata.closing_issue_repository_full_name, str)
+        and isinstance(metadata.repository_full_name, str)
+        and metadata.closing_issue_repository_full_name
+        != metadata.repository_full_name
+    ):
+        _add_blocker(
+            blockers,
+            "closing_issue_repository_name_mismatch",
+            "$.authority.closing_issue.repository_full_name",
+            "closing issue must belong to the attested repository",
+        )
+    if (
+        type(metadata.closing_issue_repository_database_id) is int
+        and type(metadata.repository_database_id) is int
+        and metadata.closing_issue_repository_database_id
+        != metadata.repository_database_id
+    ):
+        _add_blocker(
+            blockers,
+            "closing_issue_repository_id_mismatch",
+            "$.authority.closing_issue.repository_database_id",
+            "closing issue must belong to the attested repository",
         )
     _require_positive_int(metadata.workflow_id, "$.workflow.id", blockers)
     if (
@@ -1475,6 +1565,16 @@ def _build_manifest(
                 "head_sha": metadata.pull_request_head_sha,
                 "head_ref": metadata.pull_request_head_ref,
                 "head_repository_id": metadata.pull_request_head_repository_id,
+            },
+            "closing_issue": {
+                "repository_full_name": (
+                    metadata.closing_issue_repository_full_name
+                ),
+                "repository_database_id": (
+                    metadata.closing_issue_repository_database_id
+                ),
+                "database_id": metadata.closing_issue_database_id,
+                "number": metadata.closing_issue_number,
             },
         },
         "repository": {
@@ -2140,6 +2240,12 @@ def _validate_manifest(
         _AUTHORITY_PULL_REQUEST_KEYS,
         blockers,
     )
+    authority_closing_issue = _schema_mapping(
+        authority.get("closing_issue"),
+        "$.authority.closing_issue",
+        _AUTHORITY_CLOSING_ISSUE_KEYS,
+        blockers,
+    )
     repository = _schema_mapping(
         manifest.get("repository"),
         "$.repository",
@@ -2227,6 +2333,32 @@ def _validate_manifest(
         "$.authority.pull_request.head_repository_id",
         blockers,
     )
+    if (
+        _REPOSITORY_RE.fullmatch(
+            _string(authority_closing_issue.get("repository_full_name"))
+        )
+        is None
+    ):
+        _invalid_field(
+            blockers,
+            "$.authority.closing_issue.repository_full_name",
+            "closing issue repository full name must be owner/name",
+        )
+    _require_positive_int(
+        authority_closing_issue.get("repository_database_id"),
+        "$.authority.closing_issue.repository_database_id",
+        blockers,
+    )
+    _require_positive_int(
+        authority_closing_issue.get("database_id"),
+        "$.authority.closing_issue.database_id",
+        blockers,
+    )
+    _require_positive_int(
+        authority_closing_issue.get("number"),
+        "$.authority.closing_issue.number",
+        blockers,
+    )
     if _REPOSITORY_RE.fullmatch(_string(repository.get("full_name"))) is None:
         _invalid_field(
             blockers,
@@ -2265,6 +2397,30 @@ def _validate_manifest(
             "authority_repository_id_mismatch",
             "$.authority.pull_request.head_repository_id",
             "pull-request head repository must be the attested repository",
+        )
+    if (
+        isinstance(authority_closing_issue.get("repository_full_name"), str)
+        and isinstance(repository.get("full_name"), str)
+        and authority_closing_issue.get("repository_full_name")
+        != repository.get("full_name")
+    ):
+        _add_blocker(
+            blockers,
+            "closing_issue_repository_name_mismatch",
+            "$.authority.closing_issue.repository_full_name",
+            "closing issue must belong to the attested repository",
+        )
+    if (
+        type(authority_closing_issue.get("repository_database_id")) is int
+        and type(repository.get("database_id")) is int
+        and authority_closing_issue.get("repository_database_id")
+        != repository.get("database_id")
+    ):
+        _add_blocker(
+            blockers,
+            "closing_issue_repository_id_mismatch",
+            "$.authority.closing_issue.repository_database_id",
+            "closing issue must belong to the attested repository",
         )
     _require_positive_int(workflow.get("id"), "$.workflow.id", blockers)
     workflow_path = workflow.get("path")

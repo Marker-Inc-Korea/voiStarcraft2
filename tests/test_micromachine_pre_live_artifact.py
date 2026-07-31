@@ -25,6 +25,7 @@ from starcraft_commander.micromachine_pre_live_artifact import (
     PRE_LIVE_ARTIFACT_MANIFEST_NAME,
     PRE_LIVE_ARTIFACT_SCHEMA,
     PRE_LIVE_ARTIFACT_SCHEMA_VERSION,
+    PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION,
     PreLiveArtifactLimits,
     PreLiveArtifactMetadata,
     PreLiveBuildAdmissionSnapshot,
@@ -95,6 +96,10 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
             pull_request_head_sha=COMMIT,
             pull_request_head_ref=("issue-138-authenticated-prelive-provenance"),
             pull_request_head_repository_id=812345,
+            closing_issue_repository_full_name=REPOSITORY,
+            closing_issue_repository_database_id=812345,
+            closing_issue_database_id=40001,
+            closing_issue_number=138,
             repository_full_name=REPOSITORY,
             repository_database_id=812345,
             repository_commit=COMMIT,
@@ -191,6 +196,18 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                                 self.metadata.pull_request_head_repository_id
                             ),
                         },
+                        "closing_issue": {
+                            "repository_full_name": (
+                                self.metadata.closing_issue_repository_full_name
+                            ),
+                            "repository_database_id": (
+                                self.metadata.closing_issue_repository_database_id
+                            ),
+                            "database_id": (
+                                self.metadata.closing_issue_database_id
+                            ),
+                            "number": self.metadata.closing_issue_number,
+                        },
                     },
                     "producer_id": "voi.pre-live.local-producer.v1",
                     "policy_sha256": sha256(policy),
@@ -281,6 +298,12 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                         "head_sha": COMMIT,
                         "head_ref": ("issue-138-authenticated-prelive-provenance"),
                         "head_repository_id": 812345,
+                    },
+                    "closing_issue": {
+                        "repository_full_name": REPOSITORY,
+                        "repository_database_id": 812345,
+                        "database_id": 40001,
+                        "number": 138,
                     },
                 },
                 manifest["authority"],
@@ -646,6 +669,16 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
 
     def test_rejects_semantically_rebound_ctest_evidence(self) -> None:
         for name, change in (
+            (
+                "legacy schema",
+                lambda evidence: evidence.update(
+                    {
+                        "schema_version": (
+                            PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION - 1
+                        )
+                    }
+                ),
+            ),
             ("aggregate count", lambda evidence: evidence.update({"passed": 4})),
             (
                 "direct failure",
@@ -1227,6 +1260,16 @@ def as_nested_metadata(
                 "head_ref": metadata.pull_request_head_ref,
                 "head_repository_id": (metadata.pull_request_head_repository_id),
             },
+            "closing_issue": {
+                "repository_full_name": (
+                    metadata.closing_issue_repository_full_name
+                ),
+                "repository_database_id": (
+                    metadata.closing_issue_repository_database_id
+                ),
+                "database_id": metadata.closing_issue_database_id,
+                "number": metadata.closing_issue_number,
+            },
         },
         "repository": {
             "full_name": metadata.repository_full_name,
@@ -1289,7 +1332,7 @@ def make_ctest_evidence(build_dir: str) -> dict[str, object]:
         for name, executable in sorted(executable_names.items())
     }
     return {
-        "schema_version": 1,
+        "schema_version": PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION,
         "argv": [
             "/usr/bin/ctest",
             "--test-dir",
