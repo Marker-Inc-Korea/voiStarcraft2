@@ -16,6 +16,8 @@ import zipfile
 
 from starcraft_commander.micromachine_build_identity import (
     MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
+    MICROMACHINE_REQUIRED_NATIVE_TESTS,
+    canonical_micromachine_ctest_registry,
 )
 from starcraft_commander.micromachine_pre_live_artifact import (
     DETERMINISTIC_ZIP_TIMESTAMP,
@@ -23,6 +25,7 @@ from starcraft_commander.micromachine_pre_live_artifact import (
     PRE_LIVE_ARTIFACT_MANIFEST_NAME,
     PRE_LIVE_ARTIFACT_SCHEMA,
     PRE_LIVE_ARTIFACT_SCHEMA_VERSION,
+    PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION,
     PreLiveArtifactLimits,
     PreLiveArtifactMetadata,
     PreLiveBuildAdmissionSnapshot,
@@ -93,6 +96,10 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
             pull_request_head_sha=COMMIT,
             pull_request_head_ref=("issue-138-authenticated-prelive-provenance"),
             pull_request_head_repository_id=812345,
+            closing_issue_repository_full_name=REPOSITORY,
+            closing_issue_repository_database_id=812345,
+            closing_issue_database_id=40001,
+            closing_issue_number=138,
             repository_full_name=REPOSITORY,
             repository_database_id=812345,
             repository_commit=COMMIT,
@@ -146,6 +153,8 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                 "pre-live-evidence.json",
             ]
         )
+        ctest_payload = make_ctest_evidence("/private/tmp/voi/build")
+        native_tests = make_build_report_native_tests(ctest_payload)
         report = {
             "schema_version": MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
             "identity": REPORT_IDENTITY,
@@ -154,11 +163,14 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
             "observed": {
                 "binary_sha256": sha256(self.binary),
                 "embedded_build_input_identity": self.repository_input_identity,
+                "native_tests": native_tests,
+            },
+            "checksums": {
+                "native_test_registry_sha256": ctest_payload["registry_sha256"],
+                "native_test_manifest_sha256": native_tests["manifest_sha256"],
             },
         }
-        ctest = canonical_ctest_evidence_bytes(
-            make_ctest_evidence("/private/tmp/voi/build")
-        )
+        ctest = canonical_ctest_evidence_bytes(ctest_payload)
         return {
             "build/voi_build_identity.json": canonical_json_bytes(report),
             "build/MicroMachine": self.binary,
@@ -183,6 +195,18 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                             "head_repository_id": (
                                 self.metadata.pull_request_head_repository_id
                             ),
+                        },
+                        "closing_issue": {
+                            "repository_full_name": (
+                                self.metadata.closing_issue_repository_full_name
+                            ),
+                            "repository_database_id": (
+                                self.metadata.closing_issue_repository_database_id
+                            ),
+                            "database_id": (
+                                self.metadata.closing_issue_database_id
+                            ),
+                            "number": self.metadata.closing_issue_number,
                         },
                     },
                     "producer_id": "voi.pre-live.local-producer.v1",
@@ -274,6 +298,12 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                         "head_sha": COMMIT,
                         "head_ref": ("issue-138-authenticated-prelive-provenance"),
                         "head_repository_id": 812345,
+                    },
+                    "closing_issue": {
+                        "repository_full_name": REPOSITORY,
+                        "repository_database_id": 812345,
+                        "database_id": 40001,
+                        "number": 138,
                     },
                 },
                 manifest["authority"],
@@ -558,7 +588,7 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
             blocker_codes(binary_result),
         )
 
-    def test_rejects_failed_schema_71_build_report(self) -> None:
+    def test_rejects_failed_schema_72_build_report(self) -> None:
         report = json.loads(self.members[self.metadata.build_report_member])
         report["ok"] = False
         report["failures"] = ["fixture failure"]
@@ -639,6 +669,16 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
 
     def test_rejects_semantically_rebound_ctest_evidence(self) -> None:
         for name, change in (
+            (
+                "legacy schema",
+                lambda evidence: evidence.update(
+                    {
+                        "schema_version": (
+                            PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION - 1
+                        )
+                    }
+                ),
+            ),
             ("aggregate count", lambda evidence: evidence.update({"passed": 4})),
             (
                 "direct failure",
@@ -679,6 +719,60 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                     "schema_value_mismatch",
                     blocker_codes(report),
                 )
+
+    def test_rejects_self_consistent_ctest_binary_rebinding(self) -> None:
+        ctest = json.loads(self.members[self.metadata.ctest_member])
+        descriptor = ctest["test_executables"]["voi_atomic_telemetry"]
+        descriptor["sha256"] = "0" * 64
+        descriptor["sha256_after"] = "0" * 64
+        ctest["test_manifest_sha256"] = (
+            "sha256:"
+            + sha256(canonical_json_bytes(ctest["test_executables"]))
+        )
+        replacement = canonical_json_bytes(ctest)
+
+        def mutate(manifest: dict[str, object]) -> None:
+            rebind_member(
+                manifest,
+                self.metadata.ctest_member,
+                replacement,
+                role_path=("build", "ctest_sha256"),
+            )
+
+        report = verify_pre_live_artifact_bundle(
+            mutate_manifest(
+                self.bundle,
+                mutate,
+                replacements={self.metadata.ctest_member: replacement},
+            )
+        )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("schema_value_mismatch", blocker_codes(report))
+
+    def test_rejects_self_consistent_ctest_executable_rebinding(self) -> None:
+        ctest = json.loads(self.members[self.metadata.ctest_member])
+        ctest["ctest_executable_sha256"] = "0" * 64
+        replacement = canonical_json_bytes(ctest)
+
+        def mutate(manifest: dict[str, object]) -> None:
+            rebind_member(
+                manifest,
+                self.metadata.ctest_member,
+                replacement,
+                role_path=("build", "ctest_sha256"),
+            )
+
+        report = verify_pre_live_artifact_bundle(
+            mutate_manifest(
+                self.bundle,
+                mutate,
+                replacements={self.metadata.ctest_member: replacement},
+            )
+        )
+
+        self.assertFalse(report["ok"])
+        self.assertIn("schema_value_mismatch", blocker_codes(report))
 
     def test_rejects_duplicate_names(self) -> None:
         entries = read_entries(self.bundle)
@@ -1166,6 +1260,16 @@ def as_nested_metadata(
                 "head_ref": metadata.pull_request_head_ref,
                 "head_repository_id": (metadata.pull_request_head_repository_id),
             },
+            "closing_issue": {
+                "repository_full_name": (
+                    metadata.closing_issue_repository_full_name
+                ),
+                "repository_database_id": (
+                    metadata.closing_issue_repository_database_id
+                ),
+                "database_id": metadata.closing_issue_database_id,
+                "number": metadata.closing_issue_number,
+            },
         },
         "repository": {
             "full_name": metadata.repository_full_name,
@@ -1214,13 +1318,7 @@ def blocker_codes(report: dict[str, object]) -> set[str]:
 
 
 def make_ctest_evidence(build_dir: str) -> dict[str, object]:
-    executable_names = {
-        "voi_operation_transfer_admission": "voi_operation_transfer_admission_test",
-        "voi_runtime_convergence": "voi_runtime_convergence_test",
-        "voi_family_effect_lifecycle": "voi_family_effect_lifecycle_test",
-        "voi_battlefield_projection": "voi_battlefield_projection_test",
-        "voi_battlefield_projection_ndebug": "voi_battlefield_projection_ndebug_test",
-    }
+    executable_names = dict(MICROMACHINE_REQUIRED_NATIVE_TESTS)
     test_executables = {
         name: {
             "path": f"{build_dir}/bin/{executable}",
@@ -1234,7 +1332,7 @@ def make_ctest_evidence(build_dir: str) -> dict[str, object]:
         for name, executable in sorted(executable_names.items())
     }
     return {
-        "schema_version": 1,
+        "schema_version": PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION,
         "argv": [
             "/usr/bin/ctest",
             "--test-dir",
@@ -1250,16 +1348,49 @@ def make_ctest_evidence(build_dir: str) -> dict[str, object]:
         "ctest_executable": "/usr/bin/ctest",
         "ctest_executable_sha256": sha256(b"ctest executable"),
         "returncode": 0,
-        "passed": 5,
-        "total": 5,
+        "passed": len(executable_names),
+        "total": len(executable_names),
         "failures": 0,
         "test_names": sorted(executable_names),
         "test_executables": test_executables,
         "test_manifest_sha256": (
             "sha256:" + sha256(canonical_json_bytes(test_executables))
         ),
-        "stdout_sha256": sha256(b"100% tests passed, 0 tests failed out of 5\n"),
+        "registry_sha256": canonical_micromachine_ctest_registry(
+            {
+                name: descriptor["path"]
+                for name, descriptor in test_executables.items()
+            }
+        )["sha256"],
+        "stdout_sha256": sha256(b"100% tests passed, 0 tests failed out of 6\n"),
         "stderr_sha256": sha256(b""),
+    }
+
+
+def make_build_report_native_tests(
+    ctest_payload: dict[str, object],
+) -> dict[str, object]:
+    test_executables = ctest_payload["test_executables"]
+    assert isinstance(test_executables, dict)
+    tests = {
+        name: {
+            "path": descriptor["path"],
+            "sha256": descriptor["sha256"],
+            "size_bytes": len(f"{name}-binary".encode()),
+        }
+        for name, descriptor in test_executables.items()
+    }
+    return {
+        "ctest": {
+            "path": ctest_payload["ctest_executable"],
+            "sha256": ctest_payload["ctest_executable_sha256"],
+            "size_bytes": len(b"ctest executable"),
+        },
+        "registry": {
+            "sha256": ctest_payload["registry_sha256"],
+        },
+        "tests": tests,
+        "manifest_sha256": "sha256:" + ("d" * 64),
     }
 
 

@@ -28,6 +28,7 @@ from starcraft_commander.micromachine_build_identity import (
     REPO_ROOT as BUILD_IDENTITY_REPO_ROOT,
     MicroMachineBuildIdentityConfig,
     build_micromachine_build_identity,
+    canonical_micromachine_ctest_registry,
     write_micromachine_build_attestation,
     write_micromachine_embedded_build_identity_header,
     write_micromachine_source_attestation,
@@ -67,6 +68,7 @@ from starcraft_commander.micromachine_pre_live_provenance import (
 )
 from starcraft_commander.micromachine_pre_live_artifact import (
     GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME,
+    PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION,
     PreLiveArtifactMetadata,
     build_pre_live_artifact_bundle,
     canonical_ctest_evidence_bytes,
@@ -97,6 +99,8 @@ def candidate_authority(
     pull_number: int = 137,
     head_ref: str = "issue-138-authenticated-prelive-provenance",
     head_repository_id: int = AUTHORITATIVE_REPOSITORY_ID,
+    issue_id: int = 2,
+    issue_number: int = 138,
 ) -> dict[str, object]:
     return {
         "scope": "candidate_pr",
@@ -108,6 +112,12 @@ def candidate_authority(
             "head_sha": head_sha,
             "head_ref": head_ref,
             "head_repository_id": head_repository_id,
+        },
+        "closing_issue": {
+            "repository_full_name": REPOSITORY,
+            "repository_database_id": AUTHORITATIVE_REPOSITORY_ID,
+            "database_id": issue_id,
+            "number": issue_number,
         },
     }
 
@@ -994,11 +1004,26 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             " ".join(report["blockers"]),
         )
 
-        unrelated = attest_github_source(
+    def test_accepts_exactly_one_dynamic_closing_issue(self) -> None:
+        adapter = FakeGitHubAdapter()
+        adapter.issue.update({"id": 143, "number": 143})
+        adapter.closing_issues[0].update(
+            {"databaseId": 143, "number": 143}
+        )
+        adapter.artifact_bytes = make_source_artifact_bundle(
+            HEAD_SHA,
+            issue_id=143,
+            issue_number=143,
+        )
+        adapter.artifact["digest"] = (
+            "sha256:" + hashlib.sha256(adapter.artifact_bytes).hexdigest()
+        )
+
+        report = attest_github_source(
             adapter,
             repository=REPOSITORY,
             expected_repository_id=AUTHORITATIVE_REPOSITORY_ID,
-            issue_number=77,
+            issue_number=143,
             pull_number=137,
             run_id=RUN_ID,
             run_attempt=RUN_ATTEMPT,
@@ -1006,8 +1031,63 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             artifact_id=ARTIFACT_ID,
             expected_head_sha=HEAD_SHA,
         )
-        self.assertFalse(unrelated["ok"], unrelated)
-        self.assertIn("expected=138", " ".join(unrelated["blockers"]))
+
+        self.assertTrue(report["ok"], report)
+        self.assertEqual(143, report["source_ids"]["issue_number"])
+
+    def test_rejects_artifact_rebound_to_a_different_closing_issue(self) -> None:
+        adapter = FakeGitHubAdapter()
+        adapter.issue.update({"id": 143, "number": 143})
+        adapter.closing_issues[0].update(
+            {"databaseId": 143, "number": 143}
+        )
+
+        report = attest_github_source(
+            adapter,
+            repository=REPOSITORY,
+            expected_repository_id=AUTHORITATIVE_REPOSITORY_ID,
+            issue_number=143,
+            pull_number=137,
+            run_id=RUN_ID,
+            run_attempt=RUN_ATTEMPT,
+            job_id=JOB_ID,
+            artifact_id=ARTIFACT_ID,
+            expected_head_sha=HEAD_SHA,
+        )
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn(
+            "authority.closing_issue",
+            " ".join(report["blockers"]),
+        )
+
+    def test_rejects_multiple_foreign_or_mismatched_closing_issues(self) -> None:
+        mutations = {
+            "multiple": lambda adapter: adapter.closing_issues.append(
+                dict(adapter.closing_issues[0])
+            ),
+            "foreign repository id": lambda adapter: adapter.closing_issues[0][
+                "repository"
+            ].update({"databaseId": 999}),
+            "foreign repository name": lambda adapter: adapter.closing_issues[0][
+                "repository"
+            ].update({"nameWithOwner": "attacker/other"}),
+            "mismatched issue": lambda adapter: adapter.closing_issues[0].update(
+                {"databaseId": 77, "number": 77}
+            ),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                adapter = FakeGitHubAdapter()
+                mutate(adapter)
+
+                report = self.attest(adapter)
+
+                self.assertFalse(report["ok"], report)
+                self.assertIn(
+                    "closing",
+                    " ".join(report["blockers"]).casefold(),
+                )
 
     def test_accepts_server_closing_relationship_without_body_keyword(self) -> None:
         adapter = FakeGitHubAdapter()
@@ -1650,7 +1730,7 @@ class BuildBindingTest(unittest.TestCase):
                 " ".join(report["blockers"]),
             )
 
-    def test_rebuilds_schema_71_identity_and_exact_five_ctests(self) -> None:
+    def test_rebuilds_schema_72_identity_and_exact_six_ctests(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = make_build_fixture(Path(directory))
 
@@ -1663,8 +1743,82 @@ class BuildBindingTest(unittest.TestCase):
 
             self.assertTrue(report["ok"], report)
             self.assertEqual(fixture["report"]["identity"], report["current_identity"])
-            self.assertEqual(5, report["ctest"]["passed"])
-            self.assertEqual(5, report["ctest"]["total"])
+            self.assertEqual(6, report["ctest"]["passed"])
+            self.assertEqual(6, report["ctest"]["total"])
+            self.assertEqual(
+                fixture["report"]["checksums"]["native_test_registry_sha256"],
+                report["ctest"]["registry_sha256"],
+            )
+
+    def test_rejects_missing_atomic_telemetry_artifact_before_ctest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = make_build_fixture(Path(directory))
+            atomic_test = (
+                fixture["config"].micromachine_build_dir
+                / "bin"
+                / MICROMACHINE_REQUIRED_NATIVE_TESTS["voi_atomic_telemetry"]
+            )
+            atomic_test.unlink()
+            ctest_calls: list[object] = []
+
+            def forbidden_ctest(
+                *args: object,
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess:
+                ctest_calls.append(args)
+                return passing_ctest(*args, **kwargs)
+
+            report = attest_build_binding(
+                fixture["report_path"],
+                repository_dir=fixture["repository"],
+                expected_repository_commit=fixture["repository_commit"],
+                command_runner=forbidden_ctest,
+            )
+
+            self.assertFalse(report["ok"], report)
+            self.assertEqual([], ctest_calls)
+            self.assertIn(
+                "missing_or_invalid_native_test",
+                " ".join(report["blockers"]),
+            )
+            self.assertIn("voi_atomic_telemetry", " ".join(report["blockers"]))
+
+    def test_rejects_independently_renamed_atomic_telemetry_artifact(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = make_build_fixture(Path(directory))
+            atomic_test = (
+                fixture["config"].micromachine_build_dir
+                / "bin"
+                / MICROMACHINE_REQUIRED_NATIVE_TESTS["voi_atomic_telemetry"]
+            )
+            atomic_test.rename(
+                atomic_test.with_name("voi_atomic_telemetry_test.renamed")
+            )
+            ctest_calls: list[object] = []
+
+            def forbidden_ctest(
+                *args: object,
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess:
+                ctest_calls.append(args)
+                return passing_ctest(*args, **kwargs)
+
+            report = attest_build_binding(
+                fixture["report_path"],
+                repository_dir=fixture["repository"],
+                expected_repository_commit=fixture["repository_commit"],
+                command_runner=forbidden_ctest,
+            )
+
+            self.assertFalse(report["ok"], report)
+            self.assertEqual([], ctest_calls)
+            self.assertIn(
+                "missing_or_invalid_native_test",
+                " ".join(report["blockers"]),
+            )
+            self.assertIn("voi_atomic_telemetry", " ".join(report["blockers"]))
 
     def test_rejects_missing_corrupt_and_wrong_schema_reports(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1850,7 +2004,7 @@ class BuildBindingTest(unittest.TestCase):
             subprocess.CompletedProcess(
                 [],
                 1,
-                stdout="80% tests passed, 1 tests failed out of 5\n",
+                stdout="83% tests passed, 1 tests failed out of 6\n",
                 stderr="failed\n",
             ),
             subprocess.CompletedProcess([], 0, stdout="", stderr=""),
@@ -1864,8 +2018,8 @@ class BuildBindingTest(unittest.TestCase):
                 [],
                 0,
                 stdout=(
-                    "100% tests passed, 0 tests failed out of 5\n"
-                    "80% tests passed, 1 tests failed out of 5\n"
+                    "100% tests passed, 0 tests failed out of 6\n"
+                    "83% tests passed, 1 tests failed out of 6\n"
                 ),
                 stderr="",
             ),
@@ -1949,6 +2103,7 @@ class BuildBindingTest(unittest.TestCase):
                                 "voi_family_effect_lifecycle_test",
                                 "voi_battlefield_projection_test",
                                 "voi_battlefield_projection_ndebug_test",
+                                "voi_atomic_telemetry_test",
                             )
                         )
                     ]
@@ -1968,7 +2123,7 @@ class BuildBindingTest(unittest.TestCase):
             )
             self.assertFalse(wrong_identity["ok"], wrong_identity)
             self.assertIn(
-                "CTest test identity mismatch",
+                "CTest registry identity mismatch",
                 " ".join(wrong_identity["blockers"]),
             )
 
@@ -2025,7 +2180,66 @@ class BuildBindingTest(unittest.TestCase):
             )
 
             self.assertFalse(result["ok"], result)
-            self.assertIn("unexpected arguments", " ".join(result["blockers"]))
+            self.assertIn(
+                "CTest registry discovery returned an invalid test",
+                " ".join(result["blockers"]),
+            )
+
+    def test_rejects_noncanonical_ctest_registry_command_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = make_build_fixture(Path(directory))
+            build_dir = fixture["config"].micromachine_build_dir.resolve()
+            aliases = {
+                "missing parent alias": (
+                    build_dir
+                    / "bin"
+                    / "missing"
+                    / ".."
+                    / "voi_atomic_telemetry_test"
+                ),
+                "symlink directory alias": (
+                    build_dir / "linked-bin" / "voi_atomic_telemetry_test"
+                ),
+            }
+            (build_dir / "linked-bin").symlink_to(
+                build_dir / "bin",
+                target_is_directory=True,
+            )
+
+            for name, alias in aliases.items():
+                with self.subTest(name=name):
+
+                    def aliased_registry(
+                        *args: object,
+                        _alias: Path = alias,
+                        **kwargs: object,
+                    ) -> subprocess.CompletedProcess:
+                        discovered = passing_ctest(*args, **kwargs)
+                        if "--show-only=json-v1" not in args[0]:
+                            return discovered
+                        payload = json.loads(discovered.stdout)
+                        for test in payload["tests"]:
+                            if test["name"] == "voi_atomic_telemetry":
+                                test["command"] = [str(_alias)]
+                        return subprocess.CompletedProcess(
+                            args[0],
+                            0,
+                            stdout=json.dumps(payload),
+                            stderr="",
+                        )
+
+                    result = attest_build_binding(
+                        fixture["report_path"],
+                        repository_dir=fixture["repository"],
+                        expected_repository_commit=fixture["repository_commit"],
+                        command_runner=aliased_registry,
+                    )
+
+                    self.assertFalse(result["ok"], result)
+                    self.assertIn(
+                        "CTest registry identity mismatch",
+                        " ".join(result["blockers"]),
+                    )
 
     def test_ctest_executes_pinned_tests_during_original_path_swap(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2110,6 +2324,10 @@ class BuildBindingTest(unittest.TestCase):
                             "voi_battlefield_projection_ndebug",
                             "voi_battlefield_projection_ndebug_test",
                         ),
+                        (
+                            "voi_atomic_telemetry",
+                            "voi_atomic_telemetry_test",
+                        ),
                     )
                 ]
             }
@@ -2119,7 +2337,7 @@ class BuildBindingTest(unittest.TestCase):
                 f"  printf '%s\\n' '{json.dumps(discovered)}'\n"
                 "else\n"
                 "  printf '%s\\n' "
-                "'100% tests passed, 0 tests failed out of 5'\n"
+                "'100% tests passed, 0 tests failed out of 6'\n"
                 "fi\n"
                 "exit 0\n"
             )
@@ -2151,13 +2369,29 @@ class BuildBindingTest(unittest.TestCase):
             shadow = root / "shadow"
             shadow.mkdir()
             fake_ctest = shadow / "ctest"
+            build_dir = fixture["config"].micromachine_build_dir.resolve()
+            discovered = {
+                "tests": [
+                    {
+                        "name": name,
+                        "command": [str(build_dir / "bin" / executable)],
+                    }
+                    for name, executable in sorted(
+                        MICROMACHINE_REQUIRED_NATIVE_TESTS.items()
+                    )
+                ]
+            }
             fake_ctest.write_text(
                 "#!/bin/sh\n"
-                "printf '%s\\n' '100% tests passed, 0 tests failed out of 5'\n"
+                'if [ "$3" = "--show-only=json-v1" ]; then\n'
+                f"  printf '%s\\n' '{json.dumps(discovered)}'\n"
+                "else\n"
+                "  printf '%s\\n' "
+                "'100% tests passed, 0 tests failed out of 6'\n"
+                "fi\n"
                 "exit 0\n"
             )
             fake_ctest.chmod(0o755)
-            build_dir = fixture["config"].micromachine_build_dir
             (build_dir / "CMakeCache.txt").write_text(
                 f"CMAKE_CTEST_COMMAND:INTERNAL={fake_ctest.resolve()}\n"
             )
@@ -2243,6 +2477,91 @@ class BuildBindingTest(unittest.TestCase):
 
 
 class GitHubActionsBundleEmissionTest(unittest.TestCase):
+    def test_emitter_accepts_dynamic_single_closing_issue(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = make_build_fixture(root / "fixture")
+            adapter = FakeGitHubAdapter(
+                head_sha=fixture["repository_commit"],
+            )
+            adapter.issue.update({"id": 143, "number": 143})
+            adapter.closing_issues[0].update(
+                {"databaseId": 143, "number": 143}
+            )
+
+            report = emit_github_actions_pre_live_bundle(
+                adapter=adapter,
+                repository_dir=fixture["repository"],
+                expected_commit=fixture["repository_commit"],
+                run_id=RUN_ID,
+                run_attempt=RUN_ATTEMPT,
+                workflow_ref=WORKFLOW_REF,
+                workflow_sha=WORKFLOW_SHA,
+                build_report_path=fixture["report_path"],
+                expected_build_dir=fixture["config"].micromachine_build_dir,
+                output_path=root / GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME,
+                producer_id="fixture_producer",
+                ctest_runner=passing_ctest,
+            )
+
+            self.assertTrue(report["ok"], report)
+            self.assertEqual(143, report["github_context"]["closing_issue_id"])
+            self.assertEqual(
+                143,
+                report["github_context"]["closing_issue_number"],
+            )
+            self.assertEqual(
+                "open",
+                report["github_context"]["closing_issue_state"],
+            )
+
+    def test_emitter_rejects_ambiguous_or_foreign_closing_issue(self) -> None:
+        mutations = {
+            "missing": lambda adapter: adapter.closing_issues.clear(),
+            "multiple": lambda adapter: adapter.closing_issues.append(
+                dict(adapter.closing_issues[0])
+            ),
+            "foreign repository id": lambda adapter: adapter.closing_issues[0][
+                "repository"
+            ].update({"databaseId": 999}),
+            "foreign repository name": lambda adapter: adapter.closing_issues[0][
+                "repository"
+            ].update({"nameWithOwner": "attacker/other"}),
+            "closed": lambda adapter: adapter.issue.update({"state": "closed"}),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    fixture = make_build_fixture(root / "fixture")
+                    adapter = FakeGitHubAdapter(
+                        head_sha=fixture["repository_commit"],
+                    )
+                    mutate(adapter)
+
+                    report = emit_github_actions_pre_live_bundle(
+                        adapter=adapter,
+                        repository_dir=fixture["repository"],
+                        expected_commit=fixture["repository_commit"],
+                        run_id=RUN_ID,
+                        run_attempt=RUN_ATTEMPT,
+                        workflow_ref=WORKFLOW_REF,
+                        workflow_sha=WORKFLOW_SHA,
+                        build_report_path=fixture["report_path"],
+                        expected_build_dir=(
+                            fixture["config"].micromachine_build_dir
+                        ),
+                        output_path=root / GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME,
+                        producer_id="fixture_producer",
+                        ctest_runner=passing_ctest,
+                    )
+
+                    self.assertFalse(report["ok"], report)
+                    self.assertIn(
+                        "closing",
+                        " ".join(report["blockers"]).casefold(),
+                    )
+
     def test_emitter_output_is_the_bundle_consumed_by_production_verifier(
         self,
     ) -> None:
@@ -2856,6 +3175,55 @@ class LocalProducerTest(unittest.TestCase):
                 report["stdout_sha256"],
             )
 
+    def test_producer_timestamps_use_monotonic_elapsed_time(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            root.mkdir()
+            init_git_repo(root)
+            cwd = root / "producer"
+            cwd.mkdir()
+            executable = cwd / "fixture-producer"
+            executable.write_text("#!/bin/sh\n")
+            executable.chmod(0o700)
+            output = cwd / "evidence.json"
+            producer_argv = (str(executable), "fixture-producer")
+
+            def runner(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
+                output.write_bytes(b'{"evidence":true}\n')
+                return subprocess.CompletedProcess(args[0], 0, stdout=b"", stderr=b"")
+
+            with (
+                mock.patch.object(
+                    provenance_module,
+                    "_utc_now",
+                    return_value="2026-07-31T00:00:04.000000Z",
+                ) as utc_now,
+                mock.patch.object(
+                    provenance_module.time,
+                    "monotonic",
+                    side_effect=(100.0, 104.0),
+                ),
+            ):
+                report = run_local_producer(
+                    repository_dir=root,
+                    cwd=cwd,
+                    argv=producer_argv,
+                    allowed_argv=(producer_argv,),
+                    output_artifact=output,
+                    command_runner=runner,
+                )
+
+            self.assertTrue(report["ok"], report)
+            self.assertEqual(1, utc_now.call_count)
+            self.assertEqual(
+                "2026-07-31T00:00:04.000000Z",
+                report["started_at"],
+            )
+            self.assertEqual(
+                "2026-07-31T00:00:08Z",
+                report["ended_at"],
+            )
+
     def test_rejects_ambient_python_module_launcher_policy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = make_build_fixture(Path(directory))
@@ -3154,6 +3522,8 @@ class ReplayLedgerTest(unittest.TestCase):
             "artifact_sha256": "1" * 64,
             "source_ids": {
                 "repository_id": AUTHORITATIVE_REPOSITORY_ID,
+                "issue_id": 2,
+                "issue_number": 138,
                 "workflow_run_id": RUN_ID,
                 "workflow_id": WORKFLOW_ID,
                 "run_attempt": RUN_ATTEMPT,
@@ -3166,7 +3536,10 @@ class ReplayLedgerTest(unittest.TestCase):
             "current_identity": "sha256:" + "2" * 64,
             "binary_sha256": "3" * 64,
             "repository_inputs": {"digest": "sha256:" + "4" * 64},
-            "ctest": {"test_manifest_sha256": "sha256:" + "5" * 64},
+            "ctest": {
+                "test_manifest_sha256": "sha256:" + "5" * 64,
+                "registry_sha256": "sha256:" + "c" * 64,
+            },
         }
         producer_policy = {
             "ok": True,
@@ -3217,6 +3590,21 @@ class ReplayLedgerTest(unittest.TestCase):
                         local_execution,
                     ),
                 )
+        changed_issue_source = dict(github_source)
+        changed_issue_source["source_ids"] = {
+            **github_source["source_ids"],
+            "issue_id": 143,
+            "issue_number": 143,
+        }
+        self.assertNotEqual(
+            first,
+            canonical_replay_digest(
+                changed_issue_source,
+                build_binding,
+                producer_policy,
+                local_execution,
+            ),
+        )
         missing_workflow_sha = dict(github_source)
         missing_workflow_sha.pop("workflow_sha")
         with self.assertRaises(ValueError):
@@ -4029,6 +4417,18 @@ def make_build_fixture(root: Path) -> dict[str, Any]:
         executable = config.binary_path.parent / executable_name
         executable.write_text(f"#!/bin/sh\n# native-test:{test_name}\nexit 0\n")
         executable.chmod(0o755)
+    (build_dir / "CTestTestfile.cmake").write_text(
+        "\n".join(
+            (
+                f"add_test([=[{test_name}]=] "
+                f"[=[{(config.binary_path.parent / executable_name).resolve()}]=])"
+            )
+            for test_name, executable_name in sorted(
+                MICROMACHINE_REQUIRED_NATIVE_TESTS.items()
+            )
+        )
+        + "\n"
+    )
     write_micromachine_source_attestation(config)
     write_micromachine_build_attestation(config)
     report = build_micromachine_build_identity(config)
@@ -4090,6 +4490,7 @@ def passing_ctest(*args: object, **kwargs: object) -> subprocess.CompletedProces
                 "voi_battlefield_projection_ndebug",
                 "voi_battlefield_projection_ndebug_test",
             ),
+            ("voi_atomic_telemetry", "voi_atomic_telemetry_test"),
         ):
             tests.append(
                 {
@@ -4106,7 +4507,7 @@ def passing_ctest(*args: object, **kwargs: object) -> subprocess.CompletedProces
     return subprocess.CompletedProcess(
         argv,
         0,
-        stdout="100% tests passed, 0 tests failed out of 5\n",
+        stdout="100% tests passed, 0 tests failed out of 6\n",
         stderr="",
     )
 
@@ -4159,6 +4560,8 @@ def make_source_artifact_bundle(
     producer_ended_at: str = "2026-07-30T00:03:00Z",
     pull_id: int = 3,
     pull_number: int = 137,
+    issue_id: int = 2,
+    issue_number: int = 138,
     workflow_ref: str = WORKFLOW_REF,
     workflow_sha: str = WORKFLOW_SHA,
 ) -> bytes:
@@ -4166,6 +4569,8 @@ def make_source_artifact_bundle(
         head_sha,
         pull_id=pull_id,
         pull_number=pull_number,
+        issue_id=issue_id,
+        issue_number=issue_number,
     )
     binary = b"fixture-micromachine-binary"
     repository_input_identity = "sha256:" + "e" * 64
@@ -4199,6 +4604,8 @@ def make_source_artifact_bundle(
         }
     )
     report_identity = "sha256:" + "a" * 64
+    ctest_payload = make_ctest_evidence(Path("/fixture/build"))
+    native_tests = make_build_report_native_tests(ctest_payload)
     report = canonical_json_bytes(
         {
             "schema_version": MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
@@ -4208,6 +4615,11 @@ def make_source_artifact_bundle(
             "observed": {
                 "binary_sha256": hashlib.sha256(binary).hexdigest(),
                 "embedded_build_input_identity": repository_input_identity,
+                "native_tests": native_tests,
+            },
+            "checksums": {
+                "native_test_registry_sha256": ctest_payload["registry_sha256"],
+                "native_test_manifest_sha256": native_tests["manifest_sha256"],
             },
         }
     )
@@ -4232,7 +4644,7 @@ def make_source_artifact_bundle(
             "stderr_sha256": hashlib.sha256(b"").hexdigest(),
         }
     )
-    ctest = canonical_ctest_evidence_bytes(make_ctest_evidence(Path("/fixture/build")))
+    ctest = canonical_ctest_evidence_bytes(ctest_payload)
     metadata = PreLiveArtifactMetadata(
         authority_scope="candidate_pr",
         release_authoritative=False,
@@ -4242,6 +4654,10 @@ def make_source_artifact_bundle(
         pull_request_head_sha=head_sha,
         pull_request_head_ref="issue-138-authenticated-prelive-provenance",
         pull_request_head_repository_id=AUTHORITATIVE_REPOSITORY_ID,
+        closing_issue_repository_full_name=REPOSITORY,
+        closing_issue_repository_database_id=AUTHORITATIVE_REPOSITORY_ID,
+        closing_issue_database_id=issue_id,
+        closing_issue_number=issue_number,
         repository_full_name=REPOSITORY,
         repository_database_id=AUTHORITATIVE_REPOSITORY_ID,
         repository_commit=head_sha,
@@ -4385,6 +4801,10 @@ def bind_adapter_to_build_fixture(
         pull_request_head_sha=fixture["repository_commit"],
         pull_request_head_ref="issue-138-authenticated-prelive-provenance",
         pull_request_head_repository_id=AUTHORITATIVE_REPOSITORY_ID,
+        closing_issue_repository_full_name=REPOSITORY,
+        closing_issue_repository_database_id=AUTHORITATIVE_REPOSITORY_ID,
+        closing_issue_database_id=2,
+        closing_issue_number=138,
         repository_full_name=REPOSITORY,
         repository_database_id=AUTHORITATIVE_REPOSITORY_ID,
         repository_commit=fixture["repository_commit"],
@@ -4435,13 +4855,7 @@ def make_ctest_evidence(build_dir: Path) -> dict[str, object]:
     if ctest_candidate is None:
         raise AssertionError("ctest is required by the provenance fixture")
     ctest_path = Path(ctest_candidate).resolve()
-    executable_names = {
-        "voi_operation_transfer_admission": "voi_operation_transfer_admission_test",
-        "voi_runtime_convergence": "voi_runtime_convergence_test",
-        "voi_family_effect_lifecycle": "voi_family_effect_lifecycle_test",
-        "voi_battlefield_projection": "voi_battlefield_projection_test",
-        "voi_battlefield_projection_ndebug": "voi_battlefield_projection_ndebug_test",
-    }
+    executable_names = dict(MICROMACHINE_REQUIRED_NATIVE_TESTS)
     test_executables = {
         name: {
             "path": str((build_dir / "bin" / executable).resolve()),
@@ -4463,7 +4877,7 @@ def make_ctest_evidence(build_dir: Path) -> dict[str, object]:
         for name, executable in sorted(executable_names.items())
     }
     return {
-        "schema_version": 1,
+        "schema_version": PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION,
         "argv": [
             str(ctest_path),
             "--test-dir",
@@ -4479,8 +4893,8 @@ def make_ctest_evidence(build_dir: Path) -> dict[str, object]:
         "ctest_executable": str(ctest_path),
         "ctest_executable_sha256": hashlib.sha256(ctest_path.read_bytes()).hexdigest(),
         "returncode": 0,
-        "passed": 5,
-        "total": 5,
+        "passed": len(executable_names),
+        "total": len(executable_names),
         "failures": 0,
         "test_names": sorted(executable_names),
         "test_executables": test_executables,
@@ -4488,10 +4902,43 @@ def make_ctest_evidence(build_dir: Path) -> dict[str, object]:
             "sha256:"
             + hashlib.sha256(canonical_json_bytes(test_executables)).hexdigest()
         ),
+        "registry_sha256": canonical_micromachine_ctest_registry(
+            {
+                name: descriptor["path"]
+                for name, descriptor in test_executables.items()
+            }
+        )["sha256"],
         "stdout_sha256": hashlib.sha256(
-            b"100% tests passed, 0 tests failed out of 5\n"
+            b"100% tests passed, 0 tests failed out of 6\n"
         ).hexdigest(),
         "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+    }
+
+
+def make_build_report_native_tests(
+    ctest_payload: dict[str, object],
+) -> dict[str, object]:
+    test_executables = ctest_payload["test_executables"]
+    assert isinstance(test_executables, dict)
+    tests = {
+        name: {
+            "path": descriptor["path"],
+            "sha256": descriptor["sha256"],
+            "size_bytes": len(f"synthetic:{name}".encode()),
+        }
+        for name, descriptor in test_executables.items()
+    }
+    return {
+        "ctest": {
+            "path": ctest_payload["ctest_executable"],
+            "sha256": ctest_payload["ctest_executable_sha256"],
+            "size_bytes": Path(str(ctest_payload["ctest_executable"])).stat().st_size,
+        },
+        "registry": {
+            "sha256": ctest_payload["registry_sha256"],
+        },
+        "tests": tests,
+        "manifest_sha256": "sha256:" + ("d" * 64),
     }
 
 

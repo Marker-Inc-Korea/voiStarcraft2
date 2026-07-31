@@ -25,12 +25,14 @@ from typing import Final, cast
 
 from starcraft_commander.micromachine_build_identity import (
     MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
+    MICROMACHINE_REQUIRED_NATIVE_TESTS,
+    canonical_micromachine_ctest_registry,
 )
 
 
 PRE_LIVE_ARTIFACT_SCHEMA: Final[str] = "voi.micromachine.pre_live.artifact_bundle"
-PRE_LIVE_ARTIFACT_SCHEMA_VERSION: Final[int] = 2
-PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION: Final[int] = 1
+PRE_LIVE_ARTIFACT_SCHEMA_VERSION: Final[int] = 3
+PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION: Final[int] = 2
 PRE_LIVE_CANDIDATE_AUTHORITY_SCOPE: Final[str] = "candidate_pr"
 PRE_LIVE_ARTIFACT_MANIFEST_NAME: Final[str] = "manifest.json"
 GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME: Final[str] = "pre-live-provenance.zip"
@@ -93,7 +95,13 @@ _ROOT_KEYS: Final[frozenset[str]] = frozenset(
     }
 )
 _AUTHORITY_KEYS: Final[frozenset[str]] = frozenset(
-    {"scope", "release_authoritative", "event", "pull_request"}
+    {
+        "scope",
+        "release_authoritative",
+        "event",
+        "pull_request",
+        "closing_issue",
+    }
 )
 _AUTHORITY_PULL_REQUEST_KEYS: Final[frozenset[str]] = frozenset(
     {
@@ -102,6 +110,14 @@ _AUTHORITY_PULL_REQUEST_KEYS: Final[frozenset[str]] = frozenset(
         "head_sha",
         "head_ref",
         "head_repository_id",
+    }
+)
+_AUTHORITY_CLOSING_ISSUE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "repository_full_name",
+        "repository_database_id",
+        "database_id",
+        "number",
     }
 )
 _REPOSITORY_KEYS: Final[frozenset[str]] = frozenset(
@@ -175,6 +191,7 @@ _CTEST_EVIDENCE_KEYS: Final[frozenset[str]] = frozenset(
         "test_names",
         "test_executables",
         "test_manifest_sha256",
+        "registry_sha256",
         "stdout_sha256",
         "stderr_sha256",
     }
@@ -190,13 +207,9 @@ _CTEST_EXECUTABLE_KEYS: Final[frozenset[str]] = frozenset(
         "stderr_sha256",
     }
 )
-_REQUIRED_CTEST_EXECUTABLES: Final[dict[str, str]] = {
-    "voi_operation_transfer_admission": "voi_operation_transfer_admission_test",
-    "voi_runtime_convergence": "voi_runtime_convergence_test",
-    "voi_family_effect_lifecycle": "voi_family_effect_lifecycle_test",
-    "voi_battlefield_projection": "voi_battlefield_projection_test",
-    "voi_battlefield_projection_ndebug": "voi_battlefield_projection_ndebug_test",
-}
+_REQUIRED_CTEST_EXECUTABLES: Final[dict[str, str]] = dict(
+    MICROMACHINE_REQUIRED_NATIVE_TESTS
+)
 
 
 @dataclass(frozen=True)
@@ -239,6 +252,10 @@ class PreLiveArtifactMetadata:
     pull_request_head_sha: str
     pull_request_head_ref: str
     pull_request_head_repository_id: int
+    closing_issue_repository_full_name: str
+    closing_issue_repository_database_id: int
+    closing_issue_database_id: int
+    closing_issue_number: int
     repository_full_name: str
     repository_database_id: int
     repository_commit: str
@@ -272,7 +289,7 @@ MicroMachinePreLiveArtifactLimits = PreLiveArtifactLimits
 
 @dataclass(frozen=True)
 class PreLiveBuildAdmissionSnapshot:
-    """Immutable bytes and source mode accepted by schema-71 admission."""
+    """Immutable bytes and source mode accepted by schema-72 admission."""
 
     build_report_bytes: bytes
     binary_bytes: bytes
@@ -733,6 +750,12 @@ def verify_pre_live_artifact_bundle(
                     ctest_bytes,
                     blockers,
                 )
+            if report_bytes is not None and ctest_bytes is not None:
+                _validate_build_report_ctest_registry_binding(
+                    report_bytes,
+                    ctest_bytes,
+                    blockers,
+                )
             provenance_bytes = captured_members.get(
                 cast(str, producer["provenance_member"])
             )
@@ -995,6 +1018,7 @@ def _coerce_metadata(
         )
     authority = _required_mapping(metadata, "authority")
     authority_pull_request = _required_mapping(authority, "pull_request")
+    authority_closing_issue = _required_mapping(authority, "closing_issue")
     repository = _required_mapping(metadata, "repository")
     workflow = _required_mapping(metadata, "workflow")
     run = _required_mapping(metadata, "run")
@@ -1007,6 +1031,11 @@ def _coerce_metadata(
         authority_pull_request,
         _AUTHORITY_PULL_REQUEST_KEYS,
         "metadata.authority.pull_request",
+    )
+    _require_builder_keys(
+        authority_closing_issue,
+        _AUTHORITY_CLOSING_ISSUE_KEYS,
+        "metadata.authority.closing_issue",
     )
     _require_builder_keys(repository, _REPOSITORY_KEYS, "metadata.repository")
     _require_builder_keys(workflow, _WORKFLOW_KEYS, "metadata.workflow")
@@ -1071,6 +1100,22 @@ def _coerce_metadata(
         pull_request_head_repository_id=cast(
             int,
             authority_pull_request.get("head_repository_id"),
+        ),
+        closing_issue_repository_full_name=cast(
+            str,
+            authority_closing_issue.get("repository_full_name"),
+        ),
+        closing_issue_repository_database_id=cast(
+            int,
+            authority_closing_issue.get("repository_database_id"),
+        ),
+        closing_issue_database_id=cast(
+            int,
+            authority_closing_issue.get("database_id"),
+        ),
+        closing_issue_number=cast(
+            int,
+            authority_closing_issue.get("number"),
         ),
         repository_full_name=cast(str, repository.get("full_name")),
         repository_database_id=cast(int, repository.get("database_id")),
@@ -1184,6 +1229,32 @@ def _validate_metadata(
         "$.authority.pull_request.head_repository_id",
         blockers,
     )
+    if (
+        _REPOSITORY_RE.fullmatch(
+            metadata.closing_issue_repository_full_name
+        )
+        is None
+    ):
+        _invalid_field(
+            blockers,
+            "$.authority.closing_issue.repository_full_name",
+            "closing issue repository full name must be owner/name",
+        )
+    _require_positive_int(
+        metadata.closing_issue_repository_database_id,
+        "$.authority.closing_issue.repository_database_id",
+        blockers,
+    )
+    _require_positive_int(
+        metadata.closing_issue_database_id,
+        "$.authority.closing_issue.database_id",
+        blockers,
+    )
+    _require_positive_int(
+        metadata.closing_issue_number,
+        "$.authority.closing_issue.number",
+        blockers,
+    )
     if _REPOSITORY_RE.fullmatch(metadata.repository_full_name) is None:
         _invalid_field(
             blockers,
@@ -1221,6 +1292,30 @@ def _validate_metadata(
             "authority_repository_id_mismatch",
             "$.authority.pull_request.head_repository_id",
             "pull-request head repository must be the attested repository",
+        )
+    if (
+        isinstance(metadata.closing_issue_repository_full_name, str)
+        and isinstance(metadata.repository_full_name, str)
+        and metadata.closing_issue_repository_full_name
+        != metadata.repository_full_name
+    ):
+        _add_blocker(
+            blockers,
+            "closing_issue_repository_name_mismatch",
+            "$.authority.closing_issue.repository_full_name",
+            "closing issue must belong to the attested repository",
+        )
+    if (
+        type(metadata.closing_issue_repository_database_id) is int
+        and type(metadata.repository_database_id) is int
+        and metadata.closing_issue_repository_database_id
+        != metadata.repository_database_id
+    ):
+        _add_blocker(
+            blockers,
+            "closing_issue_repository_id_mismatch",
+            "$.authority.closing_issue.repository_database_id",
+            "closing issue must belong to the attested repository",
         )
     _require_positive_int(metadata.workflow_id, "$.workflow.id", blockers)
     if (
@@ -1394,7 +1489,7 @@ def _validate_builder_admission_snapshot(
 ) -> None:
     admitted_roles = (
         (
-            "schema-71 build report",
+            "schema-72 build report",
             metadata.build_report_member,
             snapshot.build_report_bytes,
             snapshot.build_report_sha256,
@@ -1470,6 +1565,16 @@ def _build_manifest(
                 "head_sha": metadata.pull_request_head_sha,
                 "head_ref": metadata.pull_request_head_ref,
                 "head_repository_id": metadata.pull_request_head_repository_id,
+            },
+            "closing_issue": {
+                "repository_full_name": (
+                    metadata.closing_issue_repository_full_name
+                ),
+                "repository_database_id": (
+                    metadata.closing_issue_repository_database_id
+                ),
+                "database_id": metadata.closing_issue_database_id,
+                "number": metadata.closing_issue_number,
             },
         },
         "repository": {
@@ -2135,6 +2240,12 @@ def _validate_manifest(
         _AUTHORITY_PULL_REQUEST_KEYS,
         blockers,
     )
+    authority_closing_issue = _schema_mapping(
+        authority.get("closing_issue"),
+        "$.authority.closing_issue",
+        _AUTHORITY_CLOSING_ISSUE_KEYS,
+        blockers,
+    )
     repository = _schema_mapping(
         manifest.get("repository"),
         "$.repository",
@@ -2222,6 +2333,32 @@ def _validate_manifest(
         "$.authority.pull_request.head_repository_id",
         blockers,
     )
+    if (
+        _REPOSITORY_RE.fullmatch(
+            _string(authority_closing_issue.get("repository_full_name"))
+        )
+        is None
+    ):
+        _invalid_field(
+            blockers,
+            "$.authority.closing_issue.repository_full_name",
+            "closing issue repository full name must be owner/name",
+        )
+    _require_positive_int(
+        authority_closing_issue.get("repository_database_id"),
+        "$.authority.closing_issue.repository_database_id",
+        blockers,
+    )
+    _require_positive_int(
+        authority_closing_issue.get("database_id"),
+        "$.authority.closing_issue.database_id",
+        blockers,
+    )
+    _require_positive_int(
+        authority_closing_issue.get("number"),
+        "$.authority.closing_issue.number",
+        blockers,
+    )
     if _REPOSITORY_RE.fullmatch(_string(repository.get("full_name"))) is None:
         _invalid_field(
             blockers,
@@ -2260,6 +2397,30 @@ def _validate_manifest(
             "authority_repository_id_mismatch",
             "$.authority.pull_request.head_repository_id",
             "pull-request head repository must be the attested repository",
+        )
+    if (
+        isinstance(authority_closing_issue.get("repository_full_name"), str)
+        and isinstance(repository.get("full_name"), str)
+        and authority_closing_issue.get("repository_full_name")
+        != repository.get("full_name")
+    ):
+        _add_blocker(
+            blockers,
+            "closing_issue_repository_name_mismatch",
+            "$.authority.closing_issue.repository_full_name",
+            "closing issue must belong to the attested repository",
+        )
+    if (
+        type(authority_closing_issue.get("repository_database_id")) is int
+        and type(repository.get("database_id")) is int
+        and authority_closing_issue.get("repository_database_id")
+        != repository.get("database_id")
+    ):
+        _add_blocker(
+            blockers,
+            "closing_issue_repository_id_mismatch",
+            "$.authority.closing_issue.repository_database_id",
+            "closing issue must belong to the attested repository",
         )
     _require_positive_int(workflow.get("id"), "$.workflow.id", blockers)
     workflow_path = workflow.get("path")
@@ -2767,7 +2928,7 @@ def _validate_build_report_binding(
             blockers,
             "build_report_failed",
             "$.build_report.ok",
-            "build report must record an accepted schema-71 build",
+            "build report must record an accepted schema-72 build",
         )
     _require_equal(
         report.get("failures"),
@@ -3059,6 +3220,128 @@ def _validate_ctest_evidence_binding(
     _validate_ctest_evidence_payload(payload, blockers)
 
 
+def _validate_build_report_ctest_registry_binding(
+    report_bytes: bytes,
+    ctest_bytes: bytes,
+    blockers: list[dict[str, object]],
+) -> None:
+    local_blockers: list[dict[str, object]] = []
+    report = _parse_json(report_bytes, local_blockers, "$.build_report")
+    ctest = _parse_json(ctest_bytes, local_blockers, "$.ctest_evidence")
+    blockers.extend(local_blockers)
+    if not isinstance(report, Mapping) or not isinstance(ctest, Mapping):
+        return
+    observed = report.get("observed")
+    native_tests = (
+        observed.get("native_tests") if isinstance(observed, Mapping) else None
+    )
+    report_tests = (
+        native_tests.get("tests") if isinstance(native_tests, Mapping) else None
+    )
+    evidence_tests = ctest.get("test_executables")
+    if not isinstance(report_tests, Mapping) or not isinstance(
+        evidence_tests, Mapping
+    ):
+        _add_blocker(
+            blockers,
+            "ctest_build_report_binding_missing",
+            "$.build_report.observed.native_tests.tests",
+            "Build report and CTest evidence must expose native-test artifacts",
+        )
+    else:
+        for name in sorted(_REQUIRED_CTEST_EXECUTABLES):
+            report_descriptor = report_tests.get(name)
+            evidence_descriptor = evidence_tests.get(name)
+            if not isinstance(report_descriptor, Mapping) or not isinstance(
+                evidence_descriptor, Mapping
+            ):
+                _add_blocker(
+                    blockers,
+                    "ctest_build_report_binding_missing",
+                    f"$.build_report.observed.native_tests.tests.{name}",
+                    "Each required native test must be present in both artifacts",
+                )
+                continue
+            _require_equal(
+                evidence_descriptor.get("path"),
+                report_descriptor.get("path"),
+                f"$.ctest_evidence.test_executables.{name}.path",
+                blockers,
+            )
+            _require_equal(
+                evidence_descriptor.get("sha256"),
+                report_descriptor.get("sha256"),
+                f"$.ctest_evidence.test_executables.{name}.sha256",
+                blockers,
+            )
+
+    report_ctest = (
+        native_tests.get("ctest") if isinstance(native_tests, Mapping) else None
+    )
+    if not isinstance(report_ctest, Mapping):
+        _add_blocker(
+            blockers,
+            "ctest_build_report_binding_missing",
+            "$.build_report.observed.native_tests.ctest",
+            "Build report must bind the CTest executable used by the evidence",
+        )
+    else:
+        _require_equal(
+            ctest.get("ctest_executable"),
+            report_ctest.get("path"),
+            "$.ctest_evidence.ctest_executable",
+            blockers,
+        )
+        _require_equal(
+            ctest.get("ctest_executable_sha256"),
+            report_ctest.get("sha256"),
+            "$.ctest_evidence.ctest_executable_sha256",
+            blockers,
+        )
+
+    registry = (
+        native_tests.get("registry") if isinstance(native_tests, Mapping) else None
+    )
+    report_registry_sha256 = (
+        registry.get("sha256") if isinstance(registry, Mapping) else None
+    )
+    evidence_registry_sha256 = ctest.get("registry_sha256")
+    _require_equal(
+        evidence_registry_sha256,
+        report_registry_sha256,
+        "$.ctest_evidence.registry_sha256",
+        blockers,
+    )
+    checksums = report.get("checksums")
+    checksum_registry_sha256 = (
+        checksums.get("native_test_registry_sha256")
+        if isinstance(checksums, Mapping)
+        else None
+    )
+    _require_equal(
+        evidence_registry_sha256,
+        checksum_registry_sha256,
+        "$.build_report.checksums.native_test_registry_sha256",
+        blockers,
+    )
+    report_manifest_sha256 = (
+        native_tests.get("manifest_sha256")
+        if isinstance(native_tests, Mapping)
+        else None
+    )
+    checksum_manifest_sha256 = (
+        checksums.get("native_test_manifest_sha256")
+        if isinstance(checksums, Mapping)
+        else None
+    )
+    _require_equal(
+        report_manifest_sha256,
+        checksum_manifest_sha256,
+        "$.build_report.checksums.native_test_manifest_sha256",
+        blockers,
+    )
+
+
 def _validate_ctest_evidence_payload(
     payload: Mapping[str, object],
     blockers: list[dict[str, object]],
@@ -3083,7 +3366,12 @@ def _validate_ctest_evidence_payload(
         blockers,
         exact_int=True,
     )
-    for key, expected in (("passed", 5), ("total", 5), ("failures", 0)):
+    required_count = len(_REQUIRED_CTEST_EXECUTABLES)
+    for key, expected in (
+        ("passed", required_count),
+        ("total", required_count),
+        ("failures", 0),
+    ):
         _require_equal(
             payload.get(key),
             expected,
@@ -3109,7 +3397,7 @@ def _validate_ctest_evidence_payload(
             blockers,
             "ctest_identity_mismatch",
             "$.ctest_evidence.test_names",
-            "CTest evidence must contain the exact five required tests",
+            "CTest evidence must contain the exact required tests",
             expected=expected_names,
             actual=names,
         )
@@ -3168,7 +3456,7 @@ def _validate_ctest_evidence_payload(
                 blockers,
                 "ctest_executable_set_mismatch",
                 "$.ctest_evidence.test_executables",
-                "CTest executable evidence must bind the exact five tests",
+                "CTest executable evidence must bind the exact required tests",
                 expected=expected_names,
                 actual=sorted(str(name) for name in executable_names),
             )
@@ -3250,6 +3538,24 @@ def _validate_ctest_evidence_payload(
             payload.get("test_manifest_sha256"),
             expected_manifest_identity,
             "$.ctest_evidence.test_manifest_sha256",
+            blockers,
+        )
+        registry_paths = {
+            name: str(cast(Mapping[str, object], executables[name]).get("path"))
+            for name in expected_names
+            if isinstance(executables.get(name), Mapping)
+            and isinstance(
+                cast(Mapping[str, object], executables[name]).get("path"),
+                str,
+            )
+        }
+        expected_registry_identity = canonical_micromachine_ctest_registry(
+            registry_paths
+        ).get("sha256")
+        _require_equal(
+            payload.get("registry_sha256"),
+            expected_registry_identity,
+            "$.ctest_evidence.registry_sha256",
             blockers,
         )
 

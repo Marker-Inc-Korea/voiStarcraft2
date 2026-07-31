@@ -17,12 +17,13 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import fields
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Final, Protocol, cast
 
@@ -32,12 +33,14 @@ from starcraft_commander.micromachine_build_identity import (
     REPO_ROOT as BUILD_IDENTITY_REPO_ROOT,
     MicroMachineBuildIdentityConfig,
     build_micromachine_build_identity,
+    canonical_micromachine_ctest_registry,
     inspect_git_worktree_state,
     micromachine_build_identity_admission_error,
 )
 from starcraft_commander.micromachine_pre_live_artifact import (
     GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME,
     PRE_LIVE_CANDIDATE_AUTHORITY_SCOPE,
+    PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION,
     PreLiveArtifactMetadata,
     PreLiveBuildAdmissionSnapshot,
     build_pre_live_artifact_bundle,
@@ -54,7 +57,6 @@ PRODUCER_POLICY_SCHEMA_VERSION: Final[int] = 1
 AUTHORITATIVE_REPOSITORY: Final[str] = "Marker-Inc-Korea/voiStarcraft2"
 AUTHORITATIVE_REPOSITORY_ID: Final[int] = 1_266_216_251
 AUTHORITATIVE_BASE_BRANCH: Final[str] = "main"
-AUTHORITATIVE_PROVENANCE_ISSUE_NUMBER: Final[int] = 138
 AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH: Final[str] = ".github/workflows/ci.yml"
 AUTHORITATIVE_PROVENANCE_JOB_NAME: Final[str] = "pre-live-provenance"
 AUTHORITATIVE_REPLAY_REF_PREFIX: Final[str] = "refs/tags/voi-pre-live-replay/"
@@ -109,7 +111,7 @@ _CTEST_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
     r"(?m)^\s*(\d+)%\s+tests passed,\s+(\d+)\s+tests failed out of\s+(\d+)\s*$"
 )
 _CTEST_FRACTION_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?im)^\s*5/5\s+tests passed\s*$"
+    r"(?im)^\s*(\d+)/(\d+)\s+tests passed\s*$"
 )
 _CMAKE_CTEST_COMMAND_RE: Final[re.Pattern[str]] = re.compile(
     r"(?m)^CMAKE_CTEST_COMMAND:INTERNAL=(.+)$"
@@ -121,6 +123,7 @@ _BUILD_SCRIPT_UPSTREAM_COMMIT_RE: Final[re.Pattern[str]] = re.compile(
 _REQUIRED_CTEST_COMMANDS: Final[dict[str, str]] = dict(
     MICROMACHINE_REQUIRED_NATIVE_TESTS
 )
+_REQUIRED_CTEST_COUNT: Final[int] = len(_REQUIRED_CTEST_COMMANDS)
 _EXTERNAL_BUILD_PATH_FIELDS: Final[frozenset[str]] = frozenset(
     {
         "micromachine_dir",
@@ -1015,12 +1018,6 @@ def attest_github_source(
             allow_slug=True,
         )
         issue_number = _positive_id(issue_number, "issue_number")
-        if issue_number != AUTHORITATIVE_PROVENANCE_ISSUE_NUMBER:
-            raise ValueError(
-                "issue_number must identify the authenticated provenance issue: "
-                f"expected={AUTHORITATIVE_PROVENANCE_ISSUE_NUMBER} "
-                f"actual={issue_number}"
-            )
         pull_number = _positive_id(pull_number, "pull_number")
         run_id = _positive_id(run_id, "run_id")
         run_attempt = _positive_id(run_attempt, "run_attempt")
@@ -1163,22 +1160,16 @@ def attest_github_source(
         )
     if expected_pull_state == "open" and pull_request.get("merged_at") is not None:
         blockers.append("open pull request unexpectedly has merged_at")
-    matching_closing_issues = [
-        candidate
-        for candidate in closing_issues
-        if candidate.get("databaseId") == issue_id
-        and candidate.get("number") == issue_number
-        and _mapping(candidate.get("repository")).get("databaseId")
-        == expected_repository_id
-        and str(
-            _mapping(candidate.get("repository")).get("nameWithOwner", "")
-        ).casefold()
-        == normalized_repository.casefold()
-    ]
-    if len(matching_closing_issues) != 1:
+    closing_issue_id, closing_issue_number = _single_repository_closing_issue(
+        closing_issues,
+        repository=normalized_repository,
+        repository_id=expected_repository_id,
+        blockers=blockers,
+    )
+    if closing_issue_id != issue_id or closing_issue_number != issue_number:
         blockers.append(
-            "GitHub closingIssuesReferences does not uniquely bind the "
-            f"authenticated issue #{AUTHORITATIVE_PROVENANCE_ISSUE_NUMBER}"
+            "GitHub closingIssuesReferences does not bind the selected "
+            f"authenticated issue #{issue_number}"
         )
     pull_head = _mapping(pull_request.get("head"))
     pull_head_sha = pull_head.get("sha")
@@ -1267,6 +1258,12 @@ def attest_github_source(
             "head_sha": expected_head_sha,
             "head_ref": pull_head_ref,
             "head_repository_id": pull_head_repository_id,
+        },
+        "closing_issue": {
+            "repository_full_name": normalized_repository,
+            "repository_database_id": repository_id,
+            "database_id": issue_id,
+            "number": issue_number,
         },
     }
 
@@ -1712,6 +1709,9 @@ def attest_github_source(
                 manifest = _mapping(artifact_bundle.get("manifest"))
                 manifest_authority = _mapping(manifest.get("authority"))
                 manifest_pull_request = _mapping(manifest_authority.get("pull_request"))
+                manifest_closing_issue = _mapping(
+                    manifest_authority.get("closing_issue")
+                )
                 manifest_repository = _mapping(manifest.get("repository"))
                 manifest_workflow = _mapping(manifest.get("workflow"))
                 manifest_run = _mapping(manifest.get("run"))
@@ -1777,6 +1777,22 @@ def attest_github_source(
                     "authority.pull_request.head_repository_id": (
                         manifest_pull_request.get("head_repository_id"),
                         pull_head_repository_id,
+                    ),
+                    "authority.closing_issue.repository_full_name": (
+                        manifest_closing_issue.get("repository_full_name"),
+                        normalized_repository,
+                    ),
+                    "authority.closing_issue.repository_database_id": (
+                        manifest_closing_issue.get("repository_database_id"),
+                        repository_id,
+                    ),
+                    "authority.closing_issue.database_id": (
+                        manifest_closing_issue.get("database_id"),
+                        issue_id,
+                    ),
+                    "authority.closing_issue.number": (
+                        manifest_closing_issue.get("number"),
+                        issue_number,
                     ),
                     "repository.full_name": (
                         manifest_repository.get("full_name"),
@@ -1890,7 +1906,7 @@ def attest_build_binding(
     command_runner: CommandRunner = subprocess.run,
     git_runner: CommandRunner = subprocess.run,
 ) -> dict[str, object]:
-    """Bind schema-71 inputs to one commit and run the exact five CTests."""
+    """Bind schema-72 inputs to one commit and run the exact required CTests."""
 
     blockers: list[str] = []
     path = Path(report_path).absolute()
@@ -1950,10 +1966,10 @@ def attest_build_binding(
                             f"actual={recorded.get('schema_version')!r}"
                         )
                     elif recorded.get("ok") is not True:
-                        blockers.append("schema-71 build report is not accepted")
+                        blockers.append("schema-72 build report is not accepted")
                     elif recorded.get("failures") != []:
                         blockers.append(
-                            "schema-71 build report contains recorded failures"
+                            "schema-72 build report contains recorded failures"
                         )
                     elif upstream_commit_policy.get("ok") is True:
                         try:
@@ -1972,7 +1988,7 @@ def attest_build_binding(
                             )
 
     ctest_result: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION,
         "argv": None,
         "discovery_argv": None,
         "ctest_executable": None,
@@ -1984,6 +2000,7 @@ def attest_build_binding(
         "test_names": [],
         "test_executables": {},
         "test_manifest_sha256": None,
+        "registry_sha256": None,
         "stdout_sha256": None,
         "stderr_sha256": None,
     }
@@ -2068,6 +2085,32 @@ def attest_build_binding(
                 )
                 if ctest_result["ok"] is not True:
                     blockers.extend(cast(list[str], ctest_result["blockers"]))
+                current_observed = current.get("observed")
+                current_native_tests = (
+                    current_observed.get("native_tests")
+                    if isinstance(current_observed, Mapping)
+                    else None
+                )
+                current_registry = (
+                    current_native_tests.get("registry")
+                    if isinstance(current_native_tests, Mapping)
+                    else None
+                )
+                expected_registry_sha256 = (
+                    current_registry.get("sha256")
+                    if isinstance(current_registry, Mapping)
+                    else None
+                )
+                if (
+                    ctest_result.get("registry_sha256")
+                    != expected_registry_sha256
+                ):
+                    blockers.append(
+                        "CTest registry digest differs from the schema-72 "
+                        "build identity: "
+                        f"expected={expected_registry_sha256!r} "
+                        f"actual={ctest_result.get('registry_sha256')!r}"
+                    )
                 try:
                     current_after_ctest = build_micromachine_build_identity(config)
                 except Exception as exc:
@@ -2427,6 +2470,7 @@ def run_local_producer(
 
     blockers: list[str] = []
     started_at = _utc_now()
+    started_monotonic = time.monotonic()
     root = Path(repository_dir).resolve()
     working_dir = Path(cwd).resolve()
     raw_output_path = Path(output_artifact)
@@ -2714,7 +2758,13 @@ def run_local_producer(
             continue
         if snapshot_after != snapshot_before:
             blockers.append(f"authenticated producer file changed: {source}")
-    ended_at = _utc_now()
+    started_timestamp = _parse_utc(started_at)
+    if started_timestamp is None:
+        raise RuntimeError("internal producer start timestamp is invalid")
+    elapsed_seconds = max(0.0, time.monotonic() - started_monotonic)
+    ended_at = _format_utc(
+        started_timestamp + timedelta(seconds=elapsed_seconds)
+    )
     return _component_result(
         blockers,
         producer=(Path(normalized_argv[0]).name if normalized_argv else None),
@@ -2956,21 +3006,47 @@ def attest_github_actions_emission_context(
     )
     if pull_request.get("merged_at") is not None:
         blockers.append("candidate pull request is already merged")
-    matching_closing_issues = [
-        candidate
-        for candidate in closing_issues
-        if candidate.get("number") == AUTHORITATIVE_PROVENANCE_ISSUE_NUMBER
-        and _mapping(candidate.get("repository")).get("databaseId")
-        == AUTHORITATIVE_REPOSITORY_ID
-        and str(
-            _mapping(candidate.get("repository")).get("nameWithOwner", "")
-        ).casefold()
-        == normalized_repository.casefold()
-    ]
-    if len(matching_closing_issues) != 1:
-        blockers.append(
-            "GitHub closingIssuesReferences does not bind the provenance issue"
-        )
+    closing_issue_id, closing_issue_number = _single_repository_closing_issue(
+        closing_issues,
+        repository=normalized_repository,
+        repository_id=AUTHORITATIVE_REPOSITORY_ID,
+        blockers=blockers,
+    )
+    closing_issue_state: str | None = None
+    if closing_issue_number is not None:
+        try:
+            closing_issue = adapter.get_issue(
+                normalized_repository,
+                closing_issue_number,
+            )
+        except Exception as exc:
+            blockers.append(f"GitHub closing issue lookup failed: {exc}")
+        else:
+            _expect_server_value(
+                closing_issue,
+                "id",
+                closing_issue_id,
+                "closing_issue",
+                blockers,
+            )
+            _expect_server_value(
+                closing_issue,
+                "number",
+                closing_issue_number,
+                "closing_issue",
+                blockers,
+            )
+            closing_issue_state = _server_string(
+                closing_issue,
+                "state",
+                "closing_issue",
+                blockers,
+            )
+            if closing_issue_state != "open":
+                blockers.append(
+                    "closing issue state mismatch: "
+                    f"expected='open' actual={closing_issue_state!r}"
+                )
     pull_head = _mapping(pull_request.get("head"))
     _expect_server_value(
         pull_head,
@@ -3163,6 +3239,12 @@ def attest_github_actions_emission_context(
             "head_ref": pull_head_ref,
             "head_repository_id": pull_head_repository_id,
         },
+        "closing_issue": {
+            "repository_full_name": normalized_repository,
+            "repository_database_id": repository_id,
+            "database_id": closing_issue_id,
+            "number": closing_issue_number,
+        },
     }
     return _component_result(
         blockers,
@@ -3178,6 +3260,9 @@ def attest_github_actions_emission_context(
         job_name=job_name,
         job_status=job_status,
         head_sha=expected_head_sha,
+        closing_issue_id=closing_issue_id,
+        closing_issue_number=closing_issue_number,
+        closing_issue_state=closing_issue_state,
         authority=authority,
     )
 
@@ -3514,6 +3599,7 @@ def _assemble_github_actions_pre_live_bundle(
     }
     authority = _mapping(source_context.get("authority"))
     pull_request = _mapping(authority.get("pull_request"))
+    closing_issue = _mapping(authority.get("closing_issue"))
     metadata = PreLiveArtifactMetadata(
         authority_scope=str(authority.get("scope")),
         release_authoritative=bool(authority.get("release_authoritative")),
@@ -3523,6 +3609,14 @@ def _assemble_github_actions_pre_live_bundle(
         pull_request_head_sha=str(pull_request.get("head_sha")),
         pull_request_head_ref=str(pull_request.get("head_ref")),
         pull_request_head_repository_id=int(pull_request.get("head_repository_id")),
+        closing_issue_repository_full_name=str(
+            closing_issue.get("repository_full_name")
+        ),
+        closing_issue_repository_database_id=int(
+            closing_issue.get("repository_database_id")
+        ),
+        closing_issue_database_id=int(closing_issue.get("database_id")),
+        closing_issue_number=int(closing_issue.get("number")),
         repository_full_name=str(source_context["repository"]),
         repository_database_id=int(source_context["repository_id"]),
         repository_commit=expected_commit,
@@ -3618,6 +3712,10 @@ def canonical_replay_digest(
     material = {
         "repository": github_source.get("repository"),
         "repository_id": source_ids.get("repository_id"),
+        "closing_issue_repository": github_source.get("repository"),
+        "closing_issue_repository_id": source_ids.get("repository_id"),
+        "closing_issue_id": source_ids.get("issue_id"),
+        "closing_issue_number": source_ids.get("issue_number"),
         "workflow_run_id": source_ids.get("workflow_run_id"),
         "workflow_id": source_ids.get("workflow_id"),
         "run_attempt": source_ids.get("run_attempt"),
@@ -3632,6 +3730,7 @@ def canonical_replay_digest(
         "binary_sha256": build_binding.get("binary_sha256"),
         "repository_inputs_sha256": repository_inputs.get("digest"),
         "ctest_manifest_sha256": ctest.get("test_manifest_sha256"),
+        "ctest_registry_sha256": ctest.get("registry_sha256"),
         "producer_id": producer_policy.get("producer_id"),
         "producer_policy_sha256": producer_policy.get("policy_sha256"),
         "producer_argv_sha256": producer_policy.get("argv_sha256"),
@@ -3643,6 +3742,10 @@ def canonical_replay_digest(
     required = {
         "repository",
         "repository_id",
+        "closing_issue_repository",
+        "closing_issue_repository_id",
+        "closing_issue_id",
+        "closing_issue_number",
         "workflow_run_id",
         "workflow_id",
         "run_attempt",
@@ -3657,6 +3760,7 @@ def canonical_replay_digest(
         "binary_sha256",
         "repository_inputs_sha256",
         "ctest_manifest_sha256",
+        "ctest_registry_sha256",
         "producer_id",
         "producer_policy_sha256",
         "producer_argv_sha256",
@@ -3685,6 +3789,17 @@ def attest_artifact_local_bindings(
     manifest = _mapping(artifact_bundle.get("manifest"))
     role_evidence = _mapping(artifact_bundle.get("role_evidence"))
     bundled_provenance = _mapping(role_evidence.get("producer_provenance"))
+    bundled_provenance_authority = _mapping(
+        bundled_provenance.get("authority")
+    )
+    bundled_provenance_closing_issue = _mapping(
+        bundled_provenance_authority.get("closing_issue")
+    )
+    manifest_authority = _mapping(manifest.get("authority"))
+    manifest_closing_issue = _mapping(
+        manifest_authority.get("closing_issue")
+    )
+    source_ids = _mapping(github_source.get("source_ids"))
     build = _mapping(manifest.get("build"))
     producer = _mapping(manifest.get("producer"))
     artifact = _mapping(manifest.get("artifact"))
@@ -3722,6 +3837,26 @@ def attest_artifact_local_bindings(
         "producer.provenance.exit_code": local_execution.get("exit_code"),
         "producer.provenance.stdout_sha256": local_execution.get("stdout_sha256"),
         "producer.provenance.stderr_sha256": local_execution.get("stderr_sha256"),
+        "authority.closing_issue.repository_full_name": github_source.get(
+            "repository"
+        ),
+        "authority.closing_issue.repository_database_id": source_ids.get(
+            "repository_id"
+        ),
+        "authority.closing_issue.database_id": source_ids.get("issue_id"),
+        "authority.closing_issue.number": source_ids.get("issue_number"),
+        "producer.provenance.authority.closing_issue.repository_full_name": (
+            github_source.get("repository")
+        ),
+        "producer.provenance.authority.closing_issue.repository_database_id": (
+            source_ids.get("repository_id")
+        ),
+        "producer.provenance.authority.closing_issue.database_id": (
+            source_ids.get("issue_id")
+        ),
+        "producer.provenance.authority.closing_issue.number": source_ids.get(
+            "issue_number"
+        ),
         "artifact.sha256": local_artifact.get("sha256"),
     }
     actual = {
@@ -3739,6 +3874,28 @@ def attest_artifact_local_bindings(
         "producer.provenance.exit_code": bundled_provenance.get("exit_code"),
         "producer.provenance.stdout_sha256": bundled_provenance.get("stdout_sha256"),
         "producer.provenance.stderr_sha256": bundled_provenance.get("stderr_sha256"),
+        "authority.closing_issue.repository_full_name": (
+            manifest_closing_issue.get("repository_full_name")
+        ),
+        "authority.closing_issue.repository_database_id": (
+            manifest_closing_issue.get("repository_database_id")
+        ),
+        "authority.closing_issue.database_id": manifest_closing_issue.get(
+            "database_id"
+        ),
+        "authority.closing_issue.number": manifest_closing_issue.get("number"),
+        "producer.provenance.authority.closing_issue.repository_full_name": (
+            bundled_provenance_closing_issue.get("repository_full_name")
+        ),
+        "producer.provenance.authority.closing_issue.repository_database_id": (
+            bundled_provenance_closing_issue.get("repository_database_id")
+        ),
+        "producer.provenance.authority.closing_issue.database_id": (
+            bundled_provenance_closing_issue.get("database_id")
+        ),
+        "producer.provenance.authority.closing_issue.number": (
+            bundled_provenance_closing_issue.get("number")
+        ),
         "artifact.sha256": artifact.get("sha256"),
     }
     for label in sorted(expected):
@@ -4736,7 +4893,7 @@ def _run_ctest(
     except (OSError, ValueError) as exc:
         return _component_result(
             [f"ctest executable could not be authenticated: {exc}"],
-            schema_version=1,
+            schema_version=PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION,
             argv=None,
             discovery_argv=None,
             ctest_executable=None,
@@ -4748,6 +4905,7 @@ def _run_ctest(
             test_names=[],
             test_executables={},
             test_manifest_sha256=None,
+            registry_sha256=None,
             stdout_sha256=None,
             stderr_sha256=None,
         )
@@ -4797,9 +4955,82 @@ def _run_ctest(
     stdout = ""
     stderr = ""
     test_names: list[str] = []
+    registry_paths: dict[str, str] = {}
     test_executables: dict[str, dict[str, object]] = {}
     pinned_test_paths: dict[str, Path] = {}
     original_test_snapshots: dict[str, tuple[int, int, int, int, str]] = {}
+    if not blockers:
+        try:
+            registered = command_runner(
+                list(discovery_argv),
+                cwd=str(build_dir),
+                check=False,
+                capture_output=True,
+                text=True,
+                shell=False,
+                env=dict(SANITIZED_TEST_ENV),
+            )
+            registry_returncode = int(registered.returncode)
+            registry_stdout = _as_text(registered.stdout)
+            registry_stderr = _as_text(registered.stderr)
+        except Exception as exc:
+            blockers.append(f"CTest registry discovery failed: {exc}")
+        else:
+            if registry_returncode != 0:
+                blockers.append(
+                    f"CTest registry discovery exited with code {registry_returncode}"
+                )
+            try:
+                registry_payload = json.loads(registry_stdout)
+            except json.JSONDecodeError as exc:
+                blockers.append(
+                    f"CTest registry discovery returned malformed JSON: {exc}"
+                )
+            else:
+                registered_tests = (
+                    registry_payload.get("tests")
+                    if isinstance(registry_payload, Mapping)
+                    else None
+                )
+                if not isinstance(registered_tests, list):
+                    blockers.append(
+                        "CTest registry discovery did not return a tests list"
+                    )
+                else:
+                    for test in registered_tests:
+                        if not isinstance(test, Mapping):
+                            blockers.append(
+                                "CTest registry discovery returned a non-object test"
+                            )
+                            continue
+                        name = test.get("name")
+                        command = test.get("command")
+                        if (
+                            not isinstance(name, str)
+                            or not isinstance(command, list)
+                            or len(command) != 1
+                            or not isinstance(command[0], str)
+                            or name in registry_paths
+                        ):
+                            blockers.append(
+                                "CTest registry discovery returned an invalid test"
+                            )
+                            continue
+                        registry_paths[name] = command[0]
+                    expected_registry_paths = {
+                        name: str((build_dir / "bin" / executable).resolve())
+                        for name, executable in _REQUIRED_CTEST_COMMANDS.items()
+                    }
+                    if registry_paths != expected_registry_paths:
+                        blockers.append(
+                            "CTest registry identity mismatch: "
+                            f"expected={expected_registry_paths} "
+                            f"actual={registry_paths}"
+                        )
+                    else:
+                        test_names = sorted(registry_paths)
+            if registry_stderr:
+                blockers.append("CTest registry discovery wrote to stderr")
     for name, executable_name in sorted(_REQUIRED_CTEST_COMMANDS.items()):
         command_path = (build_dir / "bin" / executable_name).resolve()
         if (
@@ -4888,6 +5119,7 @@ def _run_ctest(
                 if not isinstance(tests, list):
                     blockers.append("CTest discovery did not return a tests list")
                 else:
+                    pinned_test_names: list[str] = []
                     for test in tests:
                         if not isinstance(test, Mapping):
                             blockers.append(
@@ -4904,7 +5136,7 @@ def _run_ctest(
                         ):
                             blockers.append("CTest discovery returned an invalid test")
                             continue
-                        test_names.append(name)
+                        pinned_test_names.append(name)
                         if len(command) != 1:
                             blockers.append(
                                 f"CTest command contains unexpected arguments: {name}"
@@ -4921,11 +5153,11 @@ def _run_ctest(
                                 f"CTest command mismatch for {name}: "
                                 f"expected={expected_path} actual={command_path}"
                             )
-                    if set(test_names) != set(_REQUIRED_CTEST_COMMANDS):
+                    if set(pinned_test_names) != set(_REQUIRED_CTEST_COMMANDS):
                         blockers.append(
                             "CTest test identity mismatch: "
                             f"expected={sorted(_REQUIRED_CTEST_COMMANDS)} "
-                            f"actual={sorted(test_names)}"
+                            f"actual={sorted(pinned_test_names)}"
                         )
             if discovery_stderr:
                 blockers.append("CTest discovery wrote to stderr")
@@ -4953,13 +5185,17 @@ def _run_ctest(
     combined = stdout + "\n" + stderr
     summaries = _CTEST_SUMMARY_RE.findall(combined)
     fractions = _CTEST_FRACTION_RE.findall(combined)
-    exact_five = summaries == [("100", "0", "5")] or (
-        not summaries and len(fractions) == 1
+    required_count = str(_REQUIRED_CTEST_COUNT)
+    exact_required = summaries == [("100", "0", required_count)] or (
+        not summaries and fractions == [(required_count, required_count)]
     )
     if returncode is not None and returncode != 0:
         blockers.append(f"ctest exited with code {returncode}")
-    if not exact_five:
-        blockers.append("ctest did not report an exact 5/5 pass")
+    if not exact_required:
+        blockers.append(
+            "ctest did not report an exact "
+            f"{_REQUIRED_CTEST_COUNT}/{_REQUIRED_CTEST_COUNT} pass"
+        )
     try:
         _, ctest_snapshot_after = _read_regular_file_snapshot(
             ctest_path,
@@ -5019,22 +5255,36 @@ def _run_ctest(
         if test_executables
         else None
     )
+    registry_sha256 = (
+        canonical_micromachine_ctest_registry(registry_paths).get("sha256")
+        if registry_paths
+        else None
+    )
     result = _component_result(
         blockers,
-        schema_version=1,
+        schema_version=PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION,
         argv=list(argv),
         discovery_argv=list(discovery_argv),
         ctest_executable=str(ctest_path),
         ctest_executable_sha256=ctest_sha256_before,
         returncode=returncode,
-        passed=5 if exact_five and direct_passed == 5 else direct_passed,
-        total=5,
-        failures=0 if exact_five and direct_passed == 5 else 5 - direct_passed,
+        passed=(
+            _REQUIRED_CTEST_COUNT
+            if exact_required and direct_passed == _REQUIRED_CTEST_COUNT
+            else direct_passed
+        ),
+        total=_REQUIRED_CTEST_COUNT,
+        failures=(
+            0
+            if exact_required and direct_passed == _REQUIRED_CTEST_COUNT
+            else _REQUIRED_CTEST_COUNT - direct_passed
+        ),
         test_names=sorted(test_names),
         test_executables={
             name: test_executables[name] for name in sorted(test_executables)
         },
         test_manifest_sha256=test_manifest_sha256,
+        registry_sha256=registry_sha256,
         stdout_sha256=hashlib.sha256(stdout.encode()).hexdigest(),
         stderr_sha256=hashlib.sha256(stderr.encode()).hexdigest(),
     )
@@ -5905,6 +6155,53 @@ def _positive_id(value: object, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{name} must be a positive integer")
     return value
+
+
+def _single_repository_closing_issue(
+    closing_issues: Sequence[Mapping[str, object]],
+    *,
+    repository: str,
+    repository_id: int,
+    blockers: list[str],
+) -> tuple[int | None, int | None]:
+    if len(closing_issues) != 1:
+        blockers.append(
+            "GitHub closingIssuesReferences must bind exactly one issue in "
+            f"{repository}: actual={len(closing_issues)}"
+        )
+        return None, None
+    candidate = closing_issues[0]
+    if not isinstance(candidate, Mapping):
+        blockers.append("GitHub closing issue reference must be an object")
+        return None, None
+    issue_id = _server_positive_id(
+        candidate.get("databaseId"),
+        "closing_issue.databaseId",
+        blockers,
+    )
+    issue_number = _server_positive_id(
+        candidate.get("number"),
+        "closing_issue.number",
+        blockers,
+    )
+    issue_repository = _mapping(candidate.get("repository"))
+    _expect_server_value(
+        issue_repository,
+        "databaseId",
+        repository_id,
+        "closing_issue.repository",
+        blockers,
+    )
+    observed_repository = issue_repository.get("nameWithOwner")
+    if (
+        not isinstance(observed_repository, str)
+        or observed_repository.casefold() != repository.casefold()
+    ):
+        blockers.append(
+            "closing_issue.repository.nameWithOwner mismatch: "
+            f"expected={repository!r} actual={observed_repository!r}"
+        )
+    return issue_id, issue_number
 
 
 def _server_positive_id(

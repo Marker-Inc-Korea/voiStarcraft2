@@ -26,9 +26,10 @@ SANITIZED_GIT_ENV: Final[dict[str, str]] = {
     "LC_ALL": "C",
     "PATH": "/usr/bin:/bin",
 }
-MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 71
+MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 72
 MICROMACHINE_SOURCE_ATTESTATION_SCHEMA_VERSION: Final[int] = 5
 MICROMACHINE_BUILD_TRANSACTION_SCHEMA_VERSION: Final[int] = 1
+MICROMACHINE_CTEST_REGISTRY_SCHEMA_VERSION: Final[int] = 1
 MICROMACHINE_RUNTIME_MUTABLE_PATHS: Final[tuple[str, ...]] = ("bin/BotConfig.txt",)
 MICROMACHINE_REQUIRED_NATIVE_TESTS: Final[dict[str, str]] = {
     "voi_operation_transfer_admission": "voi_operation_transfer_admission_test",
@@ -36,6 +37,7 @@ MICROMACHINE_REQUIRED_NATIVE_TESTS: Final[dict[str, str]] = {
     "voi_family_effect_lifecycle": "voi_family_effect_lifecycle_test",
     "voi_battlefield_projection": "voi_battlefield_projection_test",
     "voi_battlefield_projection_ndebug": "voi_battlefield_projection_ndebug_test",
+    "voi_atomic_telemetry": "voi_atomic_telemetry_test",
 }
 CMAKE_CTEST_COMMAND_PREFIX: Final[str] = "CMAKE_CTEST_COMMAND:INTERNAL="
 DEFAULT_MICROMACHINE_COMMIT: Final[str] = "eb893161371dab975a0a7e600f9e250ac03ec1ef"
@@ -545,6 +547,13 @@ DEFAULT_MICROMACHINE_BATTLEFIELD_IDENTITY_TRANSFER_INTEGRITY_PATCH: Final[Path] 
     / "patches"
     / "0071-battlefield-identity-transfer-integrity.patch"
 )
+DEFAULT_MICROMACHINE_ATOMIC_TELEMETRY_PUBLICATION_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0072-atomic-telemetry-publication.patch"
+)
 DEFAULT_S2CLIENT_PATCH: Final[Path] = (
     REPO_ROOT
     / "integrations"
@@ -777,6 +786,9 @@ class MicroMachineBuildIdentityConfig:
     )
     micromachine_battlefield_identity_transfer_integrity_patch: Path = (
         DEFAULT_MICROMACHINE_BATTLEFIELD_IDENTITY_TRANSFER_INTEGRITY_PATCH
+    )
+    micromachine_atomic_telemetry_publication_patch: Path = (
+        DEFAULT_MICROMACHINE_ATOMIC_TELEMETRY_PUBLICATION_PATCH
     )
     s2client_patch: Path = DEFAULT_S2CLIENT_PATCH
     hook_manifest: Path = DEFAULT_HOOK_MANIFEST
@@ -1191,6 +1203,9 @@ def build_micromachine_build_identity(
                 config.micromachine_battlefield_identity_transfer_integrity_patch
             )
         ),
+        "micromachine_atomic_telemetry_publication_patch_sha256": _sha256_file(
+            config.micromachine_atomic_telemetry_publication_patch
+        ),
         "s2client_patch_sha256": _sha256_file(config.s2client_patch),
         "hook_manifest_sha256": _sha256_file(config.hook_manifest),
         "map_pool_sha256": _sha256_file(config.map_pool),
@@ -1309,6 +1324,16 @@ def build_micromachine_build_identity(
     checksums["native_test_manifest_sha256"] = (
         native_test_attestation.get("manifest_sha256")
         if native_test_attestation is not None
+        else None
+    )
+    native_test_registry = (
+        native_test_attestation.get("registry")
+        if native_test_attestation is not None
+        else None
+    )
+    checksums["native_test_registry_sha256"] = (
+        native_test_registry.get("sha256")
+        if isinstance(native_test_registry, Mapping)
         else None
     )
     identity_material = {
@@ -1556,6 +1581,9 @@ def build_micromachine_build_identity(
             ),
             "micromachine_battlefield_identity_transfer_integrity_patch": str(
                 config.micromachine_battlefield_identity_transfer_integrity_patch
+            ),
+            "micromachine_atomic_telemetry_publication_patch": str(
+                config.micromachine_atomic_telemetry_publication_patch
             ),
             "embedded_build_identity_header": str(
                 config.embedded_build_identity_header_path
@@ -2184,6 +2212,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--micromachine-battlefield-identity-transfer-integrity-patch",
         default=str(DEFAULT_MICROMACHINE_BATTLEFIELD_IDENTITY_TRANSFER_INTEGRITY_PATCH),
     )
+    parser.add_argument(
+        "--micromachine-atomic-telemetry-publication-patch",
+        default=str(DEFAULT_MICROMACHINE_ATOMIC_TELEMETRY_PUBLICATION_PATCH),
+    )
     parser.add_argument("--s2client-patch", default=str(DEFAULT_S2CLIENT_PATCH))
     parser.add_argument("--hook-manifest", default=str(DEFAULT_HOOK_MANIFEST))
     parser.add_argument("--map-pool", default=str(DEFAULT_MAP_POOL))
@@ -2438,6 +2470,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         micromachine_battlefield_identity_transfer_integrity_patch=Path(
             args.micromachine_battlefield_identity_transfer_integrity_patch
         ),
+        micromachine_atomic_telemetry_publication_patch=Path(
+            args.micromachine_atomic_telemetry_publication_patch
+        ),
         s2client_patch=Path(args.s2client_patch),
         hook_manifest=Path(args.hook_manifest),
         map_pool=Path(args.map_pool),
@@ -2504,6 +2539,168 @@ def _regular_executable_evidence(path: Path) -> dict[str, object] | None:
         "sha256": checksum,
         "size_bytes": file_stat.st_size,
     }
+
+
+def canonical_micromachine_ctest_registry(
+    test_executables: Mapping[str, str],
+) -> dict[str, object]:
+    """Canonicalize the exact registered native-test identity."""
+
+    tests = [
+        {
+            "name": name,
+            "command": [test_executables[name]],
+        }
+        for name in sorted(test_executables)
+    ]
+    material = {
+        "schema_version": MICROMACHINE_CTEST_REGISTRY_SCHEMA_VERSION,
+        "tests": tests,
+    }
+    return {
+        **material,
+        "sha256": "sha256:" + _sha256_json(material),
+    }
+
+
+def _ctest_registry_attestation(
+    *,
+    ctest_path: Path,
+    build_dir: Path,
+) -> tuple[dict[str, object] | None, list[dict[str, object]]]:
+    failures: list[dict[str, object]] = []
+    argv = [
+        str(ctest_path),
+        "--test-dir",
+        str(build_dir),
+        "--show-only=json-v1",
+    ]
+    before = _regular_executable_evidence(ctest_path)
+    if before is None:
+        return (
+            None,
+            [
+                {
+                    "code": "missing_or_invalid_ctest_executable",
+                    "path": str(ctest_path),
+                }
+            ],
+        )
+    try:
+        completed = subprocess.run(
+            argv,
+            cwd=str(build_dir),
+            check=False,
+            capture_output=True,
+            text=True,
+            shell=False,
+            env={
+                "LANG": "C",
+                "LC_ALL": "C",
+                "PATH": "/usr/bin:/bin",
+            },
+        )
+    except Exception as exc:
+        return (
+            None,
+            [
+                {
+                    "code": "ctest_registry_discovery_failed",
+                    "path": str(ctest_path),
+                    "error": str(exc),
+                }
+            ],
+        )
+    after = _regular_executable_evidence(ctest_path)
+    if after != before:
+        failures.append(
+            {
+                "code": "ctest_executable_changed_during_registry_discovery",
+                "path": str(ctest_path),
+            }
+        )
+    if completed.returncode != 0:
+        failures.append(
+            {
+                "code": "ctest_registry_discovery_failed",
+                "path": str(ctest_path),
+                "returncode": completed.returncode,
+            }
+        )
+    if completed.stderr:
+        failures.append(
+            {
+                "code": "ctest_registry_discovery_stderr",
+                "path": str(ctest_path),
+            }
+        )
+    try:
+        payload = json.loads(completed.stdout)
+    except (TypeError, json.JSONDecodeError) as exc:
+        failures.append(
+            {
+                "code": "invalid_ctest_registry_json",
+                "path": str(ctest_path),
+                "error": str(exc),
+            }
+        )
+        payload = None
+
+    registered: dict[str, str] = {}
+    tests = payload.get("tests") if isinstance(payload, Mapping) else None
+    if not isinstance(tests, list):
+        failures.append(
+            {
+                "code": "invalid_ctest_registry",
+                "path": str(ctest_path),
+            }
+        )
+    else:
+        for test in tests:
+            if not isinstance(test, Mapping):
+                failures.append(
+                    {
+                        "code": "invalid_ctest_registry_entry",
+                        "path": str(ctest_path),
+                    }
+                )
+                continue
+            name = test.get("name")
+            command = test.get("command")
+            if (
+                not isinstance(name, str)
+                or not isinstance(command, list)
+                or len(command) != 1
+                or not isinstance(command[0], str)
+                or name in registered
+            ):
+                failures.append(
+                    {
+                        "code": "invalid_ctest_registry_entry",
+                        "path": str(ctest_path),
+                        "test": name,
+                    }
+                )
+                continue
+            registered[name] = command[0]
+
+    expected = {
+        name: str((build_dir / "bin" / executable).resolve())
+        for name, executable in MICROMACHINE_REQUIRED_NATIVE_TESTS.items()
+    }
+    if registered != expected:
+        failures.append(
+            {
+                "code": "ctest_registry_identity_mismatch",
+                "expected": expected,
+                "actual": registered,
+            }
+        )
+    if failures:
+        return None, failures
+    registry = canonical_micromachine_ctest_registry(registered)
+    registry["argv"] = argv
+    return registry, []
 
 
 def _native_test_artifact_attestation(
@@ -2590,6 +2787,14 @@ def _native_test_artifact_attestation(
             continue
         native_tests[name] = evidence
 
+    registry: dict[str, object] | None = None
+    if not failures and ctest_path is not None:
+        registry, registry_failures = _ctest_registry_attestation(
+            ctest_path=ctest_path,
+            build_dir=build_dir,
+        )
+        failures.extend(registry_failures)
+
     if failures:
         return None, failures
     material = {
@@ -2599,6 +2804,7 @@ def _native_test_artifact_attestation(
             "size_bytes": cache_path.stat().st_size,
         },
         "ctest": ctest_evidence,
+        "registry": registry,
         "tests": native_tests,
     }
     return {
