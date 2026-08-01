@@ -71,6 +71,38 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  pre-live-producer-isolation:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.id == github.event.repository.id
+    needs:
+      - unit-contracts
+    name: pre-live-producer-isolation
+    runs-on: macos-14
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      VOI_PRODUCER_UID: "65001"
+      VOI_PRODUCER_GID: "65001"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify dedicated producer isolation without credentials
+        run: |
+          PYTHON_EXECUTABLE="$(python3 -c 'import os, sys; print(os.path.realpath(sys.executable))')"
+          sudo env -u GITHUB_TOKEN -u GH_TOKEN \
+            PYTHONDONTWRITEBYTECODE="1" \
+            VOI_PRODUCER_UID="${VOI_PRODUCER_UID}" \
+            VOI_PRODUCER_GID="${VOI_PRODUCER_GID}" \
+            "${PYTHON_EXECUTABLE}" -B -m unittest \
+              tests/test_micromachine_pre_live_provenance.py \
+              -k dedicated_producer_uid
+
   pre-live-provenance:
     if: >-
       github.event_name == 'pull_request' &&
@@ -78,6 +110,7 @@ jobs:
     needs:
       - unit-contracts
       - pre-live-build
+      - pre-live-producer-isolation
     name: pre-live-provenance
     runs-on: macos-14
     timeout-minutes: 60
@@ -90,10 +123,20 @@ jobs:
       BUILD_JOBS: "3"
       VOI_PRODUCER_UID: "65001"
       VOI_PRODUCER_GID: "65001"
+      VOI_CANDIDATE_WORKSPACE: ${{ github.workspace }}/candidate
+      VOI_TRUSTED_VERIFIER_WORKSPACE: ${{ github.workspace }}/trusted-verifier
+      VOI_TRUSTED_VERIFIER_COMMIT: a1606f039733aa7bd98c37bf7193d59c4790fc6b
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
+          path: trusted-verifier
+          persist-credentials: false
+          ref: a1606f039733aa7bd98c37bf7193d59c4790fc6b
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          path: candidate
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Download exact MicroMachine runtime
@@ -109,8 +152,14 @@ jobs:
             -C "${ROOT_DIR}"
       - name: Transfer verifier inputs to root ownership
         run: |
-          sudo chown -RP 0:0 "${GITHUB_WORKSPACE}" "${ROOT_DIR}"
-          sudo chmod 0755 "${GITHUB_WORKSPACE}" "${ROOT_DIR}"
+          sudo chown -RP 0:0 \
+            "${VOI_CANDIDATE_WORKSPACE}" \
+            "${VOI_TRUSTED_VERIFIER_WORKSPACE}" \
+            "${ROOT_DIR}"
+          sudo chmod 0755 \
+            "${VOI_CANDIDATE_WORKSPACE}" \
+            "${VOI_TRUSTED_VERIFIER_WORKSPACE}" \
+            "${ROOT_DIR}"
       - name: Emit canonical authenticated provenance bundle
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -119,6 +168,7 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/pre-live"
           PYTHON_EXECUTABLE="$(python3 -c 'import os, sys; print(os.path.realpath(sys.executable))')"
           VOI_NODE_EXECUTABLE="$(python3 -c 'import os, shutil; print(os.path.realpath(shutil.which("node") or ""))')"
+          cd "${VOI_TRUSTED_VERIFIER_WORKSPACE}"
           printf '%s' "${GITHUB_TOKEN}" | sudo env -u GITHUB_TOKEN \
             GITHUB_API_URL="${GITHUB_API_URL}" \
             GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
@@ -126,12 +176,14 @@ jobs:
             GITHUB_RUN_ID="${GITHUB_RUN_ID}" \
             GITHUB_WORKFLOW_REF="${GITHUB_WORKFLOW_REF}" \
             GITHUB_WORKFLOW_SHA="${GITHUB_WORKFLOW_SHA}" \
-            GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
             PYTHONDONTWRITEBYTECODE="1" \
+            VOI_CANDIDATE_WORKSPACE="${VOI_CANDIDATE_WORKSPACE}" \
             VOI_NODE_EXECUTABLE="${VOI_NODE_EXECUTABLE}" \
             VOI_PRODUCER_GID="${VOI_PRODUCER_GID}" \
             VOI_PRODUCER_UID="${VOI_PRODUCER_UID}" \
             VOI_RELEASE_COMMIT="${VOI_RELEASE_COMMIT}" \
+            VOI_TRUSTED_VERIFIER_COMMIT="${VOI_TRUSTED_VERIFIER_COMMIT}" \
+            VOI_TRUSTED_VERIFIER_WORKSPACE="${VOI_TRUSTED_VERIFIER_WORKSPACE}" \
             "${PYTHON_EXECUTABLE}" -B -m starcraft_commander.micromachine_pre_live_provenance \
             --emit-github-actions-bundle \
             "${RUNNER_TEMP}/pre-live/pre-live-provenance.zip" \
@@ -139,16 +191,6 @@ jobs:
             "${ROOT_DIR}/MicroMachine/build-latest-api"
           sudo chown "$(id -u):$(id -g)" \
             "${RUNNER_TEMP}/pre-live/pre-live-provenance.zip"
-      - name: Verify dedicated producer isolation boundary
-        run: |
-          PYTHON_EXECUTABLE="$(python3 -c 'import os, sys; print(os.path.realpath(sys.executable))')"
-          sudo env \
-            PYTHONDONTWRITEBYTECODE="1" \
-            VOI_PRODUCER_UID="${VOI_PRODUCER_UID}" \
-            VOI_PRODUCER_GID="${VOI_PRODUCER_GID}" \
-            "${PYTHON_EXECUTABLE}" -B -m unittest \
-              tests/test_micromachine_pre_live_provenance.py \
-              -k dedicated_producer_uid
       - name: Upload canonical authenticated provenance bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

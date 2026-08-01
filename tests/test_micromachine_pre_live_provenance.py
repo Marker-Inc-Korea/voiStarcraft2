@@ -733,9 +733,17 @@ class GitHubSourceAttestationTest(unittest.TestCase):
 
         self.assertIn("permissions:\n  contents: read\n", workflow)
         self.assertIn("  pre-live-build:\n", workflow)
+        self.assertIn("  pre-live-producer-isolation:\n", workflow)
         self.assertIn(f"  {AUTHORITATIVE_PROVENANCE_JOB_NAME}:\n", workflow)
         build_job = workflow.split(
             "  pre-live-build:\n",
+            1,
+        )[1].split(
+            "\n  pre-live-producer-isolation:\n",
+            1,
+        )[0]
+        isolation_job = workflow.split(
+            "  pre-live-producer-isolation:\n",
             1,
         )[1].split(
             f"\n  {AUTHORITATIVE_PROVENANCE_JOB_NAME}:\n",
@@ -778,7 +786,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             for block in job_blocks
             if "if: github.event_name == 'push'" not in block
         ]
-        self.assertGreaterEqual(len(pull_request_job_blocks), 3)
+        self.assertGreaterEqual(len(pull_request_job_blocks), 4)
         for job_block in pull_request_job_blocks:
             with self.subTest(job=job_block.split(":\n", 1)[0].strip()):
                 checkout_block = job_block.split(
@@ -808,6 +816,22 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         )
         self.assertNotIn("GITHUB_TOKEN", build_job)
         self.assertNotIn("github.token", build_job)
+        self.assertIn(
+            "      - name: Verify dedicated producer isolation "
+            "without credentials\n",
+            isolation_job,
+        )
+        self.assertIn(
+            "          sudo env -u GITHUB_TOKEN -u GH_TOKEN \\\n",
+            isolation_job,
+        )
+        self.assertIn("-k dedicated_producer_uid", isolation_job)
+        self.assertNotIn("github.token", isolation_job)
+        self.assertNotIn("actions: read", isolation_job)
+        self.assertIn(
+            "      - pre-live-producer-isolation\n",
+            provenance_job,
+        )
         self.assertNotIn(
             "Build exact MicroMachine integration",
             provenance_job,
@@ -833,8 +857,39 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         )
         self.assertIn('      VOI_PRODUCER_UID: "65001"\n', provenance_job)
         self.assertIn('      VOI_PRODUCER_GID: "65001"\n', provenance_job)
+        trusted_verifier_commit = "a1606f039733aa7bd98c37bf7193d59c4790fc6b"
         self.assertIn(
-            "      - name: Verify dedicated producer isolation boundary\n",
+            "      VOI_CANDIDATE_WORKSPACE: "
+            "${{ github.workspace }}/candidate\n",
+            provenance_job,
+        )
+        self.assertIn(
+            "      VOI_TRUSTED_VERIFIER_WORKSPACE: "
+            "${{ github.workspace }}/trusted-verifier\n",
+            provenance_job,
+        )
+        self.assertIn(
+            f"      VOI_TRUSTED_VERIFIER_COMMIT: {trusted_verifier_commit}\n",
+            provenance_job,
+        )
+        self.assertEqual(
+            2,
+            provenance_job.count(
+                "      - uses: actions/checkout@"
+                "11d5960a326750d5838078e36cf38b85af677262\n"
+            ),
+        )
+        self.assertIn(
+            "          path: trusted-verifier\n"
+            "          persist-credentials: false\n"
+            f"          ref: {trusted_verifier_commit}\n",
+            provenance_job,
+        )
+        self.assertIn(
+            "          path: candidate\n"
+            "          persist-credentials: false\n"
+            "          ref: "
+            "${{ github.event.pull_request.head.sha || github.sha }}\n",
             provenance_job,
         )
         ownership_step = provenance_job.split(
@@ -845,27 +900,21 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             1,
         )[0]
         self.assertIn(
-            '          sudo chown -RP 0:0 "${GITHUB_WORKSPACE}" '
-            '"${ROOT_DIR}"\n',
+            "          sudo chown -RP 0:0 \\\n"
+            '            "${VOI_CANDIDATE_WORKSPACE}" \\\n'
+            '            "${VOI_TRUSTED_VERIFIER_WORKSPACE}" \\\n'
+            '            "${ROOT_DIR}"\n',
             ownership_step,
         )
         self.assertIn(
-            '          sudo chmod 0755 "${GITHUB_WORKSPACE}" '
-            '"${ROOT_DIR}"\n',
+            "          sudo chmod 0755 \\\n"
+            '            "${VOI_CANDIDATE_WORKSPACE}" \\\n'
+            '            "${VOI_TRUSTED_VERIFIER_WORKSPACE}" \\\n'
+            '            "${ROOT_DIR}"\n',
             ownership_step,
         )
-        self.assertLess(
-            provenance_job.index(
-                "      - name: Emit canonical authenticated provenance bundle\n"
-            ),
-            provenance_job.index(
-                "      - name: Verify dedicated producer isolation boundary\n"
-            ),
-        )
-        self.assertIn(
-            "-k dedicated_producer_uid",
-            provenance_job,
-        )
+        self.assertNotIn("-m unittest", provenance_job)
+        self.assertNotIn("-k dedicated_producer_uid", provenance_job)
         emission_step = provenance_job.split(
             "      - name: Emit canonical authenticated provenance bundle\n",
             1,
@@ -878,8 +927,16 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             "sudo env -u GITHUB_TOKEN \\\n",
             emission_step,
         )
+        self.assertIn(
+            '          cd "${VOI_TRUSTED_VERIFIER_WORKSPACE}"\n',
+            emission_step,
+        )
         self.assertNotIn(
             'GITHUB_TOKEN="${GITHUB_TOKEN}"',
+            emission_step,
+        )
+        self.assertIn(
+            '            VOI_CANDIDATE_WORKSPACE="${VOI_CANDIDATE_WORKSPACE}" \\\n',
             emission_step,
         )
         self.assertIn(
@@ -888,6 +945,21 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         )
         self.assertIn(
             '            VOI_PRODUCER_GID="${VOI_PRODUCER_GID}" \\\n',
+            emission_step,
+        )
+        self.assertIn(
+            "            VOI_TRUSTED_VERIFIER_COMMIT="
+            '"${VOI_TRUSTED_VERIFIER_COMMIT}" \\\n',
+            emission_step,
+        )
+        self.assertIn(
+            "            VOI_TRUSTED_VERIFIER_WORKSPACE="
+            '"${VOI_TRUSTED_VERIFIER_WORKSPACE}" \\\n',
+            emission_step,
+        )
+        self.assertIn(
+            '            "${PYTHON_EXECUTABLE}" -B -m '
+            "starcraft_commander.micromachine_pre_live_provenance \\\n",
             emission_step,
         )
         self.assertIn(
