@@ -1131,6 +1131,7 @@ def _battlefield_overview_browser_fixture_page() -> str:
       transport_status: "published",
       consumption_status: "consumed",
       telemetry_frame: 480,
+      telemetry_current: true,
       disposition: "active",
       operation_convergence: {
         target_count: 4,
@@ -1200,6 +1201,8 @@ def _battlefield_overview_browser_fixture_page() -> str:
   }
 
   window.setTimeout(function () {
+    var destinationOperationId =
+      "destination-" + "xxxxxxxx-".repeat(12) + "xxxxxxxx";
     var source = operation(
       "browser-overview-source",
       "hold-main",
@@ -1209,7 +1212,7 @@ def _battlefield_overview_browser_fixture_page() -> str:
     );
     var destination = operation(
       "browser-overview-destination",
-      "reserve-bravo",
+      destinationOperationId,
       5,
       "defense",
       2
@@ -1273,7 +1276,7 @@ def _battlefield_overview_browser_fixture_page() -> str:
           transferable_count: 1,
           transfer_safe: true,
           atomic_runtime_blocker: "",
-          recommended_resolution_choices: [],
+          recommended_resolution_choices: ["transfer_available_units"],
           safety_evidence: {
             evaluated_at_frame: 480,
             protected_minimum_respected: true,
@@ -1283,7 +1286,7 @@ def _battlefield_overview_browser_fixture_page() -> str:
             requested: true,
             requested_count: 1,
             source_owner_id: "hold-main",
-            counterpart_operation_id: "reserve-bravo",
+            counterpart_operation_id: destinationOperationId,
             requested_generation: 2,
             counterpart_generation: 5,
             requested_source_generation: 3,
@@ -1303,6 +1306,11 @@ def _battlefield_overview_browser_fixture_page() -> str:
     var payload = {
       status: "published",
       blackboard_scope_id: "browser-overview-scope",
+      battlefield_projection_identity: {
+        session_epoch: 1700000000000,
+        game_frame: 480
+      },
+      battlefield_projection_fingerprint: "e".repeat(64),
       battlefield_overview: overview,
       battlefield_projection_integrity: {
         status: "valid",
@@ -1323,6 +1331,9 @@ def _battlefield_overview_browser_fixture_page() -> str:
 
     var sourceCard = document.querySelector(
       '[data-operation-id="hold-main"]'
+    );
+    var transferButton = sourceCard && sourceCard.querySelector(
+      "[data-contextual-choice-id]"
     );
     var operationText = document.getElementById(
       "battlefield-operation-details"
@@ -1354,7 +1365,7 @@ def _battlefield_overview_browser_fixture_page() -> str:
       baseText.indexOf("family evidence missing") >= 0);
     mark("transfer-detail",
       transferText.indexOf("hold-main#2") >= 0 &&
-      transferText.indexOf("reserve-bravo#5") >= 0 &&
+      transferText.indexOf(destinationOperationId + "#5") >= 0 &&
       transferText.indexOf("atomic=충족") >= 0);
     mark("original-ux",
       document.querySelectorAll("[data-operation-lane]").length === 4 &&
@@ -1375,11 +1386,44 @@ def _battlefield_overview_browser_fixture_page() -> str:
     mark("single-pending",
       document.querySelectorAll(".message-pending").length <= 1);
     var overviewRect = overviewNode.getBoundingClientRect();
+    var sourceCardRect = sourceCard.getBoundingClientRect();
+    var transferButtonRect = transferButton &&
+      transferButton.getBoundingClientRect();
     var detailRowsFit = Array.from(
       overviewNode.querySelectorAll(".battlefield-detail-row")
     ).every(function(row) {
       return row.scrollWidth <= row.clientWidth + 1;
     });
+    var isMobileViewport = window.innerWidth <= 620;
+    var transferButtonFits = Boolean(
+      destinationOperationId.length === 128 &&
+      transferButton &&
+      transferButton.textContent.indexOf(destinationOperationId) >= 0 &&
+      transferButton.scrollWidth <= transferButton.clientWidth + 1 &&
+      transferButtonRect.left >= sourceCardRect.left - 1 &&
+      transferButtonRect.right <= sourceCardRect.right + 1
+    );
+    var transferCardFits =
+      sourceCard.scrollWidth <= sourceCard.clientWidth + 1;
+    var documentFits =
+      document.documentElement.scrollWidth <=
+        document.documentElement.clientWidth + 1 &&
+      document.body.scrollWidth <= document.body.clientWidth + 1;
+    var viewportFits =
+      document.documentElement.scrollWidth <= window.innerWidth + 1 &&
+      sourceCardRect.left >= -1 &&
+      sourceCardRect.right <= window.innerWidth + 1 &&
+      transferButtonRect &&
+      transferButtonRect.left >= -1 &&
+      transferButtonRect.right <= window.innerWidth + 1;
+    mark("transfer-button-overflow",
+      !isMobileViewport || transferButtonFits);
+    mark("transfer-card-overflow",
+      !isMobileViewport || transferCardFits);
+    mark("transfer-document-overflow",
+      !isMobileViewport || documentFits);
+    mark("transfer-viewport-overflow",
+      !isMobileViewport || viewportFits);
     mark("layout",
       overviewRect.left >= -1 &&
       overviewRect.right <= window.innerWidth + 1 &&
@@ -1414,6 +1458,10 @@ class WebGuiRealBrowserTest(unittest.TestCase):
             "accessibility",
             "unique-ids",
             "single-pending",
+            "transfer-button-overflow",
+            "transfer-card-overflow",
+            "transfer-document-overflow",
+            "transfer-viewport-overflow",
             "layout",
         )
 

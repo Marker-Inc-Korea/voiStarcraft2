@@ -1466,6 +1466,44 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
             _blocker_codes(result),
         )
 
+    def test_availability_requires_every_assignment_match(self) -> None:
+        for field_name in (
+            "operation_assignments_match",
+            "squad_assignments_match",
+            "action_assignments_match",
+            "role_assignments_match",
+        ):
+            with self.subTest(field_name=field_name):
+                telemetry = _telemetry()
+                entry = telemetry["battlefield_overview"][
+                    "transfer_availability"
+                ]["entries"][0]
+                inputs = entry["atomic_revalidation_inputs"]
+                inputs.update(
+                    {
+                        "requested": False,
+                        "requested_count": 0,
+                        "action": "availability",
+                        "edit_resolution": "none",
+                        "counterpart_action": "",
+                        "requested_source_generation": 3,
+                        "requested_counterpart_generation": 5,
+                        "counterpart_pending": False,
+                    }
+                )
+                inputs[field_name] = False
+
+                result = validate_battlefield_overview(
+                    telemetry,
+                    expected_scope="battlefield",
+                )
+
+                self.assertFalse(result.ok)
+                self.assertIn(
+                    "atomic_revalidation_not_ready",
+                    _blocker_codes(result),
+                )
+
     def test_atomic_revalidation_inputs_and_exact_fields_are_required(
         self,
     ) -> None:

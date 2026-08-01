@@ -2909,6 +2909,26 @@ def _validate_atomic_revalidation_inputs(
                     "destination identity."
                 ),
             )
+        assignment_mismatches = sorted(
+            field_name
+            for field_name in (
+                "operation_assignments_match",
+                "squad_assignments_match",
+                "action_assignments_match",
+                "role_assignments_match",
+            )
+            if readiness_fields.get(field_name) is not True
+        )
+        if assignment_mismatches:
+            validation.block(
+                "atomic_revalidation_not_ready",
+                path,
+                (
+                    "Availability evidence must preserve every runtime "
+                    "assignment identity before transfer can be offered."
+                ),
+                failed_fields=assignment_mismatches,
+            )
     if (
         transfer_safe is True
         and readiness_fields.get("atomic_revalidation_ready") is not True

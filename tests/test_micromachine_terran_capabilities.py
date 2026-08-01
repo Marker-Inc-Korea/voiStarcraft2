@@ -12,6 +12,7 @@ from starcraft_commander.micromachine_terran_capabilities import (
     lower_terran_natural_language_units,
     operation_family_evidence,
     terran_production_targets,
+    terran_unit_form_prerequisites,
     validate_terran_capability_contract,
 )
 from starcraft_commander.policy_modulation_provider import (
@@ -373,6 +374,14 @@ class MicroMachineTerranCapabilitiesTest(unittest.TestCase):
         self.assertNotIn(
             "TERRAN_ARMORY",
             terran_production_targets(hellion),
+        )
+        self.assertEqual(
+            ("TERRAN_FACTORY", "TERRAN_ARMORY"),
+            terran_unit_form_prerequisites("TERRAN_HELLIONTANK"),
+        )
+        self.assertEqual(
+            ("TERRAN_FACTORY",),
+            terran_unit_form_prerequisites("TERRAN_HELLION"),
         )
 
     def test_provider_harass_aliases_lower_to_worker_harass_operation(self) -> None:

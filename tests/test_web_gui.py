@@ -5115,6 +5115,12 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 ]
             },
             telemetry=telemetry,
+            result_stream=[
+                {
+                    "update_id": "battlefield-operation",
+                    "battlefield_session_epoch": "1700000000000",
+                }
+            ],
         )
 
         operation = payload["operations"][0]
@@ -5129,6 +5135,59 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertEqual(
             "battlefield-operation",
             operation["battlefield_operation"]["identity"]["update_id"],
+        )
+
+    def test_active_operation_requires_persisted_epoch_and_generation(self):
+        telemetry = battlefield_projection_telemetry()
+        active_update = {
+            "update_id": "battlefield-operation",
+            "manager_bias_domains": ["combat"],
+            "vector": {
+                "goal": "canonical flank",
+                "operations": [
+                    {
+                        "operation_id": "flank-alpha",
+                        "generation": 3,
+                        "goal": "canonical flank",
+                    }
+                ],
+            },
+        }
+
+        missing_epoch = web_gui._micromachine_status_payload(
+            {"active_updates": [active_update]},
+            telemetry=telemetry,
+        )["operations"][0]
+        self.assertFalse(
+            missing_epoch["battlefield_projection_identity_complete"]
+        )
+        self.assertIsNone(missing_epoch["battlefield_operation"])
+        self.assertEqual(
+            "operation_session_epoch_missing",
+            missing_epoch["battlefield_projection_join"]["reason"],
+        )
+
+        missing_generation_update = deepcopy(active_update)
+        del missing_generation_update["vector"]["operations"][0][
+            "generation"
+        ]
+        missing_generation = web_gui._micromachine_status_payload(
+            {"active_updates": [missing_generation_update]},
+            telemetry=telemetry,
+            result_stream=[
+                {
+                    "update_id": "battlefield-operation",
+                    "battlefield_session_epoch": "1700000000000",
+                }
+            ],
+        )["operations"][0]
+        self.assertFalse(
+            missing_generation["battlefield_projection_identity_complete"]
+        )
+        self.assertIsNone(missing_generation["battlefield_operation"])
+        self.assertEqual(
+            "operation_canonical_identity_incomplete",
+            missing_generation["battlefield_projection_join"]["reason"],
         )
 
     def test_historical_operation_preserves_published_epoch_and_fails_closed(
@@ -5229,7 +5288,12 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             },
         }
 
-        def status_for(prerequisites, missing_prerequisites):
+        def status_for(
+            prerequisites,
+            missing_prerequisites,
+            *,
+            unit_type="TERRAN_MARAUDER",
+        ):
             return web_gui._micromachine_operation_status_payload(
                 operation_update,
                 operation_id=operation_id,
@@ -5249,7 +5313,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                                     "status": "WAITING_FOR_UNITS",
                                     "requirement_progress": [
                                         {
-                                            "unit_type": "TERRAN_MARAUDER",
+                                            "unit_type": unit_type,
                                             "role": "defender",
                                             "target_count": 4,
                                             "represented_count": 2,
@@ -5333,6 +5397,35 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             incomplete_requirement["prerequisite_integrity_blockers"],
         )
 
+        hellbat_valid = status_for(
+            ["TERRAN_FACTORY", "TERRAN_ARMORY"],
+            [],
+            unit_type="TERRAN_HELLIONTANK",
+        )
+        hellbat_requirement = hellbat_valid["operation_convergence"][
+            "requirements"
+        ][0]
+        self.assertEqual(
+            ["TERRAN_FACTORY", "TERRAN_ARMORY"],
+            hellbat_requirement["prerequisites"],
+        )
+        self.assertEqual(
+            "valid",
+            hellbat_requirement["prerequisite_integrity_status"],
+        )
+
+        hellbat_incomplete = status_for(
+            ["TERRAN_FACTORY"],
+            [],
+            unit_type="TERRAN_HELLIONTANK",
+        )
+        self.assertEqual(
+            ["prerequisite_chain_incomplete"],
+            hellbat_incomplete["operation_convergence"][
+                "prerequisite_integrity_blockers"
+            ],
+        )
+
     def test_battlefield_projection_attachment_requires_exact_update_identity(self):
         overview = deepcopy(
             battlefield_projection_telemetry()["battlefield_overview"]
@@ -5357,12 +5450,14 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 {
                     "update_id": "update-a",
                     "battlefield_session_epoch": "1700000000000",
+                    "battlefield_projection_identity_complete": True,
                     "operation_id": "shared-operation",
                     "operation_generation": 3,
                 },
                 {
                     "update_id": "update-b",
                     "battlefield_session_epoch": "1700000000000",
+                    "battlefield_projection_identity_complete": True,
                     "operation_id": "shared-operation",
                     "operation_generation": 3,
                 },
@@ -5370,6 +5465,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     "update_id": "update-c",
                     "operation_console_execution_owner_update_id": "update-a",
                     "battlefield_session_epoch": "1700000000000",
+                    "battlefield_projection_identity_complete": True,
                     "operation_id": "shared-operation",
                     "operation_generation": 3,
                 },
@@ -5419,18 +5515,21 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "wrong_update": {
                 "update_id": "foreign-update",
                 "battlefield_session_epoch": "1700000000000",
+                "battlefield_projection_identity_complete": True,
                 "operation_id": "join-operation",
                 "operation_generation": 4,
             },
             "wrong_generation": {
                 "update_id": "join-update",
                 "battlefield_session_epoch": "1700000000000",
+                "battlefield_projection_identity_complete": True,
                 "operation_id": "join-operation",
                 "operation_generation": 5,
             },
             "wrong_operation": {
                 "update_id": "join-update",
                 "battlefield_session_epoch": "1700000000000",
+                "battlefield_projection_identity_complete": True,
                 "operation_id": "foreign-operation",
                 "operation_generation": 4,
             },
@@ -5469,6 +5568,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                         {
                             "update_id": "join-update",
                             "battlefield_session_epoch": operation_epoch,
+                            "battlefield_projection_identity_complete": True,
                             "operation_id": "join-operation",
                             "operation_generation": 4,
                         }
@@ -5501,6 +5601,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                             "battlefield_session_epoch": (
                                 "1700000000000"
                             ),
+                            "battlefield_projection_identity_complete": True,
                             "operation_id": "join-operation",
                             "operation_generation": 4,
                         }
@@ -18333,6 +18434,7 @@ const assert = require("assert");
       transport_status: "published",
       consumption_status: "consumed",
       telemetry_frame: frame,
+      telemetry_current: true,
       disposition: "active",
       operation_convergence: {
         target_count: requestedCount,
@@ -19297,6 +19399,50 @@ const assert = require("assert");
     '"authority": "micromachine_cpp"'
   ));
 
+  var staleManagerEvidence = JSON.parse(JSON.stringify(detailedDefense));
+  staleManagerEvidence.telemetry_current = false;
+  staleManagerEvidence.operation_mission = "defense";
+  renderBattlefieldControlOverview({
+    battlefield_overview: authoritativeOverview,
+    battlefield_projection_integrity: {
+      status: "valid",
+      blocker_count: 0
+    },
+    operations: [staleManagerEvidence, transferDestination]
+  });
+  assert(nodes["battlefield-integrity-alert"].textContent.includes(
+    "stale manager evidence ignored=1"
+  ));
+  assert(nodes["battlefield-operation-details"].textContent.includes(
+    "mission/task 증거 없음"
+  ));
+  assert(!nodes["battlefield-operation-details"].textContent.includes(
+    "MARAUDER/defender"
+  ));
+  assert(!nodes["battlefield-base-details"].textContent.includes(
+    "hold-main#2"
+  ));
+
+  var assignmentMismatchOverview = JSON.parse(JSON.stringify(
+    authoritativeOverview
+  ));
+  assignmentMismatchOverview.transfer_availability.entries[0]
+    .atomic_revalidation_inputs.operation_assignments_match = false;
+  renderBattlefieldControlOverview({
+    battlefield_overview: assignmentMismatchOverview,
+    battlefield_projection_integrity: {
+      status: "valid",
+      blocker_count: 0
+    },
+    operations: [detailedDefense, transferDestination]
+  });
+  assert(nodes["battlefield-transfer"].textContent.includes(
+    "atomic_operation_assignments_match_mismatch"
+  ));
+  assert(!nodes["battlefield-transfer"].textContent.includes(
+    "재검증 대기"
+  ));
+
   var unrelatedPrerequisite = JSON.parse(JSON.stringify(detailedDefense));
   unrelatedPrerequisite.operation_convergence.requirements[0]
     .prerequisites = ["TERRAN_BARRACKS", "TERRAN_FUSIONCORE"];
@@ -19808,6 +19954,51 @@ const assert = require("assert");
       unsafeSourceMinimum,
       destinationCharlieProjection
     ).includes("source_minimum_violation")
+  );
+  var assignmentMismatchEntry = typedTransferEntry(
+    "destination-charlie",
+    7
+  );
+  assignmentMismatchEntry.atomic_revalidation_inputs
+    .role_assignments_match = false;
+  var assignmentMismatchData = Object.assign(
+    {},
+    typedTransferSource,
+    {
+      battlefield_overview: {
+        authority: "micromachine_cpp",
+        identity: {
+          session_epoch: 1700000000000,
+          game_frame: 329
+        },
+        operation_ownership: [
+          typedTransferSource.battlefield_operation,
+          destinationCharlieProjection
+        ],
+        transfer_availability: {
+          atomic_revalidation_required: true,
+          entries: [assignmentMismatchEntry]
+        }
+      },
+      battlefield_projection_identity: {
+        session_epoch: 1700000000000,
+        game_frame: 329
+      },
+      battlefield_projection_fingerprint: "b".repeat(64),
+      blackboard_scope_id: OPERATION_SCOPE
+    }
+  );
+  var assignmentMismatchChoices = operationResolutionChoices(
+    assignmentMismatchData
+  );
+  assert.strictEqual(assignmentMismatchChoices.length, 1);
+  assert.strictEqual(assignmentMismatchChoices[0].safe, false);
+  assert(
+    battlefieldTransferReadinessBlockers(
+      assignmentMismatchEntry,
+      typedTransferSource.battlefield_operation,
+      destinationCharlieProjection
+    ).includes("atomic_role_assignments_match_mismatch")
   );
   [
     "text",

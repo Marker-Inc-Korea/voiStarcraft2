@@ -89,6 +89,7 @@ from starcraft_commander.micromachine_terran_capabilities import (
     TERRAN_UNIT_FAMILY_BY_NAME,
     canonical_terran_unit_family,
     operation_family_evidence,
+    terran_unit_form_prerequisites,
 )
 from starcraft_commander.policy_modulation import (
     MICROMACHINE_OPERATION_EDIT_ACTIONS,
@@ -1919,6 +1920,14 @@ _TERRAN_CAPABILITY_PREREQUISITES: Final[frozenset[str]] = frozenset(
     prerequisite
     for family in TERRAN_UNIT_FAMILY_BY_NAME.values()
     for prerequisite in family.prerequisites
+) | frozenset(
+    prerequisite
+    for unit_type in (
+        unit_type
+        for family in TERRAN_UNIT_FAMILY_BY_NAME.values()
+        for unit_type in family.unit_types
+    )
+    for prerequisite in terran_unit_form_prerequisites(unit_type)
 )
 
 
@@ -1952,7 +1961,7 @@ def _micromachine_operation_requirement_payload(
     family = canonical_terran_unit_family(unit_type)
     capability = TERRAN_UNIT_FAMILY_BY_NAME.get(family)
     allowed_prerequisites = (
-        frozenset(capability.prerequisites)
+        frozenset(terran_unit_form_prerequisites(unit_type))
         if capability is not None
         else frozenset()
     )
@@ -2068,16 +2077,16 @@ def _micromachine_operation_status_payload(
 ) -> dict[str, object]:
     update_id = str(operation_update.get("update_id", "") or "").strip()
     operation_vector = _mapping_child(operation_update, "vector")
-    operation_generation = (
+    persisted_operation_generation = (
         operation_vector.get("generation")
         if type(operation_vector.get("generation")) is int
         and int(operation_vector.get("generation")) > 0
-        else 1
+        else 0
     )
+    operation_generation = persisted_operation_generation or 1
     explicit_operation_identity = bool(
         str(operation_vector.get("operation_id", "") or "").strip()
-        and type(operation_vector.get("generation")) is int
-        and int(operation_vector["generation"]) > 0
+        and persisted_operation_generation > 0
     )
     telemetry_document = _telemetry_to_mapping(telemetry)
     issued_at_frame, deadline_frame = (
@@ -2494,6 +2503,10 @@ def _micromachine_operation_status_payload(
         "battlefield_session_epoch": str(
             battlefield_session_epoch or ""
         ).strip(),
+        "battlefield_projection_identity_complete": bool(
+            explicit_operation_identity
+            and str(battlefield_session_epoch or "").strip()
+        ),
         "operation_id": operation_id,
         "operation_generation": active_operation_generation,
         "requested_operation_generation": operation_generation,
@@ -2620,6 +2633,9 @@ def _attach_battlefield_operation_projections(
         ).strip()
         operation_id = str(item.get("operation_id", "") or "").strip()
         generation = item.get("operation_generation")
+        identity_complete = (
+            item.get("battlefield_projection_identity_complete") is True
+        )
         scope = f"operation:{operation_id}" if operation_id else ""
         operation_session_epoch = str(
             item.get("battlefield_session_epoch", "") or ""
@@ -2633,6 +2649,7 @@ def _attach_battlefield_operation_projections(
         ) if (
             update_id
             and scope
+            and identity_complete
             and session_epoch
             and operation_session_epoch == session_epoch
             and type(generation) is int
@@ -2658,9 +2675,13 @@ def _attach_battlefield_operation_projections(
                         "operation_session_epoch_missing"
                         if not operation_session_epoch
                         else (
-                            "operation_session_epoch_mismatch"
-                            if operation_session_epoch != session_epoch
-                            else "exact_projection_identity_not_found"
+                            "operation_canonical_identity_incomplete"
+                            if not identity_complete
+                            else (
+                                "operation_session_epoch_mismatch"
+                                if operation_session_epoch != session_epoch
+                                else "exact_projection_identity_not_found"
+                            )
                         )
                     )
                 )
@@ -3154,7 +3175,6 @@ def _micromachine_operations_payload(
     blackboard_dir: str,
     compile_result: object | None,
     result_stream: Sequence[Mapping[str, object]],
-    battlefield_session_epoch: str = "",
 ) -> list[dict[str, object]]:
     updates = dashboard.get("active_updates")
     active_updates = [
@@ -3218,7 +3238,6 @@ def _micromachine_operations_payload(
         for operation_id, operation_update in expanded:
             operation_session_epoch = (
                 _micromachine_payload_battlefield_session_epoch(result_item)
-                or battlefield_session_epoch
             )
             operations.append(
                 _micromachine_operation_status_payload(
@@ -3398,13 +3417,6 @@ def _micromachine_status_payload(
         and battlefield_projection.battlefield_overview is not None
         else None
     )
-    battlefield_identity = _mapping_child(
-        battlefield_overview or {},
-        "identity",
-    )
-    battlefield_session_epoch = str(
-        battlefield_identity.get("session_epoch", "") or ""
-    ).strip()
     operations = _micromachine_operations_payload(
         dashboard,
         telemetry=telemetry,
@@ -3412,7 +3424,6 @@ def _micromachine_status_payload(
         blackboard_dir=blackboard_dir,
         compile_result=compile_result,
         result_stream=result_stream,
-        battlefield_session_epoch=battlefield_session_epoch,
     )
     operations = _attach_battlefield_operation_projections(
         operations,
@@ -10328,6 +10339,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   .operation-resolution-actions button {
     margin: 0; padding: 6px 8px; border: 1px solid rgba(77, 238, 234, 0.3);
     border-radius: 9px; color: var(--accent); background: rgba(77, 238, 234, 0.07);
+    min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere;
     font-size: 0.62rem; font-weight: 900; cursor: pointer;
   }
   .operation-resolution-actions button[aria-disabled="true"] {
@@ -18929,7 +18941,11 @@ function operationResolutionChoices(data) {
         inputs.atomic_revalidation_ready === true &&
         inputs.source_active === true &&
         inputs.destination_active === true &&
-        inputs.ownership_integrity === true
+        inputs.ownership_integrity === true &&
+        inputs.operation_assignments_match === true &&
+        inputs.squad_assignments_match === true &&
+        inputs.action_assignments_match === true &&
+        inputs.role_assignments_match === true
       );
       appendChoice(operationResolutionChoice(
         action,
@@ -20299,6 +20315,16 @@ function battlefieldTransferReadinessBlockers(entry, source, destination) {
   if (inputs.atomic_revalidation_ready !== true) {
     blockers.push("atomic_revalidation_not_ready");
   }
+  [
+    "operation_assignments_match",
+    "squad_assignments_match",
+    "action_assignments_match",
+    "role_assignments_match"
+  ].forEach(function(fieldName) {
+    if (inputs[fieldName] !== true) {
+      blockers.push("atomic_" + fieldName + "_mismatch");
+    }
+  });
   var requestedCount = inputs.requested === true
     ? Number(inputs.requested_count || 0)
     : Number(entry && entry.transferable_count || 0);
@@ -20320,18 +20346,24 @@ function battlefieldTransferReadinessBlockers(entry, source, destination) {
   });
 }
 
-function battlefieldOperationDataRows(data) {
-  var rows = [];
-  var seen = {};
+function battlefieldCanonicalManagerEvidenceRows(data) {
+  var rowsByIdentity = {};
   function append(candidate) {
     if (!candidate || !operationCanonicalProjectionMatches(candidate)) {
       return;
     }
     var key = String(candidate.operation_id || "") + "\u0000" +
       Number(candidate.operation_generation || 0);
-    if (!key || seen[key]) { return; }
-    seen[key] = true;
-    rows.push(candidate);
+    if (!key) { return; }
+    if (
+      !rowsByIdentity[key] ||
+      (
+        candidate.telemetry_current === true &&
+        rowsByIdentity[key].telemetry_current !== true
+      )
+    ) {
+      rowsByIdentity[key] = candidate;
+    }
   }
   if (data && data.operation_id && data.battlefield_operation) {
     append(data);
@@ -20340,7 +20372,23 @@ function battlefieldOperationDataRows(data) {
     .forEach(function(operation) {
       append(commandOperationData(operation, data));
     });
-  return rows;
+  return Object.keys(rowsByIdentity).map(function(key) {
+    return rowsByIdentity[key];
+  });
+}
+
+function battlefieldOperationDataRows(data) {
+  return battlefieldCanonicalManagerEvidenceRows(data)
+    .filter(function(candidate) {
+      return candidate.telemetry_current === true;
+    });
+}
+
+function battlefieldStaleManagerEvidenceCount(data) {
+  return battlefieldCanonicalManagerEvidenceRows(data)
+    .filter(function(candidate) {
+      return candidate.telemetry_current !== true;
+    }).length;
 }
 
 function battlefieldOperationDataByIdentity(rows, operationId, generation) {
@@ -20423,6 +20471,13 @@ function battlefieldProjectionIntegrityMessages(data, overview) {
   if (overview && Number(overview.duplicate_owner_count || 0) > 0) {
     messages.push(
       "duplicate_ownership=" + Number(overview.duplicate_owner_count)
+    );
+  }
+  var staleManagerEvidenceCount =
+    battlefieldStaleManagerEvidenceCount(data || {});
+  if (staleManagerEvidenceCount > 0) {
+    messages.push(
+      "stale manager evidence ignored=" + staleManagerEvidenceCount
     );
   }
   var identity = overview && overview.identity || {};
