@@ -406,7 +406,7 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
 
         raw_verifier = (
             "starcraft_commander.micromachine_pre_live_journeys."
-            "verify_pre_live_journey_bundle"
+            "_verify_pre_live_journey_payload_cache"
         )
         with mock.patch(
             raw_verifier,
@@ -548,6 +548,12 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                         {"authority": "micromachine_cpp"}
                     ),
                 ),
+                "boolean schema version": (
+                    "deterministic_journey_build_binding_schema_mismatch",
+                    lambda root: root["build_binding"].update(
+                        {"schema_version": True}
+                    ),
+                ),
             }
             for name, (code, mutation) in mismatch_mutations.items():
                 with self.subTest(name=name), self.assertRaisesRegex(
@@ -566,12 +572,161 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                         node_executable=self.node_descriptor,
                     )
 
+    def test_bound_journey_preflights_root_before_single_payload_read(
+        self,
+    ) -> None:
+        payload_name = "payload/stub.json"
+        payload = b"{}"
+        root = json.loads(
+            read_entries(make_stub_deterministic_journey_bundle())[
+                PRE_LIVE_ARTIFACT_MANIFEST_NAME
+            ]
+        )
+        root["members"] = [
+            {
+                "name": payload_name,
+                "sha256": sha256(payload),
+                "size_bytes": len(payload),
+            }
+        ]
+        unbound_bundle = raw_zip(
+            {
+                PRE_LIVE_ARTIFACT_MANIFEST_NAME: canonical_json_bytes(root),
+                payload_name: payload,
+            }
+        )
+        accepted = {
+            "ok": True,
+            "blockers": [],
+            "binary_sha256": sha256(self.binary),
+            "embedded_build_input_identity": self.repository_input_identity,
+        }
+        raw_verifier = (
+            "starcraft_commander.micromachine_pre_live_journeys."
+            "_verify_pre_live_journey_payload_cache"
+        )
+        with mock.patch(raw_verifier, return_value=accepted):
+            bound_bundle = bind_deterministic_journey_bundle_to_build(
+                unbound_bundle,
+                build_report_bytes=(
+                    self.members[self.metadata.build_report_member]
+                ),
+                binary_bytes=self.binary,
+                node_executable=self.node_descriptor,
+            )
+        outer_manifest = json.loads(
+            read_entries(self.bundle)[PRE_LIVE_ARTIFACT_MANIFEST_NAME]
+        )
+        original_read = artifact_module.zipfile.ZipFile.read
+
+        def verify_with_tracked_reads(
+            candidate: bytes,
+            *,
+            verifier_result: object,
+        ) -> tuple[dict[str, object], list[str], mock.Mock]:
+            reads: list[str] = []
+
+            def tracking_read(
+                archive: zipfile.ZipFile,
+                member: object,
+                *args: object,
+                **kwargs: object,
+            ) -> bytes:
+                member_name = (
+                    member.filename
+                    if isinstance(member, zipfile.ZipInfo)
+                    else str(member)
+                )
+                reads.append(member_name)
+                return original_read(archive, member, *args, **kwargs)
+
+            with (
+                mock.patch.object(
+                    artifact_module.zipfile.ZipFile,
+                    "read",
+                    new=tracking_read,
+                ),
+                mock.patch(
+                    raw_verifier,
+                    side_effect=verifier_result,
+                ) as semantic_verifier,
+            ):
+                verification = (
+                    artifact_module._verify_bound_deterministic_journey_bundle(
+                        candidate,
+                        build_report_bytes=(
+                            self.members[self.metadata.build_report_member]
+                        ),
+                        manifest=outer_manifest,
+                        limits=PreLiveArtifactLimits(),
+                        node_executable=self.node_descriptor,
+                    )
+                )
+            return verification, reads, semantic_verifier
+
+        verified, reads, semantic_verifier = verify_with_tracked_reads(
+            bound_bundle,
+            verifier_result=lambda *args, **kwargs: accepted,
+        )
+        self.assertTrue(verified["ok"], verified)
+        self.assertEqual(
+            [PRE_LIVE_ARTIFACT_MANIFEST_NAME, payload_name],
+            reads,
+        )
+        semantic_verifier.assert_called_once()
+        self.assertEqual(
+            {payload_name: payload},
+            semantic_verifier.call_args.args[1],
+        )
+
+        cases = {
+            "root schema": (
+                "deterministic_journey_build_binding_schema_mismatch",
+                lambda candidate_root: candidate_root.update(
+                    {"unexpected": True}
+                ),
+            ),
+            "member descriptor": (
+                "deterministic_journey_bundle_rejected",
+                lambda candidate_root: candidate_root["members"][0].update(
+                    {"size_bytes": True}
+                ),
+            ),
+            "boolean build binding schema": (
+                "deterministic_journey_build_binding_schema_mismatch",
+                lambda candidate_root: candidate_root[
+                    "build_binding"
+                ].update({"schema_version": True}),
+            ),
+        }
+        for name, (code, mutation) in cases.items():
+            with self.subTest(name=name):
+                malformed = mutate_nested_journey_manifest(
+                    bound_bundle,
+                    mutation,
+                )
+                rejected, reads, semantic_verifier = (
+                    verify_with_tracked_reads(
+                        malformed,
+                        verifier_result=AssertionError(
+                            "semantic replay must not run after root rejection"
+                        ),
+                    )
+                )
+                self.assertFalse(rejected["ok"], rejected)
+                self.assertIn(code, blocker_codes(rejected))
+                self.assertEqual(
+                    [PRE_LIVE_ARTIFACT_MANIFEST_NAME],
+                    reads,
+                )
+                semantic_verifier.assert_not_called()
+
     def test_deterministic_replay_requires_and_threads_node_descriptor(
         self,
     ) -> None:
         raw_verifier = (
             "starcraft_commander.micromachine_pre_live_journeys."
-            "verify_pre_live_journey_bundle"
+            "_verify_pre_live_journey_payload_cache"
         )
         accepted = {
             "ok": True,
@@ -772,14 +927,25 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
             artifact_member=PRE_LIVE_DETERMINISTIC_JOURNEY_MEMBER_NAME,
             producer_output_member=PRE_LIVE_DETERMINISTIC_JOURNEY_MEMBER_NAME,
         )
+        nested_payloads = {
+            f"payload/{index:02d}.json": b"" for index in range(10)
+        }
+        nested_root = json.loads(
+            read_entries(make_stub_deterministic_journey_bundle())[
+                PRE_LIVE_ARTIFACT_MANIFEST_NAME
+            ]
+        )
+        nested_root["members"] = [
+            {
+                "name": name,
+                "sha256": sha256(payload),
+                "size_bytes": len(payload),
+            }
+            for name, payload in sorted(nested_payloads.items())
+        ]
         nested_entries = {
-            PRE_LIVE_ARTIFACT_MANIFEST_NAME: read_entries(
-                make_stub_deterministic_journey_bundle()
-            )[PRE_LIVE_ARTIFACT_MANIFEST_NAME],
-            **{
-                f"payload/{index:02d}.json": b""
-                for index in range(10)
-            },
+            PRE_LIVE_ARTIFACT_MANIFEST_NAME: canonical_json_bytes(nested_root),
+            **nested_payloads,
         }
         nested_bundle = raw_zip(nested_entries)
         nested_identity = {
@@ -790,7 +956,7 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
         }
         raw_verifier = (
             "starcraft_commander.micromachine_pre_live_journeys."
-            "verify_pre_live_journey_bundle"
+            "_verify_pre_live_journey_payload_cache"
         )
         with mock.patch(raw_verifier, return_value=nested_identity):
             bound_bundle = bind_deterministic_journey_bundle_to_build(

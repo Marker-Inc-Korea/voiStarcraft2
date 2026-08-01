@@ -1105,6 +1105,102 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
             rejected["blockers"],
         )
 
+    def test_bundle_rejects_boolean_native_adapter_schema_before_replay(
+        self,
+    ) -> None:
+        entries = _read_zip(
+            build_pre_live_journey_bundle(MICROMACHINE_BINARY)
+        )
+        journey_id = "safe_partial_launch"
+        product_name = f"product/{journey_id}.json"
+        products = json.loads(entries[product_name])
+        products["native_adapter"]["schema_version"] = True
+        entries[product_name] = canonical_json_bytes(products)
+
+        matrix = json.loads(entries["derived/journey-matrix.json"])
+        journey = next(
+            item for item in matrix["journeys"] if item["id"] == journey_id
+        )
+        journey["product_paths"] = products
+        entries["derived/journey-matrix.json"] = canonical_json_bytes(matrix)
+        entries["report.md"] = _markdown_report(matrix).encode("utf-8")
+
+        with mock.patch(
+            (
+                "starcraft_commander.micromachine_pre_live_journeys."
+                "_consume_native_output"
+            ),
+            side_effect=AssertionError(
+                "native replay must not accept a boolean schema version"
+            ),
+        ):
+            rejected = verify_pre_live_journey_bundle(
+                _rebuild_journey_bundle(entries)
+            )
+
+        self.assertFalse(rejected["ok"], rejected)
+        self.assertIn(
+            (
+                f"{journey_id}: native adapter product schema_version "
+                "is unsupported"
+            ),
+            rejected["blockers"],
+        )
+
+    def test_bundle_preflights_every_payload_before_any_semantic_replay(
+        self,
+    ) -> None:
+        base_entries = _read_zip(
+            build_pre_live_journey_bundle(MICROMACHINE_BINARY)
+        )
+        manifest = json.loads(
+            base_entries["input/PRE_LIVE_JOURNEYS.json"]
+        )
+        last_journey_id = manifest["journeys"][-1]["id"]
+        cases = {
+            "malformed product JSON": (
+                lambda entries: entries.__setitem__(
+                    f"product/{last_journey_id}.json",
+                    b"{",
+                ),
+                f"product/{last_journey_id}.json is invalid JSON",
+            ),
+            "malformed raw event structure": (
+                lambda entries: _remove_last_journey_event_payload(
+                    entries,
+                    last_journey_id,
+                ),
+                f"{last_journey_id}: raw event has an invalid field set",
+            ),
+        }
+        for name, (mutate, blocker) in cases.items():
+            with self.subTest(name=name):
+                entries = dict(base_entries)
+                mutate(entries)
+                with mock.patch(
+                    (
+                        "starcraft_commander.micromachine_pre_live_journeys."
+                        "_rederive_product_path_blockers"
+                    ),
+                    side_effect=AssertionError(
+                        "semantic replay must wait until every payload "
+                        "passes structural preflight"
+                    ),
+                ) as semantic_replay:
+                    rejected = verify_pre_live_journey_bundle(
+                        _rebuild_journey_bundle(entries)
+                    )
+
+                semantic_replay.assert_not_called()
+                self.assertFalse(rejected["ok"], rejected)
+                self.assertTrue(
+                    any(
+                        blocker in observed
+                        for observed in rejected["blockers"]
+                    ),
+                    rejected,
+                )
+
     def test_forged_product_matrix_and_report_fail_executable_replay(
         self,
     ) -> None:
@@ -1794,6 +1890,20 @@ def _receipt_action_metadata(
 def _read_zip(bundle: bytes) -> dict[str, bytes]:
     with zipfile.ZipFile(io.BytesIO(bundle), mode="r") as archive:
         return {name: archive.read(name) for name in archive.namelist()}
+
+
+def _remove_last_journey_event_payload(
+    entries: dict[str, bytes],
+    journey_id: str,
+) -> None:
+    raw_name = f"raw/{journey_id}.jsonl"
+    events = [
+        json.loads(line) for line in entries[raw_name].splitlines()
+    ]
+    events[-1].pop("payload")
+    entries[raw_name] = b"".join(
+        canonical_json_bytes(event) + b"\n" for event in events
+    )
 
 
 def _rebuild_journey_bundle(entries: dict[str, bytes]) -> bytes:

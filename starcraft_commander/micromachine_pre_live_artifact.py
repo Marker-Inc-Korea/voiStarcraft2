@@ -17,7 +17,7 @@ import stat
 import struct
 import unicodedata
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -393,7 +393,8 @@ def bind_deterministic_journey_bundle_to_build(
     """Bind verified journey evidence to one admitted MicroMachine build."""
 
     from starcraft_commander.micromachine_pre_live_journeys import (
-        verify_pre_live_journey_bundle,
+        _preflight_pre_live_journey_root,
+        _verify_pre_live_journey_payload_cache,
     )
 
     if not isinstance(bundle, bytes):
@@ -407,9 +408,34 @@ def bind_deterministic_journey_bundle_to_build(
             "deterministic journey replay requires an admitted Node.js "
             "executable or descriptor"
         )
-    root, payloads = _read_deterministic_journey_archive(bundle)
-    verification = verify_pre_live_journey_bundle(
+
+    def validate_unbound_root(
+        root: dict[str, object],
+        infos: Sequence[zipfile.ZipInfo],
+    ) -> bool:
+        root_blockers: list[str] = []
+        _preflight_pre_live_journey_root(
+            root,
+            member_names=[info.filename for info in infos[1:]],
+            member_sizes={
+                info.filename: info.file_size for info in infos[1:]
+            },
+            blockers=root_blockers,
+        )
+        if root_blockers:
+            raise ValueError(
+                "deterministic journey root manifest is unsupported: "
+                f"{root_blockers!r}"
+            )
+        return True
+
+    root, payloads = _read_deterministic_journey_archive(
         bundle,
+        root_validator=validate_unbound_root,
+    )
+    verification = _verify_pre_live_journey_payload_cache(
+        root,
+        payloads,
         node_executable=node_executable,
     )
     if verification.get("ok") is not True:
@@ -495,6 +521,9 @@ def _read_deterministic_journey_archive(
     bundle: bytes,
     *,
     limits: PreLiveArtifactLimits | None = None,
+    root_validator: (
+        Callable[[dict[str, object], Sequence[zipfile.ZipInfo]], bool] | None
+    ) = None,
 ) -> tuple[dict[str, object], dict[str, bytes]]:
     effective_limits = limits or PreLiveArtifactLimits()
     _preflight_deterministic_journey_central_directory(
@@ -589,26 +618,30 @@ def _read_deterministic_journey_archive(
                     "deterministic journey ZIP member exceeds "
                     f"max_compression_ratio: {info.filename}"
                 )
+        raw_root = archive.read(PRE_LIVE_ARTIFACT_MANIFEST_NAME)
+        try:
+            root = json.loads(
+                raw_root,
+                object_pairs_hook=_reject_duplicate_json_keys,
+                parse_constant=_reject_nonfinite_json,
+            )
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"deterministic journey root manifest is invalid: {exc}"
+            ) from exc
+        if not isinstance(root, dict):
+            raise ValueError(
+                "deterministic journey root manifest must be an object"
+            )
+        if canonical_json_bytes(root) != raw_root:
+            raise ValueError(
+                "deterministic journey root manifest must use canonical JSON"
+            )
+        if root_validator is not None and not root_validator(root, infos):
+            return root, {}
         payloads: dict[str, bytes] = {}
-        for info in infos:
+        for info in infos[1:]:
             payloads[info.filename] = archive.read(info)
-    raw_root = payloads.pop(PRE_LIVE_ARTIFACT_MANIFEST_NAME)
-    try:
-        root = json.loads(
-            raw_root,
-            object_pairs_hook=_reject_duplicate_json_keys,
-            parse_constant=_reject_nonfinite_json,
-        )
-    except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
-        raise ValueError(
-            f"deterministic journey root manifest is invalid: {exc}"
-        ) from exc
-    if not isinstance(root, dict):
-        raise ValueError("deterministic journey root manifest must be an object")
-    if canonical_json_bytes(root) != raw_root:
-        raise ValueError(
-            "deterministic journey root manifest must use canonical JSON"
-        )
     return root, payloads
 
 
@@ -717,16 +750,177 @@ def _verify_bound_deterministic_journey_bundle(
     node_executable: Path | str | None,
 ) -> dict[str, object]:
     from starcraft_commander.micromachine_pre_live_journeys import (
-        verify_pre_live_journey_bundle,
+        _preflight_pre_live_journey_root,
+        _verify_pre_live_journey_payload_cache,
     )
 
     blockers: list[dict[str, object]] = []
-    binding: Mapping[str, object] = {}
+    binding: dict[str, object] = {}
     raw_verification: Mapping[str, object] = {}
+    unbound_root: dict[str, object] = {}
+    build = _mapping(manifest.get("build"))
+
+    if node_executable is None:
+        _add_blocker(
+            blockers,
+            "deterministic_journey_node_executable_missing",
+            "$.producer.output_member",
+            "deterministic journey replay requires an admitted Node.js "
+            "executable or descriptor",
+        )
+        return {
+            "ok": False,
+            "blockers": blockers,
+            "build_binding": {},
+            "raw_evidence": {},
+        }
+    if build_report_bytes is None:
+        _add_blocker(
+            blockers,
+            "deterministic_journey_outer_build_report_missing",
+            "$.build.report_member",
+            "outer build report bytes are unavailable for journey binding",
+        )
+        return {
+            "ok": False,
+            "blockers": blockers,
+            "build_binding": {},
+            "raw_evidence": {},
+        }
+    try:
+        expected_binding = _deterministic_journey_build_binding(
+            build_report_bytes,
+            None,
+        )
+    except ValueError:
+        _add_blocker(
+            blockers,
+            "deterministic_journey_outer_build_report_rejected",
+            "$.build.report_member",
+            "outer build report cannot derive the journey build binding",
+        )
+        return {
+            "ok": False,
+            "blockers": blockers,
+            "build_binding": {},
+            "raw_evidence": {},
+        }
+    expected_binding["binary_sha256"] = build.get("binary_sha256")
+
+    def validate_bound_root(
+        root: dict[str, object],
+        infos: Sequence[zipfile.ZipInfo],
+    ) -> bool:
+        if "authority" in root:
+            _add_blocker(
+                blockers,
+                "deterministic_journey_fabricated_authority",
+                "$.producer.output.manifest.authority",
+                "nested journey evidence cannot declare its own build authority",
+            )
+        expected_root_keys = _DETERMINISTIC_JOURNEY_ROOT_KEYS | {
+            "build_binding"
+        }
+        if set(root) != expected_root_keys:
+            _add_blocker(
+                blockers,
+                "deterministic_journey_build_binding_schema_mismatch",
+                "$.producer.output.manifest",
+                "bound journey root manifest has an invalid field set",
+                expected=sorted(expected_root_keys),
+                actual=sorted(root),
+            )
+        raw_binding = root.get("build_binding")
+        if not isinstance(raw_binding, Mapping):
+            _add_blocker(
+                blockers,
+                "deterministic_journey_build_binding_missing",
+                "$.producer.output.manifest.build_binding",
+                "nested journey evidence is not bound to the outer build",
+            )
+        else:
+            binding.update(dict(raw_binding))
+            if "authority" in raw_binding:
+                _add_blocker(
+                    blockers,
+                    "deterministic_journey_fabricated_authority",
+                    "$.producer.output.manifest.build_binding.authority",
+                    "nested journey build binding cannot assert authority",
+                )
+            binding_schema_version = raw_binding.get("schema_version")
+            if (
+                set(raw_binding)
+                != _DETERMINISTIC_JOURNEY_BUILD_BINDING_KEYS
+                or raw_binding.get("schema")
+                != PRE_LIVE_DETERMINISTIC_JOURNEY_BUILD_BINDING_SCHEMA
+                or type(binding_schema_version) is not int
+                or binding_schema_version
+                != PRE_LIVE_DETERMINISTIC_JOURNEY_BUILD_BINDING_SCHEMA_VERSION
+                or raw_binding.get("source") != "micromachine_binary_runtime"
+            ):
+                _add_blocker(
+                    blockers,
+                    "deterministic_journey_build_binding_schema_mismatch",
+                    "$.producer.output.manifest.build_binding",
+                    "nested journey build binding has an invalid schema",
+                    expected=sorted(
+                        _DETERMINISTIC_JOURNEY_BUILD_BINDING_KEYS
+                    ),
+                    actual=sorted(raw_binding),
+                )
+
+        candidate_unbound_root = {
+            key: value for key, value in root.items() if key != "build_binding"
+        }
+        root_blockers: list[str] = []
+        _preflight_pre_live_journey_root(
+            candidate_unbound_root,
+            member_names=[info.filename for info in infos[1:]],
+            member_sizes={
+                info.filename: info.file_size for info in infos[1:]
+            },
+            blockers=root_blockers,
+        )
+        if root_blockers:
+            _add_blocker(
+                blockers,
+                "deterministic_journey_bundle_rejected",
+                "$.producer.output_member",
+                "deterministic journey root or member descriptors are invalid",
+                inner_blockers=root_blockers,
+            )
+
+        mismatch_codes = {
+            "binary_sha256": "deterministic_journey_binary_digest_mismatch",
+            "embedded_build_input_identity": (
+                "deterministic_journey_embedded_build_identity_mismatch"
+            ),
+        }
+        for key, expected in expected_binding.items():
+            actual = binding.get(key)
+            if actual == expected:
+                continue
+            _add_blocker(
+                blockers,
+                mismatch_codes.get(
+                    key,
+                    "deterministic_journey_build_binding_mismatch",
+                ),
+                f"$.producer.output.manifest.build_binding.{key}",
+                "nested journey build binding does not match outer build evidence",
+                expected=expected,
+                actual=actual,
+            )
+        if blockers:
+            return False
+        unbound_root.update(candidate_unbound_root)
+        return True
+
     try:
         root, payloads = _read_deterministic_journey_archive(
             bundle,
             limits=limits,
+            root_validator=validate_bound_root,
         )
     except (OSError, RuntimeError, ValueError, zipfile.BadZipFile) as exc:
         _add_blocker(
@@ -742,80 +936,27 @@ def _verify_bound_deterministic_journey_bundle(
             "build_binding": {},
             "raw_evidence": {},
         }
-
-    if "authority" in root:
-        _add_blocker(
-            blockers,
-            "deterministic_journey_fabricated_authority",
-            "$.producer.output.manifest.authority",
-            "nested journey evidence cannot declare its own build authority",
-        )
-    expected_root_keys = _DETERMINISTIC_JOURNEY_ROOT_KEYS | {"build_binding"}
-    if set(root) != expected_root_keys:
-        _add_blocker(
-            blockers,
-            "deterministic_journey_build_binding_schema_mismatch",
-            "$.producer.output.manifest",
-            "bound journey root manifest has an invalid field set",
-            expected=sorted(expected_root_keys),
-            actual=sorted(root),
-        )
-    raw_binding = root.get("build_binding")
-    if not isinstance(raw_binding, Mapping):
-        _add_blocker(
-            blockers,
-            "deterministic_journey_build_binding_missing",
-            "$.producer.output.manifest.build_binding",
-            "nested journey evidence is not bound to the outer build",
-        )
-    else:
-        binding = raw_binding
-        if "authority" in binding:
-            _add_blocker(
-                blockers,
-                "deterministic_journey_fabricated_authority",
-                "$.producer.output.manifest.build_binding.authority",
-                "nested journey build binding cannot assert authority",
-            )
-        if set(binding) != _DETERMINISTIC_JOURNEY_BUILD_BINDING_KEYS:
-            _add_blocker(
-                blockers,
-                "deterministic_journey_build_binding_schema_mismatch",
-                "$.producer.output.manifest.build_binding",
-                "nested journey build binding has an invalid field set",
-                expected=sorted(_DETERMINISTIC_JOURNEY_BUILD_BINDING_KEYS),
-                actual=sorted(binding),
-            )
-
-    unbound_root = {
-        key: value for key, value in root.items() if key != "build_binding"
-    }
-    unbound_bundle = _write_deterministic_journey_archive(
+    if blockers:
+        return {
+            "ok": False,
+            "blockers": blockers,
+            "build_binding": dict(binding),
+            "raw_evidence": {},
+        }
+    raw_verification = _verify_pre_live_journey_payload_cache(
         unbound_root,
         payloads,
+        node_executable=node_executable,
     )
-    if node_executable is None:
+    if raw_verification.get("ok") is not True:
         _add_blocker(
             blockers,
-            "deterministic_journey_node_executable_missing",
+            "deterministic_journey_bundle_rejected",
             "$.producer.output_member",
-            "deterministic journey replay requires an admitted Node.js "
-            "executable or descriptor",
+            "deterministic journey producer output failed "
+            "raw-evidence verification",
+            inner_blockers=raw_verification.get("blockers"),
         )
-    else:
-        raw_verification = verify_pre_live_journey_bundle(
-            unbound_bundle,
-            node_executable=node_executable,
-        )
-        if raw_verification.get("ok") is not True:
-            _add_blocker(
-                blockers,
-                "deterministic_journey_bundle_rejected",
-                "$.producer.output_member",
-                "deterministic journey producer output failed "
-                "raw-evidence verification",
-                inner_blockers=raw_verification.get("blockers"),
-            )
     if raw_verification:
         for key, code in (
             (
@@ -838,55 +979,6 @@ def _verify_bound_deterministic_journey_bundle(
                 "per-journey native adapter identity does not match root binding",
                 expected=expected,
                 actual=nested,
-            )
-
-    build = _mapping(manifest.get("build"))
-    if build_report_bytes is None:
-        _add_blocker(
-            blockers,
-            "deterministic_journey_outer_build_report_missing",
-            "$.build.report_member",
-            "outer build report bytes are unavailable for journey binding",
-        )
-    else:
-        try:
-            expected_binding = _deterministic_journey_build_binding(
-                build_report_bytes,
-                None,
-            )
-        except ValueError:
-            expected_binding = {}
-        if expected_binding:
-            expected_binding["binary_sha256"] = build.get("binary_sha256")
-            mismatch_codes = {
-                "binary_sha256": (
-                    "deterministic_journey_binary_digest_mismatch"
-                ),
-                "embedded_build_input_identity": (
-                    "deterministic_journey_embedded_build_identity_mismatch"
-                ),
-            }
-            for key, expected in expected_binding.items():
-                actual = binding.get(key)
-                if actual == expected:
-                    continue
-                _add_blocker(
-                    blockers,
-                    mismatch_codes.get(
-                        key,
-                        "deterministic_journey_build_binding_mismatch",
-                    ),
-                    f"$.producer.output.manifest.build_binding.{key}",
-                    "nested journey build binding does not match outer build evidence",
-                    expected=expected,
-                    actual=actual,
-                )
-        else:
-            _add_blocker(
-                blockers,
-                "deterministic_journey_outer_build_report_rejected",
-                "$.build.report_member",
-                "outer build report cannot derive the journey build binding",
             )
     return {
         "ok": not blockers,

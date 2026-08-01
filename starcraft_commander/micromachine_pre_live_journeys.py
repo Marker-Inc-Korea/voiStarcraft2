@@ -194,6 +194,12 @@ _NATIVE_ADAPTER_PRODUCT_FIELDS: Final[frozenset[str]] = frozenset(
         "output",
     }
 )
+_RAW_EVENT_FIELDS: Final[frozenset[str]] = frozenset(
+    {"seq", "event_type", "identity", "payload"}
+)
+_RAW_EVENT_IDENTITY_FIELDS: Final[frozenset[str]] = frozenset(
+    {"update_id", "operation_id", "generation", "stage", "game_frame"}
+)
 _INITIAL_STATE_FIELDS: Final[frozenset[str]] = frozenset(
     {
         "units",
@@ -5271,87 +5277,14 @@ def verify_pre_live_journey_bundle(
                 label="root manifest",
                 blockers=blockers,
             )
-            if set(root) != {
-                "schema_version",
-                "evidence_kind",
-                "suite_id",
-                "journey_count",
-                "failed_count",
-                "report_sha256",
-                "members",
-            }:
-                blockers.append("root manifest has an invalid field set")
-            schema_version = root.get("schema_version")
-            if (
-                type(schema_version) is not int
-                or schema_version != PRE_LIVE_JOURNEY_BUNDLE_SCHEMA_VERSION
-            ):
-                blockers.append(
-                    "root manifest schema_version is unsupported"
-                )
-            if root.get("evidence_kind") != PRE_LIVE_JOURNEY_EVIDENCE_KIND:
-                blockers.append("root manifest evidence_kind is invalid")
-            suite_id = root.get("suite_id")
-            if not isinstance(suite_id, str) or not suite_id:
-                blockers.append("root manifest suite_id is invalid")
-            journey_count = root.get("journey_count")
-            failed_count = root.get("failed_count")
-            if type(journey_count) is not int or journey_count < 0:
-                blockers.append("root manifest journey_count is invalid")
-            if type(failed_count) is not int or failed_count < 0:
-                blockers.append("root manifest failed_count is invalid")
-            if (
-                type(journey_count) is int
-                and type(failed_count) is int
-                and failed_count > journey_count
-            ):
-                blockers.append(
-                    "root manifest failed_count exceeds journey_count"
-                )
-            if not _is_lower_hex_sha256(root.get("report_sha256")):
-                blockers.append("root manifest report_sha256 is invalid")
-            descriptors = root.get("members")
-            if not isinstance(descriptors, list):
-                blockers.append("root manifest members must be a list")
-                descriptors = []
-            descriptor_names: list[str] = []
-            validated_descriptors: list[dict[str, object]] = []
-            infos_by_name = {info.filename: info for info in infos}
-            for item in descriptors:
-                if not isinstance(item, Mapping) or set(item) != {
-                    "name",
-                    "sha256",
-                    "size_bytes",
-                }:
-                    blockers.append("invalid root manifest member descriptor")
-                    continue
-                name = item.get("name")
-                digest = item.get("sha256")
-                size = item.get("size_bytes")
-                if (
-                    not isinstance(name, str)
-                    or not name
-                    or not _is_lower_hex_sha256(digest)
-                    or type(size) is not int
-                    or size < 0
-                ):
-                    blockers.append("invalid root manifest member descriptor")
-                    continue
-                descriptor_names.append(name)
-                info = infos_by_name.get(name)
-                if info is not None and info.file_size != size:
-                    blockers.append(
-                        f"member size mismatch: {name}"
-                    )
-                validated_descriptors.append(
-                    {
-                        "name": name,
-                        "sha256": digest,
-                        "size_bytes": size,
-                    }
-                )
-            if descriptor_names != names[1:]:
-                blockers.append("root manifest member list does not match ZIP")
+            validated_descriptors = _preflight_pre_live_journey_root(
+                root,
+                member_names=names[1:],
+                member_sizes={
+                    info.filename: info.file_size for info in infos[1:]
+                },
+                blockers=blockers,
+            )
             if blockers:
                 return _verification_result(blockers)
             payloads: dict[str, bytes] = {}
@@ -5365,131 +5298,276 @@ def verify_pre_live_journey_bundle(
                     blockers.append(f"member size mismatch: {name}")
             if blockers:
                 return _verification_result(blockers)
-            manifest_bytes = payloads["input/PRE_LIVE_JOURNEYS.json"]
-            checked_in_manifest = canonical_json_bytes(
-                load_pre_live_journey_manifest(DEFAULT_JOURNEY_MANIFEST)
+            return _verify_pre_live_journey_payload_cache(
+                root,
+                payloads,
+                node_executable=node_executable,
             )
-            if manifest_bytes != checked_in_manifest:
-                blockers.append(
-                    "journey input manifest does not match the checked-in contract"
-                )
-            manifest = _load_canonical_json_object(
-                manifest_bytes,
-                label="journey input manifest",
+    except (KeyError, OSError, ValueError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
+        blockers.append(f"journey bundle could not be verified: {exc}")
+    identity = next(iter(native_identities), ("", ""))
+    return _verification_result(
+        blockers,
+        binary_sha256=identity[0],
+        embedded_build_input_identity=identity[1],
+    )
+
+
+def _preflight_pre_live_journey_root(
+    root: Mapping[str, object],
+    *,
+    member_names: Sequence[str],
+    member_sizes: Mapping[str, int],
+    blockers: list[str],
+) -> list[dict[str, object]]:
+    if set(root) != {
+        "schema_version",
+        "evidence_kind",
+        "suite_id",
+        "journey_count",
+        "failed_count",
+        "report_sha256",
+        "members",
+    }:
+        blockers.append("root manifest has an invalid field set")
+    schema_version = root.get("schema_version")
+    if (
+        type(schema_version) is not int
+        or schema_version != PRE_LIVE_JOURNEY_BUNDLE_SCHEMA_VERSION
+    ):
+        blockers.append("root manifest schema_version is unsupported")
+    if root.get("evidence_kind") != PRE_LIVE_JOURNEY_EVIDENCE_KIND:
+        blockers.append("root manifest evidence_kind is invalid")
+    suite_id = root.get("suite_id")
+    if not isinstance(suite_id, str) or not suite_id:
+        blockers.append("root manifest suite_id is invalid")
+    journey_count = root.get("journey_count")
+    failed_count = root.get("failed_count")
+    if type(journey_count) is not int or journey_count < 0:
+        blockers.append("root manifest journey_count is invalid")
+    if type(failed_count) is not int or failed_count < 0:
+        blockers.append("root manifest failed_count is invalid")
+    if (
+        type(journey_count) is int
+        and type(failed_count) is int
+        and failed_count > journey_count
+    ):
+        blockers.append("root manifest failed_count exceeds journey_count")
+    if not _is_lower_hex_sha256(root.get("report_sha256")):
+        blockers.append("root manifest report_sha256 is invalid")
+    descriptors = root.get("members")
+    if not isinstance(descriptors, list):
+        blockers.append("root manifest members must be a list")
+        descriptors = []
+    descriptor_names: list[str] = []
+    validated_descriptors: list[dict[str, object]] = []
+    for item in descriptors:
+        if not isinstance(item, Mapping) or set(item) != {
+            "name",
+            "sha256",
+            "size_bytes",
+        }:
+            blockers.append("invalid root manifest member descriptor")
+            continue
+        name = item.get("name")
+        digest = item.get("sha256")
+        size = item.get("size_bytes")
+        if (
+            not isinstance(name, str)
+            or not name
+            or not _is_lower_hex_sha256(digest)
+            or type(size) is not int
+            or size < 0
+        ):
+            blockers.append("invalid root manifest member descriptor")
+            continue
+        descriptor_names.append(name)
+        if name in member_sizes and member_sizes[name] != size:
+            blockers.append(f"member size mismatch: {name}")
+        validated_descriptors.append(
+            {
+                "name": name,
+                "sha256": digest,
+                "size_bytes": size,
+            }
+        )
+    if descriptor_names != list(member_names):
+        blockers.append("root manifest member list does not match ZIP")
+    return validated_descriptors
+
+
+def _verify_pre_live_journey_payload_cache(
+    root: Mapping[str, object],
+    payloads: Mapping[str, bytes],
+    *,
+    node_executable: Path | str | None,
+) -> dict[str, object]:
+    blockers: list[str] = []
+    native_identities: set[tuple[str, str]] = set()
+    validated_descriptors = _preflight_pre_live_journey_root(
+        root,
+        member_names=sorted(payloads),
+        member_sizes={name: len(payload) for name, payload in payloads.items()},
+        blockers=blockers,
+    )
+    for item in validated_descriptors:
+        name = cast(str, item["name"])
+        payload = payloads.get(name)
+        if payload is None:
+            continue
+        if hashlib.sha256(payload).hexdigest() != item["sha256"]:
+            blockers.append(f"member digest mismatch: {name}")
+        if len(payload) != item["size_bytes"]:
+            blockers.append(f"member size mismatch: {name}")
+    if blockers:
+        return _verification_result(blockers)
+    try:
+        manifest_bytes = payloads["input/PRE_LIVE_JOURNEYS.json"]
+        checked_in_manifest = canonical_json_bytes(
+            load_pre_live_journey_manifest(DEFAULT_JOURNEY_MANIFEST)
+        )
+        if manifest_bytes != checked_in_manifest:
+            blockers.append(
+                "journey input manifest does not match the checked-in contract"
+            )
+        manifest = _load_canonical_json_object(
+            manifest_bytes,
+            label="journey input manifest",
+            blockers=blockers,
+        )
+        try:
+            validated = _validate_pre_live_journey_manifest_payload(manifest)
+        except ValueError as exc:
+            blockers.append(f"journey input manifest is invalid: {exc}")
+            validated = {}
+        specs = cast(list[dict[str, object]], validated.get("journeys", []))
+        expected_names = sorted(
+            {
+                "input/PRE_LIVE_JOURNEYS.json",
+                "derived/journey-matrix.json",
+                "report.md",
+                *{f"raw/{spec['id']}.jsonl" for spec in specs},
+                *{f"product/{spec['id']}.json" for spec in specs},
+            }
+        )
+        if sorted(payloads) != expected_names:
+            blockers.append("journey bundle member set does not match input")
+        if blockers:
+            return _verification_result(blockers)
+
+        parsed_journeys: list[
+            tuple[
+                dict[str, object],
+                list[dict[str, object]],
+                dict[str, object],
+            ]
+        ] = []
+        for spec in specs:
+            journey_id = str(spec["id"])
+            parsing_blocker_count = len(blockers)
+            events = _load_canonical_json_lines(
+                payloads[f"raw/{journey_id}.jsonl"],
+                label=f"raw/{journey_id}.jsonl",
                 blockers=blockers,
             )
-            try:
-                validated = _validate_pre_live_journey_manifest_payload(manifest)
-            except ValueError as exc:
-                blockers.append(f"journey input manifest is invalid: {exc}")
-                validated = {}
-            specs = cast(list[dict[str, object]], validated.get("journeys", []))
-            expected_names = sorted(
-                {
-                    "input/PRE_LIVE_JOURNEYS.json",
-                    "derived/journey-matrix.json",
-                    "report.md",
-                    *{f"raw/{spec['id']}.jsonl" for spec in specs},
-                    *{f"product/{spec['id']}.json" for spec in specs},
-                }
+            products = _load_canonical_json_object(
+                payloads[f"product/{journey_id}.json"],
+                label=f"product/{journey_id}.json",
+                blockers=blockers,
             )
-            if names[1:] != expected_names:
-                blockers.append("journey bundle member set does not match input")
-            if blockers:
-                return _verification_result(blockers)
-            reports: list[dict[str, object]] = []
-            for spec in specs:
-                journey_id = str(spec["id"])
-                parsing_blocker_count = len(blockers)
-                events = _load_canonical_json_lines(
-                    payloads[f"raw/{journey_id}.jsonl"],
-                    label=f"raw/{journey_id}.jsonl",
-                    blockers=blockers,
-                )
-                products = _load_canonical_json_object(
-                    payloads[f"product/{journey_id}.json"],
-                    label=f"product/{journey_id}.json",
-                    blockers=blockers,
-                )
-                if len(blockers) != parsing_blocker_count:
-                    return _verification_result(blockers)
-                verdict = verify_pre_live_journey_events(spec, events)
-                derived_blockers = [
-                    *cast(list[str], verdict["blockers"]),
-                    *_rederive_product_path_blockers(
-                        spec,
-                        events,
-                        products,
-                        node_executable=node_executable,
-                    ),
-                ]
-                identity = _native_adapter_identity(products, derived_blockers)
-                if identity is not None:
-                    native_identities.add(identity)
-                reports.append(
-                    {
-                        **verdict,
-                        "ok": not derived_blockers,
-                        "status": "passed" if not derived_blockers else "failed",
-                        "blockers": derived_blockers,
-                        "product_paths": products,
-                    }
-                )
+            if len(blockers) == parsing_blocker_count:
                 blockers.extend(
                     f"{journey_id}: {blocker}"
-                    for blocker in derived_blockers
+                    for blocker in [
+                        *_preflight_raw_event_structure(events),
+                        *_preflight_product_path_blockers(
+                            products,
+                            spec=spec,
+                        ),
+                    ]
                 )
-            failures = [report["id"] for report in reports if not report["ok"]]
-            recomputed = {
-                "schema_version": PRE_LIVE_JOURNEY_REPORT_SCHEMA_VERSION,
-                "suite_id": validated.get("suite_id"),
-                "manifest_sha256": hashlib.sha256(
-                    canonical_json_bytes(validated)
-                ).hexdigest(),
-                "journey_count": len(reports),
-                "passed_count": len(reports) - len(failures),
-                "failed_count": len(failures),
-                "failures": failures,
-                "ok": not failures,
-                "status": "passed" if not failures else "failed",
-                "journeys": reports,
-            }
-            matrix_bytes = payloads["derived/journey-matrix.json"]
-            matrix = _load_canonical_json_object(
-                matrix_bytes,
-                label="derived journey matrix",
-                blockers=blockers,
+            parsed_journeys.append((spec, events, products))
+        if blockers:
+            return _verification_result(blockers)
+
+        reports: list[dict[str, object]] = []
+        for spec, events, products in parsed_journeys:
+            journey_id = str(spec["id"])
+            verdict = verify_pre_live_journey_events(spec, events)
+            derived_blockers = [
+                *cast(list[str], verdict["blockers"]),
+                *_rederive_product_path_blockers(
+                    spec,
+                    events,
+                    products,
+                    node_executable=node_executable,
+                ),
+            ]
+            identity = _native_adapter_identity(products, derived_blockers)
+            if identity is not None:
+                native_identities.add(identity)
+            reports.append(
+                {
+                    **verdict,
+                    "ok": not derived_blockers,
+                    "status": "passed" if not derived_blockers else "failed",
+                    "blockers": derived_blockers,
+                    "product_paths": products,
+                }
             )
-            matrix_schema_version = matrix.get("schema_version")
-            if (
-                type(matrix_schema_version) is not int
-                or matrix_schema_version
-                != PRE_LIVE_JOURNEY_REPORT_SCHEMA_VERSION
-            ):
-                blockers.append(
-                    "derived journey matrix schema_version is unsupported"
-                )
-            if canonical_json_bytes(matrix) != canonical_json_bytes(recomputed):
-                blockers.append("derived journey matrix was not derived from raw evidence")
-            if recomputed["ok"] is not True:
-                blockers.append("recomputed journey matrix is not green")
-            if payloads["report.md"] != _markdown_report(recomputed).encode(
-                "utf-8"
-            ):
-                blockers.append("Markdown report was not derived from raw evidence")
-            if root.get("suite_id") != validated.get("suite_id"):
-                blockers.append("root manifest suite_id mismatch")
-            if root.get("journey_count") != len(reports):
-                blockers.append("root manifest journey_count mismatch")
-            if root.get("failed_count") != len(failures):
-                blockers.append("root manifest failed_count mismatch")
-            if hashlib.sha256(matrix_bytes).hexdigest() != root.get("report_sha256"):
-                blockers.append("derived report digest mismatch")
-            if len(native_identities) != 1:
-                blockers.append(
-                    "journey native adapter identities are missing or inconsistent"
-                )
-    except (KeyError, OSError, ValueError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
+            blockers.extend(
+                f"{journey_id}: {blocker}" for blocker in derived_blockers
+            )
+        failures = [report["id"] for report in reports if not report["ok"]]
+        recomputed = {
+            "schema_version": PRE_LIVE_JOURNEY_REPORT_SCHEMA_VERSION,
+            "suite_id": validated.get("suite_id"),
+            "manifest_sha256": hashlib.sha256(
+                canonical_json_bytes(validated)
+            ).hexdigest(),
+            "journey_count": len(reports),
+            "passed_count": len(reports) - len(failures),
+            "failed_count": len(failures),
+            "failures": failures,
+            "ok": not failures,
+            "status": "passed" if not failures else "failed",
+            "journeys": reports,
+        }
+        matrix_bytes = payloads["derived/journey-matrix.json"]
+        matrix = _load_canonical_json_object(
+            matrix_bytes,
+            label="derived journey matrix",
+            blockers=blockers,
+        )
+        matrix_schema_version = matrix.get("schema_version")
+        if (
+            type(matrix_schema_version) is not int
+            or matrix_schema_version != PRE_LIVE_JOURNEY_REPORT_SCHEMA_VERSION
+        ):
+            blockers.append(
+                "derived journey matrix schema_version is unsupported"
+            )
+        if canonical_json_bytes(matrix) != canonical_json_bytes(recomputed):
+            blockers.append(
+                "derived journey matrix was not derived from raw evidence"
+            )
+        if recomputed["ok"] is not True:
+            blockers.append("recomputed journey matrix is not green")
+        if payloads["report.md"] != _markdown_report(recomputed).encode("utf-8"):
+            blockers.append("Markdown report was not derived from raw evidence")
+        if root.get("suite_id") != validated.get("suite_id"):
+            blockers.append("root manifest suite_id mismatch")
+        if root.get("journey_count") != len(reports):
+            blockers.append("root manifest journey_count mismatch")
+        if root.get("failed_count") != len(failures):
+            blockers.append("root manifest failed_count mismatch")
+        if hashlib.sha256(matrix_bytes).hexdigest() != root.get("report_sha256"):
+            blockers.append("derived report digest mismatch")
+        if len(native_identities) != 1:
+            blockers.append(
+                "journey native adapter identities are missing or inconsistent"
+            )
+    except (KeyError, OSError, ValueError, json.JSONDecodeError) as exc:
         blockers.append(f"journey bundle could not be verified: {exc}")
     identity = next(iter(native_identities), ("", ""))
     return _verification_result(
@@ -5980,12 +6058,60 @@ def _product_path_blockers(
     return blockers
 
 
-def _rederive_product_path_blockers(
-    spec: Mapping[str, object],
+def _preflight_raw_event_structure(
     events: Sequence[Mapping[str, object]],
+) -> list[str]:
+    blockers: list[str] = []
+    for expected_seq, event in enumerate(events, start=1):
+        if set(event) != _RAW_EVENT_FIELDS:
+            blockers.append("raw event has an invalid field set")
+            continue
+        seq = event.get("seq")
+        event_type = event.get("event_type")
+        identity = event.get("identity")
+        payload = event.get("payload")
+        if type(seq) is not int or seq != expected_seq:
+            blockers.append("raw event sequence is not canonical")
+        if (
+            not isinstance(event_type, str)
+            or not event_type
+            or event_type not in _CANONICAL_EVENT_STAGES
+        ):
+            blockers.append("raw event_type is unsupported")
+        if not isinstance(identity, Mapping):
+            blockers.append("raw event identity must be an object")
+        elif set(identity) != _RAW_EVENT_IDENTITY_FIELDS:
+            blockers.append("raw event identity has an invalid field set")
+        else:
+            update_id = identity.get("update_id")
+            operation_id = identity.get("operation_id")
+            generation = identity.get("generation")
+            stage = identity.get("stage")
+            game_frame = identity.get("game_frame")
+            if (
+                not isinstance(update_id, str)
+                or not update_id
+                or not isinstance(operation_id, str)
+                or type(generation) is not int
+                or generation < 0
+                or not isinstance(stage, str)
+                or stage not in _CANONICAL_EVENT_STAGES.get(
+                    cast(str, event_type),
+                    frozenset(),
+                )
+                or type(game_frame) is not int
+                or game_frame < 0
+            ):
+                blockers.append("raw event identity is not canonical")
+        if not isinstance(payload, Mapping):
+            blockers.append("raw event payload must be an object")
+    return blockers
+
+
+def _preflight_product_path_blockers(
     products: Mapping[str, object],
     *,
-    node_executable: Path | str | None = None,
+    spec: Mapping[str, object],
 ) -> list[str]:
     blockers = _product_path_blockers(products, spec=spec)
     native_adapter = products.get("native_adapter")
@@ -5993,6 +6119,28 @@ def _rederive_product_path_blockers(
         return blockers
     if set(native_adapter) != _NATIVE_ADAPTER_PRODUCT_FIELDS:
         blockers.append("native adapter product has an invalid field set")
+        return blockers
+    native_schema_version = native_adapter.get("schema_version")
+    if (
+        type(native_schema_version) is not int
+        or native_schema_version != PRE_LIVE_NATIVE_ADAPTER_SCHEMA_VERSION
+    ):
+        blockers.append("native adapter product schema_version is unsupported")
+    return blockers
+
+
+def _rederive_product_path_blockers(
+    spec: Mapping[str, object],
+    events: Sequence[Mapping[str, object]],
+    products: Mapping[str, object],
+    *,
+    node_executable: Path | str | None = None,
+) -> list[str]:
+    blockers = _preflight_product_path_blockers(products, spec=spec)
+    native_adapter = products.get("native_adapter")
+    if not isinstance(native_adapter, Mapping):
+        return blockers
+    if blockers:
         return blockers
     try:
         execution = _JourneyExecution(spec)

@@ -2920,7 +2920,7 @@ class GitHubActionsBundleEmissionTest(unittest.TestCase):
             }
             verifier = (
                 "starcraft_commander.micromachine_pre_live_journeys."
-                "verify_pre_live_journey_bundle"
+                "_verify_pre_live_journey_payload_cache"
             )
 
             with mock.patch(verifier, return_value=nested_identity):
