@@ -669,6 +669,12 @@ def _micromachine_compile_result_stream(
         result = document.get("result")
         if isinstance(result, Mapping):
             item = dict(result)
+            item.setdefault(
+                "battlefield_session_epoch",
+                str(
+                    document.get("battlefield_session_epoch", "") or ""
+                ).strip(),
+            )
             update = item.get("update")
             update_id = (
                 str(update.get("update_id", "") or "")
@@ -692,6 +698,9 @@ def _micromachine_compile_result_stream(
             "status": str(document.get("status", "") or ""),
             "command_text": str(document.get("command_text", "") or ""),
             "compile_result": compile_result,
+            "battlefield_session_epoch": str(
+                document.get("battlefield_session_epoch", "") or ""
+            ).strip(),
             "command_queue": (
                 dict(document["command_queue"])
                 if isinstance(document.get("command_queue"), Mapping)
@@ -996,6 +1005,16 @@ def _micromachine_payload_update_id(payload: Mapping[str, object]) -> str:
             else None
         )
         or ""
+    ).strip()
+
+
+def _micromachine_payload_battlefield_session_epoch(
+    payload: Mapping[str, object] | None,
+) -> str:
+    if not isinstance(payload, Mapping):
+        return ""
+    return str(
+        payload.get("battlefield_session_epoch", "") or ""
     ).strip()
 
 
@@ -1960,11 +1979,18 @@ def _micromachine_operation_requirement_payload(
         blockers.append("unit_family_evidence_missing")
     elif not reported_prerequisites:
         blockers.append("prerequisite_chain_evidence_missing")
-    if any(
+    has_unrelated_prerequisite = any(
         prerequisite not in allowed_prerequisites
         for prerequisite in (*reported_prerequisites, *reported_missing)
-    ):
+    )
+    if has_unrelated_prerequisite:
         blockers.append("unrelated_prerequisite_evidence")
+    elif (
+        capability is not None
+        and reported_prerequisites
+        and not allowed_prerequisites.issubset(reported_prerequisites)
+    ):
+        blockers.append("prerequisite_chain_incomplete")
     if any(
         prerequisite not in reported_prerequisites
         for prerequisite in reported_missing
@@ -3190,6 +3216,10 @@ def _micromachine_operations_payload(
             )
         )
         for operation_id, operation_update in expanded:
+            operation_session_epoch = (
+                _micromachine_payload_battlefield_session_epoch(result_item)
+                or battlefield_session_epoch
+            )
             operations.append(
                 _micromachine_operation_status_payload(
                     operation_update,
@@ -3201,7 +3231,7 @@ def _micromachine_operations_payload(
                     blackboard_dir=blackboard_dir,
                     result_item=result_item,
                     compile_result=scoped_compile,
-                    battlefield_session_epoch=battlefield_session_epoch,
+                    battlefield_session_epoch=operation_session_epoch,
                 )
             )
             seen_keys.add((update_id, operation_id))
@@ -3240,6 +3270,9 @@ def _micromachine_operations_payload(
             identity = (update_id, operation_id)
             if identity in seen_keys:
                 continue
+            operation_session_epoch = (
+                _micromachine_payload_battlefield_session_epoch(result_item)
+            )
             operations.append(
                 _micromachine_operation_status_payload(
                     operation_update,
@@ -3251,7 +3284,7 @@ def _micromachine_operations_payload(
                     blackboard_dir=blackboard_dir,
                     result_item=result_item,
                     compile_result=scoped_compile,
-                    battlefield_session_epoch=battlefield_session_epoch,
+                    battlefield_session_epoch=operation_session_epoch,
                 )
             )
             seen_keys.add(identity)
@@ -9061,6 +9094,18 @@ class SessionLoopBridge:
             payload["compile_result"] = compile_result_for_document
         dashboard = payload.get("dashboard", {})
         telemetry = dashboard.get("telemetry") if isinstance(dashboard, Mapping) else None
+        telemetry_document = _telemetry_to_mapping(telemetry)
+        battlefield_identity = _mapping_child(
+            _mapping_child(
+                telemetry_document,
+                "battlefield_overview",
+            ),
+            "identity",
+        )
+        battlefield_session_epoch = str(
+            battlefield_identity.get("session_epoch", "") or ""
+        ).strip()
+        payload["battlefield_session_epoch"] = battlefield_session_epoch
         update = payload.get("update")
         update_id_for_logs = str(update.get("update_id", "") or "") if isinstance(update, Mapping) else ""
         payload["intervention"] = _micromachine_intervention_summary(
@@ -9095,6 +9140,7 @@ class SessionLoopBridge:
                 "intervention",
                 "blackboard_scope_id",
                 "result_id",
+                "battlefield_session_epoch",
             )
         }
         compile_document: dict[str, object] = {
@@ -9106,6 +9152,7 @@ class SessionLoopBridge:
             "command_queue": payload.get("command_queue"),
             "duration_ms": duration_ms,
             "result": result_snapshot,
+            "battlefield_session_epoch": battlefield_session_epoch,
             "accepted_at_unix_ns": (
                 request.accepted_at_unix_ns if request is not None else time.time_ns()
             ),
@@ -18685,6 +18732,11 @@ function operationContextualTransferPayload(data, entry, action) {
   var requestedCount = action === "transfer_two_units"
     ? 2
     : transferableCount;
+  var sourceMinimumBlocker = battlefieldTransferSourceMinimumBlocker(
+    entry,
+    sourceProjection,
+    requestedCount
+  );
   var sessionEpoch = Number(
     identity.session_epoch ||
     overview.identity && overview.identity.session_epoch ||
@@ -18708,6 +18760,7 @@ function operationContextualTransferPayload(data, entry, action) {
     sourceGeneration <= 0 ||
     destinationGeneration <= 0 ||
     requestedCount <= 0 ||
+    Boolean(sourceMinimumBlocker) ||
     !Number.isSafeInteger(sessionEpoch) ||
     sessionEpoch <= 0 ||
     !Number.isSafeInteger(projectionFrame) ||
@@ -18837,7 +18890,19 @@ function operationResolutionChoices(data) {
       }
       var safety = entry.safety_evidence || {};
       var inputs = entry.atomic_revalidation_inputs || {};
-      var requiredCount = action === "transfer_two_units" ? 2 : 1;
+      var requiredCount = action === "transfer_two_units"
+        ? 2
+        : Number(entry.transferable_count || 0);
+      var sourceProjection = operationProjectionById(
+        overview,
+        entry.source_owner_id
+      );
+      var sourceMinimumBlocker =
+        battlefieldTransferSourceMinimumBlocker(
+          entry,
+          sourceProjection,
+          requiredCount
+        );
       var contextualTransfer = operationContextualTransferPayload(
         data,
         entry,
@@ -18857,6 +18922,7 @@ function operationResolutionChoices(data) {
         transfer.atomic_revalidation_required === true &&
         entry.transfer_safe === true &&
         Number(entry.transferable_count || 0) >= requiredCount &&
+        !sourceMinimumBlocker &&
         !String(entry.atomic_runtime_blocker || "") &&
         safety.protected_minimum_respected === true &&
         safety.atomic_revalidation_required === true &&
@@ -18872,6 +18938,7 @@ function operationResolutionChoices(data) {
           ? ""
           : String(
             entry.atomic_runtime_blocker ||
+            sourceMinimumBlocker ||
             "canonical_transfer_safety_incomplete"
           ),
         contextualTransfer
@@ -20188,6 +20255,37 @@ function battlefieldProtectedMinimumVerdict(readiness) {
   return null;
 }
 
+function battlefieldTransferSourceMinimumBlocker(
+  entry,
+  source,
+  requestedCount
+) {
+  var sourceLaunch = source &&
+    source.operation_launch_policy || {};
+  var hasSourceCount = entry &&
+    Object.prototype.hasOwnProperty.call(entry, "source_owner_count");
+  var hasSourceMinimum =
+    Object.prototype.hasOwnProperty.call(sourceLaunch, "min_units");
+  var sourceCount = Number(entry && entry.source_owner_count);
+  var sourceMinimum = Number(sourceLaunch.min_units);
+  var requested = Number(requestedCount);
+  if (
+    !hasSourceCount ||
+    !hasSourceMinimum ||
+    !Number.isFinite(sourceCount) ||
+    !Number.isFinite(sourceMinimum) ||
+    !Number.isFinite(requested) ||
+    sourceCount < 0 ||
+    sourceMinimum < 0 ||
+    requested <= 0
+  ) {
+    return "source_operation_minimum_evidence_missing";
+  }
+  return sourceCount - requested < sourceMinimum
+    ? "source_minimum_violation"
+    : "";
+}
+
 function battlefieldTransferReadinessBlockers(entry, source, destination) {
   var inputs = entry && entry.atomic_revalidation_inputs || {};
   var blockers = [];
@@ -20200,6 +20298,18 @@ function battlefieldTransferReadinessBlockers(entry, source, destination) {
   }
   if (inputs.atomic_revalidation_ready !== true) {
     blockers.push("atomic_revalidation_not_ready");
+  }
+  var requestedCount = inputs.requested === true
+    ? Number(inputs.requested_count || 0)
+    : Number(entry && entry.transferable_count || 0);
+  var sourceMinimumBlocker =
+    battlefieldTransferSourceMinimumBlocker(
+      entry,
+      source,
+      requestedCount
+    );
+  if (sourceMinimumBlocker) {
+    blockers.push(sourceMinimumBlocker);
   }
   var runtimeBlocker = String(
     entry && entry.atomic_runtime_blocker || ""

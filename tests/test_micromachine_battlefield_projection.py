@@ -218,6 +218,7 @@ def _telemetry(
     game_frame: int = 320,
 ) -> dict[str, object]:
     operation = _operation(game_frame=game_frame)
+    operation["operation_launch_policy"]["min_units"] = 2
     counterpart = _operation(
         update_id="voi-mm-operation",
         operation_id="assault-bravo",
@@ -403,6 +404,7 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
             reason="target_reached",
             completion_frame=488,
         )
+        operation["operation_launch_policy"]["min_units"] = 2
         operation["operation_transfer_selection"] = deepcopy(
             overview["operation_ownership"][0]["operation_transfer_selection"]
         )
@@ -1146,6 +1148,7 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
                 launch = telemetry["battlefield_overview"][
                     "operation_ownership"
                 ][0]["operation_launch_policy"]
+                launch["min_units"] = 4
                 launch["launch_count"] = 3
                 launch["missing_count"] = 1
                 launch[field_name] = False
@@ -1264,6 +1267,24 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn(
             "transfer_protected_minimum_violation",
+            _blocker_codes(result),
+        )
+
+    def test_transfer_cannot_cross_source_operation_minimum(self) -> None:
+        telemetry = _telemetry()
+        operation = telemetry["battlefield_overview"][
+            "operation_ownership"
+        ][0]
+        operation["operation_launch_policy"]["min_units"] = 4
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "transfer_source_minimum_violation",
             _blocker_codes(result),
         )
 

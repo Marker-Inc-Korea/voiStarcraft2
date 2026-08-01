@@ -199,6 +199,7 @@ class _OwnershipEvidence:
     partition_tags: Mapping[str, frozenset[int]]
     owner_tags_by_id: Mapping[str, frozenset[int]]
     owner_generations_by_id: Mapping[str, int]
+    owner_minimums_by_id: Mapping[str, int]
     transfer_selection_identities_by_operation_id: Mapping[
         str,
         _TransferSelectionIdentity,
@@ -630,6 +631,7 @@ def _validate_ownership_partition(
     explicit_tags: list[int] = []
     owner_tags_by_id: dict[str, frozenset[int]] = {}
     owner_generations_by_id: dict[str, int] = {}
+    owner_minimums_by_id: dict[str, int] = {}
     operation_identities_by_id: dict[str, BattlefieldProjectionIdentity] = {}
     transfer_selection_identities_by_operation_id: dict[
         str,
@@ -644,6 +646,9 @@ def _validate_ownership_partition(
     completion_blockers_start = len(validation.blockers)
     for index, operation in enumerate(operation_rows):
         path = f"$.battlefield_overview.operation_ownership[{index}]"
+        operation_id = str(
+            operation.get("operation_id", "") or ""
+        ).strip()
         operation_identity = _read_operation_identity(
             operation,
             path=path,
@@ -693,7 +698,6 @@ def _validate_ownership_partition(
             explicit_tags.extend(tags)
             if owner_count is not None:
                 operation_count_sum += owner_count
-            operation_id = str(operation.get("operation_id", "") or "").strip()
             if operation_id:
                 _record_owner_tags(
                     owner_tags_by_id,
@@ -718,6 +722,13 @@ def _validate_ownership_partition(
                 owner_count=owner_count,
                 validation=validation,
             )
+            min_units = _exact_int(launch.get("min_units"))
+            if (
+                operation_id
+                and min_units is not None
+                and min_units >= 0
+            ):
+                owner_minimums_by_id[operation_id] = min_units
         if lifetime is not None and completion is not None:
             _validate_completion(
                 lifetime,
@@ -898,6 +909,7 @@ def _validate_ownership_partition(
         },
         owner_tags_by_id=owner_tags_by_id,
         owner_generations_by_id=owner_generations_by_id,
+        owner_minimums_by_id=owner_minimums_by_id,
         transfer_selection_identities_by_operation_id=(
             transfer_selection_identities_by_operation_id
         ),
@@ -2267,6 +2279,18 @@ def _validate_transfer_availability(
                 source_owner_id=source_owner_id,
                 mismatched_tags=wrong_source_tags,
             )
+        source_minimum = (
+            owner_tags.owner_minimums_by_id.get(source_owner_id)
+            if source_owner_id is not None
+            else None
+        )
+        source_minimum_respected = (
+            source_count - transferable_count >= source_minimum
+            if source_count is not None
+            and transferable_count is not None
+            and source_minimum is not None
+            else False
+        )
         _validate_atomic_revalidation_inputs(
             entry.get("atomic_revalidation_inputs"),
             path=f"{path}.atomic_revalidation_inputs",
@@ -2304,6 +2328,7 @@ def _validate_transfer_availability(
                 and transfer_safe is True
                 and transferable_count is not None
                 and transferable_count > 0
+                and source_minimum_respected
             ):
                 expected_choices.append("transfer_available_units")
                 if transferable_count >= 2:
@@ -2331,6 +2356,23 @@ def _validate_transfer_availability(
                 "Transfer availability exceeds the C++ protected minimum bound.",
                 source_owner_count=source_count,
                 protected_minimum=protected_minimum,
+                transferable_count=transferable_count,
+            )
+        if (
+            source_count is not None
+            and source_minimum is not None
+            and transferable_count is not None
+            and not source_minimum_respected
+        ):
+            validation.block(
+                "transfer_source_minimum_violation",
+                f"{path}.transferable_count",
+                (
+                    "Transfer availability exceeds the source operation "
+                    "minimum bound."
+                ),
+                source_owner_count=source_count,
+                source_minimum=source_minimum,
                 transferable_count=transferable_count,
             )
         if transfer_safe is True and blocker:

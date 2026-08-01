@@ -127,7 +127,7 @@ def battlefield_projection_telemetry(
                         "integrity_status": "valid",
                     },
                     "operation_launch_policy": {
-                        "min_units": 4,
+                        "min_units": 2,
                         "max_units": 4,
                         "allow_partial_requested": True,
                         "strict_scope": False,
@@ -5131,6 +5131,92 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             operation["battlefield_operation"]["identity"]["update_id"],
         )
 
+    def test_historical_operation_preserves_published_epoch_and_fails_closed(
+        self,
+    ):
+        telemetry = battlefield_projection_telemetry()
+        overview = telemetry["battlefield_overview"]
+        operation = overview["operation_ownership"][0]
+        operation["identity"].update(
+            {
+                "update_id": "historical-update",
+                "scope": "operation:historical-operation",
+                "session_epoch": 1700000000000,
+                "operation_id": "historical-operation",
+                "generation": 4,
+            }
+        )
+        operation["operation_id"] = "historical-operation"
+        operation["generation"] = 4
+        operation["operation_completion"]["generation"] = 4
+        overview["operation_ownership"] = [operation]
+        overview["transfer_availability"]["entries"] = []
+        historical_update = {
+            "update_id": "historical-update",
+            "vector": {
+                "operation_id": "historical-operation",
+                "generation": 4,
+                "goal": "historical operation",
+            },
+        }
+
+        stale = web_gui._micromachine_status_payload(
+            {"active_updates": []},
+            telemetry=telemetry,
+            result_stream=[
+                {
+                    "status": "published",
+                    "update": historical_update,
+                    "battlefield_session_epoch": "1699999999999",
+                }
+            ],
+        )["operations"][0]
+        self.assertEqual(
+            "1699999999999",
+            stale["battlefield_session_epoch"],
+        )
+        self.assertIsNone(stale["battlefield_operation"])
+        self.assertEqual(
+            "operation_session_epoch_mismatch",
+            stale["battlefield_projection_join"]["reason"],
+        )
+
+        missing = web_gui._micromachine_status_payload(
+            {"active_updates": []},
+            telemetry=telemetry,
+            result_stream=[
+                {
+                    "status": "published",
+                    "update": historical_update,
+                }
+            ],
+        )["operations"][0]
+        self.assertEqual("", missing["battlefield_session_epoch"])
+        self.assertIsNone(missing["battlefield_operation"])
+        self.assertEqual(
+            "operation_session_epoch_missing",
+            missing["battlefield_projection_join"]["reason"],
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            restored = web_gui._micromachine_compile_result_stream(
+                [
+                    {
+                        "written_at_unix": time.time(),
+                        "battlefield_session_epoch": "1699999999999",
+                        "result": {
+                            "status": "published",
+                            "update": historical_update,
+                        },
+                    }
+                ],
+                blackboard_dir=directory,
+            )
+        self.assertEqual(
+            "1699999999999",
+            restored[0]["battlefield_session_epoch"],
+        )
+
     def test_operation_prerequisites_use_canonical_family_contract(self):
         update_id = "canonical-prerequisite-update"
         operation_id = "marauder-defense"
@@ -5229,6 +5315,22 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertNotIn(
             "FUSIONCORE",
             json.dumps(unrelated_convergence),
+        )
+
+        incomplete = status_for(
+            ["TERRAN_BARRACKS"],
+            [],
+        )
+        incomplete_requirement = incomplete["operation_convergence"][
+            "requirements"
+        ][0]
+        self.assertEqual(
+            "blocked",
+            incomplete_requirement["prerequisite_integrity_status"],
+        )
+        self.assertEqual(
+            ["prerequisite_chain_incomplete"],
+            incomplete_requirement["prerequisite_integrity_blockers"],
         )
 
     def test_battlefield_projection_attachment_requires_exact_update_identity(self):
@@ -19652,6 +19754,60 @@ const assert = require("assert");
   assert.strictEqual(
     typedTransferBody.projection_fingerprint,
     "b".repeat(64)
+  );
+  var unsafeSourceMinimum = JSON.parse(JSON.stringify(
+    typedTransferSource.battlefield_operation
+  ));
+  unsafeSourceMinimum.operation_launch_policy.min_units = 4;
+  var unsafeSourceMinimumData = Object.assign(
+    {},
+    typedTransferSource,
+    {
+      battlefield_operation: unsafeSourceMinimum,
+      battlefield_overview: {
+        authority: "micromachine_cpp",
+        identity: {
+          session_epoch: 1700000000000,
+          game_frame: 329
+        },
+        operation_ownership: [
+          unsafeSourceMinimum,
+          destinationCharlieProjection
+        ],
+        transfer_availability: {
+          atomic_revalidation_required: true,
+          entries: [
+            typedTransferEntry("destination-charlie", 7)
+          ]
+        }
+      },
+      battlefield_projection_identity: {
+        session_epoch: 1700000000000,
+        game_frame: 329
+      },
+      battlefield_projection_fingerprint: "b".repeat(64),
+      blackboard_scope_id: OPERATION_SCOPE
+    }
+  );
+  var unsafeSourceMinimumChoices = operationResolutionChoices(
+    unsafeSourceMinimumData
+  );
+  assert.strictEqual(unsafeSourceMinimumChoices.length, 1);
+  assert.strictEqual(unsafeSourceMinimumChoices[0].safe, false);
+  assert.strictEqual(
+    unsafeSourceMinimumChoices[0].reason,
+    "source_minimum_violation"
+  );
+  assert.strictEqual(
+    unsafeSourceMinimumChoices[0].contextualTransfer,
+    null
+  );
+  assert(
+    battlefieldTransferReadinessBlockers(
+      typedTransferEntry("destination-charlie", 7),
+      unsafeSourceMinimum,
+      destinationCharlieProjection
+    ).includes("source_minimum_violation")
   );
   [
     "text",
