@@ -77,6 +77,7 @@ _ALLOWED_COMPRESSION: Final[frozenset[int]] = frozenset(
     {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
 )
 _ALLOWED_GENERAL_PURPOSE_FLAGS: Final[int] = 0x0800
+_GITHUB_ARTIFACT_ALLOWED_GENERAL_PURPOSE_FLAGS: Final[int] = 0x080E
 _REGULAR_FILE_MODE: Final[int] = stat.S_IFREG | 0o644
 _EXECUTABLE_FILE_MODE: Final[int] = stat.S_IFREG | 0o755
 _CANONICAL_FILE_MODES: Final[frozenset[int]] = frozenset(
@@ -619,7 +620,12 @@ def _preflight_deterministic_journey_central_directory(
         raise ValueError(
             "deterministic journey ZIP exceeds max_archive_bytes"
         )
-    framing_error = _archive_framing_error(bundle)
+    framing_error = _archive_framing_error(
+        bundle,
+        require_exact_local_flags=True,
+        allowed_general_purpose_flags=0,
+        require_empty_extra_fields=True,
+    )
     if framing_error is not None:
         raise ValueError(
             f"deterministic journey ZIP framing is invalid: {framing_error}"
@@ -1433,6 +1439,9 @@ def verify_downloaded_pre_live_artifact(
     framing_error = _archive_framing_error(
         artifact_bytes,
         require_exact_local_flags=True,
+        allowed_general_purpose_flags=(
+            _GITHUB_ARTIFACT_ALLOWED_GENERAL_PURPOSE_FLAGS
+        ),
     )
     if framing_error is not None:
         _add_blocker(
@@ -1451,6 +1460,9 @@ def verify_downloaded_pre_live_artifact(
                 artifact_bytes,
                 parsed_entry_count=len(infos),
                 require_exact_local_flags=True,
+                allowed_general_purpose_flags=(
+                    _GITHUB_ARTIFACT_ALLOWED_GENERAL_PURPOSE_FLAGS
+                ),
             )
             if framing_error is not None:
                 _add_blocker(
@@ -2298,6 +2310,8 @@ def _archive_framing_error(
     *,
     parsed_entry_count: int | None = None,
     require_exact_local_flags: bool = False,
+    allowed_general_purpose_flags: int | None = None,
+    require_empty_extra_fields: bool = False,
 ) -> str | None:
     if len(bundle) < _END_CENTRAL_DIRECTORY.size:
         return "ZIP is shorter than an end-of-central-directory record"
@@ -2355,6 +2369,14 @@ def _archive_framing_error(
             return "ZIP64 entries are not allowed"
         if fields[13] != 0:
             return "multi-disk ZIP entries are not allowed"
+        if allowed_general_purpose_flags is not None:
+            allowed_flags = allowed_general_purpose_flags
+            if fields[4] != zipfile.ZIP_DEFLATED:
+                allowed_flags &= ~0x0006
+            if fields[3] & ~allowed_flags:
+                return "ZIP entry uses unsupported general-purpose flags"
+        if require_empty_extra_fields and fields[11] != 0:
+            return "ZIP central extra fields are not allowed"
         entry_size = (
             _CENTRAL_DIRECTORY_HEADER.size
             + fields[10]
@@ -2443,6 +2465,8 @@ def _archive_framing_error(
             return "ZIP local and central data-descriptor flags differ"
         if require_exact_local_flags and flag_delta:
             return "ZIP local and central general-purpose flags differ"
+        if require_empty_extra_fields and local_extra_size != 0:
+            return "ZIP local extra fields are not allowed"
         if local_compression != entry.compression:
             return "ZIP local and central compression methods differ"
         if (

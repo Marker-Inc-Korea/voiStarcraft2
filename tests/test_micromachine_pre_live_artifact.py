@@ -2013,6 +2013,27 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                     blocker_codes(report),
                 )
 
+    def test_rejects_github_wrapper_matching_unsupported_flags(self) -> None:
+        wrapper = raw_zip(
+            {GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME: self.bundle},
+            compression=zipfile.ZIP_DEFLATED,
+        )
+        for name, flag in (
+            ("patched data", 0x0020),
+            ("reserved", 0x4000),
+        ):
+            with self.subTest(name=name):
+                report = verify_downloaded_pre_live_artifact(
+                    add_matching_flags(wrapper, flag)
+                )
+
+                self.assertFalse(report["ok"], report)
+                self.assertEqual("invalid", report["delivery"]["kind"])
+                self.assertIn(
+                    "noncanonical_github_artifact_framing",
+                    blocker_codes(report),
+                )
+
     def test_rejects_github_wrapper_raw_filename_nul_suffix(self) -> None:
         wrapper = raw_zip(
             {GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME: self.bundle},
@@ -2394,6 +2415,28 @@ def add_local_flags(bundle: bytes, flags: int) -> bytes:
     mutated = bytearray(bundle)
     local_flags = struct.unpack_from("<H", mutated, 6)[0]
     struct.pack_into("<H", mutated, 6, local_flags | flags)
+    return bytes(mutated)
+
+
+def add_matching_flags(bundle: bytes, flags: int) -> bytes:
+    mutated = bytearray(add_local_flags(bundle, flags))
+    eocd_offset = len(bundle) - artifact_module._END_CENTRAL_DIRECTORY.size
+    eocd = artifact_module._END_CENTRAL_DIRECTORY.unpack_from(
+        bundle,
+        eocd_offset,
+    )
+    central_flags_offset = eocd[6] + 8
+    central_flags = struct.unpack_from(
+        "<H",
+        mutated,
+        central_flags_offset,
+    )[0]
+    struct.pack_into(
+        "<H",
+        mutated,
+        central_flags_offset,
+        central_flags | flags,
+    )
     return bytes(mutated)
 
 

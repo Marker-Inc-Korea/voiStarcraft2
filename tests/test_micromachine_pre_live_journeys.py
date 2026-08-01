@@ -920,7 +920,7 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
                 "matching strong encryption",
                 True,
                 True,
-                "non-deterministic ZIP metadata: manifest.json",
+                "journey bundle ZIP framing is invalid",
             ),
         ):
             with self.subTest(name=name):
@@ -931,6 +931,48 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
                         local=local,
                         central=central,
                     )
+                )
+
+                self.assertFalse(rejected["ok"], rejected)
+                self.assertIn(blocker, rejected["blockers"])
+
+    def test_bundle_rejects_local_only_extra_field(self) -> None:
+        bundle = build_pre_live_journey_bundle(MICROMACHINE_BINARY)
+
+        rejected = verify_pre_live_journey_bundle(
+            _add_last_local_extra(bundle, b"\xfe\xca\x01\x00x")
+        )
+
+        self.assertFalse(rejected["ok"], rejected)
+        self.assertIn(
+            "journey bundle ZIP framing is invalid",
+            rejected["blockers"],
+        )
+
+    def test_bundle_rejects_root_schema_identity_mutations(self) -> None:
+        base_entries = _read_zip(
+            build_pre_live_journey_bundle(MICROMACHINE_BINARY)
+        )
+        for field, value, blocker in (
+            (
+                "schema_version",
+                999,
+                "root manifest schema_version is unsupported",
+            ),
+            (
+                "evidence_kind",
+                "forged_evidence_kind",
+                "root manifest evidence_kind is invalid",
+            ),
+        ):
+            with self.subTest(field=field):
+                entries = dict(base_entries)
+                root = json.loads(entries["manifest.json"])
+                root[field] = value
+                entries["manifest.json"] = canonical_json_bytes(root)
+
+                rejected = verify_pre_live_journey_bundle(
+                    _rebuild_journey_bundle(entries)
                 )
 
                 self.assertFalse(rejected["ok"], rejected)
@@ -1674,6 +1716,34 @@ def _add_first_entry_flags(
             current = struct.unpack_from("<H", mutated, offset)[0]
             struct.pack_into("<H", mutated, offset, current | flags)
     return bytes(mutated)
+
+
+def _add_last_local_extra(bundle: bytes, extra: bytes) -> bytes:
+    local_header = struct.Struct("<4s5H3L2H")
+    eocd_header = struct.Struct("<4s4H2LH")
+    with zipfile.ZipFile(io.BytesIO(bundle), mode="r") as archive:
+        last = max(archive.infolist(), key=lambda info: info.header_offset)
+        central_offset = archive.start_dir
+    local = list(local_header.unpack_from(bundle, last.header_offset))
+    filename_end = (
+        last.header_offset + local_header.size + local[9]
+    )
+    extra_end = filename_end + local[10]
+    local[10] += len(extra)
+    eocd_offset = len(bundle) - eocd_header.size
+    eocd = list(eocd_header.unpack_from(bundle, eocd_offset))
+    eocd[6] += len(extra)
+    return b"".join(
+        (
+            bundle[: last.header_offset],
+            local_header.pack(*local),
+            bundle[last.header_offset + local_header.size : extra_end],
+            extra,
+            bundle[extra_end:central_offset],
+            bundle[central_offset:eocd_offset],
+            eocd_header.pack(*eocd),
+        )
+    )
 
 
 if __name__ == "__main__":

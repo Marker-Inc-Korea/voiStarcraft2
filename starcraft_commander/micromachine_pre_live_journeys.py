@@ -58,6 +58,9 @@ PRE_LIVE_JOURNEY_SCHEMA_VERSION: Final[int] = 1
 PRE_LIVE_JOURNEY_BUNDLE_SCHEMA_VERSION: Final[int] = 1
 PRE_LIVE_JOURNEY_REPORT_SCHEMA_VERSION: Final[int] = 1
 PRE_LIVE_NATIVE_ADAPTER_SCHEMA_VERSION: Final[int] = 2
+PRE_LIVE_JOURNEY_EVIDENCE_KIND: Final[str] = (
+    "deterministic_micromachine_pre_live_journeys"
+)
 MAX_JOURNEY_BUNDLE_BYTES: Final[int] = 64 * 1024 * 1024
 MAX_JOURNEY_BUNDLE_ENTRIES: Final[int] = 64
 MAX_JOURNEY_MEMBER_BYTES: Final[int] = 32 * 1024 * 1024
@@ -5151,7 +5154,7 @@ def build_pre_live_journey_bundle(
     ]
     root_manifest = {
         "schema_version": PRE_LIVE_JOURNEY_BUNDLE_SCHEMA_VERSION,
-        "evidence_kind": "deterministic_micromachine_pre_live_journeys",
+        "evidence_kind": PRE_LIVE_JOURNEY_EVIDENCE_KIND,
         "suite_id": manifest["suite_id"],
         "journey_count": suite["journey_count"],
         "failed_count": suite["failed_count"],
@@ -5225,6 +5228,8 @@ def verify_pre_live_journey_bundle(
         _archive_framing_error(
             bundle,
             require_exact_local_flags=True,
+            allowed_general_purpose_flags=0,
+            require_empty_extra_fields=True,
         )
         is not None
     ):
@@ -5276,6 +5281,15 @@ def verify_pre_live_journey_bundle(
                 "members",
             }:
                 blockers.append("root manifest has an invalid field set")
+            if (
+                root.get("schema_version")
+                != PRE_LIVE_JOURNEY_BUNDLE_SCHEMA_VERSION
+            ):
+                blockers.append(
+                    "root manifest schema_version is unsupported"
+                )
+            if root.get("evidence_kind") != PRE_LIVE_JOURNEY_EVIDENCE_KIND:
+                blockers.append("root manifest evidence_kind is invalid")
             descriptors = root.get("members")
             if not isinstance(descriptors, list):
                 blockers.append("root manifest members must be a list")
