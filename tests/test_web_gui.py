@@ -19706,6 +19706,35 @@ const assert = require("assert");
   var wrongUpdate = JSON.parse(JSON.stringify(detailedDefense));
   wrongUpdate.battlefield_operation.identity.update_id =
     "foreign-update";
+  var selfConsistentWrongUpdate = JSON.parse(JSON.stringify(
+    detailedDefense
+  ));
+  selfConsistentWrongUpdate.update_id = "foreign-update";
+  selfConsistentWrongUpdate.operation_console_execution_owner_update_id =
+    "foreign-update";
+  selfConsistentWrongUpdate.command_text =
+    "self-consistent foreign update";
+  selfConsistentWrongUpdate.battlefield_operation.identity.update_id =
+    "foreign-update";
+  selfConsistentWrongUpdate.operation_convergence.requirements[0]
+    .canonical_family = "ghost";
+  var selfConsistentWrongUpdateData = commandOperationData(
+    selfConsistentWrongUpdate,
+    {
+      battlefield_overview: authoritativeOverview
+    }
+  );
+  assert.strictEqual(
+    operationCanonicalProjectionMatches(selfConsistentWrongUpdateData),
+    true
+  );
+  assert.strictEqual(
+    battlefieldOperationDataByIdentity(
+      [selfConsistentWrongUpdateData],
+      detailedDefense.battlefield_operation
+    ),
+    null
+  );
   renderBattlefieldControlOverview({
     battlefield_overview: authoritativeOverview,
     battlefield_projection_integrity: {
@@ -19717,17 +19746,30 @@ const assert = require("assert");
       wrongScope,
       wrongEpoch,
       wrongUpdate,
+      selfConsistentWrongUpdate,
       transferDestination
     ]
   });
-  assert(nodes["battlefield-integrity-alert"].textContent.includes(
-    "stale manager evidence ignored=4"
-  ));
-  assert(nodes["battlefield-operation-details"].textContent.includes(
-    "mission/task 증거 없음"
-  ));
+  assert(
+    nodes["battlefield-integrity-alert"].textContent.includes(
+      "stale manager evidence ignored=5"
+    ),
+    nodes["battlefield-integrity-alert"].textContent
+  );
+  assert(
+    nodes["battlefield-operation-details"].textContent.includes(
+      "mission/task 증거 없음"
+    ),
+    nodes["battlefield-operation-details"].textContent
+  );
   assert(!nodes["battlefield-operation-details"].textContent.includes(
     "MARAUDER/defender"
+  ));
+  assert(!nodes["battlefield-operation-details"].textContent.includes(
+    "self-consistent foreign update"
+  ));
+  assert(!nodes["battlefield-operation-details"].textContent.includes(
+    "GHOST/defender"
   ));
   assert(!nodes["battlefield-base-details"].textContent.includes(
     "hold-main#2"

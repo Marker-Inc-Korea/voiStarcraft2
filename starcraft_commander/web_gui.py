@@ -20481,14 +20481,60 @@ function battlefieldManagerEvidenceRows(data) {
   return rows;
 }
 
+function battlefieldOperationExactIdentityKey(operation) {
+  if (!operation || typeof operation !== "object") { return ""; }
+  var identity = operation.identity || {};
+  var updateId = String(identity.update_id || "");
+  var scope = String(identity.scope || "");
+  var sessionEpoch = String(identity.session_epoch || "");
+  var operationId = String(operation.operation_id || "");
+  var generation = Number(operation.generation || 0);
+  if (
+    !updateId ||
+    scope !== "operation:" + operationId ||
+    !sessionEpoch ||
+    !operationId ||
+    !Number.isFinite(generation) ||
+    generation <= 0 ||
+    String(identity.operation_id || "") !== operationId ||
+    Number(identity.generation || 0) !== generation
+  ) {
+    return "";
+  }
+  return [
+    scope,
+    sessionEpoch,
+    operationId,
+    generation,
+    updateId
+  ].join("\u0000");
+}
+
+function battlefieldManagerEvidenceExactIdentityKey(candidate) {
+  if (!candidate || !operationCanonicalProjectionMatches(candidate)) {
+    return "";
+  }
+  return battlefieldOperationExactIdentityKey(
+    candidate.battlefield_operation
+  );
+}
+
+function battlefieldOverviewOperationIdentityIndex(overview) {
+  var index = {};
+  var operations = overview && Array.isArray(overview.operation_ownership)
+    ? overview.operation_ownership
+    : [];
+  operations.forEach(function(operation) {
+    var key = battlefieldOperationExactIdentityKey(operation);
+    if (key) { index[key] = true; }
+  });
+  return index;
+}
+
 function battlefieldCanonicalManagerEvidenceRows(data) {
   var rowsByIdentity = {};
   function append(candidate) {
-    if (!candidate || !operationCanonicalProjectionMatches(candidate)) {
-      return;
-    }
-    var key = String(candidate.operation_id || "") + "\u0000" +
-      Number(candidate.operation_generation || 0);
+    var key = battlefieldManagerEvidenceExactIdentityKey(candidate);
     if (!key) { return; }
     if (
       !rowsByIdentity[key] ||
@@ -20506,19 +20552,31 @@ function battlefieldCanonicalManagerEvidenceRows(data) {
   });
 }
 
-function battlefieldOperationDataRows(data) {
+function battlefieldOperationDataRows(data, overview) {
+  var overviewIdentityIndex =
+    battlefieldOverviewOperationIdentityIndex(overview);
   return battlefieldCanonicalManagerEvidenceRows(data)
     .filter(function(candidate) {
-      return candidate.telemetry_current === true;
+      var key = battlefieldManagerEvidenceExactIdentityKey(candidate);
+      return Boolean(
+        candidate.telemetry_current === true &&
+        key &&
+        overviewIdentityIndex[key]
+      );
     });
 }
 
-function battlefieldStaleManagerEvidenceCount(data) {
+function battlefieldStaleManagerEvidenceCount(data, overview) {
   var seen = {};
+  var overviewIdentityIndex =
+    battlefieldOverviewOperationIdentityIndex(overview);
   return battlefieldManagerEvidenceRows(data).filter(function(candidate) {
+    var exactIdentityKey =
+      battlefieldManagerEvidenceExactIdentityKey(candidate);
     if (
       candidate.telemetry_current === true &&
-      operationCanonicalProjectionMatches(candidate)
+      exactIdentityKey &&
+      overviewIdentityIndex[exactIdentityKey]
     ) {
       return false;
     }
@@ -20527,6 +20585,10 @@ function battlefieldStaleManagerEvidenceCount(data) {
     var key = [
       String(candidate.operation_id || ""),
       Number(candidate.operation_generation || 0),
+      String(candidate.update_id || ""),
+      String(
+        candidate.operation_console_execution_owner_update_id || ""
+      ),
       String(candidate.blackboard_scope_id || ""),
       String(identity.update_id || ""),
       String(identity.scope || ""),
@@ -20543,11 +20605,12 @@ function battlefieldStaleManagerEvidenceCount(data) {
   }).length;
 }
 
-function battlefieldOperationDataByIdentity(rows, operationId, generation) {
+function battlefieldOperationDataByIdentity(rows, operation) {
+  var expectedKey = battlefieldOperationExactIdentityKey(operation);
+  if (!expectedKey) { return null; }
   for (var index = 0; index < rows.length; index += 1) {
     if (
-      String(rows[index].operation_id || "") === String(operationId || "") &&
-      Number(rows[index].operation_generation || 0) === Number(generation || 0)
+      battlefieldManagerEvidenceExactIdentityKey(rows[index]) === expectedKey
     ) {
       return rows[index];
     }
@@ -20626,7 +20689,7 @@ function battlefieldProjectionIntegrityMessages(data, overview) {
     );
   }
   var staleManagerEvidenceCount =
-    battlefieldStaleManagerEvidenceCount(data || {});
+    battlefieldStaleManagerEvidenceCount(data || {}, overview);
   if (staleManagerEvidenceCount > 0) {
     messages.push(
       "stale manager evidence ignored=" + staleManagerEvidenceCount
@@ -20681,7 +20744,7 @@ function renderBattlefieldCanonicalDetails(data, overview) {
     return;
   }
 
-  var matchedRows = battlefieldOperationDataRows(data || {});
+  var matchedRows = battlefieldOperationDataRows(data || {}, overview);
   var operations = Array.isArray(overview.operation_ownership)
     ? overview.operation_ownership
     : [];
@@ -20699,8 +20762,7 @@ function renderBattlefieldCanonicalDetails(data, overview) {
     var launchSafety = launch.safety_evidence || {};
     var matched = battlefieldOperationDataByIdentity(
       matchedRows,
-      operationId,
-      generation
+      operation
     );
     var lane = battlefieldOperationLaneFromProjection(operation, matched);
     var mission = matched
