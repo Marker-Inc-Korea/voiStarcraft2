@@ -2372,6 +2372,9 @@ def _archive_framing_error(
         )
         filename_end = filename_start + fields[10]
         extra_end = filename_end + fields[11]
+        raw_filename = bundle[filename_start:filename_end]
+        if b"\x00" in raw_filename:
+            return "ZIP central file name contains NUL"
         extra_error = _zip_extra_field_error(
             bundle[filename_end:extra_end]
         )
@@ -2388,7 +2391,7 @@ def _archive_framing_error(
                 crc32=fields[7],
                 compressed_size=fields[8],
                 uncompressed_size=fields[9],
-                filename=bundle[filename_start:filename_end],
+                filename=raw_filename,
             )
         )
     if offset != eocd_offset:

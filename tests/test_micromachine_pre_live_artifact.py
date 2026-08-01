@@ -2013,6 +2013,23 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                     blocker_codes(report),
                 )
 
+    def test_rejects_github_wrapper_raw_filename_nul_suffix(self) -> None:
+        wrapper = raw_zip(
+            {GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME: self.bundle},
+            compression=zipfile.ZIP_DEFLATED,
+        )
+
+        report = verify_downloaded_pre_live_artifact(
+            add_raw_filename_suffix(wrapper, b"\x00shadow")
+        )
+
+        self.assertFalse(report["ok"], report)
+        self.assertEqual("invalid", report["delivery"]["kind"])
+        self.assertIn(
+            "noncanonical_github_artifact_framing",
+            blocker_codes(report),
+        )
+
     def test_accepts_github_wrapper_data_descriptors(self) -> None:
         wrapper = raw_zip(
             {GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME: self.bundle},
@@ -2378,6 +2395,47 @@ def add_local_flags(bundle: bytes, flags: int) -> bytes:
     local_flags = struct.unpack_from("<H", mutated, 6)[0]
     struct.pack_into("<H", mutated, 6, local_flags | flags)
     return bytes(mutated)
+
+
+def add_raw_filename_suffix(bundle: bytes, suffix: bytes) -> bytes:
+    eocd_offset = len(bundle) - artifact_module._END_CENTRAL_DIRECTORY.size
+    eocd = list(
+        artifact_module._END_CENTRAL_DIRECTORY.unpack_from(
+            bundle,
+            eocd_offset,
+        )
+    )
+    central_offset = eocd[6]
+    local = list(artifact_module._LOCAL_FILE_HEADER.unpack_from(bundle, 0))
+    local_filename_start = artifact_module._LOCAL_FILE_HEADER.size
+    local_filename_end = local_filename_start + local[9]
+    central = list(
+        artifact_module._CENTRAL_DIRECTORY_HEADER.unpack_from(
+            bundle,
+            central_offset,
+        )
+    )
+    central_filename_start = (
+        central_offset + artifact_module._CENTRAL_DIRECTORY_HEADER.size
+    )
+    central_filename_end = central_filename_start + central[10]
+    local[9] += len(suffix)
+    central[10] += len(suffix)
+    eocd[5] += len(suffix)
+    eocd[6] += len(suffix)
+    return b"".join(
+        (
+            artifact_module._LOCAL_FILE_HEADER.pack(*local),
+            bundle[local_filename_start:local_filename_end],
+            suffix,
+            bundle[local_filename_end:central_offset],
+            artifact_module._CENTRAL_DIRECTORY_HEADER.pack(*central),
+            bundle[central_filename_start:central_filename_end],
+            suffix,
+            bundle[central_filename_end:eocd_offset],
+            artifact_module._END_CENTRAL_DIRECTORY.pack(*eocd),
+        )
+    )
 
 
 def add_local_zip64_metadata(bundle: bytes) -> bytes:
