@@ -156,6 +156,9 @@ _NATIVE_OUTPUT_FIELDS: Final[frozenset[str]] = frozenset(
         "telemetry",
     }
 )
+_NATIVE_INPUT_FIELDS: Final[frozenset[str]] = frozenset(
+    {"schema_version", "journey_id", "initial_state", "steps"}
+)
 _NATIVE_PRODUCTION_PATH_FIELDS: Final[frozenset[str]] = frozenset(
     {
         "executor_kind",
@@ -199,6 +202,33 @@ _RAW_EVENT_FIELDS: Final[frozenset[str]] = frozenset(
 )
 _RAW_EVENT_IDENTITY_FIELDS: Final[frozenset[str]] = frozenset(
     {"update_id", "operation_id", "generation", "stage", "game_frame"}
+)
+_DERIVED_MATRIX_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "schema_version",
+        "suite_id",
+        "manifest_sha256",
+        "journey_count",
+        "passed_count",
+        "failed_count",
+        "failures",
+        "ok",
+        "status",
+        "journeys",
+    }
+)
+_DERIVED_MATRIX_JOURNEY_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "id",
+        "title",
+        "event_count",
+        "event_types",
+        "ownership_snapshot_count",
+        "blockers",
+        "ok",
+        "status",
+        "product_paths",
+    }
 )
 _INITIAL_STATE_FIELDS: Final[frozenset[str]] = frozenset(
     {
@@ -1502,7 +1532,11 @@ def _validate_native_output_payload(
 ) -> dict[str, object]:
     if not isinstance(output, dict) or set(output) != _NATIVE_OUTPUT_FIELDS:
         raise ValueError("native pre-live adapter output field set is invalid")
-    if output.get("schema_version") != PRE_LIVE_NATIVE_ADAPTER_SCHEMA_VERSION:
+    schema_version = output.get("schema_version")
+    if (
+        type(schema_version) is not int
+        or schema_version != PRE_LIVE_NATIVE_ADAPTER_SCHEMA_VERSION
+    ):
         raise ValueError("native pre-live adapter schema is unsupported")
     _validate_native_final_state(output)
     if expected_input is not None:
@@ -5455,6 +5489,23 @@ def _verify_pre_live_journey_payload_cache(
         if blockers:
             return _verification_result(blockers)
 
+        matrix_bytes = payloads["derived/journey-matrix.json"]
+        matrix = _load_canonical_json_object(
+            matrix_bytes,
+            label="derived journey matrix",
+            blockers=blockers,
+        )
+        _preflight_derived_journey_matrix(
+            matrix,
+            specs=specs,
+            suite_id=validated.get("suite_id"),
+            blockers=blockers,
+        )
+        if hashlib.sha256(matrix_bytes).hexdigest() != root.get("report_sha256"):
+            blockers.append("derived report digest mismatch")
+        if blockers:
+            return _verification_result(blockers)
+
         parsed_journeys: list[
             tuple[
                 dict[str, object],
@@ -5533,20 +5584,6 @@ def _verify_pre_live_journey_payload_cache(
             "status": "passed" if not failures else "failed",
             "journeys": reports,
         }
-        matrix_bytes = payloads["derived/journey-matrix.json"]
-        matrix = _load_canonical_json_object(
-            matrix_bytes,
-            label="derived journey matrix",
-            blockers=blockers,
-        )
-        matrix_schema_version = matrix.get("schema_version")
-        if (
-            type(matrix_schema_version) is not int
-            or matrix_schema_version != PRE_LIVE_JOURNEY_REPORT_SCHEMA_VERSION
-        ):
-            blockers.append(
-                "derived journey matrix schema_version is unsupported"
-            )
         if canonical_json_bytes(matrix) != canonical_json_bytes(recomputed):
             blockers.append(
                 "derived journey matrix was not derived from raw evidence"
@@ -5561,8 +5598,6 @@ def _verify_pre_live_journey_payload_cache(
             blockers.append("root manifest journey_count mismatch")
         if root.get("failed_count") != len(failures):
             blockers.append("root manifest failed_count mismatch")
-        if hashlib.sha256(matrix_bytes).hexdigest() != root.get("report_sha256"):
-            blockers.append("derived report digest mismatch")
         if len(native_identities) != 1:
             blockers.append(
                 "journey native adapter identities are missing or inconsistent"
@@ -6108,6 +6143,97 @@ def _preflight_raw_event_structure(
     return blockers
 
 
+def _preflight_derived_journey_matrix(
+    matrix: Mapping[str, object],
+    *,
+    specs: Sequence[Mapping[str, object]],
+    suite_id: object,
+    blockers: list[str],
+) -> None:
+    if set(matrix) != _DERIVED_MATRIX_FIELDS:
+        blockers.append("derived journey matrix has an invalid field set")
+    schema_version = matrix.get("schema_version")
+    if (
+        type(schema_version) is not int
+        or schema_version != PRE_LIVE_JOURNEY_REPORT_SCHEMA_VERSION
+    ):
+        blockers.append("derived journey matrix schema_version is unsupported")
+    if not isinstance(matrix.get("suite_id"), str) or matrix.get(
+        "suite_id"
+    ) != suite_id:
+        blockers.append("derived journey matrix suite_id is invalid")
+    if not _is_lower_hex_sha256(matrix.get("manifest_sha256")):
+        blockers.append("derived journey matrix manifest_sha256 is invalid")
+    journey_count = matrix.get("journey_count")
+    passed_count = matrix.get("passed_count")
+    failed_count = matrix.get("failed_count")
+    if (
+        type(journey_count) is not int
+        or journey_count != len(specs)
+        or type(passed_count) is not int
+        or passed_count < 0
+        or type(failed_count) is not int
+        or failed_count < 0
+        or (
+            type(passed_count) is int
+            and type(failed_count) is int
+            and passed_count + failed_count != len(specs)
+        )
+    ):
+        blockers.append("derived journey matrix counts are invalid")
+    failures = matrix.get("failures")
+    if (
+        not isinstance(failures, list)
+        or any(not isinstance(item, str) or not item for item in failures)
+        or len(failures) != len(set(failures))
+    ):
+        blockers.append("derived journey matrix failures are invalid")
+    if type(matrix.get("ok")) is not bool or matrix.get("status") not in {
+        "passed",
+        "failed",
+    }:
+        blockers.append("derived journey matrix verdict is invalid")
+    journeys = matrix.get("journeys")
+    if not isinstance(journeys, list) or len(journeys) != len(specs):
+        blockers.append("derived journey matrix journeys are invalid")
+        return
+    expected_ids = [str(spec.get("id", "")) for spec in specs]
+    observed_ids: list[str] = []
+    for row in journeys:
+        if not isinstance(row, Mapping):
+            blockers.append("derived journey matrix row must be an object")
+            continue
+        if set(row) != _DERIVED_MATRIX_JOURNEY_FIELDS:
+            blockers.append("derived journey matrix row has an invalid field set")
+        journey_id = row.get("id")
+        observed_ids.append(str(journey_id) if isinstance(journey_id, str) else "")
+        if (
+            not isinstance(journey_id, str)
+            or not journey_id
+            or not isinstance(row.get("title"), str)
+            or type(row.get("event_count")) is not int
+            or cast(int, row.get("event_count")) < 0
+            or type(row.get("ownership_snapshot_count")) is not int
+            or cast(int, row.get("ownership_snapshot_count")) < 0
+            or not isinstance(row.get("event_types"), list)
+            or any(
+                not isinstance(item, str) or not item
+                for item in cast(list[object], row.get("event_types"))
+            )
+            or not isinstance(row.get("blockers"), list)
+            or any(
+                not isinstance(item, str) or not item
+                for item in cast(list[object], row.get("blockers"))
+            )
+            or type(row.get("ok")) is not bool
+            or row.get("status") not in {"passed", "failed"}
+            or not isinstance(row.get("product_paths"), Mapping)
+        ):
+            blockers.append("derived journey matrix row is malformed")
+    if observed_ids != expected_ids:
+        blockers.append("derived journey matrix journey order is invalid")
+
+
 def _preflight_product_path_blockers(
     products: Mapping[str, object],
     *,
@@ -6126,6 +6252,34 @@ def _preflight_product_path_blockers(
         or native_schema_version != PRE_LIVE_NATIVE_ADAPTER_SCHEMA_VERSION
     ):
         blockers.append("native adapter product schema_version is unsupported")
+        return blockers
+    native_input = native_adapter.get("input")
+    if not isinstance(native_input, Mapping) or set(native_input) != (
+        _NATIVE_INPUT_FIELDS
+    ):
+        blockers.append("native adapter input has an invalid field set")
+        return blockers
+    input_schema_version = native_input.get("schema_version")
+    if (
+        type(input_schema_version) is not int
+        or input_schema_version != PRE_LIVE_NATIVE_ADAPTER_SCHEMA_VERSION
+    ):
+        blockers.append("native adapter input schema_version is unsupported")
+        return blockers
+    try:
+        expected_input = _compile_native_input(_JourneyExecution(spec))
+        if canonical_json_bytes(native_input) != canonical_json_bytes(
+            expected_input
+        ):
+            blockers.append(
+                "native adapter input was not derived from the journey compiler"
+            )
+        _validate_native_output_payload(
+            deepcopy(native_adapter.get("output")),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        blockers.append(f"native adapter structure is invalid: {exc}")
+    _native_adapter_identity(products, blockers)
     return blockers
 
 
@@ -6145,7 +6299,9 @@ def _rederive_product_path_blockers(
     try:
         execution = _JourneyExecution(spec)
         expected_input = _compile_native_input(execution)
-        if native_adapter.get("input") != expected_input:
+        if canonical_json_bytes(native_adapter.get("input")) != (
+            canonical_json_bytes(expected_input)
+        ):
             blockers.append(
                 "native adapter input was not derived from the journey compiler"
             )
@@ -6169,7 +6325,15 @@ def _rederive_product_path_blockers(
             ),
         )
         _finalize_events(execution)
-        execution.products["native_adapter"] = deepcopy(dict(native_adapter))
+        execution.products["native_adapter"] = {
+            "schema_version": PRE_LIVE_NATIVE_ADAPTER_SCHEMA_VERSION,
+            "binary_sha256": native_adapter.get("binary_sha256"),
+            "embedded_build_input_identity": native_adapter.get(
+                "embedded_build_input_identity"
+            ),
+            "input": deepcopy(expected_input),
+            "output": deepcopy(native_output),
+        }
         normalized_events = [deepcopy(dict(event)) for event in events]
         if canonical_json_bytes(execution.events) != canonical_json_bytes(
             normalized_events
@@ -6195,18 +6359,18 @@ def _native_adapter_identity(
     native_adapter = products.get("native_adapter")
     if not isinstance(native_adapter, Mapping):
         return None
-    binary_sha256 = str(native_adapter.get("binary_sha256", ""))
-    embedded_identity = str(
-        native_adapter.get("embedded_build_input_identity", "")
-    )
+    binary_sha256 = native_adapter.get("binary_sha256")
+    embedded_identity = native_adapter.get("embedded_build_input_identity")
     if (
-        len(binary_sha256) != 64
+        not isinstance(binary_sha256, str)
+        or len(binary_sha256) != 64
         or any(character not in "0123456789abcdef" for character in binary_sha256)
     ):
         blockers.append("native adapter binary_sha256 is invalid")
         return None
     if (
-        not embedded_identity.startswith(_SHA256_IDENTITY_PREFIX)
+        not isinstance(embedded_identity, str)
+        or not embedded_identity.startswith(_SHA256_IDENTITY_PREFIX)
         or len(embedded_identity) != len(_SHA256_IDENTITY_PREFIX) + 64
         or any(
             character not in "0123456789abcdef"

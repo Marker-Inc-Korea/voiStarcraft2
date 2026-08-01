@@ -572,6 +572,37 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                         node_executable=self.node_descriptor,
                     )
 
+    def test_build_binder_rejects_float_schema_before_journey_verification(
+        self,
+    ) -> None:
+        report = json.loads(
+            self.members[self.metadata.build_report_member]
+        )
+        report["schema_version"] = float(report["schema_version"])
+        raw_verifier = (
+            "starcraft_commander.micromachine_pre_live_journeys."
+            "_verify_pre_live_journey_payload_cache"
+        )
+        with (
+            mock.patch(
+                raw_verifier,
+                side_effect=AssertionError(
+                    "invalid build report must stop before journey verification"
+                ),
+            ) as semantic_verifier,
+            self.assertRaisesRegex(
+                ValueError,
+                "build report is not an admitted build identity",
+            ),
+        ):
+            bind_deterministic_journey_bundle_to_build(
+                make_stub_deterministic_journey_bundle(),
+                build_report_bytes=canonical_json_bytes(report),
+                binary_bytes=self.binary,
+                node_executable=self.node_descriptor,
+            )
+        semantic_verifier.assert_not_called()
+
     def test_bound_journey_preflights_root_before_single_payload_read(
         self,
     ) -> None:

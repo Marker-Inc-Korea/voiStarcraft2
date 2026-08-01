@@ -1105,47 +1105,83 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
             rejected["blockers"],
         )
 
-    def test_bundle_rejects_boolean_native_adapter_schema_before_replay(
+    def test_bundle_rejects_native_json_type_aliases_before_replay(
         self,
     ) -> None:
-        entries = _read_zip(
+        base_entries = _read_zip(
             build_pre_live_journey_bundle(MICROMACHINE_BINARY)
         )
         journey_id = "safe_partial_launch"
         product_name = f"product/{journey_id}.json"
-        products = json.loads(entries[product_name])
-        products["native_adapter"]["schema_version"] = True
-        entries[product_name] = canonical_json_bytes(products)
-
-        matrix = json.loads(entries["derived/journey-matrix.json"])
-        journey = next(
-            item for item in matrix["journeys"] if item["id"] == journey_id
-        )
-        journey["product_paths"] = products
-        entries["derived/journey-matrix.json"] = canonical_json_bytes(matrix)
-        entries["report.md"] = _markdown_report(matrix).encode("utf-8")
-
-        with mock.patch(
-            (
-                "starcraft_commander.micromachine_pre_live_journeys."
-                "_consume_native_output"
+        cases = {
+            "adapter boolean schema": (
+                lambda products: products["native_adapter"].update(
+                    {"schema_version": True}
+                ),
+                "native adapter product schema_version is unsupported",
             ),
-            side_effect=AssertionError(
-                "native replay must not accept a boolean schema version"
+            "input integer as float": (
+                lambda products: products["native_adapter"]["input"]["steps"][
+                    0
+                ].update(
+                    {
+                        "frame": float(
+                            products["native_adapter"]["input"]["steps"][0][
+                                "frame"
+                            ]
+                        )
+                    }
+                ),
+                "native adapter input was not derived from the journey compiler",
             ),
-        ):
-            rejected = verify_pre_live_journey_bundle(
-                _rebuild_journey_bundle(entries)
-            )
+            "output integer schema as float": (
+                lambda products: products["native_adapter"]["output"].update(
+                    {"schema_version": 2.0}
+                ),
+                (
+                    "native adapter structure is invalid: "
+                    "native pre-live adapter schema is unsupported"
+                ),
+            ),
+        }
+        for name, (mutate, blocker) in cases.items():
+            with self.subTest(name=name):
+                entries = dict(base_entries)
+                products = json.loads(entries[product_name])
+                mutate(products)
+                entries[product_name] = canonical_json_bytes(products)
 
-        self.assertFalse(rejected["ok"], rejected)
-        self.assertIn(
-            (
-                f"{journey_id}: native adapter product schema_version "
-                "is unsupported"
-            ),
-            rejected["blockers"],
-        )
+                matrix = json.loads(entries["derived/journey-matrix.json"])
+                journey = next(
+                    item
+                    for item in matrix["journeys"]
+                    if item["id"] == journey_id
+                )
+                journey["product_paths"] = products
+                entries["derived/journey-matrix.json"] = canonical_json_bytes(
+                    matrix
+                )
+                entries["report.md"] = _markdown_report(matrix).encode("utf-8")
+
+                with mock.patch(
+                    (
+                        "starcraft_commander.micromachine_pre_live_journeys."
+                        "_consume_native_output"
+                    ),
+                    side_effect=AssertionError(
+                        "native replay must not accept JSON type aliases"
+                    ),
+                ) as native_replay:
+                    rejected = verify_pre_live_journey_bundle(
+                        _rebuild_journey_bundle(entries)
+                    )
+
+                native_replay.assert_not_called()
+                self.assertFalse(rejected["ok"], rejected)
+                self.assertIn(
+                    f"{journey_id}: {blocker}",
+                    rejected["blockers"],
+                )
 
     def test_bundle_preflights_every_payload_before_any_semantic_replay(
         self,
@@ -1171,6 +1207,13 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
                     last_journey_id,
                 ),
                 f"{last_journey_id}: raw event has an invalid field set",
+            ),
+            "malformed derived matrix": (
+                lambda entries: entries.__setitem__(
+                    "derived/journey-matrix.json",
+                    b"{",
+                ),
+                "derived journey matrix is invalid JSON",
             ),
         }
         for name, (mutate, blocker) in cases.items():

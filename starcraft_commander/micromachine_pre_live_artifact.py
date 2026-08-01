@@ -408,6 +408,10 @@ def bind_deterministic_journey_bundle_to_build(
             "deterministic journey replay requires an admitted Node.js "
             "executable or descriptor"
         )
+    binding = _deterministic_journey_build_binding(
+        build_report_bytes,
+        binary_bytes,
+    )
 
     def validate_unbound_root(
         root: dict[str, object],
@@ -443,10 +447,6 @@ def bind_deterministic_journey_bundle_to_build(
             "deterministic_journey_bundle_rejected: "
             f"{verification.get('blockers')!r}"
         )
-    binding = _deterministic_journey_build_binding(
-        build_report_bytes,
-        binary_bytes,
-    )
     for key in ("binary_sha256", "embedded_build_input_identity"):
         if verification.get(key) != binding[key]:
             raise ValueError(
@@ -473,9 +473,10 @@ def _deterministic_journey_build_binding(
         raise ValueError(f"build report is invalid JSON: {exc}") from exc
     if not isinstance(report, Mapping):
         raise ValueError("build report must be a JSON object")
+    report_schema_version = report.get("schema_version")
     if (
-        report.get("schema_version")
-        != MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION
+        type(report_schema_version) is not int
+        or report_schema_version != MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION
         or report.get("ok") is not True
         or report.get("failures") != []
     ):
