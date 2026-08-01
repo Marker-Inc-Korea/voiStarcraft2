@@ -5281,26 +5281,42 @@ def verify_pre_live_journey_bundle(
                 "members",
             }:
                 blockers.append("root manifest has an invalid field set")
+            schema_version = root.get("schema_version")
             if (
-                root.get("schema_version")
-                != PRE_LIVE_JOURNEY_BUNDLE_SCHEMA_VERSION
+                type(schema_version) is not int
+                or schema_version != PRE_LIVE_JOURNEY_BUNDLE_SCHEMA_VERSION
             ):
                 blockers.append(
                     "root manifest schema_version is unsupported"
                 )
             if root.get("evidence_kind") != PRE_LIVE_JOURNEY_EVIDENCE_KIND:
                 blockers.append("root manifest evidence_kind is invalid")
+            suite_id = root.get("suite_id")
+            if not isinstance(suite_id, str) or not suite_id:
+                blockers.append("root manifest suite_id is invalid")
+            journey_count = root.get("journey_count")
+            failed_count = root.get("failed_count")
+            if type(journey_count) is not int or journey_count < 0:
+                blockers.append("root manifest journey_count is invalid")
+            if type(failed_count) is not int or failed_count < 0:
+                blockers.append("root manifest failed_count is invalid")
+            if (
+                type(journey_count) is int
+                and type(failed_count) is int
+                and failed_count > journey_count
+            ):
+                blockers.append(
+                    "root manifest failed_count exceeds journey_count"
+                )
+            if not _is_lower_hex_sha256(root.get("report_sha256")):
+                blockers.append("root manifest report_sha256 is invalid")
             descriptors = root.get("members")
             if not isinstance(descriptors, list):
                 blockers.append("root manifest members must be a list")
                 descriptors = []
-            descriptor_names = [
-                item.get("name")
-                for item in descriptors
-                if isinstance(item, Mapping)
-            ]
-            if descriptor_names != names[1:]:
-                blockers.append("root manifest member list does not match ZIP")
+            descriptor_names: list[str] = []
+            validated_descriptors: list[dict[str, object]] = []
+            infos_by_name = {info.filename: info for info in infos}
             for item in descriptors:
                 if not isinstance(item, Mapping) or set(item) != {
                     "name",
@@ -5309,12 +5325,47 @@ def verify_pre_live_journey_bundle(
                 }:
                     blockers.append("invalid root manifest member descriptor")
                     continue
-                payload = archive.read(str(item["name"]))
-                if hashlib.sha256(payload).hexdigest() != item.get("sha256"):
-                    blockers.append(f"member digest mismatch: {item['name']}")
-                if len(payload) != item.get("size_bytes"):
-                    blockers.append(f"member size mismatch: {item['name']}")
-            manifest_bytes = archive.read("input/PRE_LIVE_JOURNEYS.json")
+                name = item.get("name")
+                digest = item.get("sha256")
+                size = item.get("size_bytes")
+                if (
+                    not isinstance(name, str)
+                    or not name
+                    or not _is_lower_hex_sha256(digest)
+                    or type(size) is not int
+                    or size < 0
+                ):
+                    blockers.append("invalid root manifest member descriptor")
+                    continue
+                descriptor_names.append(name)
+                info = infos_by_name.get(name)
+                if info is not None and info.file_size != size:
+                    blockers.append(
+                        f"member size mismatch: {name}"
+                    )
+                validated_descriptors.append(
+                    {
+                        "name": name,
+                        "sha256": digest,
+                        "size_bytes": size,
+                    }
+                )
+            if descriptor_names != names[1:]:
+                blockers.append("root manifest member list does not match ZIP")
+            if blockers:
+                return _verification_result(blockers)
+            payloads: dict[str, bytes] = {}
+            for item in validated_descriptors:
+                name = cast(str, item["name"])
+                payload = archive.read(name)
+                payloads[name] = payload
+                if hashlib.sha256(payload).hexdigest() != item["sha256"]:
+                    blockers.append(f"member digest mismatch: {name}")
+                if len(payload) != item["size_bytes"]:
+                    blockers.append(f"member size mismatch: {name}")
+            if blockers:
+                return _verification_result(blockers)
+            manifest_bytes = payloads["input/PRE_LIVE_JOURNEYS.json"]
             checked_in_manifest = canonical_json_bytes(
                 load_pre_live_journey_manifest(DEFAULT_JOURNEY_MANIFEST)
             )
@@ -5344,19 +5395,24 @@ def verify_pre_live_journey_bundle(
             )
             if names[1:] != expected_names:
                 blockers.append("journey bundle member set does not match input")
+            if blockers:
+                return _verification_result(blockers)
             reports: list[dict[str, object]] = []
             for spec in specs:
                 journey_id = str(spec["id"])
+                parsing_blocker_count = len(blockers)
                 events = _load_canonical_json_lines(
-                    archive.read(f"raw/{journey_id}.jsonl"),
+                    payloads[f"raw/{journey_id}.jsonl"],
                     label=f"raw/{journey_id}.jsonl",
                     blockers=blockers,
                 )
                 products = _load_canonical_json_object(
-                    archive.read(f"product/{journey_id}.json"),
+                    payloads[f"product/{journey_id}.json"],
                     label=f"product/{journey_id}.json",
                     blockers=blockers,
                 )
+                if len(blockers) != parsing_blocker_count:
+                    return _verification_result(blockers)
                 verdict = verify_pre_live_journey_events(spec, events)
                 derived_blockers = [
                     *cast(list[str], verdict["blockers"]),
@@ -5398,17 +5454,26 @@ def verify_pre_live_journey_bundle(
                 "status": "passed" if not failures else "failed",
                 "journeys": reports,
             }
-            matrix_bytes = archive.read("derived/journey-matrix.json")
+            matrix_bytes = payloads["derived/journey-matrix.json"]
             matrix = _load_canonical_json_object(
                 matrix_bytes,
                 label="derived journey matrix",
                 blockers=blockers,
             )
-            if matrix != recomputed:
+            matrix_schema_version = matrix.get("schema_version")
+            if (
+                type(matrix_schema_version) is not int
+                or matrix_schema_version
+                != PRE_LIVE_JOURNEY_REPORT_SCHEMA_VERSION
+            ):
+                blockers.append(
+                    "derived journey matrix schema_version is unsupported"
+                )
+            if canonical_json_bytes(matrix) != canonical_json_bytes(recomputed):
                 blockers.append("derived journey matrix was not derived from raw evidence")
             if recomputed["ok"] is not True:
                 blockers.append("recomputed journey matrix is not green")
-            if archive.read("report.md") != _markdown_report(recomputed).encode(
+            if payloads["report.md"] != _markdown_report(recomputed).encode(
                 "utf-8"
             ):
                 blockers.append("Markdown report was not derived from raw evidence")
@@ -5454,6 +5519,14 @@ def _load_canonical_json_object(
     if canonical_json_bytes(value) != payload:
         blockers.append(f"{label} is not canonical JSON")
     return value
+
+
+def _is_lower_hex_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def _load_canonical_json_lines(

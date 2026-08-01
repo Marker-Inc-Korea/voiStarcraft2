@@ -15,6 +15,7 @@ import unittest
 import zipfile
 from copy import deepcopy
 from pathlib import Path
+from unittest import mock
 
 from starcraft_commander.micromachine_pre_live_artifact import (
     canonical_json_bytes,
@@ -953,30 +954,156 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
         base_entries = _read_zip(
             build_pre_live_journey_bundle(MICROMACHINE_BINARY)
         )
-        for field, value, blocker in (
+        for name, field, value, blocker in (
             (
+                "integer schema",
                 "schema_version",
                 999,
                 "root manifest schema_version is unsupported",
             ),
             (
+                "boolean schema",
+                "schema_version",
+                True,
+                "root manifest schema_version is unsupported",
+            ),
+            (
+                "boolean journey count",
+                "journey_count",
+                True,
+                "root manifest journey_count is invalid",
+            ),
+            (
+                "boolean failed count",
+                "failed_count",
+                False,
+                "root manifest failed_count is invalid",
+            ),
+            (
+                "non-string report digest",
+                "report_sha256",
+                True,
+                "root manifest report_sha256 is invalid",
+            ),
+            (
+                "evidence kind",
                 "evidence_kind",
                 "forged_evidence_kind",
                 "root manifest evidence_kind is invalid",
             ),
         ):
-            with self.subTest(field=field):
+            with self.subTest(name=name):
                 entries = dict(base_entries)
                 root = json.loads(entries["manifest.json"])
                 root[field] = value
                 entries["manifest.json"] = canonical_json_bytes(root)
 
-                rejected = verify_pre_live_journey_bundle(
-                    _rebuild_journey_bundle(entries)
-                )
+                with mock.patch(
+                    (
+                        "starcraft_commander.micromachine_pre_live_journeys."
+                        "_rederive_product_path_blockers"
+                    ),
+                    side_effect=AssertionError(
+                        "semantic replay must not run after root rejection"
+                    ),
+                ):
+                    rejected = verify_pre_live_journey_bundle(
+                        _write_journey_bundle(entries)
+                    )
 
                 self.assertFalse(rejected["ok"], rejected)
                 self.assertIn(blocker, rejected["blockers"])
+
+    def test_bundle_rejects_descriptor_structure_before_payload_reads(
+        self,
+    ) -> None:
+        base_entries = _read_zip(
+            build_pre_live_journey_bundle(MICROMACHINE_BINARY)
+        )
+        for name, mutate_root, blocker in (
+            (
+                "duplicate descriptors",
+                lambda root: root.update(
+                    {"members": [root["members"][0]] * 25}
+                ),
+                "root manifest member list does not match ZIP",
+            ),
+            (
+                "boolean descriptor size",
+                lambda root: root["members"][0].update(
+                    {"size_bytes": True}
+                ),
+                "invalid root manifest member descriptor",
+            ),
+        ):
+            with self.subTest(name=name):
+                entries = dict(base_entries)
+                root = json.loads(entries["manifest.json"])
+                mutate_root(root)
+                entries["manifest.json"] = canonical_json_bytes(root)
+                malformed = _write_journey_bundle(entries)
+                reads: list[str] = []
+                original_read = zipfile.ZipFile.read
+
+                def tracking_read(
+                    archive: zipfile.ZipFile,
+                    member: object,
+                    *args: object,
+                    **kwargs: object,
+                ) -> bytes:
+                    member_name = (
+                        member.filename
+                        if isinstance(member, zipfile.ZipInfo)
+                        else str(member)
+                    )
+                    reads.append(member_name)
+                    return original_read(
+                        archive,
+                        member,
+                        *args,
+                        **kwargs,
+                    )
+
+                with (
+                    mock.patch.object(
+                        zipfile.ZipFile,
+                        "read",
+                        new=tracking_read,
+                    ),
+                    mock.patch(
+                        (
+                            "starcraft_commander."
+                            "micromachine_pre_live_journeys."
+                            "_rederive_product_path_blockers"
+                        ),
+                        side_effect=AssertionError(
+                            "semantic replay must not run after descriptor rejection"
+                        ),
+                    ),
+                ):
+                    rejected = verify_pre_live_journey_bundle(malformed)
+
+                self.assertFalse(rejected["ok"], rejected)
+                self.assertIn(blocker, rejected["blockers"])
+                self.assertEqual(["manifest.json"], reads)
+
+    def test_bundle_rejects_boolean_report_schema_version(self) -> None:
+        entries = _read_zip(
+            build_pre_live_journey_bundle(MICROMACHINE_BINARY)
+        )
+        matrix = json.loads(entries["derived/journey-matrix.json"])
+        matrix["schema_version"] = True
+        entries["derived/journey-matrix.json"] = canonical_json_bytes(matrix)
+
+        rejected = verify_pre_live_journey_bundle(
+            _rebuild_journey_bundle(entries)
+        )
+
+        self.assertFalse(rejected["ok"], rejected)
+        self.assertIn(
+            "derived journey matrix schema_version is unsupported",
+            rejected["blockers"],
+        )
 
     def test_forged_product_matrix_and_report_fail_executable_replay(
         self,
@@ -1684,6 +1811,11 @@ def _rebuild_journey_bundle(entries: dict[str, bytes]) -> bytes:
         entries["derived/journey-matrix.json"]
     ).hexdigest()
     entries["manifest.json"] = canonical_json_bytes(root)
+    return _write_journey_bundle(entries)
+
+
+def _write_journey_bundle(entries: dict[str, bytes]) -> bytes:
+    payload_names = sorted(name for name in entries if name != "manifest.json")
     output = io.BytesIO()
     with zipfile.ZipFile(output, mode="w", compression=zipfile.ZIP_STORED) as archive:
         for name in ["manifest.json", *payload_names]:
