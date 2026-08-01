@@ -47,6 +47,8 @@ from starcraft_commander.micromachine_pre_live_provenance import (
     AUTHORITATIVE_REPLAY_REF_PREFIX,
     AUTHORITATIVE_REPLAY_REF_PATTERN,
     GITHUB_ACTIONS_PRODUCER_TIMEOUT_SECONDS,
+    GITHUB_ACTIONS_PROVENANCE_CLEANUP_RESERVE_SECONDS,
+    GITHUB_ACTIONS_PROVENANCE_JOB_TIMEOUT_MINUTES,
     ISOLATED_PYTHON_BOOTSTRAP,
     PRODUCER_POLICY_RELATIVE_PATH,
     SANITIZED_PRODUCER_ENV,
@@ -903,7 +905,26 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             '      VOI_PRODUCER_TIMEOUT_SECONDS: "1800"\n',
             provenance_job,
         )
-        self.assertIn("    timeout-minutes: 60\n", provenance_job)
+        self.assertIn(
+            "    timeout-minutes: "
+            f"{GITHUB_ACTIONS_PROVENANCE_JOB_TIMEOUT_MINUTES}\n",
+            provenance_job,
+        )
+        worst_case_seconds = (
+            (2 * provenance_module.CTEST_DISCOVERY_TIMEOUT_SECONDS)
+            + provenance_module.CTEST_EXECUTION_TIMEOUT_SECONDS
+            + (
+                REQUIRED_CTEST_COUNT
+                * provenance_module.CTEST_DIRECT_TIMEOUT_SECONDS
+            )
+            + provenance_module.BUILD_IDENTITY_PROBE_TIMEOUT_SECONDS
+            + GITHUB_ACTIONS_PRODUCER_TIMEOUT_SECONDS
+            + GITHUB_ACTIONS_PROVENANCE_CLEANUP_RESERVE_SECONDS
+        )
+        self.assertGreater(
+            GITHUB_ACTIONS_PROVENANCE_JOB_TIMEOUT_MINUTES * 60,
+            worst_case_seconds,
+        )
         self.assertIn(
             "      VOI_CANDIDATE_WORKSPACE: "
             "${{ github.workspace }}/candidate\n",
@@ -1024,11 +1045,60 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             '          "${GITHUB_WORKSPACE}"\n',
             provenance_job,
         )
-        self.assertNotIn("pre-live-build", ci_workflow)
-        self.assertNotIn("pre-live-producer-isolation", ci_workflow)
-        self.assertNotIn("pre-live-provenance", ci_workflow)
-        self.assertNotIn("github.token", ci_workflow)
-        self.assertNotIn("GITHUB_TOKEN", ci_workflow)
+        candidate_job = ci_workflow.split(
+            "  pre-live-candidate-qualification:\n",
+            1,
+        )[1].split(
+            "\n  pre-live-workflow-registration:\n",
+            1,
+        )[0]
+        registration_job = ci_workflow.split(
+            "  pre-live-workflow-registration:\n",
+            1,
+        )[1].split(
+            "\n  micromachine-macos-contracts:\n",
+            1,
+        )[0]
+        self.assertIn(
+            "      github.event_name == 'pull_request' &&\n"
+            "      github.event.pull_request.head.repo.id == "
+            "github.event.repository.id\n",
+            candidate_job,
+        )
+        self.assertIn("    runs-on: macos-14\n", candidate_job)
+        self.assertIn("    timeout-minutes: 90\n", candidate_job)
+        self.assertIn(
+            "          persist-credentials: false\n"
+            "          ref: ${{ github.event.pull_request.head.sha }}\n",
+            candidate_job,
+        )
+        self.assertIn(
+            "      - name: Build exact MicroMachine integration "
+            "without credentials\n",
+            candidate_job,
+        )
+        self.assertIn(
+            "          tests/test_micromachine_pre_live_journeys.py\n"
+            "          tests/test_micromachine_terran_capabilities.py\n",
+            candidate_job,
+        )
+        self.assertNotIn("github.token", candidate_job)
+        self.assertNotIn("GITHUB_TOKEN", candidate_job)
+        self.assertIn(
+            "    if: github.event_name == 'push'\n",
+            registration_job,
+        )
+        self.assertIn("      actions: read\n", registration_job)
+        self.assertIn(
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/"
+            "pre-live-provenance.yml",
+            registration_job,
+        )
+        self.assertIn(
+            'test "$(jq -r \'.state\' <<<"${workflow}")" = "active"\n',
+            registration_job,
+        )
+        self.assertNotIn("contents: write", ci_workflow)
         self.assertIn(
             "  micromachine-macos-contracts:\n    if: github.event_name == 'push'\n",
             ci_workflow,

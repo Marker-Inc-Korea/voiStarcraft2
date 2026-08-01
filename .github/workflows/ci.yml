@@ -35,6 +35,59 @@ jobs:
           bash -n integrations/micromachine/scripts/soak_macos_local.sh
           bash -n integrations/micromachine/scripts/soak_matrix_macos_local.sh
 
+  pre-live-candidate-qualification:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.id == github.event.repository.id
+    needs:
+      - unit-contracts
+    name: pre-live-candidate-qualification
+    runs-on: macos-14
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      ROOT_DIR: /private/tmp/voi-micromachine-runtime
+      BUILD_JOBS: "3"
+      VOI_RELEASE_COMMIT: ${{ github.event.pull_request.head.sha }}
+      VOI_MICROMACHINE_BINARY: /private/tmp/voi-micromachine-runtime/MicroMachine/build-latest-api/bin/MicroMachine
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Build exact MicroMachine integration without credentials
+        run: integrations/micromachine/scripts/build_macos_local.sh
+      - name: Verify deterministic pre-live candidate
+        run: >-
+          python3 -B -m unittest
+          tests/test_micromachine_pre_live_journeys.py
+          tests/test_micromachine_terran_capabilities.py
+
+  pre-live-workflow-registration:
+    if: github.event_name == 'push'
+    needs:
+      - unit-contracts
+    name: pre-live-workflow-registration
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Verify default-branch workflow registration
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          workflow="$(
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/pre-live-provenance.yml"
+          )"
+          test "$(jq -r '.path' <<<"${workflow}")" = \
+            ".github/workflows/pre-live-provenance.yml"
+          test "$(jq -r '.state' <<<"${workflow}")" = "active"
+
   micromachine-macos-contracts:
     if: github.event_name == 'push'
     needs:
