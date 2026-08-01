@@ -2221,6 +2221,16 @@ def _micromachine_operation_status_payload(
         if scope_id
         else f"{operation_id}\0{active_operation_generation}"
     )
+    operation_battlefield_identity = _mapping_child(
+        _mapping_child(
+            operation_telemetry_document,
+            "battlefield_overview",
+        ),
+        "identity",
+    )
+    battlefield_session_epoch = str(
+        operation_battlefield_identity.get("session_epoch", "") or ""
+    ).strip()
     operation_edit = _mapping_child(operation_vector, "operation_edit")
     if operation_telemetry is not None:
         telemetry_edit = {
@@ -2349,6 +2359,8 @@ def _micromachine_operation_status_payload(
     )
     payload = {
         "operation_key": operation_key,
+        "blackboard_scope_id": scope_id,
+        "battlefield_session_epoch": battlefield_session_epoch,
         "operation_id": operation_id,
         "operation_generation": active_operation_generation,
         "requested_operation_generation": operation_generation,
@@ -2408,7 +2420,7 @@ def _public_operation_family_evidence(
 
 def _battlefield_operation_index(
     battlefield_overview: Mapping[str, object] | None,
-) -> dict[tuple[str, str, int], dict[str, object]]:
+) -> dict[tuple[str, str, str, int, str], dict[str, object]]:
     if not isinstance(battlefield_overview, Mapping):
         return {}
     operations = battlefield_overview.get("operation_ownership")
@@ -2417,22 +2429,36 @@ def _battlefield_operation_index(
         (str, bytes, bytearray),
     ):
         return {}
-    index: dict[tuple[str, str, int], dict[str, object]] = {}
+    index: dict[tuple[str, str, str, int, str], dict[str, object]] = {}
     for operation in operations:
         if not isinstance(operation, Mapping):
             continue
         identity = _mapping_child(operation, "identity")
         update_id = str(identity.get("update_id", "") or "").strip()
+        scope = str(identity.get("scope", "") or "").strip()
+        session_epoch = str(
+            identity.get("session_epoch", "") or ""
+        ).strip()
         operation_id = str(operation.get("operation_id", "") or "").strip()
         generation = operation.get("generation")
         if (
             not update_id
+            or scope != f"operation:{operation_id}"
+            or not session_epoch
             or not operation_id
             or type(generation) is not int
             or int(generation) <= 0
         ):
             continue
-        index[(update_id, operation_id, int(generation))] = dict(operation)
+        index[
+            (
+                scope,
+                session_epoch,
+                operation_id,
+                int(generation),
+                update_id,
+            )
+        ] = dict(operation)
     return index
 
 
@@ -2441,6 +2467,13 @@ def _attach_battlefield_operation_projections(
     battlefield_overview: Mapping[str, object] | None,
 ) -> list[dict[str, object]]:
     index = _battlefield_operation_index(battlefield_overview)
+    overview_identity = _mapping_child(
+        battlefield_overview or {},
+        "identity",
+    )
+    session_epoch = str(
+        overview_identity.get("session_epoch", "") or ""
+    ).strip()
     attached: list[dict[str, object]] = []
     for operation in operations:
         item = dict(operation)
@@ -2454,17 +2487,61 @@ def _attach_battlefield_operation_projections(
         ).strip()
         operation_id = str(item.get("operation_id", "") or "").strip()
         generation = item.get("operation_generation")
-        projection = (
-            index.get((update_id, operation_id, int(generation)))
-            if update_id
-            and operation_id
+        scope = f"operation:{operation_id}" if operation_id else ""
+        operation_session_epoch = str(
+            item.get("battlefield_session_epoch", "") or ""
+        ).strip()
+        join_key = (
+            scope,
+            operation_session_epoch,
+            operation_id,
+            int(generation),
+            update_id,
+        ) if (
+            update_id
+            and scope
+            and session_epoch
+            and operation_session_epoch == session_epoch
             and type(generation) is int
             and int(generation) > 0
+        ) else None
+        projection = (
+            index.get(join_key)
+            if join_key is not None
             else None
         )
         item["battlefield_operation"] = (
             dict(projection) if projection is not None else None
         )
+        item["battlefield_projection_join"] = {
+            "status": "matched" if projection is not None else "missing",
+            "reason": (
+                ""
+                if projection is not None
+                else (
+                    "authoritative_overview_unavailable"
+                    if not isinstance(battlefield_overview, Mapping)
+                    else (
+                        "operation_session_epoch_missing"
+                        if not operation_session_epoch
+                        else (
+                            "operation_session_epoch_mismatch"
+                            if operation_session_epoch != session_epoch
+                            else "exact_projection_identity_not_found"
+                        )
+                    )
+                )
+            ),
+            "update_id": update_id,
+            "scope": scope,
+            "session_epoch": operation_session_epoch,
+            "operation_id": operation_id,
+            "generation": (
+                int(generation)
+                if type(generation) is int and int(generation) > 0
+                else 0
+            ),
+        }
         attached.append(item)
     return attached
 
@@ -6556,10 +6633,6 @@ class _OperationSemanticTimelineReducer:
             battlefield_operation,
             "operation_completion",
         )
-        projection_identity = _mapping_child(
-            battlefield_operation,
-            "identity",
-        )
         lifetime = _mapping_child(
             battlefield_operation,
             "operation_lifetime",
@@ -10337,6 +10410,62 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     border-top: 1px solid var(--line); color: var(--muted);
     font-size: 0.78rem; line-height: 1.45;
   }
+  .battlefield-integrity-alert {
+    position: relative; z-index: 1; margin: 10px 0 0; padding: 9px 10px;
+    border: 1px solid rgba(255, 107, 138, 0.38); border-radius: 12px;
+    color: #ffb4c4; background: rgba(255, 107, 138, 0.1);
+    font-size: 0.72rem; line-height: 1.45; font-weight: 800;
+    overflow-wrap: anywhere;
+  }
+  .battlefield-integrity-alert[hidden] { display: none; }
+  .battlefield-detail-stack {
+    position: relative; z-index: 1; display: grid; gap: 8px; margin-top: 10px;
+  }
+  .battlefield-detail-disclosure {
+    min-width: 0; border: 1px solid rgba(136, 169, 255, 0.18);
+    border-radius: 13px; background: rgba(255, 255, 255, 0.035);
+  }
+  .battlefield-detail-disclosure > summary {
+    cursor: pointer; list-style: none; padding: 9px 10px;
+    color: var(--ink); font-size: 0.7rem; font-weight: 900;
+    overflow-wrap: anywhere;
+  }
+  .battlefield-detail-disclosure > summary::-webkit-details-marker {
+    display: none;
+  }
+  .battlefield-detail-disclosure > summary::before {
+    content: "▸"; display: inline-block; margin-right: 7px; color: var(--accent);
+    transition: transform 0.16s ease;
+  }
+  .battlefield-detail-disclosure[open] > summary::before {
+    transform: rotate(90deg);
+  }
+  .battlefield-detail-list {
+    display: grid; gap: 7px; padding: 0 9px 9px;
+  }
+  .battlefield-detail-row {
+    min-width: 0; padding: 8px 9px; border: 1px solid rgba(136, 169, 255, 0.15);
+    border-radius: 10px; background: rgba(0, 0, 0, 0.12);
+  }
+  .battlefield-detail-row strong {
+    display: block; color: var(--accent); font-size: 0.66rem;
+    line-height: 1.35; overflow-wrap: anywhere;
+  }
+  .battlefield-detail-row span {
+    display: block; margin-top: 4px; color: var(--ink); font-size: 0.68rem;
+    line-height: 1.45; font-weight: 800; overflow-wrap: anywhere;
+  }
+  .battlefield-detail-row.integrity-alert {
+    border-color: rgba(255, 107, 138, 0.34);
+    background: rgba(255, 107, 138, 0.07);
+  }
+  .battlefield-detail-row.integrity-alert strong { color: #ff9eb2; }
+  .battlefield-raw-evidence {
+    max-height: 220px; overflow: auto; margin: 0 9px 9px; padding: 9px;
+    border: 1px solid var(--line); border-radius: 10px; background: rgba(0, 0, 0, 0.24);
+    color: var(--ink); font-size: 0.64rem; line-height: 1.4;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
   .dashboard-grid {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
     gap: 12px; margin: 0;
@@ -11015,6 +11144,41 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
         </div>
       </dl>
       <p id="battlefield-control-summary" class="battlefield-control-summary" data-i18n="battlefieldControlWaiting">명령을 입력하면 MicroMachine의 실제 배정·실행·효과 확인 상태를 추적합니다.</p>
+      <p id="battlefield-integrity-alert"
+         class="battlefield-integrity-alert"
+         role="status"
+         aria-live="polite"
+         aria-atomic="true"
+         hidden></p>
+      <div class="battlefield-detail-stack">
+        <details id="battlefield-operation-disclosure"
+                 class="battlefield-detail-disclosure">
+          <summary id="battlefield-operation-detail-summary">작전 상세</summary>
+          <div id="battlefield-operation-details"
+               class="battlefield-detail-list"
+               role="list"></div>
+        </details>
+        <details id="battlefield-base-disclosure"
+                 class="battlefield-detail-disclosure">
+          <summary id="battlefield-base-detail-summary">기지 방어 상세</summary>
+          <div id="battlefield-base-details"
+               class="battlefield-detail-list"
+               role="list"></div>
+        </details>
+        <details id="battlefield-transfer-disclosure"
+                 class="battlefield-detail-disclosure">
+          <summary id="battlefield-transfer-detail-summary">병력 이관 상세</summary>
+          <div id="battlefield-transfer-details"
+               class="battlefield-detail-list"
+               role="list"></div>
+        </details>
+        <details id="battlefield-raw-disclosure"
+                 class="battlefield-detail-disclosure">
+          <summary>Canonical JSON</summary>
+          <pre id="battlefield-raw-evidence"
+               class="battlefield-raw-evidence"></pre>
+        </details>
+      </div>
     </section>
     <dl class="dashboard-grid">
       <div class="metric-card"><dt data-i18n="minerals">미네랄</dt><dd id="state-minerals">-</dd></div>
@@ -16805,14 +16969,22 @@ function commandOperationData(operation, parentData) {
       updateId ||
       ""
     ),
+    operation_console_execution_owner_vector:
+      operation.operation_console_execution_owner_vector || {},
     operation_disposition: disposition,
     operation_mission: String(operation.mission || "operation"),
     operation_edit: operation.operation_edit || {},
     operation_convergence: operation.operation_convergence || {},
+    battlefield_projection_join:
+      operation.battlefield_projection_join || null,
     battlefield_operation: operation.battlefield_operation || null,
     battlefield_overview: parentData && parentData.battlefield_overview || null,
+    battlefield_projection:
+      parentData && parentData.battlefield_projection || null,
     battlefield_projection_identity:
       parentData && parentData.battlefield_projection_identity || null,
+    battlefield_projection_integrity:
+      parentData && parentData.battlefield_projection_integrity || null,
     battlefield_projection_fingerprint: String(
       parentData && parentData.battlefield_projection_fingerprint || ""
     ),
@@ -17000,6 +17172,19 @@ function operationCanonicalProjectionMatches(data) {
   var projection = data && data.battlefield_operation;
   if (!projection || typeof projection !== "object") { return false; }
   var identity = projection.identity || {};
+  var join = data && data.battlefield_projection_join;
+  if (
+    join &&
+    typeof join === "object" &&
+    String(join.status || "") &&
+    String(join.status || "") !== "matched"
+  ) {
+    return false;
+  }
+  var overview = data && data.battlefield_overview;
+  var overviewIdentity = overview && typeof overview === "object"
+    ? overview.identity || {}
+    : {};
   var operationId = String(data.operation_id || "");
   var projectionUpdateId = String(
     data.operation_console_execution_owner_update_id ||
@@ -17008,10 +17193,16 @@ function operationCanonicalProjectionMatches(data) {
   );
   var generation = Number(data.operation_generation || 0);
   var projectionGeneration = Number(projection.generation || 0);
+  var projectionScope = String(identity.scope || "");
+  var projectionEpoch = String(identity.session_epoch || "");
+  var overviewEpoch = String(overviewIdentity.session_epoch || "");
   return Boolean(
     operationId &&
     projectionUpdateId &&
     generation > 0 &&
+    projectionScope === "operation:" + operationId &&
+    projectionEpoch &&
+    (!overviewEpoch || projectionEpoch === overviewEpoch) &&
     String(identity.update_id || "") === projectionUpdateId &&
     String(projection.operation_id || "") === operationId &&
     projectionGeneration === generation &&
@@ -17661,7 +17852,73 @@ function operationLifetimeSummary(data) {
   return parts.join(" · ");
 }
 
+function operationCanonicalIdentitySummary(data) {
+  if (!operationCanonicalProjectionMatches(data)) {
+    var join = data && data.battlefield_projection_join || {};
+    return commandUiText(
+      "무결성 경고 · canonical identity join 실패 · ",
+      "integrity alert · canonical identity join failed · ",
+      "完整性警告 · 权威身份关联失败 · "
+    ) + String(join.reason || "missing_evidence");
+  }
+  var projection = operationProjection(data);
+  var identity = projection.identity || {};
+  return String(identity.scope || "-") +
+    " · epoch " + String(identity.session_epoch || "-") +
+    " · " + String(projection.operation_id || "-") +
+    "#" + Number(projection.generation || 0) +
+    " · f" + Number(identity.game_frame || 0);
+}
+
+function operationMissionTaskSummary(data) {
+  if (!operationCanonicalProjectionMatches(data)) {
+    return commandUiText(
+      "알 수 없음 · canonical operation join 없음",
+      "unknown · canonical operation join missing",
+      "未知 · 缺少权威作战关联"
+    );
+  }
+  var vector = data && data.operation_console_execution_owner_vector || {};
+  if (!Object.keys(vector).length) {
+    vector = data && data.update && data.update.vector || {};
+  }
+  var task = vector && vector.tactical_task || {};
+  var taskType = String(task.task_type || "");
+  return String(data.operation_mission || "operation") +
+    (taskType ? " · " + taskType : "");
+}
+
+function operationOwnershipLaneSummary(data, record) {
+  if (!operationCanonicalProjectionMatches(data)) {
+    return commandUiText(
+      "무결성 경고 · ownership/lane evidence 없음",
+      "integrity alert · ownership/lane evidence missing",
+      "完整性警告 · 缺少所有权/通道证据"
+    );
+  }
+  var ownership = operationProjection(data).operation_ownership || {};
+  var lane = operationRecordLane(record);
+  var laneLabels = {
+    planning: commandUiText("해석/편성", "planning", "解析/编组"),
+    executing: commandUiText("실행 중", "executing", "执行中"),
+    completed: commandUiText("관측 완료", "completed", "观测完成"),
+    waiting: commandUiText("대기/차단", "waiting/blocked", "等待/阻塞")
+  };
+  return String(ownership.integrity_status || "missing_evidence") +
+    commandUiText(" · 소유 ", " · owners ", " · 所有者 ") +
+    Number(ownership.owner_count || 0) +
+    commandUiText(" · lane ", " · lane ", " · 通道 ") +
+    String(laneLabels[lane] || lane);
+}
+
 function operationForceSummary(data) {
+  if (!operationCanonicalProjectionMatches(data)) {
+    return commandUiText(
+      "무결성 경고 · canonical ownership join 없음",
+      "integrity alert · canonical ownership join missing",
+      "完整性警告 · 缺少权威所有权关联"
+    );
+  }
   var projection = operationProjection(data);
   var ownership = projection.operation_ownership || {};
   var launch = projection.operation_launch_policy || {};
@@ -17680,10 +17937,23 @@ function operationForceSummary(data) {
 }
 
 function operationLaunchSummary(data) {
+  if (!operationCanonicalProjectionMatches(data)) {
+    return commandUiText(
+      "알 수 없음 · canonical readiness evidence 없음",
+      "unknown · canonical readiness evidence missing",
+      "未知 · 缺少权威就绪证据"
+    );
+  }
   var launch = operationProjection(data).operation_launch_policy || {};
   var decision = String(launch.decision || "unavailable");
+  var minimum = Number(launch.min_units || 0);
+  var requested = Number(launch.max_units || minimum);
   var launchCount = Number(launch.launch_count || 0);
   var missing = Number(launch.missing_count || 0);
+  var available = Number(
+    operationProjection(data).operation_ownership &&
+    operationProjection(data).operation_ownership.owner_count || 0
+  );
   var safety = launch.partial_launch_allowed === true
     ? (
       launch.partial_launch_safe === true
@@ -17691,12 +17961,23 @@ function operationLaunchSummary(data) {
         : commandUiText("부분 출동 불가", "partial launch unsafe", "部分出动不安全")
     )
     : commandUiText("정원 출동", "full-force policy", "满编策略");
-  return decision + " · " + launchCount +
-    commandUiText(" 출동 · 부족 ", " launched · missing ", " 出动 · 缺少 ") +
-    missing + " · " + safety;
+  return decision +
+    commandUiText(" · 최소 ", " · minimum ", " · 最低 ") + minimum +
+    commandUiText(" · 요청 ", " · requested ", " · 请求 ") + requested +
+    commandUiText(" · 가용 ", " · available ", " · 可用 ") + available +
+    commandUiText(" · 출동 ", " · launch ", " · 出动 ") + launchCount +
+    commandUiText(" · 부족 ", " · missing ", " · 缺少 ") + missing +
+    " · " + safety;
 }
 
 function operationCompletionSummary(data) {
+  if (!operationCanonicalProjectionMatches(data)) {
+    return commandUiText(
+      "알 수 없음 · canonical observation join 없음",
+      "unknown · canonical observation join missing",
+      "未知 · 缺少权威观测关联"
+    );
+  }
   var completion = operationProjection(data).operation_completion || {};
   var observed = [];
   if (completion.movement_observed === true) {
@@ -17717,6 +17998,14 @@ function operationCompletionSummary(data) {
 }
 
 function operationBlockerSummary(data) {
+  if (!operationCanonicalProjectionMatches(data)) {
+    var join = data && data.battlefield_projection_join || {};
+    return commandUiText(
+      "무결성 경고 · ",
+      "integrity alert · ",
+      "完整性警告 · "
+    ) + String(join.reason || "canonical_projection_join_missing");
+  }
   var projection = operationProjection(data);
   var launch = projection.operation_launch_policy || {};
   var lifetime = projection.operation_lifetime || {};
@@ -17821,6 +18110,7 @@ function operationEditResolution(data) {
 }
 
 function operationConvergenceSummary(data) {
+  if (!operationCanonicalProjectionMatches(data)) { return ""; }
   var convergence = data && data.operation_convergence;
   if (!convergence || typeof convergence !== "object") { return ""; }
   var requirements = Array.isArray(convergence.requirements)
@@ -17829,6 +18119,7 @@ function operationConvergenceSummary(data) {
   var requirementParts = requirements.map(function(requirement) {
     var unitType = String(requirement && requirement.unit_type || "")
       .replace(/^TERRAN_/, "");
+    var role = String(requirement && requirement.role || "");
     var represented = Number(
       requirement && requirement.represented_count || 0
     );
@@ -17851,7 +18142,15 @@ function operationConvergenceSummary(data) {
         return String(item || "").replace(/^TERRAN_/, "");
       }).filter(Boolean)
       : [];
-    var text = unitType + " " + represented + "/" + target;
+    var prerequisites = Array.isArray(
+      requirement && requirement.prerequisites
+    )
+      ? requirement.prerequisites.map(function(item) {
+        return String(item || "").replace(/^TERRAN_/, "");
+      }).filter(Boolean)
+      : [];
+    var text = unitType + (role ? "/" + role : "") +
+      " " + represented + "/" + target;
     var pipelineParts = [];
     if (completed > 0) {
       pipelineParts.push(
@@ -17877,6 +18176,12 @@ function operationConvergenceSummary(data) {
     if (missing > 0 && missingPrerequisites.length) {
       text += commandUiText(" · 필요 ", " · needs ", " · 需要 ") +
         missingPrerequisites.join(" → ");
+    } else if (prerequisites.length) {
+      text += commandUiText(
+        " · 선행조건 충족 ",
+        " · prerequisites ready ",
+        " · 前置条件就绪 "
+      ) + prerequisites.join(" → ");
     }
     var blockerLabels = {
       supply_blocked: commandUiText(
@@ -18856,13 +19161,25 @@ function renderOperationCard(record) {
   details.className = "operation-card-details";
   operationAppendDetail(
     details,
+    commandUiText("Canonical identity", "Canonical identity", "权威身份"),
+    operationCanonicalIdentitySummary(data),
+    "operation-card-verification"
+  );
+  operationAppendDetail(
+    details,
+    commandUiText("소유권/lane", "Ownership/lane", "所有权/通道"),
+    operationOwnershipLaneSummary(data, record),
+    "operation-card-verification"
+  );
+  operationAppendDetail(
+    details,
     commandUiText("배정 전력", "Assigned force", "已分配兵力"),
     commandConsoleAssignedForce(model)
   );
   operationAppendDetail(
     details,
     commandUiText("작전/태스크", "Mission/task", "作战/任务"),
-    String(data.operation_mission || "operation")
+    operationMissionTaskSummary(data)
   );
   if (data.squad_order) {
     operationAppendDetail(
@@ -18897,7 +19214,11 @@ function renderOperationCard(record) {
   if (operationConvergenceSummary(data)) {
     operationAppendDetail(
       details,
-      commandUiText("병력 수렴", "Force convergence", "兵力收敛"),
+      commandUiText(
+        "편성/생산/선행조건",
+        "Composition/production/prerequisites",
+        "编组/生产/前置条件"
+      ),
       operationConvergenceSummary(data),
       "operation-card-verification"
     );
@@ -19611,9 +19932,437 @@ function renderActiveCommandFailure(text, error, pendingId) {
   }, true);
 }
 
+function battlefieldAppendDetailRow(container, title, body, alert) {
+  if (!container) { return; }
+  var row = document.createElement("article");
+  row.className = "battlefield-detail-row" +
+    (alert ? " integrity-alert" : "");
+  row.setAttribute("role", "listitem");
+  var heading = document.createElement("strong");
+  heading.textContent = title;
+  var content = document.createElement("span");
+  content.textContent = body;
+  row.appendChild(heading);
+  row.appendChild(content);
+  container.appendChild(row);
+}
+
+function battlefieldSetDetailSummary(id, label, count) {
+  setMicroMachineText(
+    id,
+    label + " · " + Number(count || 0)
+  );
+}
+
+function battlefieldBooleanEvidence(value) {
+  if (value === true) {
+    return commandUiText("충족", "yes", "满足");
+  }
+  if (value === false) {
+    return commandUiText("미충족", "no", "未满足");
+  }
+  return commandUiText(
+    "증거 없음",
+    "missing evidence",
+    "缺少证据"
+  );
+}
+
+function battlefieldOperationDataRows(data) {
+  var rows = [];
+  var seen = {};
+  function append(candidate) {
+    if (!candidate || !operationCanonicalProjectionMatches(candidate)) {
+      return;
+    }
+    var key = String(candidate.operation_id || "") + "\u0000" +
+      Number(candidate.operation_generation || 0);
+    if (!key || seen[key]) { return; }
+    seen[key] = true;
+    rows.push(candidate);
+  }
+  if (data && data.operation_id && data.battlefield_operation) {
+    append(data);
+  }
+  (data && Array.isArray(data.operations) ? data.operations : [])
+    .forEach(function(operation) {
+      append(commandOperationData(operation, data));
+    });
+  return rows;
+}
+
+function battlefieldOperationDataByIdentity(rows, operationId, generation) {
+  for (var index = 0; index < rows.length; index += 1) {
+    if (
+      String(rows[index].operation_id || "") === String(operationId || "") &&
+      Number(rows[index].operation_generation || 0) === Number(generation || 0)
+    ) {
+      return rows[index];
+    }
+  }
+  return null;
+}
+
+function battlefieldOperationLaneFromProjection(operation, matchedData) {
+  if (matchedData) {
+    var scopeId = String(matchedData.blackboard_scope_id || "");
+    var operationId = String(matchedData.operation_id || "");
+    var record = operationRecords[
+      operationRecordKey(scopeId, operationId)
+    ];
+    if (
+      record &&
+      Number(record.operationGeneration || 0) ===
+        Number(matchedData.operation_generation || 0)
+    ) {
+      return operationRecordLane(record);
+    }
+  }
+  var completion = operation && operation.operation_completion || {};
+  var launch = operation && operation.operation_launch_policy || {};
+  if (
+    completion.terminal === true &&
+    String(completion.state || "").toLowerCase() === "completed"
+  ) {
+    return "completed";
+  }
+  if (
+    ["wait", "waiting", "blocked"].indexOf(
+      String(launch.decision || "").toLowerCase()
+    ) >= 0 ||
+    String(launch.blocker || "")
+  ) {
+    return "waiting";
+  }
+  var stage = String(
+    operation && operation.identity && operation.identity.stage || ""
+  ).toLowerCase();
+  return (
+    stage.indexOf("action") >= 0 ||
+    stage.indexOf("submitted") >= 0 ||
+    stage.indexOf("observed") >= 0
+  ) ? "executing" : "planning";
+}
+
+function battlefieldProjectionIntegrityMessages(data, overview) {
+  var messages = [];
+  var integrity = data && data.battlefield_projection_integrity;
+  if (
+    integrity &&
+    typeof integrity === "object" &&
+    String(integrity.status || "") &&
+    String(integrity.status || "") !== "valid"
+  ) {
+    messages.push(
+      "projection_integrity=" + String(integrity.status) +
+      " · blockers=" + Number(integrity.blocker_count || 0)
+    );
+  }
+  var projection = data && data.battlefield_projection;
+  var blockers = projection && Array.isArray(projection.blockers)
+    ? projection.blockers
+    : [];
+  blockers.slice(0, 4).forEach(function(blocker) {
+    messages.push(
+      String(blocker && blocker.code || "projection_blocked") +
+      (blocker && blocker.path ? " · " + blocker.path : "")
+    );
+  });
+  if (overview && Number(overview.duplicate_owner_count || 0) > 0) {
+    messages.push(
+      "duplicate_ownership=" + Number(overview.duplicate_owner_count)
+    );
+  }
+  var identity = overview && overview.identity || {};
+  if (
+    overview &&
+    (
+      !String(identity.scope || "") ||
+      !String(identity.session_epoch || "") ||
+      !Number.isFinite(Number(identity.game_frame))
+    )
+  ) {
+    messages.push("canonical_overview_identity_incomplete");
+  }
+  return messages;
+}
+
+function renderBattlefieldCanonicalDetails(data, overview) {
+  var operationContainer = document.getElementById(
+    "battlefield-operation-details"
+  );
+  var baseContainer = document.getElementById("battlefield-base-details");
+  var transferContainer = document.getElementById(
+    "battlefield-transfer-details"
+  );
+  [operationContainer, baseContainer, transferContainer]
+    .forEach(function(container) {
+      if (container) { container.textContent = ""; }
+    });
+  var raw = document.getElementById("battlefield-raw-evidence");
+  if (raw) {
+    raw.textContent = overview ? JSON.stringify(overview, null, 2) : "";
+  }
+  if (!overview) {
+    battlefieldSetDetailSummary(
+      "battlefield-operation-detail-summary",
+      commandUiText("작전 상세", "Operation detail", "作战详情"),
+      0
+    );
+    battlefieldSetDetailSummary(
+      "battlefield-base-detail-summary",
+      commandUiText("기지 방어 상세", "Base defense detail", "基地防御详情"),
+      0
+    );
+    battlefieldSetDetailSummary(
+      "battlefield-transfer-detail-summary",
+      commandUiText("병력 이관 상세", "Transfer detail", "兵力转移详情"),
+      0
+    );
+    return;
+  }
+
+  var matchedRows = battlefieldOperationDataRows(data || {});
+  var operations = Array.isArray(overview.operation_ownership)
+    ? overview.operation_ownership
+    : [];
+  battlefieldSetDetailSummary(
+    "battlefield-operation-detail-summary",
+    commandUiText("작전 상세", "Operation detail", "作战详情"),
+    operations.length
+  );
+  operations.forEach(function(operation) {
+    var operationId = String(operation && operation.operation_id || "");
+    var generation = Number(operation && operation.generation || 0);
+    var identity = operation && operation.identity || {};
+    var ownership = operation && operation.operation_ownership || {};
+    var launch = operation && operation.operation_launch_policy || {};
+    var matched = battlefieldOperationDataByIdentity(
+      matchedRows,
+      operationId,
+      generation
+    );
+    var lane = battlefieldOperationLaneFromProjection(operation, matched);
+    var mission = matched
+      ? operationMissionTaskSummary(matched)
+      : commandUiText(
+        "mission/task 증거 없음",
+        "mission/task evidence missing",
+        "缺少任务证据"
+      );
+    var composition = matched
+      ? operationConvergenceSummary(matched)
+      : "";
+    var body = String(identity.scope || "missing_scope") +
+      " · epoch " + String(identity.session_epoch || "missing_epoch") +
+      " · " + mission +
+      commandUiText(" · lane ", " · lane ", " · 通道 ") + lane +
+      commandUiText(" · 소유 ", " · owned ", " · 所有 ") +
+      Number(ownership.owner_count || 0) +
+      " (" + String(ownership.integrity_status || "missing_evidence") + ")" +
+      commandUiText(" · 최소/요청/가용/출동/부족 ", " · min/requested/available/launch/missing ", " · 最低/请求/可用/出动/缺少 ") +
+      [
+        Number(launch.min_units || 0),
+        Number(launch.max_units || 0),
+        Number(ownership.owner_count || 0),
+        Number(launch.launch_count || 0),
+        Number(launch.missing_count || 0)
+      ].join("/") +
+      " · " + (composition || commandUiText(
+        "편성/선행조건 증거 없음",
+        "composition/prerequisite evidence missing",
+        "缺少编组/前置条件证据"
+      ));
+    battlefieldAppendDetailRow(
+      operationContainer,
+      operationId + "#" + generation,
+      body,
+      !matched ||
+        String(ownership.integrity_status || "") !== "valid" ||
+        !String(identity.scope || "") ||
+        !String(identity.session_epoch || "")
+    );
+  });
+
+  var bases = Array.isArray(overview.bases) ? overview.bases : [];
+  var autonomousOwners = Array.isArray(overview.autonomous_ownership)
+    ? overview.autonomous_ownership
+    : [];
+  battlefieldSetDetailSummary(
+    "battlefield-base-detail-summary",
+    commandUiText("기지 방어 상세", "Base defense detail", "基地防御详情"),
+    bases.length
+  );
+  bases.forEach(function(base) {
+    var baseId = String(base && base.base_id || "");
+    var anchor = String(base && base.semantic_anchor || "");
+    var readiness = base && base.base_readiness || {};
+    var evidenceClass = String(readiness.evidence_class || "");
+    var evidenceFrame = readiness.last_evidence_frame;
+    var threatKnown = Boolean(
+      evidenceClass &&
+      Number.isFinite(Number(evidenceFrame)) &&
+      Number(evidenceFrame) >= 0
+    );
+    var autonomous = autonomousOwners.filter(function(owner) {
+      var ownerId = String(owner && owner.owner_id || "").toLowerCase();
+      var baseToken = baseId.toLowerCase();
+      var anchorToken = anchor.toLowerCase();
+      return Boolean(
+        ownerId &&
+        (
+          (baseToken && ownerId.indexOf(baseToken) >= 0) ||
+          (anchorToken && ownerId.indexOf(anchorToken) >= 0)
+        )
+      );
+    }).map(function(owner) {
+      return String(owner.owner_id || "autonomous") + " " +
+        Number(owner.owner_count || 0);
+    });
+    var explicit = matchedRows.filter(function(operationData) {
+      if (String(operationData.operation_mission || "") !== "defense") {
+        return false;
+      }
+      var route = operationProjection(operationData).operation_route || {};
+      var routeText = [
+        route.location_intent,
+        route.resolved_target_label,
+        route.target_type
+      ].join(" ").toLowerCase();
+      var baseToken = baseId.toLowerCase();
+      var anchorToken = anchor.toLowerCase();
+      return Boolean(
+        routeText &&
+        (
+          (baseToken && routeText.indexOf(baseToken) >= 0) ||
+          (anchorToken && routeText.indexOf(anchorToken) >= 0)
+        )
+      );
+    }).map(function(operationData) {
+      return String(operationData.operation_id || "") + "#" +
+        Number(operationData.operation_generation || 0);
+    });
+    var protectedMinimum = Array.isArray(readiness.protected_minimum)
+      ? readiness.protected_minimum.map(function(item) {
+        return String(item.family || "unknown_family") + "/" +
+          String(item.role || "unknown_role") + " " +
+          Number(item.count || 0);
+      }).join(", ")
+      : "";
+    var threat = threatKnown
+      ? "ground " + Number(readiness.ground_threat || 0) +
+        " · air " + Number(readiness.air_threat || 0) +
+        " · source " + evidenceClass +
+        " · f" + Number(evidenceFrame)
+      : commandUiText(
+        "위협 unknown · missing evidence",
+        "threat unknown · missing evidence",
+        "威胁未知 · 缺少证据"
+      );
+    var body = anchor + " · " + threat +
+      commandUiText(" · 방어 ", " · defenders ", " · 防御者 ") +
+      Number(readiness.assigned_defender_count || 0) + "/" +
+      Number(readiness.required_defender_count || 0) +
+      " · ground " +
+      Number(readiness.ground_capable_defender_count || 0) + "/" +
+      Number(readiness.required_ground_defender_count || 0) +
+      " · air " +
+      Number(readiness.air_capable_defender_count || 0) + "/" +
+      Number(readiness.required_air_defender_count || 0) +
+      commandUiText(" · 명시 ", " · explicit ", " · 显式 ") +
+      (explicit.length ? explicit.join(", ") : "missing_evidence") +
+      commandUiText(" · 자율 ", " · autonomous ", " · 自主 ") +
+      (autonomous.length ? autonomous.join(", ") : "none_projected") +
+      commandUiText(" · 보호 ", " · protected ", " · 保护 ") +
+      (protectedMinimum || "missing_evidence") +
+      " · " + String(readiness.reason || "missing_evidence");
+    battlefieldAppendDetailRow(
+      baseContainer,
+      (baseId || "unknown_base") + " · " +
+        String(readiness.readiness_state || "unknown"),
+      body,
+      !threatKnown ||
+        !protectedMinimum ||
+        !String(readiness.readiness_state || "")
+    );
+  });
+
+  var transfer = overview.transfer_availability || {};
+  var entries = Array.isArray(transfer.entries) ? transfer.entries : [];
+  battlefieldSetDetailSummary(
+    "battlefield-transfer-detail-summary",
+    commandUiText("병력 이관 상세", "Transfer detail", "兵力转移详情"),
+    entries.length
+  );
+  entries.forEach(function(entry) {
+    var inputs = entry && entry.atomic_revalidation_inputs || {};
+    var sourceId = String(entry && entry.source_owner_id || "");
+    var destinationId = String(
+      inputs.counterpart_operation_id ||
+      entry && entry.destination_operation_id ||
+      ""
+    );
+    var source = operationProjectionById(overview, sourceId);
+    var destination = operationProjectionById(overview, destinationId);
+    var sourceLaunch = source && source.operation_launch_policy || {};
+    var requestedCount = inputs.requested === true
+      ? String(Number(inputs.requested_count || 0))
+      : commandUiText("미요청", "not requested", "未请求");
+    var blocker = String(
+      entry && entry.atomic_runtime_blocker ||
+      (!destination ? "transfer_destination_identity_missing" : "") ||
+      ""
+    );
+    var readinessBits = [
+      "atomic=" + battlefieldBooleanEvidence(
+        inputs.atomic_revalidation_ready
+      ),
+      "ownership=" + battlefieldBooleanEvidence(
+        inputs.ownership_integrity
+      ),
+      "protected=" + battlefieldBooleanEvidence(
+        entry && entry.safety_evidence &&
+        entry.safety_evidence.protected_minimum_respected
+      )
+    ];
+    var body = sourceId + "#" +
+      Number(source && source.generation || 0) +
+      " → " + (destinationId || "missing_destination") + "#" +
+      Number(destination && destination.generation || 0) +
+      commandUiText(" · 요청 ", " · requested ", " · 请求 ") +
+      requestedCount +
+      commandUiText(" · 이관 가능 ", " · transferable ", " · 可转移 ") +
+      Number(entry && entry.transferable_count || 0) + "/" +
+      Number(entry && entry.source_owner_count || 0) +
+      commandUiText(" · 보호/source 최소 ", " · protected/source minimum ", " · 保护/来源最低 ") +
+      Number(entry && entry.protected_minimum || 0) + "/" +
+      Number(sourceLaunch.min_units || 0) +
+      " · " + readinessBits.join(" · ") +
+      " · " + (blocker || (
+        entry && entry.transfer_safe === true
+          ? commandUiText("재검증 준비", "ready to revalidate", "可重新验证")
+          : commandUiText("blocker 증거 없음", "blocker evidence missing", "缺少阻塞证据")
+      ));
+    battlefieldAppendDetailRow(
+      transferContainer,
+      sourceId + " → " + (destinationId || "missing_destination"),
+      body,
+      !source ||
+        !destination ||
+        inputs.atomic_revalidation_ready !== true ||
+        entry.transfer_safe !== true ||
+        Boolean(blocker)
+    );
+  });
+}
+
 function renderBattlefieldControlOverview(data, model) {
   var overview = data && data.battlefield_overview;
   overview = overview && typeof overview === "object" ? overview : null;
+  var integrityMessages = battlefieldProjectionIntegrityMessages(
+    data || {},
+    overview
+  );
   var identity = overview && overview.identity || {};
   var frame = overview ? identity.game_frame : null;
   var badge = document.getElementById("battlefield-link-badge");
@@ -19623,7 +20372,8 @@ function renderBattlefieldControlOverview(data, model) {
       String(overview.authority || "") &&
       frame !== null &&
       frame !== undefined &&
-      frame !== ""
+      frame !== "" &&
+      !integrityMessages.length
     );
     badge.className = "battlefield-link-badge" + (linked ? " control-linked" : "");
     badge.textContent = linked ? t("battlefieldLinkConnected") : t("battlefieldLinkWaiting");
@@ -19648,6 +20398,16 @@ function renderBattlefieldControlOverview(data, model) {
         "正在等待权威 battlefield_overview。"
       )
     );
+    var missingAlert = document.getElementById(
+      "battlefield-integrity-alert"
+    );
+    if (missingAlert) {
+      missingAlert.hidden = integrityMessages.length === 0;
+      missingAlert.textContent = integrityMessages.length
+        ? integrityMessages.join(" | ")
+        : "";
+    }
+    renderBattlefieldCanonicalDetails(data || {}, null);
     return;
   }
   var explicit = Number(overview.explicit_operation_owned_count || 0);
@@ -19674,6 +20434,22 @@ function renderBattlefieldControlOverview(data, model) {
   var bases = Array.isArray(overview.bases) ? overview.bases : [];
   var readinessParts = bases.map(function(base) {
     var readiness = base && base.base_readiness || {};
+    var evidenceClass = String(readiness.evidence_class || "");
+    var evidenceFrame = readiness.last_evidence_frame;
+    var threatEvidence = Boolean(
+      evidenceClass &&
+      Number.isFinite(Number(evidenceFrame)) &&
+      Number(evidenceFrame) >= 0
+    )
+      ? commandUiText(" · 위협 ", " · threat ", " · 威胁 ") +
+        Number(readiness.ground_threat || 0) + "/" +
+        Number(readiness.air_threat || 0) +
+        " · " + evidenceClass + " f" + Number(evidenceFrame)
+      : commandUiText(
+        " · 위협 unknown/missing evidence",
+        " · threat unknown/missing evidence",
+        " · 威胁未知/缺少证据"
+      );
     var protectedMinimum = Array.isArray(readiness.protected_minimum)
       ? readiness.protected_minimum.map(function(item) {
         return String(item.family || item.role || "unit") + " " +
@@ -19683,9 +20459,17 @@ function renderBattlefieldControlOverview(data, model) {
     return String(base.semantic_anchor || base.base_id || "base") + ": " +
       String(readiness.readiness_state || "unknown") +
       (readiness.reason ? " · " + readiness.reason : "") +
+      threatEvidence +
+      commandUiText(" · 방어 ", " · defenders ", " · 防御者 ") +
+      Number(readiness.assigned_defender_count || 0) + "/" +
+      Number(readiness.required_defender_count || 0) +
       (protectedMinimum
         ? commandUiText(" · 보호 ", " · protected ", " · 保护 ") + protectedMinimum
-        : "");
+        : commandUiText(
+          " · 보호 evidence missing",
+          " · protected evidence missing",
+          " · 缺少保护证据"
+        ));
   });
   setMicroMachineText(
     "battlefield-readiness",
@@ -19695,11 +20479,25 @@ function renderBattlefieldControlOverview(data, model) {
   var transfer = overview.transfer_availability || {};
   var transferEntries = Array.isArray(transfer.entries) ? transfer.entries : [];
   var transferParts = transferEntries.map(function(entry) {
-    return String(entry.source_owner_id || "owner") + ": " +
+    var inputs = entry && entry.atomic_revalidation_inputs || {};
+    var destinationId = String(
+      inputs.counterpart_operation_id ||
+      entry.destination_operation_id ||
+      ""
+    );
+    var source = operationProjectionById(
+      overview,
+      entry.source_owner_id
+    );
+    var destination = operationProjectionById(overview, destinationId);
+    return String(entry.source_owner_id || "owner") + "#" +
+      Number(source && source.generation || 0) + " → " +
+      (destinationId || "missing_destination") + "#" +
+      Number(destination && destination.generation || 0) + ": " +
       Number(entry.transferable_count || 0) + "/" +
       Number(entry.source_owner_count || 0) +
       (entry.transfer_safe === true
-        ? commandUiText(" 안전", " safe", " 安全")
+        ? commandUiText(" 재검증 대기", " revalidation ready", " 可重新验证")
         : " · " + String(entry.atomic_runtime_blocker || "unsafe"));
   });
   setMicroMachineText(
@@ -19708,7 +20506,13 @@ function renderBattlefieldControlOverview(data, model) {
   );
   setMicroMachineText(
     "battlefield-integrity",
-    duplicate === 0
+    integrityMessages.length
+      ? commandUiText(
+        "경고 · ",
+        "alert · ",
+        "警告 · "
+      ) + integrityMessages.join(" | ")
+      : duplicate === 0
       ? commandUiText("정상 · 중복 0", "valid · duplicates 0", "有效 · 重复 0")
       : commandUiText("경고 · 중복 ", "alert · duplicates ", "警告 · 重复 ") + duplicate
   );
@@ -19745,6 +20549,12 @@ function renderBattlefieldControlOverview(data, model) {
       commandUiText(" · 자율 소유 ", " · autonomous ", " · 自主所有 ") + autonomous +
       commandUiText(" · 미배정 ", " · unassigned ", " · 未分配 ") + unassigned
   );
+  var alert = document.getElementById("battlefield-integrity-alert");
+  if (alert) {
+    alert.hidden = integrityMessages.length === 0;
+    alert.textContent = integrityMessages.join(" | ");
+  }
+  renderBattlefieldCanonicalDetails(data || {}, overview);
 }
 
 function summarizeMicroMachineManagers(managers) {

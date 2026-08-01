@@ -5096,6 +5096,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         first["identity"].update(
             {
                 "update_id": "update-a",
+                "scope": "operation:shared-operation",
                 "operation_id": "shared-operation",
                 "generation": 3,
             }
@@ -5110,17 +5111,20 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             [
                 {
                     "update_id": "update-a",
+                    "battlefield_session_epoch": "1700000000000",
                     "operation_id": "shared-operation",
                     "operation_generation": 3,
                 },
                 {
                     "update_id": "update-b",
+                    "battlefield_session_epoch": "1700000000000",
                     "operation_id": "shared-operation",
                     "operation_generation": 3,
                 },
                 {
                     "update_id": "update-c",
                     "operation_console_execution_owner_update_id": "update-a",
+                    "battlefield_session_epoch": "1700000000000",
                     "operation_id": "shared-operation",
                     "operation_generation": 3,
                 },
@@ -5140,6 +5144,129 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "update-a",
             attached[2]["battlefield_operation"]["identity"]["update_id"],
         )
+        self.assertTrue(
+            all(
+                item["battlefield_projection_join"]["status"] == "matched"
+                for item in attached
+            )
+        )
+
+    def test_battlefield_projection_attachment_rejects_foreign_join_identity(self):
+        overview = deepcopy(
+            battlefield_projection_telemetry()["battlefield_overview"]
+        )
+        operation = overview["operation_ownership"][0]
+        operation["identity"].update(
+            {
+                "update_id": "join-update",
+                "scope": "operation:join-operation",
+                "session_epoch": 1700000000000,
+                "operation_id": "join-operation",
+                "generation": 4,
+            }
+        )
+        operation["operation_id"] = "join-operation"
+        operation["generation"] = 4
+        overview["identity"]["session_epoch"] = 1700000000000
+        overview["operation_ownership"] = [operation]
+
+        cases = {
+            "wrong_update": {
+                "update_id": "foreign-update",
+                "battlefield_session_epoch": "1700000000000",
+                "operation_id": "join-operation",
+                "operation_generation": 4,
+            },
+            "wrong_generation": {
+                "update_id": "join-update",
+                "battlefield_session_epoch": "1700000000000",
+                "operation_id": "join-operation",
+                "operation_generation": 5,
+            },
+            "wrong_operation": {
+                "update_id": "join-update",
+                "battlefield_session_epoch": "1700000000000",
+                "operation_id": "foreign-operation",
+                "operation_generation": 4,
+            },
+        }
+        for label, payload in cases.items():
+            with self.subTest(label=label):
+                attached = web_gui._attach_battlefield_operation_projections(
+                    [payload],
+                    overview,
+                )[0]
+                self.assertIsNone(attached["battlefield_operation"])
+                self.assertEqual(
+                    "missing",
+                    attached["battlefield_projection_join"]["status"],
+                )
+                self.assertEqual(
+                    "exact_projection_identity_not_found",
+                    attached["battlefield_projection_join"]["reason"],
+                )
+
+        for label, operation_epoch, reason in (
+            (
+                "missing_operation_session",
+                "",
+                "operation_session_epoch_missing",
+            ),
+            (
+                "stale_operation_session",
+                "1699999999999",
+                "operation_session_epoch_mismatch",
+            ),
+        ):
+            with self.subTest(label=label):
+                attached = web_gui._attach_battlefield_operation_projections(
+                    [
+                        {
+                            "update_id": "join-update",
+                            "battlefield_session_epoch": operation_epoch,
+                            "operation_id": "join-operation",
+                            "operation_generation": 4,
+                        }
+                    ],
+                    overview,
+                )[0]
+                self.assertIsNone(attached["battlefield_operation"])
+                self.assertEqual(
+                    reason,
+                    attached["battlefield_projection_join"]["reason"],
+                )
+
+        wrong_scope = deepcopy(overview)
+        wrong_scope["operation_ownership"][0]["identity"]["scope"] = (
+            "operation:foreign-operation"
+        )
+        wrong_session = deepcopy(overview)
+        wrong_session["operation_ownership"][0]["identity"]["session_epoch"] = (
+            1699999999999
+        )
+        for label, candidate in (
+            ("wrong_scope", wrong_scope),
+            ("wrong_session", wrong_session),
+        ):
+            with self.subTest(label=label):
+                attached = web_gui._attach_battlefield_operation_projections(
+                    [
+                        {
+                            "update_id": "join-update",
+                            "battlefield_session_epoch": (
+                                "1700000000000"
+                            ),
+                            "operation_id": "join-operation",
+                            "operation_generation": 4,
+                        }
+                    ],
+                    candidate,
+                )[0]
+                self.assertIsNone(attached["battlefield_operation"])
+                self.assertEqual(
+                    "missing",
+                    attached["battlefield_projection_join"]["status"],
+                )
 
     def test_real_filesystem_status_preserves_battlefield_overview(self):
         from starcraft_commander.micromachine_runtime import (
@@ -11809,7 +11936,7 @@ class SessionLoopBridgeTest(unittest.TestCase):
             ),
             blackboard_scope_id=scope_id,
         )
-        current = reducer.observe(
+        reducer.observe(
             semantic_operation_payload(
                 frame=10,
                 session_epoch=222,
@@ -15175,7 +15302,21 @@ var nodes = {
       "battlefield-transfer": element("battlefield-transfer"),
       "battlefield-integrity": element("battlefield-integrity"),
       "battlefield-production-waits": element("battlefield-production-waits"),
-      "battlefield-control-summary": element("battlefield-control-summary")
+      "battlefield-control-summary": element("battlefield-control-summary"),
+      "battlefield-integrity-alert": element("battlefield-integrity-alert"),
+      "battlefield-operation-detail-summary":
+        element("battlefield-operation-detail-summary"),
+      "battlefield-operation-details":
+        element("battlefield-operation-details"),
+      "battlefield-base-detail-summary":
+        element("battlefield-base-detail-summary"),
+      "battlefield-base-details": element("battlefield-base-details"),
+      "battlefield-transfer-detail-summary":
+        element("battlefield-transfer-detail-summary"),
+      "battlefield-transfer-details":
+        element("battlefield-transfer-details"),
+      "battlefield-raw-evidence":
+        element("battlefield-raw-evidence", "pre")
 };
 nodes["log"] = logBox;
 nodes["llm-model-select"].value = "gpt-test";
@@ -18651,16 +18792,116 @@ const assert = require("assert");
 
   // The overview consumes only the canonical battlefield projection. A
   // representative manager snapshot cannot change ownership/readiness totals.
+  var detailedDefense = operationResult(
+    "hold-main",
+    "overview-defense-update",
+    "본진 방어",
+    "defense",
+    327,
+    "queued_or_assigned",
+    actionStages("defense").slice(0, 4),
+    2
+  );
+  detailedDefense.operation_console_execution_owner_update_id =
+    "overview-defense-update";
+  detailedDefense.operation_console_execution_owner_vector = {
+    operation_id: "hold-main",
+    generation: 2,
+    tactical_task: { task_type: "defend_with_units" }
+  };
+  detailedDefense.operation_convergence = {
+    target_count: 4,
+    represented_count: 3,
+    missing_count: 1,
+    blocker: "missing_addon",
+    requirements: [
+      {
+        unit_type: "TERRAN_MARINE",
+        role: "defender",
+        target_count: 4,
+        assigned_count: 3,
+        represented_count: 3,
+        completed_count: 2,
+        in_progress_count: 1,
+        queued_count: 0,
+        missing_count: 1,
+        production_blocker: "missing_addon",
+        prerequisites: ["TERRAN_BARRACKS", "TERRAN_BARRACKSTECHLAB"],
+        missing_prerequisites: ["TERRAN_BARRACKSTECHLAB"]
+      }
+    ]
+  };
+  Object.assign(detailedDefense.battlefield_operation.identity, {
+    update_id: "overview-defense-update",
+    scope: "operation:hold-main",
+    session_epoch: 1700000000000,
+    operation_id: "hold-main",
+    generation: 2,
+    game_frame: 327
+  });
+  detailedDefense.battlefield_operation.operation_id = "hold-main";
+  detailedDefense.battlefield_operation.generation = 2;
+  detailedDefense.battlefield_operation.operation_route.location_intent =
+    "self_main";
+  detailedDefense.battlefield_operation.operation_route
+    .resolved_target_label = "self_main";
+  detailedDefense.battlefield_operation.operation_ownership.owner_count = 3;
+  detailedDefense.battlefield_operation.operation_launch_policy.min_units = 3;
+  detailedDefense.battlefield_operation.operation_launch_policy.max_units = 4;
+  detailedDefense.battlefield_operation.operation_launch_policy.launch_count = 3;
+  detailedDefense.battlefield_operation.operation_launch_policy.missing_count = 1;
+  detailedDefense.battlefield_operation.operation_launch_policy.decision = "wait";
+  detailedDefense.battlefield_operation.operation_launch_policy.blocker =
+    "missing_addon";
+
+  var transferDestination = operationResult(
+    "reserve-bravo",
+    "overview-reserve-update",
+    "예비대",
+    "defense",
+    327,
+    "queued_or_assigned",
+    actionStages("defense").slice(0, 4),
+    5
+  );
+  Object.assign(transferDestination.battlefield_operation.identity, {
+    update_id: "overview-reserve-update",
+    scope: "operation:reserve-bravo",
+    session_epoch: 1700000000000,
+    operation_id: "reserve-bravo",
+    generation: 5,
+    game_frame: 327
+  });
+  transferDestination.battlefield_operation.operation_id = "reserve-bravo";
+  transferDestination.battlefield_operation.generation = 5;
+  transferDestination.battlefield_operation.operation_ownership.owner_count = 2;
   var authoritativeOverview = {
     schema_version: 2,
     authority: "micromachine_cpp",
-    identity: { game_frame: 327 },
+    identity: {
+      update_id: "overview-update",
+      scope: "battlefield",
+      session_epoch: 1700000000000,
+      generation: 8,
+      stage: "observed",
+      game_frame: 327
+    },
     eligible_combat_count: 11,
     explicit_operation_owned_count: 6,
     autonomous_owned_count: 3,
     unassigned_count: 2,
     duplicate_owner_count: 0,
-    operation_ownership: [],
+    operation_ownership: [
+      detailedDefense.battlefield_operation,
+      transferDestination.battlefield_operation
+    ],
+    autonomous_ownership: [
+      {
+        owner_id: "BaseDefense:main",
+        owner_count: 3,
+        integrity_status: "valid"
+      }
+    ],
     bases: [
       {
         base_id: "main",
@@ -18668,26 +18909,68 @@ const assert = require("assert");
         base_readiness: {
           readiness_state: "ready",
           reason: "protected_minimum_satisfied",
+          ground_threat: 2,
+          air_threat: 1,
+          observed_enemy_strength: 3,
+          last_evidence_frame: 326,
+          evidence_class: "observed_enemy_units",
+          assigned_defender_count: 5,
+          ground_capable_defender_count: 4,
+          air_capable_defender_count: 2,
+          required_defender_count: 5,
+          required_ground_defender_count: 2,
+          required_air_defender_count: 1,
           protected_minimum: [
-            { family: "marine", count: 2 }
+            { family: "marine", role: "defender", count: 2 }
           ]
         }
       }
     ],
     transfer_availability: {
+      evaluated_at_frame: 327,
+      atomic_revalidation_required: true,
       entries: [
         {
-          source_owner_id: "assault-bravo",
-          source_owner_count: 4,
-          transferable_count: 2,
+          source_owner_id: "hold-main",
+          source_owner_count: 3,
+          protected_minimum: 2,
+          transferable_count: 1,
           transfer_safe: true,
-          atomic_runtime_blocker: ""
+          atomic_runtime_blocker: "",
+          safety_evidence: {
+            evaluated_at_frame: 327,
+            protected_minimum_respected: true,
+            atomic_revalidation_required: true
+          },
+          atomic_revalidation_inputs: {
+            requested: true,
+            requested_count: 1,
+            source_owner_id: "hold-main",
+            counterpart_operation_id: "reserve-bravo",
+            requested_generation: 2,
+            counterpart_generation: 5,
+            requested_source_generation: 3,
+            requested_counterpart_generation: 6,
+            source_active: true,
+            destination_active: true,
+            ownership_integrity: true,
+            operation_assignments_match: true,
+            squad_assignments_match: true,
+            action_assignments_match: true,
+            role_assignments_match: true,
+            atomic_revalidation_ready: true
+          }
         }
       ]
     }
   };
   renderBattlefieldControlOverview({
     battlefield_overview: authoritativeOverview,
+    battlefield_projection_integrity: {
+      status: "valid",
+      blocker_count: 0
+    },
+    operations: [detailedDefense, transferDestination],
     intervention: {
       manager_snapshot: {
         CombatCommander: { combat_unit_count: 999 },
@@ -18701,8 +18984,87 @@ const assert = require("assert");
   assert.strictEqual(nodes["battlefield-unassigned"].textContent, "2");
   assert(nodes["battlefield-readiness"].textContent.includes("self_main"));
   assert(nodes["battlefield-readiness"].textContent.includes("marine 2"));
-  assert(nodes["battlefield-transfer"].textContent.includes("2/4"));
+  assert(nodes["battlefield-readiness"].textContent.includes("observed_enemy_units"));
+  assert(nodes["battlefield-transfer"].textContent.includes("hold-main#2"));
+  assert(nodes["battlefield-transfer"].textContent.includes("reserve-bravo#5"));
   assert(!nodes["battlefield-control-summary"].textContent.includes("999"));
+  assert(nodes["battlefield-operation-details"].textContent.includes(
+    "operation:hold-main"
+  ));
+  assert(nodes["battlefield-operation-details"].textContent.includes(
+    "MARINE/defender"
+  ));
+  assert(nodes["battlefield-operation-details"].textContent.includes(
+    "BARRACKSTECHLAB"
+  ));
+  assert(nodes["battlefield-base-details"].textContent.includes(
+    "observed_enemy_units"
+  ));
+  assert(nodes["battlefield-base-details"].textContent.includes(
+    "BaseDefense:main 3"
+  ));
+  assert(nodes["battlefield-base-details"].textContent.includes(
+    "hold-main#2"
+  ));
+  assert(nodes["battlefield-transfer-details"].textContent.includes(
+    "hold-main#2"
+  ));
+  assert(nodes["battlefield-transfer-details"].textContent.includes(
+    "reserve-bravo#5"
+  ));
+  assert(nodes["battlefield-transfer-details"].textContent.includes(
+    "atomic=충족"
+  ));
+  assert(nodes["battlefield-raw-evidence"].textContent.includes(
+    '"authority": "micromachine_cpp"'
+  ));
+
+  var unrelatedPrerequisite = JSON.parse(JSON.stringify(detailedDefense));
+  unrelatedPrerequisite.operation_convergence.requirements[0]
+    .missing_prerequisites = ["TERRAN_FUSIONCORE"];
+  unrelatedPrerequisite.battlefield_operation.identity.session_epoch =
+    1699999999999;
+  renderBattlefieldControlOverview({
+    battlefield_overview: authoritativeOverview,
+    battlefield_projection_integrity: {
+      status: "valid",
+      blocker_count: 0
+    },
+    operations: [unrelatedPrerequisite, transferDestination]
+  });
+  assert(!nodes["battlefield-operation-details"].textContent.includes(
+    "FUSIONCORE"
+  ), "unrelated prerequisite evidence must fail closed");
+  assert(nodes["battlefield-operation-details"].textContent.includes(
+    "편성/선행조건 증거 없음"
+  ), "stale canonical joins must render localized missing evidence");
+
+  renderBattlefieldControlOverview({
+    battlefield_overview: null,
+    battlefield_projection_integrity: {
+      status: "blocked",
+      blocker_count: 2
+    },
+    battlefield_projection: {
+      blockers: [
+        {
+          code: "manager_disagreement",
+          path: "$.battlefield_overview.operation_ownership"
+        },
+        {
+          code: "same_frame_payload_conflict",
+          path: "$.battlefield_overview.identity.game_frame"
+        }
+      ]
+    }
+  });
+  assert(nodes["battlefield-integrity-alert"].textContent.includes(
+    "manager_disagreement"
+  ));
+  assert(nodes["battlefield-integrity-alert"].textContent.includes(
+    "same_frame_payload_conflict"
+  ));
+  assert.strictEqual(nodes["battlefield-operation-details"].children.length, 0);
 
   // Contextual resolution controls are separate from the five standard card
   // actions and fail closed until canonical runtime safety says they are safe.
