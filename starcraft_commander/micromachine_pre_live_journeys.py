@@ -5221,7 +5221,13 @@ def verify_pre_live_journey_bundle(
         return _verification_result(["journey bundle must be bytes"])
     if len(bundle) > MAX_JOURNEY_BUNDLE_BYTES:
         return _verification_result(["journey bundle exceeds the size limit"])
-    if _archive_framing_error(bundle) is not None:
+    if (
+        _archive_framing_error(
+            bundle,
+            require_exact_local_flags=True,
+        )
+        is not None
+    ):
         return _verification_result(
             ["journey bundle ZIP framing is invalid"]
         )
@@ -5240,13 +5246,21 @@ def verify_pre_live_journey_bundle(
                     info.date_time != DETERMINISTIC_ZIP_TIMESTAMP
                     or info.compress_type != zipfile.ZIP_STORED
                     or info.create_system != 3
+                    or info.create_version != 20
+                    or info.extract_version != 20
+                    or info.reserved != 0
+                    or info.flag_bits != 0
                     or info.external_attr != _REGULAR_FILE_MODE << 16
+                    or info.internal_attr != 0
+                    or info.volume != 0
                     or info.extra
                     or info.comment
                 ):
                     blockers.append(f"non-deterministic ZIP metadata: {info.filename}")
                 if info.file_size > MAX_JOURNEY_MEMBER_BYTES:
                     blockers.append(f"ZIP member exceeds size limit: {info.filename}")
+            if blockers:
+                return _verification_result(blockers)
             root = _load_canonical_json_object(
                 archive.read("manifest.json"),
                 label="root manifest",

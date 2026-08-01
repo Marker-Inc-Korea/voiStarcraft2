@@ -7,6 +7,7 @@ import io
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -906,6 +907,35 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
             rejected["blockers"],
         )
 
+    def test_bundle_rejects_general_purpose_flag_mutations(self) -> None:
+        bundle = build_pre_live_journey_bundle(MICROMACHINE_BINARY)
+        for name, local, central, blocker in (
+            (
+                "local-only strong encryption",
+                True,
+                False,
+                "journey bundle ZIP framing is invalid",
+            ),
+            (
+                "matching strong encryption",
+                True,
+                True,
+                "non-deterministic ZIP metadata: manifest.json",
+            ),
+        ):
+            with self.subTest(name=name):
+                rejected = verify_pre_live_journey_bundle(
+                    _add_first_entry_flags(
+                        bundle,
+                        0x0040,
+                        local=local,
+                        central=central,
+                    )
+                )
+
+                self.assertFalse(rejected["ok"], rejected)
+                self.assertIn(blocker, rejected["blockers"])
+
     def test_forged_product_matrix_and_report_fail_executable_replay(
         self,
     ) -> None:
@@ -1623,6 +1653,27 @@ def _rebuild_journey_bundle(entries: dict[str, bytes]) -> bytes:
             info.external_attr = 0o100644 << 16
             archive.writestr(info, entries[name])
     return output.getvalue()
+
+
+def _add_first_entry_flags(
+    bundle: bytes,
+    flags: int,
+    *,
+    local: bool,
+    central: bool,
+) -> bytes:
+    with zipfile.ZipFile(io.BytesIO(bundle), mode="r") as archive:
+        local_offset = archive.infolist()[0].header_offset
+        central_offset = archive.start_dir
+    mutated = bytearray(bundle)
+    for enabled, offset in (
+        (local, local_offset + 6),
+        (central, central_offset + 8),
+    ):
+        if enabled:
+            current = struct.unpack_from("<H", mutated, offset)[0]
+            struct.pack_into("<H", mutated, offset, current | flags)
+    return bytes(mutated)
 
 
 if __name__ == "__main__":
