@@ -21,6 +21,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -96,6 +97,8 @@ MAX_BUILD_REPORT_BYTES: Final[int] = 16 * 1024 * 1024
 MAX_CMAKE_CACHE_BYTES: Final[int] = 16 * 1024 * 1024
 MAX_PRODUCER_SOURCE_BYTES: Final[int] = 16 * 1024 * 1024
 MAX_PRODUCER_EXECUTABLE_BYTES: Final[int] = 512 * 1024 * 1024
+MAX_PROCESS_STDOUT_BYTES: Final[int] = 8 * 1024 * 1024
+MAX_PROCESS_STDERR_BYTES: Final[int] = 8 * 1024 * 1024
 MAX_REPLAY_LEDGER_BYTES: Final[int] = 16 * 1024 * 1024
 MAX_REPLAY_ENTRIES: Final[int] = 100_000
 MAX_GITHUB_TOKEN_BYTES: Final[int] = 4096
@@ -2110,9 +2113,31 @@ def _build_micromachine_identity_with_boundary(
             completed.stderr,
         )
 
+    def run_ctest_registry_discovery(
+        argv: Sequence[str],
+        build_dir: Path,
+        environment: Mapping[str, str],
+        timeout: float,
+    ) -> subprocess.CompletedProcess[object]:
+        completed = _run_dedicated_uid_native_command(
+            argv,
+            cwd=str(build_dir),
+            env=environment,
+            timeout=timeout,
+            uid=execution_identity[0],
+            gid=execution_identity[1],
+        )
+        return subprocess.CompletedProcess(
+            list(argv),
+            completed.returncode,
+            completed.stdout,
+            completed.stderr,
+        )
+
     return build_micromachine_build_identity(
         config,
         binary_identity_runner=run_binary_identity_probe,
+        ctest_registry_runner=run_ctest_registry_discovery,
     )
 
 
@@ -6823,6 +6848,125 @@ def _descriptor_execution_path(descriptor: int) -> str:
     return str(path)
 
 
+def _communicate_process_bounded(
+    process: subprocess.Popen[bytes],
+    *,
+    argv: Sequence[str],
+    timeout: float,
+    producer_uid: int | None,
+    residual_error_prefix: str,
+) -> tuple[bytes, bytes]:
+    if process.stdout is None or process.stderr is None:
+        raise OSError("bounded process capture requires stdout and stderr pipes")
+
+    buffers = {
+        "stdout": bytearray(),
+        "stderr": bytearray(),
+    }
+    limits = {
+        "stdout": MAX_PROCESS_STDOUT_BYTES,
+        "stderr": MAX_PROCESS_STDERR_BYTES,
+    }
+    overflowed: list[str] = []
+    reader_errors: list[BaseException] = []
+    state_changed = threading.Event()
+
+    def read_pipe(name: str, pipe: Any) -> None:
+        try:
+            while True:
+                remaining = limits[name] + 1 - len(buffers[name])
+                chunk = pipe.read(min(64 * 1024, max(1, remaining)))
+                if not chunk:
+                    return
+                if not isinstance(chunk, bytes):
+                    raise TypeError(f"{name} pipe returned non-bytes output")
+                buffers[name].extend(chunk)
+                if len(buffers[name]) > limits[name]:
+                    overflowed.append(name)
+                    return
+        except BaseException as exc:
+            reader_errors.append(exc)
+        finally:
+            state_changed.set()
+
+    threads = [
+        threading.Thread(
+            target=read_pipe,
+            args=("stdout", process.stdout),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=read_pipe,
+            args=("stderr", process.stderr),
+            daemon=True,
+        ),
+    ]
+    for thread in threads:
+        thread.start()
+
+    deadline = time.monotonic() + timeout
+    failure: str | None = None
+    while process.poll() is None:
+        if overflowed:
+            failure = "output_limit"
+            break
+        if reader_errors:
+            failure = "reader_error"
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            failure = "timeout"
+            break
+        state_changed.wait(min(0.02, remaining))
+        state_changed.clear()
+
+    residual_pids: tuple[int, ...] = ()
+    if failure is not None:
+        _kill_and_reap_process(process, producer_uid=producer_uid)
+    elif producer_uid is not None:
+        residual_pids = _terminate_producer_uid_processes(producer_uid)
+
+    for thread in threads:
+        thread.join(timeout=1.0)
+    if any(thread.is_alive() for thread in threads):
+        for pipe in (process.stdout, process.stderr):
+            try:
+                pipe.close()
+            except OSError:
+                pass
+        for thread in threads:
+            thread.join(timeout=1.0)
+        if failure is None:
+            failure = "reader_stalled"
+
+    stdout = bytes(buffers["stdout"][: MAX_PROCESS_STDOUT_BYTES])
+    stderr = bytes(buffers["stderr"][: MAX_PROCESS_STDERR_BYTES])
+    if failure == "timeout":
+        raise subprocess.TimeoutExpired(
+            list(argv),
+            timeout,
+            output=stdout,
+            stderr=stderr,
+        )
+    if failure == "output_limit" or overflowed:
+        streams = ", ".join(sorted(set(overflowed))) or "process output"
+        raise OSError(
+            f"{streams} exceeded the bounded capture limit"
+        )
+    if failure == "reader_error" or reader_errors:
+        raise OSError(
+            f"bounded process output capture failed: {reader_errors[0]}"
+        )
+    if failure == "reader_stalled":
+        raise OSError("bounded process output readers did not terminate")
+    if residual_pids:
+        raise OSError(
+            residual_error_prefix
+            + ", ".join(str(pid) for pid in residual_pids)
+        )
+    return stdout, stderr
+
+
 def _run_authenticated_python_exec(
     argv: Sequence[str],
     *,
@@ -6930,35 +7074,19 @@ def _run_authenticated_python_exec(
             start_new_session=True,
             **credential_options,
         )
-        timed_out = False
-        try:
-            stdout, stderr = process.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired as exc:
-            timed_out = True
-            stdout, stderr = _finish_timed_out_process(
-                process,
-                producer_uid=(
-                    producer_identity[0]
-                    if producer_identity is not None
-                    else None
-                ),
-            )
-            raise subprocess.TimeoutExpired(
-                list(argv),
-                timeout,
-                output=stdout,
-                stderr=stderr,
-            ) from exc
-        finally:
-            if producer_identity is not None and not timed_out:
-                residual_pids = _terminate_producer_uid_processes(
-                    producer_identity[0]
-                )
-                if residual_pids:
-                    raise OSError(
-                        "producer left detached descendants under dedicated UID: "
-                        + ", ".join(str(pid) for pid in residual_pids)
-                    )
+        stdout, stderr = _communicate_process_bounded(
+            process,
+            argv=argv,
+            timeout=timeout,
+            producer_uid=(
+                producer_identity[0]
+                if producer_identity is not None
+                else None
+            ),
+            residual_error_prefix=(
+                "producer left detached descendants under dedicated UID: "
+            ),
+        )
         return subprocess.CompletedProcess(
             list(argv),
             process.returncode,
@@ -7108,30 +7236,16 @@ def _run_dedicated_uid_native_command(
         extra_groups=(),
         umask=0o077,
     )
-    timed_out = False
-    try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        timed_out = True
-        stdout, stderr = _finish_timed_out_process(
-            process,
-            producer_uid=uid,
-        )
-        raise subprocess.TimeoutExpired(
-            list(argv),
-            timeout,
-            output=stdout,
-            stderr=stderr,
-        ) from exc
-    finally:
-        if not timed_out:
-            residual_pids = _terminate_producer_uid_processes(uid)
-            if residual_pids:
-                raise OSError(
-                    "native verifier command left detached descendants under "
-                    "dedicated UID: "
-                    + ", ".join(str(pid) for pid in residual_pids)
-                )
+    stdout, stderr = _communicate_process_bounded(
+        process,
+        argv=argv,
+        timeout=timeout,
+        producer_uid=uid,
+        residual_error_prefix=(
+            "native verifier command left detached descendants under "
+            "dedicated UID: "
+        ),
+    )
     return subprocess.CompletedProcess(
         list(argv),
         process.returncode,
@@ -7140,15 +7254,16 @@ def _run_dedicated_uid_native_command(
     )
 
 
-def _finish_timed_out_process(
+def _kill_and_reap_process(
     process: subprocess.Popen[bytes],
     *,
     producer_uid: int | None,
-) -> tuple[bytes, bytes]:
+) -> None:
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
-        process.kill()
+        if process.poll() is None:
+            process.kill()
     try:
         process.wait(timeout=1.0)
     except subprocess.TimeoutExpired as exc:
@@ -7156,16 +7271,22 @@ def _finish_timed_out_process(
         try:
             process.wait(timeout=1.0)
         except subprocess.TimeoutExpired as final_exc:
-            raise OSError("timed-out producer main process could not be reaped") from (
-                final_exc
-            )
+            raise OSError("producer main process could not be reaped") from final_exc
         else:
             if process.returncode is None:
                 raise OSError(
-                    "timed-out producer main process has no reaped status"
+                    "producer main process has no reaped status"
                 ) from exc
     if producer_uid is not None:
         _terminate_producer_uid_processes(producer_uid)
+
+
+def _finish_timed_out_process(
+    process: subprocess.Popen[bytes],
+    *,
+    producer_uid: int | None,
+) -> tuple[bytes, bytes]:
+    _kill_and_reap_process(process, producer_uid=producer_uid)
     return process.communicate()
 
 

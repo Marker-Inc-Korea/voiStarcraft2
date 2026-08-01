@@ -47,7 +47,12 @@ BinaryIdentityRunner = Callable[
     [Sequence[str], Path],
     subprocess.CompletedProcess[object],
 ]
+CTestRegistryRunner = Callable[
+    [Sequence[str], Path, Mapping[str, str], float],
+    subprocess.CompletedProcess[object],
+]
 CMAKE_CTEST_COMMAND_PREFIX: Final[str] = "CMAKE_CTEST_COMMAND:INTERNAL="
+CTEST_REGISTRY_TIMEOUT_SECONDS: Final[float] = 120.0
 DEFAULT_MICROMACHINE_COMMIT: Final[str] = "eb893161371dab975a0a7e600f9e250ac03ec1ef"
 DEFAULT_S2CLIENT_COMMIT: Final[str] = "614acc00abb5355e4c94a1b0279b46e9d845b7ce"
 DEFAULT_MICROMACHINE_PATCH: Final[Path] = (
@@ -887,6 +892,7 @@ def build_micromachine_build_identity(
     config: MicroMachineBuildIdentityConfig,
     *,
     binary_identity_runner: BinaryIdentityRunner | None = None,
+    ctest_registry_runner: CTestRegistryRunner | None = None,
 ) -> dict[str, object]:
     """Create a machine-readable identity report without modifying worktrees."""
 
@@ -935,7 +941,10 @@ def build_micromachine_build_identity(
         native_test_failures: list[dict[str, object]] = []
     else:
         native_test_attestation, native_test_failures = (
-            _native_test_artifact_attestation(config)
+            _native_test_artifact_attestation(
+                config,
+                ctest_registry_runner=ctest_registry_runner,
+            )
         )
     failures.extend(native_test_failures)
     if s2client_build_root is None:
@@ -2736,6 +2745,7 @@ def _ctest_registry_attestation(
     *,
     ctest_path: Path,
     build_dir: Path,
+    command_runner: CTestRegistryRunner | None = None,
 ) -> tuple[dict[str, object] | None, list[dict[str, object]]]:
     failures: list[dict[str, object]] = []
     argv = [
@@ -2756,19 +2766,30 @@ def _ctest_registry_attestation(
             ],
         )
     try:
-        completed = subprocess.run(
-            argv,
-            cwd=str(build_dir),
-            check=False,
-            capture_output=True,
-            text=True,
-            shell=False,
-            env={
-                "LANG": "C",
-                "LC_ALL": "C",
-                "PATH": "/usr/bin:/bin",
-            },
-        )
+        environment = {
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PATH": "/usr/bin:/bin",
+        }
+        if command_runner is None:
+            completed = subprocess.run(
+                argv,
+                cwd=str(build_dir),
+                stdin=subprocess.DEVNULL,
+                check=False,
+                capture_output=True,
+                text=True,
+                shell=False,
+                timeout=CTEST_REGISTRY_TIMEOUT_SECONDS,
+                env=environment,
+            )
+        else:
+            completed = command_runner(
+                argv,
+                build_dir,
+                environment,
+                CTEST_REGISTRY_TIMEOUT_SECONDS,
+            )
     except Exception as exc:
         return (
             None,
@@ -2796,7 +2817,19 @@ def _ctest_registry_attestation(
                 "returncode": completed.returncode,
             }
         )
-    if completed.stderr:
+    stdout = completed.stdout
+    stderr = completed.stderr
+    if isinstance(stdout, bytes):
+        try:
+            stdout = stdout.decode("utf-8")
+        except UnicodeDecodeError:
+            stdout = None
+    if isinstance(stderr, bytes):
+        try:
+            stderr = stderr.decode("utf-8")
+        except UnicodeDecodeError:
+            stderr = None
+    if stderr:
         failures.append(
             {
                 "code": "ctest_registry_discovery_stderr",
@@ -2804,7 +2837,7 @@ def _ctest_registry_attestation(
             }
         )
     try:
-        payload = json.loads(completed.stdout)
+        payload = json.loads(stdout)
     except (TypeError, json.JSONDecodeError) as exc:
         failures.append(
             {
@@ -2874,6 +2907,8 @@ def _ctest_registry_attestation(
 
 def _native_test_artifact_attestation(
     config: MicroMachineBuildIdentityConfig,
+    *,
+    ctest_registry_runner: CTestRegistryRunner | None = None,
 ) -> tuple[dict[str, object] | None, list[dict[str, object]]]:
     failures: list[dict[str, object]] = []
     build_root = _secure_directory_root_identity(
@@ -2961,6 +2996,7 @@ def _native_test_artifact_attestation(
         registry, registry_failures = _ctest_registry_attestation(
             ctest_path=ctest_path,
             build_dir=build_dir,
+            command_runner=ctest_registry_runner,
         )
         failures.extend(registry_failures)
 

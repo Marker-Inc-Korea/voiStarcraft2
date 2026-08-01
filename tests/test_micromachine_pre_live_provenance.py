@@ -3955,29 +3955,57 @@ class LocalProducerTest(unittest.TestCase):
         ) as directory:
             snapshot_path = Path(directory) / "MicroMachine.snapshot"
             snapshot_path.write_bytes(b"fixture")
-            completed = subprocess.CompletedProcess(
-                [str(snapshot_path), "--voi-build-input-identity"],
-                0,
-                b"sha256:" + (b"a" * 64) + b"\n",
-                b"",
-            )
+            ctest_environment = {
+                "LANG": "C",
+                "LC_ALL": "C",
+                "PATH": "/usr/bin:/bin",
+            }
+
+            def run_native(
+                argv: object,
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess[bytes]:
+                del kwargs
+                command = list(argv)
+                stdout = (
+                    b"sha256:" + (b"a" * 64) + b"\n"
+                    if "--voi-build-input-identity" in command
+                    else b'{"tests":[]}\n'
+                )
+                return subprocess.CompletedProcess(command, 0, stdout, b"")
 
             def reconstruct(
                 config: object,
                 *,
                 binary_identity_runner: object,
+                ctest_registry_runner: object,
             ) -> dict[str, object]:
                 self.assertIs(mock.sentinel.config, config)
-                runner = binary_identity_runner
-                self.assertTrue(callable(runner))
-                observed = runner(
+                self.assertTrue(callable(binary_identity_runner))
+                observed = binary_identity_runner(
                     (
                         "/candidate/MicroMachine",
                         "--voi-build-input-identity",
                     ),
                     snapshot_path,
                 )
-                self.assertEqual(completed.stdout, observed.stdout)
+                self.assertEqual(
+                    b"sha256:" + (b"a" * 64) + b"\n",
+                    observed.stdout,
+                )
+                self.assertTrue(callable(ctest_registry_runner))
+                registry = ctest_registry_runner(
+                    (
+                        "/candidate/ctest",
+                        "--test-dir",
+                        str(snapshot_path.parent),
+                        "--show-only=json-v1",
+                    ),
+                    snapshot_path.parent,
+                    ctest_environment,
+                    120.0,
+                )
+                self.assertEqual(b'{"tests":[]}\n', registry.stdout)
                 return {"ok": True}
 
             with (
@@ -3994,7 +4022,7 @@ class LocalProducerTest(unittest.TestCase):
                 mock.patch.object(
                     provenance_module,
                     "_run_dedicated_uid_native_command",
-                    return_value=completed,
+                    side_effect=run_native,
                 ) as native_runner,
             ):
                 report = provenance_module._build_micromachine_identity_with_boundary(
@@ -4004,17 +4032,198 @@ class LocalProducerTest(unittest.TestCase):
                 )
 
         self.assertEqual({"ok": True}, report)
-        native_runner.assert_called_once_with(
-            (
-                str(snapshot_path),
-                "--voi-build-input-identity",
-            ),
-            cwd=str(snapshot_path.parent),
-            env=provenance_module.SANITIZED_TEST_ENV,
-            timeout=provenance_module.BUILD_IDENTITY_PROBE_TIMEOUT_SECONDS,
-            uid=65001,
-            gid=65001,
+        self.assertEqual(
+            [
+                mock.call(
+                    (
+                        str(snapshot_path),
+                        "--voi-build-input-identity",
+                    ),
+                    cwd=str(snapshot_path.parent),
+                    env=provenance_module.SANITIZED_TEST_ENV,
+                    timeout=provenance_module.BUILD_IDENTITY_PROBE_TIMEOUT_SECONDS,
+                    uid=65001,
+                    gid=65001,
+                ),
+                mock.call(
+                    (
+                        "/candidate/ctest",
+                        "--test-dir",
+                        str(snapshot_path.parent),
+                        "--show-only=json-v1",
+                    ),
+                    cwd=str(snapshot_path.parent),
+                    env=ctest_environment,
+                    timeout=120.0,
+                    uid=65001,
+                    gid=65001,
+                ),
+            ],
+            native_runner.call_args_list,
         )
+
+    def test_dedicated_producer_uid_ctest_registry_closes_stdin_and_cleans_descendant(
+        self,
+    ) -> None:
+        producer_uid, producer_gid = self.dedicated_producer_uid()
+        with tempfile.TemporaryDirectory(
+            dir=BUILD_IDENTITY_REPO_ROOT,
+        ) as directory:
+            root = Path(directory)
+            root.chmod(0o711)
+            producer_io = root / "producer-io"
+            producer_io.mkdir(mode=0o700)
+            os.chown(producer_io, producer_uid, producer_gid)
+            observation_path = producer_io / "ctest-observation.json"
+            child_pid_path = producer_io / "ctest-child.pid"
+            sentinel_token = "token-visible-only-in-root-parent"
+            script = (
+                "import json,os,subprocess,sys,time\n"
+                "from pathlib import Path\n"
+                "with open('/dev/null','wb') as sink:\n"
+                "    subprocess.Popen(\n"
+                "        ['/bin/sh','-c','echo $$ > \"$1\"; exec sleep 30',\n"
+                "         'ctest-child',sys.argv[2]],\n"
+                "        stdin=sink,stdout=sink,stderr=sink,\n"
+                "        start_new_session=True,\n"
+                "    )\n"
+                "child_path=Path(sys.argv[2])\n"
+                "for _ in range(100):\n"
+                "    if child_path.is_file():\n"
+                "        break\n"
+                "    time.sleep(0.01)\n"
+                "Path(sys.argv[1]).write_text(json.dumps({\n"
+                "    'stdin':sys.stdin.buffer.read().decode(),\n"
+                "    'token_env':os.environ.get('GITHUB_TOKEN'),\n"
+                "}))\n"
+            )
+
+            def reconstruct(
+                config: object,
+                *,
+                binary_identity_runner: object,
+                ctest_registry_runner: object,
+            ) -> dict[str, object]:
+                del config, binary_identity_runner
+                self.assertTrue(callable(ctest_registry_runner))
+                ctest_registry_runner(
+                    (
+                        str(Path(sys.executable).resolve()),
+                        "-I",
+                        "-B",
+                        "-S",
+                        "-c",
+                        script,
+                        str(observation_path),
+                        str(child_pid_path),
+                    ),
+                    producer_io,
+                    provenance_module.SANITIZED_TEST_ENV,
+                    5.0,
+                )
+                return {"ok": True}
+
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"GITHUB_TOKEN": sentinel_token},
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "build_micromachine_build_identity",
+                    side_effect=reconstruct,
+                ),
+                self.assertRaisesRegex(
+                    OSError,
+                    "native verifier command left detached descendants",
+                ),
+            ):
+                provenance_module._build_micromachine_identity_with_boundary(
+                    mock.sentinel.config,
+                    execution_uid=producer_uid,
+                    execution_gid=producer_gid,
+                )
+
+            self.assertEqual(
+                {"stdin": "", "token_env": None},
+                json.loads(observation_path.read_text()),
+            )
+            child_pid = int(child_pid_path.read_text().strip())
+            self.assertNotIn(
+                child_pid,
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
+            self.assertEqual(
+                (),
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
+
+    def test_dedicated_producer_uid_native_output_limit_cleans_descendant(
+        self,
+    ) -> None:
+        producer_uid, producer_gid = self.dedicated_producer_uid()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o711)
+            producer_io = root / "producer-io"
+            producer_io.mkdir(mode=0o700)
+            os.chown(producer_io, producer_uid, producer_gid)
+            child_pid_path = producer_io / "native-output-child.pid"
+            script = (
+                "from pathlib import Path\n"
+                "import os,subprocess,sys,time\n"
+                "with open('/dev/null','wb') as sink:\n"
+                "    subprocess.Popen(\n"
+                "        ['/bin/sh','-c','echo $$ > \"$1\"; exec sleep 30',\n"
+                "         'native-output-child',sys.argv[1]],\n"
+                "        stdin=sink,stdout=sink,stderr=sink,\n"
+                "        start_new_session=True,\n"
+                "    )\n"
+                "pid_path=Path(sys.argv[1])\n"
+                "for _ in range(100):\n"
+                "    if pid_path.is_file():\n"
+                "        break\n"
+                "    time.sleep(0.01)\n"
+                "os.write(1,b'x'*4096)\n"
+            )
+
+            with (
+                mock.patch.object(
+                    provenance_module,
+                    "MAX_PROCESS_STDOUT_BYTES",
+                    128,
+                ),
+                self.assertRaisesRegex(
+                    OSError,
+                    "stdout exceeded the bounded capture limit",
+                ),
+            ):
+                provenance_module._run_dedicated_uid_native_command(
+                    (
+                        str(Path(sys.executable).resolve()),
+                        "-I",
+                        "-B",
+                        "-S",
+                        "-c",
+                        script,
+                        str(child_pid_path),
+                    ),
+                    cwd=str(producer_io),
+                    env=SANITIZED_PRODUCER_ENV,
+                    timeout=5.0,
+                    uid=producer_uid,
+                    gid=producer_gid,
+                )
+
+            child_pid = int(child_pid_path.read_text().strip())
+            self.assertNotIn(
+                child_pid,
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
+            self.assertEqual(
+                (),
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
 
     def test_github_actions_main_does_not_read_token_after_failed_preflight(
         self,
@@ -4129,6 +4338,91 @@ class LocalProducerTest(unittest.TestCase):
                 )
 
             self.assertTrue(child_pid_path.is_file())
+            child_pid = int(child_pid_path.read_text().strip())
+            self.assertNotIn(
+                child_pid,
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
+            self.assertEqual(
+                (),
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
+
+    def test_dedicated_producer_uid_output_limit_cleans_descendant(
+        self,
+    ) -> None:
+        producer_uid, producer_gid = self.dedicated_producer_uid()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o711)
+            state_dir = root / "state"
+            state_dir.mkdir(mode=0o700)
+            producer_io = root / "producer-io"
+            producer_io.mkdir(mode=0o700)
+            os.chown(producer_io, producer_uid, producer_gid)
+            child_pid_path = producer_io / "producer-output-child.pid"
+            script = (
+                "from pathlib import Path\n"
+                "import os,subprocess,sys,time\n"
+                "with open('/dev/null','wb') as sink:\n"
+                "    subprocess.Popen(\n"
+                "        ['/bin/sh','-c','echo $$ > \"$1\"; exec sleep 30',\n"
+                "         'producer-output-child',sys.argv[1]],\n"
+                "        stdin=sink,stdout=sink,stderr=sink,\n"
+                "        start_new_session=True,\n"
+                "    )\n"
+                "pid_path=Path(sys.argv[1])\n"
+                "for _ in range(100):\n"
+                "    if pid_path.is_file():\n"
+                "        break\n"
+                "    time.sleep(0.01)\n"
+                "os.write(1,b'x'*4096)\n"
+            ).encode()
+            argv = (
+                str(Path(sys.executable).resolve()),
+                "-I",
+                "-B",
+                "-S",
+                "-c",
+                ISOLATED_PYTHON_BOOTSTRAP,
+                str(root),
+                "output_limit_producer.py",
+                str(child_pid_path),
+            )
+            executable_payload = Path(argv[0]).read_bytes()
+
+            with (
+                mock.patch.object(
+                    provenance_module,
+                    "MAX_PROCESS_STDOUT_BYTES",
+                    128,
+                ),
+                self.assertRaisesRegex(
+                    OSError,
+                    "stdout exceeded the bounded capture limit",
+                ),
+            ):
+                provenance_module._run_pinned_command(
+                    subprocess.run,
+                    argv,
+                    executable_payload=executable_payload,
+                    executable_snapshot=(
+                        0,
+                        0,
+                        len(executable_payload),
+                        0,
+                        hashlib.sha256(executable_payload).hexdigest(),
+                    ),
+                    authenticated_python_sources={
+                        "output_limit_producer.py": script,
+                    },
+                    state_dir=state_dir,
+                    cwd=str(producer_io),
+                    timeout=5.0,
+                    producer_uid=producer_uid,
+                    producer_gid=producer_gid,
+                )
+
             child_pid = int(child_pid_path.read_text().strip())
             self.assertNotIn(
                 child_pid,

@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from starcraft_commander.micromachine_build_identity import (
     MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
@@ -27,6 +28,48 @@ from starcraft_commander.micromachine_build_identity import (
 
 
 class MicroMachineBuildIdentityTest(unittest.TestCase):
+    def test_ctest_registry_discovery_closes_stdin_and_is_bounded(self) -> None:
+        with tempfile.TemporaryDirectory(
+            dir=Path(__file__).resolve().parents[1],
+        ) as directory:
+            build_dir = Path(directory)
+            ctest_path = build_dir / "ctest"
+            ctest_path.write_text("#!/bin/sh\nexit 0\n")
+            ctest_path.chmod(0o755)
+            registry = {
+                "tests": [
+                    {
+                        "name": test_name,
+                        "command": [
+                            str((build_dir / "bin" / executable_name).resolve())
+                        ],
+                    }
+                    for test_name, executable_name in sorted(
+                        MICROMACHINE_REQUIRED_NATIVE_TESTS.items()
+                    )
+                ]
+            }
+            completed = subprocess.CompletedProcess(
+                [str(ctest_path)],
+                0,
+                json.dumps(registry),
+                "",
+            )
+
+            with mock.patch(
+                "starcraft_commander.micromachine_build_identity.subprocess.run",
+                return_value=completed,
+            ) as runner:
+                attestation, failures = _ctest_registry_attestation(
+                    ctest_path=ctest_path,
+                    build_dir=build_dir,
+                )
+
+        self.assertEqual([], failures)
+        self.assertIsNotNone(attestation)
+        self.assertIs(subprocess.DEVNULL, runner.call_args.kwargs["stdin"])
+        self.assertEqual(120.0, runner.call_args.kwargs["timeout"])
+
     def test_live_admission_requires_the_supported_schema(self) -> None:
         self.assertEqual(78, MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION)
         passing = {
