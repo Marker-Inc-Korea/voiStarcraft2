@@ -266,6 +266,11 @@ ATOMIC_TELEMETRY_PUBLICATION_PATCH_FILE = (
     / "patches"
     / "0072-atomic-telemetry-publication.patch"
 )
+CONTEXTUAL_TRANSFER_CHOICE_PROJECTION_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0073-contextual-transfer-choice-projection.patch"
+)
 S2CLIENT_PATCH_FILE = KIT_DIR / "patches" / "0001-s2client-macos-launchservices.patch"
 BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
 PROBE_SCRIPT = KIT_DIR / "scripts" / "probe_macos_local.sh"
@@ -990,12 +995,12 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
         self.assertEqual(
             [patch["order"] for patch in bundle],
-            list(range(1, 73)),
+            list(range(1, 74)),
         )
-        self.assertEqual(len(set(manifest_paths)), 72)
+        self.assertEqual(len(set(manifest_paths)), 73)
         self.assertEqual(
             manifest_paths[-1],
-            "patches/0072-atomic-telemetry-publication.patch",
+            "patches/0073-contextual-transfer-choice-projection.patch",
         )
         self.assertTrue(
             all((KIT_DIR / path).is_file() for path in manifest_paths)
@@ -1199,8 +1204,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 "order": 68,
             },
             {
-                "path": manifest["patch_bundle"][-5]["path"],
-                "order": manifest["patch_bundle"][-5]["order"],
+                "path": manifest["patch_bundle"][-6]["path"],
+                "order": manifest["patch_bundle"][-6]["order"],
             },
         )
         build_script = BUILD_SCRIPT.read_text()
@@ -1341,8 +1346,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 "order": 70,
             },
             {
-                "path": manifest["patch_bundle"][-3]["path"],
-                "order": manifest["patch_bundle"][-3]["order"],
+                "path": manifest["patch_bundle"][-4]["path"],
+                "order": manifest["patch_bundle"][-4]["order"],
             },
         )
         build_script = BUILD_SCRIPT.read_text()
@@ -1404,8 +1409,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 "order": 71,
             },
             {
-                "path": manifest["patch_bundle"][-2]["path"],
-                "order": manifest["patch_bundle"][-2]["order"],
+                "path": manifest["patch_bundle"][-3]["path"],
+                "order": manifest["patch_bundle"][-3]["order"],
             },
         )
         build_script = BUILD_SCRIPT.read_text()
@@ -1477,8 +1482,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 "order": 72,
             },
             {
-                "path": manifest["patch_bundle"][-1]["path"],
-                "order": manifest["patch_bundle"][-1]["order"],
+                "path": manifest["patch_bundle"][-2]["path"],
+                "order": manifest["patch_bundle"][-2]["order"],
             },
         )
         build_script = BUILD_SCRIPT.read_text()
@@ -1516,6 +1521,93 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 "apply",
                 "--numstat",
                 str(ATOMIC_TELEMETRY_PUBLICATION_PATCH_FILE),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, parse_result.returncode, parse_result.stderr)
+
+    def test_contextual_transfer_choice_projection_patch_is_required(self) -> None:
+        patch = _read_patch_text(
+            CONTEXTUAL_TRANSFER_CHOICE_PROJECTION_PATCH_FILE
+        )
+        for contract in (
+            "for (const auto & destination : m_voiOperations)",
+            "counterpartOperationId",
+            "requestedCounterpartGeneration",
+            "destinationMaximum",
+            "VoiBattlefieldTransferEndpoint",
+            "transferByEndpoint",
+            "recommendedResolutionChoices",
+            "transfer_available_units",
+            "transfer_two_units",
+            "multiDestinationProjection",
+            "reserve-charlie",
+            "no_transferable_units",
+            "kVoiBattlefieldMaximumJsonSafeInteger",
+            "(1ULL << 53) - 1ULL",
+            "value &= kVoiBattlefieldMaximumJsonSafeInteger",
+            "<= kVoiBattlefieldMaximumJsonSafeInteger",
+            "if (processEpoch > previous",
+            "wrappedMaximumSafeEpoch",
+            "rejectedUnsafeProcessEpoch",
+            "kVoiBattlefieldMaximumJsonSafeInteger + 1",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, patch)
+
+        manifest = json.loads((KIT_DIR / "HOOK_MANIFEST.json").read_text())
+        self.assertEqual(
+            {
+                "path": (
+                    "patches/"
+                    "0073-contextual-transfer-choice-projection.patch"
+                ),
+                "order": 73,
+            },
+            {
+                "path": manifest["patch_bundle"][-1]["path"],
+                "order": manifest["patch_bundle"][-1]["order"],
+            },
+        )
+        build_script = BUILD_SCRIPT.read_text()
+        patch_variable = "CONTEXTUAL_TRANSFER_CHOICE_PROJECTION_PATCH_FILE"
+        self.assertIn(
+            f'{patch_variable}="${{REPO_ROOT}}/integrations/'
+            "micromachine/patches/"
+            '0073-contextual-transfer-choice-projection.patch"',
+            build_script,
+        )
+        prior_apply = build_script.index(
+            "apply --recount --ignore-space-change --whitespace=nowarn "
+            '"${ATOMIC_TELEMETRY_PUBLICATION_PATCH_FILE}"'
+        )
+        patch_check = build_script.index(
+            "apply --recount --check --ignore-space-change "
+            '--whitespace=nowarn "${'
+            f'{patch_variable}'
+            '}"'
+        )
+        patch_apply = build_script.index(
+            "apply --recount --ignore-space-change --whitespace=nowarn "
+            f'"${{{patch_variable}}}"'
+        )
+        self.assertLess(prior_apply, patch_check)
+        self.assertLess(patch_check, patch_apply)
+        self.assertEqual(
+            2,
+            build_script.count(
+                "--micromachine-contextual-transfer-choice-projection-patch "
+                '"${CONTEXTUAL_TRANSFER_CHOICE_PROJECTION_PATCH_FILE}"'
+            ),
+        )
+        parse_result = subprocess.run(
+            [
+                "git",
+                "apply",
+                "--numstat",
+                str(CONTEXTUAL_TRANSFER_CHOICE_PROJECTION_PATCH_FILE),
             ],
             check=False,
             capture_output=True,
@@ -5350,7 +5442,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "patches/0070-battlefield-projection-review-closure.patch",
             "patches/0071-battlefield-identity-transfer-integrity.patch",
             "patches/0072-atomic-telemetry-publication.patch",
-            "through `0072`",
+            "patches/0073-contextual-transfer-choice-projection.patch",
+            "through `0073`",
         )
         for term in required_terms:
             with self.subTest(term=term):
@@ -6192,6 +6285,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "0055-operation-production-ownership-and-restore-proof.patch",
             "0056-embedded-build-input-identity.patch",
             "0072-atomic-telemetry-publication.patch",
+            "0073-contextual-transfer-choice-projection.patch",
             "0001-s2client-macos-launchservices.patch",
             "OPERATION_STATE_PATCH_FILE",
             "ADDON_RECOVERY_PATCH_FILE",
@@ -6247,6 +6341,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "OPERATION_PRODUCTION_OWNERSHIP_RESTORE_PROOF_PATCH_FILE",
             "EMBEDDED_BUILD_INPUT_IDENTITY_PATCH_FILE",
             "ATOMIC_TELEMETRY_PUBLICATION_PATCH_FILE",
+            "CONTEXTUAL_TRANSFER_CHOICE_PROJECTION_PATCH_FILE",
             "--micromachine-explicit-ability-production-isolation-patch",
             "--micromachine-explicit-ability-attempt-lifecycle-patch",
             "--micromachine-explicit-ability-review-closure-patch",
@@ -6261,6 +6356,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "--micromachine-operation-production-ownership-restore-proof-patch",
             "--micromachine-embedded-build-input-identity-patch",
             "--micromachine-atomic-telemetry-publication-patch",
+            "--micromachine-contextual-transfer-choice-projection-patch",
             "--write-embedded-identity-header",
             "DSC2Api_SC2API_LIB",
             "reset --hard",

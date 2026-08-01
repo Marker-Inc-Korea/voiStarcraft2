@@ -50,7 +50,7 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Final, Protocol, runtime_checkable
+from typing import Callable, Final, Protocol, runtime_checkable
 from urllib.parse import parse_qs, urlsplit
 from weakref import WeakValueDictionary
 
@@ -74,6 +74,12 @@ from starcraft_commander.micromachine_command_execution import (
     classify_micromachine_command_execution,
     classify_micromachine_operation_executions,
     operation_requires_specific_family_ability_evidence,
+)
+from starcraft_commander.contextual_transfer import (
+    CONTEXTUAL_TRANSFER_REQUEST_FIELDS,
+    ContextualTransferRejectedError,
+    ContextualTransferRequest,
+    prepare_contextual_transfer,
 )
 from starcraft_commander.micromachine_tactical_evidence import (
     classify_micromachine_tactical_evidence,
@@ -3240,16 +3246,22 @@ def _micromachine_status_payload(
             if battlefield_projection.identity is not None
             else None
         ),
+        "battlefield_projection_fingerprint": "",
         "battlefield_projection_integrity": dict(
             battlefield_projection.integrity
         ),
     }
     public_payload = _public_micromachine_runtime_payload(payload)
-    return (
-        dict(public_payload)
-        if isinstance(public_payload, Mapping)
-        else {}
+    if not isinstance(public_payload, Mapping):
+        return {}
+    result = dict(public_payload)
+    public_overview = result.get("battlefield_overview")
+    result["battlefield_projection_fingerprint"] = (
+        battlefield_overview_fingerprint(public_overview)
+        if isinstance(public_overview, Mapping)
+        else ""
     )
+    return result
 
 
 def _micromachine_status_with_runtime_gate(
@@ -4380,6 +4392,7 @@ _STOP_SENTINEL: Final[object] = object()
 """Internal queue sentinel asking the bridge worker loop to exit."""
 
 _MICROMACHINE_REQUEST_TIMEOUT_SECONDS: Final[float] = 30.0
+_CONTEXTUAL_TRANSFER_REPLAY_LIMIT: Final[int] = 256
 """Maximum HTTP wait for one queued MicroMachine modulation submission."""
 
 _MICROMACHINE_SYNC_PUBLISH_DEADLINE_SECONDS: Final[float] = 25.0
@@ -4748,6 +4761,14 @@ class _MicroMachinePublishCancelledError(RuntimeError):
     """Raised when a cancelled or expired request reaches the publish boundary."""
 
 
+class _ContextualTransferIdentityMismatchError(ValueError):
+    """Raised when one replay identity is reused for a different choice."""
+
+
+class _ContextualTransferReplayCapacityError(RuntimeError):
+    """Raised when every bounded replay slot is still in flight."""
+
+
 @dataclass
 class _MicroMachineModulationRequest:
     """Queued MicroMachine write request, serialized with commander commands."""
@@ -4769,6 +4790,18 @@ class _MicroMachineModulationRequest:
     accepted_at_unix_ns: int = 0
     acceptance_ordinal: int = 0
     publish_committed: bool = False
+    contextual_transfer: ContextualTransferRequest | None = None
+    contextual_status_resolver: (
+        Callable[[], Mapping[str, object]] | None
+    ) = None
+
+
+@dataclass(frozen=True)
+class _ContextualTransferReplay:
+    """One in-flight or completed replay-safe contextual transfer."""
+
+    payload_fingerprint: str
+    future: concurrent.futures.Future[Mapping[str, object]]
 
 
 @dataclass(frozen=True)
@@ -8064,11 +8097,19 @@ class SessionLoopBridge:
         )
         self._lifecycle_lock = threading.Lock()
         self._lifecycle_state = _BRIDGE_LIFECYCLE_STOPPED
-        self._micromachine_request_lock = threading.Lock()
+        self._micromachine_request_lock = threading.RLock()
         self._micromachine_requests: dict[
             str,
             _MicroMachineModulationRequest,
         ] = {}
+        self._contextual_transfer_replay_lock = threading.Lock()
+        self._contextual_transfer_replays: dict[
+            tuple[str, str],
+            _ContextualTransferReplay,
+        ] = {}
+        self._contextual_transfer_replay_order: deque[
+            tuple[str, str]
+        ] = deque()
         self._micromachine_emergency_epochs: dict[str, tuple[int, str]] = {}
         self._micromachine_acceptance_ordinals: dict[str, int] = {}
         self._queue_sequence = 0
@@ -8449,6 +8490,157 @@ class SessionLoopBridge:
             if publish_committed:
                 return future.result()
             raise
+
+    def submit_micromachine_contextual_transfer(
+        self,
+        contextual_request: ContextualTransferRequest | Mapping[str, object],
+        *,
+        blackboard_dir: str = "",
+        status_resolver: Callable[[], Mapping[str, object]],
+    ) -> Mapping[str, object]:
+        """Queue one typed transfer and replay the same identity safely."""
+
+        if not callable(status_resolver):
+            raise TypeError("contextual transfer status_resolver must be callable.")
+        request_contract = (
+            contextual_request
+            if isinstance(contextual_request, ContextualTransferRequest)
+            else ContextualTransferRequest.from_mapping(contextual_request)
+        )
+        root = _clean_blackboard_dir(
+            blackboard_dir,
+            self._micromachine_blackboard_dir,
+        )
+        replay_key = (os.path.realpath(root), request_contract.request_id)
+        payload_fingerprint = request_contract.replay_fingerprint()
+        request: _MicroMachineModulationRequest | None = None
+        with self._contextual_transfer_replay_lock:
+            replay = self._contextual_transfer_replays.get(replay_key)
+            if replay is not None:
+                if replay.payload_fingerprint != payload_fingerprint:
+                    raise _ContextualTransferIdentityMismatchError(
+                        "request_identity_mismatch"
+                    )
+                future = replay.future
+            else:
+                self._prune_contextual_transfer_replays(
+                    target_size=_CONTEXTUAL_TRANSFER_REPLAY_LIMIT - 1
+                )
+                if (
+                    len(self._contextual_transfer_replays)
+                    >= _CONTEXTUAL_TRANSFER_REPLAY_LIMIT
+                ):
+                    raise _ContextualTransferReplayCapacityError(
+                        "contextual_transfer_replay_capacity"
+                    )
+                future = concurrent.futures.Future()
+                replay = _ContextualTransferReplay(
+                    payload_fingerprint=payload_fingerprint,
+                    future=future,
+                )
+                self._contextual_transfer_replays[replay_key] = replay
+                self._contextual_transfer_replay_order.append(replay_key)
+                request = _MicroMachineModulationRequest(
+                    text=(
+                        "Canonical contextual transfer "
+                        f"{request_contract.source_operation_id} -> "
+                        f"{request_contract.destination_operation_id}"
+                    ),
+                    blackboard_dir=root,
+                    provider_output=None,
+                    allow_smoke_keyword_provider=False,
+                    semantic_scope=None,
+                    commander_context={},
+                    ttl_seconds=None,
+                    current_frame=None,
+                    update_id=request_contract.request_id,
+                    future=future,
+                    cancel_event=threading.Event(),
+                    deadline_monotonic=(
+                        time.monotonic()
+                        + _MICROMACHINE_SYNC_PUBLISH_DEADLINE_SECONDS
+                    ),
+                    contextual_transfer=request_contract,
+                    contextual_status_resolver=status_resolver,
+                )
+        if request is not None:
+            try:
+                self._accept_micromachine_request(request)
+            except Exception:
+                with self._contextual_transfer_replay_lock:
+                    self._forget_contextual_transfer_replay(
+                        replay_key,
+                        replay,
+                    )
+                raise
+        try:
+            return future.result(timeout=_MICROMACHINE_REQUEST_TIMEOUT_SECONDS)
+        except concurrent.futures.TimeoutError:
+            if request is not None:
+                with self._micromachine_request_lock:
+                    publish_committed = request.publish_committed
+                    if not publish_committed:
+                        request.cancel_event.set()
+                        if not future.done():
+                            future.set_exception(
+                                concurrent.futures.TimeoutError(
+                                    "contextual transfer request timed out"
+                                )
+                            )
+                        if (
+                            self._micromachine_requests.get(
+                                request.update_id or ""
+                            )
+                            is request
+                        ):
+                            del self._micromachine_requests[
+                                request.update_id or ""
+                            ]
+                        with self._contextual_transfer_replay_lock:
+                            self._forget_contextual_transfer_replay(
+                                replay_key,
+                                replay,
+                            )
+                if publish_committed:
+                    return future.result()
+            raise
+
+    def _forget_contextual_transfer_replay(
+        self,
+        replay_key: tuple[str, str],
+        replay: _ContextualTransferReplay,
+    ) -> None:
+        if self._contextual_transfer_replays.get(replay_key) is replay:
+            del self._contextual_transfer_replays[replay_key]
+        self._contextual_transfer_replay_order = deque(
+            key
+            for key in self._contextual_transfer_replay_order
+            if key != replay_key
+        )
+
+    def _prune_contextual_transfer_replays(
+        self,
+        *,
+        target_size: int = _CONTEXTUAL_TRANSFER_REPLAY_LIMIT,
+    ) -> None:
+        retained: deque[tuple[str, str]] = deque()
+        seen: set[tuple[str, str]] = set()
+        while self._contextual_transfer_replay_order:
+            replay_key = self._contextual_transfer_replay_order.popleft()
+            if replay_key in seen:
+                continue
+            seen.add(replay_key)
+            replay = self._contextual_transfer_replays.get(replay_key)
+            if replay is None:
+                continue
+            if (
+                len(self._contextual_transfer_replays) > target_size
+                and replay.future.done()
+            ):
+                del self._contextual_transfer_replays[replay_key]
+                continue
+            retained.append(replay_key)
+        self._contextual_transfer_replay_order = retained
 
     def submit_micromachine_modulation_background(
         self,
@@ -9060,18 +9252,24 @@ class SessionLoopBridge:
             request.commander_context,
         )
         try:
-            payload = self._publish_micromachine_modulation(
-                request.text,
-                blackboard_dir=root,
-                provider_output=request.provider_output,
-                allow_smoke_keyword_provider=request.allow_smoke_keyword_provider,
-                semantic_scope=request.semantic_scope,
-                commander_context=commander_context,
-                ttl_seconds=request.ttl_seconds,
-                current_frame=request.current_frame,
-                update_id=request.update_id,
-                request=request,
-            )
+            if request.contextual_transfer is not None:
+                payload = self._publish_micromachine_contextual_transfer(
+                    request,
+                    blackboard_dir=root,
+                )
+            else:
+                payload = self._publish_micromachine_modulation(
+                    request.text,
+                    blackboard_dir=root,
+                    provider_output=request.provider_output,
+                    allow_smoke_keyword_provider=request.allow_smoke_keyword_provider,
+                    semantic_scope=request.semantic_scope,
+                    commander_context=commander_context,
+                    ttl_seconds=request.ttl_seconds,
+                    current_frame=request.current_frame,
+                    update_id=request.update_id,
+                    request=request,
+                )
         except Exception as error:  # noqa: BLE001 - returned to HTTP handler.
             if not request.cancel_event.is_set():
                 self._remember_micromachine_command(
@@ -9091,6 +9289,75 @@ class SessionLoopBridge:
         if not request.future.done():
             request.future.set_result(payload)
         self._forget_micromachine_request(request)
+
+    def _publish_micromachine_contextual_transfer(
+        self,
+        request: _MicroMachineModulationRequest,
+        *,
+        blackboard_dir: str,
+    ) -> Mapping[str, object]:
+        """Revalidate and publish one typed transfer under the writer lock."""
+
+        from starcraft_commander.micromachine_runtime import (
+            MicroMachineFilesystemBlackboard,
+        )
+
+        contract = request.contextual_transfer
+        status_resolver = request.contextual_status_resolver
+        if contract is None or not callable(status_resolver):
+            raise ValueError("contextual transfer request is incomplete.")
+        with self._micromachine_request_lock:
+            if request.cancel_event.is_set():
+                raise _MicroMachinePublishCancelledError(
+                    "Contextual transfer was cancelled before revalidation."
+                )
+            status = status_resolver()
+            if not isinstance(status, Mapping):
+                raise ContextualTransferRejectedError(
+                    "authoritative_status_unavailable",
+                    "The launcher-validated status resolver returned no mapping.",
+                )
+            backend = MicroMachineFilesystemBlackboard(blackboard_dir)
+            current_update = backend.read_latest_update(
+                current_frame=contract.projection_frame,
+            )
+            if current_update is None:
+                raise ContextualTransferRejectedError(
+                    "current_vector_unavailable",
+                    "The latest MicroMachine vector is unavailable.",
+                )
+            preparation = prepare_contextual_transfer(
+                contract,
+                status=status,
+                current_vector=current_update.vector.to_dict(),
+            )
+            request.text = preparation.command_text
+            request.provider_output = preparation.provider_output
+            request.current_frame = preparation.current_frame
+            payload = dict(
+                self._publish_micromachine_modulation(
+                    preparation.command_text,
+                    blackboard_dir=blackboard_dir,
+                    provider_output=preparation.provider_output,
+                    commander_context={},
+                    current_frame=preparation.current_frame,
+                    update_id=contract.request_id,
+                    request=request,
+                )
+            )
+            payload["contextual_transfer"] = {
+                "schema_version": contract.schema_version,
+                "choice_id": contract.choice_id,
+                "request_id": contract.request_id,
+                "action": contract.action,
+                "source_operation_id": contract.source_operation_id,
+                "destination_operation_id": contract.destination_operation_id,
+                "requested_count": contract.requested_count,
+                "stage": (
+                    "published" if payload.get("ok") is True else "blocked"
+                ),
+            }
+            return payload
 
     def _micromachine_commander_context(
         self,
@@ -11038,6 +11305,9 @@ var pendingAggregateNode = null;
 var latestMicroMachinePlanText = "";
 var operationRecords = {};
 var operationRecordOrder = [];
+var contextualTransferChoiceRecords = {};
+var contextualTransferChoiceOrder = [];
+var CONTEXTUAL_TRANSFER_CHOICE_MAXIMUM = 256;
 var operationConsoleScopeId = "";
 var operationConsoleSessionEpoch = "";
 var operationConsoleRetiredSessionEpochs = [];
@@ -15072,7 +15342,13 @@ function parseJsonResponse(response) {
       }
     }
     if (!response.ok) {
-      throw new Error(data.error || ("HTTP " + response.status));
+      var blocker = data && data.blocker || {};
+      throw new Error(
+        data.error ||
+        blocker.message ||
+        blocker.code ||
+        ("HTTP " + response.status)
+      );
     }
     return data;
   });
@@ -16535,6 +16811,11 @@ function commandOperationData(operation, parentData) {
     operation_convergence: operation.operation_convergence || {},
     battlefield_operation: operation.battlefield_operation || null,
     battlefield_overview: parentData && parentData.battlefield_overview || null,
+    battlefield_projection_identity:
+      parentData && parentData.battlefield_projection_identity || null,
+    battlefield_projection_fingerprint: String(
+      parentData && parentData.battlefield_projection_fingerprint || ""
+    ),
     semantic_timeline: Array.isArray(operation.semantic_timeline)
       ? operation.semantic_timeline
       : [],
@@ -17816,16 +18097,215 @@ function operationSafeCommandIdentifier(operationId) {
 function operationResolutionChoice(
   action,
   safe,
-  reason
+  reason,
+  contextualTransfer
 ) {
   var definition = operationResolutionDefinition(action);
   if (!definition) { return null; }
+  var label = definition.label();
+  if (contextualTransfer) {
+    label += " → " + contextualTransfer.destination_operation_id;
+  }
   return {
     action: action,
-    label: definition.label(),
+    label: label,
     safe: safe === true,
-    reason: String(reason || "")
+    reason: String(reason || ""),
+    contextualTransfer: contextualTransfer || null,
+    choiceId: contextualTransfer
+      ? String(contextualTransfer.choice_id || "")
+      : "",
+    controlKey: contextualTransfer
+      ? String(contextualTransfer.choice_id || "")
+      : action
   };
+}
+
+function operationProjectionById(overview, operationId) {
+  var operations = overview &&
+    Array.isArray(overview.operation_ownership)
+    ? overview.operation_ownership
+    : [];
+  return operations.find(function(operation) {
+    return String(operation && operation.operation_id || "") ===
+      String(operationId || "");
+  }) || null;
+}
+
+function contextualTransferOpaqueHash(value) {
+  var text = String(value || "");
+  var left = 2166136261;
+  var right = 2246822507;
+  for (var index = 0; index < text.length; index += 1) {
+    var code = text.charCodeAt(index);
+    left ^= code;
+    left = Math.imul(left, 16777619);
+    right ^= code + index;
+    right = Math.imul(right, 3266489909);
+  }
+  return (
+    ("00000000" + (left >>> 0).toString(16)).slice(-8) +
+    ("00000000" + (right >>> 0).toString(16)).slice(-8)
+  );
+}
+
+function rememberContextualTransferChoice(payload) {
+  var choiceId = String(payload && payload.choice_id || "");
+  if (!choiceId) { return false; }
+  var synchronizedOrder = [];
+  var synchronizedIds = {};
+  contextualTransferChoiceOrder.forEach(function(candidateId) {
+    var normalizedId = String(candidateId || "");
+    if (
+      normalizedId &&
+      contextualTransferChoiceRecords[normalizedId] &&
+      !synchronizedIds[normalizedId]
+    ) {
+      synchronizedIds[normalizedId] = true;
+      synchronizedOrder.push(normalizedId);
+    }
+  });
+  Object.keys(contextualTransferChoiceRecords).forEach(function(candidateId) {
+    if (!synchronizedIds[candidateId]) {
+      synchronizedIds[candidateId] = true;
+      synchronizedOrder.push(candidateId);
+    }
+  });
+  contextualTransferChoiceOrder = synchronizedOrder;
+  var existing = contextualTransferChoiceRecords[choiceId];
+  if (!existing) {
+    while (
+      Object.keys(contextualTransferChoiceRecords).length >=
+      CONTEXTUAL_TRANSFER_CHOICE_MAXIMUM
+    ) {
+      var retiredIndex = -1;
+      for (
+        var index = 0;
+        index < contextualTransferChoiceOrder.length;
+        index += 1
+      ) {
+        var candidate = contextualTransferChoiceOrder[index];
+        if (
+          contextualTransferChoiceRecords[candidate] &&
+          contextualTransferChoiceRecords[candidate].inFlight !== true
+        ) {
+          retiredIndex = index;
+          break;
+        }
+      }
+      if (retiredIndex < 0) {
+        return false;
+      }
+      var retired = contextualTransferChoiceOrder.splice(
+        retiredIndex,
+        1
+      )[0];
+      delete contextualTransferChoiceRecords[retired];
+    }
+    contextualTransferChoiceOrder.push(choiceId);
+  }
+  contextualTransferChoiceRecords[choiceId] = {
+    payload: payload,
+    inFlight: existing && existing.inFlight === true,
+    promise: existing && existing.promise || null
+  };
+  return true;
+}
+
+var CONTEXTUAL_TRANSFER_CHOICE_CAPACITY_REJECTED = {};
+
+function operationContextualTransferPayload(data, entry, action) {
+  var overview = data && data.battlefield_overview || {};
+  var identity = data && data.battlefield_projection_identity || {};
+  var inputs = entry && entry.atomic_revalidation_inputs || {};
+  var sourceId = String(entry && entry.source_owner_id || "");
+  var destinationId = String(
+    inputs.counterpart_operation_id ||
+    entry && entry.destination_operation_id ||
+    ""
+  );
+  var sourceProjection = operationProjectionById(overview, sourceId);
+  var destinationProjection = operationProjectionById(
+    overview,
+    destinationId
+  );
+  var sourceLaunch = sourceProjection &&
+    sourceProjection.operation_launch_policy || {};
+  var sourceGeneration = Number(
+    sourceProjection && sourceProjection.generation || 0
+  );
+  var destinationGeneration = Number(
+    destinationProjection && destinationProjection.generation || 0
+  );
+  var transferableCount = Number(entry && entry.transferable_count || 0);
+  var requestedCount = action === "transfer_two_units"
+    ? 2
+    : transferableCount;
+  var sessionEpoch = Number(
+    identity.session_epoch ||
+    overview.identity && overview.identity.session_epoch ||
+    0
+  );
+  var projectionFrame = Number(
+    identity.game_frame ||
+    overview.identity && overview.identity.game_frame ||
+    0
+  );
+  var projectionFingerprint = String(
+    data && data.battlefield_projection_fingerprint || ""
+  );
+  var scopeId = String(data && data.blackboard_scope_id || "");
+  if (
+    !operationSafeCommandIdentifier(sourceId) ||
+    !operationSafeCommandIdentifier(destinationId) ||
+    !sourceProjection ||
+    !destinationProjection ||
+    sourceId === destinationId ||
+    sourceGeneration <= 0 ||
+    destinationGeneration <= 0 ||
+    requestedCount <= 0 ||
+    !Number.isSafeInteger(sessionEpoch) ||
+    sessionEpoch <= 0 ||
+    !Number.isSafeInteger(projectionFrame) ||
+    projectionFrame < 0 ||
+    !/^[a-f0-9]{64}$/.test(projectionFingerprint) ||
+    !scopeId
+  ) {
+    return null;
+  }
+  var canonical = {
+    schema_version: 1,
+    action: action,
+    source_operation_id: sourceId,
+    destination_operation_id: destinationId,
+    source_generation: sourceGeneration,
+    destination_generation: destinationGeneration,
+    requested_count: requestedCount,
+    protected_minimum: Number(entry.protected_minimum || 0),
+    source_minimum: Number(sourceLaunch.min_units || 0),
+    blackboard_scope_id: scopeId,
+    session_epoch: sessionEpoch,
+    projection_frame: projectionFrame,
+    projection_fingerprint: projectionFingerprint
+  };
+  var opaqueHash = contextualTransferOpaqueHash(JSON.stringify(canonical));
+  var payload = Object.assign(
+    {
+      choice_id: "voi-ctx-choice-" + opaqueHash,
+      request_id: "voi-ctx-request-" + opaqueHash
+    },
+    canonical
+  );
+  var blackboardInput = document.getElementById(
+    "micromachine-blackboard-dir"
+  );
+  payload.blackboard_dir = blackboardInput
+    ? String(blackboardInput.value || "").trim()
+    : "";
+  if (!rememberContextualTransferChoice(payload)) {
+    return CONTEXTUAL_TRANSFER_CHOICE_CAPACITY_REJECTED;
+  }
+  return payload;
 }
 
 function operationResolutionChoices(data) {
@@ -17840,8 +18320,9 @@ function operationResolutionChoices(data) {
   );
   var launchSafety = launch.safety_evidence || {};
   function appendChoice(choice) {
-    if (!choice || seen[choice.action]) { return; }
-    seen[choice.action] = true;
+    var key = choice && (choice.choiceId || choice.action);
+    if (!choice || !key || seen[key]) { return; }
+    seen[key] = true;
     choices.push(choice);
   }
   (Array.isArray(launch.recommended_choices)
@@ -17913,9 +18394,21 @@ function operationResolutionChoices(data) {
       var safety = entry.safety_evidence || {};
       var inputs = entry.atomic_revalidation_inputs || {};
       var requiredCount = action === "transfer_two_units" ? 2 : 1;
+      var contextualTransfer = operationContextualTransferPayload(
+        data,
+        entry,
+        action
+      );
+      if (
+        contextualTransfer ===
+        CONTEXTUAL_TRANSFER_CHOICE_CAPACITY_REJECTED
+      ) {
+        return;
+      }
       var transferSafe = Boolean(
         canonicalIdentity &&
         operationIdSafe &&
+        contextualTransfer &&
         String(overview.authority || "") === "micromachine_cpp" &&
         transfer.atomic_revalidation_required === true &&
         entry.transfer_safe === true &&
@@ -17925,6 +18418,7 @@ function operationResolutionChoices(data) {
         safety.atomic_revalidation_required === true &&
         inputs.atomic_revalidation_ready === true &&
         inputs.source_active === true &&
+        inputs.destination_active === true &&
         inputs.ownership_integrity === true
       );
       appendChoice(operationResolutionChoice(
@@ -17935,7 +18429,8 @@ function operationResolutionChoices(data) {
           : String(
             entry.atomic_runtime_blocker ||
             "canonical_transfer_safety_incomplete"
-          )
+          ),
+        contextualTransfer
       ));
     });
   });
@@ -17954,6 +18449,54 @@ function operationResolutionCommand(action, record) {
   return definition.command(record.operationId);
 }
 
+function submitContextualTransferChoice(choiceId) {
+  var stored = contextualTransferChoiceRecords[String(choiceId || "")];
+  if (!stored || !stored.payload) {
+    return Promise.reject(
+      new Error("contextual_transfer_choice_unavailable")
+    );
+  }
+  if (stored.inFlight && stored.promise) {
+    return stored.promise;
+  }
+  var payload = JSON.parse(JSON.stringify(stored.payload));
+  stored.inFlight = true;
+  var statusNode = document.getElementById("micromachine-status");
+  if (statusNode) {
+    statusNode.textContent = commandUiText(
+      "권위 transfer identity를 원자적으로 재검증하는 중입니다.",
+      "Atomically revalidating the authoritative transfer identity.",
+      "正在原子化重新验证权威转移身份。"
+    );
+  }
+  stored.promise = fetch(
+    "/api/micromachine/contextual-transfer" + authQuery,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }
+  )
+    .then(parseJsonResponse)
+    .then(function(data) {
+      stored.inFlight = false;
+      stored.promise = null;
+      announceAcceptedTacticalPlan(data, "contextual_transfer");
+      safeRenderMicroMachineStatus(data);
+      renderOperationConsole(data);
+      return data;
+    })
+    .catch(function(error) {
+      stored.inFlight = false;
+      stored.promise = null;
+      if (statusNode) {
+        statusNode.textContent = t("microMachineFailed") + ": " + error.message;
+      }
+      throw error;
+    });
+  return stored.promise;
+}
+
 function operationNodeContains(root, candidate) {
   var current = candidate;
   while (current) {
@@ -17969,6 +18512,7 @@ function operationFocusedControlKey(root) {
   return String(
     active.getAttribute("data-operation-action") ||
     active.getAttribute("data-operation-resolution") ||
+    active.getAttribute("data-contextual-choice-id") ||
     ""
   );
 }
@@ -17987,7 +18531,8 @@ function restoreOperationFocusedControl(root, key) {
     }
     if (
       candidate.getAttribute("data-operation-action") === key ||
-      candidate.getAttribute("data-operation-resolution") === key
+      candidate.getAttribute("data-operation-resolution") === key ||
+      candidate.getAttribute("data-contextual-choice-id") === key
     ) {
       candidate.focus({ preventScroll: true });
       return;
@@ -18019,7 +18564,24 @@ function renderOperationResolutionActions(record, data) {
       "aria-disabled",
       choice.safe === true ? "false" : "true"
     );
-    button.setAttribute("data-operation-resolution", choice.action);
+    var contextualChoiceId = String(
+      choice.choiceId ||
+      (
+        choice.action.indexOf("transfer_") === 0
+          ? "voi-ctx-unavailable-" + contextualTransferOpaqueHash(
+            record.key + "\u0000" + choice.action + "\u0000" + choice.reason
+          )
+          : ""
+      )
+    );
+    if (contextualChoiceId) {
+      button.setAttribute(
+        "data-contextual-choice-id",
+        contextualChoiceId
+      );
+    } else {
+      button.setAttribute("data-operation-resolution", choice.action);
+    }
     button.setAttribute(
       "aria-label",
       choice.label + ": " + (record.text || record.operationId)
@@ -18027,7 +18589,8 @@ function renderOperationResolutionActions(record, data) {
     if (choice.reason) {
       button.title = choice.reason;
       var reason = document.createElement("span");
-      reason.id = record.domId + "-resolution-" + choice.action + "-reason";
+      reason.id = record.domId + "-resolution-" +
+        contextualTransferOpaqueHash(choice.controlKey) + "-reason";
       reason.className = "operation-resolution-reason";
       reason.textContent = choice.reason;
       button.setAttribute("aria-describedby", reason.id);
@@ -18038,6 +18601,15 @@ function renderOperationResolutionActions(record, data) {
         if (event && typeof event.preventDefault === "function") {
           event.preventDefault();
         }
+        return;
+      }
+      if (choice.contextualTransfer && choice.choiceId) {
+        button.setAttribute("aria-disabled", "true");
+        submitContextualTransferChoice(
+          choice.choiceId
+        ).catch(function() {
+          button.setAttribute("aria-disabled", "false");
+        });
         return;
       }
       var command = operationResolutionCommand(choice.action, record);
@@ -22089,6 +22661,9 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/micromachine/modulate":
             self._handle_micromachine_modulate()
             return
+        if path == "/api/micromachine/contextual-transfer":
+            self._handle_micromachine_contextual_transfer()
+            return
         # Drain any request body so a keep-alive connection stays usable.
         self._read_request_body()
         self._send_not_found()
@@ -23698,6 +24273,189 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         )
         self._send_json(status, payload)
 
+    def _handle_micromachine_contextual_transfer(self) -> None:
+        submit_fn = getattr(
+            self._bridge,
+            "submit_micromachine_contextual_transfer",
+            None,
+        )
+        if not callable(submit_fn):
+            self._send_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {
+                    "accepted": False,
+                    "error": (
+                        "MicroMachine contextual transfer bridge is disabled."
+                    ),
+                },
+            )
+            return
+        body = self._read_request_body()
+        if body is None:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {
+                    "accepted": False,
+                    "error": (
+                        "contextual transfer JSON request body is required."
+                    ),
+                },
+            )
+            return
+        try:
+            document = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {
+                    "accepted": False,
+                    "error": "contextual transfer body must be valid UTF-8 JSON.",
+                },
+            )
+            return
+        if not isinstance(document, Mapping):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {
+                    "accepted": False,
+                    "error": "contextual transfer body must be a JSON object.",
+                },
+            )
+            return
+        allowed_fields = set(CONTEXTUAL_TRANSFER_REQUEST_FIELDS) | {
+            "blackboard_dir"
+        }
+        unknown_fields = sorted(set(document) - allowed_fields)
+        if unknown_fields:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {
+                    "accepted": False,
+                    "error": (
+                        "contextual transfer request contains unsupported "
+                        f"fields: {', '.join(unknown_fields)}"
+                    ),
+                },
+            )
+            return
+        request_blackboard_dir = self._resolved_micromachine_blackboard_dir(
+            str(document.get("blackboard_dir", "") or "")
+        )
+        try:
+            contract = ContextualTransferRequest.from_mapping(
+                {
+                    field_name: document[field_name]
+                    for field_name in CONTEXTUAL_TRANSFER_REQUEST_FIELDS
+                    if field_name in document
+                }
+            )
+            source_lock = self.server.operation_status_lock(  # type: ignore[attr-defined]
+                request_blackboard_dir
+            )
+            with source_lock:
+                payload = dict(
+                    submit_fn(
+                        contract,
+                        blackboard_dir=request_blackboard_dir,
+                        status_resolver=lambda: self._micromachine_status_payload(
+                            request_blackboard_dir,
+                            read_only=False,
+                        ),
+                    )
+                )
+        except _ContextualTransferIdentityMismatchError:
+            self._send_json(
+                HTTPStatus.CONFLICT,
+                {
+                    "accepted": False,
+                    "status": "rejected",
+                    "request_id": str(document.get("request_id", "") or ""),
+                    "choice_id": str(document.get("choice_id", "") or ""),
+                    "blocker": {
+                        "code": "request_identity_mismatch",
+                        "message": (
+                            "request_id was already bound to a different "
+                            "contextual transfer payload."
+                        ),
+                    },
+                    "consumption_status": "not_published",
+                },
+            )
+            return
+        except _ContextualTransferReplayCapacityError:
+            self._send_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {
+                    "accepted": False,
+                    "status": "busy",
+                    "request_id": str(document.get("request_id", "") or ""),
+                    "choice_id": str(document.get("choice_id", "") or ""),
+                    "blocker": {
+                        "code": "contextual_transfer_replay_capacity",
+                        "message": (
+                            "All contextual transfer replay slots are still "
+                            "in flight; retry after one request completes."
+                        ),
+                    },
+                    "consumption_status": "not_published",
+                },
+            )
+            return
+        except ContextualTransferRejectedError as error:
+            self._send_json(
+                HTTPStatus.CONFLICT,
+                {
+                    "accepted": False,
+                    "status": "rejected",
+                    "request_id": str(document.get("request_id", "") or ""),
+                    "choice_id": str(document.get("choice_id", "") or ""),
+                    "blocker": error.to_dict(),
+                    "consumption_status": "not_published",
+                },
+            )
+            return
+        except ValueError as error:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "error": str(error)},
+            )
+            return
+        except concurrent.futures.TimeoutError:
+            self._send_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {
+                    "accepted": False,
+                    "error": "contextual transfer request timed out.",
+                },
+            )
+            return
+        except Exception as error:  # noqa: BLE001 - surfaced honestly.
+            self._send_internal_error(error)
+            return
+        payload["accepted"] = bool(payload.get("ok"))
+        event_update_id, event_operation_id, event_generation, event_frame = (
+            _web_event_identity(payload)
+        )
+        self.server.publish_event(  # type: ignore[attr-defined]
+            "micromachine_submission",
+            payload,
+            update_id=event_update_id or contract.request_id,
+            operation_id=(
+                event_operation_id or contract.source_operation_id
+            ),
+            generation=event_generation or contract.source_generation,
+            game_frame=(
+                event_frame
+                if event_frame >= 0
+                else contract.projection_frame
+            ),
+            blackboard_dir=request_blackboard_dir,
+        )
+        self._send_json(
+            HTTPStatus.ACCEPTED if payload["accepted"] else HTTPStatus.OK,
+            payload,
+        )
+
     def _read_request_body(self) -> bytes | None:
         """Read the request body; ``None`` marks malformed/oversized input."""
 
@@ -23734,7 +24492,8 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     "GET/POST /api/llm, "
                     "POST /api/command, GET /api/runtime/status, "
                     "POST /api/runtime/start, GET /api/micromachine/status, "
-                    "POST /api/micromachine/modulate."
+                    "POST /api/micromachine/modulate, "
+                    "POST /api/micromachine/contextual-transfer."
                 )
             },
         )

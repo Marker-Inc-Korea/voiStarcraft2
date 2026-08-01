@@ -1730,7 +1730,7 @@ class BuildBindingTest(unittest.TestCase):
                 " ".join(report["blockers"]),
             )
 
-    def test_rebuilds_schema_72_identity_and_exact_six_ctests(self) -> None:
+    def test_rebuilds_schema_73_identity_and_exact_six_ctests(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = make_build_fixture(Path(directory))
 

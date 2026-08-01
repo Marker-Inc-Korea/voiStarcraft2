@@ -1322,6 +1322,129 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
         self.assertEqual("transfer_in", inputs["counterpart_action"])
         self.assertEqual(5, inputs["counterpart_generation"])
 
+    def test_availability_preserves_multiple_destination_endpoints(self) -> None:
+        telemetry = _telemetry()
+        overview = telemetry["battlefield_overview"]
+        reserve = _operation(
+            operation_id="reserve-charlie",
+            generation=7,
+            owner_tags=(),
+        )
+        overview["operation_ownership"].append(reserve)
+        entry = overview["transfer_availability"]["entries"][0]
+        entry["recommended_resolution_choices"] = [
+            "transfer_available_units",
+            "transfer_two_units",
+        ]
+        inputs = entry["atomic_revalidation_inputs"]
+        inputs.update(
+            {
+                "requested": False,
+                "requested_count": 0,
+                "action": "availability",
+                "edit_resolution": "none",
+                "counterpart_action": "",
+                "requested_source_generation": 3,
+                "requested_counterpart_generation": 5,
+                "counterpart_pending": False,
+            }
+        )
+        second = deepcopy(entry)
+        second_inputs = second["atomic_revalidation_inputs"]
+        second_inputs["counterpart_operation_id"] = "reserve-charlie"
+        second_inputs["counterpart_generation"] = 7
+        second_inputs["requested_counterpart_generation"] = 7
+        overview["transfer_availability"]["entries"].append(second)
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        endpoints = {
+            (
+                item["source_owner_id"],
+                item["atomic_revalidation_inputs"]["counterpart_operation_id"],
+            )
+            for item in result.battlefield_overview[
+                "transfer_availability"
+            ]["entries"]
+        }
+        self.assertEqual(
+            {
+                ("flank-alpha", "assault-bravo"),
+                ("flank-alpha", "reserve-charlie"),
+            },
+            endpoints,
+        )
+
+    def test_availability_rejects_duplicate_endpoint_and_bad_recommendation(
+        self,
+    ) -> None:
+        telemetry = _telemetry()
+        overview = telemetry["battlefield_overview"]
+        entry = overview["transfer_availability"]["entries"][0]
+        entry["recommended_resolution_choices"] = ["transfer_two_units"]
+        inputs = entry["atomic_revalidation_inputs"]
+        inputs.update(
+            {
+                "requested": False,
+                "requested_count": 0,
+                "action": "availability",
+                "edit_resolution": "none",
+                "counterpart_action": "",
+                "requested_source_generation": 3,
+                "requested_counterpart_generation": 5,
+                "counterpart_pending": False,
+            }
+        )
+        overview["transfer_availability"]["entries"].append(deepcopy(entry))
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("duplicate_transfer_endpoint", _blocker_codes(result))
+        self.assertIn("transfer_recommendation_mismatch", _blocker_codes(result))
+
+    def test_availability_rejects_stale_destination_generation(self) -> None:
+        telemetry = _telemetry()
+        entry = telemetry["battlefield_overview"]["transfer_availability"][
+            "entries"
+        ][0]
+        entry["recommended_resolution_choices"] = [
+            "transfer_available_units",
+            "transfer_two_units",
+        ]
+        inputs = entry["atomic_revalidation_inputs"]
+        inputs.update(
+            {
+                "requested": False,
+                "requested_count": 0,
+                "action": "availability",
+                "edit_resolution": "none",
+                "counterpart_action": "",
+                "counterpart_generation": 6,
+                "requested_source_generation": 3,
+                "requested_counterpart_generation": 6,
+                "counterpart_pending": False,
+            }
+        )
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "atomic_counterpart_generation_mismatch",
+            _blocker_codes(result),
+        )
+
     def test_atomic_revalidation_inputs_and_exact_fields_are_required(
         self,
     ) -> None:

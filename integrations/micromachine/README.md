@@ -86,6 +86,7 @@ Verified upstream:
 | `patches/0070-battlefield-projection-review-closure.patch` | Closes independent-review blockers in the authoritative battlefield projection: fixes malformed numeric identity JSON, seeds each MicroMachine process with a wall-clock nanosecond session epoch, and parses the emitted projection in C++ tests. The patch is a required schema-70 build input bound into build identity and source attestation. |
 | `patches/0071-battlefield-identity-transfer-integrity.patch` | Closes the remaining independent-review blockers: binds telemetry to the exact launcher runtime instance, strengthens session identity, fails closed on incomplete or duplicate global ownership evidence, and revalidates the canonical battlefield projection immediately before transfer mutation. The patch is a required schema-71 build input bound into build identity and source attestation. |
 | `patches/0072-atomic-telemetry-publication.patch` | Publishes bootstrap and authoritative telemetry through one directory-FD-anchored `openat`/`renameat` path so readers observe only complete snapshots. The writer handles EINTR and short writes, rejects a symlinked telemetry directory, replaces rather than follows a destination symlink, preserves the previous snapshot on open/write/close/rename failure, and removes failed temporary artifacts. Family-effect acknowledgement occurs only after successful publication, while a concurrent 512 KiB reader/writer plus injected-failure CTest enforces the contract. The patch is a required schema-72 build input bound into build identity and source attestation. |
+| `patches/0073-contextual-transfer-choice-projection.patch` | Makes contextual transfer choices reachable from native telemetry by preserving every active `(source_operation_id, destination_operation_id)` endpoint, both current generations, source protected minimum, destination capacity, deterministic transferable tags, and safe `transfer_available_units`/`transfer_two_units` recommendations. The patch is a required schema-73 build input bound into build identity and source attestation. |
 | `scripts/build_macos_local.sh` | Reproducible macOS build script for `s2client-api` plus patched MicroMachine. |
 | `scripts/probe_macos_local.sh` | Standalone `s2client-api` bootstrap probe that proves CreateGame/JoinGame produces own starting units before MicroMachine is evaluated. |
 | `scripts/smoke_macos_local.sh` | Local StarCraft II smoke script that writes modulation and requires both telemetry and real macro-opening evidence. |
@@ -159,10 +160,10 @@ how to act.
 `scripts/build_macos_local.sh` writes
 `$MICROMACHINE_BUILD_DIR/voi_build_identity.json` after a successful build. The
 clean build applies the MicroMachine patch bundle in numeric order from `0001`
-through `0072`, runs the runtime CTest contracts, then copies the blackboard
+through `0073`, runs the runtime CTest contracts, then copies the blackboard
 header and generates the embedded
 identity header before compilation. The
-schema-72 report includes pinned MicroMachine and `s2client-api` commits, every patch
+schema-73 report includes pinned MicroMachine and `s2client-api` commits, every patch
 checksum, config/header checksums, binary path, and binary checksum. A pre-build
 source attestation is finalized only after the executable exists, binding its
 hash, size, and executable-reported build-input identity to the attested source

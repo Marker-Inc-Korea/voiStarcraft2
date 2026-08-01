@@ -588,7 +588,7 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
             blocker_codes(binary_result),
         )
 
-    def test_rejects_failed_schema_72_build_report(self) -> None:
+    def test_rejects_failed_schema_73_build_report(self) -> None:
         report = json.loads(self.members[self.metadata.build_report_member])
         report["ok"] = False
         report["failures"] = ["fixture failure"]

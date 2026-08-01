@@ -1,0 +1,491 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -3528,36 +3528,70 @@ void CombatCommander::updateVoiBattlefieldProjection()
+ 
+ 		if (isActiveOperation(operation))
+ 		{
+-			VoiBattlefieldTransferInput availability;
+-			availability.sourceOwnerId =
+-				operation.operationId;
+-			availability.sourceOwnerTags =
+-				operation.assignedUnitTags;
+ 			const std::size_t protectedCount =
+ 				static_cast<std::size_t>(
+ 					std::max(0, operation.minUnits));
+-			if (operation.assignedUnitTags.size()
+-				> protectedCount)
++			for (const auto & destination : m_voiOperations)
+ 			{
+-				availability.selectedTags.assign(
+-					operation.assignedUnitTags.begin()
+-						+ protectedCount,
+-					operation.assignedUnitTags.end());
++				if (destination.operationId
++						== operation.operationId
++					|| !isActiveOperation(destination))
++				{
++					continue;
++				}
++				VoiBattlefieldTransferInput availability;
++				availability.sourceOwnerId =
++					operation.operationId;
++				availability.counterpartOperationId =
++					destination.operationId;
++				availability.requestedGeneration =
++					operation.generation;
++				availability.counterpartGeneration =
++					destination.generation;
++				availability.requestedSourceGeneration =
++					operation.generation;
++				availability.requestedCounterpartGeneration =
++					destination.generation;
++				availability.sourceOwnerTags =
++					operation.assignedUnitTags;
++				if (operation.assignedUnitTags.size()
++					> protectedCount)
++				{
++					availability.selectedTags.assign(
++						operation.assignedUnitTags.begin()
++							+ protectedCount,
++						operation.assignedUnitTags.end());
++				}
++				availability.counterpartPresent = true;
++				availability.sourceActive = true;
++				availability.destinationActive = true;
++				availability.sourceMinimum = protectedCount;
++				availability.destinationOwnedCount =
++					assignedTagSet(destination).size();
++				availability.destinationMaximum =
++					static_cast<std::size_t>(
++						std::max(
++							0,
++							destination.maxUnits));
++				availability.operationAssignmentsMatch =
++					operationSnapshotValid
++					&& operationAssignmentsMatch(
++						destination);
++				availability.squadAssignmentsMatch =
++					squadSnapshotValid
++					&& squadAssignmentsMatch(
++						destination);
++				availability.actionAssignmentsMatch =
++					actionSnapshotValid
++					&& actionAssignmentsMatch(
++						destination);
++				availability.roleAssignmentsMatch =
++					roleSnapshotValid
++					&& roleAssignmentsMatch(
++						destination);
++				input.transferAvailability.push_back(
++					availability);
+ 			}
+-			availability.sourceActive = true;
+-			availability.sourceMinimum =
+-				static_cast<std::size_t>(
+-					std::max(0, operation.minUnits));
+-			availability.operationAssignmentsMatch =
+-				operationSnapshotValid;
+-			availability.squadAssignmentsMatch =
+-				squadSnapshotValid;
+-			availability.actionAssignmentsMatch =
+-				actionSnapshotValid;
+-			availability.roleAssignmentsMatch =
+-				roleSnapshotValid;
+-			input.transferAvailability.push_back(
+-				availability);
+ 		}
+ 	}
+ 
+diff --git a/src/voi_battlefield_projection.hpp b/src/voi_battlefield_projection.hpp
+--- a/src/voi_battlefield_projection.hpp
++++ b/src/voi_battlefield_projection.hpp
+@@ -231,6 +231,7 @@ struct VoiBattlefieldTransferProjection
+ 	bool atomicRevalidationReady = false;
+ 	bool protectedMinimumRespected = false;
+ 	bool transferSafe = false;
++	std::vector<std::string> recommendedResolutionChoices;
+ 	std::string blocker;
+ };
+ 
+@@ -661,9 +662,7 @@ voiProjectBattlefieldTransfer(
+ 				: "none";
+ 	}
+ 	result.counterpartOperationId =
+-		result.requested
+-			? input.counterpartOperationId
+-			: "";
++		input.counterpartOperationId;
+ 	result.sourceOwnerId = input.sourceOwnerId;
+ 	result.requestedGeneration =
+ 		input.requestedGeneration;
+@@ -681,9 +680,9 @@ voiProjectBattlefieldTransfer(
+ 		input.counterpartPending;
+ 	result.sourceActive = input.sourceActive;
+ 	result.destinationActive =
+-		result.requested
+-			? input.destinationActive
+-			: true;
++		result.counterpartOperationId.empty()
++			? true
++			: input.destinationActive;
+ 	result.ownershipIntegrity = ownershipIntegrity;
+ 	result.operationAssignmentsMatch =
+ 		input.operationAssignmentsMatch;
+@@ -743,7 +742,11 @@ voiProjectBattlefieldTransfer(
+ 			: 0;
+ 	const std::size_t prospectiveAvailableCount = result.requested
+ 		? selectedTags.size()
+-		: std::min(sourceSurplus, selectedTags.size());
++		: (result.counterpartOperationId.empty()
++			? std::min(sourceSurplus, selectedTags.size())
++			: std::min(
++				std::min(sourceSurplus, selectedTags.size()),
++				destinationCapacity));
+ 	result.protectedMinimumRespected =
+ 		result.sourceOwnerCount >= result.protectedMinimum
+ 		&& prospectiveAvailableCount <= sourceSurplus;
+@@ -896,6 +899,17 @@ voiProjectBattlefieldTransfer(
+ 				prospectiveAvailableCount));
+ 	result.atomicRevalidationReady = true;
+ 	result.transferSafe = true;
++	if (!result.requested
++		&& !result.counterpartOperationId.empty())
++	{
++		result.recommendedResolutionChoices.push_back(
++			"transfer_available_units");
++		if (result.availableCount >= 2)
++		{
++			result.recommendedResolutionChoices.push_back(
++				"transfer_two_units");
++		}
++	}
+ 	return result;
+ }
+ 
+@@ -1273,8 +1287,12 @@ inline VoiBattlefieldProjection voiMakeBattlefieldProjection(
+ 		result.bases.push_back(projected);
+ 	}
+ 
+-	std::map<std::string, VoiBattlefieldTransferProjection>
+-		transferBySourceOwner;
++	using VoiBattlefieldTransferEndpoint =
++		std::pair<std::string, std::string>;
++	std::map<
++		VoiBattlefieldTransferEndpoint,
++		VoiBattlefieldTransferProjection>
++		transferByEndpoint;
+ 	for (const auto & transfer : input.transferAvailability)
+ 	{
+ 		const auto projected = voiProjectBattlefieldTransfer(
+@@ -1283,8 +1301,11 @@ inline VoiBattlefieldProjection voiMakeBattlefieldProjection(
+ 			eligibleTagSet);
+ 		if (!projected.sourceOwnerId.empty())
+ 		{
+-			transferBySourceOwner[projected.sourceOwnerId] =
+-				projected;
++			transferByEndpoint[
++				std::make_pair(
++					projected.sourceOwnerId,
++					projected.counterpartOperationId)] =
++					projected;
+ 		}
+ 	}
+ 	for (const auto & operation : input.operations)
+@@ -1594,18 +1615,22 @@ inline VoiBattlefieldProjection voiMakeBattlefieldProjection(
+ 
+ 		if (!projected.transfer.sourceOwnerId.empty())
+ 		{
+-			const auto existing = transferBySourceOwner.find(
+-				projected.transfer.sourceOwnerId);
+-			if (existing == transferBySourceOwner.end()
++			const VoiBattlefieldTransferEndpoint endpoint =
++				std::make_pair(
++					projected.transfer.sourceOwnerId,
++					projected.transfer
++						.counterpartOperationId);
++			const auto existing = transferByEndpoint.find(
++				endpoint);
++			if (existing == transferByEndpoint.end()
+ 				|| projected.transfer.requested)
+ 			{
+-				transferBySourceOwner[
+-					projected.transfer.sourceOwnerId] =
+-						projected.transfer;
++				transferByEndpoint[endpoint] =
++					projected.transfer;
+ 			}
+ 		}
+ 	}
+-	for (const auto & transfer : transferBySourceOwner)
++	for (const auto & transfer : transferByEndpoint)
+ 	{
+ 		result.transfers.push_back(transfer.second);
+ 	}
+@@ -2074,7 +2099,12 @@ inline std::string voiBattlefieldProjectionJson(
+ 			<< ",\"atomic_runtime_blocker\":\""
+ 			<< voiBattlefieldJsonEscape(
+ 				transfer.blocker)
+-			<< "\",\"recommended_resolution_choices\":[],"
++			<< "\",\"recommended_resolution_choices\":";
++		voiBattlefieldWriteStringArray(
++			output,
++			transfer.recommendedResolutionChoices);
++		output
++			<< ","
+ 			<< "\"safety_evidence\":{"
+ 			<< "\"evaluated_at_frame\":"
+ 			<< projection.frame
+diff --git a/tests/battlefield_projection_test.cpp b/tests/battlefield_projection_test.cpp
+--- a/tests/battlefield_projection_test.cpp
++++ b/tests/battlefield_projection_test.cpp
+@@ -117,9 +117,18 @@ VoiBattlefieldProjectionInput validInput()
+ 
+ 	VoiBattlefieldTransferInput availability;
+ 	availability.sourceOwnerId = "assault-alpha";
++	availability.counterpartOperationId = "defense-bravo";
++	availability.requestedGeneration = 4;
++	availability.counterpartGeneration = 2;
++	availability.requestedSourceGeneration = 4;
++	availability.requestedCounterpartGeneration = 2;
+ 	availability.sourceOwnerTags = { 11 };
+ 	availability.sourceActive = true;
++	availability.destinationActive = true;
++	availability.counterpartPresent = true;
+ 	availability.sourceMinimum = 0;
++	availability.destinationOwnedCount = 1;
++	availability.destinationMaximum = 2;
+ 	availability.selectedTags = { 11 };
+ 	availability.operationAssignmentsMatch = true;
+ 	availability.squadAssignmentsMatch = true;
+@@ -220,7 +229,84 @@ int main()
+ 	CHECK(projection.transfers.size() == 1);
+ 	CHECK(projection.transfers[0].transferableTags
+ 		== std::vector<std::uint64_t>({ 11 }));
++	CHECK(
++		projection.transfers[0].counterpartOperationId
++		== "defense-bravo");
++	CHECK(projection.transfers[0].requestedGeneration == 4);
++	CHECK(projection.transfers[0].counterpartGeneration == 2);
++	CHECK(
++		projection.transfers[0].recommendedResolutionChoices
++		== std::vector<std::string>({
++			"transfer_available_units",
++		}));
+ 
++	auto multiDestination = validInput();
++	auto secondAssault = combatUnit(32);
++	secondAssault.explicitOwners = {
++		"operation:assault-alpha#4"
++	};
++	multiDestination.units.push_back(secondAssault);
++	multiDestination.units[3].explicitOwners = {
++		"operation:assault-alpha#4"
++	};
++	multiDestination.operations[0].assignedTags = {
++		11,
++		31,
++		32,
++	};
++	multiDestination.operations[0].minimumUnits = 1;
++	auto reserve = operation("reserve-charlie", 9, { });
++	reserve.maximumUnits = 1;
++	multiDestination.operations.push_back(reserve);
++	VoiBattlefieldTransferInput toDefense =
++		multiDestination.transferAvailability[0];
++	toDefense.sourceOwnerTags = { 11, 31, 32 };
++	toDefense.selectedTags = { 31, 32 };
++	toDefense.sourceMinimum = 1;
++	toDefense.destinationMaximum = 4;
++	VoiBattlefieldTransferInput toReserve = toDefense;
++	toReserve.counterpartOperationId = "reserve-charlie";
++	toReserve.counterpartGeneration = 9;
++	toReserve.requestedCounterpartGeneration = 9;
++	toReserve.destinationOwnedCount = 0;
++	toReserve.destinationMaximum = 0;
++	multiDestination.transferAvailability = {
++		toDefense,
++		toReserve,
++	};
++	const auto multiDestinationProjection =
++		voiMakeBattlefieldProjection(multiDestination);
++	CHECK(multiDestinationProjection.transfers.size() == 2);
++	CHECK(
++		multiDestinationProjection.transfers[0]
++			.counterpartOperationId == "defense-bravo");
++	CHECK(
++		multiDestinationProjection.transfers[0]
++			.transferableTags
++		== std::vector<std::uint64_t>({ 31, 32 }));
++	CHECK(
++		multiDestinationProjection.transfers[0]
++			.recommendedResolutionChoices
++		== std::vector<std::string>({
++			"transfer_available_units",
++			"transfer_two_units",
++		}));
++	CHECK(
++		multiDestinationProjection.transfers[1]
++			.counterpartOperationId == "reserve-charlie");
++	CHECK(
++		multiDestinationProjection.transfers[1]
++			.counterpartGeneration == 9);
++	CHECK(
++		!multiDestinationProjection.transfers[1]
++			.transferSafe);
++	CHECK(
++		multiDestinationProjection.transfers[1]
++			.blocker == "no_transferable_units");
++	CHECK(
++		multiDestinationProjection.transfers[1]
++			.recommendedResolutionChoices.empty());
++
+ 	auto exclusions = validInput();
+ 	auto dead = combatUnit(40);
+ 	dead.alive = false;
+@@ -713,6 +799,23 @@ int main()
+ 		transferJson.find(
+ 			"\"successful_write_acknowledgement\"")
+ 		!= std::string::npos);
++	const std::string multiDestinationJson =
++		voiBattlefieldProjectionJson(
++			multiDestinationProjection);
++	CHECK(
++		multiDestinationJson.find(
++			"\"counterpart_operation_id\":\"defense-bravo\"")
++		!= std::string::npos);
++	CHECK(
++		multiDestinationJson.find(
++			"\"counterpart_operation_id\":\"reserve-charlie\"")
++		!= std::string::npos);
++	CHECK(
++		multiDestinationJson.find(
++			"\"recommended_resolution_choices\":["
++			"\"transfer_available_units\","
++			"\"transfer_two_units\"]")
++		!= std::string::npos);
+ 
+ 	return failures == 0 ? 0 : 1;
+ }
+diff --git a/src/voi_runtime_identity.hpp b/src/voi_runtime_identity.hpp
+--- a/src/voi_runtime_identity.hpp
++++ b/src/voi_runtime_identity.hpp
+@@ -95,6 +95,9 @@ inline std::uint64_t voiMixBattlefieldSessionComponent(
+ 	return value ^ (value >> 31);
+ }
+ 
++constexpr std::uint64_t kVoiBattlefieldMaximumJsonSafeInteger =
++	(1ULL << 53) - 1ULL;
++
+ inline std::uint64_t voiComposeBattlefieldSessionIdentity(
+ 	std::uint64_t wallClockNanoseconds,
+ 	std::uint64_t processId,
+@@ -107,6 +110,7 @@ inline std::uint64_t voiComposeBattlefieldSessionIdentity(
+ 		value ^ processId);
+ 	value = voiMixBattlefieldSessionComponent(
+ 		value ^ processNonce);
++	value &= kVoiBattlefieldMaximumJsonSafeInteger;
+ 	return value == 0 ? 1 : value;
+ }
+ 
+diff --git a/tests/battlefield_projection_test.cpp b/tests/battlefield_projection_test.cpp
+--- a/tests/battlefield_projection_test.cpp
++++ b/tests/battlefield_projection_test.cpp
+@@ -157,6 +157,9 @@ int main()
+ 	CHECK(voiCurrentBattlefieldSessionEpoch() > 1);
+ 	CHECK(
+ 		voiCurrentBattlefieldSessionEpoch()
++		<= kVoiBattlefieldMaximumJsonSafeInteger);
++	CHECK(
++		voiCurrentBattlefieldSessionEpoch()
+ 		== voiCurrentBattlefieldSessionEpoch());
+ 	const std::uint64_t equalTimestamp =
+ 		1700000000000000000ULL;
+@@ -172,6 +175,12 @@ int main()
+ 			7001);
+ 	CHECK(firstProcessIdentity > 0);
+ 	CHECK(secondProcessIdentity > 0);
++	CHECK(
++		firstProcessIdentity
++		<= kVoiBattlefieldMaximumJsonSafeInteger);
++	CHECK(
++		secondProcessIdentity
++		<= kVoiBattlefieldMaximumJsonSafeInteger);
+ 	CHECK(firstProcessIdentity != secondProcessIdentity);
+ 	CHECK(
+ 		voiNextBattlefieldSessionEpoch(
+diff --git a/src/voi_battlefield_projection.hpp b/src/voi_battlefield_projection.hpp
+--- a/src/voi_battlefield_projection.hpp
++++ b/src/voi_battlefield_projection.hpp
+@@ -17,12 +17,15 @@ inline std::uint64_t voiNextBattlefieldSessionEpoch(
+ 	std::uint64_t previous,
+ 	std::uint64_t processEpoch = 0)
+ {
+-	if (processEpoch > previous)
++	if (processEpoch > previous
++		&& processEpoch
++			<= kVoiBattlefieldMaximumJsonSafeInteger)
+ 	{
+ 		return processEpoch;
+ 	}
+-	return previous == std::numeric_limits<std::uint64_t>::max()
+-		? previous
++	return previous
++		>= kVoiBattlefieldMaximumJsonSafeInteger
++		? 1
+ 		: previous + 1;
+ }
+ 
+diff --git a/tests/battlefield_projection_test.cpp b/tests/battlefield_projection_test.cpp
+--- a/tests/battlefield_projection_test.cpp
++++ b/tests/battlefield_projection_test.cpp
+@@ -182,10 +182,47 @@ int main()
+ 		secondProcessIdentity
+ 		<= kVoiBattlefieldMaximumJsonSafeInteger);
+ 	CHECK(firstProcessIdentity != secondProcessIdentity);
++	const auto reachedMaximumSafeEpoch =
++		voiNextBattlefieldSessionEpoch(
++			kVoiBattlefieldMaximumJsonSafeInteger - 1,
++			kVoiBattlefieldMaximumJsonSafeInteger - 1);
+ 	CHECK(
++		reachedMaximumSafeEpoch
++		== kVoiBattlefieldMaximumJsonSafeInteger);
++	CHECK(reachedMaximumSafeEpoch > 0);
++	CHECK(
++		reachedMaximumSafeEpoch
++		<= kVoiBattlefieldMaximumJsonSafeInteger);
++	CHECK(
++		reachedMaximumSafeEpoch
++		!= kVoiBattlefieldMaximumJsonSafeInteger - 1);
++	const auto wrappedMaximumSafeEpoch =
+ 		voiNextBattlefieldSessionEpoch(
+-			std::numeric_limits<std::uint64_t>::max())
+-		== std::numeric_limits<std::uint64_t>::max());
++			kVoiBattlefieldMaximumJsonSafeInteger,
++			kVoiBattlefieldMaximumJsonSafeInteger);
++	CHECK(wrappedMaximumSafeEpoch == 1);
++	CHECK(wrappedMaximumSafeEpoch > 0);
++	CHECK(
++		wrappedMaximumSafeEpoch
++		<= kVoiBattlefieldMaximumJsonSafeInteger);
++	CHECK(
++		wrappedMaximumSafeEpoch
++		!= kVoiBattlefieldMaximumJsonSafeInteger);
++	CHECK(
++		voiNextBattlefieldSessionEpoch(
++			kVoiBattlefieldMaximumJsonSafeInteger,
++			kVoiBattlefieldMaximumJsonSafeInteger)
++		== wrappedMaximumSafeEpoch);
++	const auto rejectedUnsafeProcessEpoch =
++		voiNextBattlefieldSessionEpoch(
++			41,
++			kVoiBattlefieldMaximumJsonSafeInteger + 1);
++	CHECK(rejectedUnsafeProcessEpoch == 42);
++	CHECK(rejectedUnsafeProcessEpoch > 0);
++	CHECK(
++		rejectedUnsafeProcessEpoch
++		<= kVoiBattlefieldMaximumJsonSafeInteger);
++	CHECK(rejectedUnsafeProcessEpoch != 41);
+ 	const auto runtimeIdentity =
+ 		voiParseRuntimeInstanceIdentity(
+ 			"0123456789abcdef0123456789abcdef");

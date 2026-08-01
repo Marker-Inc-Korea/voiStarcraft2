@@ -2150,6 +2150,7 @@ def _validate_transfer_availability(
         if owner_tags.partition_tags
         else set()
     )
+    transfer_endpoints: set[tuple[str, str]] = set()
     for index, entry in enumerate(entries):
         path = f"$.battlefield_overview.transfer_availability.entries[{index}]"
         source_owner_id = _required_string(
@@ -2182,11 +2183,31 @@ def _validate_transfer_availability(
             path=f"{path}.atomic_runtime_blocker",
             validation=validation,
         )
-        _required_sequence(
+        recommended_choices = _required_sequence(
             entry.get("recommended_resolution_choices"),
             path=f"{path}.recommended_resolution_choices",
             validation=validation,
         )
+        raw_inputs = entry.get("atomic_revalidation_inputs")
+        counterpart_operation_id = (
+            str(raw_inputs.get("counterpart_operation_id", "") or "")
+            if isinstance(raw_inputs, Mapping)
+            else ""
+        )
+        if source_owner_id is not None:
+            endpoint = (source_owner_id, counterpart_operation_id)
+            if endpoint in transfer_endpoints:
+                validation.block(
+                    "duplicate_transfer_endpoint",
+                    path,
+                    (
+                        "Each source/destination transfer endpoint must be "
+                        "projected exactly once."
+                    ),
+                    source_owner_id=source_owner_id,
+                    counterpart_operation_id=counterpart_operation_id,
+                )
+            transfer_endpoints.add(endpoint)
         candidate_tags = _required_unit_tags(
             entry.get("transferable_unit_tags"),
             path=f"{path}.transferable_unit_tags",
@@ -2255,6 +2276,49 @@ def _validate_transfer_availability(
             owner_tags=owner_tags,
             validation=validation,
         )
+        if recommended_choices is not None:
+            normalized_choices = [str(choice) for choice in recommended_choices]
+            supported_choices = {
+                "transfer_available_units",
+                "transfer_two_units",
+            }
+            unsupported_choices = sorted(
+                set(normalized_choices) - supported_choices
+            )
+            if unsupported_choices:
+                validation.block(
+                    "unsupported_transfer_recommendation",
+                    f"{path}.recommended_resolution_choices",
+                    "C++ emitted an unsupported contextual transfer action.",
+                    choices=unsupported_choices,
+                )
+            requested = (
+                raw_inputs.get("requested")
+                if isinstance(raw_inputs, Mapping)
+                else None
+            )
+            expected_choices: list[str] = []
+            if (
+                requested is False
+                and counterpart_operation_id
+                and transfer_safe is True
+                and transferable_count is not None
+                and transferable_count > 0
+            ):
+                expected_choices.append("transfer_available_units")
+                if transferable_count >= 2:
+                    expected_choices.append("transfer_two_units")
+            if normalized_choices != expected_choices:
+                validation.block(
+                    "transfer_recommendation_mismatch",
+                    f"{path}.recommended_resolution_choices",
+                    (
+                        "Contextual transfer recommendations must match the "
+                        "exact safe transferable count and endpoint identity."
+                    ),
+                    expected=expected_choices,
+                    reported=normalized_choices,
+                )
         if (
             source_count is not None
             and protected_minimum is not None
@@ -2696,12 +2760,6 @@ def _validate_atomic_revalidation_inputs(
                 "Non-requested transfer projection must use availability action.",
                 actual=source_action,
             )
-        if counterpart_operation_id or counterpart_action or counterpart_generation:
-            validation.block(
-                "atomic_unrequested_counterpart_mismatch",
-                path,
-                "Availability-only projection cannot carry counterpart identity.",
-            )
         if source_owner_generation is not None and source_generation not in {
             0,
             source_owner_generation,
@@ -2712,6 +2770,102 @@ def _validate_atomic_revalidation_inputs(
                 "Availability source generation conflicts with the source operation.",
                 reported=source_generation,
                 operation_generation=source_owner_generation,
+            )
+        if requested_source_generation not in {0, source_generation}:
+            validation.block(
+                "atomic_source_generation_mismatch",
+                f"{path}.requested_source_generation",
+                (
+                    "Availability source request generation must match the "
+                    "current source generation."
+                ),
+                reported=requested_source_generation,
+                operation_generation=source_owner_generation,
+            )
+        if counterpart_operation_id:
+            counterpart_owner_generation = (
+                owner_tags.owner_generations_by_id.get(
+                    counterpart_operation_id
+                )
+            )
+            if counterpart_operation_id == source_owner_id:
+                validation.block(
+                    "atomic_counterpart_operation_mismatch",
+                    f"{path}.counterpart_operation_id",
+                    "Transfer source and destination operations must differ.",
+                    operation_id=counterpart_operation_id,
+                )
+            elif counterpart_owner_generation is None:
+                validation.block(
+                    "atomic_counterpart_operation_mismatch",
+                    f"{path}.counterpart_operation_id",
+                    (
+                        "Availability destination is not present in "
+                        "authoritative operation ownership."
+                    ),
+                    counterpart_operation_id=counterpart_operation_id,
+                )
+            if counterpart_action:
+                validation.block(
+                    "atomic_counterpart_action_mismatch",
+                    f"{path}.counterpart_action",
+                    (
+                        "Availability endpoint identity cannot claim a "
+                        "submitted reciprocal action."
+                    ),
+                    actual=counterpart_action,
+                )
+            if (
+                counterpart_owner_generation is None
+                or counterpart_generation != counterpart_owner_generation
+            ):
+                validation.block(
+                    "atomic_counterpart_generation_mismatch",
+                    f"{path}.counterpart_generation",
+                    (
+                        "Availability destination generation must match the "
+                        "destination operation."
+                    ),
+                    counterpart_operation_id=counterpart_operation_id,
+                    reported=counterpart_generation,
+                    operation_generation=counterpart_owner_generation,
+                )
+            if requested_counterpart_generation not in {
+                0,
+                counterpart_generation,
+            }:
+                validation.block(
+                    "atomic_counterpart_generation_mismatch",
+                    f"{path}.requested_counterpart_generation",
+                    (
+                        "Availability destination request generation must "
+                        "match the current destination generation."
+                    ),
+                    reported=requested_counterpart_generation,
+                    operation_generation=counterpart_owner_generation,
+                )
+            if readiness_fields.get("counterpart_present") is not True:
+                validation.block(
+                    "atomic_revalidation_not_ready",
+                    path,
+                    (
+                        "Availability endpoint requires an authoritative "
+                        "destination presence observation."
+                    ),
+                    failed_fields=["counterpart_present"],
+                )
+        elif (
+            counterpart_action
+            or counterpart_generation
+            or requested_counterpart_generation
+        ):
+            validation.block(
+                "atomic_unrequested_counterpart_mismatch",
+                path,
+                (
+                    "Source-only availability cannot carry partial "
+                    "destination identity."
+                ),
             )
     if (
         transfer_safe is True
