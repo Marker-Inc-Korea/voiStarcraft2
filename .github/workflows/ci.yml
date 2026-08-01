@@ -83,12 +83,11 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/pre-live"
           PYTHON_EXECUTABLE="$(python3 -c 'import os, sys; print(os.path.realpath(sys.executable))')"
           VOI_NODE_EXECUTABLE="$(python3 -c 'import os, shutil; print(os.path.realpath(shutil.which("node") or ""))')"
-          sudo env \
+          printf '%s' "${GITHUB_TOKEN}" | sudo env -u GITHUB_TOKEN \
             GITHUB_API_URL="${GITHUB_API_URL}" \
             GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
             GITHUB_RUN_ATTEMPT="${GITHUB_RUN_ATTEMPT}" \
             GITHUB_RUN_ID="${GITHUB_RUN_ID}" \
-            GITHUB_TOKEN="${GITHUB_TOKEN}" \
             GITHUB_WORKFLOW_REF="${GITHUB_WORKFLOW_REF}" \
             GITHUB_WORKFLOW_SHA="${GITHUB_WORKFLOW_SHA}" \
             GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \

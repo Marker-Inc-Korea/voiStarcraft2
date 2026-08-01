@@ -828,7 +828,15 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             "      - name: Upload canonical authenticated provenance bundle\n",
             1,
         )[0]
-        self.assertIn("          sudo env \\\n", emission_step)
+        self.assertIn(
+            "          printf '%s' \"${GITHUB_TOKEN}\" | "
+            "sudo env -u GITHUB_TOKEN \\\n",
+            emission_step,
+        )
+        self.assertNotIn(
+            'GITHUB_TOKEN="${GITHUB_TOKEN}"',
+            emission_step,
+        )
         self.assertIn(
             '            VOI_PRODUCER_UID="${VOI_PRODUCER_UID}" \\\n',
             emission_step,
@@ -3605,20 +3613,49 @@ class LocalProducerTest(unittest.TestCase):
                 f"sentinel={sentinel_token!r}\n"
                 "parent_pid=os.getppid()\n"
                 "observed=[]\n"
-                "for ps_path in ('/bin/ps','/usr/bin/ps'):\n"
-                "    if not Path(ps_path).is_file():\n"
-                "        continue\n"
+                "ps_path=next(\n"
+                "    (value for value in ('/bin/ps','/usr/bin/ps')\n"
+                "     if Path(value).is_file()),\n"
+                "    None,\n"
+                ")\n"
+                "if ps_path is not None:\n"
+                "    visible=subprocess.run(\n"
+                "        [ps_path,'-axo','pid=,ppid=,command='],\n"
+                "        check=False,capture_output=True,text=False,\n"
+                "    )\n"
+                "    observed.extend((visible.stdout,visible.stderr))\n"
+                "ancestor_pid=parent_pid\n"
+                "visited=set()\n"
+                "while ps_path is not None and ancestor_pid not in visited:\n"
+                "    visited.add(ancestor_pid)\n"
                 "    result=subprocess.run(\n"
-                "        [ps_path,'eww','-p',str(parent_pid)],\n"
+                "        [ps_path,'eww','-p',str(ancestor_pid)],\n"
                 "        check=False,capture_output=True,text=False,\n"
                 "    )\n"
                 "    observed.extend((result.stdout,result.stderr))\n"
-                "    break\n"
-                "proc_environ=Path('/proc')/str(parent_pid)/'environ'\n"
-                "try:\n"
-                "    observed.append(proc_environ.read_bytes())\n"
-                "except OSError as exc:\n"
-                "    observed.append(str(exc).encode())\n"
+                "    proc_environ=(\n"
+                "        Path('/proc')/str(ancestor_pid)/'environ'\n"
+                "    )\n"
+                "    try:\n"
+                "        observed.append(proc_environ.read_bytes())\n"
+                "    except OSError as exc:\n"
+                "        observed.append(str(exc).encode())\n"
+                "    parent=subprocess.run(\n"
+                "        [ps_path,'-o','ppid=,command=',\n"
+                "         '-p',str(ancestor_pid)],\n"
+                "        check=False,capture_output=True,text=False,\n"
+                "    )\n"
+                "    observed.extend((parent.stdout,parent.stderr))\n"
+                "    fields=parent.stdout.strip().split(None,1)\n"
+                "    if not fields:\n"
+                "        break\n"
+                "    try:\n"
+                "        next_pid=int(fields[0])\n"
+                "    except ValueError:\n"
+                "        break\n"
+                "    if next_pid <= 0 or next_pid == ancestor_pid:\n"
+                "        break\n"
+                "    ancestor_pid=next_pid\n"
                 "combined=b'\\n'.join(observed)\n"
                 "Path(sys.argv[sys.argv.index('--output') + 1]).write_text(\n"
                 "    json.dumps({\n"
@@ -3660,6 +3697,25 @@ class LocalProducerTest(unittest.TestCase):
             )
             self.assertEqual(producer_uid, output["euid"])
             self.assertFalse(output["recovered"], output)
+
+    def test_github_token_stdin_is_bounded_and_exact(self) -> None:
+        self.assertEqual(
+            "ghs_exact-token",
+            provenance_module._read_github_token_from_stdin(
+                io.BytesIO(b"ghs_exact-token")
+            ),
+        )
+        for name, payload in {
+            "empty": b"",
+            "newline": b"ghs_token\n",
+            "non-ASCII": b"ghs_\xff",
+            "oversized": b"x" * 4097,
+        }.items():
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    provenance_module._read_github_token_from_stdin(
+                        io.BytesIO(payload)
+                    )
 
     def test_dedicated_producer_uid_kills_setsided_descendant_on_timeout(
         self,

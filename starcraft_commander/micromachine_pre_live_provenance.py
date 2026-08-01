@@ -98,6 +98,7 @@ MAX_PRODUCER_SOURCE_BYTES: Final[int] = 16 * 1024 * 1024
 MAX_PRODUCER_EXECUTABLE_BYTES: Final[int] = 512 * 1024 * 1024
 MAX_REPLAY_LEDGER_BYTES: Final[int] = 16 * 1024 * 1024
 MAX_REPLAY_ENTRIES: Final[int] = 100_000
+MAX_GITHUB_TOKEN_BYTES: Final[int] = 4096
 UNTRUSTED_STATUS_FIELDS: Final[frozenset[str]] = frozenset(
     {
         "artifact_sha256",
@@ -7125,7 +7126,7 @@ def _main(argv: Sequence[str]) -> int:
             run_attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
             producer_uid = int(os.environ[PRODUCER_UID_ENV])
             producer_gid = int(os.environ[PRODUCER_GID_ENV])
-            token = os.environ["GITHUB_TOKEN"]
+            token = _read_github_token_from_stdin(sys.stdin.buffer)
             api_base_url = os.environ.get(
                 "GITHUB_API_URL",
                 "https://api.github.com",
@@ -7172,6 +7173,25 @@ def _main(argv: Sequence[str]) -> int:
         file=sys.stderr,
     )
     return 2
+
+
+def _read_github_token_from_stdin(stream: Any) -> str:
+    payload = stream.read(MAX_GITHUB_TOKEN_BYTES + 1)
+    if not isinstance(payload, bytes):
+        raise ValueError("GitHub token stdin must be a binary stream")
+    if not payload:
+        raise ValueError("GitHub token stdin is empty")
+    if len(payload) > MAX_GITHUB_TOKEN_BYTES:
+        raise ValueError("GitHub token stdin exceeds the size limit")
+    try:
+        token = payload.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise ValueError("GitHub token stdin is not ASCII") from exc
+    if any(ord(character) < 0x21 or ord(character) > 0x7E for character in token):
+        raise ValueError(
+            "GitHub token stdin contains whitespace or control characters"
+        )
+    return token
 
 
 def _component_result(
