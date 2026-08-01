@@ -26,7 +26,7 @@ SANITIZED_GIT_ENV: Final[dict[str, str]] = {
     "LC_ALL": "C",
     "PATH": "/usr/bin:/bin",
 }
-MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 73
+MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 75
 MICROMACHINE_SOURCE_ATTESTATION_SCHEMA_VERSION: Final[int] = 5
 MICROMACHINE_BUILD_TRANSACTION_SCHEMA_VERSION: Final[int] = 1
 MICROMACHINE_CTEST_REGISTRY_SCHEMA_VERSION: Final[int] = 1
@@ -561,6 +561,20 @@ DEFAULT_MICROMACHINE_CONTEXTUAL_TRANSFER_CHOICE_PROJECTION_PATCH: Final[Path] = 
     / "patches"
     / "0073-contextual-transfer-choice-projection.patch"
 )
+DEFAULT_MICROMACHINE_AUTONOMOUS_OWNER_COMPOSITION_EVIDENCE_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0074-autonomous-owner-composition-evidence.patch"
+)
+DEFAULT_MICROMACHINE_BATTLEFIELD_REVIEW_CLOSURE_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0075-battlefield-review-closure.patch"
+)
 DEFAULT_S2CLIENT_PATCH: Final[Path] = (
     REPO_ROOT
     / "integrations"
@@ -799,6 +813,12 @@ class MicroMachineBuildIdentityConfig:
     )
     micromachine_contextual_transfer_choice_projection_patch: Path = (
         DEFAULT_MICROMACHINE_CONTEXTUAL_TRANSFER_CHOICE_PROJECTION_PATCH
+    )
+    micromachine_autonomous_owner_composition_evidence_patch: Path = (
+        DEFAULT_MICROMACHINE_AUTONOMOUS_OWNER_COMPOSITION_EVIDENCE_PATCH
+    )
+    micromachine_battlefield_review_closure_patch: Path = (
+        DEFAULT_MICROMACHINE_BATTLEFIELD_REVIEW_CLOSURE_PATCH
     )
     s2client_patch: Path = DEFAULT_S2CLIENT_PATCH
     hook_manifest: Path = DEFAULT_HOOK_MANIFEST
@@ -1221,6 +1241,14 @@ def build_micromachine_build_identity(
                 config.micromachine_contextual_transfer_choice_projection_patch
             )
         ),
+        "micromachine_autonomous_owner_composition_evidence_patch_sha256": (
+            _sha256_file(
+                config.micromachine_autonomous_owner_composition_evidence_patch
+            )
+        ),
+        "micromachine_battlefield_review_closure_patch_sha256": _sha256_file(
+            config.micromachine_battlefield_review_closure_patch
+        ),
         "s2client_patch_sha256": _sha256_file(config.s2client_patch),
         "hook_manifest_sha256": _sha256_file(config.hook_manifest),
         "map_pool_sha256": _sha256_file(config.map_pool),
@@ -1602,6 +1630,12 @@ def build_micromachine_build_identity(
             ),
             "micromachine_contextual_transfer_choice_projection_patch": str(
                 config.micromachine_contextual_transfer_choice_projection_patch
+            ),
+            "micromachine_autonomous_owner_composition_evidence_patch": str(
+                config.micromachine_autonomous_owner_composition_evidence_patch
+            ),
+            "micromachine_battlefield_review_closure_patch": str(
+                config.micromachine_battlefield_review_closure_patch
             ),
             "embedded_build_identity_header": str(
                 config.embedded_build_identity_header_path
@@ -2240,6 +2274,16 @@ def build_argument_parser() -> argparse.ArgumentParser:
             DEFAULT_MICROMACHINE_CONTEXTUAL_TRANSFER_CHOICE_PROJECTION_PATCH
         ),
     )
+    parser.add_argument(
+        "--micromachine-autonomous-owner-composition-evidence-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_AUTONOMOUS_OWNER_COMPOSITION_EVIDENCE_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-battlefield-review-closure-patch",
+        default=str(DEFAULT_MICROMACHINE_BATTLEFIELD_REVIEW_CLOSURE_PATCH),
+    )
     parser.add_argument("--s2client-patch", default=str(DEFAULT_S2CLIENT_PATCH))
     parser.add_argument("--hook-manifest", default=str(DEFAULT_HOOK_MANIFEST))
     parser.add_argument("--map-pool", default=str(DEFAULT_MAP_POOL))
@@ -2499,6 +2543,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         micromachine_contextual_transfer_choice_projection_patch=Path(
             args.micromachine_contextual_transfer_choice_projection_patch
+        ),
+        micromachine_autonomous_owner_composition_evidence_patch=Path(
+            args.micromachine_autonomous_owner_composition_evidence_patch
+        ),
+        micromachine_battlefield_review_closure_patch=Path(
+            args.micromachine_battlefield_review_closure_patch
         ),
         s2client_patch=Path(args.s2client_patch),
         hook_manifest=Path(args.hook_manifest),

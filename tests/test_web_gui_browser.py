@@ -592,7 +592,7 @@ def _contextual_transfer_browser_fixture_page() -> str:
       identity: {
         update_id: "browser-transfer-update",
         scope: "operation:" + operationId,
-        session_epoch: 9007199254740991,
+        session_epoch: "9007199254740991",
         operation_id: operationId,
         generation: generation,
         stage: "assigned",
@@ -745,7 +745,7 @@ def _contextual_transfer_browser_fixture_page() -> str:
       status: "published",
       blackboard_scope_id: "browser-transfer-scope",
       battlefield_projection_identity: {
-        session_epoch: 9007199254740991,
+        session_epoch: "9007199254740991",
         game_frame: 140
       },
       battlefield_projection_fingerprint: "c".repeat(64),
@@ -753,7 +753,7 @@ def _contextual_transfer_browser_fixture_page() -> str:
         schema_version: 2,
         authority: "micromachine_cpp",
         identity: {
-          session_epoch: 9007199254740991,
+          session_epoch: "9007199254740991",
           game_frame: 140
         },
         operation_ownership: [
@@ -828,7 +828,7 @@ def _contextual_transfer_browser_fixture_page() -> str:
         body.protected_minimum === 2 &&
         body.source_minimum === 2 &&
         body.blackboard_scope_id === "browser-transfer-scope" &&
-        body.session_epoch === 9007199254740991 &&
+        body.session_epoch === "9007199254740991" &&
         body.projection_frame === 140 &&
         body.projection_fingerprint === "c".repeat(64));
       mark("allowlist", forbiddenFields.every(function (field) {
@@ -913,14 +913,14 @@ def _contextual_transfer_browser_fixture_page() -> str:
         status: "published",
         blackboard_scope_id: "browser-transfer-scope",
         battlefield_projection_identity: {
-          session_epoch: 9007199254740991,
+          session_epoch: "9007199254740991",
           game_frame: 141
         },
         battlefield_projection_fingerprint: "d".repeat(64),
         battlefield_overview: {
           authority: "micromachine_cpp",
           identity: {
-            session_epoch: 9007199254740991,
+            session_epoch: "9007199254740991",
             game_frame: 141
           },
           operation_ownership: [
@@ -985,7 +985,618 @@ def _contextual_transfer_browser_fixture_page() -> str:
     return page.replace("</body>", scenario + "\n</body>", 1)
 
 
+def _battlefield_overview_browser_fixture_page() -> str:
+    prelude = r"""
+<script>
+(function () {
+  function response(payload) {
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      statusText: "",
+      json: function () { return Promise.resolve(payload); },
+      text: function () { return Promise.resolve(JSON.stringify(payload)); }
+    });
+  }
+  window.fetch = function (url) {
+    var route = String(url || "").split("?")[0];
+    if (route === "/api/llm") {
+      return response({ configured: true, provider: "openai", model: "test" });
+    }
+    if (route === "/api/history") {
+      return response({ events: [], latest: 0 });
+    }
+    if (route === "/api/state") {
+      return response({ available: false, standing_orders: [] });
+    }
+    if (route === "/api/runtime/status") {
+      return response({ running: false, status: "idle" });
+    }
+    if (route === "/api/micromachine/status") {
+      return response({
+        status: "idle",
+        blackboard_scope_id: "browser-overview-scope",
+        operations: []
+      });
+    }
+    return response({});
+  };
+  class FakeEventSource {
+    addEventListener() {}
+    close() {}
+  }
+  window.EventSource = FakeEventSource;
+})();
+</script>
+"""
+    scenario = r"""
+<script>
+(function () {
+  function mark(name, pass) {
+    document.body.setAttribute("data-qa-" + name, pass ? "true" : "false");
+  }
+
+  function projection(updateId, operationId, generation, ownerCount) {
+    return {
+      identity: {
+        update_id: updateId,
+        scope: "operation:" + operationId,
+        session_epoch: 1700000000000,
+        operation_id: operationId,
+        generation: generation,
+        stage: "queued_or_assigned",
+        game_frame: 480
+      },
+      operation_id: operationId,
+      generation: generation,
+      operation_route: {
+        requested_route_type: "direct",
+        applied_route_type: "direct",
+        location_intent: "home",
+        target_type: "base_defense",
+        resolved_target_label: "home",
+        target_x: 44,
+        target_y: 20,
+        target_evidence: "semantic_anchor"
+      },
+      operation_lifetime: {
+        mode: "standing",
+        completion_state: "active",
+        completion_conditions: ["cancelled_by_user"],
+        duration_seconds: 0,
+        issued_at_frame: 400,
+        deadline_frame: 0,
+        standing: true,
+        completed: false,
+        completion_reason: "",
+        completed_frame: 0
+      },
+      operation_ownership: {
+        owner_count: ownerCount,
+        integrity_status: "valid"
+      },
+      operation_launch_policy: {
+        min_units: 2,
+        max_units: 4,
+        allow_partial_requested: true,
+        strict_scope: true,
+        partial_launch_allowed: true,
+        partial_launch_safe: true,
+        launch_count: ownerCount,
+        missing_count: Math.max(0, 4 - ownerCount),
+        decision: ownerCount >= 4 ? "launch" : "wait",
+        blocker: ownerCount >= 4 ? "" : "missing_addon",
+        recommended_choices: [],
+        safety_evidence: {
+          evaluated_at_frame: 480,
+          protected_defense_minimum_respected: true,
+          source_operation_minimum_respected: true,
+          transfer_admission: "accepted",
+          emergency_preemption: "none"
+        }
+      },
+      operation_completion: {
+        movement_observed: false,
+        engagement_observed: false,
+        target_reached: false,
+        terminal: false,
+        state: "active",
+        reason: "",
+        frame: 0,
+        generation: generation
+      }
+    };
+  }
+
+  function operation(updateId, operationId, generation, mission, ownerCount) {
+    var canonical = projection(
+      updateId,
+      operationId,
+      generation,
+      ownerCount
+    );
+    return {
+      operation_id: operationId,
+      operation_generation: generation,
+      requested_operation_generation: generation,
+      update_id: updateId,
+      operation_console_execution_owner_update_id: updateId,
+      operation_console_execution_owner_vector: {
+        operation_id: operationId,
+        generation: generation,
+        tactical_task: { task_type: "defend_with_units" }
+      },
+      command_text: "Defend " + operationId,
+      mission: mission,
+      transport_status: "published",
+      consumption_status: "consumed",
+      telemetry_frame: 480,
+      telemetry_current: true,
+      disposition: "active",
+      operation_convergence: {
+        target_count: 4,
+        represented_count: ownerCount,
+        missing_count: Math.max(0, 4 - ownerCount),
+        blocker: ownerCount >= 4 ? "" : "missing_addon",
+        requirements: [{
+          unit_type: "TERRAN_MARAUDER",
+          canonical_family: "marauder",
+          role: "defender",
+          target_count: 4,
+          assigned_count: ownerCount,
+          represented_count: ownerCount,
+          completed_count: Math.max(0, ownerCount - 1),
+          in_progress_count: ownerCount < 4 ? 1 : 0,
+          queued_count: 0,
+          missing_count: Math.max(0, 4 - ownerCount),
+          production_blocker: ownerCount < 4 ? "missing_addon" : "ready",
+          prerequisites: ["TERRAN_BARRACKS", "BARRACKS_TECHLAB"],
+          missing_prerequisites: ownerCount < 4
+            ? ["BARRACKS_TECHLAB"]
+            : [],
+          prerequisite_integrity_status: "valid",
+          prerequisite_integrity_blockers: []
+        }],
+        prerequisite_integrity_status: "valid",
+        prerequisite_integrity_blockers: []
+      },
+      battlefield_projection_join: {
+        status: "matched",
+        reason: "",
+        update_id: updateId,
+        scope: "operation:" + operationId,
+        session_epoch: "1700000000000",
+        operation_id: operationId,
+        generation: generation
+      },
+      battlefield_operation: canonical,
+      semantic_timeline: [],
+      update: {
+        update_id: updateId,
+        vector: {
+          goal: "Defend " + operationId,
+          operation_id: operationId,
+          generation: generation,
+          tactical_task: { task_type: "defend_with_units" }
+        }
+      },
+      intervention: {
+        telemetry_frame: 480,
+        command_execution: {
+          command_id: updateId,
+          operation_id: operationId,
+          operation_generation: generation,
+          state: "queued_or_assigned",
+          completed: false,
+          failed: false,
+          expired: false,
+          stages: [
+            { name: "parsed", ok: true },
+            { name: "consumed_by_manager", ok: true },
+            { name: "queued_or_assigned", ok: true }
+          ]
+        }
+      }
+    };
+  }
+
+  window.setTimeout(function () {
+    var destinationOperationId =
+      "destination-" + "xxxxxxxx-".repeat(12) + "xxxxxxxx";
+    var source = operation(
+      "browser-overview-source",
+      "hold-main",
+      2,
+      "defense",
+      3
+    );
+    var destination = operation(
+      "browser-overview-destination",
+      destinationOperationId,
+      5,
+      "defense",
+      2
+    );
+    var overview = {
+      schema_version: 2,
+      authority: "micromachine_cpp",
+      identity: {
+        update_id: "browser-overview",
+        scope: "battlefield",
+        session_epoch: 1700000000000,
+        generation: 9,
+        stage: "observed",
+        game_frame: 480
+      },
+      eligible_combat_count: 8,
+      explicit_operation_owned_count: 5,
+      autonomous_owned_count: 2,
+      unassigned_count: 1,
+      duplicate_owner_count: 0,
+      operation_ownership: [
+        source.battlefield_operation,
+        destination.battlefield_operation
+      ],
+      autonomous_ownership: [{
+        owner_id: "squad:Base Defense 44 20",
+        owner_count: 2,
+        composition: [{
+          family: "marine",
+          role: "base_defender",
+          count: 1,
+          ground_capable_count: 1,
+          air_capable_count: 1
+        }, {
+          family: "viking",
+          role: "base_defender",
+          count: 1,
+          ground_capable_count: 1,
+          air_capable_count: 1
+        }],
+        integrity_status: "valid"
+      }],
+      bases: [{
+        base_id: "base:44:20",
+        semantic_anchor: "self_main",
+        base_readiness: {
+          readiness_state: "ready",
+          reason: "capability_aware_minimum_satisfied",
+          ground_threat: 2,
+          air_threat: 1,
+          observed_enemy_strength: 3,
+          last_evidence_frame: 479,
+          evidence_class: "observed_enemy_units",
+          assigned_defender_count: 5,
+          ground_capable_defender_count: 4,
+          air_capable_defender_count: 2,
+          required_defender_count: 5,
+          required_ground_defender_count: 2,
+          required_air_defender_count: 1,
+          protected_minimum: [{
+            family: "marine",
+            role: "defender",
+            count: 2
+          }]
+        }
+      }],
+      transfer_availability: {
+        evaluated_at_frame: 480,
+        atomic_revalidation_required: true,
+        entries: [{
+          source_owner_id: "hold-main",
+          source_owner_count: 3,
+          protected_minimum: 2,
+          transferable_count: 1,
+          transfer_safe: true,
+          atomic_runtime_blocker: "",
+          recommended_resolution_choices: ["transfer_available_units"],
+          safety_evidence: {
+            evaluated_at_frame: 480,
+            protected_minimum_respected: true,
+            atomic_revalidation_required: true
+          },
+          atomic_revalidation_inputs: {
+            requested: true,
+            requested_count: 1,
+            source_owner_id: "hold-main",
+            counterpart_operation_id: destinationOperationId,
+            requested_generation: 2,
+            counterpart_generation: 5,
+            requested_source_generation: 3,
+            requested_counterpart_generation: 6,
+            source_active: true,
+            destination_active: true,
+            ownership_integrity: true,
+            operation_assignments_match: true,
+            squad_assignments_match: true,
+            action_assignments_match: true,
+            role_assignments_match: true,
+            atomic_revalidation_ready: true
+          }
+        }]
+      }
+    };
+    var payload = {
+      status: "published",
+      blackboard_scope_id: "browser-overview-scope",
+      battlefield_projection_identity: {
+        session_epoch: 1700000000000,
+        game_frame: 480
+      },
+      battlefield_projection_fingerprint: "e".repeat(64),
+      battlefield_overview: overview,
+      battlefield_projection_integrity: {
+        status: "valid",
+        blocker_count: 0
+      },
+      operations: [source, destination]
+    };
+    renderOperationConsole(payload);
+    renderBattlefieldControlOverview(payload);
+    [
+      "battlefield-operation-disclosure",
+      "battlefield-base-disclosure",
+      "battlefield-transfer-disclosure"
+    ].forEach(function(id) {
+      var disclosure = document.getElementById(id);
+      if (disclosure) { disclosure.open = true; }
+    });
+
+    var sourceCard = document.querySelector(
+      '[data-operation-id="hold-main"]'
+    );
+    var transferButton = sourceCard && sourceCard.querySelector(
+      "[data-contextual-choice-id]"
+    );
+    var operationText = document.getElementById(
+      "battlefield-operation-details"
+    ).textContent;
+    var baseText = document.getElementById(
+      "battlefield-base-details"
+    ).textContent;
+    var transferText = document.getElementById(
+      "battlefield-transfer-details"
+    ).textContent;
+    var overviewNode = document.getElementById(
+      "battlefield-control-overview"
+    );
+    var allIds = Array.from(document.querySelectorAll("[id]"))
+      .map(function(node) { return node.id; });
+    mark("complete", true);
+    mark("operation-detail",
+      operationText.indexOf("operation:hold-main") >= 0 &&
+      operationText.indexOf("MARAUDER/defender") >= 0 &&
+      operationText.indexOf("BARRACKS_TECHLAB") >= 0 &&
+      operationText.indexOf("보호 minimum 충족") >= 0 &&
+      operationText.indexOf("source minimum 충족") >= 0);
+    mark("base-detail",
+      baseText.indexOf("observed_enemy_units") >= 0 &&
+      baseText.indexOf("squad:Base Defense 44 20 2") >= 0 &&
+      baseText.indexOf("hold-main#2") >= 0 &&
+      baseText.indexOf("MARAUDER/defender 3/4") >= 0 &&
+      baseText.indexOf("보호 minimum 준수 충족") >= 0 &&
+      baseText.indexOf("marine/base_defender 1") >= 0 &&
+      baseText.indexOf("viking/base_defender 1") >= 0 &&
+      baseText.indexOf("family evidence missing") < 0);
+    mark("transfer-detail",
+      transferText.indexOf("hold-main#2") >= 0 &&
+      transferText.indexOf(destinationOperationId + "#5") >= 0 &&
+      transferText.indexOf("atomic=충족") >= 0);
+    mark("original-ux",
+      document.querySelectorAll("[data-operation-lane]").length === 4 &&
+      sourceCard &&
+      sourceCard.querySelectorAll(".operation-stage").length === 4 &&
+      sourceCard.querySelectorAll(
+        ".operation-card-actions [data-operation-action]"
+      ).length === 5);
+    mark("accessibility",
+      document.querySelectorAll(
+        ".battlefield-detail-disclosure > summary"
+      ).length === 4 &&
+      document.getElementById("battlefield-integrity-alert")
+        .getAttribute("role") === "status" &&
+      document.getElementById("battlefield-operation-details")
+        .getAttribute("role") === "list");
+    mark("unique-ids", allIds.length === new Set(allIds).size);
+    mark("single-pending",
+      document.querySelectorAll(".message-pending").length <= 1);
+    var overviewRect = overviewNode.getBoundingClientRect();
+    var sourceCardRect = sourceCard.getBoundingClientRect();
+    var transferButtonRect = transferButton &&
+      transferButton.getBoundingClientRect();
+    var detailRowsFit = Array.from(
+      overviewNode.querySelectorAll(".battlefield-detail-row")
+    ).every(function(row) {
+      return row.scrollWidth <= row.clientWidth + 1;
+    });
+    var isMobileViewport = window.innerWidth <= 620;
+    var transferButtonFits = Boolean(
+      destinationOperationId.length === 128 &&
+      transferButton &&
+      transferButton.textContent.indexOf(destinationOperationId) >= 0 &&
+      transferButton.scrollWidth <= transferButton.clientWidth + 1 &&
+      transferButtonRect.left >= sourceCardRect.left - 1 &&
+      transferButtonRect.right <= sourceCardRect.right + 1
+    );
+    var transferCardFits =
+      sourceCard.scrollWidth <= sourceCard.clientWidth + 1;
+    var documentFits =
+      document.documentElement.scrollWidth <=
+        document.documentElement.clientWidth + 1 &&
+      document.body.scrollWidth <= document.body.clientWidth + 1;
+    var viewportFits =
+      document.documentElement.scrollWidth <= window.innerWidth + 1 &&
+      sourceCardRect.left >= -1 &&
+      sourceCardRect.right <= window.innerWidth + 1 &&
+      transferButtonRect &&
+      transferButtonRect.left >= -1 &&
+      transferButtonRect.right <= window.innerWidth + 1;
+    mark("transfer-button-overflow",
+      !isMobileViewport || transferButtonFits);
+    mark("transfer-card-overflow",
+      !isMobileViewport || transferCardFits);
+    mark("transfer-document-overflow",
+      !isMobileViewport || documentFits);
+    mark("transfer-viewport-overflow",
+      !isMobileViewport || viewportFits);
+    mark("layout",
+      overviewRect.left >= -1 &&
+      overviewRect.right <= window.innerWidth + 1 &&
+      overviewRect.width <= window.innerWidth + 1 &&
+      detailRowsFit);
+  }, 120);
+})();
+</script>
+"""
+    page = render_web_gui_page(
+        micromachine_blackboard_dir="/tmp/browser-overview-blackboard"
+    )
+    page = page.replace("<script>", prelude + "\n<script>", 1)
+    return page.replace("</body>", scenario + "\n</body>", 1)
+
+
 class WebGuiRealBrowserTest(unittest.TestCase):
+    def test_battlefield_overview_detail_in_real_chrome_desktop_and_mobile(
+        self,
+    ) -> None:
+        chrome = _chrome_executable()
+        if chrome is None:
+            self.skipTest("Chrome/Chromium is not installed")
+
+        page = _battlefield_overview_browser_fixture_page()
+        expected_markers = (
+            "complete",
+            "operation-detail",
+            "base-detail",
+            "transfer-detail",
+            "original-ux",
+            "accessibility",
+            "unique-ids",
+            "single-pending",
+            "transfer-button-overflow",
+            "transfer-card-overflow",
+            "transfer-document-overflow",
+            "transfer-viewport-overflow",
+            "layout",
+        )
+
+        class FixtureHandler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                if self.path not in {"/", "/index.html"}:
+                    self.send_error(404)
+                    return
+                body = page.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), FixtureHandler)
+        thread = threading.Thread(
+            target=server.serve_forever,
+            name="battlefield-overview-browser-fixture",
+            daemon=True,
+        )
+        thread.start()
+
+        def stop_fixture_server() -> None:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        self.addCleanup(stop_fixture_server)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = pathlib.Path(temporary_directory)
+            for width, height in ((1440, 1100), (390, 844)):
+                with self.subTest(viewport=f"{width}x{height}"):
+                    profile = temporary_root / f"profile-dump-{width}"
+                    common = [
+                        chrome,
+                        "--headless=new",
+                        "--disable-gpu",
+                        "--disable-dev-shm-usage",
+                        "--no-first-run",
+                        "--no-default-browser-check",
+                        "--force-device-scale-factor=1",
+                        f"--window-size={width},{height}",
+                        "--virtual-time-budget=1800",
+                    ]
+                    result = subprocess.run(
+                        [
+                            *common,
+                            f"--user-data-dir={profile}",
+                            "--dump-dom",
+                            f"http://127.0.0.1:{server.server_port}/",
+                        ],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    if (
+                        sys.platform == "darwin"
+                        and result.returncode != 0
+                        and not result.stdout
+                        and (
+                            "sandbox_parameters_mac.mm" in result.stderr
+                            or result.returncode in (-6, -5, 134)
+                        )
+                    ):
+                        self.skipTest(
+                            "The local macOS sandbox blocks headless Chrome"
+                        )
+                    self.assertEqual(
+                        result.returncode,
+                        0,
+                        textwrap.shorten(
+                            result.stderr or result.stdout,
+                            width=2000,
+                            placeholder="...",
+                        ),
+                    )
+                    for marker in expected_markers:
+                        self.assertIn(
+                            f'data-qa-{marker}="true"',
+                            result.stdout,
+                            marker,
+                        )
+
+                    screenshot = (
+                        temporary_root /
+                        f"battlefield-overview-{width}x{height}.png"
+                    )
+                    screenshot_result = subprocess.run(
+                        [
+                            *common,
+                            f"--user-data-dir={temporary_root / f'profile-shot-{width}'}",
+                            f"--screenshot={screenshot}",
+                            f"http://127.0.0.1:{server.server_port}/",
+                        ],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    self.assertEqual(
+                        screenshot_result.returncode,
+                        0,
+                        textwrap.shorten(
+                            screenshot_result.stderr
+                            or screenshot_result.stdout,
+                            width=2000,
+                            placeholder="...",
+                        ),
+                    )
+                    png = screenshot.read_bytes()
+                    self.assertGreater(len(png), 1000)
+                    self.assertEqual(b"\x89PNG\r\n\x1a\n", png[:8])
+                    self.assertEqual(width, int.from_bytes(png[16:20], "big"))
+                    self.assertEqual(height, int.from_bytes(png[20:24], "big"))
+
     def test_voice_tactical_loop_in_real_chrome_desktop_and_mobile(self) -> None:
         chrome = _chrome_executable()
         if chrome is None:

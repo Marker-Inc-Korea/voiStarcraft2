@@ -434,6 +434,36 @@ def canonical_terran_unit_family(unit_type: object) -> str:
     return family.family if family is not None else ""
 
 
+def terran_unit_form_prerequisites(unit_type: object) -> tuple[str, ...]:
+    """Return family and form-specific prerequisites for one Terran unit."""
+
+    raw_token = str(unit_type or "").strip()
+    family_name = canonical_terran_unit_family(raw_token)
+    family = TERRAN_UNIT_FAMILY_BY_NAME.get(family_name)
+    if family is None:
+        return ()
+    token = raw_token.upper()
+    if token and not token.startswith("TERRAN_") and "_" not in token:
+        token = f"TERRAN_{token}"
+    additional_prerequisites = tuple(
+        prerequisite
+        for form in TERRAN_NATURAL_LANGUAGE_FORMS
+        if (
+            form.requested_unit_type == token
+            or raw_token.casefold() in {
+                alias.casefold() for alias in form.aliases
+            }
+        )
+        for prerequisite in form.additional_prerequisites
+    )
+    return _ordered_unique(
+        (
+            *family.prerequisites,
+            *additional_prerequisites,
+        )
+    )
+
+
 def all_terran_capability_matrix() -> tuple[dict[str, object], ...]:
     """Return the stable machine-readable 15-family capability matrix."""
 

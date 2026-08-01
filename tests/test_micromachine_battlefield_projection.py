@@ -18,7 +18,7 @@ def _identity(
     *,
     update_id: str = "voi-mm-current",
     scope: str = "battlefield",
-    session_epoch: int = 1700000000000,
+    session_epoch: int | str = "1700000000000",
     generation: int = 7,
     stage: str = "observed",
     game_frame: int = 320,
@@ -218,6 +218,7 @@ def _telemetry(
     game_frame: int = 320,
 ) -> dict[str, object]:
     operation = _operation(game_frame=game_frame)
+    operation["operation_launch_policy"]["min_units"] = 2
     counterpart = _operation(
         update_id="voi-mm-operation",
         operation_id="assault-bravo",
@@ -258,16 +259,25 @@ def _telemetry(
             "operation_ownership": [operation, counterpart],
             "autonomous_ownership": [
                 {
-                    "owner_id": "BaseDefense:main",
+                    "owner_id": "squad:Base Defense 44 20",
                     "owner_count": 2,
                     "owner_tags": [201, 202],
+                    "composition": [
+                        {
+                            "family": "marine",
+                            "role": "base_defender",
+                            "count": 2,
+                            "ground_capable_count": 2,
+                            "air_capable_count": 2,
+                        }
+                    ],
                     "integrity_status": "valid",
                 }
             ],
             "unassigned_unit_tags": [301, 302],
             "bases": [
                 {
-                    "base_id": "main",
+                    "base_id": "base:44:20",
                     "semantic_anchor": "self_main",
                     "base_readiness": {
                         "readiness_state": "ready",
@@ -403,6 +413,7 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
             reason="target_reached",
             completion_frame=488,
         )
+        operation["operation_launch_policy"]["min_units"] = 2
         operation["operation_transfer_selection"] = deepcopy(
             overview["operation_ownership"][0]["operation_transfer_selection"]
         )
@@ -532,6 +543,68 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
 
         self.assertFalse(result.ok)
         self.assertIn("owner_integrity_invalid", _blocker_codes(result))
+
+    def test_autonomous_composition_must_cover_owner_count(self) -> None:
+        telemetry = _telemetry()
+        telemetry["battlefield_overview"]["autonomous_ownership"][0][
+            "composition"
+        ][0]["count"] = 1
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "autonomous_composition_count_mismatch",
+            _blocker_codes(result),
+        )
+
+    def test_autonomous_capability_count_cannot_exceed_composition(self) -> None:
+        telemetry = _telemetry()
+        telemetry["battlefield_overview"]["autonomous_ownership"][0][
+            "composition"
+        ][0]["air_capable_count"] = 3
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "autonomous_capability_count_mismatch",
+            _blocker_codes(result),
+        )
+
+    def test_autonomous_composition_family_must_be_canonical(self) -> None:
+        telemetry = _telemetry()
+        telemetry["battlefield_overview"]["autonomous_ownership"][0][
+            "composition"
+        ][0]["family"] = "zergling"
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("invalid_autonomous_family", _blocker_codes(result))
+
+    def test_autonomous_composition_role_must_be_native(self) -> None:
+        telemetry = _telemetry()
+        telemetry["battlefield_overview"]["autonomous_ownership"][0][
+            "composition"
+        ][0]["role"] = "defender"
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("invalid_autonomous_role", _blocker_codes(result))
 
     def test_owner_ids_must_be_unique_across_runtime_owners(self) -> None:
         telemetry = _telemetry()
@@ -1146,6 +1219,7 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
                 launch = telemetry["battlefield_overview"][
                     "operation_ownership"
                 ][0]["operation_launch_policy"]
+                launch["min_units"] = 4
                 launch["launch_count"] = 3
                 launch["missing_count"] = 1
                 launch[field_name] = False
@@ -1264,6 +1338,24 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn(
             "transfer_protected_minimum_violation",
+            _blocker_codes(result),
+        )
+
+    def test_transfer_cannot_cross_source_operation_minimum(self) -> None:
+        telemetry = _telemetry()
+        operation = telemetry["battlefield_overview"][
+            "operation_ownership"
+        ][0]
+        operation["operation_launch_policy"]["min_units"] = 4
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "transfer_source_minimum_violation",
             _blocker_codes(result),
         )
 
@@ -1444,6 +1536,44 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
             "atomic_counterpart_generation_mismatch",
             _blocker_codes(result),
         )
+
+    def test_availability_requires_every_assignment_match(self) -> None:
+        for field_name in (
+            "operation_assignments_match",
+            "squad_assignments_match",
+            "action_assignments_match",
+            "role_assignments_match",
+        ):
+            with self.subTest(field_name=field_name):
+                telemetry = _telemetry()
+                entry = telemetry["battlefield_overview"][
+                    "transfer_availability"
+                ]["entries"][0]
+                inputs = entry["atomic_revalidation_inputs"]
+                inputs.update(
+                    {
+                        "requested": False,
+                        "requested_count": 0,
+                        "action": "availability",
+                        "edit_resolution": "none",
+                        "counterpart_action": "",
+                        "requested_source_generation": 3,
+                        "requested_counterpart_generation": 5,
+                        "counterpart_pending": False,
+                    }
+                )
+                inputs[field_name] = False
+
+                result = validate_battlefield_overview(
+                    telemetry,
+                    expected_scope="battlefield",
+                )
+
+                self.assertFalse(result.ok)
+                self.assertIn(
+                    "atomic_revalidation_not_ready",
+                    _blocker_codes(result),
+                )
 
     def test_atomic_revalidation_inputs_and_exact_fields_are_required(
         self,
@@ -1754,6 +1884,87 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
                 self.assertFalse(result.ok)
                 self.assertIn(code, _blocker_codes(result))
                 self.assertFalse(result.integrity["monotonic"])
+
+    def test_uint64_session_epoch_remains_exact_decimal_string(self) -> None:
+        epochs = (
+            "18446744073709551614",
+            "18446744073709551615",
+        )
+        fingerprints: list[str] = []
+        for epoch in epochs:
+            with self.subTest(epoch=epoch):
+                telemetry = _telemetry()
+                telemetry["battlefield_overview"]["identity"][
+                    "session_epoch"
+                ] = epoch
+                for operation in telemetry["battlefield_overview"][
+                    "operation_ownership"
+                ]:
+                    operation["identity"]["session_epoch"] = epoch
+
+                result = validate_battlefield_overview(
+                    telemetry,
+                    expected_scope="battlefield",
+                )
+
+                self.assertTrue(result.ok, result.to_dict())
+                self.assertEqual(
+                    epoch,
+                    result.battlefield_overview["identity"]["session_epoch"],
+                )
+                self.assertTrue(
+                    all(
+                        operation["identity"]["session_epoch"] == epoch
+                        for operation in result.battlefield_overview[
+                            "operation_ownership"
+                        ]
+                    )
+                )
+                self.assertEqual(epoch, result.identity.to_dict()["session_epoch"])
+                fingerprints.append(
+                    battlefield_overview_fingerprint(
+                        result.battlefield_overview
+                    )
+                )
+        self.assertNotEqual(fingerprints[0], fingerprints[1])
+
+    def test_unsafe_numeric_session_epoch_fails_closed(self) -> None:
+        telemetry = _telemetry()
+        unsafe_epoch = 9_007_199_254_740_992
+        telemetry["battlefield_overview"]["identity"]["session_epoch"] = (
+            unsafe_epoch
+        )
+        for operation in telemetry["battlefield_overview"][
+            "operation_ownership"
+        ]:
+            operation["identity"]["session_epoch"] = unsafe_epoch
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("invalid_identity", _blocker_codes(result))
+
+    def test_decimal_session_epoch_above_uint64_fails_closed(self) -> None:
+        telemetry = _telemetry()
+        overflow_epoch = "18446744073709551616"
+        telemetry["battlefield_overview"]["identity"]["session_epoch"] = (
+            overflow_epoch
+        )
+        for operation in telemetry["battlefield_overview"][
+            "operation_ownership"
+        ]:
+            operation["identity"]["session_epoch"] = overflow_epoch
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("invalid_identity", _blocker_codes(result))
 
     def test_newer_session_epoch_allows_safe_game_frame_reset(self) -> None:
         previous = BattlefieldProjectionIdentity(

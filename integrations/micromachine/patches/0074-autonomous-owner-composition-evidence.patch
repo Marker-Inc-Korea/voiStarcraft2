@@ -1,0 +1,298 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -2851,6 +2851,14 @@ void CombatCommander::updateVoiBattlefieldProjection()
+ 				unit.canAttackGround();
+ 			projected.canAttackAir =
+ 				unit.canAttackAir();
++			projected.family = voiTerranOperationFamily(
++				sc2::UnitTypeToName(
++					unit.getAPIUnitType()));
++			if (projected.combat
++				&& projected.family.empty())
++			{
++				ownershipEvidencePresent = false;
++			}
+ 		}
+ 		unitsByTag[projected.tag] = projected;
+ 	}
+@@ -2949,8 +2957,16 @@ void CombatCommander::updateVoiBattlefieldProjection()
+ 			{
+ 				const std::string ownerId =
+ 					"squad:" + squadName;
+-				ensureUnit(unit.getTag())
+-					.autonomousOwners.push_back(ownerId);
++				auto & projectedUnit =
++					ensureUnit(unit.getTag());
++				projectedUnit.autonomousOwners.push_back(
++					ownerId);
++				projectedUnit.autonomousRoleByOwner[
++					ownerId] =
++						squadName.find("Base Defense ")
++								== 0
++							? "base_defender"
++							: "autonomous_squad_member";
+ 				autonomousTagsByOwner[ownerId].push_back(
+ 					unit.getTag());
+ 			}
+diff --git a/src/voi_battlefield_projection.hpp b/src/voi_battlefield_projection.hpp
+--- a/src/voi_battlefield_projection.hpp
++++ b/src/voi_battlefield_projection.hpp
+@@ -41,8 +41,11 @@ struct VoiBattlefieldUnitInput
+ 	bool worker = false;
+ 	bool structure = false;
+ 	bool temporaryPayload = false;
++	std::string family;
+ 	std::vector<std::string> explicitOwners;
+ 	std::vector<std::string> autonomousOwners;
++	std::map<std::string, std::string>
++		autonomousRoleByOwner;
+ };
+ 
+ struct VoiBattlefieldBaseInput
+@@ -259,6 +262,15 @@ struct VoiBattlefieldAutonomousOwnerProjection
+ 	std::vector<std::uint64_t> ownerTags;
+ 	std::size_t ownerCount = 0;
+ 	bool integrity = false;
++	struct Composition
++	{
++		std::string family;
++		std::string role;
++		std::size_t count = 0;
++		std::size_t groundCapableCount = 0;
++		std::size_t airCapableCount = 0;
++	};
++	std::vector<Composition> composition;
+ };
+ 
+ struct VoiBattlefieldOperationProjection
+@@ -962,6 +974,26 @@ inline VoiBattlefieldProjection voiMakeBattlefieldProjection(
+ 				existing->second.autonomousOwners.end(),
+ 				unit.autonomousOwners.begin(),
+ 				unit.autonomousOwners.end());
++			for (const auto & role :
++				unit.autonomousRoleByOwner)
++			{
++				const auto previous =
++					existing->second
++						.autonomousRoleByOwner.find(
++							role.first);
++				if (previous != existing->second
++						.autonomousRoleByOwner.end()
++					&& previous->second != role.second)
++				{
++					existing->second
++						.autonomousRoleByOwner[
++							role.first] = "";
++					continue;
++				}
++				existing->second
++					.autonomousRoleByOwner[
++						role.first] = role.second;
++			}
+ 			continue;
+ 		}
+ 		normalizedUnits[unit.tag] = unit;
+@@ -1052,6 +1084,54 @@ inline VoiBattlefieldProjection voiMakeBattlefieldProjection(
+ 			owner.second.end());
+ 		projected.ownerCount = projected.ownerTags.size();
+ 		projected.integrity = input.ownershipEvidencePresent;
++		using CompositionKey =
++			std::pair<std::string, std::string>;
++		std::map<
++			CompositionKey,
++			VoiBattlefieldAutonomousOwnerProjection::Composition>
++			compositionByFamilyRole;
++		for (const auto tag : projected.ownerTags)
++		{
++			const auto unit = normalizedUnits.find(tag);
++			if (unit == normalizedUnits.end())
++			{
++				projected.integrity = false;
++				continue;
++			}
++			const auto role =
++				unit->second.autonomousRoleByOwner.find(
++					owner.first);
++			if (unit->second.family.empty()
++				|| role == unit->second
++					.autonomousRoleByOwner.end()
++				|| role->second.empty())
++			{
++				projected.integrity = false;
++				continue;
++			}
++			auto & composition =
++				compositionByFamilyRole[
++					std::make_pair(
++						unit->second.family,
++						role->second)];
++			composition.family = unit->second.family;
++			composition.role = role->second;
++			++composition.count;
++			if (unit->second.canAttackGround)
++			{
++				++composition.groundCapableCount;
++			}
++			if (unit->second.canAttackAir)
++			{
++				++composition.airCapableCount;
++			}
++		}
++		for (const auto & composition :
++			compositionByFamilyRole)
++		{
++			projected.composition.push_back(
++				composition.second);
++		}
+ 		result.autonomousOwnedCount += projected.ownerCount;
+ 		result.autonomousOwners.push_back(projected);
+ 		result.autonomousOwnedTags.insert(
+@@ -1165,6 +1245,21 @@ inline VoiBattlefieldProjection voiMakeBattlefieldProjection(
+ 		input.ownershipEvidencePresent
+ 		&& allOperationOwnershipEvidencePresent
+ 		&& allExplicitOwnersKnown
++		&& std::all_of(
++			result.autonomousOwners.begin(),
++			result.autonomousOwners.end(),
++			[](const VoiBattlefieldAutonomousOwnerProjection
++					& owner)
++			{
++				std::size_t represented = 0;
++				for (const auto & composition :
++					owner.composition)
++				{
++					represented += composition.count;
++				}
++				return owner.integrity
++					&& represented == owner.ownerCount;
++			})
+ 		&& result.duplicateUnitInputCount == 0
+ 		&& result.duplicateOwnershipCount == 0
+ 		&& result.eligibleCombatCount
+@@ -2004,6 +2099,32 @@ inline std::string voiBattlefieldProjectionJson(
+ 		voiBattlefieldWriteTagArray(
+ 			output,
+ 			owner.ownerTags);
++		output << ",\"composition\":[";
++		for (std::size_t compositionIndex = 0;
++			compositionIndex < owner.composition.size();
++			++compositionIndex)
++		{
++			if (compositionIndex > 0)
++			{
++				output << ",";
++			}
++			const auto & composition =
++				owner.composition[compositionIndex];
++			output << "{\"family\":\""
++				<< voiBattlefieldJsonEscape(
++					composition.family)
++				<< "\",\"role\":\""
++				<< voiBattlefieldJsonEscape(
++					composition.role)
++				<< "\",\"count\":"
++				<< composition.count
++				<< ",\"ground_capable_count\":"
++				<< composition.groundCapableCount
++				<< ",\"air_capable_count\":"
++				<< composition.airCapableCount
++				<< "}";
++		}
++		output << "]";
+ 		output << ",\"integrity_status\":\""
+ 			<< (owner.integrity ? "valid" : "invalid")
+ 			<< "\"}";
+diff --git a/tests/battlefield_projection_test.cpp b/tests/battlefield_projection_test.cpp
+--- a/tests/battlefield_projection_test.cpp
++++ b/tests/battlefield_projection_test.cpp
+@@ -23,7 +23,8 @@ int failures = 0;
+ VoiBattlefieldUnitInput combatUnit(
+ 	std::uint64_t tag,
+ 	bool canAttackGround = true,
+-	bool canAttackAir = true)
++	bool canAttackAir = true,
++	std::string family = "marine")
+ {
+ 	VoiBattlefieldUnitInput unit;
+ 	unit.tag = tag;
+@@ -33,6 +34,7 @@ VoiBattlefieldUnitInput combatUnit(
+ 	unit.combat = true;
+ 	unit.canAttackGround = canAttackGround;
+ 	unit.canAttackAir = canAttackAir;
++	unit.family = std::move(family);
+ 	return unit;
+ }
+ 
+@@ -105,6 +107,9 @@ VoiBattlefieldProjectionInput validInput()
+ 	defense.explicitOwners = { "operation:defense-bravo#2" };
+ 	auto autonomous = combatUnit(21);
+ 	autonomous.autonomousOwners = { "squad:BaseDefense:main" };
++	autonomous.autonomousRoleByOwner = {
++		{ "squad:BaseDefense:main", "base_defender" },
++	};
+ 	auto unassigned = combatUnit(31);
+ 	input.units = { assault, defense, autonomous, unassigned };
+ 	input.bases = { readyBase() };
+@@ -147,6 +152,23 @@ int main()
+ 	CHECK(projection.eligibleCombatCount == 4);
+ 	CHECK(projection.explicitOwnedCount == 2);
+ 	CHECK(projection.autonomousOwnedCount == 1);
++	CHECK(projection.autonomousOwners.size() == 1);
++	CHECK(projection.autonomousOwners[0].composition.size() == 1);
++	CHECK(
++		projection.autonomousOwners[0].composition[0].family
++		== "marine");
++	CHECK(
++		projection.autonomousOwners[0].composition[0].role
++		== "base_defender");
++	CHECK(
++		projection.autonomousOwners[0].composition[0].count
++		== 1);
++	CHECK(
++		projection.autonomousOwners[0].composition[0]
++			.groundCapableCount == 1);
++	CHECK(
++		projection.autonomousOwners[0].composition[0]
++			.airCapableCount == 1);
+ 	CHECK(projection.unassignedCount == 1);
+ 	CHECK(projection.duplicateOwnershipCount == 0);
+ 	CHECK(projection.operations.size() == 2);
+@@ -286,6 +308,37 @@ int main()
+ 			"transfer_available_units",
+ 		}));
+ 
++	auto mixedAutonomous = validInput();
++	auto viking = combatUnit(22, true, true, "viking");
++	viking.autonomousOwners = {
++		"squad:BaseDefense:main",
++	};
++	viking.autonomousRoleByOwner = {
++		{ "squad:BaseDefense:main", "base_defender" },
++	};
++	mixedAutonomous.units.push_back(viking);
++	const auto mixedAutonomousProjection =
++		voiMakeBattlefieldProjection(mixedAutonomous);
++	CHECK(mixedAutonomousProjection.ownershipIntegrity);
++	CHECK(
++		mixedAutonomousProjection.autonomousOwners[0]
++			.composition.size() == 2);
++	CHECK(
++		mixedAutonomousProjection.autonomousOwners[0]
++			.composition[1].family == "viking");
++	CHECK(
++		mixedAutonomousProjection.autonomousOwners[0]
++			.composition[1].count == 1);
++
++	auto missingAutonomousRole = validInput();
++	missingAutonomousRole.units[2]
++		.autonomousRoleByOwner.clear();
++	const auto missingAutonomousRoleProjection =
++		voiMakeBattlefieldProjection(
++			missingAutonomousRole);
++	CHECK(!missingAutonomousRoleProjection.ownershipIntegrity);
++	CHECK(missingAutonomousRoleProjection.failClosed);
++
+ 	auto multiDestination = validInput();
+ 	auto secondAssault = combatUnit(32);
+ 	secondAssault.explicitOwners = {

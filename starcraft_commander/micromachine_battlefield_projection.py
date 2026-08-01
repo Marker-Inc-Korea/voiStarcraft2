@@ -16,9 +16,15 @@ import json
 import math
 from typing import Final
 
+from starcraft_commander.micromachine_terran_capabilities import (
+    TERRAN_UNIT_FAMILY_BY_NAME,
+)
+
 
 BATTLEFIELD_OVERVIEW_SCHEMA_VERSION: Final[int] = 2
 BATTLEFIELD_OVERVIEW_AUTHORITY: Final[str] = "micromachine_cpp"
+JSON_SAFE_INTEGER_MAX: Final[int] = 9_007_199_254_740_991
+UINT64_MAX: Final[int] = 18_446_744_073_709_551_615
 
 _TERMINAL_COMPLETION_STATES: Final[frozenset[str]] = frozenset(
     {"completed", "failed", "cancelled", "expired", "superseded"}
@@ -31,6 +37,12 @@ _SAFE_TRANSFER_ADMISSIONS: Final[frozenset[str]] = frozenset(
 )
 _INACTIVE_EMERGENCY_STATES: Final[frozenset[str]] = frozenset(
     {"none", "inactive", "not_required"}
+)
+_AUTONOMOUS_OWNER_FAMILIES: Final[frozenset[str]] = frozenset(
+    TERRAN_UNIT_FAMILY_BY_NAME
+)
+_AUTONOMOUS_OWNER_ROLES: Final[frozenset[str]] = frozenset(
+    {"base_defender", "autonomous_squad_member"}
 )
 
 
@@ -49,7 +61,7 @@ class BattlefieldProjectionIdentity:
         return {
             "update_id": self.update_id,
             "scope": self.scope,
-            "session_epoch": self.session_epoch,
+            "session_epoch": str(self.session_epoch),
             "generation": self.generation,
             "stage": self.stage,
             "game_frame": self.game_frame,
@@ -182,7 +194,7 @@ class _Validation:
         }
         return BattlefieldProjectionResult(
             battlefield_overview=(
-                deepcopy(dict(overview))
+                _public_battlefield_overview(overview)
                 if overview is not None and not self.blockers
                 else None
             ),
@@ -199,6 +211,7 @@ class _OwnershipEvidence:
     partition_tags: Mapping[str, frozenset[int]]
     owner_tags_by_id: Mapping[str, frozenset[int]]
     owner_generations_by_id: Mapping[str, int]
+    owner_minimums_by_id: Mapping[str, int]
     transfer_selection_identities_by_operation_id: Mapping[
         str,
         _TransferSelectionIdentity,
@@ -630,6 +643,7 @@ def _validate_ownership_partition(
     explicit_tags: list[int] = []
     owner_tags_by_id: dict[str, frozenset[int]] = {}
     owner_generations_by_id: dict[str, int] = {}
+    owner_minimums_by_id: dict[str, int] = {}
     operation_identities_by_id: dict[str, BattlefieldProjectionIdentity] = {}
     transfer_selection_identities_by_operation_id: dict[
         str,
@@ -644,6 +658,9 @@ def _validate_ownership_partition(
     completion_blockers_start = len(validation.blockers)
     for index, operation in enumerate(operation_rows):
         path = f"$.battlefield_overview.operation_ownership[{index}]"
+        operation_id = str(
+            operation.get("operation_id", "") or ""
+        ).strip()
         operation_identity = _read_operation_identity(
             operation,
             path=path,
@@ -693,7 +710,6 @@ def _validate_ownership_partition(
             explicit_tags.extend(tags)
             if owner_count is not None:
                 operation_count_sum += owner_count
-            operation_id = str(operation.get("operation_id", "") or "").strip()
             if operation_id:
                 _record_owner_tags(
                     owner_tags_by_id,
@@ -718,6 +734,13 @@ def _validate_ownership_partition(
                 owner_count=owner_count,
                 validation=validation,
             )
+            min_units = _exact_int(launch.get("min_units"))
+            if (
+                operation_id
+                and min_units is not None
+                and min_units >= 0
+            ):
+                owner_minimums_by_id[operation_id] = min_units
         if lifetime is not None and completion is not None:
             _validate_completion(
                 lifetime,
@@ -774,6 +797,12 @@ def _validate_ownership_partition(
         tags, owner_count = _validate_owner_block(
             owner,
             path=path,
+            validation=validation,
+        )
+        _validate_autonomous_composition(
+            owner,
+            path=path,
+            owner_count=owner_count,
             validation=validation,
         )
         autonomous_tags.extend(tags)
@@ -898,6 +927,7 @@ def _validate_ownership_partition(
         },
         owner_tags_by_id=owner_tags_by_id,
         owner_generations_by_id=owner_generations_by_id,
+        owner_minimums_by_id=owner_minimums_by_id,
         transfer_selection_identities_by_operation_id=(
             transfer_selection_identities_by_operation_id
         ),
@@ -956,6 +986,96 @@ def _validate_owner_block(
             actual=integrity_status,
         )
     return tags, owner_count
+
+
+def _validate_autonomous_composition(
+    owner: Mapping[str, object],
+    *,
+    path: str,
+    owner_count: int | None,
+    validation: _Validation,
+) -> None:
+    composition = _required_mapping_sequence(
+        owner.get("composition"),
+        path=f"{path}.composition",
+        validation=validation,
+    )
+    represented = 0
+    seen: set[tuple[str, str]] = set()
+    for index, item in enumerate(composition):
+        item_path = f"{path}.composition[{index}]"
+        family = _required_string(
+            item.get("family"),
+            path=f"{item_path}.family",
+            validation=validation,
+        )
+        role = _required_string(
+            item.get("role"),
+            path=f"{item_path}.role",
+            validation=validation,
+        )
+        count = _required_nonnegative_int(
+            item.get("count"),
+            path=f"{item_path}.count",
+            validation=validation,
+        )
+        ground_count = _required_nonnegative_int(
+            item.get("ground_capable_count"),
+            path=f"{item_path}.ground_capable_count",
+            validation=validation,
+        )
+        air_count = _required_nonnegative_int(
+            item.get("air_capable_count"),
+            path=f"{item_path}.air_capable_count",
+            validation=validation,
+        )
+        if family is not None and family not in _AUTONOMOUS_OWNER_FAMILIES:
+            validation.block(
+                "invalid_autonomous_family",
+                f"{item_path}.family",
+                "Autonomous composition must use a canonical Terran family.",
+                actual=family,
+            )
+        if role is not None and role not in _AUTONOMOUS_OWNER_ROLES:
+            validation.block(
+                "invalid_autonomous_role",
+                f"{item_path}.role",
+                "Autonomous composition must use a native ownership role.",
+                actual=role,
+            )
+        if family is not None and role is not None:
+            key = (family, role)
+            if key in seen:
+                validation.block(
+                    "duplicate_autonomous_composition",
+                    item_path,
+                    "Autonomous family and role composition rows must be unique.",
+                    family=family,
+                    role=role,
+                )
+            seen.add(key)
+        if count is not None:
+            represented += count
+            for field_name, capable_count in (
+                ("ground_capable_count", ground_count),
+                ("air_capable_count", air_count),
+            ):
+                if capable_count is not None and capable_count > count:
+                    validation.block(
+                        "autonomous_capability_count_mismatch",
+                        f"{item_path}.{field_name}",
+                        "Capability count cannot exceed its composition count.",
+                        count=count,
+                        capable_count=capable_count,
+                    )
+    if owner_count is not None and represented != owner_count:
+        validation.block(
+            "autonomous_composition_count_mismatch",
+            f"{path}.composition",
+            "Autonomous composition must represent every owned unit exactly once.",
+            owner_count=owner_count,
+            composition_count=represented,
+        )
 
 
 def _validate_operation_route(
@@ -2267,6 +2387,18 @@ def _validate_transfer_availability(
                 source_owner_id=source_owner_id,
                 mismatched_tags=wrong_source_tags,
             )
+        source_minimum = (
+            owner_tags.owner_minimums_by_id.get(source_owner_id)
+            if source_owner_id is not None
+            else None
+        )
+        source_minimum_respected = (
+            source_count - transferable_count >= source_minimum
+            if source_count is not None
+            and transferable_count is not None
+            and source_minimum is not None
+            else False
+        )
         _validate_atomic_revalidation_inputs(
             entry.get("atomic_revalidation_inputs"),
             path=f"{path}.atomic_revalidation_inputs",
@@ -2304,6 +2436,7 @@ def _validate_transfer_availability(
                 and transfer_safe is True
                 and transferable_count is not None
                 and transferable_count > 0
+                and source_minimum_respected
             ):
                 expected_choices.append("transfer_available_units")
                 if transferable_count >= 2:
@@ -2331,6 +2464,23 @@ def _validate_transfer_availability(
                 "Transfer availability exceeds the C++ protected minimum bound.",
                 source_owner_count=source_count,
                 protected_minimum=protected_minimum,
+                transferable_count=transferable_count,
+            )
+        if (
+            source_count is not None
+            and source_minimum is not None
+            and transferable_count is not None
+            and not source_minimum_respected
+        ):
+            validation.block(
+                "transfer_source_minimum_violation",
+                f"{path}.transferable_count",
+                (
+                    "Transfer availability exceeds the source operation "
+                    "minimum bound."
+                ),
+                source_owner_count=source_count,
+                source_minimum=source_minimum,
                 transferable_count=transferable_count,
             )
         if transfer_safe is True and blocker:
@@ -2867,6 +3017,26 @@ def _validate_atomic_revalidation_inputs(
                     "destination identity."
                 ),
             )
+        assignment_mismatches = sorted(
+            field_name
+            for field_name in (
+                "operation_assignments_match",
+                "squad_assignments_match",
+                "action_assignments_match",
+                "role_assignments_match",
+            )
+            if readiness_fields.get(field_name) is not True
+        )
+        if assignment_mismatches:
+            validation.block(
+                "atomic_revalidation_not_ready",
+                path,
+                (
+                    "Availability evidence must preserve every runtime "
+                    "assignment identity before transfer can be offered."
+                ),
+                failed_fields=assignment_mismatches,
+            )
     if (
         transfer_safe is True
         and readiness_fields.get("atomic_revalidation_ready") is not True
@@ -3216,7 +3386,7 @@ def _read_identity_components(
         path=f"{path}.identity.scope",
         validation=validation,
     )
-    session_epoch = _identity_positive_int(
+    session_epoch = _identity_session_epoch(
         nested.get("session_epoch"),
         path=f"{path}.identity.session_epoch",
         validation=validation,
@@ -3253,7 +3423,12 @@ def _read_identity_components(
         ("game_frame", game_frame),
     ):
         direct = value.get(field_name)
-        if direct is not None and direct != identity_value:
+        comparable_direct = (
+            _exact_decimal_int(direct)
+            if field_name == "session_epoch"
+            else direct
+        )
+        if direct is not None and comparable_direct != identity_value:
             validation.block(
                 "identity_field_mismatch",
                 f"{path}.{field_name}",
@@ -3718,6 +3893,27 @@ def _identity_positive_int(
     return parsed
 
 
+def _identity_session_epoch(
+    value: object,
+    *,
+    path: str,
+    validation: _Validation,
+) -> int | None:
+    canonical = canonical_battlefield_session_epoch(value)
+    if canonical is None:
+        validation.block(
+            "invalid_identity",
+            path,
+            (
+                "Identity session_epoch must be a positive canonical decimal "
+                "string within uint64 range, or a JSON-safe positive integer."
+            ),
+            actual=value,
+        )
+        return None
+    return int(canonical)
+
+
 def _identity_nonnegative_int(
     value: object,
     *,
@@ -3740,6 +3936,54 @@ def _exact_int(value: object) -> int | None:
     if type(value) is not int:
         return None
     return value
+
+
+def _exact_decimal_int(value: object) -> int | None:
+    if type(value) is int:
+        return int(value)
+    if (
+        not isinstance(value, str)
+        or not value
+        or not value.isascii()
+        or not value.isdigit()
+        or (len(value) > 1 and value.startswith("0"))
+    ):
+        return None
+    return int(value)
+
+
+def canonical_battlefield_session_epoch(value: object) -> str | None:
+    """Return the exact public decimal representation of one session epoch."""
+
+    parsed = _exact_decimal_int(value)
+    if parsed is None or parsed <= 0 or parsed > UINT64_MAX:
+        return None
+    if type(value) is int and parsed > JSON_SAFE_INTEGER_MAX:
+        return None
+    return str(parsed)
+
+
+def _public_battlefield_overview(
+    overview: Mapping[str, object],
+) -> dict[str, object]:
+    result = deepcopy(dict(overview))
+    identity = result.get("identity")
+    if isinstance(identity, dict) and "session_epoch" in identity:
+        identity["session_epoch"] = str(identity["session_epoch"])
+    operations = result.get("operation_ownership")
+    if isinstance(operations, list):
+        for operation in operations:
+            if not isinstance(operation, dict):
+                continue
+            operation_identity = operation.get("identity")
+            if (
+                isinstance(operation_identity, dict)
+                and "session_epoch" in operation_identity
+            ):
+                operation_identity["session_epoch"] = str(
+                    operation_identity["session_epoch"]
+                )
+    return result
 
 
 def _is_sequence(value: object) -> bool:

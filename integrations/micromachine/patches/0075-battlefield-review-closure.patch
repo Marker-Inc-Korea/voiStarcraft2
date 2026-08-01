@@ -1,0 +1,242 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -3102,6 +3102,7 @@ void CombatCommander::updateVoiBattlefieldProjection()
+ 		std::ostringstream defenseSquadName;
+ 		defenseSquadName << "Base Defense "
+ 			<< basePosition.x << " " << basePosition.y;
++		std::vector<sc2::Tag> autonomousDefenderTags;
+ 		if (m_squadData.squadExists(
+ 			defenseSquadName.str()))
+ 		{
+@@ -3109,10 +3110,61 @@ void CombatCommander::updateVoiBattlefieldProjection()
+ 				m_squadData.getSquad(
+ 					defenseSquadName.str()).getUnits())
+ 			{
+-				projectedBase.defenderTags.push_back(
++				autonomousDefenderTags.push_back(
+ 					defender.getTag());
++			}
++		}
++		std::vector<VoiBattlefieldDefenseOperationInput>
++			defenseOperations;
++		for (const auto & operation : m_voiOperations)
++		{
++			VoiBattlefieldDefenseOperationInput defenseOperation;
++			defenseOperation.active =
++				!operation.completed
++				&& operation.status != "BLOCKED"
++				&& operation.status != "CANCELLED"
++				&& operation.status != "EXPIRED"
++				&& operation.status != "FAILED"
++				&& operation.status != "SUPERSEDED";
++			defenseOperation.defensive =
++				operation.taskType == "defend";
++			defenseOperation.targetMatchesBase =
++				operation.targetPosition != CCPosition()
++				&& m_bot.Bases().getBaseContainingPosition(
++					operation.targetPosition,
++					Players::Self) == base;
++			defenseOperation.squadEvidencePresent =
++				!operation.squadName.empty()
++				&& m_squadData.squadExists(
++					operation.squadName);
++			if (defenseOperation.squadEvidencePresent)
++			{
++				for (const auto & defender :
++					m_squadData.getSquad(
++						operation.squadName).getUnits())
++				{
++					if (!defender.isValid()
++						|| !defender.isAlive())
++					{
++						defenseOperation
++							.squadEvidencePresent = false;
++						continue;
++					}
++					defenseOperation.squadTags.push_back(
++						defender.getTag());
++				}
+ 			}
++			defenseOperations.push_back(
++				std::move(defenseOperation));
+ 		}
++		const auto defenders =
++			voiBattlefieldCollectBaseDefenders(
++				autonomousDefenderTags,
++				defenseOperations);
++		projectedBase.defenderTags = defenders.defenderTags;
++		projectedBase.readinessEvidencePresent =
++			projectedBase.readinessEvidencePresent
++			&& defenders.evidencePresent;
+ 		autonomousProtectedMinimum[
+ 			"squad:" + defenseSquadName.str()] =
+ 				projectedBase.protectedMinimum;
+diff --git a/src/voi_battlefield_projection.hpp b/src/voi_battlefield_projection.hpp
+--- a/src/voi_battlefield_projection.hpp
++++ b/src/voi_battlefield_projection.hpp
+@@ -69,8 +69,23 @@ struct VoiBattlefieldBaseInput
+ 	std::size_t protectedMinimum = 0;
+ 	std::string protectedFamily = "eligible_combat";
+ 	std::string protectedRole = "base_defender";
++};
++
++struct VoiBattlefieldDefenseOperationInput
++{
++	bool active = false;
++	bool defensive = false;
++	bool targetMatchesBase = false;
++	bool squadEvidencePresent = false;
++	std::vector<std::uint64_t> squadTags;
+ };
+ 
++struct VoiBattlefieldBaseDefenderCollection
++{
++	std::vector<std::uint64_t> defenderTags;
++	bool evidencePresent = true;
++};
++
+ struct VoiBattlefieldTransferInput
+ {
+ 	bool requested = false;
+@@ -511,6 +526,46 @@ inline void voiBattlefieldSortUniqueTags(
+ 		unique.end());
+ }
+ 
++inline VoiBattlefieldBaseDefenderCollection
++voiBattlefieldCollectBaseDefenders(
++	const std::vector<std::uint64_t> & autonomousTags,
++	const std::vector<VoiBattlefieldDefenseOperationInput> & operations)
++{
++	VoiBattlefieldBaseDefenderCollection result;
++	std::set<std::uint64_t> unique;
++	const auto appendTags =
++		[&](const std::vector<std::uint64_t> & tags)
++		{
++			for (const auto tag : tags)
++			{
++				if (tag == 0)
++				{
++					result.evidencePresent = false;
++					continue;
++				}
++				unique.insert(tag);
++			}
++		};
++	appendTags(autonomousTags);
++	for (const auto & operation : operations)
++	{
++		if (!operation.active
++			|| !operation.defensive
++			|| !operation.targetMatchesBase)
++		{
++			continue;
++		}
++		if (!operation.squadEvidencePresent)
++		{
++			result.evidencePresent = false;
++			continue;
++		}
++		appendTags(operation.squadTags);
++	}
++	result.defenderTags.assign(unique.begin(), unique.end());
++	return result;
++}
++
+ struct VoiBattlefieldTransferMutationValidation
+ {
+ 	bool valid = false;
+@@ -1842,9 +1897,9 @@ inline std::string voiBattlefieldProjectionJson(
+ 		<< voiBattlefieldJsonEscape(projection.updateId)
+ 		<< "\",\"scope\":\""
+ 		<< voiBattlefieldJsonEscape(projection.scope)
+-		<< "\",\"session_epoch\":"
++		<< "\",\"session_epoch\":\""
+ 		<< projection.sessionEpoch
+-		<< ",\"generation\":"
++		<< "\",\"generation\":"
+ 		<< projection.generation
+ 		<< ",\"stage\":\""
+ 		<< voiBattlefieldJsonEscape(projection.stage)
+@@ -1881,9 +1936,9 @@ inline std::string voiBattlefieldProjectionJson(
+ 				operation.updateId)
+ 			<< "\",\"scope\":\""
+ 			<< voiBattlefieldJsonEscape(operation.scope)
+-			<< "\",\"session_epoch\":"
++			<< "\",\"session_epoch\":\""
+ 			<< projection.sessionEpoch
+-			<< ",\"generation\":"
++			<< "\",\"generation\":"
+ 			<< operation.generation
+ 			<< ",\"stage\":\""
+ 			<< voiBattlefieldJsonEscape(
+diff --git a/tests/battlefield_projection_test.cpp b/tests/battlefield_projection_test.cpp
+--- a/tests/battlefield_projection_test.cpp
++++ b/tests/battlefield_projection_test.cpp
+@@ -146,6 +146,35 @@ VoiBattlefieldProjectionInput validInput()
+ 
+ int main()
+ {
++	VoiBattlefieldDefenseOperationInput explicitDefense;
++	explicitDefense.active = true;
++	explicitDefense.defensive = true;
++	explicitDefense.targetMatchesBase = true;
++	explicitDefense.squadEvidencePresent = true;
++	explicitDefense.squadTags = { 12, 12 };
++	VoiBattlefieldDefenseOperationInput foreignDefense =
++		explicitDefense;
++	foreignDefense.targetMatchesBase = false;
++	foreignDefense.squadTags = { 31 };
++	const auto collectedDefenders =
++		voiBattlefieldCollectBaseDefenders(
++			{ 21 },
++			{ explicitDefense, foreignDefense });
++	CHECK(collectedDefenders.evidencePresent);
++	CHECK(
++		collectedDefenders.defenderTags
++		== std::vector<std::uint64_t>({ 12, 21 }));
++	auto missingDefenseSquad = explicitDefense;
++	missingDefenseSquad.squadEvidencePresent = false;
++	const auto missingDefenseEvidence =
++		voiBattlefieldCollectBaseDefenders(
++			{ 21 },
++			{ missingDefenseSquad });
++	CHECK(!missingDefenseEvidence.evidencePresent);
++	CHECK(
++		missingDefenseEvidence.defenderTags
++		== std::vector<std::uint64_t>({ 21 }));
++
+ 	const auto projection = voiMakeBattlefieldProjection(validInput());
+ 	CHECK(projection.ownershipIntegrity);
+ 	CHECK(!projection.failClosed);
+@@ -859,9 +888,9 @@ int main()
+ 		const auto parsed = nlohmann::json::parse(json);
+ 		jsonParsed = parsed.is_object()
+ 			&& parsed["identity"]["session_epoch"]
+-				== 1700000000000ULL
++				== "1700000000000"
+ 			&& parsed["operation_ownership"][0]["identity"][
+-				"session_epoch"] == 1700000000000ULL;
++				"session_epoch"] == "1700000000000";
+ 	}
+ 	catch (const std::exception &)
+ 	{
+@@ -871,9 +900,17 @@ int main()
+ 	CHECK(json.find("\"battlefield\"") != std::string::npos);
+ 	CHECK(json.find("\"schema_version\":2") != std::string::npos);
+ 	CHECK(
+-		json.find("\"session_epoch\":1700000000000")
++		json.find("\"session_epoch\":\"1700000000000\"")
+ 		!= std::string::npos);
++	auto highEpochInput = validInput();
++	highEpochInput.sessionEpoch = 18446744073709551615ULL;
++	const auto highEpochJson =
++		voiBattlefieldProjectionJson(
++			voiMakeBattlefieldProjection(highEpochInput));
+ 	CHECK(
++		nlohmann::json::parse(highEpochJson)["identity"][
++			"session_epoch"] == "18446744073709551615");
++	CHECK(
+ 		json.find("\"ground_capable_defender_count\":2")
+ 		!= std::string::npos);
+ 	CHECK(json.find("\"operation_route\"") != std::string::npos);
