@@ -28,7 +28,7 @@ from starcraft_commander.micromachine_build_identity import (
 
 class MicroMachineBuildIdentityTest(unittest.TestCase):
     def test_live_admission_requires_the_supported_schema(self) -> None:
-        self.assertEqual(73, MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION)
+        self.assertEqual(74, MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION)
         passing = {
             "schema_version": MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
             "identity": "sha256:fixture",
@@ -115,6 +115,14 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             )
             self.assertIn(
                 "micromachine_contextual_transfer_choice_projection_patch_sha256",
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_autonomous_owner_composition_evidence_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                "micromachine_autonomous_owner_composition_evidence_patch_sha256",
                 report["checksums"],
             )
             self.assertIn(
@@ -2286,6 +2294,16 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             ).name,
         )
 
+    def test_autonomous_composition_cli_defaults_to_patch_0074(self) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0074-autonomous-owner-composition-evidence.patch",
+            Path(
+                args.micromachine_autonomous_owner_composition_evidence_patch
+            ).name,
+        )
+
     def test_operation_edit_ownership_handoff_patch_changes_identity(
         self,
     ) -> None:
@@ -2925,6 +2943,48 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             self.assertFalse(report["ok"], report)
             self.assertIn(
                 "micromachine_contextual_transfer_choice_projection_patch_sha256",
+                {
+                    failure.get("checksum")
+                    for failure in report["failures"]
+                    if failure["code"] == "missing_required_build_input"
+                },
+            )
+
+    def test_autonomous_composition_patch_changes_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            checksum = (
+                "micromachine_autonomous_owner_composition_evidence_patch_sha256"
+            )
+
+            config.micromachine_autonomous_owner_composition_evidence_patch.write_text(
+                "changed autonomous owner composition evidence\n"
+            )
+            second = build_micromachine_build_identity(config)
+
+            self.assertTrue(first["ok"], first)
+            self.assertFalse(second["ok"], second)
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+
+    def test_missing_autonomous_composition_patch_marks_identity_not_ok(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_autonomous_owner_composition_evidence_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"], report)
+            self.assertIn(
+                "micromachine_autonomous_owner_composition_evidence_patch_sha256",
                 {
                     failure.get("checksum")
                     for failure in report["failures"]
@@ -3766,6 +3826,9 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         micromachine_contextual_transfer_choice_projection_patch = (
             root / "micromachine-contextual-transfer-choice-projection.patch"
         )
+        micromachine_autonomous_owner_composition_evidence_patch = (
+            root / "micromachine-autonomous-owner-composition-evidence.patch"
+        )
         s2client_patch = root / "s2client.patch"
         hook_manifest = root / "HOOK_MANIFEST.json"
         map_pool = root / "MICROMACHINE_MAP_POOL.json"
@@ -3844,6 +3907,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             micromachine_battlefield_identity_transfer_integrity_patch,
             micromachine_atomic_telemetry_publication_patch,
             micromachine_contextual_transfer_choice_projection_patch,
+            micromachine_autonomous_owner_composition_evidence_patch,
             s2client_patch,
             hook_manifest,
             map_pool,
@@ -4061,6 +4125,9 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             ),
             micromachine_contextual_transfer_choice_projection_patch=(
                 micromachine_contextual_transfer_choice_projection_patch
+            ),
+            micromachine_autonomous_owner_composition_evidence_patch=(
+                micromachine_autonomous_owner_composition_evidence_patch
             ),
             s2client_patch=s2client_patch,
             hook_manifest=hook_manifest,

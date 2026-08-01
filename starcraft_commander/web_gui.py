@@ -2823,6 +2823,15 @@ _PUBLIC_BATTLEFIELD_SCHEMA: Final[Mapping[str, object]] = {
         {
             "owner_id": _PUBLIC_BATTLEFIELD_SCALAR,
             "owner_count": _PUBLIC_BATTLEFIELD_SCALAR,
+            "composition": (
+                {
+                    "family": _PUBLIC_BATTLEFIELD_SCALAR,
+                    "role": _PUBLIC_BATTLEFIELD_SCALAR,
+                    "count": _PUBLIC_BATTLEFIELD_SCALAR,
+                    "ground_capable_count": _PUBLIC_BATTLEFIELD_SCALAR,
+                    "air_capable_count": _PUBLIC_BATTLEFIELD_SCALAR,
+                },
+            ),
             "integrity_status": _PUBLIC_BATTLEFIELD_SCALAR,
         },
     ),
@@ -20346,6 +20355,19 @@ function battlefieldTransferReadinessBlockers(entry, source, destination) {
   });
 }
 
+function battlefieldManagerEvidenceRows(data) {
+  var rows = [];
+  if (data && data.operation_id && data.battlefield_operation) {
+    rows.push(data);
+  }
+  (data && Array.isArray(data.operations) ? data.operations : [])
+    .forEach(function(operation) {
+      var candidate = commandOperationData(operation, data);
+      if (candidate) { rows.push(candidate); }
+    });
+  return rows;
+}
+
 function battlefieldCanonicalManagerEvidenceRows(data) {
   var rowsByIdentity = {};
   function append(candidate) {
@@ -20365,13 +20387,7 @@ function battlefieldCanonicalManagerEvidenceRows(data) {
       rowsByIdentity[key] = candidate;
     }
   }
-  if (data && data.operation_id && data.battlefield_operation) {
-    append(data);
-  }
-  (data && Array.isArray(data.operations) ? data.operations : [])
-    .forEach(function(operation) {
-      append(commandOperationData(operation, data));
-    });
+  battlefieldManagerEvidenceRows(data).forEach(append);
   return Object.keys(rowsByIdentity).map(function(key) {
     return rowsByIdentity[key];
   });
@@ -20385,10 +20401,33 @@ function battlefieldOperationDataRows(data) {
 }
 
 function battlefieldStaleManagerEvidenceCount(data) {
-  return battlefieldCanonicalManagerEvidenceRows(data)
-    .filter(function(candidate) {
-      return candidate.telemetry_current !== true;
-    }).length;
+  var seen = {};
+  return battlefieldManagerEvidenceRows(data).filter(function(candidate) {
+    if (
+      candidate.telemetry_current === true &&
+      operationCanonicalProjectionMatches(candidate)
+    ) {
+      return false;
+    }
+    var projection = candidate.battlefield_operation || {};
+    var identity = projection.identity || {};
+    var key = [
+      String(candidate.operation_id || ""),
+      Number(candidate.operation_generation || 0),
+      String(candidate.blackboard_scope_id || ""),
+      String(identity.update_id || ""),
+      String(identity.scope || ""),
+      String(identity.session_epoch || ""),
+      String(identity.operation_id || ""),
+      Number(identity.generation || 0),
+      String(projection.operation_id || ""),
+      Number(projection.generation || 0),
+      String(candidate.telemetry_current)
+    ].join("\u0000");
+    if (seen[key]) { return false; }
+    seen[key] = true;
+    return true;
+  }).length;
 }
 
 function battlefieldOperationDataByIdentity(rows, operationId, generation) {
@@ -20634,13 +20673,28 @@ function renderBattlefieldCanonicalDetails(data, overview) {
         baseId
       );
     }).map(function(owner) {
+      var compositionRows = Array.isArray(owner && owner.composition)
+        ? owner.composition.map(function(item) {
+          var family = String(item && item.family || "");
+          var role = String(item && item.role || "");
+          if (!family || !role) { return ""; }
+          return family + "/" + role + " " +
+            Number(item.count || 0) +
+            " · ground " +
+            Number(item.ground_capable_count || 0) +
+            " · air " +
+            Number(item.air_capable_count || 0);
+        }).filter(Boolean)
+        : [];
       return String(owner.owner_id || "autonomous") + " " +
         Number(owner.owner_count || 0) +
-        commandUiText(
-          " · family evidence missing",
-          " · family evidence missing",
-          " · 缺少单位族证据"
-        );
+        (compositionRows.length
+          ? " · " + compositionRows.join(", ")
+          : commandUiText(
+            " · family evidence missing",
+            " · family evidence missing",
+            " · 缺少单位族证据"
+          ));
     });
     var explicit = matchedRows.filter(function(operationData) {
       if (String(operationData.operation_mission || "") !== "defense") {

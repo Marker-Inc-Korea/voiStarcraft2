@@ -1240,6 +1240,19 @@ def _battlefield_overview_browser_fixture_page() -> str:
       autonomous_ownership: [{
         owner_id: "BaseDefense:main",
         owner_count: 2,
+        composition: [{
+          family: "marine",
+          role: "base_defender",
+          count: 1,
+          ground_capable_count: 1,
+          air_capable_count: 1
+        }, {
+          family: "viking",
+          role: "base_defender",
+          count: 1,
+          ground_capable_count: 1,
+          air_capable_count: 1
+        }],
         integrity_status: "valid"
       }],
       bases: [{
@@ -1362,7 +1375,9 @@ def _battlefield_overview_browser_fixture_page() -> str:
       baseText.indexOf("hold-main#2") >= 0 &&
       baseText.indexOf("MARAUDER/defender 3/4") >= 0 &&
       baseText.indexOf("보호 minimum 준수 충족") >= 0 &&
-      baseText.indexOf("family evidence missing") >= 0);
+      baseText.indexOf("marine/base_defender 1") >= 0 &&
+      baseText.indexOf("viking/base_defender 1") >= 0 &&
+      baseText.indexOf("family evidence missing") < 0);
     mark("transfer-detail",
       transferText.indexOf("hold-main#2") >= 0 &&
       transferText.indexOf(destinationOperationId + "#5") >= 0 &&

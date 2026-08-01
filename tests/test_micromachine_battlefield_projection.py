@@ -262,6 +262,15 @@ def _telemetry(
                     "owner_id": "BaseDefense:main",
                     "owner_count": 2,
                     "owner_tags": [201, 202],
+                    "composition": [
+                        {
+                            "family": "marine",
+                            "role": "base_defender",
+                            "count": 2,
+                            "ground_capable_count": 2,
+                            "air_capable_count": 2,
+                        }
+                    ],
                     "integrity_status": "valid",
                 }
             ],
@@ -534,6 +543,40 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
 
         self.assertFalse(result.ok)
         self.assertIn("owner_integrity_invalid", _blocker_codes(result))
+
+    def test_autonomous_composition_must_cover_owner_count(self) -> None:
+        telemetry = _telemetry()
+        telemetry["battlefield_overview"]["autonomous_ownership"][0][
+            "composition"
+        ][0]["count"] = 1
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "autonomous_composition_count_mismatch",
+            _blocker_codes(result),
+        )
+
+    def test_autonomous_capability_count_cannot_exceed_composition(self) -> None:
+        telemetry = _telemetry()
+        telemetry["battlefield_overview"]["autonomous_ownership"][0][
+            "composition"
+        ][0]["air_capable_count"] = 3
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "autonomous_capability_count_mismatch",
+            _blocker_codes(result),
+        )
 
     def test_owner_ids_must_be_unique_across_runtime_owners(self) -> None:
         telemetry = _telemetry()

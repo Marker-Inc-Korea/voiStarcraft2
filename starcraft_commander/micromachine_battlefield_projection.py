@@ -787,6 +787,12 @@ def _validate_ownership_partition(
             path=path,
             validation=validation,
         )
+        _validate_autonomous_composition(
+            owner,
+            path=path,
+            owner_count=owner_count,
+            validation=validation,
+        )
         autonomous_tags.extend(tags)
         if owner_count is not None:
             autonomous_count_sum += owner_count
@@ -968,6 +974,82 @@ def _validate_owner_block(
             actual=integrity_status,
         )
     return tags, owner_count
+
+
+def _validate_autonomous_composition(
+    owner: Mapping[str, object],
+    *,
+    path: str,
+    owner_count: int | None,
+    validation: _Validation,
+) -> None:
+    composition = _required_mapping_sequence(
+        owner.get("composition"),
+        path=f"{path}.composition",
+        validation=validation,
+    )
+    represented = 0
+    seen: set[tuple[str, str]] = set()
+    for index, item in enumerate(composition):
+        item_path = f"{path}.composition[{index}]"
+        family = _required_string(
+            item.get("family"),
+            path=f"{item_path}.family",
+            validation=validation,
+        )
+        role = _required_string(
+            item.get("role"),
+            path=f"{item_path}.role",
+            validation=validation,
+        )
+        count = _required_nonnegative_int(
+            item.get("count"),
+            path=f"{item_path}.count",
+            validation=validation,
+        )
+        ground_count = _required_nonnegative_int(
+            item.get("ground_capable_count"),
+            path=f"{item_path}.ground_capable_count",
+            validation=validation,
+        )
+        air_count = _required_nonnegative_int(
+            item.get("air_capable_count"),
+            path=f"{item_path}.air_capable_count",
+            validation=validation,
+        )
+        if family is not None and role is not None:
+            key = (family, role)
+            if key in seen:
+                validation.block(
+                    "duplicate_autonomous_composition",
+                    item_path,
+                    "Autonomous family and role composition rows must be unique.",
+                    family=family,
+                    role=role,
+                )
+            seen.add(key)
+        if count is not None:
+            represented += count
+            for field_name, capable_count in (
+                ("ground_capable_count", ground_count),
+                ("air_capable_count", air_count),
+            ):
+                if capable_count is not None and capable_count > count:
+                    validation.block(
+                        "autonomous_capability_count_mismatch",
+                        f"{item_path}.{field_name}",
+                        "Capability count cannot exceed its composition count.",
+                        count=count,
+                        capable_count=capable_count,
+                    )
+    if owner_count is not None and represented != owner_count:
+        validation.block(
+            "autonomous_composition_count_mismatch",
+            f"{path}.composition",
+            "Autonomous composition must represent every owned unit exactly once.",
+            owner_count=owner_count,
+            composition_count=represented,
+        )
 
 
 def _validate_operation_route(

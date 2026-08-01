@@ -226,6 +226,15 @@ def battlefield_projection_telemetry(
                     "owner_id": "BaseDefense:main",
                     "owner_count": 2,
                     "owner_tags": [201, 202],
+                    "composition": [
+                        {
+                            "family": "marine",
+                            "role": "base_defender",
+                            "count": 2,
+                            "ground_capable_count": 2,
+                            "air_capable_count": 2,
+                        }
+                    ],
                     "integrity_status": "valid",
                 }
             ],
@@ -5796,6 +5805,20 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertNotIn("unknown_runtime_state", serialized)
         self.assertNotIn("actor_tag", serialized)
         self.assertNotIn("987654", serialized)
+        self.assertEqual(
+            [
+                {
+                    "family": "marine",
+                    "role": "base_defender",
+                    "count": 2,
+                    "ground_capable_count": 2,
+                    "air_capable_count": 2,
+                }
+            ],
+            payload["battlefield_overview"]["autonomous_ownership"][0][
+                "composition"
+            ],
+        )
         self.assertIn(
             "protected minimum",
             payload["battlefield_overview"]["bases"][0]["base_readiness"][
@@ -19264,6 +19287,22 @@ const assert = require("assert");
       {
         owner_id: "BaseDefense:main",
         owner_count: 3,
+        composition: [
+          {
+            family: "marine",
+            role: "base_defender",
+            count: 2,
+            ground_capable_count: 2,
+            air_capable_count: 2
+          },
+          {
+            family: "viking",
+            role: "base_defender",
+            count: 1,
+            ground_capable_count: 1,
+            air_capable_count: 1
+          }
+        ],
         integrity_status: "valid"
       }
     ],
@@ -19384,6 +19423,12 @@ const assert = require("assert");
     "보호 minimum 준수 충족"
   ));
   assert(nodes["battlefield-base-details"].textContent.includes(
+    "marine/base_defender 2"
+  ));
+  assert(nodes["battlefield-base-details"].textContent.includes(
+    "viking/base_defender 1"
+  ));
+  assert(!nodes["battlefield-base-details"].textContent.includes(
     "family evidence missing"
   ));
   assert(nodes["battlefield-transfer-details"].textContent.includes(
@@ -19412,6 +19457,44 @@ const assert = require("assert");
   });
   assert(nodes["battlefield-integrity-alert"].textContent.includes(
     "stale manager evidence ignored=1"
+  ));
+  assert(nodes["battlefield-operation-details"].textContent.includes(
+    "mission/task 증거 없음"
+  ));
+  assert(!nodes["battlefield-operation-details"].textContent.includes(
+    "MARAUDER/defender"
+  ));
+  assert(!nodes["battlefield-base-details"].textContent.includes(
+    "hold-main#2"
+  ));
+
+  var wrongGeneration = JSON.parse(JSON.stringify(detailedDefense));
+  wrongGeneration.battlefield_operation.identity.generation = 99;
+  var wrongScope = JSON.parse(JSON.stringify(detailedDefense));
+  wrongScope.battlefield_operation.identity.scope =
+    "operation:foreign-scope";
+  var wrongEpoch = JSON.parse(JSON.stringify(detailedDefense));
+  wrongEpoch.battlefield_operation.identity.session_epoch =
+    1700000000001;
+  var wrongUpdate = JSON.parse(JSON.stringify(detailedDefense));
+  wrongUpdate.battlefield_operation.identity.update_id =
+    "foreign-update";
+  renderBattlefieldControlOverview({
+    battlefield_overview: authoritativeOverview,
+    battlefield_projection_integrity: {
+      status: "valid",
+      blocker_count: 0
+    },
+    operations: [
+      wrongGeneration,
+      wrongScope,
+      wrongEpoch,
+      wrongUpdate,
+      transferDestination
+    ]
+  });
+  assert(nodes["battlefield-integrity-alert"].textContent.includes(
+    "stale manager evidence ignored=4"
   ));
   assert(nodes["battlefield-operation-details"].textContent.includes(
     "mission/task 증거 없음"
@@ -19498,6 +19581,15 @@ const assert = require("assert");
     {
       owner_id: "BaseDefense:enemy_main",
       owner_count: 9,
+      composition: [
+        {
+          family: "marine",
+          role: "base_defender",
+          count: 9,
+          ground_capable_count: 9,
+          air_capable_count: 9
+        }
+      ],
       integrity_status: "valid"
     }
   ];
