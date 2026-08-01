@@ -1,5 +1,5 @@
 diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
-index 6949175..6df94db 100644
+index 6949175..3733a2a 100644
 --- a/src/CombatCommander.cpp
 +++ b/src/CombatCommander.cpp
 @@ -1,6 +1,7 @@
@@ -31,7 +31,31 @@ index 6949175..6df94db 100644
  		operation.status = "COMPLETED";
  	}
  	else
-@@ -6741,6 +6747,12 @@ void CombatCommander::updateVoiOperations()
+@@ -5105,14 +5111,15 @@ void CombatCommander::updateVoiOperations()
+ 				0)));
+ 	if (operationCount == 0)
+ 	{
+-		for (auto & operation : m_voiOperations)
+-		{
+-			releaseVoiOperation(
+-				operation,
+-				"removed_from_policy",
+-				false);
+-		}
+-		m_voiOperations.clear();
++		voiReleaseOmittedNonterminalOperations(
++			m_voiOperations,
++			[&](VoiOperationState & operation)
++			{
++				releaseVoiOperation(
++					operation,
++					"removed_from_policy",
++					false);
++			});
+ 		m_voiOperationUnitOwners.clear();
+ 		return;
+ 	}
+@@ -6741,6 +6748,12 @@ void CombatCommander::updateVoiOperations()
  				existing.operationId);
  		if (requested == nullptr)
  		{
@@ -44,7 +68,19 @@ index 6949175..6df94db 100644
  			const auto transferBlocker =
  				transferBlockers.find(
  					existing.operationId);
-@@ -15035,9 +15047,37 @@ void CombatCommander::drawVoiOperationHud()
+@@ -7641,6 +7654,11 @@ void CombatCommander::synchronizeVoiOperationLifecycleForProduction()
+ 	}
+ 	for (auto & operation : m_voiOperations)
+ 	{
++		if (voiOperationHudRetainTerminalHistory(
++				operation.completed))
++		{
++			continue;
++		}
+ 		bool retained = false;
+ 		bool terminal = false;
+ 		std::string reason =
+@@ -15035,9 +15053,38 @@ void CombatCommander::drawVoiOperationHud()
  	{
  		return;
  	}
@@ -65,6 +101,7 @@ index 6949175..6df94db 100644
 +		candidate.operationId = operation.operationId;
 +		candidate.generation = operation.generation;
 +		candidate.canonicalFrame = operation.issuedAtFrame;
++		candidate.priority = operation.priority;
 +		candidate.terminal = operation.completed;
 +		candidate.terminalFramePresent =
 +			operation.completionFrame != 0;
@@ -83,7 +120,7 @@ index 6949175..6df94db 100644
  		const auto * battlefieldOperation =
  			voiFindBattlefieldOperationProjection(
  				m_voiBattlefieldProjection,
-@@ -15197,6 +15237,12 @@ void CombatCommander::drawVoiOperationHud()
+@@ -15197,6 +15244,12 @@ void CombatCommander::drawVoiOperationHud()
  			color);
  		screenY += 0.025f;
  
@@ -96,7 +133,7 @@ index 6949175..6df94db 100644
  		if (operation.targetPosition != CCPosition()
  			&& m_bot.Map().isValidPosition(
  				operation.targetPosition))
-@@ -15268,6 +15314,15 @@ void CombatCommander::drawVoiOperationHud()
+@@ -15268,6 +15321,15 @@ void CombatCommander::drawVoiOperationHud()
  				color);
  		}
  	}
@@ -114,10 +151,10 @@ index 6949175..6df94db 100644
  CCPosition CombatCommander::getMainAttackLocation()
 diff --git a/src/voi_operation_hud_selection.hpp b/src/voi_operation_hud_selection.hpp
 new file mode 100644
-index 0000000..2c14311
+index 0000000..01ec037
 --- /dev/null
 +++ b/src/voi_operation_hud_selection.hpp
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,146 @@
 +#pragma once
 +
 +#include <algorithm>
@@ -135,6 +172,7 @@ index 0000000..2c14311
 +	std::string operationId;
 +	std::uint64_t generation = 0;
 +	std::uint64_t canonicalFrame = 0;
++	float priority = 0.0f;
 +	bool terminal = false;
 +	bool terminalFramePresent = false;
 +	std::uint64_t terminalFrame = 0;
@@ -157,6 +195,27 @@ index 0000000..2c14311
 +inline bool voiOperationHudRetainTerminalHistory(bool terminal)
 +{
 +	return terminal;
++}
++
++template <typename Operation, typename ReleaseOperation>
++inline std::size_t voiReleaseOmittedNonterminalOperations(
++	std::vector<Operation> & operations,
++	ReleaseOperation releaseOperation)
++{
++	std::size_t removedCount = 0;
++	for (std::size_t index = 0; index < operations.size();)
++	{
++		if (voiOperationHudRetainTerminalHistory(
++				operations[index].completed))
++		{
++			++index;
++			continue;
++		}
++		releaseOperation(operations[index]);
++		operations.erase(operations.begin() + index);
++		++removedCount;
++	}
++	return removedCount;
 +}
 +
 +inline bool voiOperationHudTerminalEligible(
@@ -200,6 +259,10 @@ index 0000000..2c14311
 +			if (left.terminal != right.terminal)
 +			{
 +				return !left.terminal;
++			}
++			if (left.priority != right.priority)
++			{
++				return left.priority > right.priority;
 +			}
 +			if (left.canonicalFrame != right.canonicalFrame)
 +			{
@@ -281,10 +344,10 @@ index cdfc8a6..8815736 100644
 +)
 diff --git a/tests/operation_hud_selection_test.cpp b/tests/operation_hud_selection_test.cpp
 new file mode 100644
-index 0000000..619bcc3
+index 0000000..65d9e99
 --- /dev/null
 +++ b/tests/operation_hud_selection_test.cpp
-@@ -0,0 +1,253 @@
+@@ -0,0 +1,364 @@
 +#include "voi_operation_hud_selection.hpp"
 +
 +#include <algorithm>
@@ -315,13 +378,15 @@ index 0000000..619bcc3
 +	std::uint64_t canonicalFrame,
 +	bool terminal = false,
 +	std::uint64_t terminalFrame = 0,
-+	bool terminalFramePresent = false)
++	bool terminalFramePresent = false,
++	float priority = 0.0f)
 +{
 +	VoiOperationHudCandidate result;
 +	result.sourceIndex = sourceIndex;
 +	result.operationId = operationId;
 +	result.generation = generation;
 +	result.canonicalFrame = canonicalFrame;
++	result.priority = priority;
 +	result.terminal = terminal;
 +	result.terminalFrame = terminalFrame;
 +	result.terminalFramePresent = terminalFramePresent;
@@ -338,6 +403,7 @@ index 0000000..619bcc3
 +			<< value.operationId << "|"
 +			<< value.generation << "|"
 +			<< value.canonicalFrame << "|"
++			<< value.priority << "|"
 +			<< value.terminal << "|"
 +			<< value.terminalFramePresent << "|"
 +			<< value.terminalFrame << "\n";
@@ -396,6 +462,40 @@ index 0000000..619bcc3
 +	{
 +		CHECK(selection.operationIndices[index] == 100 + index);
 +	}
++}
++
++void testHigherPriorityActiveOperationsPrecedeOlderWork()
++{
++	std::vector<VoiOperationHudCandidate> candidates;
++	for (std::size_t index = 0; index < 8; ++index)
++	{
++		candidates.push_back(candidate(
++			index,
++			"low-" + std::to_string(index),
++			1,
++			index,
++			false,
++			0,
++			false,
++			1.0f));
++	}
++	candidates.push_back(candidate(
++		99,
++		"high",
++		1,
++		500,
++		false,
++		0,
++		false,
++		10.0f));
++	const auto selection = voiSelectOperationHud(candidates, 500);
++	CHECK(selection.operationIndices.size() == 8);
++	CHECK(selection.hiddenCount == 1);
++	CHECK(selection.operationIndices.front() == 99);
++	CHECK(std::find(
++		selection.operationIndices.begin(),
++		selection.operationIndices.end(),
++		7) == selection.operationIndices.end());
 +}
 +
 +void testSameFrameTieBreak()
@@ -460,6 +560,78 @@ index 0000000..619bcc3
 +{
 +	CHECK(voiOperationHudRetainTerminalHistory(true));
 +	CHECK(!voiOperationHudRetainTerminalHistory(false));
++}
++
++struct OperationLifecycleFixture
++{
++	bool completed = false;
++	std::string operationId;
++	std::string status;
++	std::string completionReason;
++	std::string blockedReason;
++	std::uint64_t completionFrame = 0;
++	std::vector<std::uint64_t> ownershipHistory;
++};
++
++std::string lifecycleFingerprint(
++	const OperationLifecycleFixture & operation)
++{
++	std::ostringstream output;
++	output << operation.completed << "|"
++		<< operation.operationId << "|"
++		<< operation.status << "|"
++		<< operation.completionReason << "|"
++		<< operation.blockedReason << "|"
++		<< operation.completionFrame;
++	for (const auto owner : operation.ownershipHistory)
++	{
++		output << "|" << owner;
++	}
++	return output.str();
++}
++
++void testPolicyOmissionPreservesTerminalCanonicalState()
++{
++	std::vector<OperationLifecycleFixture> operations = {
++		{
++			true,
++			"terminal",
++			"COMPLETED",
++			"completed_by_policy",
++			"",
++			400,
++			{ 11, 22 },
++		},
++		{
++			false,
++			"active",
++			"EXECUTING",
++			"",
++			"",
++			0,
++			{ 33 },
++		},
++	};
++	const std::string terminalBefore =
++		lifecycleFingerprint(operations.front());
++	std::size_t releaseCount = 0;
++	const std::size_t removedCount =
++		voiReleaseOmittedNonterminalOperations(
++			operations,
++			[&](OperationLifecycleFixture & operation)
++			{
++				++releaseCount;
++				operation.status = "BLOCKED";
++				operation.blockedReason =
++					"removed_from_policy";
++				operation.ownershipHistory.clear();
++			});
++	CHECK(removedCount == 1);
++	CHECK(releaseCount == 1);
++	CHECK(operations.size() == 1);
++	CHECK(operations.front().operationId == "terminal");
++	CHECK(lifecycleFingerprint(operations.front())
++		== terminalBefore);
 +}
 +
 +void testHiddenCountBoundaryAndAgedOutExclusion()
@@ -528,11 +700,13 @@ index 0000000..619bcc3
 +{
 +	testThirtyTwoOperationCap();
 +	testActiveOperationsPrecedeTerminalHistory();
++	testHigherPriorityActiveOperationsPrecedeOlderWork();
 +	testSameFrameTieBreak();
 +	testInvalidTerminalFramesFailClosed();
 +	testTerminalGraceBoundary();
 +	testTerminalFrameLatchesOnFirstTransition();
 +	testPolicyOmissionRetainsOnlyTerminalHistory();
++	testPolicyOmissionPreservesTerminalCanonicalState();
 +	testHiddenCountBoundaryAndAgedOutExclusion();
 +	testMarkerEligibilityUsesSelection();
 +	testSelectionDoesNotMutateCanonicalState();

@@ -1783,6 +1783,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         for contract in (
             "VoiOperationHudMaxRows = 8",
             "VoiOperationHudTerminalGraceFrames = 110",
+            "candidate.priority = operation.priority",
+            "return left.priority > right.priority",
             "voiOperationHudTerminalEligible",
             "candidate.terminalFrame < candidate.canonicalFrame",
             "currentFrame - candidate.terminalFrame",
@@ -1794,6 +1796,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "voiOperationHudMarkerVisible",
             "testThirtyTwoOperationCap",
             "testActiveOperationsPrecedeTerminalHistory",
+            "testHigherPriorityActiveOperationsPrecedeOlderWork",
             "testSameFrameTieBreak",
             "testInvalidTerminalFramesFailClosed",
             "testTerminalGraceBoundary",
@@ -1801,6 +1804,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "voiOperationHudRetainTerminalHistory",
             "testTerminalFrameLatchesOnFirstTransition",
             "testPolicyOmissionRetainsOnlyTerminalHistory",
+            "voiReleaseOmittedNonterminalOperations",
+            "testPolicyOmissionPreservesTerminalCanonicalState",
+            "ownershipHistory",
             "testHiddenCountBoundaryAndAgedOutExclusion",
             "testMarkerEligibilityUsesSelection",
             "testSelectionDoesNotMutateCanonicalState",
@@ -1813,8 +1819,14 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         release_start = patch.index(
             "void CombatCommander::releaseVoiOperation("
         )
+        update_start = patch.index(
+            "void CombatCommander::updateVoiOperations()"
+        )
+        synchronize_start = patch.index(
+            "void CombatCommander::synchronizeVoiOperationLifecycleForProduction()"
+        )
         draw_start = patch.index("void CombatCommander::drawVoiOperationHud()")
-        release_delta = patch[release_start:draw_start]
+        release_delta = patch[release_start:synchronize_start]
         self.assertIn("const bool wasTerminal = operation.completed;", release_delta)
         self.assertIn(
             "voiOperationHudLatchTerminalFrame(",
@@ -1832,6 +1844,23 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             retention_gate,
         )
         self.assertLess(retention_gate, omitted_release)
+        update_delta = patch[update_start:synchronize_start]
+        self.assertIn(
+            "voiReleaseOmittedNonterminalOperations(",
+            update_delta,
+        )
+        self.assertIn("-\t\tm_voiOperations.clear();", update_delta)
+        self.assertNotIn("+\t\tm_voiOperations.clear();", update_delta)
+
+        synchronize_delta = patch[synchronize_start:draw_start]
+        sync_retention = synchronize_delta.index(
+            "voiOperationHudRetainTerminalHistory("
+        )
+        sync_mutation = synchronize_delta.index(
+            "bool retained = false;",
+            sync_retention,
+        )
+        self.assertLess(sync_retention, sync_mutation)
 
         draw_end = patch.index(
             "CCPosition CombatCommander::getMainAttackLocation()",
