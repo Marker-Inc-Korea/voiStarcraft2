@@ -4040,11 +4040,12 @@ class LocalProducerTest(unittest.TestCase):
             ) -> subprocess.CompletedProcess[bytes]:
                 del kwargs
                 command = list(argv)
-                stdout = (
-                    b"sha256:" + (b"a" * 64) + b"\n"
-                    if "--voi-build-input-identity" in command
-                    else b'{"tests":[]}\n'
-                )
+                if "--voi-build-input-identity" in command:
+                    stdout = b"sha256:" + (b"a" * 64) + b"\n"
+                elif command[0] == "/usr/bin/git":
+                    stdout = b"git-output\n"
+                else:
+                    stdout = b'{"tests":[]}\n'
                 return subprocess.CompletedProcess(command, 0, stdout, b"")
 
             def reconstruct(
@@ -4052,6 +4053,7 @@ class LocalProducerTest(unittest.TestCase):
                 *,
                 binary_identity_runner: object,
                 ctest_registry_runner: object,
+                git_command_runner: object,
             ) -> dict[str, object]:
                 self.assertIs(mock.sentinel.config, config)
                 self.assertTrue(callable(binary_identity_runner))
@@ -4079,6 +4081,22 @@ class LocalProducerTest(unittest.TestCase):
                     120.0,
                 )
                 self.assertEqual(b'{"tests":[]}\n', registry.stdout)
+                self.assertTrue(callable(git_command_runner))
+                git_result = git_command_runner(
+                    (
+                        "/usr/bin/git",
+                        "-c",
+                        "core.fsmonitor=false",
+                        "-C",
+                        str(snapshot_path.parent),
+                        "rev-parse",
+                        "HEAD",
+                    ),
+                    snapshot_path.parent,
+                    {"PATH": "/usr/bin:/bin"},
+                    30.0,
+                )
+                self.assertEqual(b"git-output\n", git_result.stdout)
                 return {"ok": True}
 
             with (
@@ -4131,6 +4149,22 @@ class LocalProducerTest(unittest.TestCase):
                     uid=65001,
                     gid=65001,
                 ),
+                mock.call(
+                    (
+                        "/usr/bin/git",
+                        "-c",
+                        "core.fsmonitor=false",
+                        "-C",
+                        str(snapshot_path.parent),
+                        "rev-parse",
+                        "HEAD",
+                    ),
+                    cwd=str(snapshot_path.parent),
+                    env={"PATH": "/usr/bin:/bin"},
+                    timeout=30.0,
+                    uid=65001,
+                    gid=65001,
+                ),
             ],
             native_runner.call_args_list,
         )
@@ -4176,8 +4210,9 @@ class LocalProducerTest(unittest.TestCase):
                 *,
                 binary_identity_runner: object,
                 ctest_registry_runner: object,
+                git_command_runner: object,
             ) -> dict[str, object]:
-                del config, binary_identity_runner
+                del config, binary_identity_runner, git_command_runner
                 self.assertTrue(callable(ctest_registry_runner))
                 ctest_registry_runner(
                     (
@@ -4226,6 +4261,164 @@ class LocalProducerTest(unittest.TestCase):
                 child_pid,
                 provenance_module._process_ids_for_uid(producer_uid),
             )
+            self.assertEqual(
+                (),
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
+
+    def test_dedicated_producer_uid_git_runner_closes_stdin_and_cleans_descendant(
+        self,
+    ) -> None:
+        producer_uid, producer_gid = self.dedicated_producer_uid()
+        with tempfile.TemporaryDirectory(
+            dir=BUILD_IDENTITY_REPO_ROOT,
+        ) as directory:
+            root = Path(directory)
+            root.chmod(0o711)
+            producer_io = root / "producer-io"
+            producer_io.mkdir(mode=0o700)
+            os.chown(producer_io, producer_uid, producer_gid)
+            observation_path = producer_io / "git-observation.json"
+            child_pid_path = producer_io / "git-child.pid"
+            sentinel_token = "token-visible-only-in-root-parent"
+            script = (
+                "import json,os,subprocess,sys,time\n"
+                "from pathlib import Path\n"
+                "with open('/dev/null','wb') as sink:\n"
+                "    subprocess.Popen(\n"
+                "        ['/bin/sh','-c','echo $$ > \"$1\"; exec sleep 30',\n"
+                "         'git-child',sys.argv[2]],\n"
+                "        stdin=sink,stdout=sink,stderr=sink,\n"
+                "        start_new_session=True,\n"
+                "    )\n"
+                "child_path=Path(sys.argv[2])\n"
+                "for _ in range(100):\n"
+                "    if child_path.is_file():\n"
+                "        break\n"
+                "    time.sleep(0.01)\n"
+                "Path(sys.argv[1]).write_text(json.dumps({\n"
+                "    'stdin':sys.stdin.buffer.read().decode(),\n"
+                "    'token_env':os.environ.get('GITHUB_TOKEN'),\n"
+                "}))\n"
+            )
+
+            def reconstruct(
+                config: object,
+                *,
+                binary_identity_runner: object,
+                ctest_registry_runner: object,
+                git_command_runner: object,
+            ) -> dict[str, object]:
+                del config, binary_identity_runner, ctest_registry_runner
+                self.assertTrue(callable(git_command_runner))
+                git_command_runner(
+                    (
+                        str(Path(sys.executable).resolve()),
+                        "-I",
+                        "-B",
+                        "-S",
+                        "-c",
+                        script,
+                        str(observation_path),
+                        str(child_pid_path),
+                    ),
+                    producer_io,
+                    provenance_module.SANITIZED_TEST_ENV,
+                    5.0,
+                )
+                return {"ok": True}
+
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"GITHUB_TOKEN": sentinel_token},
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "build_micromachine_build_identity",
+                    side_effect=reconstruct,
+                ),
+                self.assertRaisesRegex(
+                    OSError,
+                    "native verifier command left detached descendants",
+                ),
+            ):
+                provenance_module._build_micromachine_identity_with_boundary(
+                    mock.sentinel.config,
+                    execution_uid=producer_uid,
+                    execution_gid=producer_gid,
+                )
+
+            self.assertEqual(
+                {"stdin": "", "token_env": None},
+                json.loads(observation_path.read_text()),
+            )
+            child_pid = int(child_pid_path.read_text().strip())
+            self.assertNotIn(
+                child_pid,
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
+            self.assertEqual(
+                (),
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
+
+    def test_dedicated_producer_uid_disables_artifact_fsmonitor_helper(
+        self,
+    ) -> None:
+        producer_uid, producer_gid = self.dedicated_producer_uid()
+        with tempfile.TemporaryDirectory(
+            dir=BUILD_IDENTITY_REPO_ROOT,
+        ) as directory:
+            root = Path(directory)
+            root.chmod(0o755)
+            fixture = make_build_fixture(root / "fixture")
+            producer_io = root / "producer-io"
+            producer_io.mkdir(mode=0o700)
+            os.chown(producer_io, producer_uid, producer_gid)
+            observation_path = producer_io / "fsmonitor-observation"
+            child_pid_path = producer_io / "fsmonitor-child.pid"
+            helper = root / "malicious-fsmonitor"
+            helper.write_text(
+                "#!/bin/sh\n"
+                f"cat > {observation_path}\n"
+                f"/bin/sh -c 'echo $$ > {child_pid_path}; exec sleep 30' "
+                "</dev/null >/dev/null 2>&1 &\n"
+                "exit 1\n"
+            )
+            helper.chmod(0o755)
+            subprocess.run(
+                [
+                    "/usr/bin/git",
+                    "-C",
+                    str(fixture["config"].micromachine_dir),
+                    "config",
+                    "core.fsmonitor",
+                    str(helper),
+                ],
+                check=True,
+                capture_output=True,
+            )
+
+            with mock.patch.dict(
+                os.environ,
+                {"GITHUB_TOKEN": "root-parent-token"},
+            ):
+                result = attest_build_binding(
+                    fixture["report_path"],
+                    repository_dir=fixture["repository"],
+                    expected_repository_commit=fixture["repository_commit"],
+                    expected_build_dir=(
+                        fixture["config"].micromachine_build_dir
+                    ),
+                    command_runner=passing_ctest,
+                    execution_uid=producer_uid,
+                    execution_gid=producer_gid,
+                )
+
+            self.assertTrue(result["ok"], result)
+            self.assertFalse(observation_path.exists())
+            self.assertFalse(child_pid_path.exists())
             self.assertEqual(
                 (),
                 provenance_module._process_ids_for_uid(producer_uid),

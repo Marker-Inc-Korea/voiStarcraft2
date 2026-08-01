@@ -5922,7 +5922,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "patches/0077-deterministic-pre-live-journey-adapter.patch",
             "patches/0078-production-path-journey-review-closure.patch",
             "through `0078`",
-            "schema-79 report",
+            "schema-80 report",
         )
         for term in required_terms:
             with self.subTest(term=term):

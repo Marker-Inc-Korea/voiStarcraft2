@@ -2134,10 +2134,32 @@ def _build_micromachine_identity_with_boundary(
             completed.stderr,
         )
 
+    def run_git_inspection(
+        argv: Sequence[str],
+        repository_dir: Path,
+        environment: Mapping[str, str],
+        timeout: float,
+    ) -> subprocess.CompletedProcess[object]:
+        completed = _run_dedicated_uid_native_command(
+            argv,
+            cwd=str(repository_dir),
+            env=environment,
+            timeout=timeout,
+            uid=execution_identity[0],
+            gid=execution_identity[1],
+        )
+        return subprocess.CompletedProcess(
+            list(argv),
+            completed.returncode,
+            completed.stdout,
+            completed.stderr,
+        )
+
     return build_micromachine_build_identity(
         config,
         binary_identity_runner=run_binary_identity_probe,
         ctest_registry_runner=run_ctest_registry_discovery,
+        git_command_runner=run_git_inspection,
     )
 
 

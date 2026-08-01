@@ -26,7 +26,7 @@ SANITIZED_GIT_ENV: Final[dict[str, str]] = {
     "LC_ALL": "C",
     "PATH": "/usr/bin:/bin",
 }
-MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 79
+MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 80
 MICROMACHINE_SOURCE_ATTESTATION_SCHEMA_VERSION: Final[int] = 6
 MICROMACHINE_BUILD_TRANSACTION_SCHEMA_VERSION: Final[int] = 1
 MICROMACHINE_CTEST_REGISTRY_SCHEMA_VERSION: Final[int] = 1
@@ -51,8 +51,13 @@ CTestRegistryRunner = Callable[
     [Sequence[str], Path, Mapping[str, str], float],
     subprocess.CompletedProcess[object],
 ]
+GitCommandRunner = Callable[
+    [Sequence[str], Path, Mapping[str, str], float],
+    subprocess.CompletedProcess[object],
+]
 CMAKE_CTEST_COMMAND_PREFIX: Final[str] = "CMAKE_CTEST_COMMAND:INTERNAL="
 CTEST_REGISTRY_TIMEOUT_SECONDS: Final[float] = 120.0
+GIT_INSPECTION_TIMEOUT_SECONDS: Final[float] = 30.0
 DEFAULT_MICROMACHINE_COMMIT: Final[str] = "eb893161371dab975a0a7e600f9e250ac03ec1ef"
 DEFAULT_S2CLIENT_COMMIT: Final[str] = "614acc00abb5355e4c94a1b0279b46e9d845b7ce"
 DEFAULT_MICROMACHINE_PATCH: Final[Path] = (
@@ -893,6 +898,7 @@ def build_micromachine_build_identity(
     *,
     binary_identity_runner: BinaryIdentityRunner | None = None,
     ctest_registry_runner: CTestRegistryRunner | None = None,
+    git_command_runner: GitCommandRunner | None = None,
 ) -> dict[str, object]:
     """Create a machine-readable identity report without modifying worktrees."""
 
@@ -904,16 +910,24 @@ def build_micromachine_build_identity(
         config.resolved_s2client_build_dir,
         source_root=config.s2client_dir,
     )
-    observed_micro = _git_head(config.micromachine_dir)
-    observed_s2 = _git_head(config.s2client_dir)
+    observed_micro = _git_head(
+        config.micromachine_dir,
+        command_runner=git_command_runner,
+    )
+    observed_s2 = _git_head(
+        config.s2client_dir,
+        command_runner=git_command_runner,
+    )
     observed_micro_source_state = _git_source_state_sha256(
         config.micromachine_dir,
         excluded_roots=(config.micromachine_build_dir,),
         excluded_paths=MICROMACHINE_RUNTIME_MUTABLE_PATHS,
+        command_runner=git_command_runner,
     )
     observed_s2_source_state = _git_source_state_sha256(
         config.s2client_dir,
         excluded_roots=(config.resolved_s2client_build_dir,),
+        command_runner=git_command_runner,
     )
     observed_s2_build_state = (
         _directory_state_sha256(config.resolved_s2client_build_dir)
@@ -3627,20 +3641,82 @@ def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
     temporary.replace(path)
 
 
-def _git_head(path: Path) -> str | None:
+def _run_git_inspection_command(
+    path: Path,
+    arguments: Sequence[str],
+    *,
+    command_runner: GitCommandRunner | None = None,
+) -> subprocess.CompletedProcess[object]:
+    resolved_path = path.resolve()
+    argv = [
+        TRUSTED_GIT_EXECUTABLE,
+        "-c",
+        f"safe.directory={resolved_path}",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "credential.helper=",
+        "--no-pager",
+        "-C",
+        str(resolved_path),
+        *arguments,
+    ]
+    environment = dict(SANITIZED_GIT_ENV)
+    if command_runner is not None:
+        return command_runner(
+            argv,
+            resolved_path,
+            environment,
+            GIT_INSPECTION_TIMEOUT_SECONDS,
+        )
+    return subprocess.run(
+        argv,
+        cwd=str(resolved_path),
+        stdin=subprocess.DEVNULL,
+        check=False,
+        capture_output=True,
+        text=False,
+        shell=False,
+        timeout=GIT_INSPECTION_TIMEOUT_SECONDS,
+        env=environment,
+    )
+
+
+def _completed_stdout_bytes(
+    completed: subprocess.CompletedProcess[object],
+) -> bytes | None:
+    stdout = completed.stdout
+    if isinstance(stdout, bytes):
+        return stdout
+    if isinstance(stdout, str):
+        return stdout.encode("utf-8")
+    return None
+
+
+def _git_head(
+    path: Path,
+    *,
+    command_runner: GitCommandRunner | None = None,
+) -> str | None:
     if not (path / ".git").exists():
         return None
     try:
-        completed = subprocess.run(
-            [TRUSTED_GIT_EXECUTABLE, "-C", str(path), "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=dict(SANITIZED_GIT_ENV),
+        completed = _run_git_inspection_command(
+            path,
+            ("rev-parse", "HEAD"),
+            command_runner=command_runner,
         )
-    except (OSError, subprocess.CalledProcessError):
+    except (OSError, subprocess.SubprocessError):
         return None
-    value = completed.stdout.strip()
+    stdout = _completed_stdout_bytes(completed)
+    if completed.returncode != 0 or stdout is None:
+        return None
+    try:
+        value = stdout.decode("ascii").strip()
+    except UnicodeDecodeError:
+        return None
     return value or None
 
 
@@ -3649,11 +3725,13 @@ def _git_source_state_sha256(
     *,
     excluded_roots: Sequence[Path] = (),
     excluded_paths: Sequence[str] = (),
+    command_runner: GitCommandRunner | None = None,
 ) -> str | None:
     inspection = inspect_git_worktree_state(
         path,
         excluded_roots=excluded_roots,
         excluded_paths=excluded_paths,
+        command_runner=command_runner,
     )
     if inspection is None:
         return None
@@ -3729,6 +3807,7 @@ def inspect_git_worktree_state(
     *,
     excluded_roots: Sequence[Path] = (),
     excluded_paths: Sequence[str] = (),
+    command_runner: GitCommandRunner | None = None,
 ) -> dict[str, object] | None:
     """Hash HEAD and actual worktree bytes without trusting index stat hints."""
 
@@ -3776,61 +3855,49 @@ def inspect_git_worktree_state(
         )
 
     try:
-        object_format = subprocess.run(
-            [
-                TRUSTED_GIT_EXECUTABLE,
-                "-C",
-                str(resolved_root),
-                "rev-parse",
-                "--show-object-format",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=dict(SANITIZED_GIT_ENV),
-        ).stdout.strip()
-        tree_output = subprocess.run(
-            [
-                TRUSTED_GIT_EXECUTABLE,
-                "-C",
-                str(resolved_root),
-                "ls-tree",
-                "-r",
-                "-z",
-                "--full-tree",
-                "HEAD",
-            ],
-            check=True,
-            capture_output=True,
-            env=dict(SANITIZED_GIT_ENV),
-        ).stdout
-        untracked_output = subprocess.run(
-            [
-                TRUSTED_GIT_EXECUTABLE,
-                "-C",
-                str(resolved_root),
-                "ls-files",
-                "--others",
-                "-z",
-            ],
-            check=True,
-            capture_output=True,
-            env=dict(SANITIZED_GIT_ENV),
-        ).stdout
-        index_flags_output = subprocess.run(
-            [
-                TRUSTED_GIT_EXECUTABLE,
-                "-C",
-                str(resolved_root),
-                "ls-files",
-                "-v",
-                "-z",
-            ],
-            check=True,
-            capture_output=True,
-            env=dict(SANITIZED_GIT_ENV),
-        ).stdout
-    except (OSError, subprocess.CalledProcessError):
+        object_format_result = _run_git_inspection_command(
+            resolved_root,
+            ("rev-parse", "--show-object-format"),
+            command_runner=command_runner,
+        )
+        tree_result = _run_git_inspection_command(
+            resolved_root,
+            ("ls-tree", "-r", "-z", "--full-tree", "HEAD"),
+            command_runner=command_runner,
+        )
+        untracked_result = _run_git_inspection_command(
+            resolved_root,
+            ("ls-files", "--others", "-z"),
+            command_runner=command_runner,
+        )
+        index_flags_result = _run_git_inspection_command(
+            resolved_root,
+            ("ls-files", "-v", "-z"),
+            command_runner=command_runner,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    results = (
+        object_format_result,
+        tree_result,
+        untracked_result,
+        index_flags_result,
+    )
+    if any(result.returncode != 0 for result in results):
+        return None
+    raw_outputs = tuple(_completed_stdout_bytes(result) for result in results)
+    if any(output is None for output in raw_outputs):
+        return None
+    object_format_output, tree_output, untracked_output, index_flags_output = (
+        raw_outputs
+    )
+    assert object_format_output is not None
+    assert tree_output is not None
+    assert untracked_output is not None
+    assert index_flags_output is not None
+    try:
+        object_format = object_format_output.decode("ascii").strip()
+    except UnicodeDecodeError:
         return None
     if object_format not in {"sha1", "sha256"}:
         return None

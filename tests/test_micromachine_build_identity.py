@@ -71,7 +71,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         self.assertEqual(120.0, runner.call_args.kwargs["timeout"])
 
     def test_live_admission_requires_the_supported_schema(self) -> None:
-        self.assertEqual(79, MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION)
+        self.assertEqual(80, MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION)
         passing = {
             "schema_version": MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
             "identity": "sha256:fixture",
@@ -3622,6 +3622,56 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 ["excluded-root-target:src-link.cpp"],
                 inspection["unsafe_symlink_entries"],
             )
+
+    def test_git_inspection_disables_local_helpers_and_closes_stdin(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            sentinel = root / "fsmonitor-executed"
+            helper = root / "malicious-fsmonitor"
+            helper.write_text(
+                "#!/bin/sh\n"
+                f"touch {sentinel}\n"
+                "exit 1\n"
+            )
+            helper.chmod(0o755)
+            subprocess.run(
+                [
+                    "/usr/bin/git",
+                    "-C",
+                    str(config.micromachine_dir),
+                    "config",
+                    "core.fsmonitor",
+                    str(helper),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            real_run = subprocess.run
+
+            with mock.patch(
+                "starcraft_commander.micromachine_build_identity.subprocess.run",
+                side_effect=real_run,
+            ) as runner:
+                inspection = inspect_git_worktree_state(
+                    config.micromachine_dir,
+                    excluded_roots=(config.micromachine_build_dir,),
+                )
+
+            self.assertIsNotNone(inspection)
+            self.assertFalse(sentinel.exists())
+            self.assertEqual(4, runner.call_count)
+            for call in runner.call_args_list:
+                argv = list(call.args[0])
+                self.assertIn("core.fsmonitor=false", argv)
+                self.assertIn("core.hooksPath=/dev/null", argv)
+                self.assertIn("credential.helper=", argv)
+                self.assertTrue(
+                    any(value.startswith("safe.directory=") for value in argv)
+                )
+                self.assertIs(subprocess.DEVNULL, call.kwargs["stdin"])
+                self.assertEqual(30.0, call.kwargs["timeout"])
+                self.assertFalse(call.kwargs["shell"])
 
     def test_micromachine_build_root_symlink_is_rejected_without_execution(
         self,
