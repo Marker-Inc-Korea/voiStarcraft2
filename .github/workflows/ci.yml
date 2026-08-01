@@ -88,14 +88,14 @@ jobs:
       PYTHONDONTWRITEBYTECODE: "1"
       VOI_PRODUCER_UID: "65001"
       VOI_PRODUCER_GID: "65001"
-      VOI_TRUSTED_VERIFIER_COMMIT: a0020cccecaa247406263bf61dabee74d6c683a7
+      VOI_TRUSTED_VERIFIER_COMMIT: 106419d21d17dc41164c0f1fea988e15cab3f9f8
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
           path: trusted-verifier
           persist-credentials: false
-          ref: a0020cccecaa247406263bf61dabee74d6c683a7
+          ref: 106419d21d17dc41164c0f1fea988e15cab3f9f8
       - name: Verify immutable dedicated producer isolation
         working-directory: trusted-verifier
         run: |
@@ -130,14 +130,14 @@ jobs:
       VOI_PRODUCER_GID: "65001"
       VOI_CANDIDATE_WORKSPACE: ${{ github.workspace }}/candidate
       VOI_TRUSTED_VERIFIER_WORKSPACE: ${{ github.workspace }}/trusted-verifier
-      VOI_TRUSTED_VERIFIER_COMMIT: a0020cccecaa247406263bf61dabee74d6c683a7
+      VOI_TRUSTED_VERIFIER_COMMIT: 106419d21d17dc41164c0f1fea988e15cab3f9f8
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
           path: trusted-verifier
           persist-credentials: false
-          ref: a0020cccecaa247406263bf61dabee74d6c683a7
+          ref: 106419d21d17dc41164c0f1fea988e15cab3f9f8
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
