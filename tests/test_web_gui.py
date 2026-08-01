@@ -5302,7 +5302,41 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             missing_prerequisites,
             *,
             unit_type="TERRAN_MARAUDER",
+            include_counts=True,
         ):
+            requirement = {
+                "unit_type": unit_type,
+                "role": "defender",
+                "production_blocker": "missing_addon",
+                "prerequisites": prerequisites,
+                "missing_prerequisites": missing_prerequisites,
+            }
+            operation = {
+                "operation_id": operation_id,
+                "update_id": update_id,
+                "generation": 2,
+                "status": "WAITING_FOR_UNITS",
+                "requirement_progress": [requirement],
+            }
+            if include_counts:
+                requirement.update(
+                    {
+                        "target_count": 4,
+                        "assigned_count": 2,
+                        "represented_count": 2,
+                        "completed_count": 1,
+                        "in_progress_count": 1,
+                        "queued_count": 0,
+                        "missing_count": 2,
+                    }
+                )
+                operation.update(
+                    {
+                        "requirement_target_count": 4,
+                        "requirement_represented_count": 2,
+                        "requirement_missing_count": 2,
+                    }
+                )
             return web_gui._micromachine_operation_status_payload(
                 operation_update,
                 operation_id=operation_id,
@@ -5314,30 +5348,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     "managers": {
                         "OperationDirector": {
                             "policy_update_id": update_id,
-                            "operations": [
-                                {
-                                    "operation_id": operation_id,
-                                    "update_id": update_id,
-                                    "generation": 2,
-                                    "status": "WAITING_FOR_UNITS",
-                                    "requirement_progress": [
-                                        {
-                                            "unit_type": unit_type,
-                                            "role": "defender",
-                                            "target_count": 4,
-                                            "represented_count": 2,
-                                            "missing_count": 2,
-                                            "production_blocker": (
-                                                "missing_addon"
-                                            ),
-                                            "prerequisites": prerequisites,
-                                            "missing_prerequisites": (
-                                                missing_prerequisites
-                                            ),
-                                        }
-                                    ],
-                                }
-                            ],
+                            "operations": [operation],
                         }
                     },
                 },
@@ -5433,6 +5444,39 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             hellbat_incomplete["operation_convergence"][
                 "prerequisite_integrity_blockers"
             ],
+        )
+
+        missing_counts = status_for(
+            ["TERRAN_BARRACKS", "TERRAN_BARRACKSTECHLAB"],
+            ["TERRAN_BARRACKSTECHLAB"],
+            include_counts=False,
+        )
+        missing_count_convergence = missing_counts["operation_convergence"]
+        missing_count_requirement = missing_count_convergence["requirements"][0]
+        for field in (
+            "target_count",
+            "assigned_count",
+            "represented_count",
+            "completed_count",
+            "in_progress_count",
+            "queued_count",
+            "missing_count",
+        ):
+            with self.subTest(field=field):
+                self.assertIsNone(missing_count_requirement[field])
+        self.assertIsNone(missing_count_convergence["target_count"])
+        self.assertIsNone(missing_count_convergence["represented_count"])
+        self.assertIsNone(missing_count_convergence["missing_count"])
+        self.assertEqual(
+            "blocked",
+            missing_count_convergence["prerequisite_integrity_status"],
+        )
+        self.assertEqual(
+            [
+                "requirement_count_evidence_missing",
+                "operation_count_evidence_missing",
+            ],
+            missing_count_convergence["prerequisite_integrity_blockers"],
         )
 
     def test_battlefield_projection_attachment_requires_exact_update_identity(self):
@@ -18756,6 +18800,76 @@ const assert = require("assert");
     assaultRecord.node.querySelector(".operation-card-state").textContent,
     "유닛 편성 완료"
   );
+  var staleManagerCard = operationResult(
+    "stale-manager-card",
+    "stale-manager-update",
+    "오래된 manager 카드",
+    "attack",
+    310,
+    "waiting_for_units",
+    observedExecutionStages().slice(0, 4)
+  );
+  staleManagerCard.telemetry_current = false;
+  staleManagerCard.disposition = "blocked";
+  staleManagerCard.operation_convergence.blocker =
+    "stale_manager_blocker";
+  staleManagerCard.intervention.command_execution.blocker_reason =
+    "stale_manager_blocker";
+  var staleManagerCardData = commandOperationData(
+    staleManagerCard,
+    serverResult({status: "published"}, OPERATION_SCOPE)
+  );
+  assert.strictEqual(staleManagerCardData.telemetry_stale, true);
+  assert.strictEqual(operationConvergenceSummary(staleManagerCardData), "");
+  assert(
+    !operationBlockerSummary(staleManagerCardData).includes(
+      "stale_manager_blocker"
+    )
+  );
+  assert.strictEqual(
+    operationRecordLane({
+      data: staleManagerCardData,
+      disposition: "blocked",
+      terminal: true
+    }),
+    "planning"
+  );
+
+  var staleAssaultRefresh = operationResult(
+    "assault-bravo",
+    "parallel-update-b",
+    "오래된 공격 manager evidence",
+    "attack",
+    310,
+    "waiting_for_units",
+    observedExecutionStages().slice(0, 4)
+  );
+  staleAssaultRefresh.telemetry_current = false;
+  staleAssaultRefresh.disposition = "blocked";
+  staleAssaultRefresh.operation_convergence.blocker =
+    "stale_manager_blocker";
+  staleAssaultRefresh.intervention.command_execution.blocker_reason =
+    "stale_manager_blocker";
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [
+      staleAssaultRefresh,
+      operationResult(
+        "recon-alpha",
+        "parallel-update-a",
+        "마린 1기 정찰",
+        "scouting",
+        300,
+        "action_issued",
+        actionStages("move").slice(0, 6)
+      )
+    ]
+  }, OPERATION_SCOPE));
+  assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.data.telemetry_current, true);
+  assert.strictEqual(assaultRecord.node.parentNode.id, "operation-lane-planning");
+  assert(!assaultRecord.node.textContent.includes("stale_manager_blocker"));
+
   var reconNodeBeforeDetachedSnapshot = reconRecord.node;
   renderOperationConsole(serverResult({
     status: "idle",
@@ -19232,9 +19346,9 @@ const assert = require("assert");
   detailedDefense.battlefield_operation.operation_id = "hold-main";
   detailedDefense.battlefield_operation.generation = 2;
   detailedDefense.battlefield_operation.operation_route.location_intent =
-    "self_main";
+    "home";
   detailedDefense.battlefield_operation.operation_route
-    .resolved_target_label = "self_main";
+    .resolved_target_label = "home";
   detailedDefense.battlefield_operation.operation_ownership.owner_count = 3;
   detailedDefense.battlefield_operation.operation_launch_policy.min_units = 3;
   detailedDefense.battlefield_operation.operation_launch_policy.max_units = 4;
@@ -19429,6 +19543,19 @@ const assert = require("assert");
   assert(nodes["battlefield-base-details"].textContent.includes(
     "MARAUDER/defender 3/4"
   ));
+  assert(battlefieldOperationTargetsBase(
+    {
+      telemetry_current: true,
+      battlefield_operation: {
+        operation_route: {
+          location_intent: "natural",
+          resolved_target_label: "natural"
+        }
+      }
+    },
+    "base:70:30",
+    "self_natural"
+  ));
   assert(nodes["battlefield-base-details"].textContent.includes(
     "보호 minimum 준수 충족"
   ));
@@ -19561,6 +19688,52 @@ const assert = require("assert");
   assert(nodes["battlefield-operation-details"].textContent.includes(
     "unrelated_prerequisite_evidence"
   ), "matching canonical joins must expose prerequisite integrity blockers");
+
+  var missingCountEvidence = JSON.parse(JSON.stringify(detailedDefense));
+  [
+    "target_count",
+    "assigned_count",
+    "represented_count",
+    "completed_count",
+    "in_progress_count",
+    "queued_count",
+    "missing_count"
+  ].forEach(function(field) {
+    missingCountEvidence.operation_convergence.requirements[0][field] = null;
+  });
+  missingCountEvidence.operation_convergence.target_count = null;
+  missingCountEvidence.operation_convergence.represented_count = null;
+  missingCountEvidence.operation_convergence.missing_count = null;
+  missingCountEvidence.operation_convergence.requirements[0]
+    .prerequisite_integrity_status = "blocked";
+  missingCountEvidence.operation_convergence.requirements[0]
+    .prerequisite_integrity_blockers = [
+      "requirement_count_evidence_missing"
+    ];
+  missingCountEvidence.operation_convergence
+    .prerequisite_integrity_status = "blocked";
+  missingCountEvidence.operation_convergence
+    .prerequisite_integrity_blockers = [
+      "requirement_count_evidence_missing",
+      "operation_count_evidence_missing"
+    ];
+  renderBattlefieldControlOverview({
+    battlefield_overview: authoritativeOverview,
+    battlefield_projection_integrity: {
+      status: "valid",
+      blocker_count: 0
+    },
+    operations: [missingCountEvidence, transferDestination]
+  });
+  assert(nodes["battlefield-operation-details"].textContent.includes(
+    "증거 없음/증거 없음"
+  ));
+  assert(nodes["battlefield-operation-details"].textContent.includes(
+    "requirement_count_evidence_missing"
+  ));
+  assert(!nodes["battlefield-operation-details"].textContent.includes(
+    "MARAUDER/defender 0/0"
+  ));
 
   var sourceOnlyOverview = JSON.parse(JSON.stringify(authoritativeOverview));
   sourceOnlyOverview.transfer_availability.entries[0]

@@ -2006,6 +2006,21 @@ def _micromachine_operation_requirement_payload(
         if prerequisite in allowed_prerequisites
     ):
         blockers.append("missing_prerequisite_chain_mismatch")
+    count_fields = (
+        "target_count",
+        "assigned_count",
+        "represented_count",
+        "completed_count",
+        "in_progress_count",
+        "queued_count",
+        "missing_count",
+    )
+    counts: dict[str, int | None] = {}
+    for field in count_fields:
+        value = _int_or_none(requirement.get(field))
+        counts[field] = value if value is not None and value >= 0 else None
+    if any(value is None for value in counts.values()):
+        blockers.append("requirement_count_evidence_missing")
     prerequisites = [
         prerequisite
         for prerequisite in reported_prerequisites
@@ -2020,34 +2035,7 @@ def _micromachine_operation_requirement_payload(
         "unit_type": unit_type,
         "canonical_family": family,
         "role": str(requirement.get("role", "") or ""),
-        "target_count": max(
-            0,
-            _int_or_none(requirement.get("target_count")) or 0,
-        ),
-        "assigned_count": max(
-            0,
-            _int_or_none(requirement.get("assigned_count")) or 0,
-        ),
-        "represented_count": max(
-            0,
-            _int_or_none(requirement.get("represented_count")) or 0,
-        ),
-        "completed_count": max(
-            0,
-            _int_or_none(requirement.get("completed_count")) or 0,
-        ),
-        "in_progress_count": max(
-            0,
-            _int_or_none(requirement.get("in_progress_count")) or 0,
-        ),
-        "queued_count": max(
-            0,
-            _int_or_none(requirement.get("queued_count")) or 0,
-        ),
-        "missing_count": max(
-            0,
-            _int_or_none(requirement.get("missing_count")) or 0,
-        ),
+        **counts,
         "production_blocker": str(
             requirement.get("production_blocker", "") or ""
         ),
@@ -2440,6 +2428,30 @@ def _micromachine_operation_status_payload(
             )
         )
     )
+    operation_count_fields = {
+        "target_count": "requirement_target_count",
+        "represented_count": "requirement_represented_count",
+        "missing_count": "requirement_missing_count",
+    }
+    operation_counts: dict[str, int | None] = {}
+    for public_name, telemetry_name in operation_count_fields.items():
+        value = _int_or_none(
+            operation_telemetry.get(telemetry_name)
+            if isinstance(operation_telemetry, Mapping)
+            else None
+        )
+        operation_counts[public_name] = (
+            value if value is not None and value >= 0 else None
+        )
+    if normalized_requirement_progress and any(
+        value is None for value in operation_counts.values()
+    ):
+        prerequisite_integrity_blockers.append(
+            "operation_count_evidence_missing"
+        )
+        prerequisite_integrity_blockers = list(
+            dict.fromkeys(prerequisite_integrity_blockers)
+        )
     operation_convergence = {
         "status": str(
             operation_telemetry.get("status", "")
@@ -2451,35 +2463,7 @@ def _micromachine_operation_status_payload(
             if isinstance(operation_telemetry, Mapping)
             else ""
         ),
-        "target_count": max(
-            0,
-            _int_or_none(
-                operation_telemetry.get("requirement_target_count")
-                if isinstance(operation_telemetry, Mapping)
-                else None
-            )
-            or 0,
-        ),
-        "represented_count": max(
-            0,
-            _int_or_none(
-                operation_telemetry.get(
-                    "requirement_represented_count",
-                )
-                if isinstance(operation_telemetry, Mapping)
-                else None
-            )
-            or 0,
-        ),
-        "missing_count": max(
-            0,
-            _int_or_none(
-                operation_telemetry.get("requirement_missing_count")
-                if isinstance(operation_telemetry, Mapping)
-                else None
-            )
-            or 0,
-        ),
+        **operation_counts,
         "requirements": normalized_requirement_progress,
         "prerequisite_integrity_status": (
             "blocked"
@@ -17092,6 +17076,7 @@ function commandOperationData(operation, parentData) {
   var updateId = operationPayloadUpdateId(operation);
   var scopeId = operationPayloadScopeId(operation, parentData);
   var operationGeneration = Number(operation.operation_generation || 0);
+  var telemetryStale = operation.telemetry_current === false;
   var intervention = Object.assign({}, operation.intervention || {});
   var execution = intervention.command_execution || {};
   if (
@@ -17107,6 +17092,9 @@ function commandOperationData(operation, parentData) {
   ) {
     intervention.command_execution = {};
   }
+  if (telemetryStale) {
+    intervention.command_execution = {};
+  }
   if (
     (intervention.telemetry_frame === null ||
       intervention.telemetry_frame === undefined ||
@@ -17116,7 +17104,9 @@ function commandOperationData(operation, parentData) {
   ) {
     intervention.telemetry_frame = operation.telemetry_frame;
   }
-  var disposition = String(operation.disposition || "");
+  var disposition = telemetryStale
+    ? ""
+    : String(operation.disposition || "");
   var status = String(
     operation.transport_status ||
     operation.status ||
@@ -17160,7 +17150,9 @@ function commandOperationData(operation, parentData) {
     operation_disposition: disposition,
     operation_mission: String(operation.mission || "operation"),
     operation_edit: operation.operation_edit || {},
-    operation_convergence: operation.operation_convergence || {},
+    operation_convergence: telemetryStale
+      ? {}
+      : operation.operation_convergence || {},
     battlefield_projection_join:
       operation.battlefield_projection_join || null,
     battlefield_operation: operation.battlefield_operation || null,
@@ -17174,14 +17166,19 @@ function commandOperationData(operation, parentData) {
     battlefield_projection_fingerprint: String(
       parentData && parentData.battlefield_projection_fingerprint || ""
     ),
-    semantic_timeline: Array.isArray(operation.semantic_timeline)
+    semantic_timeline: !telemetryStale &&
+      Array.isArray(operation.semantic_timeline)
       ? operation.semantic_timeline
       : [],
-    squad_order: String(operation.squad_order || ""),
-    family_evidence: Array.isArray(operation.family_evidence)
+    squad_order: telemetryStale
+      ? ""
+      : String(operation.squad_order || ""),
+    family_evidence: !telemetryStale &&
+      Array.isArray(operation.family_evidence)
       ? operation.family_evidence
       : [],
-    telemetry_current: operation.telemetry_current === true
+    telemetry_current: operation.telemetry_current === true,
+    telemetry_stale: telemetryStale
   };
 }
 
@@ -17719,6 +17716,27 @@ function reconcileOperationRecord(operation, parentData) {
         : -1
     });
   }
+  if (
+    record &&
+    record.data &&
+    record.data.telemetry_current === true &&
+    data.telemetry_stale === true &&
+    Number(data.operation_generation || 0) ===
+      Number(record.operationGeneration || 0)
+  ) {
+    data = Object.assign({}, data, {
+      intervention: record.data.intervention || {},
+      operation_convergence: record.data.operation_convergence || {},
+      semantic_timeline: record.data.semantic_timeline || [],
+      squad_order: record.data.squad_order || "",
+      family_evidence: record.data.family_evidence || [],
+      telemetry_frame: record.telemetryFrame,
+      telemetry_current: true,
+      telemetry_stale: false,
+      operation_disposition:
+        record.data.operation_disposition || ""
+    });
+  }
   var model = commandConsoleStageModel(data);
   var telemetryFrame = commandConsoleTelemetryFrame(data);
   var stageRank = commandConsoleStageRank(model);
@@ -18008,6 +18026,30 @@ function operationProjection(data) {
   return projection && typeof projection === "object" ? projection : {};
 }
 
+function operationCurrentConvergence(data) {
+  if (!data || data.telemetry_current !== true) { return null; }
+  var convergence = data.operation_convergence;
+  return convergence && typeof convergence === "object"
+    ? convergence
+    : null;
+}
+
+function operationCountEvidenceValid(value) {
+  return typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= 0;
+}
+
+function operationCountEvidenceLabel(value) {
+  return operationCountEvidenceValid(value)
+    ? String(value)
+    : commandUiText(
+      "증거 없음",
+      "missing evidence",
+      "缺少证据"
+    );
+}
+
 function operationRouteSummary(data) {
   var route = operationProjection(data).operation_route || {};
   var requested = String(route.requested_route_type || "-");
@@ -18108,14 +18150,15 @@ function operationForceSummary(data) {
   var projection = operationProjection(data);
   var ownership = projection.operation_ownership || {};
   var launch = projection.operation_launch_policy || {};
-  var convergence = data && data.operation_convergence || {};
-  var requested = Number(
-    convergence.target_count ||
-    launch.max_units ||
-    launch.min_units ||
-    0
-  );
-  var represented = Number(convergence.represented_count || 0);
+  var convergence = operationCurrentConvergence(data);
+  var requestedEvidence =
+    convergence && operationCountEvidenceValid(convergence.target_count)
+      ? convergence.target_count
+      : launch.max_units || launch.min_units || 0;
+  var requested = Number(requestedEvidence);
+  var represented = convergence
+    ? operationCountEvidenceLabel(convergence.represented_count)
+    : operationCountEvidenceLabel(null);
   var owners = Number(ownership.owner_count || 0);
   return commandUiText("요구 ", "requested ", "请求 ") + requested +
     commandUiText(" · 반영 ", " · represented ", " · 已反映 ") + represented +
@@ -18195,9 +18238,11 @@ function operationBlockerSummary(data) {
   var projection = operationProjection(data);
   var launch = projection.operation_launch_policy || {};
   var lifetime = projection.operation_lifetime || {};
-  var convergence = data && data.operation_convergence || {};
+  var convergence = operationCurrentConvergence(data) || {};
   var intervention = data && data.intervention || {};
-  var execution = intervention.command_execution || {};
+  var execution = data && data.telemetry_stale === true
+    ? {}
+    : intervention.command_execution || {};
   var blocker = String(
     launch.blocker ||
     convergence.blocker ||
@@ -18297,8 +18342,8 @@ function operationEditResolution(data) {
 
 function operationConvergenceSummary(data) {
   if (!operationCanonicalProjectionMatches(data)) { return ""; }
-  var convergence = data && data.operation_convergence;
-  if (!convergence || typeof convergence !== "object") { return ""; }
+  var convergence = operationCurrentConvergence(data);
+  if (!convergence) { return ""; }
   var requirements = Array.isArray(convergence.requirements)
     ? convergence.requirements
     : [];
@@ -18316,18 +18361,12 @@ function operationConvergenceSummary(data) {
     var unitType = String(requirement && requirement.unit_type || "")
       .replace(/^TERRAN_/, "");
     var role = String(requirement && requirement.role || "");
-    var represented = Number(
-      requirement && requirement.represented_count || 0
-    );
-    var target = Number(requirement && requirement.target_count || 0);
-    var missing = Number(requirement && requirement.missing_count || 0);
-    var completed = Number(
-      requirement && requirement.completed_count || 0
-    );
-    var inProgress = Number(
-      requirement && requirement.in_progress_count || 0
-    );
-    var queued = Number(requirement && requirement.queued_count || 0);
+    var represented = requirement && requirement.represented_count;
+    var target = requirement && requirement.target_count;
+    var missing = requirement && requirement.missing_count;
+    var completed = requirement && requirement.completed_count;
+    var inProgress = requirement && requirement.in_progress_count;
+    var queued = requirement && requirement.queued_count;
     var blocker = String(
       requirement && requirement.production_blocker || ""
     );
@@ -18346,19 +18385,20 @@ function operationConvergenceSummary(data) {
       }).filter(Boolean)
       : [];
     var text = unitType + (role ? "/" + role : "") +
-      " " + represented + "/" + target;
+      " " + operationCountEvidenceLabel(represented) +
+      "/" + operationCountEvidenceLabel(target);
     var pipelineParts = [];
-    if (completed > 0) {
+    if (operationCountEvidenceValid(completed) && completed > 0) {
       pipelineParts.push(
         commandUiText("완료 ", "ready ", "已完成 ") + completed
       );
     }
-    if (inProgress > 0) {
+    if (operationCountEvidenceValid(inProgress) && inProgress > 0) {
       pipelineParts.push(
         commandUiText("생산 중 ", "training ", "生产中 ") + inProgress
       );
     }
-    if (queued > 0) {
+    if (operationCountEvidenceValid(queued) && queued > 0) {
       pipelineParts.push(
         commandUiText("큐 ", "queued ", "队列 ") + queued
       );
@@ -18366,10 +18406,14 @@ function operationConvergenceSummary(data) {
     if (pipelineParts.length) {
       text += " · " + pipelineParts.join(" / ");
     }
-    if (missing > 0) {
+    if (operationCountEvidenceValid(missing) && missing > 0) {
       text += commandUiText(" · 부족 ", " · missing ", " · 缺少 ") + missing;
     }
-    if (missing > 0 && missingPrerequisites.length) {
+    if (
+      operationCountEvidenceValid(missing) &&
+      missing > 0 &&
+      missingPrerequisites.length
+    ) {
       text += commandUiText(" · 필요 ", " · needs ", " · 需要 ") +
         missingPrerequisites.join(" → ");
     } else if (prerequisites.length) {
@@ -18443,10 +18487,11 @@ function operationConvergenceSummary(data) {
   if (requirementParts.length) {
     return requirementParts.join(" | ");
   }
-  var targetCount = Number(convergence.target_count || 0);
-  var representedCount = Number(convergence.represented_count || 0);
-  if (targetCount > 0) {
-    return representedCount + "/" + targetCount;
+  var targetCount = convergence.target_count;
+  var representedCount = convergence.represented_count;
+  if (operationCountEvidenceValid(targetCount) && targetCount > 0) {
+    return operationCountEvidenceLabel(representedCount) +
+      "/" + operationCountEvidenceLabel(targetCount);
   }
   return "";
 }
@@ -19619,11 +19664,29 @@ function operationRecordLane(record) {
   var model = commandConsoleStageModel(data);
   var projection = operationProjection(data);
   var launch = projection.operation_launch_policy || {};
-  var convergence = data.operation_convergence || {};
+  var convergence = operationCurrentConvergence(data) || {};
   var intervention = data.intervention || {};
   var execution = intervention.command_execution || {};
   var executionState = String(execution.state || "").toLowerCase();
   var disposition = String(record && record.disposition || "").toLowerCase();
+  if (data.telemetry_stale === true) {
+    var completion = projection.operation_completion || {};
+    if (
+      completion.terminal === true &&
+      String(completion.state || "").toLowerCase() === "completed"
+    ) {
+      return "completed";
+    }
+    if (
+      ["wait", "waiting", "blocked"].indexOf(
+        String(launch.decision || "").toLowerCase()
+      ) >= 0 ||
+      Boolean(launch.blocker)
+    ) {
+      return "waiting";
+    }
+    return "planning";
+  }
   if (
     disposition === "completed" &&
     model.canonicalCompletionVerified
@@ -20232,6 +20295,12 @@ function battlefieldOperationTargetsBase(operationData, baseId, anchor) {
   var identities = [baseId, anchor].map(function(value) {
     return String(value || "").trim().toLowerCase();
   }).filter(Boolean);
+  var canonicalAnchor = String(anchor || "").trim().toLowerCase();
+  if (canonicalAnchor === "self_main") {
+    identities.push("home", "main_base");
+  } else if (canonicalAnchor === "self_natural") {
+    identities.push("natural");
+  }
   return [
     route.location_intent,
     route.resolved_target_label,

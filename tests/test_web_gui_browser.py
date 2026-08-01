@@ -1052,9 +1052,9 @@ def _battlefield_overview_browser_fixture_page() -> str:
       operation_route: {
         requested_route_type: "direct",
         applied_route_type: "direct",
-        location_intent: "self_main",
+        location_intent: "home",
         target_type: "base_defense",
-        resolved_target_label: "self_main",
+        resolved_target_label: "home",
         target_x: 44,
         target_y: 72,
         target_evidence: "semantic_anchor"
