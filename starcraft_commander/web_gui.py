@@ -86,6 +86,8 @@ from starcraft_commander.micromachine_tactical_evidence import (
     normalize_tactical_effect_tags,
 )
 from starcraft_commander.micromachine_terran_capabilities import (
+    TERRAN_UNIT_FAMILY_BY_NAME,
+    canonical_terran_unit_family,
     operation_family_evidence,
 )
 from starcraft_commander.policy_modulation import (
@@ -1894,6 +1896,137 @@ def _micromachine_operation_disposition(
     return "active" if active else "pending"
 
 
+_TERRAN_CAPABILITY_PREREQUISITES: Final[frozenset[str]] = frozenset(
+    prerequisite
+    for family in TERRAN_UNIT_FAMILY_BY_NAME.values()
+    for prerequisite in family.prerequisites
+)
+
+
+def _canonical_terran_prerequisite_token(value: object) -> str:
+    token = re.sub(
+        r"[^A-Z0-9]+",
+        "_",
+        str(value or "").strip().upper(),
+    ).strip("_")
+    if not token:
+        return ""
+    candidates = [token]
+    stem = token.removeprefix("TERRAN_")
+    for suffix in ("TECHLAB", "REACTOR"):
+        if stem.endswith(suffix) and not stem.endswith(f"_{suffix}"):
+            candidates.append(f"{stem[:-len(suffix)]}_{suffix}")
+    return next(
+        (
+            candidate
+            for candidate in candidates
+            if candidate in _TERRAN_CAPABILITY_PREREQUISITES
+        ),
+        token,
+    )
+
+
+def _micromachine_operation_requirement_payload(
+    requirement: Mapping[str, object],
+) -> dict[str, object]:
+    unit_type = str(requirement.get("unit_type", "") or "")
+    family = canonical_terran_unit_family(unit_type)
+    capability = TERRAN_UNIT_FAMILY_BY_NAME.get(family)
+    allowed_prerequisites = (
+        frozenset(capability.prerequisites)
+        if capability is not None
+        else frozenset()
+    )
+    reported_prerequisites = list(
+        dict.fromkeys(
+            token
+            for value in _string_list(
+                requirement.get("prerequisites", ())
+            )
+            if (token := _canonical_terran_prerequisite_token(value))
+        )
+    )
+    reported_missing = list(
+        dict.fromkeys(
+            token
+            for value in _string_list(
+                requirement.get("missing_prerequisites", ())
+            )
+            if (token := _canonical_terran_prerequisite_token(value))
+        )
+    )
+    blockers: list[str] = []
+    if capability is None:
+        blockers.append("unit_family_evidence_missing")
+    elif not reported_prerequisites:
+        blockers.append("prerequisite_chain_evidence_missing")
+    if any(
+        prerequisite not in allowed_prerequisites
+        for prerequisite in (*reported_prerequisites, *reported_missing)
+    ):
+        blockers.append("unrelated_prerequisite_evidence")
+    if any(
+        prerequisite not in reported_prerequisites
+        for prerequisite in reported_missing
+        if prerequisite in allowed_prerequisites
+    ):
+        blockers.append("missing_prerequisite_chain_mismatch")
+    prerequisites = [
+        prerequisite
+        for prerequisite in reported_prerequisites
+        if prerequisite in allowed_prerequisites
+    ]
+    missing_prerequisites = [
+        prerequisite
+        for prerequisite in reported_missing
+        if prerequisite in allowed_prerequisites
+    ]
+    return {
+        "unit_type": unit_type,
+        "canonical_family": family,
+        "role": str(requirement.get("role", "") or ""),
+        "target_count": max(
+            0,
+            _int_or_none(requirement.get("target_count")) or 0,
+        ),
+        "assigned_count": max(
+            0,
+            _int_or_none(requirement.get("assigned_count")) or 0,
+        ),
+        "represented_count": max(
+            0,
+            _int_or_none(requirement.get("represented_count")) or 0,
+        ),
+        "completed_count": max(
+            0,
+            _int_or_none(requirement.get("completed_count")) or 0,
+        ),
+        "in_progress_count": max(
+            0,
+            _int_or_none(requirement.get("in_progress_count")) or 0,
+        ),
+        "queued_count": max(
+            0,
+            _int_or_none(requirement.get("queued_count")) or 0,
+        ),
+        "missing_count": max(
+            0,
+            _int_or_none(requirement.get("missing_count")) or 0,
+        ),
+        "production_blocker": str(
+            requirement.get("production_blocker", "") or ""
+        ),
+        "prerequisites": prerequisites,
+        "missing_prerequisites": missing_prerequisites,
+        "prerequisite_integrity_status": (
+            "blocked" if blockers else "valid"
+        ),
+        "prerequisite_integrity_blockers": list(
+            dict.fromkeys(blockers)
+        ),
+    }
+
+
 def _micromachine_operation_status_payload(
     operation_update: Mapping[str, object],
     *,
@@ -1905,6 +2038,7 @@ def _micromachine_operation_status_payload(
     blackboard_dir: str,
     result_item: Mapping[str, object] | None,
     compile_result: Mapping[str, object] | None,
+    battlefield_session_epoch: str = "",
 ) -> dict[str, object]:
     update_id = str(operation_update.get("update_id", "") or "").strip()
     operation_vector = _mapping_child(operation_update, "vector")
@@ -2221,16 +2355,6 @@ def _micromachine_operation_status_payload(
         if scope_id
         else f"{operation_id}\0{active_operation_generation}"
     )
-    operation_battlefield_identity = _mapping_child(
-        _mapping_child(
-            operation_telemetry_document,
-            "battlefield_overview",
-        ),
-        "identity",
-    )
-    battlefield_session_epoch = str(
-        operation_battlefield_identity.get("session_epoch", "") or ""
-    ).strip()
     operation_edit = _mapping_child(operation_vector, "operation_edit")
     if operation_telemetry is not None:
         telemetry_edit = {
@@ -2263,47 +2387,7 @@ def _micromachine_operation_status_payload(
         else None
     )
     normalized_requirement_progress = [
-        {
-            "unit_type": str(requirement.get("unit_type", "") or ""),
-            "role": str(requirement.get("role", "") or ""),
-            "target_count": max(
-                0,
-                _int_or_none(requirement.get("target_count")) or 0,
-            ),
-            "assigned_count": max(
-                0,
-                _int_or_none(requirement.get("assigned_count")) or 0,
-            ),
-            "represented_count": max(
-                0,
-                _int_or_none(requirement.get("represented_count")) or 0,
-            ),
-            "completed_count": max(
-                0,
-                _int_or_none(requirement.get("completed_count")) or 0,
-            ),
-            "in_progress_count": max(
-                0,
-                _int_or_none(requirement.get("in_progress_count")) or 0,
-            ),
-            "queued_count": max(
-                0,
-                _int_or_none(requirement.get("queued_count")) or 0,
-            ),
-            "missing_count": max(
-                0,
-                _int_or_none(requirement.get("missing_count")) or 0,
-            ),
-            "production_blocker": str(
-                requirement.get("production_blocker", "") or ""
-            ),
-            "prerequisites": _string_list(
-                requirement.get("prerequisites", ())
-            ),
-            "missing_prerequisites": _string_list(
-                requirement.get("missing_prerequisites", ())
-            ),
-        }
+        _micromachine_operation_requirement_payload(requirement)
         for requirement in (
             requirement_progress
             if isinstance(requirement_progress, Sequence)
@@ -2312,6 +2396,15 @@ def _micromachine_operation_status_payload(
         )
         if isinstance(requirement, Mapping)
     ]
+    prerequisite_integrity_blockers = list(
+        dict.fromkeys(
+            blocker
+            for requirement in normalized_requirement_progress
+            for blocker in _string_list(
+                requirement.get("prerequisite_integrity_blockers", ())
+            )
+        )
+    )
     operation_convergence = {
         "status": str(
             operation_telemetry.get("status", "")
@@ -2353,6 +2446,18 @@ def _micromachine_operation_status_payload(
             or 0,
         ),
         "requirements": normalized_requirement_progress,
+        "prerequisite_integrity_status": (
+            "blocked"
+            if prerequisite_integrity_blockers
+            else (
+                "valid"
+                if normalized_requirement_progress
+                else "missing_evidence"
+            )
+        ),
+        "prerequisite_integrity_blockers": (
+            prerequisite_integrity_blockers
+        ),
     }
     family_evidence = _public_operation_family_evidence(
         aggregate_family_evidence
@@ -2360,7 +2465,9 @@ def _micromachine_operation_status_payload(
     payload = {
         "operation_key": operation_key,
         "blackboard_scope_id": scope_id,
-        "battlefield_session_epoch": battlefield_session_epoch,
+        "battlefield_session_epoch": str(
+            battlefield_session_epoch or ""
+        ).strip(),
         "operation_id": operation_id,
         "operation_generation": active_operation_generation,
         "requested_operation_generation": operation_generation,
@@ -3021,6 +3128,7 @@ def _micromachine_operations_payload(
     blackboard_dir: str,
     compile_result: object | None,
     result_stream: Sequence[Mapping[str, object]],
+    battlefield_session_epoch: str = "",
 ) -> list[dict[str, object]]:
     updates = dashboard.get("active_updates")
     active_updates = [
@@ -3093,6 +3201,7 @@ def _micromachine_operations_payload(
                     blackboard_dir=blackboard_dir,
                     result_item=result_item,
                     compile_result=scoped_compile,
+                    battlefield_session_epoch=battlefield_session_epoch,
                 )
             )
             seen_keys.add((update_id, operation_id))
@@ -3142,6 +3251,7 @@ def _micromachine_operations_payload(
                     blackboard_dir=blackboard_dir,
                     result_item=result_item,
                     compile_result=scoped_compile,
+                    battlefield_session_epoch=battlefield_session_epoch,
                 )
             )
             seen_keys.add(identity)
@@ -3249,6 +3359,19 @@ def _micromachine_status_payload(
     )
     if command_queue:
         intervention["command_queue"] = command_queue
+    battlefield_overview = (
+        dict(battlefield_projection.battlefield_overview)
+        if battlefield_projection.ok
+        and battlefield_projection.battlefield_overview is not None
+        else None
+    )
+    battlefield_identity = _mapping_child(
+        battlefield_overview or {},
+        "identity",
+    )
+    battlefield_session_epoch = str(
+        battlefield_identity.get("session_epoch", "") or ""
+    ).strip()
     operations = _micromachine_operations_payload(
         dashboard,
         telemetry=telemetry,
@@ -3256,12 +3379,7 @@ def _micromachine_status_payload(
         blackboard_dir=blackboard_dir,
         compile_result=compile_result,
         result_stream=result_stream,
-    )
-    battlefield_overview = (
-        dict(battlefield_projection.battlefield_overview)
-        if battlefield_projection.ok
-        and battlefield_projection.battlefield_overview is not None
-        else None
+        battlefield_session_epoch=battlefield_session_epoch,
     )
     operations = _attach_battlefield_operation_projections(
         operations,
@@ -18117,6 +18235,16 @@ function operationConvergenceSummary(data) {
     ? convergence.requirements
     : [];
   var requirementParts = requirements.map(function(requirement) {
+    var prerequisiteIntegrityStatus = String(
+      requirement && requirement.prerequisite_integrity_status || ""
+    );
+    var prerequisiteIntegrityBlockers = Array.isArray(
+      requirement && requirement.prerequisite_integrity_blockers
+    )
+      ? requirement.prerequisite_integrity_blockers.map(function(item) {
+        return String(item || "");
+      }).filter(Boolean)
+      : [];
     var unitType = String(requirement && requirement.unit_type || "")
       .replace(/^TERRAN_/, "");
     var role = String(requirement && requirement.role || "");
@@ -18137,14 +18265,14 @@ function operationConvergenceSummary(data) {
     );
     var missingPrerequisites = Array.isArray(
       requirement && requirement.missing_prerequisites
-    )
+    ) && prerequisiteIntegrityStatus === "valid"
       ? requirement.missing_prerequisites.map(function(item) {
         return String(item || "").replace(/^TERRAN_/, "");
       }).filter(Boolean)
       : [];
     var prerequisites = Array.isArray(
       requirement && requirement.prerequisites
-    )
+    ) && prerequisiteIntegrityStatus === "valid"
       ? requirement.prerequisites.map(function(item) {
         return String(item || "").replace(/^TERRAN_/, "");
       }).filter(Boolean)
@@ -18230,6 +18358,17 @@ function operationConvergenceSummary(data) {
     if (blocker && blocker !== "ready") {
       text += commandUiText(" · 상태 ", " · status ", " · 状态 ") +
         (blockerLabels[blocker] || blocker);
+    }
+    if (prerequisiteIntegrityStatus !== "valid") {
+      text += commandUiText(
+        " · 선행조건 무결성 차단 ",
+        " · prerequisite integrity blocked ",
+        " · 前置条件完整性受阻 "
+      ) + (
+        prerequisiteIntegrityBlockers.length
+          ? prerequisiteIntegrityBlockers.join(", ")
+          : "prerequisite_evidence_missing"
+      );
     }
     return text;
   }).filter(Boolean);
@@ -19968,6 +20107,109 @@ function battlefieldBooleanEvidence(value) {
   );
 }
 
+function battlefieldAutonomousOwnerMatchesBase(ownerId, baseId) {
+  var match = String(ownerId || "").trim().match(
+    /^(?:squad:)?BaseDefense:([^:]+)$/i
+  );
+  return Boolean(
+    match &&
+    String(match[1] || "").toLowerCase() ===
+      String(baseId || "").trim().toLowerCase()
+  );
+}
+
+function battlefieldOperationTargetsBase(operationData, baseId, anchor) {
+  var route = operationProjection(operationData).operation_route || {};
+  var identities = [baseId, anchor].map(function(value) {
+    return String(value || "").trim().toLowerCase();
+  }).filter(Boolean);
+  return [
+    route.location_intent,
+    route.resolved_target_label,
+    route.target_type
+  ].some(function(value) {
+    var normalized = String(value || "").trim().toLowerCase();
+    return Boolean(
+      normalized && identities.indexOf(normalized) >= 0
+    );
+  });
+}
+
+function battlefieldOperationFamilyComposition(operationData) {
+  var convergence = operationData &&
+    operationData.operation_convergence || {};
+  var requirements = Array.isArray(convergence.requirements)
+    ? convergence.requirements
+    : [];
+  var composition = requirements.map(function(requirement) {
+    var family = String(
+      requirement && requirement.canonical_family || ""
+    );
+    if (!family) { return ""; }
+    var role = String(requirement && requirement.role || "");
+    return family.toUpperCase() + (role ? "/" + role : "") + " " +
+      Number(requirement && requirement.represented_count || 0) + "/" +
+      Number(requirement && requirement.target_count || 0);
+  }).filter(Boolean);
+  return composition.length
+    ? composition.join(", ")
+    : commandUiText(
+      "family evidence missing",
+      "family evidence missing",
+      "缺少单位族证据"
+    );
+}
+
+function battlefieldProtectedMinimumVerdict(readiness) {
+  var state = String(
+    readiness && readiness.readiness_state || ""
+  ).toLowerCase();
+  var reason = String(readiness && readiness.reason || "").toLowerCase();
+  if (
+    state === "ready" &&
+    [
+      "capability_aware_minimum_satisfied",
+      "protected_minimum_satisfied"
+    ].indexOf(reason) >= 0
+  ) {
+    return true;
+  }
+  if (
+    state === "unsafe" &&
+    [
+      "ground_capable_defender_minimum_not_met",
+      "air_capable_defender_minimum_not_met",
+      "protected_minimum_not_met",
+      "base_protected_minimum_not_met"
+    ].indexOf(reason) >= 0
+  ) {
+    return false;
+  }
+  return null;
+}
+
+function battlefieldTransferReadinessBlockers(entry, source, destination) {
+  var inputs = entry && entry.atomic_revalidation_inputs || {};
+  var blockers = [];
+  if (!source) { blockers.push("transfer_source_identity_missing"); }
+  if (!destination) {
+    blockers.push("transfer_destination_identity_missing");
+  }
+  if (!entry || entry.transfer_safe !== true) {
+    blockers.push("transfer_safe_not_confirmed");
+  }
+  if (inputs.atomic_revalidation_ready !== true) {
+    blockers.push("atomic_revalidation_not_ready");
+  }
+  var runtimeBlocker = String(
+    entry && entry.atomic_runtime_blocker || ""
+  );
+  if (runtimeBlocker) { blockers.push(runtimeBlocker); }
+  return blockers.filter(function(blocker, index) {
+    return blockers.indexOf(blocker) === index;
+  });
+}
+
 function battlefieldOperationDataRows(data) {
   var rows = [];
   var seen = {};
@@ -20137,6 +20379,7 @@ function renderBattlefieldCanonicalDetails(data, overview) {
     var identity = operation && operation.identity || {};
     var ownership = operation && operation.operation_ownership || {};
     var launch = operation && operation.operation_launch_policy || {};
+    var launchSafety = launch.safety_evidence || {};
     var matched = battlefieldOperationDataByIdentity(
       matchedRows,
       operationId,
@@ -20168,6 +20411,20 @@ function renderBattlefieldCanonicalDetails(data, overview) {
         Number(launch.launch_count || 0),
         Number(launch.missing_count || 0)
       ].join("/") +
+      commandUiText(
+        " · 보호 minimum ",
+        " · protected minimum ",
+        " · 保护最低值 "
+      ) + battlefieldBooleanEvidence(
+        launchSafety.protected_defense_minimum_respected
+      ) +
+      commandUiText(
+        " · source minimum ",
+        " · source minimum ",
+        " · 来源最低值 "
+      ) + battlefieldBooleanEvidence(
+        launchSafety.source_operation_minimum_respected
+      ) +
       " · " + (composition || commandUiText(
         "편성/선행조건 증거 없음",
         "composition/prerequisite evidence missing",
@@ -20180,7 +20437,9 @@ function renderBattlefieldCanonicalDetails(data, overview) {
       !matched ||
         String(ownership.integrity_status || "") !== "valid" ||
         !String(identity.scope || "") ||
-        !String(identity.session_epoch || "")
+        !String(identity.session_epoch || "") ||
+        launchSafety.protected_defense_minimum_respected !== true ||
+        launchSafety.source_operation_minimum_respected !== true
     );
   });
 
@@ -20205,42 +20464,32 @@ function renderBattlefieldCanonicalDetails(data, overview) {
       Number(evidenceFrame) >= 0
     );
     var autonomous = autonomousOwners.filter(function(owner) {
-      var ownerId = String(owner && owner.owner_id || "").toLowerCase();
-      var baseToken = baseId.toLowerCase();
-      var anchorToken = anchor.toLowerCase();
-      return Boolean(
-        ownerId &&
-        (
-          (baseToken && ownerId.indexOf(baseToken) >= 0) ||
-          (anchorToken && ownerId.indexOf(anchorToken) >= 0)
-        )
+      return battlefieldAutonomousOwnerMatchesBase(
+        owner && owner.owner_id,
+        baseId
       );
     }).map(function(owner) {
       return String(owner.owner_id || "autonomous") + " " +
-        Number(owner.owner_count || 0);
+        Number(owner.owner_count || 0) +
+        commandUiText(
+          " · family evidence missing",
+          " · family evidence missing",
+          " · 缺少单位族证据"
+        );
     });
     var explicit = matchedRows.filter(function(operationData) {
       if (String(operationData.operation_mission || "") !== "defense") {
         return false;
       }
-      var route = operationProjection(operationData).operation_route || {};
-      var routeText = [
-        route.location_intent,
-        route.resolved_target_label,
-        route.target_type
-      ].join(" ").toLowerCase();
-      var baseToken = baseId.toLowerCase();
-      var anchorToken = anchor.toLowerCase();
-      return Boolean(
-        routeText &&
-        (
-          (baseToken && routeText.indexOf(baseToken) >= 0) ||
-          (anchorToken && routeText.indexOf(anchorToken) >= 0)
-        )
+      return battlefieldOperationTargetsBase(
+        operationData,
+        baseId,
+        anchor
       );
     }).map(function(operationData) {
       return String(operationData.operation_id || "") + "#" +
-        Number(operationData.operation_generation || 0);
+        Number(operationData.operation_generation || 0) + " " +
+        battlefieldOperationFamilyComposition(operationData);
     });
     var protectedMinimum = Array.isArray(readiness.protected_minimum)
       ? readiness.protected_minimum.map(function(item) {
@@ -20259,6 +20508,9 @@ function renderBattlefieldCanonicalDetails(data, overview) {
         "threat unknown · missing evidence",
         "威胁未知 · 缺少证据"
       );
+    var protectedMinimumVerdict = battlefieldProtectedMinimumVerdict(
+      readiness
+    );
     var body = anchor + " · " + threat +
       commandUiText(" · 방어 ", " · defenders ", " · 防御者 ") +
       Number(readiness.assigned_defender_count || 0) + "/" +
@@ -20275,6 +20527,11 @@ function renderBattlefieldCanonicalDetails(data, overview) {
       (autonomous.length ? autonomous.join(", ") : "none_projected") +
       commandUiText(" · 보호 ", " · protected ", " · 保护 ") +
       (protectedMinimum || "missing_evidence") +
+      commandUiText(
+        " · 보호 minimum 준수 ",
+        " · protected minimum respected ",
+        " · 保护最低值满足 "
+      ) + battlefieldBooleanEvidence(protectedMinimumVerdict) +
       " · " + String(readiness.reason || "missing_evidence");
     battlefieldAppendDetailRow(
       baseContainer,
@@ -20283,7 +20540,8 @@ function renderBattlefieldCanonicalDetails(data, overview) {
       body,
       !threatKnown ||
         !protectedMinimum ||
-        !String(readiness.readiness_state || "")
+        !String(readiness.readiness_state || "") ||
+        protectedMinimumVerdict !== true
     );
   });
 
@@ -20308,10 +20566,10 @@ function renderBattlefieldCanonicalDetails(data, overview) {
     var requestedCount = inputs.requested === true
       ? String(Number(inputs.requested_count || 0))
       : commandUiText("미요청", "not requested", "未请求");
-    var blocker = String(
-      entry && entry.atomic_runtime_blocker ||
-      (!destination ? "transfer_destination_identity_missing" : "") ||
-      ""
+    var blockers = battlefieldTransferReadinessBlockers(
+      entry,
+      source,
+      destination
     );
     var readinessBits = [
       "atomic=" + battlefieldBooleanEvidence(
@@ -20338,7 +20596,7 @@ function renderBattlefieldCanonicalDetails(data, overview) {
       Number(entry && entry.protected_minimum || 0) + "/" +
       Number(sourceLaunch.min_units || 0) +
       " · " + readinessBits.join(" · ") +
-      " · " + (blocker || (
+      " · " + (blockers.length ? blockers.join(", ") : (
         entry && entry.transfer_safe === true
           ? commandUiText("재검증 준비", "ready to revalidate", "可重新验证")
           : commandUiText("blocker 증거 없음", "blocker evidence missing", "缺少阻塞证据")
@@ -20347,11 +20605,7 @@ function renderBattlefieldCanonicalDetails(data, overview) {
       transferContainer,
       sourceId + " → " + (destinationId || "missing_destination"),
       body,
-      !source ||
-        !destination ||
-        inputs.atomic_revalidation_ready !== true ||
-        entry.transfer_safe !== true ||
-        Boolean(blocker)
+      blockers.length > 0
     );
   });
 }
@@ -20490,15 +20744,20 @@ function renderBattlefieldControlOverview(data, model) {
       entry.source_owner_id
     );
     var destination = operationProjectionById(overview, destinationId);
+    var blockers = battlefieldTransferReadinessBlockers(
+      entry,
+      source,
+      destination
+    );
     return String(entry.source_owner_id || "owner") + "#" +
       Number(source && source.generation || 0) + " → " +
       (destinationId || "missing_destination") + "#" +
       Number(destination && destination.generation || 0) + ": " +
       Number(entry.transferable_count || 0) + "/" +
       Number(entry.source_owner_count || 0) +
-      (entry.transfer_safe === true
+      (!blockers.length
         ? commandUiText(" 재검증 대기", " revalidation ready", " 可重新验证")
-        : " · " + String(entry.atomic_runtime_blocker || "unsafe"));
+        : " · " + blockers.join(", "));
   });
   setMicroMachineText(
     "battlefield-transfer",

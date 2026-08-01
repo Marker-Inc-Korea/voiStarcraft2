@@ -1138,7 +1138,8 @@ def _battlefield_overview_browser_fixture_page() -> str:
         missing_count: Math.max(0, 4 - ownerCount),
         blocker: ownerCount >= 4 ? "" : "missing_addon",
         requirements: [{
-          unit_type: "TERRAN_MARINE",
+          unit_type: "TERRAN_MARAUDER",
+          canonical_family: "marauder",
           role: "defender",
           target_count: 4,
           assigned_count: ownerCount,
@@ -1148,11 +1149,15 @@ def _battlefield_overview_browser_fixture_page() -> str:
           queued_count: 0,
           missing_count: Math.max(0, 4 - ownerCount),
           production_blocker: ownerCount < 4 ? "missing_addon" : "ready",
-          prerequisites: ["TERRAN_BARRACKS", "TERRAN_BARRACKSTECHLAB"],
+          prerequisites: ["TERRAN_BARRACKS", "BARRACKS_TECHLAB"],
           missing_prerequisites: ownerCount < 4
-            ? ["TERRAN_BARRACKSTECHLAB"]
-            : []
-        }]
+            ? ["BARRACKS_TECHLAB"]
+            : [],
+          prerequisite_integrity_status: "valid",
+          prerequisite_integrity_blockers: []
+        }],
+        prerequisite_integrity_status: "valid",
+        prerequisite_integrity_blockers: []
       },
       battlefield_projection_join: {
         status: "matched",
@@ -1239,7 +1244,7 @@ def _battlefield_overview_browser_fixture_page() -> str:
         semantic_anchor: "self_main",
         base_readiness: {
           readiness_state: "ready",
-          reason: "protected_minimum_satisfied",
+          reason: "capability_aware_minimum_satisfied",
           ground_threat: 2,
           air_threat: 1,
           observed_enemy_strength: 3,
@@ -1336,12 +1341,17 @@ def _battlefield_overview_browser_fixture_page() -> str:
     mark("complete", true);
     mark("operation-detail",
       operationText.indexOf("operation:hold-main") >= 0 &&
-      operationText.indexOf("MARINE/defender") >= 0 &&
-      operationText.indexOf("BARRACKSTECHLAB") >= 0);
+      operationText.indexOf("MARAUDER/defender") >= 0 &&
+      operationText.indexOf("BARRACKS_TECHLAB") >= 0 &&
+      operationText.indexOf("보호 minimum 충족") >= 0 &&
+      operationText.indexOf("source minimum 충족") >= 0);
     mark("base-detail",
       baseText.indexOf("observed_enemy_units") >= 0 &&
       baseText.indexOf("BaseDefense:main 2") >= 0 &&
-      baseText.indexOf("hold-main#2") >= 0);
+      baseText.indexOf("hold-main#2") >= 0 &&
+      baseText.indexOf("MARAUDER/defender 3/4") >= 0 &&
+      baseText.indexOf("보호 minimum 준수 충족") >= 0 &&
+      baseText.indexOf("family evidence missing") >= 0);
     mark("transfer-detail",
       transferText.indexOf("hold-main#2") >= 0 &&
       transferText.indexOf("reserve-bravo#5") >= 0 &&

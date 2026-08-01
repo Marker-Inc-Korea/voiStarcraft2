@@ -5088,6 +5088,149 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             overview["identity"]["update_id"],
         )
 
+    def test_micromachine_status_attaches_operation_with_authoritative_epoch(self):
+        telemetry = battlefield_projection_telemetry()
+        payload = web_gui._micromachine_status_payload(
+            {
+                "active_updates": [
+                    {
+                        "update_id": "battlefield-operation",
+                        "manager_bias_domains": ["combat"],
+                        "vector": {
+                            "goal": "canonical flank",
+                            "operations": [
+                                {
+                                    "operation_id": "flank-alpha",
+                                    "generation": 3,
+                                    "goal": "canonical flank",
+                                    "tactical_task": {
+                                        "task_type": (
+                                            "pressure_with_main_army"
+                                        ),
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ]
+            },
+            telemetry=telemetry,
+        )
+
+        operation = payload["operations"][0]
+        self.assertEqual(
+            "1700000000000",
+            operation["battlefield_session_epoch"],
+        )
+        self.assertEqual(
+            "matched",
+            operation["battlefield_projection_join"]["status"],
+        )
+        self.assertEqual(
+            "battlefield-operation",
+            operation["battlefield_operation"]["identity"]["update_id"],
+        )
+
+    def test_operation_prerequisites_use_canonical_family_contract(self):
+        update_id = "canonical-prerequisite-update"
+        operation_id = "marauder-defense"
+        operation_update = {
+            "update_id": update_id,
+            "vector": {
+                "operation_id": operation_id,
+                "generation": 2,
+                "goal": "marauder defense",
+            },
+        }
+
+        def status_for(prerequisites, missing_prerequisites):
+            return web_gui._micromachine_operation_status_payload(
+                operation_update,
+                operation_id=operation_id,
+                operation_count=1,
+                active=True,
+                telemetry={
+                    "frame": 240,
+                    "active_modulation_ids": [update_id],
+                    "managers": {
+                        "OperationDirector": {
+                            "policy_update_id": update_id,
+                            "operations": [
+                                {
+                                    "operation_id": operation_id,
+                                    "update_id": update_id,
+                                    "generation": 2,
+                                    "status": "WAITING_FOR_UNITS",
+                                    "requirement_progress": [
+                                        {
+                                            "unit_type": "TERRAN_MARAUDER",
+                                            "role": "defender",
+                                            "target_count": 4,
+                                            "represented_count": 2,
+                                            "missing_count": 2,
+                                            "production_blocker": (
+                                                "missing_addon"
+                                            ),
+                                            "prerequisites": prerequisites,
+                                            "missing_prerequisites": (
+                                                missing_prerequisites
+                                            ),
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    },
+                },
+                telemetry_archive=(),
+                blackboard_dir="",
+                result_item={},
+                compile_result={},
+            )
+
+        valid = status_for(
+            ["TERRAN_BARRACKS", "TERRAN_BARRACKSTECHLAB"],
+            ["TERRAN_BARRACKSTECHLAB"],
+        )
+        valid_requirement = valid["operation_convergence"]["requirements"][0]
+        self.assertEqual("marauder", valid_requirement["canonical_family"])
+        self.assertEqual(
+            ["TERRAN_BARRACKS", "BARRACKS_TECHLAB"],
+            valid_requirement["prerequisites"],
+        )
+        self.assertEqual(
+            ["BARRACKS_TECHLAB"],
+            valid_requirement["missing_prerequisites"],
+        )
+        self.assertEqual(
+            "valid",
+            valid_requirement["prerequisite_integrity_status"],
+        )
+
+        unrelated = status_for(
+            ["TERRAN_BARRACKS", "TERRAN_FUSIONCORE"],
+            ["TERRAN_FUSIONCORE"],
+        )
+        unrelated_convergence = unrelated["operation_convergence"]
+        unrelated_requirement = unrelated_convergence["requirements"][0]
+        self.assertEqual(
+            ["TERRAN_BARRACKS"],
+            unrelated_requirement["prerequisites"],
+        )
+        self.assertEqual([], unrelated_requirement["missing_prerequisites"])
+        self.assertEqual(
+            "blocked",
+            unrelated_requirement["prerequisite_integrity_status"],
+        )
+        self.assertEqual(
+            ["unrelated_prerequisite_evidence"],
+            unrelated_convergence["prerequisite_integrity_blockers"],
+        )
+        self.assertNotIn(
+            "FUSIONCORE",
+            json.dumps(unrelated_convergence),
+        )
+
     def test_battlefield_projection_attachment_requires_exact_update_identity(self):
         overview = deepcopy(
             battlefield_projection_telemetry()["battlefield_overview"]
@@ -7424,6 +7567,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 "requirements": [
                     {
                         "unit_type": "TERRAN_MARINE",
+                        "canonical_family": "marine",
                         "role": "main_army",
                         "target_count": 4,
                         "assigned_count": 2,
@@ -7435,8 +7579,12 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                         "production_blocker": "production_queued",
                         "prerequisites": ["TERRAN_BARRACKS"],
                         "missing_prerequisites": [],
+                        "prerequisite_integrity_status": "valid",
+                        "prerequisite_integrity_blockers": [],
                     }
                 ],
+                "prerequisite_integrity_status": "valid",
+                "prerequisite_integrity_blockers": [],
             },
             operations["assault-bravo"]["operation_convergence"],
         )
@@ -18816,7 +18964,8 @@ const assert = require("assert");
     blocker: "missing_addon",
     requirements: [
       {
-        unit_type: "TERRAN_MARINE",
+        unit_type: "TERRAN_MARAUDER",
+        canonical_family: "marauder",
         role: "defender",
         target_count: 4,
         assigned_count: 3,
@@ -18826,10 +18975,14 @@ const assert = require("assert");
         queued_count: 0,
         missing_count: 1,
         production_blocker: "missing_addon",
-        prerequisites: ["TERRAN_BARRACKS", "TERRAN_BARRACKSTECHLAB"],
-        missing_prerequisites: ["TERRAN_BARRACKSTECHLAB"]
+        prerequisites: ["TERRAN_BARRACKS", "BARRACKS_TECHLAB"],
+        missing_prerequisites: ["BARRACKS_TECHLAB"],
+        prerequisite_integrity_status: "valid",
+        prerequisite_integrity_blockers: []
       }
-    ]
+    ],
+    prerequisite_integrity_status: "valid",
+    prerequisite_integrity_blockers: []
   };
   Object.assign(detailedDefense.battlefield_operation.identity, {
     update_id: "overview-defense-update",
@@ -18853,6 +19006,14 @@ const assert = require("assert");
   detailedDefense.battlefield_operation.operation_launch_policy.decision = "wait";
   detailedDefense.battlefield_operation.operation_launch_policy.blocker =
     "missing_addon";
+  Object.assign(
+    detailedDefense.battlefield_operation.operation_launch_policy
+      .safety_evidence,
+    {
+      protected_defense_minimum_respected: true,
+      source_operation_minimum_respected: true
+    }
+  );
 
   var transferDestination = operationResult(
     "reserve-bravo",
@@ -18908,7 +19069,7 @@ const assert = require("assert");
         semantic_anchor: "self_main",
         base_readiness: {
           readiness_state: "ready",
-          reason: "protected_minimum_satisfied",
+          reason: "capability_aware_minimum_satisfied",
           ground_threat: 2,
           air_threat: 1,
           observed_enemy_strength: 3,
@@ -18992,10 +19153,16 @@ const assert = require("assert");
     "operation:hold-main"
   ));
   assert(nodes["battlefield-operation-details"].textContent.includes(
-    "MARINE/defender"
+    "MARAUDER/defender"
   ));
   assert(nodes["battlefield-operation-details"].textContent.includes(
-    "BARRACKSTECHLAB"
+    "BARRACKS_TECHLAB"
+  ));
+  assert(nodes["battlefield-operation-details"].textContent.includes(
+    "보호 minimum 충족"
+  ));
+  assert(nodes["battlefield-operation-details"].textContent.includes(
+    "source minimum 충족"
   ));
   assert(nodes["battlefield-base-details"].textContent.includes(
     "observed_enemy_units"
@@ -19005,6 +19172,15 @@ const assert = require("assert");
   ));
   assert(nodes["battlefield-base-details"].textContent.includes(
     "hold-main#2"
+  ));
+  assert(nodes["battlefield-base-details"].textContent.includes(
+    "MARAUDER/defender 3/4"
+  ));
+  assert(nodes["battlefield-base-details"].textContent.includes(
+    "보호 minimum 준수 충족"
+  ));
+  assert(nodes["battlefield-base-details"].textContent.includes(
+    "family evidence missing"
   ));
   assert(nodes["battlefield-transfer-details"].textContent.includes(
     "hold-main#2"
@@ -19021,9 +19197,15 @@ const assert = require("assert");
 
   var unrelatedPrerequisite = JSON.parse(JSON.stringify(detailedDefense));
   unrelatedPrerequisite.operation_convergence.requirements[0]
+    .prerequisites = ["TERRAN_BARRACKS", "TERRAN_FUSIONCORE"];
+  unrelatedPrerequisite.operation_convergence.requirements[0]
     .missing_prerequisites = ["TERRAN_FUSIONCORE"];
-  unrelatedPrerequisite.battlefield_operation.identity.session_epoch =
-    1699999999999;
+  unrelatedPrerequisite.operation_convergence.requirements[0]
+    .prerequisite_integrity_status = "blocked";
+  unrelatedPrerequisite.operation_convergence.requirements[0]
+    .prerequisite_integrity_blockers = [
+      "unrelated_prerequisite_evidence"
+    ];
   renderBattlefieldControlOverview({
     battlefield_overview: authoritativeOverview,
     battlefield_projection_integrity: {
@@ -19036,8 +19218,91 @@ const assert = require("assert");
     "FUSIONCORE"
   ), "unrelated prerequisite evidence must fail closed");
   assert(nodes["battlefield-operation-details"].textContent.includes(
-    "편성/선행조건 증거 없음"
-  ), "stale canonical joins must render localized missing evidence");
+    "unrelated_prerequisite_evidence"
+  ), "matching canonical joins must expose prerequisite integrity blockers");
+
+  var sourceOnlyOverview = JSON.parse(JSON.stringify(authoritativeOverview));
+  sourceOnlyOverview.transfer_availability.entries[0]
+    .atomic_revalidation_inputs.counterpart_operation_id = "";
+  sourceOnlyOverview.operation_ownership = [
+    detailedDefense.battlefield_operation
+  ];
+  renderBattlefieldControlOverview({
+    battlefield_overview: sourceOnlyOverview,
+    battlefield_projection_integrity: {
+      status: "valid",
+      blocker_count: 0
+    },
+    operations: [detailedDefense]
+  });
+  assert(nodes["battlefield-transfer"].textContent.includes(
+    "transfer_destination_identity_missing"
+  ));
+  assert(!nodes["battlefield-transfer"].textContent.includes(
+    "재검증 대기"
+  ), "missing destination must never render as ready");
+  assert(nodes["battlefield-transfer-details"].textContent.includes(
+    "transfer_destination_identity_missing"
+  ));
+
+  var foreignBaseOverview = JSON.parse(JSON.stringify(authoritativeOverview));
+  foreignBaseOverview.autonomous_ownership = [
+    {
+      owner_id: "BaseDefense:enemy_main",
+      owner_count: 9,
+      integrity_status: "valid"
+    }
+  ];
+  var foreignDefense = JSON.parse(JSON.stringify(detailedDefense));
+  foreignDefense.operation_id = "hold-enemy-main";
+  foreignDefense.operation_generation = 4;
+  foreignDefense.update_id = "foreign-defense-update";
+  foreignDefense.operation_console_execution_owner_update_id =
+    "foreign-defense-update";
+  Object.assign(foreignDefense.battlefield_operation.identity, {
+    update_id: "foreign-defense-update",
+    scope: "operation:hold-enemy-main",
+    operation_id: "hold-enemy-main",
+    generation: 4
+  });
+  foreignDefense.battlefield_operation.operation_id = "hold-enemy-main";
+  foreignDefense.battlefield_operation.generation = 4;
+  foreignDefense.battlefield_operation.operation_route.location_intent =
+    "enemy_main";
+  foreignDefense.battlefield_operation.operation_route
+    .resolved_target_label = "enemy_main";
+  foreignBaseOverview.operation_ownership = [
+    foreignDefense.battlefield_operation
+  ];
+  renderBattlefieldControlOverview({
+    battlefield_overview: foreignBaseOverview,
+    battlefield_projection_integrity: {
+      status: "valid",
+      blocker_count: 0
+    },
+    operations: [foreignDefense]
+  });
+  assert(!nodes["battlefield-base-details"].textContent.includes(
+    "BaseDefense:enemy_main 9"
+  ), "enemy_main autonomous ownership must not match main");
+  assert(!nodes["battlefield-base-details"].textContent.includes(
+    "hold-enemy-main#4"
+  ), "enemy_main route must not match main");
+  assert.strictEqual(
+    battlefieldAutonomousOwnerMatchesBase(
+      "BaseDefense:enemy_main",
+      "main"
+    ),
+    false
+  );
+  assert.strictEqual(
+    battlefieldOperationTargetsBase(
+      foreignDefense,
+      "main",
+      "self_main"
+    ),
+    false
+  );
 
   renderBattlefieldControlOverview({
     battlefield_overview: null,
