@@ -5303,6 +5303,8 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             *,
             unit_type="TERRAN_MARAUDER",
             include_counts=True,
+            include_requirement=True,
+            operation_count_values=None,
         ):
             requirement = {
                 "unit_type": unit_type,
@@ -5316,8 +5318,9 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 "update_id": update_id,
                 "generation": 2,
                 "status": "WAITING_FOR_UNITS",
-                "requirement_progress": [requirement],
             }
+            if include_requirement:
+                operation["requirement_progress"] = [requirement]
             if include_counts:
                 requirement.update(
                     {
@@ -5337,6 +5340,8 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                         "requirement_missing_count": 2,
                     }
                 )
+            if operation_count_values is not None:
+                operation.update(operation_count_values)
             return web_gui._micromachine_operation_status_payload(
                 operation_update,
                 operation_id=operation_id,
@@ -5478,6 +5483,49 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             ],
             missing_count_convergence["prerequisite_integrity_blockers"],
         )
+        invalid_operation_counts = (
+            {},
+            {
+                "requirement_target_count": "invalid",
+                "requirement_represented_count": "invalid",
+                "requirement_missing_count": "invalid",
+            },
+            {
+                "requirement_target_count": True,
+                "requirement_represented_count": True,
+                "requirement_missing_count": True,
+            },
+            {
+                "requirement_target_count": -1,
+                "requirement_represented_count": -1,
+                "requirement_missing_count": -1,
+            },
+        )
+        for values in invalid_operation_counts:
+            with self.subTest(operation_count_values=values):
+                missing_operation_counts = status_for(
+                    [],
+                    [],
+                    include_counts=False,
+                    include_requirement=False,
+                    operation_count_values=values,
+                )["operation_convergence"]
+                self.assertEqual([], missing_operation_counts["requirements"])
+                self.assertIsNone(missing_operation_counts["target_count"])
+                self.assertIsNone(
+                    missing_operation_counts["represented_count"]
+                )
+                self.assertIsNone(missing_operation_counts["missing_count"])
+                self.assertEqual(
+                    "blocked",
+                    missing_operation_counts["prerequisite_integrity_status"],
+                )
+                self.assertEqual(
+                    ["operation_count_evidence_missing"],
+                    missing_operation_counts[
+                        "prerequisite_integrity_blockers"
+                    ],
+                )
 
     def test_battlefield_projection_attachment_requires_exact_update_identity(self):
         overview = deepcopy(
@@ -18834,6 +18882,25 @@ const assert = require("assert");
     }),
     "planning"
   );
+  var operationCountBeforeStaleOnly =
+    Object.keys(operationRecords).length;
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [staleManagerCard]
+  }, OPERATION_SCOPE));
+  assert.strictEqual(
+    operationRecords[
+      operationRecordKey(OPERATION_SCOPE, "stale-manager-card")
+    ],
+    undefined
+  );
+  assert.strictEqual(
+    Object.keys(operationRecords).length,
+    operationCountBeforeStaleOnly
+  );
+  assert(
+    !nodes["operation-list"].textContent.includes("오래된 manager 카드")
+  );
 
   var staleAssaultRefresh = operationResult(
     "assault-bravo",
@@ -18850,6 +18917,20 @@ const assert = require("assert");
     "stale_manager_blocker";
   staleAssaultRefresh.intervention.command_execution.blocker_reason =
     "stale_manager_blocker";
+  staleAssaultRefresh.operation_edit = {
+    action: "retarget",
+    resolution: "applied"
+  };
+  staleAssaultRefresh.battlefield_operation.operation_route.location_intent =
+    "home";
+  staleAssaultRefresh.battlefield_operation.operation_route
+    .resolved_target_label = "home";
+  staleAssaultRefresh.battlefield_operation.operation_completion.terminal =
+    true;
+  staleAssaultRefresh.battlefield_operation.operation_completion.state =
+    "completed";
+  var assaultDataBeforeStaleRefresh = assaultRecord.data;
+  var assaultTextBeforeStaleRefresh = assaultRecord.text;
   renderOperationConsole(serverResult({
     status: "published",
     operations: [
@@ -18866,9 +18947,14 @@ const assert = require("assert");
     ]
   }, OPERATION_SCOPE));
   assaultRecord = operationRecords[assaultKey];
+  assert.strictEqual(assaultRecord.data, assaultDataBeforeStaleRefresh);
+  assert.strictEqual(assaultRecord.text, assaultTextBeforeStaleRefresh);
   assert.strictEqual(assaultRecord.data.telemetry_current, true);
   assert.strictEqual(assaultRecord.node.parentNode.id, "operation-lane-planning");
   assert(!assaultRecord.node.textContent.includes("stale_manager_blocker"));
+  assert(!assaultRecord.node.textContent.includes(
+    "오래된 공격 manager evidence"
+  ));
 
   var reconNodeBeforeDetachedSnapshot = reconRecord.node;
   renderOperationConsole(serverResult({
@@ -19349,6 +19435,8 @@ const assert = require("assert");
     "home";
   detailedDefense.battlefield_operation.operation_route
     .resolved_target_label = "home";
+  detailedDefense.battlefield_operation.operation_route.target_x = 44;
+  detailedDefense.battlefield_operation.operation_route.target_y = 20;
   detailedDefense.battlefield_operation.operation_ownership.owner_count = 3;
   detailedDefense.battlefield_operation.operation_launch_policy.min_units = 3;
   detailedDefense.battlefield_operation.operation_launch_policy.max_units = 4;
@@ -19549,7 +19637,9 @@ const assert = require("assert");
       battlefield_operation: {
         operation_route: {
           location_intent: "natural",
-          resolved_target_label: "natural"
+          resolved_target_label: "natural",
+          target_x: 70,
+          target_y: 30
         }
       }
     },
@@ -19734,6 +19824,12 @@ const assert = require("assert");
   assert(!nodes["battlefield-operation-details"].textContent.includes(
     "MARAUDER/defender 0/0"
   ));
+  assert(nodes["battlefield-base-details"].textContent.includes(
+    "MARAUDER/defender 증거 없음/증거 없음"
+  ));
+  assert(!nodes["battlefield-base-details"].textContent.includes(
+    "MARAUDER/defender 0/0"
+  ));
 
   var sourceOnlyOverview = JSON.parse(JSON.stringify(authoritativeOverview));
   sourceOnlyOverview.transfer_availability.entries[0]
@@ -19791,9 +19887,11 @@ const assert = require("assert");
   foreignDefense.battlefield_operation.operation_id = "hold-enemy-main";
   foreignDefense.battlefield_operation.generation = 4;
   foreignDefense.battlefield_operation.operation_route.location_intent =
-    "enemy_main";
+    "home";
   foreignDefense.battlefield_operation.operation_route
-    .resolved_target_label = "enemy_main";
+    .resolved_target_label = "home";
+  foreignDefense.battlefield_operation.operation_route.target_x = 90;
+  foreignDefense.battlefield_operation.operation_route.target_y = 90;
   foreignBaseOverview.operation_ownership = [
     foreignDefense.battlefield_operation
   ];
@@ -19810,11 +19908,30 @@ const assert = require("assert");
   ), "enemy_main autonomous ownership must not match main");
   assert(!nodes["battlefield-base-details"].textContent.includes(
     "hold-enemy-main#4"
-  ), "enemy_main route must not match main");
+  ), "home aliases with foreign coordinates must not match main");
   assert.strictEqual(
     battlefieldAutonomousOwnerMatchesBase(
       "BaseDefense:enemy_main",
       "main"
+    ),
+    false
+  );
+  var conflictingDefense = JSON.parse(JSON.stringify(detailedDefense));
+  conflictingDefense.battlefield_operation.operation_route
+    .resolved_target_label = "natural";
+  assert.strictEqual(
+    battlefieldOperationTargetsBase(
+      conflictingDefense,
+      "base:44:20",
+      "self_main"
+    ),
+    false
+  );
+  assert.strictEqual(
+    battlefieldOperationTargetsBase(
+      detailedDefense,
+      "base:70:30",
+      "self_natural"
     ),
     false
   );

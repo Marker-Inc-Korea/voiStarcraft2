@@ -2443,9 +2443,7 @@ def _micromachine_operation_status_payload(
         operation_counts[public_name] = (
             value if value is not None and value >= 0 else None
         )
-    if normalized_requirement_progress and any(
-        value is None for value in operation_counts.values()
-    ):
+    if any(value is None for value in operation_counts.values()):
         prerequisite_integrity_blockers.append(
             "operation_count_evidence_missing"
         )
@@ -17699,6 +17697,30 @@ function reconcileOperationRecord(operation, parentData) {
     operationRecordKey(scopeId, operationId)
   );
   var record = operationRecordForCandidate(key, updateId);
+  if (data.telemetry_stale === true) {
+    var acceptedExecutionOwnerUpdateId = String(
+      record &&
+      record.data &&
+      record.data.operation_console_execution_owner_update_id ||
+      record &&
+      record.updateId ||
+      ""
+    );
+    var incomingExecutionOwnerUpdateId = String(
+      data.operation_console_execution_owner_update_id ||
+      updateId ||
+      ""
+    );
+    return (
+      record &&
+      record.data &&
+      record.data.telemetry_current === true &&
+      Number(data.operation_generation || 0) ===
+        Number(record.operationGeneration || 0) &&
+      acceptedExecutionOwnerUpdateId &&
+      incomingExecutionOwnerUpdateId === acceptedExecutionOwnerUpdateId
+    ) ? record : null;
+  }
   var incomingProjection = data && data.battlefield_operation;
   var projectionIdentityMismatch = Boolean(
     incomingProjection &&
@@ -17714,27 +17736,6 @@ function reconcileOperationRecord(operation, parentData) {
       telemetry_frame: record
         ? record.telemetryFrame
         : -1
-    });
-  }
-  if (
-    record &&
-    record.data &&
-    record.data.telemetry_current === true &&
-    data.telemetry_stale === true &&
-    Number(data.operation_generation || 0) ===
-      Number(record.operationGeneration || 0)
-  ) {
-    data = Object.assign({}, data, {
-      intervention: record.data.intervention || {},
-      operation_convergence: record.data.operation_convergence || {},
-      semantic_timeline: record.data.semantic_timeline || [],
-      squad_order: record.data.squad_order || "",
-      family_evidence: record.data.family_evidence || [],
-      telemetry_frame: record.telemetryFrame,
-      telemetry_current: true,
-      telemetry_stale: false,
-      operation_disposition:
-        record.data.operation_disposition || ""
     });
   }
   var model = commandConsoleStageModel(data);
@@ -20301,16 +20302,38 @@ function battlefieldOperationTargetsBase(operationData, baseId, anchor) {
   } else if (canonicalAnchor === "self_natural") {
     identities.push("natural");
   }
-  return [
+  var routeIdentities = [
     route.location_intent,
-    route.resolved_target_label,
-    route.target_type
-  ].some(function(value) {
-    var normalized = String(value || "").trim().toLowerCase();
-    return Boolean(
-      normalized && identities.indexOf(normalized) >= 0
-    );
-  });
+    route.resolved_target_label
+  ].map(function(value) {
+    return String(value || "").trim().toLowerCase();
+  }).filter(Boolean);
+  if (
+    !routeIdentities.length ||
+    routeIdentities.some(function(value) {
+      return identities.indexOf(value) < 0;
+    })
+  ) {
+    return false;
+  }
+  var baseParts = String(baseId || "").trim().split(":");
+  var baseX = baseParts.length === 3 ? Number(baseParts[1]) : NaN;
+  var baseY = baseParts.length === 3 ? Number(baseParts[2]) : NaN;
+  var targetX = route.target_x;
+  var targetY = route.target_y;
+  if (
+    typeof targetX !== "number" ||
+    typeof targetY !== "number" ||
+    !Number.isFinite(baseX) ||
+    !Number.isFinite(baseY) ||
+    !Number.isFinite(targetX) ||
+    !Number.isFinite(targetY)
+  ) {
+    return false;
+  }
+  var deltaX = targetX - baseX;
+  var deltaY = targetY - baseY;
+  return deltaX * deltaX + deltaY * deltaY <= 64;
 }
 
 function battlefieldOperationFamilyComposition(operationData) {
@@ -20326,8 +20349,12 @@ function battlefieldOperationFamilyComposition(operationData) {
     if (!family) { return ""; }
     var role = String(requirement && requirement.role || "");
     return family.toUpperCase() + (role ? "/" + role : "") + " " +
-      Number(requirement && requirement.represented_count || 0) + "/" +
-      Number(requirement && requirement.target_count || 0);
+      operationCountEvidenceLabel(
+        requirement && requirement.represented_count
+      ) + "/" +
+      operationCountEvidenceLabel(
+        requirement && requirement.target_count
+      );
   }).filter(Boolean);
   return composition.length
     ? composition.join(", ")

@@ -1056,7 +1056,7 @@ def _battlefield_overview_browser_fixture_page() -> str:
         target_type: "base_defense",
         resolved_target_label: "home",
         target_x: 44,
-        target_y: 72,
+        target_y: 20,
         target_evidence: "semantic_anchor"
       },
       operation_lifetime: {
