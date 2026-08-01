@@ -18772,6 +18772,32 @@ function rememberContextualTransferChoice(payload) {
 
 var CONTEXTUAL_TRANSFER_CHOICE_CAPACITY_REJECTED = {};
 
+function canonicalContextualTransferSessionEpoch(value) {
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      return "";
+    }
+    return String(value);
+  }
+  if (typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value)) {
+    return "";
+  }
+  if (value === "0") {
+    return "";
+  }
+  var uint64Maximum = "18446744073709551615";
+  if (
+    value.length > uint64Maximum.length ||
+    (
+      value.length === uint64Maximum.length &&
+      value > uint64Maximum
+    )
+  ) {
+    return "";
+  }
+  return value;
+}
+
 function operationContextualTransferPayload(data, entry, action) {
   var overview = data && data.battlefield_overview || {};
   var identity = data && data.battlefield_projection_identity || {};
@@ -18804,10 +18830,15 @@ function operationContextualTransferPayload(data, entry, action) {
     sourceProjection,
     requestedCount
   );
-  var sessionEpoch = Number(
-    identity.session_epoch ||
-    overview.identity && overview.identity.session_epoch ||
-    0
+  var rawSessionEpoch = Object.prototype.hasOwnProperty.call(
+    identity,
+    "session_epoch"
+  );
+  rawSessionEpoch = rawSessionEpoch
+    ? identity.session_epoch
+    : overview.identity && overview.identity.session_epoch;
+  var sessionEpoch = canonicalContextualTransferSessionEpoch(
+    rawSessionEpoch
   );
   var projectionFrame = Number(
     identity.game_frame ||
@@ -18828,8 +18859,7 @@ function operationContextualTransferPayload(data, entry, action) {
     destinationGeneration <= 0 ||
     requestedCount <= 0 ||
     Boolean(sourceMinimumBlocker) ||
-    !Number.isSafeInteger(sessionEpoch) ||
-    sessionEpoch <= 0 ||
+    !sessionEpoch ||
     !Number.isSafeInteger(projectionFrame) ||
     projectionFrame < 0 ||
     !/^[a-f0-9]{64}$/.test(projectionFingerprint) ||

@@ -13,6 +13,7 @@ from typing import Final
 from starcraft_commander.micromachine_battlefield_projection import (
     BATTLEFIELD_OVERVIEW_AUTHORITY,
     battlefield_overview_fingerprint,
+    canonical_battlefield_session_epoch,
 )
 
 
@@ -86,7 +87,7 @@ class ContextualTransferRequest:
     protected_minimum: int
     source_minimum: int
     blackboard_scope_id: str
-    session_epoch: int
+    session_epoch: str
     projection_frame: int
     projection_fingerprint: str
 
@@ -186,11 +187,9 @@ class ContextualTransferRequest:
                 "blackboard_scope_id",
                 value.get("blackboard_scope_id"),
             ),
-            session_epoch=_require_int(
+            session_epoch=_require_session_epoch(
                 "session_epoch",
                 value.get("session_epoch"),
-                minimum=1,
-                maximum=9_007_199_254_740_991,
             ),
             projection_frame=_require_int(
                 "projection_frame",
@@ -283,7 +282,7 @@ def prepare_contextual_transfer(
         )
     identity = _mapping(status.get("battlefield_projection_identity"))
     overview_identity = _mapping(overview.get("identity"))
-    current_epoch = _required_current_int(
+    current_epoch = _required_current_session_epoch(
         "session_epoch",
         identity.get("session_epoch", overview_identity.get("session_epoch")),
     )
@@ -955,6 +954,16 @@ def _require_identifier(field_name: str, value: object) -> str:
     return identifier
 
 
+def _require_session_epoch(field_name: str, value: object) -> str:
+    canonical = canonical_battlefield_session_epoch(value)
+    if canonical is None:
+        raise ValueError(
+            f"{field_name} must be a positive canonical decimal string within "
+            "uint64 range, or a JSON-safe positive integer."
+        )
+    return canonical
+
+
 def _require_int(
     field_name: str,
     value: object,
@@ -967,6 +976,19 @@ def _require_int(
             f"{field_name} must be an integer between {minimum} and {maximum}."
         )
     return value
+
+
+def _required_current_session_epoch(
+    field_name: str,
+    value: object,
+) -> str:
+    canonical = canonical_battlefield_session_epoch(value)
+    if canonical is None:
+        _reject(
+            "authoritative_field_invalid",
+            f"Current authoritative field {field_name} is invalid.",
+        )
+    return canonical
 
 
 def _required_current_int(

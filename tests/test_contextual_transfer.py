@@ -18,6 +18,7 @@ from starcraft_commander.contextual_transfer import (
     prepare_contextual_transfer,
 )
 from starcraft_commander.micromachine_battlefield_projection import (
+    BattlefieldProjectionIdentity,
     battlefield_overview_fingerprint,
 )
 from starcraft_commander.micromachine_live_session import (
@@ -37,7 +38,7 @@ from starcraft_commander.web_gui import (
 )
 
 
-SESSION_EPOCH = 9_007_199_254_740_991
+SESSION_EPOCH = "18446744073709551615"
 PROJECTION_FRAME = 140
 
 
@@ -198,17 +199,18 @@ def _transfer_entry(destination_operation_id, destination_generation):
 
 
 def _status(blackboard_dir, *, generation=1):
+    overview_identity = BattlefieldProjectionIdentity(
+        update_id="battlefield-current",
+        scope="battlefield",
+        session_epoch=int(SESSION_EPOCH),
+        generation=7,
+        stage="observed",
+        game_frame=PROJECTION_FRAME,
+    ).to_dict()
     overview = {
         "schema_version": 2,
         "authority": "micromachine_cpp",
-        "identity": {
-            "update_id": "battlefield-current",
-            "scope": "battlefield",
-            "session_epoch": SESSION_EPOCH,
-            "generation": 7,
-            "stage": "observed",
-            "game_frame": PROJECTION_FRAME,
-        },
+        "identity": overview_identity,
         "operation_ownership": [
             _operation_projection("source-alpha", generation, 4, 2),
             _operation_projection(
@@ -350,7 +352,7 @@ class ContextualTransferAdmissionTest(unittest.TestCase):
                 "blackboard_scope_id": "voi-mm-scope-wrong"
             },
             "session_epoch_mismatch": {
-                "session_epoch": SESSION_EPOCH + 1
+                "session_epoch": "18446744073709551614"
             },
             "projection_frame_mismatch": {
                 "projection_frame": PROJECTION_FRAME - 1
@@ -504,13 +506,28 @@ class ContextualTransferAdmissionTest(unittest.TestCase):
             ContextualTransferRequest.from_mapping(
                 {**payload, "action": "execute_ability"}
             )
-        with self.assertRaisesRegex(
-            ValueError,
-            "session_epoch must be an integer between 1 and 9007199254740991",
+        safe_numeric = ContextualTransferRequest.from_mapping(
+            {**payload, "session_epoch": 9_007_199_254_740_991}
+        )
+        self.assertEqual("9007199254740991", safe_numeric.session_epoch)
+        for invalid_epoch in (
+            0,
+            9_007_199_254_740_992,
+            "0",
+            "01",
+            "+1",
+            "-1",
+            " 1",
+            "18446744073709551616",
         ):
-            ContextualTransferRequest.from_mapping(
-                {**payload, "session_epoch": 9_007_199_254_740_992}
-            )
+            with self.subTest(invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "positive canonical decimal string within uint64 range",
+                ):
+                    ContextualTransferRequest.from_mapping(
+                        {**payload, "session_epoch": invalid_epoch}
+                    )
 
     def test_mixed_semantic_composition_fails_closed(self):
         vector = deepcopy(self.vector)

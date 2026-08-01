@@ -20263,6 +20263,9 @@ const assert = require("assert");
   typedTransferSource.battlefield_operation.operation_launch_policy.min_units = 2;
   typedTransferSource.battlefield_operation.operation_launch_policy.max_units = 4;
   typedTransferSource.battlefield_operation.operation_ownership.owner_count = 4;
+  var typedTransferSessionEpoch = "1700000000000";
+  typedTransferSource.battlefield_operation.identity.session_epoch =
+    typedTransferSessionEpoch;
   var destinationBravoProjection = JSON.parse(JSON.stringify(
     typedTransferSource.battlefield_operation
   ));
@@ -20312,14 +20315,14 @@ const assert = require("assert");
   renderOperationConsole(serverResult({
     status: "published",
     battlefield_projection_identity: {
-      session_epoch: 1700000000000,
+      session_epoch: typedTransferSessionEpoch,
       game_frame: 329
     },
     battlefield_projection_fingerprint: "b".repeat(64),
     battlefield_overview: {
       authority: "micromachine_cpp",
       identity: {
-        session_epoch: 1700000000000,
+        session_epoch: typedTransferSessionEpoch,
         game_frame: 329
       },
       operation_ownership: [
@@ -20413,12 +20416,73 @@ const assert = require("assert");
   assert.strictEqual(typedTransferBody.protected_minimum, 2);
   assert.strictEqual(typedTransferBody.source_minimum, 2);
   assert.strictEqual(typedTransferBody.blackboard_scope_id, OPERATION_SCOPE);
-  assert.strictEqual(typedTransferBody.session_epoch, 1700000000000);
+  assert.strictEqual(
+    typedTransferBody.session_epoch,
+    typedTransferSessionEpoch
+  );
   assert.strictEqual(typedTransferBody.projection_frame, 329);
   assert.strictEqual(
     typedTransferBody.projection_fingerprint,
     "b".repeat(64)
   );
+  var uint64SessionEpoch = "18446744073709551615";
+  var uint64SourceProjection = JSON.parse(JSON.stringify(
+    typedTransferSource.battlefield_operation
+  ));
+  uint64SourceProjection.identity.session_epoch = uint64SessionEpoch;
+  var uint64DestinationProjection = JSON.parse(JSON.stringify(
+    destinationCharlieProjection
+  ));
+  uint64DestinationProjection.identity.session_epoch = uint64SessionEpoch;
+  var uint64TransferData = {
+    operation_id: "assault-bravo",
+    battlefield_projection_identity: {
+      session_epoch: uint64SessionEpoch,
+      game_frame: 329
+    },
+    battlefield_projection_fingerprint: "c".repeat(64),
+    battlefield_overview: {
+      identity: {
+        session_epoch: uint64SessionEpoch,
+        game_frame: 329
+      },
+      operation_ownership: [
+        uint64SourceProjection,
+        uint64DestinationProjection
+      ]
+    },
+    blackboard_scope_id: OPERATION_SCOPE
+  };
+  var uint64TransferPayload = operationContextualTransferPayload(
+    uint64TransferData,
+    typedTransferEntry("destination-charlie", 7),
+    "transfer_two_units"
+  );
+  assert(uint64TransferPayload);
+  assert.strictEqual(
+    uint64TransferPayload.session_epoch,
+    uint64SessionEpoch
+  );
+  [
+    9007199254740992,
+    "01",
+    "18446744073709551616"
+  ].forEach(function(invalidSessionEpoch) {
+    var invalidEpochData = Object.assign({}, uint64TransferData, {
+      battlefield_projection_identity: {
+        session_epoch: invalidSessionEpoch,
+        game_frame: 329
+      }
+    });
+    assert.strictEqual(
+      operationContextualTransferPayload(
+        invalidEpochData,
+        typedTransferEntry("destination-charlie", 7),
+        "transfer_two_units"
+      ),
+      null
+    );
+  });
   var unsafeSourceMinimum = JSON.parse(JSON.stringify(
     typedTransferSource.battlefield_operation
   ));
@@ -20431,7 +20495,7 @@ const assert = require("assert");
       battlefield_overview: {
         authority: "micromachine_cpp",
         identity: {
-          session_epoch: 1700000000000,
+          session_epoch: typedTransferSessionEpoch,
           game_frame: 329
         },
         operation_ownership: [
@@ -20446,7 +20510,7 @@ const assert = require("assert");
         }
       },
       battlefield_projection_identity: {
-        session_epoch: 1700000000000,
+        session_epoch: typedTransferSessionEpoch,
         game_frame: 329
       },
       battlefield_projection_fingerprint: "b".repeat(64),
@@ -20486,7 +20550,7 @@ const assert = require("assert");
       battlefield_overview: {
         authority: "micromachine_cpp",
         identity: {
-          session_epoch: 1700000000000,
+          session_epoch: typedTransferSessionEpoch,
           game_frame: 329
         },
         operation_ownership: [
@@ -20499,7 +20563,7 @@ const assert = require("assert");
         }
       },
       battlefield_projection_identity: {
-        session_epoch: 1700000000000,
+        session_epoch: typedTransferSessionEpoch,
         game_frame: 329
       },
       battlefield_projection_fingerprint: "b".repeat(64),

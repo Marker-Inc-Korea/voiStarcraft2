@@ -1947,6 +1947,25 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("invalid_identity", _blocker_codes(result))
 
+    def test_decimal_session_epoch_above_uint64_fails_closed(self) -> None:
+        telemetry = _telemetry()
+        overflow_epoch = "18446744073709551616"
+        telemetry["battlefield_overview"]["identity"]["session_epoch"] = (
+            overflow_epoch
+        )
+        for operation in telemetry["battlefield_overview"][
+            "operation_ownership"
+        ]:
+            operation["identity"]["session_epoch"] = overflow_epoch
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("invalid_identity", _blocker_codes(result))
+
     def test_newer_session_epoch_allows_safe_game_frame_reset(self) -> None:
         previous = BattlefieldProjectionIdentity(
             update_id="previous",

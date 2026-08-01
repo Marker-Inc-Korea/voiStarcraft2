@@ -24,6 +24,7 @@ from starcraft_commander.micromachine_terran_capabilities import (
 BATTLEFIELD_OVERVIEW_SCHEMA_VERSION: Final[int] = 2
 BATTLEFIELD_OVERVIEW_AUTHORITY: Final[str] = "micromachine_cpp"
 JSON_SAFE_INTEGER_MAX: Final[int] = 9_007_199_254_740_991
+UINT64_MAX: Final[int] = 18_446_744_073_709_551_615
 
 _TERMINAL_COMPLETION_STATES: Final[frozenset[str]] = frozenset(
     {"completed", "failed", "cancelled", "expired", "superseded"}
@@ -3898,22 +3899,19 @@ def _identity_session_epoch(
     path: str,
     validation: _Validation,
 ) -> int | None:
-    parsed = _exact_decimal_int(value)
-    unsafe_json_integer = (
-        type(value) is int and int(value) > JSON_SAFE_INTEGER_MAX
-    )
-    if parsed is None or parsed <= 0 or unsafe_json_integer:
+    canonical = canonical_battlefield_session_epoch(value)
+    if canonical is None:
         validation.block(
             "invalid_identity",
             path,
             (
                 "Identity session_epoch must be a positive canonical decimal "
-                "string, or a JSON-safe positive integer."
+                "string within uint64 range, or a JSON-safe positive integer."
             ),
             actual=value,
         )
         return None
-    return parsed
+    return int(canonical)
 
 
 def _identity_nonnegative_int(
@@ -3952,6 +3950,17 @@ def _exact_decimal_int(value: object) -> int | None:
     ):
         return None
     return int(value)
+
+
+def canonical_battlefield_session_epoch(value: object) -> str | None:
+    """Return the exact public decimal representation of one session epoch."""
+
+    parsed = _exact_decimal_int(value)
+    if parsed is None or parsed <= 0 or parsed > UINT64_MAX:
+        return None
+    if type(value) is int and parsed > JSON_SAFE_INTEGER_MAX:
+        return None
+    return str(parsed)
 
 
 def _public_battlefield_overview(
