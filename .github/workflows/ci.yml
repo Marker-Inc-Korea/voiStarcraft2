@@ -54,9 +54,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
+          path: candidate
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Build exact MicroMachine integration without credentials
+        working-directory: candidate
         run: integrations/micromachine/scripts/build_macos_local.sh
       - name: Archive exact MicroMachine runtime
         run: |
@@ -86,13 +88,16 @@ jobs:
       PYTHONDONTWRITEBYTECODE: "1"
       VOI_PRODUCER_UID: "65001"
       VOI_PRODUCER_GID: "65001"
+      VOI_TRUSTED_VERIFIER_COMMIT: a0020cccecaa247406263bf61dabee74d6c683a7
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
+          path: trusted-verifier
           persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Verify dedicated producer isolation without credentials
+          ref: a0020cccecaa247406263bf61dabee74d6c683a7
+      - name: Verify immutable dedicated producer isolation
+        working-directory: trusted-verifier
         run: |
           PYTHON_EXECUTABLE="$(python3 -c 'import os, sys; print(os.path.realpath(sys.executable))')"
           sudo env -u GITHUB_TOKEN -u GH_TOKEN \
@@ -125,14 +130,14 @@ jobs:
       VOI_PRODUCER_GID: "65001"
       VOI_CANDIDATE_WORKSPACE: ${{ github.workspace }}/candidate
       VOI_TRUSTED_VERIFIER_WORKSPACE: ${{ github.workspace }}/trusted-verifier
-      VOI_TRUSTED_VERIFIER_COMMIT: a1606f039733aa7bd98c37bf7193d59c4790fc6b
+      VOI_TRUSTED_VERIFIER_COMMIT: a0020cccecaa247406263bf61dabee74d6c683a7
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
           path: trusted-verifier
           persist-credentials: false
-          ref: a1606f039733aa7bd98c37bf7193d59c4790fc6b
+          ref: a0020cccecaa247406263bf61dabee74d6c683a7
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0

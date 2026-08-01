@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
@@ -753,6 +754,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             f"  {AUTHORITATIVE_PROVENANCE_JOB_NAME}:\n",
             1,
         )[1].split("\n  micromachine-macos-contracts:\n", 1)[0]
+        trusted_verifier_commit = "a0020cccecaa247406263bf61dabee74d6c683a7"
         self.assertIn(
             "    if: >-\n"
             "      github.event_name == 'pull_request' &&\n"
@@ -799,7 +801,15 @@ class GitHubSourceAttestationTest(unittest.TestCase):
                 )
         self.assertIn(
             "      - name: Build exact MicroMachine integration "
-            "without credentials\n",
+            "without credentials\n"
+            "        working-directory: candidate\n",
+            build_job,
+        )
+        self.assertIn(
+            "          path: candidate\n"
+            "          persist-credentials: false\n"
+            "          ref: "
+            "${{ github.event.pull_request.head.sha || github.sha }}\n",
             build_job,
         )
         self.assertIn(
@@ -817,8 +827,18 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         self.assertNotIn("GITHUB_TOKEN", build_job)
         self.assertNotIn("github.token", build_job)
         self.assertIn(
-            "      - name: Verify dedicated producer isolation "
-            "without credentials\n",
+            "      - name: Verify immutable dedicated producer isolation\n"
+            "        working-directory: trusted-verifier\n",
+            isolation_job,
+        )
+        self.assertIn(
+            f"      VOI_TRUSTED_VERIFIER_COMMIT: {trusted_verifier_commit}\n",
+            isolation_job,
+        )
+        self.assertIn(
+            "          path: trusted-verifier\n"
+            "          persist-credentials: false\n"
+            f"          ref: {trusted_verifier_commit}\n",
             isolation_job,
         )
         self.assertIn(
@@ -828,6 +848,8 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         self.assertIn("-k dedicated_producer_uid", isolation_job)
         self.assertNotIn("github.token", isolation_job)
         self.assertNotIn("actions: read", isolation_job)
+        self.assertNotIn("path: candidate", isolation_job)
+        self.assertNotIn("github.event.pull_request.head.sha", isolation_job)
         self.assertIn(
             "      - pre-live-producer-isolation\n",
             provenance_job,
@@ -857,7 +879,6 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         )
         self.assertIn('      VOI_PRODUCER_UID: "65001"\n', provenance_job)
         self.assertIn('      VOI_PRODUCER_GID: "65001"\n', provenance_job)
-        trusted_verifier_commit = "a1606f039733aa7bd98c37bf7193d59c4790fc6b"
         self.assertIn(
             "      VOI_CANDIDATE_WORKSPACE: "
             "${{ github.workspace }}/candidate\n",
@@ -1904,6 +1925,58 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
 
 
 class BuildBindingTest(unittest.TestCase):
+    def test_cross_runner_artifact_handoff_requires_identical_candidate_layout(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(
+            dir=BUILD_IDENTITY_REPO_ROOT,
+        ) as directory:
+            root = Path(directory)
+            fixture_root = root / "runner-workspace"
+            fixture = make_build_fixture(fixture_root)
+            repository = fixture["repository"]
+            commit = fixture["repository_commit"]
+            config = fixture["config"]
+            archive_path = root / "pre-live-build-runtime.tar.gz"
+            with tarfile.open(archive_path, "w:gz") as archive:
+                archive.add(
+                    config.micromachine_dir,
+                    arcname="MicroMachine",
+                )
+                archive.add(
+                    config.s2client_dir,
+                    arcname="s2client-api",
+                )
+            shutil.rmtree(config.micromachine_dir)
+            shutil.rmtree(config.s2client_dir)
+            with tarfile.open(archive_path, "r:gz") as archive:
+                archive.extractall(fixture_root)
+
+            accepted = attest_build_binding(
+                fixture["report_path"],
+                repository_dir=repository,
+                expected_repository_commit=commit,
+                expected_build_dir=config.micromachine_build_dir,
+                command_runner=passing_ctest,
+            )
+
+            relocated_repository = root / "relocated" / "candidate"
+            shutil.copytree(repository, relocated_repository)
+            rejected = attest_build_binding(
+                fixture["report_path"],
+                repository_dir=relocated_repository,
+                expected_repository_commit=commit,
+                expected_build_dir=config.micromachine_build_dir,
+                command_runner=passing_ctest,
+            )
+
+        self.assertTrue(accepted["ok"], accepted)
+        self.assertFalse(rejected["ok"], rejected)
+        self.assertIn(
+            "repository build inputs",
+            " ".join(rejected["blockers"]),
+        )
+
     def test_rejects_coherent_build_from_non_authoritative_upstream_commit(
         self,
     ) -> None:
