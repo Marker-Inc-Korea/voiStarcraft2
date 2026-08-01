@@ -1238,7 +1238,7 @@ def _battlefield_overview_browser_fixture_page() -> str:
         destination.battlefield_operation
       ],
       autonomous_ownership: [{
-        owner_id: "BaseDefense:main",
+        owner_id: "squad:Base Defense 44 20",
         owner_count: 2,
         composition: [{
           family: "marine",
@@ -1256,7 +1256,7 @@ def _battlefield_overview_browser_fixture_page() -> str:
         integrity_status: "valid"
       }],
       bases: [{
-        base_id: "main",
+        base_id: "base:44:20",
         semantic_anchor: "self_main",
         base_readiness: {
           readiness_state: "ready",
@@ -1371,7 +1371,7 @@ def _battlefield_overview_browser_fixture_page() -> str:
       operationText.indexOf("source minimum 충족") >= 0);
     mark("base-detail",
       baseText.indexOf("observed_enemy_units") >= 0 &&
-      baseText.indexOf("BaseDefense:main 2") >= 0 &&
+      baseText.indexOf("squad:Base Defense 44 20 2") >= 0 &&
       baseText.indexOf("hold-main#2") >= 0 &&
       baseText.indexOf("MARAUDER/defender 3/4") >= 0 &&
       baseText.indexOf("보호 minimum 준수 충족") >= 0 &&

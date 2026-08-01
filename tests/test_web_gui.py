@@ -223,7 +223,7 @@ def battlefield_projection_telemetry(
             ],
             "autonomous_ownership": [
                 {
-                    "owner_id": "BaseDefense:main",
+                    "owner_id": "squad:Base Defense 44 20",
                     "owner_count": 2,
                     "owner_tags": [201, 202],
                     "composition": [
@@ -241,7 +241,7 @@ def battlefield_projection_telemetry(
             "unassigned_unit_tags": [301, 302],
             "bases": [
                 {
-                    "base_id": "main",
+                    "base_id": "base:44:20",
                     "semantic_anchor": "self_main",
                     "base_readiness": {
                         "readiness_state": "ready",
@@ -5790,8 +5790,18 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "excluded_unit_tags",
         ):
             self.assertNotIn(forbidden_key, serialized)
-        for raw_tag in ("101", "102", "103", "104", "201", "202", "301", "302"):
-            self.assertNotIn(raw_tag, serialized)
+        pending_values = [payload]
+        public_integer_values = set()
+        while pending_values:
+            value = pending_values.pop()
+            if isinstance(value, dict):
+                pending_values.extend(value.values())
+            elif isinstance(value, list):
+                pending_values.extend(value)
+            elif type(value) is int:
+                public_integer_values.add(value)
+        for raw_tag in (101, 102, 103, 104, 201, 202, 301, 302):
+            self.assertNotIn(raw_tag, public_integer_values)
         for forbidden_value in (
             "991",
             "992",
@@ -19285,7 +19295,7 @@ const assert = require("assert");
     ],
     autonomous_ownership: [
       {
-        owner_id: "BaseDefense:main",
+        owner_id: "squad:Base Defense 44 20",
         owner_count: 3,
         composition: [
           {
@@ -19308,7 +19318,7 @@ const assert = require("assert");
     ],
     bases: [
       {
-        base_id: "main",
+        base_id: "base:44:20",
         semantic_anchor: "self_main",
         base_readiness: {
           readiness_state: "ready",
@@ -19411,7 +19421,7 @@ const assert = require("assert");
     "observed_enemy_units"
   ));
   assert(nodes["battlefield-base-details"].textContent.includes(
-    "BaseDefense:main 3"
+    "squad:Base Defense 44 20 3"
   ));
   assert(nodes["battlefield-base-details"].textContent.includes(
     "hold-main#2"
@@ -19579,7 +19589,7 @@ const assert = require("assert");
   var foreignBaseOverview = JSON.parse(JSON.stringify(authoritativeOverview));
   foreignBaseOverview.autonomous_ownership = [
     {
-      owner_id: "BaseDefense:enemy_main",
+      owner_id: "squad:Base Defense 90 90",
       owner_count: 9,
       composition: [
         {

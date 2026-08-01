@@ -16,6 +16,10 @@ import json
 import math
 from typing import Final
 
+from starcraft_commander.micromachine_terran_capabilities import (
+    TERRAN_UNIT_FAMILY_BY_NAME,
+)
+
 
 BATTLEFIELD_OVERVIEW_SCHEMA_VERSION: Final[int] = 2
 BATTLEFIELD_OVERVIEW_AUTHORITY: Final[str] = "micromachine_cpp"
@@ -31,6 +35,12 @@ _SAFE_TRANSFER_ADMISSIONS: Final[frozenset[str]] = frozenset(
 )
 _INACTIVE_EMERGENCY_STATES: Final[frozenset[str]] = frozenset(
     {"none", "inactive", "not_required"}
+)
+_AUTONOMOUS_OWNER_FAMILIES: Final[frozenset[str]] = frozenset(
+    TERRAN_UNIT_FAMILY_BY_NAME
+)
+_AUTONOMOUS_OWNER_ROLES: Final[frozenset[str]] = frozenset(
+    {"base_defender", "autonomous_squad_member"}
 )
 
 
@@ -1017,6 +1027,20 @@ def _validate_autonomous_composition(
             path=f"{item_path}.air_capable_count",
             validation=validation,
         )
+        if family is not None and family not in _AUTONOMOUS_OWNER_FAMILIES:
+            validation.block(
+                "invalid_autonomous_family",
+                f"{item_path}.family",
+                "Autonomous composition must use a canonical Terran family.",
+                actual=family,
+            )
+        if role is not None and role not in _AUTONOMOUS_OWNER_ROLES:
+            validation.block(
+                "invalid_autonomous_role",
+                f"{item_path}.role",
+                "Autonomous composition must use a native ownership role.",
+                actual=role,
+            )
         if family is not None and role is not None:
             key = (family, role)
             if key in seen:

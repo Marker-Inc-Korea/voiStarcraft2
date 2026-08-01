@@ -20200,13 +20200,30 @@ function battlefieldBooleanEvidence(value) {
 }
 
 function battlefieldAutonomousOwnerMatchesBase(ownerId, baseId) {
-  var match = String(ownerId || "").trim().match(
+  var owner = String(ownerId || "").trim();
+  var base = String(baseId || "").trim();
+  var canonicalMatch = owner.match(
     /^(?:squad:)?BaseDefense:([^:]+)$/i
   );
+  if (
+    canonicalMatch &&
+    String(canonicalMatch[1] || "").toLowerCase() === base.toLowerCase()
+  ) {
+    return true;
+  }
+  var nativeOwnerMatch = owner.match(
+    /^(?:squad:)?Base Defense\\s+([^:\\s]+)\\s+([^:\\s]+)$/i
+  );
+  var nativeBaseMatch = base.match(
+    /^base:([^:]+):([^:]+)$/i
+  );
   return Boolean(
-    match &&
-    String(match[1] || "").toLowerCase() ===
-      String(baseId || "").trim().toLowerCase()
+    nativeOwnerMatch &&
+    nativeBaseMatch &&
+    String(nativeOwnerMatch[1] || "").toLowerCase() ===
+      String(nativeBaseMatch[1] || "").toLowerCase() &&
+    String(nativeOwnerMatch[2] || "").toLowerCase() ===
+      String(nativeBaseMatch[2] || "").toLowerCase()
   );
 }
 

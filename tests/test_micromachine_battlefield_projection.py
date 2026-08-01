@@ -259,7 +259,7 @@ def _telemetry(
             "operation_ownership": [operation, counterpart],
             "autonomous_ownership": [
                 {
-                    "owner_id": "BaseDefense:main",
+                    "owner_id": "squad:Base Defense 44 20",
                     "owner_count": 2,
                     "owner_tags": [201, 202],
                     "composition": [
@@ -277,7 +277,7 @@ def _telemetry(
             "unassigned_unit_tags": [301, 302],
             "bases": [
                 {
-                    "base_id": "main",
+                    "base_id": "base:44:20",
                     "semantic_anchor": "self_main",
                     "base_readiness": {
                         "readiness_state": "ready",
@@ -577,6 +577,34 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
             "autonomous_capability_count_mismatch",
             _blocker_codes(result),
         )
+
+    def test_autonomous_composition_family_must_be_canonical(self) -> None:
+        telemetry = _telemetry()
+        telemetry["battlefield_overview"]["autonomous_ownership"][0][
+            "composition"
+        ][0]["family"] = "zergling"
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("invalid_autonomous_family", _blocker_codes(result))
+
+    def test_autonomous_composition_role_must_be_native(self) -> None:
+        telemetry = _telemetry()
+        telemetry["battlefield_overview"]["autonomous_ownership"][0][
+            "composition"
+        ][0]["role"] = "defender"
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("invalid_autonomous_role", _blocker_codes(result))
 
     def test_owner_ids_must_be_unique_across_runtime_owners(self) -> None:
         telemetry = _telemetry()
