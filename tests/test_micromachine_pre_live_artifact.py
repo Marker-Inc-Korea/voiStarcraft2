@@ -603,6 +603,48 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
             )
         semantic_verifier.assert_not_called()
 
+    def test_outer_admission_failure_stops_before_nested_journey_verification(
+        self,
+    ) -> None:
+        raw_verifier = (
+            "starcraft_commander.micromachine_pre_live_journeys."
+            "_verify_pre_live_journey_payload_cache"
+        )
+        accepted = {
+            "ok": True,
+            "blockers": [],
+            "binary_sha256": sha256(self.binary),
+            "embedded_build_input_identity": self.repository_input_identity,
+        }
+        with mock.patch(raw_verifier, return_value=accepted):
+            bundle = self.make_deterministic_artifact_bundle(
+                node_executable=self.node_descriptor,
+            )
+
+        def contradict_report_identity(manifest: dict[str, object]) -> None:
+            manifest["build"]["report_identity"] = "sha256:" + ("d" * 64)
+
+        malformed = mutate_manifest(bundle, contradict_report_identity)
+        with mock.patch.object(
+            artifact_module,
+            "_verify_bound_deterministic_journey_bundle",
+            side_effect=AssertionError(
+                "outer admission failure must stop before nested verification"
+            ),
+        ) as nested_verifier:
+            rejected = verify_pre_live_artifact_bundle(
+                malformed,
+                admission_snapshot=self.admission_snapshot,
+                node_executable=self.node_descriptor,
+            )
+
+        nested_verifier.assert_not_called()
+        self.assertFalse(rejected["ok"], rejected)
+        self.assertIn(
+            "build_report_identity_mismatch",
+            blocker_codes(rejected),
+        )
+
     def test_bound_journey_preflights_root_before_single_payload_read(
         self,
     ) -> None:

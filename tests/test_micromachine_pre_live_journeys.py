@@ -1143,6 +1143,77 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
                     "native pre-live adapter schema is unsupported"
                 ),
             ),
+            "native event sequence as boolean": (
+                lambda products: products["native_adapter"]["output"]["events"][
+                    0
+                ].update({"seq": True}),
+                (
+                    "native adapter structure is invalid: "
+                    "native event sequence is not contiguous"
+                ),
+            ),
+            "native event sequence as float": (
+                lambda products: products["native_adapter"]["output"]["events"][
+                    0
+                ].update({"seq": 1.0}),
+                (
+                    "native adapter structure is invalid: "
+                    "native event sequence is not contiguous"
+                ),
+            ),
+            "native identity generation as boolean": (
+                lambda products: products["native_adapter"]["output"]["events"][
+                    0
+                ]["identity"].update({"generation": True}),
+                (
+                    "native adapter structure is invalid: "
+                    "native lifecycle identity is malformed"
+                ),
+            ),
+            "native identity generation as float": (
+                lambda products: products["native_adapter"]["output"]["events"][
+                    0
+                ]["identity"].update({"generation": 0.0}),
+                (
+                    "native adapter structure is invalid: "
+                    "native lifecycle identity is malformed"
+                ),
+            ),
+            "operation director generation as boolean": (
+                lambda products: products["native_adapter"]["output"][
+                    "operation_director"
+                ][0].update({"generation": True}),
+                (
+                    "native adapter structure is invalid: "
+                    "native operation director identity is invalid"
+                ),
+            ),
+            "operation director generation as float": (
+                lambda products: products["native_adapter"]["output"][
+                    "operation_director"
+                ][0].update(
+                    {
+                        "generation": float(
+                            products["native_adapter"]["output"][
+                                "operation_director"
+                            ][0]["generation"]
+                        )
+                    }
+                ),
+                (
+                    "native adapter structure is invalid: "
+                    "native operation director identity is invalid"
+                ),
+            ),
+            "operation director update identity as boolean": (
+                lambda products: products["native_adapter"]["output"][
+                    "operation_director"
+                ][0].update({"policy_update_id": True}),
+                (
+                    "native adapter structure is invalid: "
+                    "native operation director identity is invalid"
+                ),
+            ),
         }
         for name, (mutate, blocker) in cases.items():
             with self.subTest(name=name):
@@ -1214,6 +1285,20 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
                     b"{",
                 ),
                 "derived journey matrix is invalid JSON",
+            ),
+            "contradictory derived matrix verdict": (
+                _contradict_derived_matrix_verdict,
+                "derived journey matrix verdict is contradictory",
+            ),
+            "semantically invalid raw identity": (
+                lambda entries: _mutate_voice_callout_identity(
+                    entries,
+                    last_journey_id,
+                ),
+                (
+                    f"{last_journey_id}: "
+                    "web/HUD/voice/callout projection identity mismatch"
+                ),
             ),
         }
         for name, (mutate, blocker) in cases.items():
@@ -1944,6 +2029,29 @@ def _remove_last_journey_event_payload(
         json.loads(line) for line in entries[raw_name].splitlines()
     ]
     events[-1].pop("payload")
+    entries[raw_name] = b"".join(
+        canonical_json_bytes(event) + b"\n" for event in events
+    )
+
+
+def _contradict_derived_matrix_verdict(entries: dict[str, bytes]) -> None:
+    matrix = json.loads(entries["derived/journey-matrix.json"])
+    matrix["status"] = "failed"
+    entries["derived/journey-matrix.json"] = canonical_json_bytes(matrix)
+
+
+def _mutate_voice_callout_identity(
+    entries: dict[str, bytes],
+    journey_id: str,
+) -> None:
+    raw_name = f"raw/{journey_id}.jsonl"
+    events = [
+        json.loads(line) for line in entries[raw_name].splitlines()
+    ]
+    callout = next(
+        event for event in events if event["event_type"] == "voice_callout"
+    )
+    callout["identity"]["update_id"] = "foreign-callout-update"
     entries[raw_name] = b"".join(
         canonical_json_bytes(event) + b"\n" for event in events
     )

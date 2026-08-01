@@ -1579,32 +1579,47 @@ def _validate_native_lifecycle_sequence(events: object) -> None:
     ]
     if len(canonical) != len(events):
         raise ValueError("native event stream contains a non-object event")
-    if [event.get("seq") for event in canonical] != list(
-        range(1, len(canonical) + 1)
-    ):
-        raise ValueError("native event sequence is not contiguous")
     frames: list[int] = []
     ownership: dict[tuple[str, str, int], int] = {}
     admission: dict[tuple[str, str, int], int] = {}
     preemption: dict[tuple[str, str, int], int] = {}
     squad_orders: dict[tuple[str, str, int, str], int] = {}
     submissions: dict[tuple[str, str, int, str], int] = {}
-    for index, event in enumerate(canonical):
+    for expected_seq, event in enumerate(canonical, start=1):
+        if set(event) != _RAW_EVENT_FIELDS:
+            raise ValueError("native lifecycle event field set is invalid")
+        seq = event.get("seq")
+        if type(seq) is not int or seq != expected_seq:
+            raise ValueError("native event sequence is not contiguous")
         identity = event.get("identity")
         payload = event.get("payload")
         if not isinstance(identity, Mapping) or not isinstance(payload, Mapping):
             raise ValueError("native lifecycle event is malformed")
+        if set(identity) != _RAW_EVENT_IDENTITY_FIELDS:
+            raise ValueError("native lifecycle identity field set is invalid")
+        update_id = identity.get("update_id")
+        operation_id = identity.get("operation_id")
+        generation = identity.get("generation")
+        stage = identity.get("stage")
         frame = identity.get("game_frame")
-        if type(frame) is not int or frame < 0:
-            raise ValueError("native lifecycle frame is invalid")
+        if (
+            not isinstance(update_id, str)
+            or not isinstance(operation_id, str)
+            or type(generation) is not int
+            or generation < 0
+            or not isinstance(stage, str)
+            or not stage
+            or type(frame) is not int
+            or frame < 0
+        ):
+            raise ValueError("native lifecycle identity is malformed")
         frames.append(frame)
-        identity_key = (
-            str(identity.get("update_id", "") or ""),
-            str(identity.get("operation_id", "") or ""),
-            int(identity.get("generation", 0) or 0),
-        )
+        identity_key = (update_id, operation_id, generation)
         action_key = (*identity_key, str(payload.get("action", "") or ""))
         event_type = event.get("event_type")
+        if not isinstance(event_type, str) or not event_type:
+            raise ValueError("native lifecycle event type is invalid")
+        index = expected_seq - 1
         if (
             event_type == "launch_decision"
             and identity.get("stage") == "launch_admitted"
@@ -1649,13 +1664,17 @@ def _validate_native_compiler_identity_bindings(
         if str(identity.get("operation_id", "") or ""):
             identities.append(_native_identity_tuple(identity))
     for row in _mapping_sequence(output.get("operation_director")):
-        identities.append(
-            (
-                str(row.get("policy_update_id", "") or ""),
-                str(row.get("operation_id", "") or ""),
-                int(row.get("generation", 0) or 0),
-            )
-        )
+        policy_update_id = row.get("policy_update_id")
+        operation_id = row.get("operation_id")
+        generation = row.get("generation")
+        if (
+            not isinstance(policy_update_id, str)
+            or not isinstance(operation_id, str)
+            or type(generation) is not int
+            or generation < 0
+        ):
+            raise ValueError("native operation director identity is malformed")
+        identities.append((policy_update_id, operation_id, generation))
         for evidence in _mapping_sequence(row.get("family_evidence")):
             identities.append(_native_identity_tuple(evidence))
     production_path = output.get("production_path")
@@ -1679,11 +1698,17 @@ def _validate_native_compiler_identity_bindings(
 def _native_identity_tuple(
     identity: Mapping[str, object],
 ) -> tuple[str, str, int]:
-    return (
-        str(identity.get("update_id", "") or ""),
-        str(identity.get("operation_id", "") or ""),
-        int(identity.get("generation", 0) or 0),
-    )
+    update_id = identity.get("update_id")
+    operation_id = identity.get("operation_id")
+    generation = identity.get("generation")
+    if (
+        not isinstance(update_id, str)
+        or not isinstance(operation_id, str)
+        or type(generation) is not int
+        or generation < 0
+    ):
+        raise ValueError("native operation identity is malformed")
+    return update_id, operation_id, generation
 
 
 def _compiler_requested_operation_identities(
@@ -2639,15 +2664,18 @@ def _validate_native_family_effect_causality(
         "ability_state": "ability_effect",
     }
     for row in rows:
-        update_id = str(row.get("policy_update_id", "") or "")
-        operation_id = str(row.get("operation_id", "") or "")
+        update_id = row.get("policy_update_id")
+        operation_id = row.get("operation_id")
         generation = row.get("generation")
-        action = str(row.get("last_action", "") or "")
+        action = row.get("last_action")
         if (
-            not update_id
+            not isinstance(update_id, str)
+            or not update_id
+            or not isinstance(operation_id, str)
             or not operation_id
             or type(generation) is not int
             or generation <= 0
+            or not isinstance(action, str)
         ):
             raise ValueError("native operation director identity is invalid")
         if action:
@@ -5541,19 +5569,73 @@ def _verify_pre_live_journey_payload_cache(
         if blockers:
             return _verification_result(blockers)
 
-        reports: list[dict[str, object]] = []
+        preflighted_journeys: list[
+            tuple[
+                dict[str, object],
+                list[dict[str, object]],
+                dict[str, object],
+                dict[str, object],
+            ]
+        ] = []
         for spec, events, products in parsed_journeys:
             journey_id = str(spec["id"])
             verdict = verify_pre_live_journey_events(spec, events)
-            derived_blockers = [
-                *cast(list[str], verdict["blockers"]),
-                *_rederive_product_path_blockers(
-                    spec,
-                    events,
-                    products,
-                    node_executable=node_executable,
+            raw_blockers = cast(list[str], verdict["blockers"])
+            preflighted_journeys.append((spec, events, products, verdict))
+            blockers.extend(
+                f"{journey_id}: {blocker}" for blocker in raw_blockers
+            )
+        pre_replay_reports = [
+            {
+                **verdict,
+                "ok": not verdict["blockers"],
+                "status": (
+                    "passed" if not verdict["blockers"] else "failed"
                 ),
-            ]
+                "blockers": list(cast(list[str], verdict["blockers"])),
+                "product_paths": products,
+            }
+            for _, _, products, verdict in preflighted_journeys
+        ]
+        pre_replay_failures = [
+            report["id"]
+            for report in pre_replay_reports
+            if report["ok"] is not True
+        ]
+        pre_replay_matrix = {
+            "schema_version": PRE_LIVE_JOURNEY_REPORT_SCHEMA_VERSION,
+            "suite_id": validated.get("suite_id"),
+            "manifest_sha256": hashlib.sha256(
+                canonical_json_bytes(validated)
+            ).hexdigest(),
+            "journey_count": len(pre_replay_reports),
+            "passed_count": (
+                len(pre_replay_reports) - len(pre_replay_failures)
+            ),
+            "failed_count": len(pre_replay_failures),
+            "failures": pre_replay_failures,
+            "ok": not pre_replay_failures,
+            "status": "passed" if not pre_replay_failures else "failed",
+            "journeys": pre_replay_reports,
+        }
+        if canonical_json_bytes(matrix) != canonical_json_bytes(
+            pre_replay_matrix
+        ):
+            blockers.append(
+                "derived journey matrix was not derived from raw evidence"
+            )
+        if blockers:
+            return _verification_result(blockers)
+
+        reports: list[dict[str, object]] = []
+        for spec, events, products, verdict in preflighted_journeys:
+            journey_id = str(spec["id"])
+            derived_blockers = _rederive_product_path_blockers(
+                spec,
+                events,
+                products,
+                node_executable=node_executable,
+            )
             identity = _native_adapter_identity(products, derived_blockers)
             if identity is not None:
                 native_identities.add(identity)
@@ -6188,11 +6270,12 @@ def _preflight_derived_journey_matrix(
         or len(failures) != len(set(failures))
     ):
         blockers.append("derived journey matrix failures are invalid")
-    if type(matrix.get("ok")) is not bool or matrix.get("status") not in {
-        "passed",
-        "failed",
-    }:
+    matrix_ok = matrix.get("ok")
+    matrix_status = matrix.get("status")
+    if type(matrix_ok) is not bool or matrix_status not in {"passed", "failed"}:
         blockers.append("derived journey matrix verdict is invalid")
+    elif matrix_status != ("passed" if matrix_ok else "failed"):
+        blockers.append("derived journey matrix verdict is contradictory")
     journeys = matrix.get("journeys")
     if not isinstance(journeys, list) or len(journeys) != len(specs):
         blockers.append("derived journey matrix journeys are invalid")
@@ -6207,6 +6290,9 @@ def _preflight_derived_journey_matrix(
             blockers.append("derived journey matrix row has an invalid field set")
         journey_id = row.get("id")
         observed_ids.append(str(journey_id) if isinstance(journey_id, str) else "")
+        row_blockers = row.get("blockers")
+        row_ok = row.get("ok")
+        row_status = row.get("status")
         if (
             not isinstance(journey_id, str)
             or not journey_id
@@ -6220,16 +6306,21 @@ def _preflight_derived_journey_matrix(
                 not isinstance(item, str) or not item
                 for item in cast(list[object], row.get("event_types"))
             )
-            or not isinstance(row.get("blockers"), list)
+            or not isinstance(row_blockers, list)
             or any(
                 not isinstance(item, str) or not item
-                for item in cast(list[object], row.get("blockers"))
+                for item in cast(list[object], row_blockers)
             )
-            or type(row.get("ok")) is not bool
-            or row.get("status") not in {"passed", "failed"}
+            or type(row_ok) is not bool
+            or row_status not in {"passed", "failed"}
             or not isinstance(row.get("product_paths"), Mapping)
         ):
             blockers.append("derived journey matrix row is malformed")
+        elif (
+            row_status != ("passed" if row_ok else "failed")
+            or row_ok != (not row_blockers)
+        ):
+            blockers.append("derived journey matrix row verdict is contradictory")
     if observed_ids != expected_ids:
         blockers.append("derived journey matrix journey order is invalid")
 

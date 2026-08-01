@@ -1415,6 +1415,15 @@ def verify_pre_live_artifact_bundle(
                 )
                 if producer_provenance is not None:
                     role_evidence["producer_provenance"] = producer_provenance
+            if blockers:
+                return _verification_result(
+                    blockers,
+                    manifest,
+                    manifest_evidence,
+                    member_evidence,
+                    caller_claims,
+                    role_evidence=role_evidence,
+                )
             if (
                 producer.get("policy_id")
                 == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
