@@ -38,6 +38,7 @@ from starcraft_commander.micromachine_build_identity import (
 )
 from starcraft_commander.micromachine_pre_live_provenance import (
     AUTHORITATIVE_PROVENANCE_JOB_NAME,
+    AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
     AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH,
     AUTHORITATIVE_REPOSITORY_ID,
     AUTHORITATIVE_REPLAY_CREATE_RULESET_NAME,
@@ -45,6 +46,7 @@ from starcraft_commander.micromachine_pre_live_provenance import (
     AUTHORITATIVE_REPLAY_IMMUTABLE_RULESET_NAME,
     AUTHORITATIVE_REPLAY_REF_PREFIX,
     AUTHORITATIVE_REPLAY_REF_PATTERN,
+    GITHUB_ACTIONS_PRODUCER_TIMEOUT_SECONDS,
     ISOLATED_PYTHON_BOOTSTRAP,
     PRODUCER_POLICY_RELATIVE_PATH,
     SANITIZED_PRODUCER_ENV,
@@ -91,9 +93,9 @@ ARTIFACT_ID = 301
 WORKFLOW_ID = 401
 WORKFLOW_PATH = AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH
 WORKFLOW_REF = (
-    f"{REPOSITORY}/{WORKFLOW_PATH}@refs/pull/137/merge"
+    f"{REPOSITORY}/{WORKFLOW_PATH}@refs/heads/main"
 )
-WORKFLOW_SHA = "c" * 40
+WORKFLOW_SHA = BASE_SHA
 REQUIRED_CTEST_COUNT = len(MICROMACHINE_REQUIRED_NATIVE_TESTS)
 
 
@@ -254,19 +256,20 @@ class FakeGitHubAdapter:
             "workflow_id": WORKFLOW_ID,
             "run_number": 17,
             "run_attempt": RUN_ATTEMPT,
-            "head_sha": head_sha,
-            "head_branch": "issue-138-authenticated-prelive-provenance",
+            "head_sha": BASE_SHA,
+            "head_branch": "main",
             "head_repository": {
                 "id": AUTHORITATIVE_REPOSITORY_ID,
                 "full_name": REPOSITORY,
             },
-            "event": "pull_request",
+            "event": AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
             "pull_requests": [
                 {
                     "id": 3,
                     "number": 137,
                     "head": {
                         "sha": head_sha,
+                        "ref": "issue-138-authenticated-prelive-provenance",
                         "repo": {"id": AUTHORITATIVE_REPOSITORY_ID},
                     },
                 }
@@ -305,7 +308,7 @@ class FakeGitHubAdapter:
             "id": JOB_ID,
             "run_id": RUN_ID,
             "run_attempt": RUN_ATTEMPT,
-            "head_sha": head_sha,
+            "head_sha": BASE_SHA,
             "name": "pre-live-provenance",
             "status": "completed",
             "conclusion": "success",
@@ -322,7 +325,7 @@ class FakeGitHubAdapter:
             "digest": "sha256:" + hashlib.sha256(self.artifact_bytes).hexdigest(),
             "workflow_run": {
                 "id": RUN_ID,
-                "head_sha": head_sha,
+                "head_sha": BASE_SHA,
             },
         }
         self.artifact_bytes = make_source_artifact_bundle(head_sha)
@@ -332,10 +335,6 @@ class FakeGitHubAdapter:
         self.fail_at: str | None = None
         self.download_calls = 0
         self.workflow_references = {
-            "refs/pull/137/merge": {
-                "ref": "refs/pull/137/merge",
-                "object": {"type": "commit", "sha": WORKFLOW_SHA},
-            },
             (
                 "refs/heads/issue-138-authenticated-prelive-provenance"
             ): {
@@ -731,8 +730,18 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             BUILD_IDENTITY_REPO_ROOT / AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH
         )
         workflow = workflow_path.read_text()
+        ci_workflow = (
+            BUILD_IDENTITY_REPO_ROOT / ".github/workflows/ci.yml"
+        ).read_text()
 
         self.assertIn("permissions:\n  contents: read\n", workflow)
+        self.assertIn(
+            "on:\n"
+            "  pull_request_target:\n"
+            "    branches:\n"
+            "      - main\n",
+            workflow,
+        )
         self.assertIn("  pre-live-build:\n", workflow)
         self.assertIn("  pre-live-producer-isolation:\n", workflow)
         self.assertIn(f"  {AUTHORITATIVE_PROVENANCE_JOB_NAME}:\n", workflow)
@@ -757,7 +766,6 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         trusted_verifier_commit = "20c1bc2c55e638ad29bb3961cb245b9582eb5d6a"
         self.assertIn(
             "    if: >-\n"
-            "      github.event_name == 'pull_request' &&\n"
             "      github.event.pull_request.head.repo.id == "
             "github.event.repository.id\n",
             provenance_job,
@@ -770,7 +778,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             workflow,
         )
         self.assertEqual(
-            3,
+            2,
             workflow.count(
                 "      ROOT_DIR: /private/tmp/voi-micromachine-runtime\n"
             ),
@@ -783,13 +791,8 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             )
             if "\n      - uses: actions/checkout@" in match.group(0)
         ]
-        pull_request_job_blocks = [
-            block
-            for block in job_blocks
-            if "if: github.event_name == 'push'" not in block
-        ]
-        self.assertGreaterEqual(len(pull_request_job_blocks), 4)
-        for job_block in pull_request_job_blocks:
+        self.assertEqual(3, len(job_blocks))
+        for job_block in job_blocks:
             with self.subTest(job=job_block.split(":\n", 1)[0].strip()):
                 checkout_block = job_block.split(
                     "      - uses: actions/checkout@",
@@ -808,8 +811,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         self.assertIn(
             "          path: candidate\n"
             "          persist-credentials: false\n"
-            "          ref: "
-            "${{ github.event.pull_request.head.sha || github.sha }}\n",
+            "          ref: ${{ github.event.pull_request.head.sha }}\n",
             build_job,
         )
         self.assertIn(
@@ -898,6 +900,11 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         self.assertIn('      VOI_PRODUCER_UID: "65001"\n', provenance_job)
         self.assertIn('      VOI_PRODUCER_GID: "65001"\n', provenance_job)
         self.assertIn(
+            '      VOI_PRODUCER_TIMEOUT_SECONDS: "1800"\n',
+            provenance_job,
+        )
+        self.assertIn("    timeout-minutes: 60\n", provenance_job)
+        self.assertIn(
             "      VOI_CANDIDATE_WORKSPACE: "
             "${{ github.workspace }}/candidate\n",
             provenance_job,
@@ -927,8 +934,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         self.assertIn(
             "          path: candidate\n"
             "          persist-credentials: false\n"
-            "          ref: "
-            "${{ github.event.pull_request.head.sha || github.sha }}\n",
+            "          ref: ${{ github.event.pull_request.head.sha }}\n",
             provenance_job,
         )
         ownership_step = provenance_job.split(
@@ -987,6 +993,11 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             emission_step,
         )
         self.assertIn(
+            "            VOI_PRODUCER_TIMEOUT_SECONDS="
+            '"${VOI_PRODUCER_TIMEOUT_SECONDS}" \\\n',
+            emission_step,
+        )
+        self.assertIn(
             "            VOI_TRUSTED_VERIFIER_COMMIT="
             '"${VOI_TRUSTED_VERIFIER_COMMIT}" \\\n',
             emission_step,
@@ -1013,9 +1024,14 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             '          "${GITHUB_WORKSPACE}"\n',
             provenance_job,
         )
+        self.assertNotIn("pre-live-build", ci_workflow)
+        self.assertNotIn("pre-live-producer-isolation", ci_workflow)
+        self.assertNotIn("pre-live-provenance", ci_workflow)
+        self.assertNotIn("github.token", ci_workflow)
+        self.assertNotIn("GITHUB_TOKEN", ci_workflow)
         self.assertIn(
             "  micromachine-macos-contracts:\n    if: github.event_name == 'push'\n",
-            workflow,
+            ci_workflow,
         )
         self.assertNotIn("contents: write", workflow)
 
@@ -1531,10 +1547,12 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             "pull": lambda adapter: adapter.pull_request["head"].update(
                 {"sha": "b" * 40}
             ),
-            "run": lambda adapter: adapter.workflow_run.update({"head_sha": "b" * 40}),
-            "attempt": lambda adapter: adapter.attempt.update({"head_sha": "b" * 40}),
+            "run": lambda adapter: adapter.workflow_run.update({"head_sha": "c" * 40}),
+            "attempt": lambda adapter: adapter.attempt.update(
+                {"head_sha": "c" * 40}
+            ),
             "artifact": lambda adapter: adapter.artifact["workflow_run"].update(
-                {"head_sha": "b" * 40}
+                {"head_sha": "c" * 40}
             ),
         }
         for name, mutate in mutations.items():
@@ -1604,7 +1622,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             "inactive workflow": lambda adapter: adapter.workflow.update(
                 {"state": "disabled_manually"}
             ),
-            "job head": lambda adapter: adapter.job.update({"head_sha": "b" * 40}),
+            "job head": lambda adapter: adapter.job.update({"head_sha": "c" * 40}),
             "job identity": lambda adapter: adapter.job.update({"name": ""}),
         }
         for name, mutate in mutations.items():
@@ -1745,7 +1763,7 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
             "object": {"type": "commit", "sha": HEAD_SHA},
         }
         workflow_reference_record = {
-            "ref": "refs/pull/137/merge",
+            "ref": "refs/heads/main",
             "object": {"type": "commit", "sha": WORKFLOW_SHA},
         }
         rulesets, ruleset_details = make_replay_ruleset_fixtures()
@@ -1778,9 +1796,7 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
             (
                 f"/repos/{REPOSITORY}/git/ref/{replay_ref.removeprefix('refs/')}"
             ): replay_record,
-            (
-                f"/repos/{REPOSITORY}/git/ref/pull/137/merge"
-            ): workflow_reference_record,
+            f"/repos/{REPOSITORY}/git/ref/heads/main": workflow_reference_record,
             f"/repos/{REPOSITORY}/rulesets": rulesets,
             f"/repos/{REPOSITORY}/rulesets/501": ruleset_details[501],
             f"/repos/{REPOSITORY}/rulesets/502": ruleset_details[502],
@@ -1869,8 +1885,8 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
             adapter.list_workflow_runs(
                 REPOSITORY,
                 WORKFLOW_ID,
-                branch="issue-138-authenticated-prelive-provenance",
-                event="pull_request",
+                branch="main",
+                event=AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
             )[0]["id"],
         )
         self.assertEqual(
@@ -1921,7 +1937,7 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
             workflow_reference_record,
             adapter.get_git_reference(
                 REPOSITORY,
-                ref="refs/pull/137/merge",
+                ref="refs/heads/main",
             ),
         )
         self.assertEqual(
@@ -4064,14 +4080,13 @@ class LocalProducerTest(unittest.TestCase):
             "GITHUB_REPOSITORY": REPOSITORY,
             "GITHUB_RUN_ATTEMPT": str(RUN_ATTEMPT),
             "GITHUB_RUN_ID": str(RUN_ID),
-            "GITHUB_WORKFLOW_REF": (
-                f"{REPOSITORY}/.github/workflows/ci.yml@refs/pull/137/merge"
-            ),
-            "GITHUB_WORKFLOW_SHA": HEAD_SHA,
+            "GITHUB_WORKFLOW_REF": WORKFLOW_REF,
+            "GITHUB_WORKFLOW_SHA": WORKFLOW_SHA,
             "VOI_CANDIDATE_WORKSPACE": "/candidate",
             "VOI_NODE_EXECUTABLE": "/usr/local/bin/node",
             "VOI_PRODUCER_GID": "65001",
             "VOI_PRODUCER_UID": "65001",
+            "VOI_PRODUCER_TIMEOUT_SECONDS": "1800",
             "VOI_RELEASE_COMMIT": HEAD_SHA,
             "VOI_TRUSTED_VERIFIER_COMMIT": BASE_SHA,
             "VOI_TRUSTED_VERIFIER_WORKSPACE": "/trusted",
@@ -4128,6 +4143,10 @@ class LocalProducerTest(unittest.TestCase):
         self.assertEqual(
             "/candidate",
             emitter.call_args.kwargs["repository_dir"],
+        )
+        self.assertEqual(
+            GITHUB_ACTIONS_PRODUCER_TIMEOUT_SECONDS,
+            emitter.call_args.kwargs["producer_timeout_seconds"],
         )
 
     def test_dedicated_ctest_command_uses_bounded_uid_runner(self) -> None:
@@ -4638,14 +4657,13 @@ class LocalProducerTest(unittest.TestCase):
             "GITHUB_REPOSITORY": REPOSITORY,
             "GITHUB_RUN_ATTEMPT": str(RUN_ATTEMPT),
             "GITHUB_RUN_ID": str(RUN_ID),
-            "GITHUB_WORKFLOW_REF": (
-                f"{REPOSITORY}/.github/workflows/ci.yml@refs/pull/137/merge"
-            ),
-            "GITHUB_WORKFLOW_SHA": HEAD_SHA,
+            "GITHUB_WORKFLOW_REF": WORKFLOW_REF,
+            "GITHUB_WORKFLOW_SHA": WORKFLOW_SHA,
             "VOI_CANDIDATE_WORKSPACE": "/candidate",
             "VOI_NODE_EXECUTABLE": "/usr/local/bin/node",
             "VOI_PRODUCER_GID": "65001",
             "VOI_PRODUCER_UID": "65001",
+            "VOI_PRODUCER_TIMEOUT_SECONDS": "1800",
             "VOI_RELEASE_COMMIT": HEAD_SHA,
             "VOI_TRUSTED_VERIFIER_COMMIT": BASE_SHA,
             "VOI_TRUSTED_VERIFIER_WORKSPACE": "/trusted",
@@ -5997,7 +6015,7 @@ class ReplayLedgerTest(unittest.TestCase):
         for field, replacement in (
             (
                 "workflow_ref",
-                f"{REPOSITORY}/{WORKFLOW_PATH}@refs/heads/main",
+                f"{REPOSITORY}/{WORKFLOW_PATH}@refs/heads/other",
             ),
             ("workflow_sha", "d" * 40),
         ):
@@ -6491,10 +6509,7 @@ class AggregateProvenanceTest(unittest.TestCase):
                     build = make_build_fixture(root / "build-fixture")
                     commit = build["repository_commit"]
                     adapter = FakeGitHubAdapter(head_sha=commit)
-                    adapter.workflow_run["head_sha"] = commit
-                    adapter.attempt["head_sha"] = commit
                     adapter.pull_request["head"]["sha"] = commit
-                    adapter.artifact["workflow_run"]["head_sha"] = commit
                     adapter.workflow_run["pull_requests"][0]["head"][
                         "sha"
                     ] = commit
@@ -6560,10 +6575,7 @@ class AggregateProvenanceTest(unittest.TestCase):
             build = make_build_fixture(root / "build-fixture")
             commit = build["repository_commit"]
             adapter = FakeGitHubAdapter(head_sha=commit)
-            adapter.workflow_run["head_sha"] = commit
-            adapter.attempt["head_sha"] = commit
             adapter.pull_request["head"]["sha"] = commit
-            adapter.artifact["workflow_run"]["head_sha"] = commit
             adapter.workflow_run["pull_requests"][0]["head"]["sha"] = commit
             adapter.attempt["pull_requests"][0]["head"]["sha"] = commit
             node_executable = Path(sys.executable).resolve()
@@ -6660,10 +6672,7 @@ class AggregateProvenanceTest(unittest.TestCase):
             repository = build["repository"]
             commit = build["repository_commit"]
             adapter = FakeGitHubAdapter(head_sha=commit)
-            adapter.workflow_run["head_sha"] = commit
-            adapter.attempt["head_sha"] = commit
             adapter.pull_request["head"]["sha"] = commit
-            adapter.artifact["workflow_run"]["head_sha"] = commit
             adapter.workflow_run["pull_requests"][0]["head"]["sha"] = commit
             adapter.attempt["pull_requests"][0]["head"]["sha"] = commit
             bind_adapter_to_build_fixture(
@@ -6770,10 +6779,8 @@ class AggregateProvenanceTest(unittest.TestCase):
             repository = build["repository"]
             commit = build["repository_commit"]
             adapter = FakeGitHubAdapter(head_sha=commit)
-            adapter.workflow_run.update({"head_sha": commit, "conclusion": "failure"})
-            adapter.attempt["head_sha"] = commit
+            adapter.workflow_run.update({"conclusion": "failure"})
             adapter.pull_request["head"]["sha"] = commit
-            adapter.artifact["workflow_run"]["head_sha"] = commit
             adapter.workflow_run["pull_requests"][0]["head"]["sha"] = commit
             adapter.attempt["pull_requests"][0]["head"]["sha"] = commit
             producer_called = False
@@ -6824,10 +6831,7 @@ class AggregateProvenanceTest(unittest.TestCase):
             repository = build["repository"]
             commit = build["repository_commit"]
             adapter = FakeGitHubAdapter(head_sha=commit)
-            adapter.workflow_run["head_sha"] = commit
-            adapter.attempt["head_sha"] = commit
             adapter.pull_request["head"]["sha"] = commit
-            adapter.artifact["workflow_run"]["head_sha"] = commit
             adapter.workflow_run["pull_requests"][0]["head"]["sha"] = commit
             adapter.attempt["pull_requests"][0]["head"]["sha"] = commit
             bind_adapter_to_build_fixture(
@@ -6882,10 +6886,7 @@ class AggregateProvenanceTest(unittest.TestCase):
             repository = build["repository"]
             commit = build["repository_commit"]
             adapter = FakeGitHubAdapter(head_sha=commit)
-            adapter.workflow_run["head_sha"] = commit
-            adapter.attempt["head_sha"] = commit
             adapter.pull_request["head"]["sha"] = commit
-            adapter.artifact["workflow_run"]["head_sha"] = commit
             adapter.workflow_run["pull_requests"][0]["head"]["sha"] = commit
             adapter.attempt["pull_requests"][0]["head"]["sha"] = commit
             bind_adapter_to_build_fixture(
