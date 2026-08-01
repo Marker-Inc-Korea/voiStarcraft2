@@ -281,6 +281,11 @@ BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE = (
     / "patches"
     / "0075-battlefield-review-closure.patch"
 )
+BOUNDED_TERMINAL_OPERATION_HUD_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0076-bounded-terminal-operation-hud.patch"
+)
 S2CLIENT_PATCH_FILE = KIT_DIR / "patches" / "0001-s2client-macos-launchservices.patch"
 BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
 PROBE_SCRIPT = KIT_DIR / "scripts" / "probe_macos_local.sh"
@@ -1005,12 +1010,12 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
         self.assertEqual(
             [patch["order"] for patch in bundle],
-            list(range(1, 76)),
+            list(range(1, 77)),
         )
-        self.assertEqual(len(set(manifest_paths)), 75)
+        self.assertEqual(len(set(manifest_paths)), 76)
         self.assertEqual(
             manifest_paths[-1],
-            "patches/0075-battlefield-review-closure.patch",
+            "patches/0076-bounded-terminal-operation-hud.patch",
         )
         self.assertTrue(
             all((KIT_DIR / path).is_file() for path in manifest_paths)
@@ -1766,6 +1771,164 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 "apply",
                 "--numstat",
                 str(BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, parse_result.returncode, parse_result.stderr)
+
+    def test_bounded_terminal_operation_hud_patch_is_required(self) -> None:
+        patch = _read_patch_text(BOUNDED_TERMINAL_OPERATION_HUD_PATCH_FILE)
+        for contract in (
+            "VoiOperationHudMaxRows = 8",
+            "VoiOperationHudTerminalGraceFrames = 110",
+            "candidate.priority = operation.priority",
+            "return left.priority > right.priority",
+            "voiOperationHudTerminalEligible",
+            "candidate.terminalFrame < candidate.canonicalFrame",
+            "currentFrame - candidate.terminalFrame",
+            "voiSelectOperationHud",
+            "selection.operationIndices",
+            "for (const auto operationIndex : selection.operationIndices)",
+            "selection.hiddenCount",
+            '" operations hidden"',
+            "voiOperationHudMarkerVisible",
+            "testThirtyTwoOperationCap",
+            "testActiveOperationsPrecedeTerminalHistory",
+            "testHigherPriorityActiveOperationsPrecedeOlderWork",
+            "testSameFrameTieBreak",
+            "testInvalidTerminalFramesFailClosed",
+            "testTerminalGraceBoundary",
+            "voiOperationHudLatchTerminalFrame",
+            "voiOperationHudRetainTerminalHistory",
+            "testTerminalFrameLatchesOnFirstTransition",
+            "testPolicyOmissionRetainsOnlyTerminalHistory",
+            "voiReleaseOmittedNonterminalOperations",
+            "testPolicyOmissionPreservesTerminalCanonicalState",
+            "ownershipHistory",
+            "testHiddenCountBoundaryAndAgedOutExclusion",
+            "testMarkerEligibilityUsesSelection",
+            "testSelectionDoesNotMutateCanonicalState",
+            "voi_operation_hud_selection_ndebug_test",
+            "NDEBUG",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, patch)
+
+        release_start = patch.index(
+            "void CombatCommander::releaseVoiOperation("
+        )
+        update_start = patch.index(
+            "void CombatCommander::updateVoiOperations()"
+        )
+        synchronize_start = patch.index(
+            "void CombatCommander::synchronizeVoiOperationLifecycleForProduction()"
+        )
+        draw_start = patch.index("void CombatCommander::drawVoiOperationHud()")
+        release_delta = patch[release_start:synchronize_start]
+        self.assertIn("const bool wasTerminal = operation.completed;", release_delta)
+        self.assertIn(
+            "voiOperationHudLatchTerminalFrame(",
+            release_delta,
+        )
+        self.assertIn(
+            "voiOperationHudRetainTerminalHistory(",
+            release_delta,
+        )
+        retention_gate = release_delta.index(
+            "voiOperationHudRetainTerminalHistory("
+        )
+        omitted_release = release_delta.index(
+            "const auto transferBlocker =",
+            retention_gate,
+        )
+        self.assertLess(retention_gate, omitted_release)
+        update_delta = patch[update_start:synchronize_start]
+        self.assertIn(
+            "voiReleaseOmittedNonterminalOperations(",
+            update_delta,
+        )
+        self.assertIn("-\t\tm_voiOperations.clear();", update_delta)
+        self.assertNotIn("+\t\tm_voiOperations.clear();", update_delta)
+
+        synchronize_delta = patch[synchronize_start:draw_start]
+        sync_retention = synchronize_delta.index(
+            "voiOperationHudRetainTerminalHistory("
+        )
+        sync_mutation = synchronize_delta.index(
+            "bool retained = false;",
+            sync_retention,
+        )
+        self.assertLess(sync_retention, sync_mutation)
+
+        draw_end = patch.index(
+            "CCPosition CombatCommander::getMainAttackLocation()",
+            draw_start,
+        )
+        draw_delta = patch[draw_start:draw_end]
+        marker_gate = draw_delta.index("voiOperationHudMarkerVisible(")
+        target_marker = draw_delta.index(
+            "if (operation.targetPosition != CCPosition()",
+            marker_gate,
+        )
+        self.assertLess(marker_gate, target_marker)
+        for mutation in (
+            "m_voiOperations.erase",
+            "m_voiOperationUnitOwners.erase",
+            "unitActions.erase",
+            "m_squadData.removeSquad",
+            "releaseVoiOperation(",
+        ):
+            with self.subTest(mutation=mutation):
+                self.assertNotIn(mutation, draw_delta)
+
+        manifest = json.loads((KIT_DIR / "HOOK_MANIFEST.json").read_text())
+        self.assertEqual(
+            {
+                "path": "patches/0076-bounded-terminal-operation-hud.patch",
+                "order": 76,
+            },
+            {
+                "path": manifest["patch_bundle"][75]["path"],
+                "order": manifest["patch_bundle"][75]["order"],
+            },
+        )
+        build_script = BUILD_SCRIPT.read_text()
+        patch_variable = "BOUNDED_TERMINAL_OPERATION_HUD_PATCH_FILE"
+        self.assertIn(
+            f'{patch_variable}="${{REPO_ROOT}}/integrations/'
+            "micromachine/patches/"
+            '0076-bounded-terminal-operation-hud.patch"',
+            build_script,
+        )
+        prior_apply = build_script.index(
+            "apply --recount --ignore-space-change --whitespace=nowarn "
+            '"${BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE}"'
+        )
+        patch_check = build_script.index(
+            "apply --recount --check --ignore-space-change "
+            '--whitespace=nowarn "${BOUNDED_TERMINAL_OPERATION_HUD_PATCH_FILE}"'
+        )
+        patch_apply = build_script.index(
+            "apply --recount --ignore-space-change --whitespace=nowarn "
+            '"${BOUNDED_TERMINAL_OPERATION_HUD_PATCH_FILE}"'
+        )
+        self.assertLess(prior_apply, patch_check)
+        self.assertLess(patch_check, patch_apply)
+        self.assertEqual(
+            2,
+            build_script.count(
+                "--micromachine-bounded-terminal-operation-hud-patch "
+                '"${BOUNDED_TERMINAL_OPERATION_HUD_PATCH_FILE}"'
+            ),
+        )
+        parse_result = subprocess.run(
+            [
+                "git",
+                "apply",
+                "--numstat",
+                str(BOUNDED_TERMINAL_OPERATION_HUD_PATCH_FILE),
             ],
             check=False,
             capture_output=True,
@@ -5603,7 +5766,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "patches/0073-contextual-transfer-choice-projection.patch",
             "patches/0074-autonomous-owner-composition-evidence.patch",
             "patches/0075-battlefield-review-closure.patch",
-            "through `0075`",
+            "patches/0076-bounded-terminal-operation-hud.patch",
+            "through `0076`",
+            "schema-76 report",
         )
         for term in required_terms:
             with self.subTest(term=term):
@@ -6448,6 +6613,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "0073-contextual-transfer-choice-projection.patch",
             "0074-autonomous-owner-composition-evidence.patch",
             "0075-battlefield-review-closure.patch",
+            "0076-bounded-terminal-operation-hud.patch",
             "0001-s2client-macos-launchservices.patch",
             "OPERATION_STATE_PATCH_FILE",
             "ADDON_RECOVERY_PATCH_FILE",
@@ -6506,6 +6672,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "CONTEXTUAL_TRANSFER_CHOICE_PROJECTION_PATCH_FILE",
             "AUTONOMOUS_OWNER_COMPOSITION_EVIDENCE_PATCH_FILE",
             "BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE",
+            "BOUNDED_TERMINAL_OPERATION_HUD_PATCH_FILE",
             "--micromachine-explicit-ability-production-isolation-patch",
             "--micromachine-explicit-ability-attempt-lifecycle-patch",
             "--micromachine-explicit-ability-review-closure-patch",
@@ -6523,6 +6690,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "--micromachine-contextual-transfer-choice-projection-patch",
             "--micromachine-autonomous-owner-composition-evidence-patch",
             "--micromachine-battlefield-review-closure-patch",
+            "--micromachine-bounded-terminal-operation-hud-patch",
             "--write-embedded-identity-header",
             "DSC2Api_SC2API_LIB",
             "reset --hard",

@@ -90,6 +90,7 @@ WORKFLOW_REF = (
     f"{REPOSITORY}/{WORKFLOW_PATH}@refs/pull/137/merge"
 )
 WORKFLOW_SHA = "c" * 40
+REQUIRED_CTEST_COUNT = len(MICROMACHINE_REQUIRED_NATIVE_TESTS)
 
 
 def candidate_authority(
@@ -1730,7 +1731,7 @@ class BuildBindingTest(unittest.TestCase):
                 " ".join(report["blockers"]),
             )
 
-    def test_rebuilds_schema_73_identity_and_exact_six_ctests(self) -> None:
+    def test_rebuilds_supported_identity_and_exact_required_ctests(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = make_build_fixture(Path(directory))
 
@@ -1743,8 +1744,8 @@ class BuildBindingTest(unittest.TestCase):
 
             self.assertTrue(report["ok"], report)
             self.assertEqual(fixture["report"]["identity"], report["current_identity"])
-            self.assertEqual(6, report["ctest"]["passed"])
-            self.assertEqual(6, report["ctest"]["total"])
+            self.assertEqual(REQUIRED_CTEST_COUNT, report["ctest"]["passed"])
+            self.assertEqual(REQUIRED_CTEST_COUNT, report["ctest"]["total"])
             self.assertEqual(
                 fixture["report"]["checksums"]["native_test_registry_sha256"],
                 report["ctest"]["registry_sha256"],
@@ -1999,12 +2000,15 @@ class BuildBindingTest(unittest.TestCase):
                     )
                     self.assertFalse(report["ok"], report)
 
-    def test_rejects_ctest_failure_missing_summary_and_four_of_five(self) -> None:
+    def test_rejects_ctest_failure_missing_and_inexact_summaries(self) -> None:
         cases = (
             subprocess.CompletedProcess(
                 [],
                 1,
-                stdout="83% tests passed, 1 tests failed out of 6\n",
+                stdout=(
+                    f"88% tests passed, 1 tests failed out of "
+                    f"{REQUIRED_CTEST_COUNT}\n"
+                ),
                 stderr="failed\n",
             ),
             subprocess.CompletedProcess([], 0, stdout="", stderr=""),
@@ -2018,8 +2022,10 @@ class BuildBindingTest(unittest.TestCase):
                 [],
                 0,
                 stdout=(
-                    "100% tests passed, 0 tests failed out of 6\n"
-                    "83% tests passed, 1 tests failed out of 6\n"
+                    "100% tests passed, 0 tests failed out of "
+                    f"{REQUIRED_CTEST_COUNT}\n"
+                    "88% tests passed, 1 tests failed out of "
+                    f"{REQUIRED_CTEST_COUNT}\n"
                 ),
                 stderr="",
             ),
@@ -2097,14 +2103,7 @@ class BuildBindingTest(unittest.TestCase):
                             "command": [str(build_dir / "bin" / executable)],
                         }
                         for index, executable in enumerate(
-                            (
-                                "voi_operation_transfer_admission_test",
-                                "voi_runtime_convergence_test",
-                                "voi_family_effect_lifecycle_test",
-                                "voi_battlefield_projection_test",
-                                "voi_battlefield_projection_ndebug_test",
-                                "voi_atomic_telemetry_test",
-                            )
+                            sorted(MICROMACHINE_REQUIRED_NATIVE_TESTS.values())
                         )
                     ]
                     return subprocess.CompletedProcess(
@@ -2303,31 +2302,8 @@ class BuildBindingTest(unittest.TestCase):
                         "name": name,
                         "command": [str(build_dir / "bin" / executable)],
                     }
-                    for name, executable in (
-                        (
-                            "voi_operation_transfer_admission",
-                            "voi_operation_transfer_admission_test",
-                        ),
-                        (
-                            "voi_runtime_convergence",
-                            "voi_runtime_convergence_test",
-                        ),
-                        (
-                            "voi_family_effect_lifecycle",
-                            "voi_family_effect_lifecycle_test",
-                        ),
-                        (
-                            "voi_battlefield_projection",
-                            "voi_battlefield_projection_test",
-                        ),
-                        (
-                            "voi_battlefield_projection_ndebug",
-                            "voi_battlefield_projection_ndebug_test",
-                        ),
-                        (
-                            "voi_atomic_telemetry",
-                            "voi_atomic_telemetry_test",
-                        ),
+                    for name, executable in sorted(
+                        MICROMACHINE_REQUIRED_NATIVE_TESTS.items()
                     )
                 ]
             }
@@ -2337,7 +2313,7 @@ class BuildBindingTest(unittest.TestCase):
                 f"  printf '%s\\n' '{json.dumps(discovered)}'\n"
                 "else\n"
                 "  printf '%s\\n' "
-                "'100% tests passed, 0 tests failed out of 6'\n"
+                f"'100% tests passed, 0 tests failed out of {REQUIRED_CTEST_COUNT}'\n"
                 "fi\n"
                 "exit 0\n"
             )
@@ -2387,7 +2363,7 @@ class BuildBindingTest(unittest.TestCase):
                 f"  printf '%s\\n' '{json.dumps(discovered)}'\n"
                 "else\n"
                 "  printf '%s\\n' "
-                "'100% tests passed, 0 tests failed out of 6'\n"
+                f"'100% tests passed, 0 tests failed out of {REQUIRED_CTEST_COUNT}'\n"
                 "fi\n"
                 "exit 0\n"
             )
@@ -4478,20 +4454,7 @@ def passing_ctest(*args: object, **kwargs: object) -> subprocess.CompletedProces
     if "--show-only=json-v1" in argv:
         build_dir = Path(argv[argv.index("--test-dir") + 1])
         tests = []
-        for name, executable in (
-            (
-                "voi_operation_transfer_admission",
-                "voi_operation_transfer_admission_test",
-            ),
-            ("voi_runtime_convergence", "voi_runtime_convergence_test"),
-            ("voi_family_effect_lifecycle", "voi_family_effect_lifecycle_test"),
-            ("voi_battlefield_projection", "voi_battlefield_projection_test"),
-            (
-                "voi_battlefield_projection_ndebug",
-                "voi_battlefield_projection_ndebug_test",
-            ),
-            ("voi_atomic_telemetry", "voi_atomic_telemetry_test"),
-        ):
+        for name, executable in sorted(MICROMACHINE_REQUIRED_NATIVE_TESTS.items()):
             tests.append(
                 {
                     "name": name,
@@ -4507,7 +4470,10 @@ def passing_ctest(*args: object, **kwargs: object) -> subprocess.CompletedProces
     return subprocess.CompletedProcess(
         argv,
         0,
-        stdout="100% tests passed, 0 tests failed out of 6\n",
+        stdout=(
+            "100% tests passed, 0 tests failed out of "
+            f"{REQUIRED_CTEST_COUNT}\n"
+        ),
         stderr="",
     )
 
@@ -4909,7 +4875,10 @@ def make_ctest_evidence(build_dir: Path) -> dict[str, object]:
             }
         )["sha256"],
         "stdout_sha256": hashlib.sha256(
-            b"100% tests passed, 0 tests failed out of 6\n"
+            (
+                "100% tests passed, 0 tests failed out of "
+                f"{REQUIRED_CTEST_COUNT}\n"
+            ).encode()
         ).hexdigest(),
         "stderr_sha256": hashlib.sha256(b"").hexdigest(),
     }

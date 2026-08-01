@@ -383,6 +383,11 @@
       "path": "patches/0075-battlefield-review-closure.patch",
       "order": 75,
       "scope": "close battlefield review findings by joining cached browser manager evidence only on exact update identity, merging active exact-target defense operation squads into native base readiness, failing readiness closed when matching squad evidence is missing, and serializing full uint64 session epochs as exact decimal strings"
+    },
+    {
+      "path": "patches/0076-bounded-terminal-operation-hud.patch",
+      "order": 76,
+      "scope": "bound the in-game operation HUD to eight deterministic active-first rows, retain valid terminal rows for exactly 110 frames, fail closed on invalid terminal frames, render an overflow summary outside the row cap, and derive every map marker from the same render-only selection in Debug and NDEBUG"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {
