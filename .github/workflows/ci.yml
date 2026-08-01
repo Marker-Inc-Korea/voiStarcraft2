@@ -71,6 +71,7 @@ jobs:
           path: ${{ runner.temp }}/pre-live-build-runtime.tar.gz
           compression-level: 0
           if-no-files-found: error
+          overwrite: true
           retention-days: 1
 
   pre-live-producer-isolation:
@@ -203,6 +204,7 @@ jobs:
           path: ${{ runner.temp }}/pre-live/pre-live-provenance.zip
           compression-level: 0
           if-no-files-found: error
+          overwrite: true
       - name: Restore checkout ownership to the runner
         if: always()
         run: >-

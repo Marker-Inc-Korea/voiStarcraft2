@@ -824,6 +824,15 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             "          name: pre-live-build-runtime\n",
             build_job,
         )
+        self.assertIn(
+            "          name: pre-live-build-runtime\n"
+            "          path: ${{ runner.temp }}/"
+            "pre-live-build-runtime.tar.gz\n"
+            "          compression-level: 0\n"
+            "          if-no-files-found: error\n"
+            "          overwrite: true\n",
+            build_job,
+        )
         self.assertNotIn("GITHUB_TOKEN", build_job)
         self.assertNotIn("github.token", build_job)
         self.assertIn(
@@ -852,6 +861,15 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         self.assertNotIn("github.event.pull_request.head.sha", isolation_job)
         self.assertIn(
             "      - pre-live-producer-isolation\n",
+            provenance_job,
+        )
+        self.assertIn(
+            "          name: pre-live\n"
+            "          path: ${{ runner.temp }}/pre-live/"
+            "pre-live-provenance.zip\n"
+            "          compression-level: 0\n"
+            "          if-no-files-found: error\n"
+            "          overwrite: true\n",
             provenance_job,
         )
         self.assertNotIn(
@@ -3042,11 +3060,15 @@ class GitHubActionsBundleEmissionTest(unittest.TestCase):
                         "status": "blocked",
                         "blockers": ["identity rejected"],
                     },
-                ),
+                ) as build_attestation,
                 mock.patch.object(
                     provenance_module,
                     "attest_github_actions_emission_context",
                 ) as github_attestation,
+                mock.patch.object(
+                    provenance_module,
+                    "run_local_producer",
+                ) as producer_execution,
             ):
                 report = emit_github_actions_pre_live_bundle(
                     adapter=adapter,
@@ -3066,7 +3088,13 @@ class GitHubActionsBundleEmissionTest(unittest.TestCase):
                 )
 
             self.assertFalse(report["ok"], report)
+            self.assertEqual(
+                "not_evaluated",
+                report["build_binding"]["status"],
+            )
+            build_attestation.assert_not_called()
             github_attestation.assert_not_called()
+            producer_execution.assert_not_called()
 
     def test_deterministic_output_is_bound_to_the_admitted_build(self) -> None:
         raw_output = b"raw deterministic journey output"
@@ -6394,6 +6422,64 @@ class AggregateProvenanceTest(unittest.TestCase):
         adapter = kwargs["github_adapter"]
         kwargs["replay_store"] = GitHubRefReplayStore(adapter)
         return attest_pre_live_provenance(**kwargs)
+
+    def test_invalid_identity_preflight_never_attests_or_executes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build = make_build_fixture(root / "build-fixture")
+            commit = build["repository_commit"]
+            adapter = FakeGitHubAdapter(head_sha=commit)
+
+            with (
+                mock.patch.object(
+                    provenance_module,
+                    "_normalize_producer_identity",
+                    side_effect=ValueError("invalid dedicated identity"),
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "attest_build_binding",
+                ) as build_attestation,
+                mock.patch.object(
+                    provenance_module,
+                    "attest_github_source",
+                ) as github_attestation,
+                mock.patch.object(
+                    provenance_module,
+                    "run_local_producer",
+                ) as producer_execution,
+            ):
+                report = self.attest(
+                    root / "global-replay",
+                    repository_dir=build["repository"],
+                    expected_commit=commit,
+                    github_adapter=adapter,
+                    issue_number=139,
+                    pull_number=138,
+                    run_id=RUN_ID,
+                    run_attempt=RUN_ATTEMPT,
+                    job_id=JOB_ID,
+                    artifact_id=ARTIFACT_ID,
+                    expected_head_sha=commit,
+                    build_report_path=build["report_path"],
+                    expected_build_dir=(
+                        build["config"].micromachine_build_dir
+                    ),
+                    producer_id=(
+                        PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+                    ),
+                    producer_uid=65001,
+                    producer_gid=65002,
+                )
+
+            self.assertFalse(report["ok"], report)
+            self.assertEqual(
+                "not_evaluated",
+                report["build_binding"]["status"],
+            )
+            build_attestation.assert_not_called()
+            github_attestation.assert_not_called()
+            producer_execution.assert_not_called()
 
     def test_non_deterministic_producers_cannot_qualify_or_consume_replay(
         self,

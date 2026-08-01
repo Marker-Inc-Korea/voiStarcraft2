@@ -2297,6 +2297,7 @@ def _validate_native_production_path(
                 "target_kind",
                 "target_x",
                 "target_y",
+                "cloak_state",
                 "unit_tags",
                 "dispatch_proof",
             ),
@@ -2317,6 +2318,7 @@ def _validate_native_production_path(
                 "target_kind",
                 "target_x",
                 "target_y",
+                "cloak_state",
                 "unit_tags",
             ),
         )
@@ -2388,6 +2390,7 @@ def _validate_native_dispatched_sc2_action_payload(
         "target_kind",
         "target_x",
         "target_y",
+        "cloak_state",
         "unit_tags",
     }
     if set(payload) != expected:
@@ -2506,6 +2509,7 @@ def _validate_native_submission_receipt_payload(
         "target_kind",
         "target_x",
         "target_y",
+        "cloak_state",
         "unit_tags",
         "dispatch_proof",
     }
@@ -2523,6 +2527,7 @@ def _validate_native_submission_receipt_payload(
             "target_kind",
             "target_x",
             "target_y",
+            "cloak_state",
             "unit_tags",
             "callback_executed",
             "dispatch_proof",
@@ -2583,7 +2588,7 @@ def _native_finite_number(
 
 def _native_action_metadata(
     payload: Mapping[str, object],
-) -> tuple[str, str, str, int, str, object, object]:
+) -> tuple[str, str, str, int, str, object, object, str]:
     unit_type = str(payload.get("unit_type", "") or "")
     dispatch_action = str(payload.get("dispatch_action", "") or "")
     ability_name = str(payload.get("ability_name", "") or "")
@@ -2591,6 +2596,7 @@ def _native_action_metadata(
     target_kind = str(payload.get("target_kind", "") or "")
     target_x = payload.get("target_x")
     target_y = payload.get("target_y")
+    cloak_state = payload.get("cloak_state")
     supported_dispatches = {
         "attack_move",
         "move",
@@ -2610,6 +2616,8 @@ def _native_action_metadata(
         or ability_id < 0
         or not _native_finite_number(target_x)
         or not _native_finite_number(target_y)
+        or type(cloak_state) is not str
+        or cloak_state not in {"", "not_cloaked", "cloaked", "unknown"}
     ):
         raise ValueError("native SC2 action metadata is invalid")
     if dispatch_action in ability_dispatches:
@@ -2629,6 +2637,7 @@ def _native_action_metadata(
         target_kind,
         target_x,
         target_y,
+        cloak_state,
     )
 
 
@@ -2671,7 +2680,7 @@ def _production_receipt_id(
     *,
     dispatch_action: str,
     action_metadata: (
-        tuple[str, str, str, int, str, object, object] | None
+        tuple[str, str, str, int, str, object, object, str] | None
     ) = None,
 ) -> str:
     update_id, operation_id, generation, action, unit_tags = binding
@@ -2691,12 +2700,14 @@ def _production_receipt_id(
             target_kind,
             target_x,
             target_y,
+            cloak_state,
         ) = action_metadata
         canonical += f"{len(unit_type)}:{unit_type}|"
         canonical += f"{len(ability_name)}:{ability_name}|"
         canonical += f"{ability_id}|"
         canonical += f"{len(target_kind)}:{target_kind}|"
         canonical += f"{float(target_x):.17g}|{float(target_y):.17g}|"
+        canonical += f"{len(cloak_state)}:{cloak_state}|"
     digest = 1_469_598_103_934_665_603
     for value in canonical.encode("utf-8"):
         digest ^= value
@@ -2950,6 +2961,7 @@ def _validate_native_submission_causality(
             target_kind,
             target_x,
             target_y,
+            cloak_state,
         ) = key
         binding = {
             "update_id": update_id,
@@ -2963,6 +2975,7 @@ def _validate_native_submission_causality(
             "target_kind": target_kind,
             "target_x": target_x,
             "target_y": target_y,
+            "cloak_state": cloak_state,
             "submission_ids": sorted(
                 grouped_ids[key]
             ),

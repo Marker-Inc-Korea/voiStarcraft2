@@ -3991,7 +3991,12 @@ def emit_github_actions_pre_live_bundle(
             workflow_sha=workflow_sha,
         )
     )
-    if _prevalidated_build_binding is None:
+    if producer_identity_blocked:
+        build_binding = _not_evaluated_component(
+            "build binding was not evaluated because the producer execution "
+            "identity failed preflight"
+        )
+    elif _prevalidated_build_binding is None:
         build_binding = attest_build_binding(
             build_report_path,
             repository_dir=repository_root,
@@ -4012,7 +4017,14 @@ def emit_github_actions_pre_live_bundle(
     blockers.extend(_prefixed_blockers("repository", repository_before))
     blockers.extend(_prefixed_blockers("github_context", source_context))
     blockers.extend(_prefixed_blockers("build", build_binding))
-    admitted_build = _capture_admitted_build_snapshots(build_binding)
+    admitted_build = (
+        _not_evaluated_component(
+            "build snapshots were not captured because the producer execution "
+            "identity failed preflight"
+        )
+        if producer_identity_blocked
+        else _capture_admitted_build_snapshots(build_binding)
+    )
     blockers.extend(_prefixed_blockers("admitted_build", admitted_build))
 
     producer_policy: dict[str, object]
@@ -5358,6 +5370,7 @@ def attest_pre_live_provenance(
 
     blockers: list[str] = []
     producer_identity: tuple[int, int] | None = None
+    producer_identity_blocked = False
     if producer_id == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID:
         try:
             producer_identity = _normalize_producer_identity(
@@ -5370,6 +5383,7 @@ def attest_pre_live_provenance(
                     "producer UID/GID"
                 )
         except (OSError, TypeError, ValueError) as exc:
+            producer_identity_blocked = True
             blockers.append(f"producer execution identity is invalid: {exc}")
     repository_before = attest_repository(
         repository_dir,
@@ -5377,15 +5391,22 @@ def attest_pre_live_provenance(
         expected_commit=expected_commit,
         command_runner=git_runner,
     )
-    build_binding = attest_build_binding(
-        build_report_path,
-        repository_dir=repository_dir,
-        expected_repository_commit=expected_commit,
-        expected_build_dir=expected_build_dir,
-        command_runner=ctest_runner,
-        git_runner=git_runner,
-        execution_uid=producer_identity[0] if producer_identity else None,
-        execution_gid=producer_identity[1] if producer_identity else None,
+    build_binding = (
+        _not_evaluated_component(
+            "build binding was not evaluated because the producer execution "
+            "identity failed preflight"
+        )
+        if producer_identity_blocked
+        else attest_build_binding(
+            build_report_path,
+            repository_dir=repository_dir,
+            expected_repository_commit=expected_commit,
+            expected_build_dir=expected_build_dir,
+            command_runner=ctest_runner,
+            git_runner=git_runner,
+            execution_uid=producer_identity[0] if producer_identity else None,
+            execution_gid=producer_identity[1] if producer_identity else None,
+        )
     )
     if expected_head_sha != expected_commit:
         blockers.append(
@@ -7698,6 +7719,15 @@ def _component_result(
     result["ok"] = not blockers
     result["status"] = "accepted" if not blockers else "blocked"
     result["blockers"] = list(blockers)
+    return result
+
+
+def _not_evaluated_component(
+    blocker: str,
+    **values: object,
+) -> dict[str, object]:
+    result = _component_result([blocker], **values)
+    result["status"] = "not_evaluated"
     return result
 
 

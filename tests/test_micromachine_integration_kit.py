@@ -1386,20 +1386,20 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "voiProductionLiveActionBinding(",
             patch,
         )
-        for transformed_type, canonical_type in (
-            ("TERRAN_HELLIONTANK", "TERRAN_HELLION"),
-            ("TERRAN_WIDOWMINEBURROWED", "TERRAN_WIDOWMINE"),
-            ("TERRAN_SIEGETANKSIEGED", "TERRAN_SIEGETANK"),
-            ("TERRAN_THORAP", "TERRAN_THOR"),
-            ("TERRAN_VIKINGASSAULT", "TERRAN_VIKINGFIGHTER"),
-            ("TERRAN_LIBERATORAG", "TERRAN_LIBERATOR"),
+        for transformed_type in (
+            "TERRAN_HELLIONTANK",
+            "TERRAN_WIDOWMINEBURROWED",
+            "TERRAN_SIEGETANKSIEGED",
+            "TERRAN_THORAP",
+            "TERRAN_VIKINGASSAULT",
+            "TERRAN_LIBERATORAG",
         ):
             with self.subTest(transformed_type=transformed_type):
                 self.assertIn(
                     f"case sc2::UNIT_TYPEID::{transformed_type}:",
                     patch,
                 )
-                self.assertIn(f'return "{canonical_type}";', patch)
+                self.assertIn(f'return "{transformed_type}";', patch)
         self.assertIn(
             "const auto liveBinding = voiProductionLiveActionBinding(",
             patch,
@@ -1427,6 +1427,15 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             '"assigned ability caster cloak state is invalid"',
             "unitFor(unitTag, binding, blocker)",
             "unitFor(unitTag, binding, unitBlocker)",
+            "binding.abilityName = abilityName;",
+            "binding.abilityId = abilityId;",
+            "binding.cloakState = cloakState;",
+            "binding->cloakState",
+            "receipt.cloakState = binding->cloakState;",
+            "action.explicitAbilityName",
+            "action.explicitAbilityAttemptGeneration",
+            "voiProductionObservedCloakState(",
+            "rangedUnit->cloak",
             "sc2::Unit::Cloaked",
             "sc2::Unit::NotCloaked",
         ):

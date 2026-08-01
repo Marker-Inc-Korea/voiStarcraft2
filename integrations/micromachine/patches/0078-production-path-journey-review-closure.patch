@@ -1,5 +1,5 @@
 diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
-index 3733a2a..3dad91d 100644
+index 3733a2a..abf108c 100644
 --- a/src/CombatCommander.cpp
 +++ b/src/CombatCommander.cpp
 @@ -1,4 +1,7 @@
@@ -10,7 +10,30 @@ index 3733a2a..3dad91d 100644
  #include "Util.h"
  #include "CCBot.h"
  #include "voi_operation_hud_selection.hpp"
-@@ -69,171 +72,6 @@ struct VoiTacticalNukeTarget
+@@ -58,6 +61,22 @@ constexpr float ExplicitAbilityRejectedStagingRadiusSq = 4.0f * 4.0f;
+ constexpr uint32_t ExplicitAbilityConfirmationTimeoutFrames = 224u;
+ constexpr float ExplicitAbilityOrderPositionToleranceSq = 1.0f;
+ 
++std::string voiProductionObservedCloakState(
++	sc2::Unit::CloakState cloakState)
++{
++	switch (cloakState)
++	{
++	case sc2::Unit::NotCloaked:
++		return "not_cloaked";
++	case sc2::Unit::Cloaked:
++	case sc2::Unit::CloakedDetected:
++	case sc2::Unit::CloakedAllied:
++		return "cloaked";
++	default:
++		return "unknown";
++	}
++}
++
+ struct VoiTacticalNukeTarget
+ {
+ 	CCPosition position = CCPosition();
+@@ -69,171 +88,6 @@ struct VoiTacticalNukeTarget
  	bool locationMatch = false;
  };
  
@@ -182,7 +205,7 @@ index 3733a2a..3dad91d 100644
  bool voiIsAbilityAvailableForCommand(
  	sc2::AbilityID abilityId,
  	const sc2::Unit * unit,
-@@ -2236,7 +2074,9 @@ float voiOperationSquadOrderRadius(const std::string & taskType)
+@@ -2236,7 +2090,9 @@ float voiOperationSquadOrderRadius(const std::string & taskType)
  	return DefaultOrderRadius;
  }
  
@@ -193,7 +216,7 @@ index 3733a2a..3dad91d 100644
  	VoiOperationState & operation,
  	Squad & squad,
  	size_t orderType,
-@@ -2244,10 +2084,38 @@ void voiSetOperationSquadOrder(
+@@ -2244,10 +2100,38 @@ void voiSetOperationSquadOrder(
  	float radius,
  	const std::string & status)
  {
@@ -234,7 +257,7 @@ index 3733a2a..3dad91d 100644
  }
  
  std::string voiSquadOrderName(size_t orderType)
-@@ -4134,23 +4002,14 @@ void CombatCommander::observeVoiOperations()
+@@ -4134,23 +4018,14 @@ void CombatCommander::observeVoiOperations()
  			const auto submitted =
  				evidence->submittedPositions.find(
  					unit.getTag());
@@ -261,7 +284,7 @@ index 3733a2a..3dad91d 100644
  					voiFamilyEffectTelemetrySnapshot(
  						operation.generation,
  						*evidence),
-@@ -4160,27 +4019,17 @@ void CombatCommander::observeVoiOperations()
+@@ -4160,27 +4035,17 @@ void CombatCommander::observeVoiOperations()
  					submitted
  						!= evidence->submittedPositions.end(),
  					unitMoved,
@@ -294,7 +317,7 @@ index 3733a2a..3dad91d 100644
  				evidence->effectUnitTags.insert(
  					unit.getTag());
  				evidence->effectFrame = currentFrame;
-@@ -4190,12 +4039,10 @@ void CombatCommander::observeVoiOperations()
+@@ -4190,12 +4055,10 @@ void CombatCommander::observeVoiOperations()
  			else if (
  				evidence->requiredEffect
  						== "movement_or_engagement"
@@ -310,7 +333,7 @@ index 3733a2a..3dad91d 100644
  				evidence->effectUnitTags.insert(
  					unit.getTag());
  				evidence->effectFrame = currentFrame;
-@@ -4254,10 +4101,8 @@ void CombatCommander::observeVoiOperations()
+@@ -4254,10 +4117,8 @@ void CombatCommander::observeVoiOperations()
  				operation.activeTargetPosition,
  				8.0f) >= majority)
  		{
@@ -323,7 +346,7 @@ index 3733a2a..3dad91d 100644
  				operation,
  				squad,
  				voiOperationSquadOrderType(
-@@ -4266,6 +4111,18 @@ void CombatCommander::observeVoiOperations()
+@@ -4266,6 +4127,18 @@ void CombatCommander::observeVoiOperations()
  				voiOperationSquadOrderRadius(
  					operation.taskType),
  				operation.status);
@@ -342,7 +365,7 @@ index 3733a2a..3dad91d 100644
  		}
  
  		const float completionRadius =
-@@ -4738,10 +4595,15 @@ void CombatCommander::reconcileVoiOperation(
+@@ -4738,10 +4611,15 @@ void CombatCommander::reconcileVoiOperation(
  				restoreSquad;
  			operation.assignedRoleByTag[unit.getTag()] = role;
  			m_squadData.assignUnitToSquad(unit, squad);
@@ -360,7 +383,7 @@ index 3733a2a..3dad91d 100644
  		};
  	auto sortedCandidates =
  		[&](const std::string & requiredType)
-@@ -5027,13 +4889,17 @@ void CombatCommander::reconcileVoiOperation(
+@@ -5027,13 +4905,17 @@ void CombatCommander::reconcileVoiOperation(
  		operation.status = "BLOCKED";
  		operation.blockedReason =
  			"emergency_retreat_preempted";
@@ -380,7 +403,7 @@ index 3733a2a..3dad91d 100644
  		return;
  	}
  	const bool enoughUnits =
-@@ -5047,13 +4913,18 @@ void CombatCommander::reconcileVoiOperation(
+@@ -5047,13 +4929,18 @@ void CombatCommander::reconcileVoiOperation(
  	{
  		operation.status = convergence.status;
  		operation.blockedReason = convergence.blocker;
@@ -401,7 +424,7 @@ index 3733a2a..3dad91d 100644
  		return;
  	}
  	if (operation.assignedFrame == 0)
-@@ -5068,7 +4939,7 @@ void CombatCommander::reconcileVoiOperation(
+@@ -5068,7 +4955,7 @@ void CombatCommander::reconcileVoiOperation(
  	{
  		operation.status = "ASSIGNED";
  	}
@@ -410,7 +433,7 @@ index 3733a2a..3dad91d 100644
  		operation,
  		squad,
  		voiOperationSquadOrderType(
-@@ -5076,7 +4947,12 @@ void CombatCommander::reconcileVoiOperation(
+@@ -5076,7 +4963,12 @@ void CombatCommander::reconcileVoiOperation(
  		operation.activeTargetPosition,
  		voiOperationSquadOrderRadius(
  			operation.taskType),
@@ -424,7 +447,7 @@ index 3733a2a..3dad91d 100644
  }
  
  void CombatCommander::updateVoiOperations()
-@@ -9300,6 +9176,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+@@ -9300,6 +9192,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
  			"Unsupported tactical_task.ability";
  		return;
  	}
@@ -432,7 +455,7 @@ index 3733a2a..3dad91d 100644
  	if (m_lastVoiExplicitAbilityTerminalAttemptGeneration
  			== m_voiExplicitAbilityAttemptGeneration
  		&& (m_lastVoiExplicitAbilityStatus == "completed"
-@@ -9331,7 +9208,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+@@ -9331,7 +9224,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
  		const bool actorOrderObserved =
  			voiActorHasExactAbilityOrder(
  				actor,
@@ -441,7 +464,7 @@ index 3733a2a..3dad91d 100644
  				m_lastVoiExplicitAbilityTargetTag,
  				m_lastVoiExplicitAbilityTargetPosition);
  		const bool actorTargetOrderObserved =
-@@ -9353,7 +9230,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+@@ -9353,7 +9246,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
  			actor != nullptr
  			&& m_lastVoiExplicitAbilityAvailableAtSubmission
  			&& !Util::IsAbilityAvailable(
@@ -450,7 +473,7 @@ index 3733a2a..3dad91d 100644
  				actor,
  				m_unitsAbilities);
  		std::string desiredStateEvidence;
-@@ -9379,7 +9256,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+@@ -9379,7 +9272,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
  				m_lastVoiExplicitAbilityObservedAcceptedEvidence =
  					"actor_order:"
  					+ std::string(
@@ -459,7 +482,7 @@ index 3733a2a..3dad91d 100644
  			}
  			else if (actorEnergySpent)
  			{
-@@ -9681,7 +9558,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+@@ -9681,7 +9574,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
  			return;
  		}
  		if (voiIsAbilityAvailableForCommand(
@@ -468,7 +491,7 @@ index 3733a2a..3dad91d 100644
  			unit,
  			m_unitsAbilities))
  		{
-@@ -9721,7 +9598,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+@@ -9721,7 +9614,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
  		[&](float fallback)
  		{
  			const auto rangeIt =
@@ -477,7 +500,7 @@ index 3733a2a..3dad91d 100644
  			return rangeIt != m_abilityCastingRanges.end()
  				&& rangeIt->second > 0.0f
  				? rangeIt->second
-@@ -10423,7 +10300,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+@@ -10423,7 +10316,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
  								* radius;
  						if (m_bot.Map().isValidPosition(candidate)
  							&& m_bot.Query()->Placement(
@@ -486,7 +509,7 @@ index 3733a2a..3dad91d 100644
  								candidate,
  								caster))
  						{
-@@ -10465,7 +10342,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+@@ -10465,7 +10358,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
  	{
  		action = UnitAction(
  			MicroActionType::Ability,
@@ -495,7 +518,7 @@ index 3733a2a..3dad91d 100644
  			true,
  			ACTION_REEXECUTION_FREQUENCY,
  			actionDescription,
-@@ -10479,7 +10356,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+@@ -10479,7 +10372,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
  	{
  		action = UnitAction(
  			MicroActionType::AbilityTarget,
@@ -504,7 +527,7 @@ index 3733a2a..3dad91d 100644
  			selectedTarget,
  			true,
  			ACTION_REEXECUTION_FREQUENCY,
-@@ -10490,7 +10367,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+@@ -10490,7 +10383,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
  	{
  		action = UnitAction(
  			MicroActionType::AbilityPosition,
@@ -513,30 +536,86 @@ index 3733a2a..3dad91d 100644
  			selectedPosition,
  			true,
  			ACTION_REEXECUTION_FREQUENCY,
-@@ -16394,6 +16271,22 @@ void CombatCommander::ExecuteActions()
+@@ -16361,6 +16254,14 @@ void CombatCommander::ExecuteActions()
+ 		// Uninitialized action
+ 		if (action.description.empty())
+ 			continue;
++		const bool explicitAbilityAction =
++			action.description.rfind(
++				"VoiExplicitAbility:",
++				0) == 0;
++		const bool explicitAbilityStagingAction =
++			action.description.rfind(
++				"VoiExplicitAbilityStage:",
++				0) == 0;
+ 		const bool operationAction =
+ 			!action.operationId.empty()
+ 			|| action.operationGeneration != 0
+@@ -16394,6 +16295,48 @@ void CombatCommander::ExecuteActions()
  			&& commandEpochOperation->submittedPositions.find(
  				rangedUnit->tag)
  				== commandEpochOperation->submittedPositions.end();
 +		VoiProductionActionBinding productionBinding;
 +		const VoiProductionActionBinding *
 +			productionBindingPtr = nullptr;
++		VoiProductionOperationIdentity productionIdentity;
 +		if (commandEpochOperation != nullptr)
 +		{
++			productionIdentity = {
++				commandEpochOperation->policyUpdateId,
++				commandEpochOperation->operationId,
++				commandEpochOperation->generation
++			};
++		}
++		else if (explicitAbilityAction)
++		{
++			productionIdentity = {
++				action.explicitAbilityUpdateId,
++				action.explicitAbilityTaskId,
++				action.explicitAbilityAttemptGeneration
++			};
++		}
++		if (voiProductionOperationIdentityIsValid(
++				productionIdentity))
++		{
 +			productionBinding = voiProductionLiveActionBinding(
-+				{
-+					commandEpochOperation->policyUpdateId,
-+					commandEpochOperation->operationId,
-+					commandEpochOperation->generation
-+				},
-+				voiOperationFamilyActionName(action),
++				productionIdentity,
++				commandEpochOperation != nullptr
++					? voiOperationFamilyActionName(action)
++					: "execute_ability:"
++						+ action.explicitAbilityName,
 +				static_cast<sc2::UNIT_TYPEID>(
-+					rangedUnit->unit_type));
++					rangedUnit->unit_type),
++				explicitAbilityAction
++					? action.explicitAbilityName
++					: "",
++				explicitAbilityAction
++					? static_cast<std::uint32_t>(
++						action.abilityID)
++					: 0,
++				voiProductionObservedCloakState(
++					rangedUnit->cloak));
 +			productionBindingPtr = &productionBinding;
 +		}
  
  		/*if (m_logVikingActions && rangedUnit->unit_type == sc2::UNIT_TYPEID::TERRAN_VIKINGFIGHTER)
  		{
-@@ -16487,13 +16380,22 @@ void CombatCommander::ExecuteActions()
+@@ -16422,14 +16365,6 @@ void CombatCommander::ExecuteActions()
+ 		std::stringstream ss;
+ 		bool skip = false;
+ 		bool issuedCommand = false;
+-		const bool explicitAbilityAction =
+-			action.description.rfind(
+-				"VoiExplicitAbility:",
+-				0) == 0;
+-		const bool explicitAbilityStagingAction =
+-			action.description.rfind(
+-				"VoiExplicitAbilityStage:",
+-				0) == 0;
+ 		const bool explicitScoutOrderAction =
+ 			action.description.rfind(
+ 				"VoiExplicitScoutOrder:",
+@@ -16487,13 +16422,22 @@ void CombatCommander::ExecuteActions()
  				{
  					if (rangedUnit->unit_type == sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER)
  					{
@@ -562,7 +641,7 @@ index 3733a2a..3dad91d 100644
  				}
  				break;
  			case MicroActionType::AttackUnit:
-@@ -16504,8 +16406,12 @@ void CombatCommander::ExecuteActions()
+@@ -16504,8 +16448,12 @@ void CombatCommander::ExecuteActions()
  					skip = true;
  				if (!skip)
  				{
@@ -577,7 +656,7 @@ index 3733a2a..3dad91d 100644
  				}
  				break;
  			case MicroActionType::Move:
-@@ -16531,8 +16437,12 @@ void CombatCommander::ExecuteActions()
+@@ -16531,8 +16479,12 @@ void CombatCommander::ExecuteActions()
  				}
  				if (!skip)
  				{
@@ -592,7 +671,7 @@ index 3733a2a..3dad91d 100644
  				}
  				break;
  			case MicroActionType::Ability:
-@@ -16550,8 +16460,12 @@ void CombatCommander::ExecuteActions()
+@@ -16550,8 +16502,12 @@ void CombatCommander::ExecuteActions()
  				}
  				else
  				{
@@ -607,7 +686,7 @@ index 3733a2a..3dad91d 100644
  				}
  				break;
  			case MicroActionType::AbilityPosition:
-@@ -16638,8 +16552,9 @@ void CombatCommander::ExecuteActions()
+@@ -16638,8 +16594,9 @@ void CombatCommander::ExecuteActions()
  						rangedUnit,
  						action.abilityID,
  						action.position,
@@ -619,7 +698,7 @@ index 3733a2a..3dad91d 100644
  				}
  				break;
  			case MicroActionType::AbilityTarget:
-@@ -16695,8 +16610,9 @@ void CombatCommander::ExecuteActions()
+@@ -16695,8 +16652,9 @@ void CombatCommander::ExecuteActions()
  						rangedUnit,
  						action.abilityID,
  						action.target,
@@ -631,7 +710,7 @@ index 3733a2a..3dad91d 100644
  				}
  				break;
  			case MicroActionType::Stop:
-@@ -16706,12 +16622,20 @@ void CombatCommander::ExecuteActions()
+@@ -16706,12 +16664,20 @@ void CombatCommander::ExecuteActions()
  				skip = true;
  				break;
  			case MicroActionType::RightClick:
@@ -2033,10 +2112,10 @@ index 0000000..8f6b2f1
 +}
 diff --git a/src/voi_live_production_binding.hpp b/src/voi_live_production_binding.hpp
 new file mode 100644
-index 0000000..ffc3235
+index 0000000..3e30955
 --- /dev/null
 +++ b/src/voi_live_production_binding.hpp
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,75 @@
 +#pragma once
 +
 +#include "sc2api/sc2_typeenums.h"
@@ -2056,31 +2135,37 @@ index 0000000..ffc3235
 +	case sc2::UNIT_TYPEID::TERRAN_GHOST:
 +		return "TERRAN_GHOST";
 +	case sc2::UNIT_TYPEID::TERRAN_HELLION:
-+	case sc2::UNIT_TYPEID::TERRAN_HELLIONTANK:
 +		return "TERRAN_HELLION";
++	case sc2::UNIT_TYPEID::TERRAN_HELLIONTANK:
++		return "TERRAN_HELLIONTANK";
 +	case sc2::UNIT_TYPEID::TERRAN_WIDOWMINE:
-+	case sc2::UNIT_TYPEID::TERRAN_WIDOWMINEBURROWED:
 +		return "TERRAN_WIDOWMINE";
++	case sc2::UNIT_TYPEID::TERRAN_WIDOWMINEBURROWED:
++		return "TERRAN_WIDOWMINEBURROWED";
 +	case sc2::UNIT_TYPEID::TERRAN_CYCLONE:
 +		return "TERRAN_CYCLONE";
 +	case sc2::UNIT_TYPEID::TERRAN_SIEGETANK:
-+	case sc2::UNIT_TYPEID::TERRAN_SIEGETANKSIEGED:
 +		return "TERRAN_SIEGETANK";
++	case sc2::UNIT_TYPEID::TERRAN_SIEGETANKSIEGED:
++		return "TERRAN_SIEGETANKSIEGED";
 +	case sc2::UNIT_TYPEID::TERRAN_THOR:
-+	case sc2::UNIT_TYPEID::TERRAN_THORAP:
 +		return "TERRAN_THOR";
++	case sc2::UNIT_TYPEID::TERRAN_THORAP:
++		return "TERRAN_THORAP";
 +	case sc2::UNIT_TYPEID::TERRAN_MEDIVAC:
 +		return "TERRAN_MEDIVAC";
 +	case sc2::UNIT_TYPEID::TERRAN_RAVEN:
 +		return "TERRAN_RAVEN";
 +	case sc2::UNIT_TYPEID::TERRAN_VIKINGFIGHTER:
-+	case sc2::UNIT_TYPEID::TERRAN_VIKINGASSAULT:
 +		return "TERRAN_VIKINGFIGHTER";
++	case sc2::UNIT_TYPEID::TERRAN_VIKINGASSAULT:
++		return "TERRAN_VIKINGASSAULT";
 +	case sc2::UNIT_TYPEID::TERRAN_BANSHEE:
 +		return "TERRAN_BANSHEE";
 +	case sc2::UNIT_TYPEID::TERRAN_LIBERATOR:
-+	case sc2::UNIT_TYPEID::TERRAN_LIBERATORAG:
 +		return "TERRAN_LIBERATOR";
++	case sc2::UNIT_TYPEID::TERRAN_LIBERATORAG:
++		return "TERRAN_LIBERATORAG";
 +	case sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER:
 +		return "TERRAN_BATTLECRUISER";
 +	default:
@@ -2091,13 +2176,19 @@ index 0000000..ffc3235
 +inline VoiProductionActionBinding voiProductionLiveActionBinding(
 +	const VoiProductionOperationIdentity & identity,
 +	const std::string & action,
-+	sc2::UNIT_TYPEID unitType)
++	sc2::UNIT_TYPEID unitType,
++	const std::string & abilityName = "",
++	std::uint32_t abilityId = 0,
++	const std::string & cloakState = "")
 +{
 +	VoiProductionActionBinding binding;
 +	binding.identity = identity;
 +	binding.action = action;
 +	binding.unitType =
 +		voiProductionCanonicalTerranUnitType(unitType);
++	binding.abilityName = abilityName;
++	binding.abilityId = abilityId;
++	binding.cloakState = cloakState;
 +	return binding;
 +}
 diff --git a/src/voi_operation_observation.hpp b/src/voi_operation_observation.hpp
@@ -2173,7 +2264,7 @@ index 0000000..4e1671b
 +	return decision;
 +}
 diff --git a/src/voi_pre_live_journey_adapter.hpp b/src/voi_pre_live_journey_adapter.hpp
-index 5adac66..3d8999e 100644
+index 5adac66..c6765eb 100644
 --- a/src/voi_pre_live_journey_adapter.hpp
 +++ b/src/voi_pre_live_journey_adapter.hpp
 @@ -2,9 +2,12 @@
@@ -2837,7 +2928,7 @@ index 5adac66..3d8999e 100644
  				{ "assigned_unit_tags", operation.assignedTags },
  			});
  	}
-@@ -826,6 +1235,155 @@ class VoiPreLiveJourneyAdapter
+@@ -826,6 +1235,157 @@ class VoiPreLiveJourneyAdapter
  		{
  			return;
  		}
@@ -2981,6 +3072,8 @@ index 5adac66..3d8999e 100644
 +						submission.targetX },
 +					{ "target_y",
 +						submission.targetY },
++					{ "cloak_state",
++						submission.cloakState },
 +					{ "unit_tags",
 +						submission.unitTags },
 +					{ "dispatch_proof",
@@ -2993,7 +3086,7 @@ index 5adac66..3d8999e 100644
  		operation.submitted = true;
  		for (auto & requirement : operation.requirements)
  		{
-@@ -865,7 +1423,14 @@ class VoiPreLiveJourneyAdapter
+@@ -865,7 +1425,14 @@ class VoiPreLiveJourneyAdapter
  			"order_issued",
  			{
  				{ "action", operation.action },
@@ -3009,7 +3102,7 @@ index 5adac66..3d8999e 100644
  			});
  		emit(
  			"submission",
-@@ -873,7 +1438,18 @@ class VoiPreLiveJourneyAdapter
+@@ -873,7 +1440,18 @@ class VoiPreLiveJourneyAdapter
  			"submitted",
  			{
  				{ "action", operation.action },
@@ -3029,7 +3122,7 @@ index 5adac66..3d8999e 100644
  			});
  		operation.status = "EXECUTING";
  	}
-@@ -961,6 +1537,22 @@ class VoiPreLiveJourneyAdapter
+@@ -961,6 +1539,22 @@ class VoiPreLiveJourneyAdapter
  			first.editAction == "transfer_in"
  				? &first
  				: &second;
@@ -3052,7 +3145,7 @@ index 5adac66..3d8999e 100644
  		const auto existingSource =
  			m_operations.find(source->operationId);
  		if (existingSource == m_operations.end())
-@@ -970,33 +1562,429 @@ class VoiPreLiveJourneyAdapter
+@@ -970,33 +1564,429 @@ class VoiPreLiveJourneyAdapter
  					"transfer_pair_not_active";
  			return;
  		}
@@ -3494,7 +3587,7 @@ index 5adac66..3d8999e 100644
  		emit(
  			"transfer",
  			*source,
-@@ -1005,6 +1993,22 @@ class VoiPreLiveJourneyAdapter
+@@ -1005,6 +1995,22 @@ class VoiPreLiveJourneyAdapter
  				{ "action", "transfer_out" },
  				{ "counterpart_operation_id",
  					destination->operationId },
@@ -3517,7 +3610,7 @@ index 5adac66..3d8999e 100644
  				{ "unit_tags", selected },
  				{ "resolution", "applied" },
  			});
-@@ -1046,6 +2050,9 @@ class VoiPreLiveJourneyAdapter
+@@ -1046,6 +2052,9 @@ class VoiPreLiveJourneyAdapter
  					continue;
  				}
  				operation.action = "retreat";
@@ -3527,7 +3620,7 @@ index 5adac66..3d8999e 100644
  				operation.updateId = updateId;
  				operation.submitted = false;
  				emit(
-@@ -1093,6 +2100,24 @@ class VoiPreLiveJourneyAdapter
+@@ -1093,6 +2102,24 @@ class VoiPreLiveJourneyAdapter
  				if (existing != m_operations.end())
  				{
  					auto cancelled = existing->second;
@@ -3552,7 +3645,7 @@ index 5adac66..3d8999e 100644
  					cancelled.updateId = operation.updateId;
  					cancelled.generation =
  						operation.generation;
-@@ -1103,8 +2128,38 @@ class VoiPreLiveJourneyAdapter
+@@ -1103,8 +2130,38 @@ class VoiPreLiveJourneyAdapter
  					cancelled.completionReason =
  						"cancelled_by_user";
  					cancelled.completionFrame = m_frame;
@@ -3593,7 +3686,7 @@ index 5adac66..3d8999e 100644
  					emit(
  						"cancellation",
  						cancelled,
-@@ -1113,9 +2168,11 @@ class VoiPreLiveJourneyAdapter
+@@ -1113,9 +2170,11 @@ class VoiPreLiveJourneyAdapter
  							{ "action", "cancel" },
  							{ "reason",
  								"cancelled_by_user" },
@@ -3607,7 +3700,7 @@ index 5adac66..3d8999e 100644
  				}
  				continue;
  			}
-@@ -1144,6 +2201,40 @@ class VoiPreLiveJourneyAdapter
+@@ -1144,6 +2203,40 @@ class VoiPreLiveJourneyAdapter
  					existing->second.targetReached;
  			}
  			operation.submitted = false;
@@ -3648,7 +3741,7 @@ index 5adac66..3d8999e 100644
  			m_operations[operation.operationId] = operation;
  			assignOperation(
  				m_operations[operation.operationId]);
-@@ -1200,11 +2291,18 @@ class VoiPreLiveJourneyAdapter
+@@ -1200,11 +2293,18 @@ class VoiPreLiveJourneyAdapter
  				created.tag = tag;
  				created.unitType =
  					jsonString(item, "unit_type");
@@ -3667,7 +3760,7 @@ index 5adac66..3d8999e 100644
  				created.family =
  					voiCanonicalTerranFamilyForUnitType(
  						created.unitType);
-@@ -1270,26 +2368,84 @@ class VoiPreLiveJourneyAdapter
+@@ -1270,26 +2370,84 @@ class VoiPreLiveJourneyAdapter
  				{
  					continue;
  				}
@@ -3760,7 +3853,7 @@ index 5adac66..3d8999e 100644
  			}
  			if (!abilityEffects.empty())
  			{
-@@ -1402,6 +2558,17 @@ class VoiPreLiveJourneyAdapter
+@@ -1402,6 +2560,17 @@ class VoiPreLiveJourneyAdapter
  			"effect_observed",
  			{
  				{ "action", operation.action },
@@ -3778,7 +3871,7 @@ index 5adac66..3d8999e 100644
  				{ "unit_tags", tags },
  				{ "effect_kind", effectKind },
  			});
-@@ -1413,6 +2580,8 @@ class VoiPreLiveJourneyAdapter
+@@ -1413,6 +2582,8 @@ class VoiPreLiveJourneyAdapter
  
  	void applyResourceObservation(const VoiPreLiveJson & step)
  	{
@@ -3787,7 +3880,7 @@ index 5adac66..3d8999e 100644
  		const auto structures = step.find("structures");
  		if (structures != step.end() && structures->is_array())
  		{
-@@ -1445,6 +2614,14 @@ class VoiPreLiveJourneyAdapter
+@@ -1445,6 +2616,14 @@ class VoiPreLiveJourneyAdapter
  				VoiPreLiveUnitState unit;
  				unit.tag = tag;
  				unit.unitType = unitType;
@@ -3802,7 +3895,7 @@ index 5adac66..3d8999e 100644
  				unit.family =
  					voiCanonicalTerranFamilyForUnitType(
  						unitType);
-@@ -1555,6 +2732,7 @@ class VoiPreLiveJourneyAdapter
+@@ -1555,6 +2734,7 @@ class VoiPreLiveJourneyAdapter
  				{ "tag", unit.tag },
  				{ "unit_type", unit.unitType },
  				{ "family", unit.family },
@@ -3810,7 +3903,7 @@ index 5adac66..3d8999e 100644
  				{ "alive", unit.alive },
  				{ "complete", unit.complete },
  				{ "self_owned", unit.selfOwned },
-@@ -1569,9 +2747,15 @@ class VoiPreLiveJourneyAdapter
+@@ -1569,9 +2749,15 @@ class VoiPreLiveJourneyAdapter
  			});
  		}
  		VoiPreLiveJson owners = VoiPreLiveJson::object();
@@ -3827,7 +3920,7 @@ index 5adac66..3d8999e 100644
  		}
  		VoiPreLiveJson operations = VoiPreLiveJson::array();
  		for (const auto & entry : m_operations)
-@@ -1585,6 +2769,19 @@ class VoiPreLiveJourneyAdapter
+@@ -1585,6 +2771,19 @@ class VoiPreLiveJourneyAdapter
  				{ "active", operation.active },
  				{ "assigned_unit_tags",
  					operation.assignedTags },
@@ -3847,7 +3940,7 @@ index 5adac66..3d8999e 100644
  				{ "action", operation.action },
  				{ "blocker", operation.blocker },
  			});
-@@ -1593,12 +2790,22 @@ class VoiPreLiveJourneyAdapter
+@@ -1593,12 +2792,22 @@ class VoiPreLiveJourneyAdapter
  			{ "frame", m_frame },
  			{ "units", units },
  			{ "owners", owners },
@@ -3870,7 +3963,7 @@ index 5adac66..3d8999e 100644
  		};
  	}
  
-@@ -1638,13 +2845,13 @@ class VoiPreLiveJourneyAdapter
+@@ -1638,13 +2847,13 @@ class VoiPreLiveJourneyAdapter
  			if (owner != m_owners.end())
  			{
  				const auto operation =
@@ -3887,7 +3980,7 @@ index 5adac66..3d8999e 100644
  						+ "#" + std::to_string(generation));
  			}
  			if (!source.autonomousOwner.empty())
-@@ -1948,11 +3155,143 @@ class VoiPreLiveJourneyAdapter
+@@ -1948,11 +3157,145 @@ class VoiPreLiveJourneyAdapter
  		};
  	}
  
@@ -3934,6 +4027,7 @@ index 5adac66..3d8999e 100644
 +					receipt.targetKind },
 +				{ "target_x", receipt.targetX },
 +				{ "target_y", receipt.targetY },
++				{ "cloak_state", receipt.cloakState },
 +				{ "unit_tags", receipt.unitTags },
 +			});
 +		}
@@ -3981,6 +4075,7 @@ index 5adac66..3d8999e 100644
 +					receipt.targetKind },
 +				{ "target_x", receipt.targetX },
 +				{ "target_y", receipt.targetY },
++				{ "cloak_state", receipt.cloakState },
 +				{ "unit_tags", receipt.unitTags },
 +				{ "callback_executed",
 +					receipt.callbackExecuted },
@@ -4032,7 +4127,7 @@ index 5adac66..3d8999e 100644
  		{
  			throw std::runtime_error(
  				"pre-live adapter schema_version is unsupported");
-@@ -2016,14 +3355,17 @@ public:
+@@ -2016,14 +3359,17 @@ public:
  			}
  			else if (kind == "client_reconnect")
  			{
@@ -4053,7 +4148,7 @@ index 5adac66..3d8999e 100644
  					});
  				recordSnapshot("client_reconnect");
  			}
-@@ -2040,13 +3382,14 @@ public:
+@@ -2040,13 +3386,14 @@ public:
  				voiBattlefieldProjectionJson(projection));
  		const auto director = operationDirectorJson();
  		return {
@@ -4069,7 +4164,7 @@ index 5adac66..3d8999e 100644
  			{ "telemetry", {
  				{ "protocol_version", "voi-mm-bridge/v1" },
  				{ "frame", m_frame },
-@@ -2070,9 +3413,10 @@ public:
+@@ -2070,9 +3417,10 @@ public:
  };
  
  inline VoiPreLiveJson voiRunPreLiveJourneyAdapter(
@@ -4082,7 +4177,7 @@ index 5adac66..3d8999e 100644
  	return adapter.run(input);
  }
  
-@@ -2080,7 +3424,8 @@ inline int voiRunPreLiveJourneyAdapterFile(
+@@ -2080,7 +3428,8 @@ inline int voiRunPreLiveJourneyAdapterFile(
  	const std::string & path,
  	std::istream & standardInput,
  	std::ostream & output,
@@ -4092,7 +4187,7 @@ index 5adac66..3d8999e 100644
  {
  	try
  	{
-@@ -2099,7 +3444,9 @@ inline int voiRunPreLiveJourneyAdapterFile(
+@@ -2099,7 +3448,9 @@ inline int voiRunPreLiveJourneyAdapterFile(
  		}
  		VoiPreLiveJson payload;
  		*input >> payload;
@@ -4105,10 +4200,10 @@ index 5adac66..3d8999e 100644
  	}
 diff --git a/src/voi_production_path.hpp b/src/voi_production_path.hpp
 new file mode 100644
-index 0000000..62a2fd7
+index 0000000..80e3e43
 --- /dev/null
 +++ b/src/voi_production_path.hpp
-@@ -0,0 +1,459 @@
+@@ -0,0 +1,464 @@
 +#pragma once
 +
 +#include <algorithm>
@@ -4340,6 +4435,9 @@ index 0000000..62a2fd7
 +		canonical << std::setprecision(17)
 +			<< binding->targetX << "|"
 +			<< binding->targetY << "|";
++		voiProductionAppendDeterministicField(
++			canonical,
++			binding->cloakState);
 +	}
 +
 +	std::uint64_t hash = 1469598103934665603ULL;
@@ -4418,6 +4516,7 @@ index 0000000..62a2fd7
 +	std::string targetKind;
 +	double targetX = 0.0;
 +	double targetY = 0.0;
++	std::string cloakState;
 +	std::vector<std::uint64_t> unitTags;
 +	std::string submissionId;
 +	std::string blocker;
@@ -4446,6 +4545,7 @@ index 0000000..62a2fd7
 +		receipt.targetKind = binding->targetKind;
 +		receipt.targetX = binding->targetX;
 +		receipt.targetY = binding->targetY;
++		receipt.cloakState = binding->cloakState;
 +	}
 +	if (!voiProductionOperationIdentityIsValid(identity))
 +	{
@@ -4592,7 +4692,7 @@ index 3ddbf11..534667e 100644
 +    COMMAND voi_production_path_test
 +)
 diff --git a/tests/pre_live_journey_adapter_test.cpp b/tests/pre_live_journey_adapter_test.cpp
-index 5aad7ef..38aca53 100644
+index 5aad7ef..67de461 100644
 --- a/tests/pre_live_journey_adapter_test.cpp
 +++ b/tests/pre_live_journey_adapter_test.cpp
 @@ -2,7 +2,9 @@
@@ -4985,7 +5085,7 @@ index 5aad7ef..38aca53 100644
  	CHECK(
  		output["battlefield_overview"]["authority"]
  			== "micromachine_cpp");
-@@ -152,6 +477,202 @@ int main()
+@@ -152,6 +477,206 @@ int main()
  			["family_evidence"][0]["effect_kind"]
  			== "movement");
  	CHECK(output["hud"]["rows"].is_array());
@@ -5076,6 +5176,7 @@ index 5aad7ef..38aca53 100644
 +		CHECK(submission["action"] == "squad_order:attack");
 +		CHECK(submission["dispatch_action"] == "attack_move");
 +		CHECK(submission["unit_type"] == "TERRAN_MARINE");
++		CHECK(submission["cloak_state"] == "");
 +		CHECK(submission["unit_tags"].size() == 1);
 +		CHECK(submission["callback_executed"] == true);
 +		CHECK(submission["dispatch_proof"] == true);
@@ -5084,7 +5185,7 @@ index 5aad7ef..38aca53 100644
 +		CHECK(
 +			submissionId.find("voi-sc2-submission-") == 0);
 +		submissionIds.insert(submissionId);
-+		CHECK(dispatched.size() == 13);
++		CHECK(dispatched.size() == 14);
 +		CHECK(dispatched["submission_id"] == submissionId);
 +		CHECK(dispatched["update_id"] == "adapter-test");
 +		CHECK(dispatched["operation_id"] == "assault-alpha");
@@ -5092,6 +5193,9 @@ index 5aad7ef..38aca53 100644
 +		CHECK(dispatched["action"] == "squad_order:attack");
 +		CHECK(dispatched["dispatch_action"] == "attack_move");
 +		CHECK(dispatched["unit_type"] == submission["unit_type"]);
++		CHECK(
++			dispatched["cloak_state"]
++				== submission["cloak_state"]);
 +		CHECK(dispatched["unit_tags"] == submission["unit_tags"]);
 +	}
 +	CHECK(submissionIds.size() == 2);
@@ -5188,7 +5292,7 @@ index 5aad7ef..38aca53 100644
  
  	auto multiRole = validInput();
  	multiRole["initial_state"]["units"].push_back({
-@@ -186,7 +707,7 @@ int main()
+@@ -186,7 +711,7 @@ int main()
  		},
  	};
  	const auto multiRoleOutput =
@@ -5197,7 +5301,7 @@ index 5aad7ef..38aca53 100644
  	CHECK(
  		multiRoleOutput["operation_director"][0]["assigned_count"]
  			== 5);
-@@ -220,11 +741,21 @@ int main()
+@@ -220,11 +745,21 @@ int main()
  	protectedMinimum["steps"].erase(
  		protectedMinimum["steps"].begin() + 1);
  	const auto protectedOutput =
@@ -5220,7 +5324,7 @@ index 5aad7ef..38aca53 100644
  	for (const auto & event : protectedOutput["events"])
  	{
  		protectedRejectionObserved =
-@@ -232,14 +763,313 @@ int main()
+@@ -232,14 +767,313 @@ int main()
  			|| (event["event_type"] == "rejection"
  				&& event["payload"]["reason"]
  					== "protected_minimum_violation");
@@ -5535,7 +5639,7 @@ index 5aad7ef..38aca53 100644
  		CHECK(false);
  	}
  	catch (const std::runtime_error & error)
-@@ -254,7 +1084,7 @@ int main()
+@@ -254,7 +1088,7 @@ int main()
  	regressive["steps"][1]["frame"] = 99;
  	try
  	{
@@ -5544,7 +5648,7 @@ index 5aad7ef..38aca53 100644
  		CHECK(false);
  	}
  	catch (const std::runtime_error & error)
-@@ -263,3 +1093,6 @@ int main()
+@@ -263,3 +1097,6 @@ int main()
  			std::string(error.what()).find("regressed")
  				!= std::string::npos);
  	}
@@ -5553,10 +5657,10 @@ index 5aad7ef..38aca53 100644
 +}
 diff --git a/tests/production_path_test.cpp b/tests/production_path_test.cpp
 new file mode 100644
-index 0000000..c03b63b
+index 0000000..e0937e2
 --- /dev/null
 +++ b/tests/production_path_test.cpp
-@@ -0,0 +1,530 @@
+@@ -0,0 +1,575 @@
 +#include "voi_live_production_binding.hpp"
 +
 +#include <iostream>
@@ -5612,7 +5716,7 @@ index 0000000..c03b63b
 +			},
 +			{
 +				sc2::UNIT_TYPEID::TERRAN_HELLIONTANK,
-+				"TERRAN_HELLION"
++				"TERRAN_HELLIONTANK"
 +			},
 +			{
 +				sc2::UNIT_TYPEID::TERRAN_WIDOWMINE,
@@ -5620,7 +5724,7 @@ index 0000000..c03b63b
 +			},
 +			{
 +				sc2::UNIT_TYPEID::TERRAN_WIDOWMINEBURROWED,
-+				"TERRAN_WIDOWMINE"
++				"TERRAN_WIDOWMINEBURROWED"
 +			},
 +			{
 +				sc2::UNIT_TYPEID::TERRAN_CYCLONE,
@@ -5632,7 +5736,7 @@ index 0000000..c03b63b
 +			},
 +			{
 +				sc2::UNIT_TYPEID::TERRAN_SIEGETANKSIEGED,
-+				"TERRAN_SIEGETANK"
++				"TERRAN_SIEGETANKSIEGED"
 +			},
 +			{
 +				sc2::UNIT_TYPEID::TERRAN_THOR,
@@ -5640,7 +5744,7 @@ index 0000000..c03b63b
 +			},
 +			{
 +				sc2::UNIT_TYPEID::TERRAN_THORAP,
-+				"TERRAN_THOR"
++				"TERRAN_THORAP"
 +			},
 +			{
 +				sc2::UNIT_TYPEID::TERRAN_MEDIVAC,
@@ -5656,7 +5760,7 @@ index 0000000..c03b63b
 +			},
 +			{
 +				sc2::UNIT_TYPEID::TERRAN_VIKINGASSAULT,
-+				"TERRAN_VIKINGFIGHTER"
++				"TERRAN_VIKINGASSAULT"
 +			},
 +			{
 +				sc2::UNIT_TYPEID::TERRAN_BANSHEE,
@@ -5668,7 +5772,7 @@ index 0000000..c03b63b
 +			},
 +			{
 +				sc2::UNIT_TYPEID::TERRAN_LIBERATORAG,
-+				"TERRAN_LIBERATOR"
++				"TERRAN_LIBERATORAG"
 +			},
 +			{
 +				sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER,
@@ -5691,6 +5795,18 @@ index 0000000..c03b63b
 +		CHECK(liveBinding.action == "squad_order:attack");
 +		CHECK(liveBinding.unitType == liveUnitTypeCase.second);
 +	}
++	const auto explicitLiveBinding =
++		voiProductionLiveActionBinding(
++			identity,
++			"execute_ability:ghost_cloak",
++			sc2::UNIT_TYPEID::TERRAN_GHOST,
++			"ghost_cloak",
++			382,
++			"not_cloaked");
++	CHECK(explicitLiveBinding.unitType == "TERRAN_GHOST");
++	CHECK(explicitLiveBinding.abilityName == "ghost_cloak");
++	CHECK(explicitLiveBinding.abilityId == 382);
++	CHECK(explicitLiveBinding.cloakState == "not_cloaked");
 +	const auto unsupportedLiveBinding =
 +		voiProductionLiveActionBinding(
 +			identity,
@@ -5887,6 +6003,39 @@ index 0000000..c03b63b
 +		acceptedSubmission.unitTags
 +			== std::vector<std::uint64_t>({11}));
 +	CHECK(!acceptedSubmission.submissionId.empty());
++
++	const auto explicitSubmission = voiProductionSubmitSc2Action(
++		identity,
++		explicitLiveBinding.action,
++		"ability",
++		std::vector<std::uint64_t>({11}),
++		&explicitLiveBinding,
++		[]()
++		{
++			return true;
++		});
++	CHECK(explicitSubmission.submitted);
++	CHECK(explicitSubmission.unitType == "TERRAN_GHOST");
++	CHECK(explicitSubmission.abilityName == "ghost_cloak");
++	CHECK(explicitSubmission.abilityId == 382);
++	CHECK(explicitSubmission.cloakState == "not_cloaked");
++	auto cloakedExplicitBinding = explicitLiveBinding;
++	cloakedExplicitBinding.cloakState = "cloaked";
++	const auto cloakedExplicitSubmission =
++		voiProductionSubmitSc2Action(
++			identity,
++			cloakedExplicitBinding.action,
++			"ability",
++			std::vector<std::uint64_t>({11}),
++			&cloakedExplicitBinding,
++			[]()
++			{
++				return true;
++			});
++	CHECK(cloakedExplicitSubmission.submitted);
++	CHECK(
++		cloakedExplicitSubmission.submissionId
++			!= explicitSubmission.submissionId);
 +
 +	bool acceptedDispatchCommandIssued = false;
 +	int acceptedDispatchCallbackCount = 0;

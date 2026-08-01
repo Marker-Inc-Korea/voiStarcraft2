@@ -778,6 +778,24 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
         ):
             _validate_native_output_payload(native)
 
+    def test_native_sc2_receipt_id_binds_caster_cloak_state(self) -> None:
+        native = deepcopy(
+            self.artifacts["all_terran_family_ability_blocker_matrix"][
+                "products"
+            ]["native_adapter"]["output"]
+        )
+        receipt = next(
+            row
+            for row in native["production_path"]["sc2_submission_receipts"]
+            if row["ability_name"] == "ghost_decloak"
+        )
+        receipt["cloak_state"] = "not_cloaked"
+        with self.assertRaisesRegex(
+            ValueError,
+            "submission id is invalid",
+        ):
+            _validate_native_output_payload(native)
+
     def test_native_sc2_caster_unit_type_is_compiler_bound(self) -> None:
         adapter = deepcopy(
             self.artifacts["all_terran_family_ability_blocker_matrix"][
@@ -2464,7 +2482,7 @@ def _resequence(events: list[dict[str, object]]) -> None:
 
 def _receipt_action_metadata(
     payload: dict[str, object],
-) -> tuple[str, str, str, int, str, object, object]:
+) -> tuple[str, str, str, int, str, object, object, str]:
     return (
         str(payload["unit_type"]),
         str(payload["dispatch_action"]),
@@ -2473,6 +2491,7 @@ def _receipt_action_metadata(
         str(payload["target_kind"]),
         payload["target_x"],
         payload["target_y"],
+        str(payload["cloak_state"]),
     )
 
 
