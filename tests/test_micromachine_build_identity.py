@@ -28,7 +28,7 @@ from starcraft_commander.micromachine_build_identity import (
 
 class MicroMachineBuildIdentityTest(unittest.TestCase):
     def test_live_admission_requires_the_supported_schema(self) -> None:
-        self.assertEqual(75, MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION)
+        self.assertEqual(76, MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION)
         passing = {
             "schema_version": MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
             "identity": "sha256:fixture",
@@ -131,6 +131,14 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             )
             self.assertIn(
                 "micromachine_battlefield_review_closure_patch_sha256",
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_bounded_terminal_operation_hud_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                "micromachine_bounded_terminal_operation_hud_patch_sha256",
                 report["checksums"],
             )
             self.assertIn(
@@ -2320,6 +2328,14 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             Path(args.micromachine_battlefield_review_closure_patch).name,
         )
 
+    def test_bounded_terminal_operation_hud_cli_defaults_to_patch_0076(self) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0076-bounded-terminal-operation-hud.patch",
+            Path(args.micromachine_bounded_terminal_operation_hud_patch).name,
+        )
+
     def test_operation_edit_ownership_handoff_patch_changes_identity(
         self,
     ) -> None:
@@ -3047,6 +3063,63 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                     if failure["code"] == "missing_required_build_input"
                 },
             )
+
+    def test_bounded_terminal_operation_hud_patch_changes_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            checksum = "micromachine_bounded_terminal_operation_hud_patch_sha256"
+
+            config.micromachine_bounded_terminal_operation_hud_patch.write_text(
+                "changed bounded terminal operation hud\n"
+            )
+            second = build_micromachine_build_identity(config)
+
+            self.assertTrue(first["ok"], first)
+            self.assertFalse(second["ok"], second)
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+
+    def test_missing_bounded_terminal_operation_hud_patch_fails_closed(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_bounded_terminal_operation_hud_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"], report)
+            self.assertIn(
+                "micromachine_bounded_terminal_operation_hud_patch_sha256",
+                {
+                    failure.get("checksum")
+                    for failure in report["failures"]
+                    if failure["code"] == "missing_required_build_input"
+                },
+            )
+
+    def test_operation_hud_selection_native_tests_are_required(self) -> None:
+        self.assertEqual(
+            {
+                "voi_operation_hud_selection": "voi_operation_hud_selection_test",
+                "voi_operation_hud_selection_ndebug": (
+                    "voi_operation_hud_selection_ndebug_test"
+                ),
+            },
+            {
+                name: MICROMACHINE_REQUIRED_NATIVE_TESTS[name]
+                for name in (
+                    "voi_operation_hud_selection",
+                    "voi_operation_hud_selection_ndebug",
+                )
+            },
+        )
 
     def test_atomic_telemetry_native_test_requires_its_canonical_artifact(
         self,
@@ -3888,6 +3961,9 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         micromachine_battlefield_review_closure_patch = (
             root / "micromachine-battlefield-review-closure.patch"
         )
+        micromachine_bounded_terminal_operation_hud_patch = (
+            root / "micromachine-bounded-terminal-operation-hud.patch"
+        )
         s2client_patch = root / "s2client.patch"
         hook_manifest = root / "HOOK_MANIFEST.json"
         map_pool = root / "MICROMACHINE_MAP_POOL.json"
@@ -3968,6 +4044,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             micromachine_contextual_transfer_choice_projection_patch,
             micromachine_autonomous_owner_composition_evidence_patch,
             micromachine_battlefield_review_closure_patch,
+            micromachine_bounded_terminal_operation_hud_patch,
             s2client_patch,
             hook_manifest,
             map_pool,
@@ -4191,6 +4268,9 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             ),
             micromachine_battlefield_review_closure_patch=(
                 micromachine_battlefield_review_closure_patch
+            ),
+            micromachine_bounded_terminal_operation_hud_patch=(
+                micromachine_bounded_terminal_operation_hud_patch
             ),
             s2client_patch=s2client_patch,
             hook_manifest=hook_manifest,

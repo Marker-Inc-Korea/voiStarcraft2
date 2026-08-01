@@ -26,7 +26,7 @@ SANITIZED_GIT_ENV: Final[dict[str, str]] = {
     "LC_ALL": "C",
     "PATH": "/usr/bin:/bin",
 }
-MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 75
+MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 76
 MICROMACHINE_SOURCE_ATTESTATION_SCHEMA_VERSION: Final[int] = 5
 MICROMACHINE_BUILD_TRANSACTION_SCHEMA_VERSION: Final[int] = 1
 MICROMACHINE_CTEST_REGISTRY_SCHEMA_VERSION: Final[int] = 1
@@ -38,6 +38,8 @@ MICROMACHINE_REQUIRED_NATIVE_TESTS: Final[dict[str, str]] = {
     "voi_battlefield_projection": "voi_battlefield_projection_test",
     "voi_battlefield_projection_ndebug": "voi_battlefield_projection_ndebug_test",
     "voi_atomic_telemetry": "voi_atomic_telemetry_test",
+    "voi_operation_hud_selection": "voi_operation_hud_selection_test",
+    "voi_operation_hud_selection_ndebug": "voi_operation_hud_selection_ndebug_test",
 }
 CMAKE_CTEST_COMMAND_PREFIX: Final[str] = "CMAKE_CTEST_COMMAND:INTERNAL="
 DEFAULT_MICROMACHINE_COMMIT: Final[str] = "eb893161371dab975a0a7e600f9e250ac03ec1ef"
@@ -575,6 +577,13 @@ DEFAULT_MICROMACHINE_BATTLEFIELD_REVIEW_CLOSURE_PATCH: Final[Path] = (
     / "patches"
     / "0075-battlefield-review-closure.patch"
 )
+DEFAULT_MICROMACHINE_BOUNDED_TERMINAL_OPERATION_HUD_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0076-bounded-terminal-operation-hud.patch"
+)
 DEFAULT_S2CLIENT_PATCH: Final[Path] = (
     REPO_ROOT
     / "integrations"
@@ -819,6 +828,9 @@ class MicroMachineBuildIdentityConfig:
     )
     micromachine_battlefield_review_closure_patch: Path = (
         DEFAULT_MICROMACHINE_BATTLEFIELD_REVIEW_CLOSURE_PATCH
+    )
+    micromachine_bounded_terminal_operation_hud_patch: Path = (
+        DEFAULT_MICROMACHINE_BOUNDED_TERMINAL_OPERATION_HUD_PATCH
     )
     s2client_patch: Path = DEFAULT_S2CLIENT_PATCH
     hook_manifest: Path = DEFAULT_HOOK_MANIFEST
@@ -1249,6 +1261,9 @@ def build_micromachine_build_identity(
         "micromachine_battlefield_review_closure_patch_sha256": _sha256_file(
             config.micromachine_battlefield_review_closure_patch
         ),
+        "micromachine_bounded_terminal_operation_hud_patch_sha256": _sha256_file(
+            config.micromachine_bounded_terminal_operation_hud_patch
+        ),
         "s2client_patch_sha256": _sha256_file(config.s2client_patch),
         "hook_manifest_sha256": _sha256_file(config.hook_manifest),
         "map_pool_sha256": _sha256_file(config.map_pool),
@@ -1636,6 +1651,9 @@ def build_micromachine_build_identity(
             ),
             "micromachine_battlefield_review_closure_patch": str(
                 config.micromachine_battlefield_review_closure_patch
+            ),
+            "micromachine_bounded_terminal_operation_hud_patch": str(
+                config.micromachine_bounded_terminal_operation_hud_patch
             ),
             "embedded_build_identity_header": str(
                 config.embedded_build_identity_header_path
@@ -2284,6 +2302,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--micromachine-battlefield-review-closure-patch",
         default=str(DEFAULT_MICROMACHINE_BATTLEFIELD_REVIEW_CLOSURE_PATCH),
     )
+    parser.add_argument(
+        "--micromachine-bounded-terminal-operation-hud-patch",
+        default=str(DEFAULT_MICROMACHINE_BOUNDED_TERMINAL_OPERATION_HUD_PATCH),
+    )
     parser.add_argument("--s2client-patch", default=str(DEFAULT_S2CLIENT_PATCH))
     parser.add_argument("--hook-manifest", default=str(DEFAULT_HOOK_MANIFEST))
     parser.add_argument("--map-pool", default=str(DEFAULT_MAP_POOL))
@@ -2549,6 +2571,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         micromachine_battlefield_review_closure_patch=Path(
             args.micromachine_battlefield_review_closure_patch
+        ),
+        micromachine_bounded_terminal_operation_hud_patch=Path(
+            args.micromachine_bounded_terminal_operation_hud_patch
         ),
         s2client_patch=Path(args.s2client_patch),
         hook_manifest=Path(args.hook_manifest),

@@ -89,6 +89,7 @@ Verified upstream:
 | `patches/0073-contextual-transfer-choice-projection.patch` | Makes contextual transfer choices reachable from native telemetry by preserving every active `(source_operation_id, destination_operation_id)` endpoint, both current generations, source protected minimum, destination capacity, deterministic transferable tags, and safe `transfer_available_units`/`transfer_two_units` recommendations. The patch is a required schema-73 build input bound into build identity and source attestation. |
 | `patches/0074-autonomous-owner-composition-evidence.patch` | Publishes privacy-safe autonomous owner composition from the authoritative C++ unit projection, grouped by canonical Terran family and native ownership role with represented, ground-capable, and air-capable counts. Missing family or role evidence fails ownership integrity closed. The patch is a required schema-74 build input bound into build identity and source attestation. |
 | `patches/0075-battlefield-review-closure.patch` | Closes independent-review blockers by merging active exact-target explicit defense squads with legacy autonomous base defenders, failing readiness closed on missing matching squad evidence, and serializing full `uint64_t` session epochs as exact decimal strings. The patch is a required schema-75 build input bound into build identity and source attestation. |
+| `patches/0076-bounded-terminal-operation-hud.patch` | Bounds the in-game HUD to eight deterministic operation rows while prioritizing nonterminal work, retains only terminal rows with canonical completion frames aged `0..109`, renders `+N operations hidden` outside the row cap, and draws target, route, squad, and unit markers only for the selected rows. Header-only native tests execute the same contract in Debug and NDEBUG without mutating lifecycle, ownership, history, or operation order. The patch is a required schema-76 build input bound into build identity and source attestation. |
 | `scripts/build_macos_local.sh` | Reproducible macOS build script for `s2client-api` plus patched MicroMachine. |
 | `scripts/probe_macos_local.sh` | Standalone `s2client-api` bootstrap probe that proves CreateGame/JoinGame produces own starting units before MicroMachine is evaluated. |
 | `scripts/smoke_macos_local.sh` | Local StarCraft II smoke script that writes modulation and requires both telemetry and real macro-opening evidence. |
@@ -162,10 +163,10 @@ how to act.
 `scripts/build_macos_local.sh` writes
 `$MICROMACHINE_BUILD_DIR/voi_build_identity.json` after a successful build. The
 clean build applies the MicroMachine patch bundle in numeric order from `0001`
-through `0075`, runs the runtime CTest contracts, then copies the blackboard
+through `0076`, runs the runtime CTest contracts, then copies the blackboard
 header and generates the embedded
 identity header before compilation. The
-schema-75 report includes pinned MicroMachine and `s2client-api` commits, every patch
+schema-76 report includes pinned MicroMachine and `s2client-api` commits, every patch
 checksum, config/header checksums, binary path, and binary checksum. A pre-build
 source attestation is finalized only after the executable exists, binding its
 hash, size, and executable-reported build-input identity to the attested source

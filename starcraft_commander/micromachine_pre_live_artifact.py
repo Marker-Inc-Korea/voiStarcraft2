@@ -289,7 +289,7 @@ MicroMachinePreLiveArtifactLimits = PreLiveArtifactLimits
 
 @dataclass(frozen=True)
 class PreLiveBuildAdmissionSnapshot:
-    """Immutable bytes and source mode accepted by schema-75 admission."""
+    """Immutable bytes and source mode accepted by the supported build identity schema."""
 
     build_report_bytes: bytes
     binary_bytes: bytes
@@ -1489,7 +1489,7 @@ def _validate_builder_admission_snapshot(
 ) -> None:
     admitted_roles = (
         (
-            "schema-75 build report",
+            "supported build identity report",
             metadata.build_report_member,
             snapshot.build_report_bytes,
             snapshot.build_report_sha256,
@@ -2928,7 +2928,7 @@ def _validate_build_report_binding(
             blockers,
             "build_report_failed",
             "$.build_report.ok",
-            "build report must record an accepted schema-75 build",
+            "build report must record an accepted supported build identity",
         )
     _require_equal(
         report.get("failures"),

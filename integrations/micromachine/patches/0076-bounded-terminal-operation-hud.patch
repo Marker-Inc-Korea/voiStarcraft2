@@ -1,0 +1,456 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index 6949175..b90279d 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -1,6 +1,7 @@
+ #include "CombatCommander.h"
+ #include "Util.h"
+ #include "CCBot.h"
++#include "voi_operation_hud_selection.hpp"
+ #include "voi_operation_transfer_admission.hpp"
+ #include "voi_runtime_convergence.hpp"
+ #include <algorithm>
+@@ -15035,9 +15036,37 @@ void CombatCommander::drawVoiOperationHud()
+ 	{
+ 		return;
+ 	}
++	std::vector<VoiOperationHudCandidate> candidates;
++	candidates.reserve(m_voiOperations.size());
++	for (size_t index = 0; index < m_voiOperations.size(); ++index)
++	{
++		const auto & operation = m_voiOperations[index];
++		if (voiFindBattlefieldOperationProjection(
++				m_voiBattlefieldProjection,
++				operation.operationId,
++				operation.generation) == nullptr)
++		{
++			continue;
++		}
++		VoiOperationHudCandidate candidate;
++		candidate.sourceIndex = index;
++		candidate.operationId = operation.operationId;
++		candidate.generation = operation.generation;
++		candidate.canonicalFrame = operation.issuedAtFrame;
++		candidate.terminal = operation.completed;
++		candidate.terminalFramePresent =
++			operation.completionFrame != 0;
++		candidate.terminalFrame = operation.completionFrame;
++		candidates.push_back(candidate);
++	}
++	const auto selection = voiSelectOperationHud(
++		candidates,
++		m_voiBattlefieldProjection.frame);
+ 	float screenY = 0.08f;
+-	for (const auto & operation : m_voiOperations)
++	for (const auto operationIndex : selection.operationIndices)
+ 	{
++		const auto & operation =
++			m_voiOperations[operationIndex];
+ 		const auto * battlefieldOperation =
+ 			voiFindBattlefieldOperationProjection(
+ 				m_voiBattlefieldProjection,
+@@ -15268,6 +15297,15 @@ void CombatCommander::drawVoiOperationHud()
+ 				color);
+ 		}
+ 	}
++	if (selection.hiddenCount > 0)
++	{
++		m_bot.Map().drawTextScreen(
++			0.01f,
++			screenY,
++			"+" + std::to_string(selection.hiddenCount)
++				+ " operations hidden",
++			sc2::Colors::White);
++	}
+ }
+ 
+ CCPosition CombatCommander::getMainAttackLocation()
+diff --git a/src/voi_operation_hud_selection.hpp b/src/voi_operation_hud_selection.hpp
+new file mode 100644
+index 0000000..26bb5b0
+--- /dev/null
++++ b/src/voi_operation_hud_selection.hpp
+@@ -0,0 +1,107 @@
++#pragma once
++
++#include <algorithm>
++#include <cstddef>
++#include <cstdint>
++#include <string>
++#include <vector>
++
++constexpr std::size_t VoiOperationHudMaxRows = 8;
++constexpr std::uint64_t VoiOperationHudTerminalGraceFrames = 110;
++
++struct VoiOperationHudCandidate
++{
++	std::size_t sourceIndex = 0;
++	std::string operationId;
++	std::uint64_t generation = 0;
++	std::uint64_t canonicalFrame = 0;
++	bool terminal = false;
++	bool terminalFramePresent = false;
++	std::uint64_t terminalFrame = 0;
++};
++
++struct VoiOperationHudSelection
++{
++	std::vector<std::size_t> operationIndices;
++	std::size_t hiddenCount = 0;
++};
++
++inline bool voiOperationHudTerminalEligible(
++	const VoiOperationHudCandidate & candidate,
++	std::uint64_t currentFrame)
++{
++	if (!candidate.terminal)
++	{
++		return true;
++	}
++	if (!candidate.terminalFramePresent
++		|| candidate.terminalFrame == 0
++		|| candidate.terminalFrame < candidate.canonicalFrame
++		|| candidate.terminalFrame > currentFrame)
++	{
++		return false;
++	}
++	return currentFrame - candidate.terminalFrame
++		< VoiOperationHudTerminalGraceFrames;
++}
++
++inline VoiOperationHudSelection voiSelectOperationHud(
++	const std::vector<VoiOperationHudCandidate> & candidates,
++	std::uint64_t currentFrame)
++{
++	std::vector<VoiOperationHudCandidate> eligible;
++	eligible.reserve(candidates.size());
++	for (const auto & candidate : candidates)
++	{
++		if (voiOperationHudTerminalEligible(candidate, currentFrame))
++		{
++			eligible.push_back(candidate);
++		}
++	}
++	std::sort(
++		eligible.begin(),
++		eligible.end(),
++		[](const VoiOperationHudCandidate & left,
++			const VoiOperationHudCandidate & right)
++		{
++			if (left.terminal != right.terminal)
++			{
++				return !left.terminal;
++			}
++			if (left.canonicalFrame != right.canonicalFrame)
++			{
++				return left.canonicalFrame < right.canonicalFrame;
++			}
++			if (left.operationId != right.operationId)
++			{
++				return left.operationId < right.operationId;
++			}
++			if (left.generation != right.generation)
++			{
++				return left.generation < right.generation;
++			}
++			return left.sourceIndex < right.sourceIndex;
++		});
++
++	VoiOperationHudSelection selection;
++	const std::size_t visibleCount =
++		std::min(VoiOperationHudMaxRows, eligible.size());
++	selection.operationIndices.reserve(visibleCount);
++	for (std::size_t index = 0; index < visibleCount; ++index)
++	{
++		selection.operationIndices.push_back(
++			eligible[index].sourceIndex);
++	}
++	selection.hiddenCount = eligible.size() - visibleCount;
++	return selection;
++}
++
++inline bool voiOperationHudMarkerVisible(
++	const VoiOperationHudSelection & selection,
++	std::size_t sourceIndex)
++{
++	return std::find(
++		selection.operationIndices.begin(),
++		selection.operationIndices.end(),
++		sourceIndex) != selection.operationIndices.end();
++}
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index cdfc8a6..8815736 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -95,3 +95,36 @@ add_test(
+     NAME voi_atomic_telemetry
+     COMMAND voi_atomic_telemetry_test
+ )
++
++add_executable(
++    voi_operation_hud_selection_test
++    operation_hud_selection_test.cpp
++)
++target_include_directories(
++    voi_operation_hud_selection_test
++    PRIVATE
++    "${PROJECT_SOURCE_DIR}/src"
++)
++add_test(
++    NAME voi_operation_hud_selection
++    COMMAND voi_operation_hud_selection_test
++)
++
++add_executable(
++    voi_operation_hud_selection_ndebug_test
++    operation_hud_selection_test.cpp
++)
++target_compile_definitions(
++    voi_operation_hud_selection_ndebug_test
++    PRIVATE
++    NDEBUG
++)
++target_include_directories(
++    voi_operation_hud_selection_ndebug_test
++    PRIVATE
++    "${PROJECT_SOURCE_DIR}/src"
++)
++add_test(
++    NAME voi_operation_hud_selection_ndebug
++    COMMAND voi_operation_hud_selection_ndebug_test
++)
+diff --git a/tests/operation_hud_selection_test.cpp b/tests/operation_hud_selection_test.cpp
+new file mode 100644
+index 0000000..d972610
+--- /dev/null
++++ b/tests/operation_hud_selection_test.cpp
+@@ -0,0 +1,229 @@
++#include "voi_operation_hud_selection.hpp"
++
++#include <algorithm>
++#include <iostream>
++#include <sstream>
++#include <string>
++#include <vector>
++
++namespace
++{
++int failures = 0;
++
++#define CHECK(condition)                                                     \
++	do                                                                       \
++	{                                                                        \
++		if (!(condition))                                                     \
++		{                                                                    \
++			std::cerr << __FILE__ << ":" << __LINE__                         \
++				<< ": CHECK failed: " #condition << "\n";                    \
++			++failures;                                                       \
++		}                                                                    \
++	} while (false)
++
++VoiOperationHudCandidate candidate(
++	std::size_t sourceIndex,
++	const std::string & operationId,
++	std::uint64_t generation,
++	std::uint64_t canonicalFrame,
++	bool terminal = false,
++	std::uint64_t terminalFrame = 0,
++	bool terminalFramePresent = false)
++{
++	VoiOperationHudCandidate result;
++	result.sourceIndex = sourceIndex;
++	result.operationId = operationId;
++	result.generation = generation;
++	result.canonicalFrame = canonicalFrame;
++	result.terminal = terminal;
++	result.terminalFrame = terminalFrame;
++	result.terminalFramePresent = terminalFramePresent;
++	return result;
++}
++
++std::string fingerprint(
++	const std::vector<VoiOperationHudCandidate> & candidates)
++{
++	std::ostringstream output;
++	for (const auto & value : candidates)
++	{
++		output << value.sourceIndex << "|"
++			<< value.operationId << "|"
++			<< value.generation << "|"
++			<< value.canonicalFrame << "|"
++			<< value.terminal << "|"
++			<< value.terminalFramePresent << "|"
++			<< value.terminalFrame << "\n";
++	}
++	return output.str();
++}
++
++void testThirtyTwoOperationCap()
++{
++	std::vector<VoiOperationHudCandidate> candidates;
++	for (std::size_t index = 0; index < 32; ++index)
++	{
++		candidates.push_back(candidate(
++			index,
++			"operation-" + std::to_string(index),
++			1,
++			100 + index));
++	}
++	std::reverse(candidates.begin(), candidates.end());
++	const auto selection = voiSelectOperationHud(candidates, 500);
++	CHECK(selection.operationIndices.size() == VoiOperationHudMaxRows);
++	CHECK(selection.hiddenCount == 24);
++	for (std::size_t index = 0;
++		index < selection.operationIndices.size();
++		++index)
++	{
++		CHECK(selection.operationIndices[index] == index);
++	}
++}
++
++void testActiveOperationsPrecedeTerminalHistory()
++{
++	std::vector<VoiOperationHudCandidate> candidates;
++	for (std::size_t index = 0; index < 10; ++index)
++	{
++		candidates.push_back(candidate(
++			100 + index,
++			"active-" + std::to_string(index),
++			1,
++			200 + index));
++		candidates.push_back(candidate(
++			index,
++			"terminal-" + std::to_string(index),
++			1,
++			10 + index,
++			true,
++			490,
++			true));
++	}
++	const auto selection = voiSelectOperationHud(candidates, 500);
++	CHECK(selection.operationIndices.size() == 8);
++	CHECK(selection.hiddenCount == 12);
++	for (std::size_t index = 0;
++		index < selection.operationIndices.size();
++		++index)
++	{
++		CHECK(selection.operationIndices[index] == 100 + index);
++	}
++}
++
++void testSameFrameTieBreak()
++{
++	const std::vector<VoiOperationHudCandidate> candidates = {
++		candidate(30, "bravo", 1, 100),
++		candidate(20, "alpha", 2, 100),
++		candidate(10, "alpha", 1, 100),
++		candidate(40, "alpha", 1, 101),
++	};
++	const auto selection = voiSelectOperationHud(candidates, 500);
++	const std::vector<std::size_t> expected = { 10, 20, 30, 40 };
++	CHECK(selection.operationIndices == expected);
++	CHECK(selection.hiddenCount == 0);
++}
++
++void testInvalidTerminalFramesFailClosed()
++{
++	const std::vector<VoiOperationHudCandidate> candidates = {
++		candidate(1, "zero", 1, 100, true, 0, true),
++		candidate(2, "missing", 1, 100, true, 150, false),
++		candidate(3, "future", 1, 100, true, 501, true),
++		candidate(4, "regressive", 1, 200, true, 199, true),
++		candidate(5, "valid", 1, 100, true, 450, true),
++	};
++	const auto selection = voiSelectOperationHud(candidates, 500);
++	CHECK(selection.operationIndices
++		== std::vector<std::size_t>({ 5 }));
++	CHECK(selection.hiddenCount == 0);
++}
++
++void testTerminalGraceBoundary()
++{
++	const std::vector<VoiOperationHudCandidate> candidates = {
++		candidate(1, "terminal", 1, 10, true, 100, true),
++	};
++	CHECK(voiSelectOperationHud(candidates, 209)
++		.operationIndices.size() == 1);
++	CHECK(voiSelectOperationHud(candidates, 210)
++		.operationIndices.empty());
++	CHECK(voiSelectOperationHud(candidates, 211)
++		.operationIndices.empty());
++}
++
++void testHiddenCountBoundaryAndAgedOutExclusion()
++{
++	std::vector<VoiOperationHudCandidate> candidates;
++	for (std::size_t index = 0; index < 8; ++index)
++	{
++		candidates.push_back(candidate(
++			index,
++			"active-" + std::to_string(index),
++			1,
++			index));
++	}
++	CHECK(voiSelectOperationHud(candidates, 500).hiddenCount == 0);
++	candidates.push_back(candidate(8, "active-8", 1, 8));
++	CHECK(voiSelectOperationHud(candidates, 500).hiddenCount == 1);
++	candidates.push_back(candidate(
++		9,
++		"aged-terminal",
++		1,
++		1,
++		true,
++		300,
++		true));
++	CHECK(voiSelectOperationHud(candidates, 500).hiddenCount == 1);
++}
++
++void testMarkerEligibilityUsesSelection()
++{
++	std::vector<VoiOperationHudCandidate> candidates;
++	for (std::size_t index = 0; index < 9; ++index)
++	{
++		candidates.push_back(candidate(
++			index,
++			"active-" + std::to_string(index),
++			1,
++			index));
++	}
++	const auto selection = voiSelectOperationHud(candidates, 500);
++	CHECK(voiOperationHudMarkerVisible(selection, 0));
++	CHECK(voiOperationHudMarkerVisible(selection, 7));
++	CHECK(!voiOperationHudMarkerVisible(selection, 8));
++
++	const auto aged = voiSelectOperationHud(
++		{ candidate(20, "aged", 1, 1, true, 300, true) },
++		500);
++	CHECK(!voiOperationHudMarkerVisible(aged, 20));
++}
++
++void testSelectionDoesNotMutateCanonicalState()
++{
++	std::vector<VoiOperationHudCandidate> candidates = {
++		candidate(3, "charlie", 3, 30),
++		candidate(1, "alpha", 1, 10),
++		candidate(2, "bravo", 2, 20, true, 25, true),
++	};
++	const std::string before = fingerprint(candidates);
++	const auto selection = voiSelectOperationHud(candidates, 30);
++	CHECK(fingerprint(candidates) == before);
++	CHECK(selection.operationIndices
++		== std::vector<std::size_t>({ 1, 3, 2 }));
++}
++}
++
++int main()
++{
++	testThirtyTwoOperationCap();
++	testActiveOperationsPrecedeTerminalHistory();
++	testSameFrameTieBreak();
++	testInvalidTerminalFramesFailClosed();
++	testTerminalGraceBoundary();
++	testHiddenCountBoundaryAndAgedOutExclusion();
++	testMarkerEligibilityUsesSelection();
++	testSelectionDoesNotMutateCanonicalState();
++	return failures == 0 ? 0 : 1;
++}
