@@ -1,12 +1,12 @@
 diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
-index 3733a2a..4258e05 100644
+index 3733a2a..3dad91d 100644
 --- a/src/CombatCommander.cpp
 +++ b/src/CombatCommander.cpp
 @@ -1,4 +1,7 @@
  #include "CombatCommander.h"
 +#include "voi_explicit_ability_spec.hpp"
++#include "voi_live_production_binding.hpp"
 +#include "voi_operation_observation.hpp"
-+#include "voi_production_path.hpp"
  #include "Util.h"
  #include "CCBot.h"
  #include "voi_operation_hud_selection.hpp"
@@ -513,7 +513,7 @@ index 3733a2a..4258e05 100644
  			selectedPosition,
  			true,
  			ACTION_REEXECUTION_FREQUENCY,
-@@ -16394,6 +16271,20 @@ void CombatCommander::ExecuteActions()
+@@ -16394,6 +16271,22 @@ void CombatCommander::ExecuteActions()
  			&& commandEpochOperation->submittedPositions.find(
  				rangedUnit->tag)
  				== commandEpochOperation->submittedPositions.end();
@@ -522,19 +522,21 @@ index 3733a2a..4258e05 100644
 +			productionBindingPtr = nullptr;
 +		if (commandEpochOperation != nullptr)
 +		{
-+			productionBinding.identity = {
-+				commandEpochOperation->policyUpdateId,
-+				commandEpochOperation->operationId,
-+				commandEpochOperation->generation
-+			};
-+			productionBinding.action =
-+				voiOperationFamilyActionName(action);
++			productionBinding = voiProductionLiveActionBinding(
++				{
++					commandEpochOperation->policyUpdateId,
++					commandEpochOperation->operationId,
++					commandEpochOperation->generation
++				},
++				voiOperationFamilyActionName(action),
++				static_cast<sc2::UNIT_TYPEID>(
++					rangedUnit->unit_type));
 +			productionBindingPtr = &productionBinding;
 +		}
  
  		/*if (m_logVikingActions && rangedUnit->unit_type == sc2::UNIT_TYPEID::TERRAN_VIKINGFIGHTER)
  		{
-@@ -16487,13 +16378,22 @@ void CombatCommander::ExecuteActions()
+@@ -16487,13 +16380,22 @@ void CombatCommander::ExecuteActions()
  				{
  					if (rangedUnit->unit_type == sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER)
  					{
@@ -560,7 +562,7 @@ index 3733a2a..4258e05 100644
  				}
  				break;
  			case MicroActionType::AttackUnit:
-@@ -16504,8 +16404,12 @@ void CombatCommander::ExecuteActions()
+@@ -16504,8 +16406,12 @@ void CombatCommander::ExecuteActions()
  					skip = true;
  				if (!skip)
  				{
@@ -575,7 +577,7 @@ index 3733a2a..4258e05 100644
  				}
  				break;
  			case MicroActionType::Move:
-@@ -16531,8 +16435,12 @@ void CombatCommander::ExecuteActions()
+@@ -16531,8 +16437,12 @@ void CombatCommander::ExecuteActions()
  				}
  				if (!skip)
  				{
@@ -590,7 +592,7 @@ index 3733a2a..4258e05 100644
  				}
  				break;
  			case MicroActionType::Ability:
-@@ -16550,8 +16458,12 @@ void CombatCommander::ExecuteActions()
+@@ -16550,8 +16460,12 @@ void CombatCommander::ExecuteActions()
  				}
  				else
  				{
@@ -605,7 +607,7 @@ index 3733a2a..4258e05 100644
  				}
  				break;
  			case MicroActionType::AbilityPosition:
-@@ -16638,8 +16550,9 @@ void CombatCommander::ExecuteActions()
+@@ -16638,8 +16552,9 @@ void CombatCommander::ExecuteActions()
  						rangedUnit,
  						action.abilityID,
  						action.position,
@@ -617,7 +619,7 @@ index 3733a2a..4258e05 100644
  				}
  				break;
  			case MicroActionType::AbilityTarget:
-@@ -16695,8 +16608,9 @@ void CombatCommander::ExecuteActions()
+@@ -16695,8 +16610,9 @@ void CombatCommander::ExecuteActions()
  						rangedUnit,
  						action.abilityID,
  						action.target,
@@ -629,7 +631,7 @@ index 3733a2a..4258e05 100644
  				}
  				break;
  			case MicroActionType::Stop:
-@@ -16706,12 +16620,20 @@ void CombatCommander::ExecuteActions()
+@@ -16706,12 +16622,20 @@ void CombatCommander::ExecuteActions()
  				skip = true;
  				break;
  			case MicroActionType::RightClick:
@@ -1840,6 +1842,75 @@ index 0000000..3eb739d
 +#pragma once
 +
 +#include "voi_explicit_ability_catalog.hpp"
+diff --git a/src/voi_live_production_binding.hpp b/src/voi_live_production_binding.hpp
+new file mode 100644
+index 0000000..ffc3235
+--- /dev/null
++++ b/src/voi_live_production_binding.hpp
+@@ -0,0 +1,63 @@
++#pragma once
++
++#include "sc2api/sc2_typeenums.h"
++#include "voi_production_path.hpp"
++
++inline std::string voiProductionCanonicalTerranUnitType(
++	sc2::UNIT_TYPEID unitType)
++{
++	switch (unitType)
++	{
++	case sc2::UNIT_TYPEID::TERRAN_MARINE:
++		return "TERRAN_MARINE";
++	case sc2::UNIT_TYPEID::TERRAN_MARAUDER:
++		return "TERRAN_MARAUDER";
++	case sc2::UNIT_TYPEID::TERRAN_REAPER:
++		return "TERRAN_REAPER";
++	case sc2::UNIT_TYPEID::TERRAN_GHOST:
++		return "TERRAN_GHOST";
++	case sc2::UNIT_TYPEID::TERRAN_HELLION:
++	case sc2::UNIT_TYPEID::TERRAN_HELLIONTANK:
++		return "TERRAN_HELLION";
++	case sc2::UNIT_TYPEID::TERRAN_WIDOWMINE:
++	case sc2::UNIT_TYPEID::TERRAN_WIDOWMINEBURROWED:
++		return "TERRAN_WIDOWMINE";
++	case sc2::UNIT_TYPEID::TERRAN_CYCLONE:
++		return "TERRAN_CYCLONE";
++	case sc2::UNIT_TYPEID::TERRAN_SIEGETANK:
++	case sc2::UNIT_TYPEID::TERRAN_SIEGETANKSIEGED:
++		return "TERRAN_SIEGETANK";
++	case sc2::UNIT_TYPEID::TERRAN_THOR:
++	case sc2::UNIT_TYPEID::TERRAN_THORAP:
++		return "TERRAN_THOR";
++	case sc2::UNIT_TYPEID::TERRAN_MEDIVAC:
++		return "TERRAN_MEDIVAC";
++	case sc2::UNIT_TYPEID::TERRAN_RAVEN:
++		return "TERRAN_RAVEN";
++	case sc2::UNIT_TYPEID::TERRAN_VIKINGFIGHTER:
++	case sc2::UNIT_TYPEID::TERRAN_VIKINGASSAULT:
++		return "TERRAN_VIKINGFIGHTER";
++	case sc2::UNIT_TYPEID::TERRAN_BANSHEE:
++		return "TERRAN_BANSHEE";
++	case sc2::UNIT_TYPEID::TERRAN_LIBERATOR:
++	case sc2::UNIT_TYPEID::TERRAN_LIBERATORAG:
++		return "TERRAN_LIBERATOR";
++	case sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER:
++		return "TERRAN_BATTLECRUISER";
++	default:
++		return "";
++	}
++}
++
++inline VoiProductionActionBinding voiProductionLiveActionBinding(
++	const VoiProductionOperationIdentity & identity,
++	const std::string & action,
++	sc2::UNIT_TYPEID unitType)
++{
++	VoiProductionActionBinding binding;
++	binding.identity = identity;
++	binding.action = action;
++	binding.unitType =
++		voiProductionCanonicalTerranUnitType(unitType);
++	return binding;
++}
 diff --git a/src/voi_operation_observation.hpp b/src/voi_operation_observation.hpp
 new file mode 100644
 index 0000000..4e1671b
@@ -4199,10 +4270,10 @@ index 0000000..05d8f65
 +		dispatch);
 +}
 diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
-index 3ddbf11..66bccb7 100644
+index 3ddbf11..534667e 100644
 --- a/tests/CMakeLists.txt
 +++ b/tests/CMakeLists.txt
-@@ -142,3 +142,17 @@ add_test(
+@@ -142,3 +142,18 @@ add_test(
      NAME voi_pre_live_journey_adapter
      COMMAND voi_pre_live_journey_adapter_test
  )
@@ -4215,6 +4286,7 @@ index 3ddbf11..66bccb7 100644
 +    voi_production_path_test
 +    PRIVATE
 +    "${PROJECT_SOURCE_DIR}/src"
++    "${SC2Api_INCLUDE_DIRS}"
 +)
 +add_test(
 +    NAME voi_production_path
@@ -5136,11 +5208,11 @@ index 5aad7ef..2b399d8 100644
 +}
 diff --git a/tests/production_path_test.cpp b/tests/production_path_test.cpp
 new file mode 100644
-index 0000000..7bac1a8
+index 0000000..c03b63b
 --- /dev/null
 +++ b/tests/production_path_test.cpp
-@@ -0,0 +1,420 @@
-+#include "voi_production_path.hpp"
+@@ -0,0 +1,530 @@
++#include "voi_live_production_binding.hpp"
 +
 +#include <iostream>
 +#include <string>
@@ -5170,6 +5242,116 @@ index 0000000..7bac1a8
 +		3
 +	};
 +	const std::vector<std::uint64_t> unorderedTags = {12, 11};
++	const std::vector<
++		std::pair<sc2::UNIT_TYPEID, std::string>>
++		liveUnitTypeCases = {
++			{
++				sc2::UNIT_TYPEID::TERRAN_MARINE,
++				"TERRAN_MARINE"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_MARAUDER,
++				"TERRAN_MARAUDER"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_REAPER,
++				"TERRAN_REAPER"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_GHOST,
++				"TERRAN_GHOST"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_HELLION,
++				"TERRAN_HELLION"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_HELLIONTANK,
++				"TERRAN_HELLION"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_WIDOWMINE,
++				"TERRAN_WIDOWMINE"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_WIDOWMINEBURROWED,
++				"TERRAN_WIDOWMINE"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_CYCLONE,
++				"TERRAN_CYCLONE"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_SIEGETANK,
++				"TERRAN_SIEGETANK"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_SIEGETANKSIEGED,
++				"TERRAN_SIEGETANK"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_THOR,
++				"TERRAN_THOR"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_THORAP,
++				"TERRAN_THOR"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_MEDIVAC,
++				"TERRAN_MEDIVAC"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_RAVEN,
++				"TERRAN_RAVEN"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_VIKINGFIGHTER,
++				"TERRAN_VIKINGFIGHTER"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_VIKINGASSAULT,
++				"TERRAN_VIKINGFIGHTER"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_BANSHEE,
++				"TERRAN_BANSHEE"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_LIBERATOR,
++				"TERRAN_LIBERATOR"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_LIBERATORAG,
++				"TERRAN_LIBERATOR"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER,
++				"TERRAN_BATTLECRUISER"
++			}
++		};
++	for (const auto & liveUnitTypeCase : liveUnitTypeCases)
++	{
++		const auto liveBinding = voiProductionLiveActionBinding(
++			identity,
++			"squad_order:attack",
++			liveUnitTypeCase.first);
++		CHECK(liveBinding.identity.updateId == identity.updateId);
++		CHECK(
++			liveBinding.identity.operationId
++				== identity.operationId);
++		CHECK(
++			liveBinding.identity.generation
++				== identity.generation);
++		CHECK(liveBinding.action == "squad_order:attack");
++		CHECK(liveBinding.unitType == liveUnitTypeCase.second);
++	}
++	const auto unsupportedLiveBinding =
++		voiProductionLiveActionBinding(
++			identity,
++			"squad_order:attack",
++			sc2::UNIT_TYPEID::TERRAN_SCV);
++	CHECK(unsupportedLiveBinding.unitType.empty());
 +
 +	int invalidOrderCallbackCount = 0;
 +	const auto invalidOrder = voiProductionIssueSquadOrder(

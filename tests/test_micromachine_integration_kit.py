@@ -1376,6 +1376,38 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             text=True,
         )
         self.assertEqual(0, parse_result.returncode, parse_result.stderr)
+        patch = PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE.read_text()
+        self.assertIn(
+            "productionBinding = voiProductionLiveActionBinding(",
+            patch,
+        )
+        self.assertIn(
+            "inline VoiProductionActionBinding "
+            "voiProductionLiveActionBinding(",
+            patch,
+        )
+        for transformed_type, canonical_type in (
+            ("TERRAN_HELLIONTANK", "TERRAN_HELLION"),
+            ("TERRAN_WIDOWMINEBURROWED", "TERRAN_WIDOWMINE"),
+            ("TERRAN_SIEGETANKSIEGED", "TERRAN_SIEGETANK"),
+            ("TERRAN_THORAP", "TERRAN_THOR"),
+            ("TERRAN_VIKINGASSAULT", "TERRAN_VIKINGFIGHTER"),
+            ("TERRAN_LIBERATORAG", "TERRAN_LIBERATOR"),
+        ):
+            with self.subTest(transformed_type=transformed_type):
+                self.assertIn(
+                    f"case sc2::UNIT_TYPEID::{transformed_type}:",
+                    patch,
+                )
+                self.assertIn(f'return "{canonical_type}";', patch)
+        self.assertIn(
+            "const auto liveBinding = voiProductionLiveActionBinding(",
+            patch,
+        )
+        self.assertIn(
+            "CHECK(liveBinding.unitType == liveUnitTypeCase.second);",
+            patch,
+        )
 
     def test_battlefield_projection_patch_has_authoritative_runtime_contract(
         self,

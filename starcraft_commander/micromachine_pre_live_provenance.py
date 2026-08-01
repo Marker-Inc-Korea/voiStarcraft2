@@ -7,16 +7,15 @@ claims are accepted only as explicitly ignored compatibility data.
 
 from __future__ import annotations
 
+import base64
 import fcntl
 import hashlib
 import hmac
-import importlib.abc
-import importlib.machinery
-import importlib.util
 import json
 import os
 import pwd
 import re
+import signal
 import stat
 import subprocess
 import sys
@@ -25,7 +24,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import zipimport
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import fields
 from datetime import datetime, timedelta, timezone
@@ -157,6 +155,131 @@ ISOLATED_PYTHON_BOOTSTRAP: Final[str] = (
     "sys.argv=[script,*args];"
     "runpy.run_path(script,run_name='__main__')"
 )
+AUTHENTICATED_PYTHON_EXEC_BOOTSTRAP: Final[str] = r"""
+import base64
+import importlib.abc
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import sys
+import traceback
+import zipimport
+
+source_fd_text, snapshot_root, relative_script, *candidate_args = sys.argv[1:]
+source_fd = int(source_fd_text)
+with os.fdopen(source_fd, "rb", closefd=False) as source_file:
+    source_bundle = json.load(source_file)
+source_records = {}
+for record in source_bundle["sources"]:
+    relative_path = Path(record["path"])
+    payload = base64.b64decode(record["payload"], validate=True)
+    if relative_path.suffix != ".py":
+        continue
+    if relative_path.name == "__init__.py":
+        module_name = ".".join(relative_path.parts[:-1])
+        is_package = True
+    else:
+        module_name = ".".join(relative_path.with_suffix("").parts)
+        is_package = False
+    if module_name:
+        source_records[module_name] = (
+            payload,
+            str(Path(snapshot_root) / relative_path),
+            is_package,
+        )
+main_source = base64.b64decode(
+    source_bundle["main_source"],
+    validate=True,
+)
+
+
+class AuthenticatedSourceLoader(
+    importlib.abc.MetaPathFinder,
+    importlib.abc.Loader,
+):
+    def find_spec(self, fullname, path=None, target=None):
+        record = source_records.get(fullname)
+        if record is None:
+            return None
+        return importlib.util.spec_from_loader(
+            fullname,
+            self,
+            is_package=record[2],
+        )
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        name = str(module.__name__)
+        payload, filename, is_package = source_records[name]
+        module.__file__ = filename
+        module.__package__ = name if is_package else name.rpartition(".")[0]
+        if is_package:
+            module.__path__ = [str(Path(filename).parent)]
+        exec(compile(payload, filename, "exec"), module.__dict__)
+
+
+stdlib_root = Path(os.__file__).resolve().parent
+trusted_stdlib_paths = [
+    str(path)
+    for path in (
+        stdlib_root.parent
+        / f"python{sys.version_info.major}{sys.version_info.minor}.zip",
+        stdlib_root,
+        stdlib_root / "lib-dynload",
+    )
+    if path.exists()
+]
+stdlib_file_finder = importlib.machinery.FileFinder.path_hook(
+    (
+        importlib.machinery.SourceFileLoader,
+        importlib.machinery.SOURCE_SUFFIXES,
+    ),
+    (
+        importlib.machinery.SourcelessFileLoader,
+        importlib.machinery.BYTECODE_SUFFIXES,
+    ),
+    (
+        importlib.machinery.ExtensionFileLoader,
+        importlib.machinery.EXTENSION_SUFFIXES,
+    ),
+)
+sys.path[:] = trusted_stdlib_paths
+sys.path_hooks[:] = [zipimport.zipimporter, stdlib_file_finder]
+sys.path_importer_cache.clear()
+sys.meta_path[:] = [
+    AuthenticatedSourceLoader(),
+    importlib.machinery.BuiltinImporter,
+    importlib.machinery.FrozenImporter,
+    importlib.machinery.PathFinder,
+]
+script = str(Path(snapshot_root) / relative_script)
+sys.argv = [script, *candidate_args]
+try:
+    globals_dict = {
+        "__builtins__": __builtins__,
+        "__cached__": None,
+        "__file__": script,
+        "__loader__": None,
+        "__name__": "__main__",
+        "__package__": None,
+        "__spec__": None,
+    }
+    exec(compile(main_source, script, "exec"), globals_dict)
+except SystemExit as exc:
+    if exc.code is None:
+        raise SystemExit(0)
+    if isinstance(exc.code, int):
+        raise
+    print(exc.code, file=sys.stderr)
+    raise SystemExit(1)
+except BaseException:
+    traceback.print_exc()
+    raise SystemExit(1)
+"""
 DETERMINISTIC_JOURNEY_PRODUCER_RAW_ARGV: Final[tuple[str, ...]] = (
     "{python}",
     "-I",
@@ -197,24 +320,6 @@ SANITIZED_TEST_ENV: Final[dict[str, str]] = {
     "LC_ALL": "C",
     "PATH": "/usr/bin:/bin",
 }
-_TRUSTED_STDLIB_ROOT: Final[Path] = Path(os.__file__).resolve().parent
-_TRUSTED_STDLIB_IMPORT_PATHS: Final[tuple[str, ...]] = tuple(
-    str(path)
-    for path in (
-        _TRUSTED_STDLIB_ROOT.parent
-        / f"python{sys.version_info.major}{sys.version_info.minor}.zip",
-        _TRUSTED_STDLIB_ROOT,
-        _TRUSTED_STDLIB_ROOT / "lib-dynload",
-    )
-    if path.exists()
-)
-_TRUSTED_INTRINSIC_MODULES: Final[dict[str, object]] = {
-    name: module
-    for name, module in sys.modules.items()
-    if getattr(getattr(module, "__spec__", None), "origin", None)
-    in {"built-in", "frozen"}
-}
-
 CommandRunner = Callable[..., subprocess.CompletedProcess[Any]]
 
 
@@ -6328,18 +6433,6 @@ def _run_pinned_command(
 ) -> subprocess.CompletedProcess[Any]:
     if executable_payload is None or executable_snapshot is None:
         raise OSError("producer executable was not pinned")
-    if command_runner is subprocess.run and _is_isolated_python_command(argv):
-        with tempfile.TemporaryDirectory(
-            prefix=".native-execution-",
-            dir=state_dir,
-        ) as native_execution_root:
-            return _run_authenticated_python_fork(
-                argv,
-                authenticated_python_sources=authenticated_python_sources,
-                native_execution_root=Path(native_execution_root),
-                cwd=cwd,
-                timeout=timeout,
-            )
     with tempfile.TemporaryDirectory(
         prefix=".producer-executable-",
         dir=state_dir,
@@ -6355,18 +6448,38 @@ def _run_pinned_command(
                 or snapshot_before[4] != executable_snapshot[4]
             ):
                 raise OSError("private executable snapshot differs from pinned bytes")
-            completed = command_runner(
-                list(argv),
-                executable=str(executable_path),
-                cwd=cwd,
-                check=False,
-                capture_output=True,
-                text=False,
-                shell=False,
-                timeout=timeout,
-                env=dict(SANITIZED_PRODUCER_ENV),
-                pass_fds=tuple(inherited_fds),
-            )
+            if (
+                command_runner is subprocess.run
+                and _is_isolated_python_command(argv)
+            ):
+                with tempfile.TemporaryDirectory(
+                    prefix=".native-execution-",
+                    dir=state_dir,
+                ) as native_execution_root:
+                    completed = _run_authenticated_python_exec(
+                        argv,
+                        executable_path=executable_path,
+                        authenticated_python_sources=(
+                            authenticated_python_sources
+                        ),
+                        native_execution_root=Path(native_execution_root),
+                        cwd=cwd,
+                        timeout=timeout,
+                        inherited_fds=inherited_fds,
+                    )
+            else:
+                completed = command_runner(
+                    list(argv),
+                    executable=str(executable_path),
+                    cwd=cwd,
+                    check=False,
+                    capture_output=True,
+                    text=False,
+                    shell=False,
+                    timeout=timeout,
+                    env=dict(SANITIZED_PRODUCER_ENV),
+                    pass_fds=tuple(inherited_fds),
+                )
             _, snapshot_after = _read_open_regular_file_snapshot(
                 snapshot_fd,
                 maximum=MAX_PRODUCER_EXECUTABLE_BYTES,
@@ -6424,210 +6537,114 @@ def _descriptor_execution_path(descriptor: int) -> str:
     return str(path)
 
 
-def _run_authenticated_python_fork(
+def _run_authenticated_python_exec(
     argv: Sequence[str],
     *,
+    executable_path: Path,
     authenticated_python_sources: Mapping[str, bytes],
     native_execution_root: Path,
     cwd: str,
     timeout: float,
+    inherited_fds: Sequence[int],
 ) -> subprocess.CompletedProcess[bytes]:
-    """Execute an authenticated Python snapshot without a second executable exec."""
+    """Execute authenticated Python bytes after discarding the parent heap."""
 
-    import selectors
-    import signal
-    import time
-    import traceback
-
-    stdout_read, stdout_write = os.pipe()
-    stderr_read, stderr_write = os.pipe()
-    child_pid = os.fork()
-    if child_pid == 0:
-        exit_code = 1
-        try:
-            try:
-                os.setpgid(0, 0)
-            except PermissionError:
-                if os.getpgrp() != os.getpid():
-                    raise
-            os.close(stdout_read)
-            os.close(stderr_read)
-            os.dup2(stdout_write, 1)
-            os.dup2(stderr_write, 2)
-            os.close(stdout_write)
-            os.close(stderr_write)
-            os.environ.clear()
-            os.environ.update(SANITIZED_PRODUCER_ENV)
-            os.environ[PINNED_NATIVE_EXEC_ROOT_ENV] = str(
-                native_execution_root
-            )
-            os.chdir(cwd)
-            snapshot_root = argv[6]
-            relative_script = argv[7]
-            script = str(Path(snapshot_root) / relative_script)
-            source_records: dict[str, tuple[bytes, str, bool]] = {}
-            for relative, payload in authenticated_python_sources.items():
-                relative_path = Path(relative)
-                if relative_path.suffix != ".py":
-                    continue
-                if relative_path.name == "__init__.py":
-                    module_name = ".".join(relative_path.parts[:-1])
-                    is_package = True
-                else:
-                    module_name = ".".join(relative_path.with_suffix("").parts)
-                    is_package = False
-                if module_name:
-                    source_records[module_name] = (
-                        payload,
-                        str(Path(snapshot_root) / relative_path),
-                        is_package,
-                    )
-            main_source = authenticated_python_sources.get(relative_script)
-            if main_source is None:
-                raise RuntimeError("authenticated main Python source is missing")
-
-            class AuthenticatedSourceLoader(
-                importlib.abc.MetaPathFinder,
-                importlib.abc.Loader,
-            ):
-                def find_spec(
-                    self,
-                    fullname: str,
-                    path: object = None,
-                    target: object = None,
-                ) -> object:
-                    record = source_records.get(fullname)
-                    if record is None:
-                        return None
-                    return importlib.util.spec_from_loader(
-                        fullname,
-                        self,
-                        is_package=record[2],
-                    )
-
-                def create_module(self, spec: object) -> None:
-                    return None
-
-                def exec_module(self, module: object) -> None:
-                    name = str(module.__name__)
-                    payload, filename, is_package = source_records[name]
-                    module.__file__ = filename
-                    module.__package__ = name if is_package else name.rpartition(".")[0]
-                    if is_package:
-                        module.__path__ = [str(Path(filename).parent)]
-                    exec(compile(payload, filename, "exec"), module.__dict__)
-
-            authenticated_loader = AuthenticatedSourceLoader()
-            stdlib_file_finder = importlib.machinery.FileFinder.path_hook(
-                (
-                    importlib.machinery.SourceFileLoader,
-                    importlib.machinery.SOURCE_SUFFIXES,
-                ),
-                (
-                    importlib.machinery.SourcelessFileLoader,
-                    importlib.machinery.BYTECODE_SUFFIXES,
-                ),
-                (
-                    importlib.machinery.ExtensionFileLoader,
-                    importlib.machinery.EXTENSION_SUFFIXES,
-                ),
-            )
-            sys.modules.clear()
-            sys.modules.update(_TRUSTED_INTRINSIC_MODULES)
-            sys.path[:] = list(_TRUSTED_STDLIB_IMPORT_PATHS)
-            sys.path_hooks[:] = [zipimport.zipimporter, stdlib_file_finder]
-            sys.path_importer_cache.clear()
-            sys.meta_path[:] = [
-                authenticated_loader,
-                importlib.machinery.BuiltinImporter,
-                importlib.machinery.FrozenImporter,
-                importlib.machinery.PathFinder,
-            ]
-            sys.argv = [script, *argv[8:]]
-            try:
-                globals_dict = {
-                    "__builtins__": __builtins__,
-                    "__cached__": None,
-                    "__file__": script,
-                    "__loader__": None,
-                    "__name__": "__main__",
-                    "__package__": None,
-                    "__spec__": None,
+    relative_script = argv[7]
+    main_source = authenticated_python_sources.get(relative_script)
+    if main_source is None:
+        raise RuntimeError("authenticated main Python source is missing")
+    source_bundle = json.dumps(
+        {
+            "main_source": base64.b64encode(main_source).decode("ascii"),
+            "schema_version": 1,
+            "sources": [
+                {
+                    "path": relative,
+                    "payload": base64.b64encode(payload).decode("ascii"),
                 }
-                exec(compile(main_source, script, "exec"), globals_dict)
-                exit_code = 0
-            except SystemExit as exc:
-                if exc.code is None:
-                    exit_code = 0
-                elif isinstance(exc.code, int):
-                    exit_code = exc.code
-                else:
-                    print(exc.code, file=sys.stderr)
-                    exit_code = 1
-            except BaseException:
-                traceback.print_exc()
-                exit_code = 1
-            try:
-                sys.stdout.flush()
-                sys.stderr.flush()
-            except Exception:
-                pass
-        finally:
-            os._exit(exit_code)
-
-    try:
-        os.setpgid(child_pid, child_pid)
-    except (PermissionError, ProcessLookupError):
-        pass
-    os.close(stdout_write)
-    os.close(stderr_write)
-    stdout = bytearray()
-    stderr = bytearray()
-    selector = selectors.DefaultSelector()
-    selector.register(stdout_read, selectors.EVENT_READ, stdout)
-    selector.register(stderr_read, selectors.EVENT_READ, stderr)
-    deadline = time.monotonic() + timeout
-    child_status: int | None = None
-    try:
-        while selector.get_map() or child_status is None:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                try:
-                    os.killpg(child_pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    try:
-                        os.kill(child_pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                if child_status is None:
-                    try:
-                        os.waitpid(child_pid, 0)
-                    except ChildProcessError:
-                        pass
-                raise subprocess.TimeoutExpired(list(argv), timeout)
-            for key, _ in selector.select(min(remaining, 0.1)):
-                chunk = os.read(key.fd, 1024 * 1024)
-                if chunk:
-                    key.data.extend(chunk)
-                else:
-                    selector.unregister(key.fd)
-                    os.close(key.fd)
-            if child_status is None:
-                waited_pid, status = os.waitpid(child_pid, os.WNOHANG)
-                if waited_pid == child_pid:
-                    child_status = status
-        returncode = os.waitstatus_to_exitcode(child_status)
-    finally:
-        for key in list(selector.get_map().values()):
-            selector.unregister(key.fd)
-            os.close(key.fd)
-        selector.close()
-    return subprocess.CompletedProcess(
-        list(argv),
-        returncode,
-        bytes(stdout),
-        bytes(stderr),
+                for relative, payload in sorted(
+                    authenticated_python_sources.items()
+                )
+            ],
+        },
+        allow_nan=False,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+    bundle_path = (
+        native_execution_root
+        / f".authenticated-sources-{os.urandom(16).hex()}"
     )
+    _write_private_snapshot_file(bundle_path, source_bundle)
+    bundle_flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        bundle_flags |= os.O_NOFOLLOW
+    source_fd = os.open(bundle_path, bundle_flags)
+    try:
+        bundle_path.unlink()
+        _, source_snapshot = _read_open_regular_file_snapshot(
+            source_fd,
+            maximum=len(source_bundle),
+        )
+        if (
+            source_snapshot[2] != len(source_bundle)
+            or source_snapshot[4] != hashlib.sha256(source_bundle).hexdigest()
+        ):
+            raise OSError("authenticated source bundle changed before exec")
+        environment = dict(SANITIZED_PRODUCER_ENV)
+        environment[PINNED_NATIVE_EXEC_ROOT_ENV] = str(
+            native_execution_root
+        )
+        exec_argv = [
+            argv[0],
+            "-I",
+            "-B",
+            "-S",
+            "-c",
+            AUTHENTICATED_PYTHON_EXEC_BOOTSTRAP,
+            str(source_fd),
+            argv[6],
+            relative_script,
+            *argv[8:],
+        ]
+        process = subprocess.Popen(
+            exec_argv,
+            executable=str(executable_path),
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=False,
+            shell=False,
+            env=environment,
+            pass_fds=tuple(
+                dict.fromkeys((*inherited_fds, source_fd))
+            ),
+            start_new_session=True,
+        )
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                process.kill()
+            stdout, stderr = process.communicate()
+            raise subprocess.TimeoutExpired(
+                list(argv),
+                timeout,
+                output=stdout,
+                stderr=stderr,
+            ) from exc
+        return subprocess.CompletedProcess(
+            list(argv),
+            process.returncode,
+            stdout,
+            stderr,
+        )
+    finally:
+        os.close(source_fd)
 
 
 def _write_private_executable_file(path: Path, payload: bytes) -> None:

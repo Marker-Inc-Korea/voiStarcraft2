@@ -3470,6 +3470,60 @@ class LocalProducerTest(unittest.TestCase):
             self.assertFalse(report["ok"], report)
             self.assertFalse(Path(str(policy["output_artifact"])).exists())
 
+    def test_authenticated_python_exec_cannot_recover_parent_github_token(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = make_build_fixture(root / "fixture")
+            sentinel_token = "github-token-visible-only-in-parent-heap"
+            adapter = StdlibGitHubRESTAdapter(token=sentinel_token)
+            commit = replace_fixture_producer_source(
+                fixture,
+                "import gc\n"
+                "import json\n"
+                "from pathlib import Path\n"
+                "import sys\n"
+                "recovered=[]\n"
+                "for candidate in gc.get_objects():\n"
+                "    try:\n"
+                "        if candidate.__class__.__name__ == "
+                "'StdlibGitHubRESTAdapter':\n"
+                "            recovered.append(candidate._token)\n"
+                "    except BaseException:\n"
+                "        pass\n"
+                "Path(sys.argv[sys.argv.index('--output') + 1]).write_text(\n"
+                "    json.dumps({'recovered': recovered}) + '\\n'\n"
+                ")\n",
+            )
+            policy = resolve_local_producer_policy(
+                repository_dir=fixture["repository"],
+                expected_commit=commit,
+                producer_id="fixture_producer",
+            )
+            self.assertTrue(policy["ok"], policy)
+            source_files = policy["runtime_sources"]["files"]
+
+            report = run_local_producer(
+                repository_dir=fixture["repository"],
+                cwd=policy["cwd"],
+                argv=policy["argv"],
+                allowed_argv=(policy["argv"],),
+                output_artifact=policy["output_artifact"],
+                authenticated_files=[item["path"] for item in source_files],
+                authenticated_file_digests={
+                    item["path"]: item["sha256"] for item in source_files
+                },
+            )
+
+            self.assertIsNotNone(adapter)
+            self.assertTrue(report["ok"], report)
+            output = json.loads(
+                Path(str(policy["output_artifact"])).read_bytes()
+            )
+            self.assertNotIn(sentinel_token, output["recovered"])
+            self.assertEqual([], output["recovered"])
+
     def test_rejects_symlinked_output_leaf_without_touching_target(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = make_build_fixture(Path(directory))
@@ -3852,13 +3906,20 @@ class LocalProducerTest(unittest.TestCase):
                 "timeout_producer.py",
                 str(child_pid_path),
             )
+            executable_payload = Path(argv[0]).read_bytes()
 
             with self.assertRaises(subprocess.TimeoutExpired):
                 provenance_module._run_pinned_command(
                     subprocess.run,
                     argv,
-                    executable_payload=b"authenticated-python",
-                    executable_snapshot=(0, 0, 0, 0, "0" * 64),
+                    executable_payload=executable_payload,
+                    executable_snapshot=(
+                        0,
+                        0,
+                        len(executable_payload),
+                        0,
+                        hashlib.sha256(executable_payload).hexdigest(),
+                    ),
                     authenticated_python_sources={
                         "timeout_producer.py": script,
                     },
