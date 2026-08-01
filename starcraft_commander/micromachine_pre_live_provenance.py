@@ -132,15 +132,24 @@ PRODUCER_GID_ENV: Final[str] = "VOI_PRODUCER_GID"
 CANDIDATE_WORKSPACE_ENV: Final[str] = "VOI_CANDIDATE_WORKSPACE"
 TRUSTED_VERIFIER_WORKSPACE_ENV: Final[str] = "VOI_TRUSTED_VERIFIER_WORKSPACE"
 TRUSTED_VERIFIER_COMMIT_ENV: Final[str] = "VOI_TRUSTED_VERIFIER_COMMIT"
+VERIFIER_TIMEOUT_ENV: Final[str] = "VOI_VERIFIER_TIMEOUT_SECONDS"
 TRUSTED_PS_EXECUTABLE: Final[str] = "/bin/ps"
+TRUSTED_XCODE_DEVELOPER_DIR: Final[str] = (
+    "/Applications/Xcode.app/Contents/Developer"
+)
 PRODUCER_PROCESS_CLEANUP_SECONDS: Final[float] = 5.0
+PROCESS_ENUMERATION_TIMEOUT_SECONDS: Final[float] = 5.0
+GIT_OPERATION_TIMEOUT_SECONDS: Final[float] = 30.0
 CTEST_DISCOVERY_TIMEOUT_SECONDS: Final[float] = 120.0
 CTEST_EXECUTION_TIMEOUT_SECONDS: Final[float] = 600.0
 CTEST_DIRECT_TIMEOUT_SECONDS: Final[float] = 120.0
 BUILD_IDENTITY_PROBE_TIMEOUT_SECONDS: Final[float] = 30.0
 GITHUB_ACTIONS_PRODUCER_TIMEOUT_SECONDS: Final[float] = 1800.0
-GITHUB_ACTIONS_PROVENANCE_JOB_TIMEOUT_MINUTES: Final[int] = 90
+GITHUB_ACTIONS_VERIFIER_TIMEOUT_SECONDS: Final[float] = 4800.0
+GITHUB_ACTIONS_PROVENANCE_JOB_TIMEOUT_MINUTES: Final[int] = 120
 GITHUB_ACTIONS_PROVENANCE_CLEANUP_RESERVE_SECONDS: Final[float] = 600.0
+GITHUB_ACTIONS_PROVENANCE_SETUP_RESERVE_SECONDS: Final[float] = 900.0
+GITHUB_ACTIONS_PROVENANCE_PUBLICATION_RESERVE_SECONDS: Final[float] = 300.0
 _REPOSITORY_RE: Final[re.Pattern[str]] = re.compile(
     r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
 )
@@ -343,7 +352,161 @@ SANITIZED_TEST_ENV: Final[dict[str, str]] = {
     "LC_ALL": "C",
     "PATH": "/usr/bin:/bin",
 }
+GITHUB_HTTP_SUBPROCESS_BOOTSTRAP: Final[str] = r"""
+import json
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+class CrossHostAuthStrippingRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        redirected = super().redirect_request(
+            request, fp, code, msg, headers, newurl
+        )
+        if redirected is None:
+            return None
+        old_host = urllib.parse.urlparse(request.full_url).netloc.casefold()
+        new_host = urllib.parse.urlparse(newurl).netloc.casefold()
+        if old_host != new_host:
+            redirected.remove_header("Authorization")
+        return redirected
+
+
+def emit(kind, payload=b""):
+    sys.stdout.buffer.write(kind + payload)
+    sys.stdout.buffer.flush()
+
+
+try:
+    raw = sys.stdin.buffer.read(65537)
+    if len(raw) > 65536:
+        raise ValueError("GitHub transport request exceeded the input limit")
+    spec = json.loads(raw)
+    maximum = int(spec["maximum"])
+    error_maximum = int(spec["error_maximum"])
+    request = urllib.request.Request(
+        spec["url"],
+        data=(
+            bytes.fromhex(spec["body_hex"])
+            if spec.get("body_hex") is not None
+            else None
+        ),
+        headers=spec["headers"],
+        method=spec["method"],
+    )
+    opener = urllib.request.build_opener(
+        CrossHostAuthStrippingRedirectHandler()
+    )
+    try:
+        with opener.open(request, timeout=float(spec["timeout"])) as response:
+            payload = response.read(maximum + 1)
+    except urllib.error.HTTPError as exc:
+        body = exc.read(error_maximum + 1)[:error_maximum]
+        emit(b"H", int(exc.code).to_bytes(4, "big") + body)
+    else:
+        if len(payload) > maximum:
+            emit(b"L")
+        else:
+            emit(b"S", payload)
+except BaseException as exc:
+    message = f"{type(exc).__name__}: {exc}".encode(
+        "utf-8", errors="replace"
+    )[:4096]
+    emit(b"E", message)
+"""
 CommandRunner = Callable[..., subprocess.CompletedProcess[Any]]
+
+
+class _VerifierDeadline:
+    """Shared monotonic deadline for one authenticated verifier invocation."""
+
+    def __init__(
+        self,
+        timeout_seconds: float,
+        *,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(timeout_seconds)
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("verifier timeout must be finite and positive")
+        self.timeout_seconds = float(timeout_seconds)
+        self._monotonic = monotonic
+        self._expires_at = monotonic() + self.timeout_seconds
+
+    def remaining_seconds(self) -> float:
+        return max(0.0, self._expires_at - self._monotonic())
+
+    def bounded_timeout(
+        self,
+        maximum_seconds: float,
+        *,
+        operation: str,
+        reserve_seconds: float = 0.0,
+    ) -> float:
+        if (
+            isinstance(maximum_seconds, bool)
+            or not isinstance(maximum_seconds, (int, float))
+            or not math.isfinite(maximum_seconds)
+            or maximum_seconds <= 0
+        ):
+            raise ValueError(f"{operation} timeout must be finite and positive")
+        if (
+            isinstance(reserve_seconds, bool)
+            or not isinstance(reserve_seconds, (int, float))
+            or not math.isfinite(reserve_seconds)
+            or reserve_seconds < 0
+        ):
+            raise ValueError(f"{operation} reserve must be finite and non-negative")
+        available = self.remaining_seconds() - float(reserve_seconds)
+        if available <= 0:
+            raise TimeoutError(
+                f"verifier deadline exhausted before {operation}; "
+                f"cleanup_reserve={float(reserve_seconds):g}s"
+            )
+        return min(float(maximum_seconds), available)
+
+    def require_capacity(
+        self,
+        required_seconds: float,
+        *,
+        operation: str,
+    ) -> None:
+        if (
+            isinstance(required_seconds, bool)
+            or not isinstance(required_seconds, (int, float))
+            or not math.isfinite(required_seconds)
+            or required_seconds <= 0
+        ):
+            raise ValueError(f"{operation} capacity must be finite and positive")
+        remaining = self.remaining_seconds()
+        if remaining < float(required_seconds):
+            raise TimeoutError(
+                f"verifier deadline cannot start {operation}: "
+                f"required={float(required_seconds):g}s "
+                f"remaining={remaining:g}s"
+            )
+
+
+def _bounded_operation_timeout(
+    deadline: _VerifierDeadline | None,
+    maximum_seconds: float,
+    *,
+    operation: str,
+    reserve_seconds: float = 0.0,
+) -> float:
+    if deadline is None:
+        return float(maximum_seconds)
+    return deadline.bounded_timeout(
+        maximum_seconds,
+        operation=operation,
+        reserve_seconds=reserve_seconds,
+    )
 
 
 class GitHubSourceAdapter(Protocol):
@@ -578,6 +741,7 @@ class StdlibGitHubRESTAdapter:
         timeout_seconds: float = 30.0,
         max_artifact_bytes: int = MAX_GITHUB_ARTIFACT_BYTES,
         urlopen: Callable[..., Any] | None = None,
+        deadline: _VerifierDeadline | None = None,
     ) -> None:
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
@@ -587,6 +751,8 @@ class StdlibGitHubRESTAdapter:
         self._api_base_url = api_base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
         self._max_artifact_bytes = max_artifact_bytes
+        self._deadline = deadline
+        self._uses_subprocess_transport = urlopen is None
         self._urlopen = (
             urlopen
             or urllib.request.build_opener(
@@ -950,6 +1116,21 @@ class StdlibGitHubRESTAdapter:
             headers["Authorization"] = f"Bearer {self._token}"
         if body is not None:
             headers["Content-Type"] = "application/json"
+        request_timeout = _bounded_operation_timeout(
+            self._deadline,
+            self._timeout_seconds,
+            operation=f"GitHub API request {path}",
+        )
+        if self._uses_subprocess_transport:
+            return self._request_bytes_in_subprocess(
+                path=path,
+                url=url,
+                method=method,
+                headers=headers,
+                body=body,
+                maximum=maximum,
+                request_timeout=request_timeout,
+            )
         request = urllib.request.Request(
             url,
             data=body,
@@ -957,25 +1138,174 @@ class StdlibGitHubRESTAdapter:
             method=method,
         )
         try:
-            with self._urlopen(request, timeout=self._timeout_seconds) as response:
-                payload = response.read(maximum + 1)
+            with self._urlopen(request, timeout=request_timeout) as response:
+                payload = self._read_response_bytes(
+                    response,
+                    maximum=maximum,
+                    operation=f"GitHub API response {path}",
+                )
         except urllib.error.HTTPError as exc:
             try:
-                error_body = exc.read(MAX_GITHUB_JSON_BYTES + 1)
-            except OSError:
-                error_body = b""
+                error_body = self._read_response_bytes(
+                    exc,
+                    maximum=MAX_GITHUB_JSON_BYTES,
+                    operation=f"GitHub API error response {path}",
+                )
+            except (OSError, TimeoutError) as read_exc:
+                raise GitHubSourceError(
+                    f"GitHub error response failed for {path}: {read_exc}"
+                ) from read_exc
             raise GitHubHTTPError(
                 path=path,
                 status=int(exc.code),
                 body=error_body[:MAX_GITHUB_JSON_BYTES],
             ) from exc
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except (OSError, urllib.error.URLError, TimeoutError) as exc:
             raise GitHubSourceError(f"GitHub request failed for {path}: {exc}") from exc
         if len(payload) > maximum:
             raise GitHubSourceError(
                 f"GitHub response exceeded {maximum} bytes for {path}"
             )
         return payload
+
+    def _request_bytes_in_subprocess(
+        self,
+        *,
+        path: str,
+        url: str,
+        method: str,
+        headers: Mapping[str, str],
+        body: bytes | None,
+        maximum: int,
+        request_timeout: float,
+    ) -> bytes:
+        request_spec = canonical_json_bytes(
+            {
+                "body_hex": body.hex() if body is not None else None,
+                "error_maximum": MAX_GITHUB_JSON_BYTES,
+                "headers": dict(headers),
+                "maximum": maximum,
+                "method": method,
+                "timeout": request_timeout,
+                "url": url,
+            }
+        )
+        try:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    "-B",
+                    "-S",
+                    "-c",
+                    GITHUB_HTTP_SUBPROCESS_BOOTSTRAP,
+                ],
+                input=request_spec,
+                check=False,
+                capture_output=True,
+                text=False,
+                shell=False,
+                timeout=request_timeout,
+                env=dict(SANITIZED_PRODUCER_ENV),
+                start_new_session=True,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError(
+                f"verifier deadline exhausted during GitHub API request {path}"
+            ) from exc
+        if self._deadline is not None:
+            self._deadline.bounded_timeout(
+                self._timeout_seconds,
+                operation=f"GitHub API request {path}",
+            )
+        if completed.returncode != 0:
+            stderr = _as_text(completed.stderr)[:4096]
+            raise GitHubSourceError(
+                f"GitHub transport failed for {path}: {stderr}"
+            )
+        envelope = _as_bytes(completed.stdout)
+        if not envelope:
+            raise GitHubSourceError(
+                f"GitHub transport returned no result for {path}"
+            )
+        kind = envelope[:1]
+        payload = envelope[1:]
+        if kind == b"S":
+            if len(payload) > maximum:
+                raise GitHubSourceError(
+                    f"GitHub response exceeded {maximum} bytes for {path}"
+                )
+            return payload
+        if kind == b"H" and len(payload) >= 4:
+            raise GitHubHTTPError(
+                path=path,
+                status=int.from_bytes(payload[:4], "big"),
+                body=payload[4:MAX_GITHUB_JSON_BYTES + 4],
+            )
+        if kind == b"L":
+            raise GitHubSourceError(
+                f"GitHub response exceeded {maximum} bytes for {path}"
+            )
+        if kind == b"E":
+            raise GitHubSourceError(
+                f"GitHub request failed for {path}: "
+                + payload.decode("utf-8", errors="replace")
+            )
+        raise GitHubSourceError(
+            f"GitHub transport returned a malformed result for {path}"
+        )
+
+    def _read_response_bytes(
+        self,
+        response: Any,
+        *,
+        maximum: int,
+        operation: str,
+    ) -> bytes:
+        timed_out = threading.Event()
+        watchdog: threading.Timer | None = None
+        if self._deadline is not None:
+            remaining = self._deadline.bounded_timeout(
+                self._timeout_seconds,
+                operation=operation,
+            )
+
+            def expire_response() -> None:
+                timed_out.set()
+                try:
+                    response.close()
+                except Exception:
+                    pass
+
+            watchdog = threading.Timer(remaining, expire_response)
+            watchdog.daemon = True
+            watchdog.start()
+        try:
+            reader = getattr(response, "read1", None)
+            if not callable(reader):
+                reader = response.read
+            payload = bytearray()
+            while len(payload) <= maximum:
+                if self._deadline is not None:
+                    self._deadline.bounded_timeout(
+                        self._timeout_seconds,
+                        operation=operation,
+                    )
+                chunk = reader(min(64 * 1024, maximum + 1 - len(payload)))
+                if timed_out.is_set():
+                    raise TimeoutError(
+                        f"verifier deadline exhausted during {operation}"
+                    )
+                if not chunk:
+                    break
+                if not isinstance(chunk, bytes):
+                    raise TypeError("GitHub response returned non-bytes data")
+                payload.extend(chunk)
+            return bytes(payload)
+        finally:
+            if watchdog is not None:
+                watchdog.cancel()
+                watchdog.join(timeout=1.0)
 
 
 def normalize_github_repository(
@@ -1042,6 +1372,7 @@ def attest_repository(
     expected_repository: str,
     expected_commit: str,
     command_runner: CommandRunner = subprocess.run,
+    deadline: _VerifierDeadline | None = None,
 ) -> dict[str, object]:
     """Attest exact HEAD, origin, and a clean tracked/untracked worktree."""
 
@@ -1079,6 +1410,7 @@ def attest_repository(
             (TRUSTED_GIT_EXECUTABLE, "rev-parse", "HEAD"),
             cwd=root,
             env=SANITIZED_GIT_ENV,
+            deadline=deadline,
         )
         status_result = _run_text(
             command_runner,
@@ -1092,12 +1424,14 @@ def attest_repository(
             cwd=root,
             preserve_whitespace=True,
             env=SANITIZED_GIT_ENV,
+            deadline=deadline,
         )
         origin = _run_text(
             command_runner,
             (TRUSTED_GIT_EXECUTABLE, "remote", "get-url", "origin"),
             cwd=root,
             env=SANITIZED_GIT_ENV,
+            deadline=deadline,
         )
         if head["returncode"] != 0:
             blockers.append("git rev-parse HEAD failed")
@@ -1119,7 +1453,13 @@ def attest_repository(
             dirty_entries = status_output.splitlines() if status_output else []
             if dirty_entries:
                 blockers.append("repository has tracked or untracked changes")
-        worktree_state = inspect_git_worktree_state(root)
+        worktree_state = inspect_git_worktree_state(
+            root,
+            command_runner=_git_inspection_command_runner(
+                command_runner,
+                deadline=deadline,
+            ),
+        )
         if worktree_state is None:
             blockers.append("direct HEAD/worktree comparison failed")
         else:
@@ -2098,12 +2438,13 @@ def _build_micromachine_identity_with_boundary(
     *,
     execution_uid: int | None,
     execution_gid: int | None,
+    deadline: _VerifierDeadline | None = None,
 ) -> dict[str, object]:
     execution_identity = _normalize_producer_identity(
         execution_uid,
         execution_gid,
     )
-    if execution_identity is None:
+    if execution_identity is None and deadline is None:
         return build_micromachine_build_identity(config)
 
     def run_binary_identity_probe(
@@ -2117,13 +2458,32 @@ def _build_micromachine_identity_with_boundary(
         ):
             raise OSError("build identity executable snapshot is invalid")
         os.chmod(executable_path, 0o555)
+        timeout = _bounded_operation_timeout(
+            deadline,
+            BUILD_IDENTITY_PROBE_TIMEOUT_SECONDS,
+            operation="MicroMachine build identity probe",
+        )
+        if execution_identity is None:
+            return subprocess.run(
+                list(argv),
+                executable=str(executable_path),
+                cwd=str(executable_path.parent),
+                stdin=subprocess.DEVNULL,
+                check=False,
+                capture_output=True,
+                text=True,
+                shell=False,
+                timeout=timeout,
+                env=dict(SANITIZED_TEST_ENV),
+            )
         completed = _run_dedicated_uid_native_command(
             (str(executable_path), *argv[1:]),
             cwd=str(executable_path.parent),
             env=SANITIZED_TEST_ENV,
-            timeout=BUILD_IDENTITY_PROBE_TIMEOUT_SECONDS,
+            timeout=timeout,
             uid=execution_identity[0],
             gid=execution_identity[1],
+            deadline=deadline,
         )
         return subprocess.CompletedProcess(
             list(argv),
@@ -2138,13 +2498,31 @@ def _build_micromachine_identity_with_boundary(
         environment: Mapping[str, str],
         timeout: float,
     ) -> subprocess.CompletedProcess[object]:
+        bounded_timeout = _bounded_operation_timeout(
+            deadline,
+            timeout,
+            operation="MicroMachine CTest registry discovery",
+        )
+        if execution_identity is None:
+            return subprocess.run(
+                list(argv),
+                cwd=str(build_dir),
+                stdin=subprocess.DEVNULL,
+                check=False,
+                capture_output=True,
+                text=True,
+                shell=False,
+                timeout=bounded_timeout,
+                env=dict(environment),
+            )
         completed = _run_dedicated_uid_native_command(
             argv,
             cwd=str(build_dir),
             env=environment,
-            timeout=timeout,
+            timeout=bounded_timeout,
             uid=execution_identity[0],
             gid=execution_identity[1],
+            deadline=deadline,
         )
         return subprocess.CompletedProcess(
             list(argv),
@@ -2159,13 +2537,31 @@ def _build_micromachine_identity_with_boundary(
         environment: Mapping[str, str],
         timeout: float,
     ) -> subprocess.CompletedProcess[object]:
+        bounded_timeout = _bounded_operation_timeout(
+            deadline,
+            timeout,
+            operation="MicroMachine Git inspection",
+        )
+        if execution_identity is None:
+            return subprocess.run(
+                list(argv),
+                cwd=str(repository_dir),
+                stdin=subprocess.DEVNULL,
+                check=False,
+                capture_output=True,
+                text=False,
+                shell=False,
+                timeout=bounded_timeout,
+                env=dict(environment),
+            )
         completed = _run_dedicated_uid_native_command(
             argv,
             cwd=str(repository_dir),
             env=environment,
-            timeout=timeout,
+            timeout=bounded_timeout,
             uid=execution_identity[0],
             gid=execution_identity[1],
+            deadline=deadline,
         )
         return subprocess.CompletedProcess(
             list(argv),
@@ -2192,6 +2588,7 @@ def attest_build_binding(
     git_runner: CommandRunner = subprocess.run,
     execution_uid: int | None = None,
     execution_gid: int | None = None,
+    deadline: _VerifierDeadline | None = None,
 ) -> dict[str, object]:
     """Bind supported build identity inputs to one commit and run required CTests."""
 
@@ -2208,11 +2605,16 @@ def attest_build_binding(
         repository_root,
         expected_commit=expected_repository_commit,
         git_runner=git_runner,
+        deadline=deadline,
     )
     blockers.extend(
         _prefixed_blockers("repository upstream commit policy", upstream_commit_policy)
     )
-    repository_head = _git_head(repository_root, git_runner)
+    repository_head = _git_head(
+        repository_root,
+        git_runner,
+        deadline=deadline,
+    )
     if repository_head != expected_repository_commit:
         blockers.append(
             "repository build-input HEAD mismatch: "
@@ -2312,6 +2714,7 @@ def attest_build_binding(
             repository_root=repository_root,
             expected_commit=expected_repository_commit,
             git_runner=git_runner,
+            deadline=deadline,
         )
         blockers.extend(
             _prefixed_blockers("repository build inputs", repository_inputs)
@@ -2367,6 +2770,7 @@ def attest_build_binding(
                     config,
                     execution_uid=execution_uid,
                     execution_gid=execution_gid,
+                    deadline=deadline,
                 )
             except Exception as exc:
                 blockers.append(f"current build identity reconstruction failed: {exc}")
@@ -2383,6 +2787,7 @@ def attest_build_binding(
                     command_runner,
                     execution_uid=execution_uid,
                     execution_gid=execution_gid,
+                    deadline=deadline,
                 )
                 if ctest_result["ok"] is not True:
                     blockers.extend(cast(list[str], ctest_result["blockers"]))
@@ -2418,6 +2823,7 @@ def attest_build_binding(
                             config,
                             execution_uid=execution_uid,
                             execution_gid=execution_gid,
+                            deadline=deadline,
                         )
                     )
                 except Exception as exc:
@@ -2496,6 +2902,7 @@ def canonical_pre_live_state_dir(
     repository_dir: Path | str,
     *,
     git_runner: CommandRunner = subprocess.run,
+    deadline: _VerifierDeadline | None = None,
 ) -> Path:
     """Return the repository-owned state directory used for replay and outputs."""
 
@@ -2505,6 +2912,7 @@ def canonical_pre_live_state_dir(
         (TRUSTED_GIT_EXECUTABLE, "rev-parse", "--git-common-dir"),
         cwd=root,
         env=SANITIZED_GIT_ENV,
+        deadline=deadline,
     )
     if result["returncode"] != 0:
         raise ValueError("could not resolve the repository git common directory")
@@ -2557,6 +2965,7 @@ def resolve_local_producer_policy(
     micromachine_binary_path: Path | str | None = None,
     micromachine_binary_sha256: str | None = None,
     node_executable: Path | str | None = None,
+    deadline: _VerifierDeadline | None = None,
 ) -> dict[str, object]:
     """Load one exact producer command from the policy committed at HEAD."""
 
@@ -2583,6 +2992,11 @@ def resolve_local_producer_policy(
                 capture_output=True,
                 text=False,
                 shell=False,
+                timeout=_bounded_operation_timeout(
+                    deadline,
+                    GIT_OPERATION_TIMEOUT_SECONDS,
+                    operation="producer policy Git lookup",
+                ),
                 env=dict(SANITIZED_GIT_ENV),
             )
             if int(completed.returncode) != 0:
@@ -2654,7 +3068,11 @@ def resolve_local_producer_policy(
 
     state_dir: Path | None = None
     try:
-        state_dir = canonical_pre_live_state_dir(root, git_runner=git_runner)
+        state_dir = canonical_pre_live_state_dir(
+            root,
+            git_runner=git_runner,
+            deadline=deadline,
+        )
     except ValueError as exc:
         blockers.append(str(exc))
     cwd_relative = Path(cwd_value)
@@ -2882,6 +3300,7 @@ def resolve_local_producer_policy(
                 repository_root=root,
                 expected_commit=expected_commit,
                 git_runner=git_runner,
+                deadline=deadline,
             )
             blockers.extend(_prefixed_blockers("producer module", module_evidence))
             runtime_sources = _attest_committed_python_sources(
@@ -2889,6 +3308,7 @@ def resolve_local_producer_policy(
                 repository_root=root,
                 expected_commit=expected_commit,
                 git_runner=git_runner,
+                deadline=deadline,
             )
             blockers.extend(
                 _prefixed_blockers("producer runtime sources", runtime_sources)
@@ -2938,6 +3358,8 @@ def run_local_producer(
     pinned_argv_file_digests: Mapping[str, str] | None = None,
     producer_uid: int | None = None,
     producer_gid: int | None = None,
+    deadline: _VerifierDeadline | None = None,
+    cleanup_reserve_seconds: float = 0.0,
 ) -> dict[str, object]:
     """Run one exact allowlisted producer and derive provenance from execution."""
 
@@ -3000,6 +3422,15 @@ def run_local_producer(
         blockers.append("producer output artifact must not be a symlink")
     if timeout_seconds <= 0:
         blockers.append("producer timeout_seconds must be positive")
+    if (
+        isinstance(cleanup_reserve_seconds, bool)
+        or not isinstance(cleanup_reserve_seconds, (int, float))
+        or not math.isfinite(cleanup_reserve_seconds)
+        or cleanup_reserve_seconds < 0
+    ):
+        blockers.append(
+            "producer cleanup_reserve_seconds must be finite and non-negative"
+        )
     try:
         producer_identity = _normalize_producer_identity(
             producer_uid,
@@ -3088,7 +3519,7 @@ def run_local_producer(
             snapshot,
         )
 
-    commit_before = _git_head(root, git_runner)
+    commit_before = _git_head(root, git_runner, deadline=deadline)
     if commit_before is None:
         blockers.append("could not record producer repository commit")
     before_state = _artifact_state(output_path)
@@ -3112,6 +3543,7 @@ def run_local_producer(
                 state_dir = canonical_pre_live_state_dir(
                     root,
                     git_runner=git_runner,
+                    deadline=deadline,
                 )
                 with (
                     tempfile.TemporaryDirectory(
@@ -3209,6 +3641,11 @@ def run_local_producer(
                             execution_replacements.get(value, value)
                             for value in normalized_argv
                         ]
+                        if deadline is not None:
+                            deadline.require_capacity(
+                                timeout_seconds + cleanup_reserve_seconds,
+                                operation="deterministic journey producer",
+                            )
                         completed = _run_pinned_command(
                             command_runner,
                             execution_argv,
@@ -3239,6 +3676,8 @@ def run_local_producer(
                                 if producer_identity is not None
                                 else None
                             ),
+                            deadline=deadline,
+                            cleanup_reserve_seconds=cleanup_reserve_seconds,
                         )
                         for source, (
                             snapshot_descriptor,
@@ -3283,7 +3722,13 @@ def run_local_producer(
                 state_dir = canonical_pre_live_state_dir(
                     root,
                     git_runner=git_runner,
+                    deadline=deadline,
                 )
+                if deadline is not None:
+                    deadline.require_capacity(
+                        timeout_seconds + cleanup_reserve_seconds,
+                        operation="local producer",
+                    )
                 completed = _run_pinned_command(
                     command_runner,
                     list(normalized_argv),
@@ -3293,6 +3738,8 @@ def run_local_producer(
                     state_dir=state_dir,
                     cwd=str(working_dir),
                     timeout=timeout_seconds,
+                    deadline=deadline,
+                    cleanup_reserve_seconds=cleanup_reserve_seconds,
                 )
                 returncode = int(completed.returncode)
                 stdout = _as_bytes(completed.stdout)
@@ -3343,7 +3790,7 @@ def run_local_producer(
     else:
         captured_output_sha256 = None
 
-    commit_after = _git_head(root, git_runner)
+    commit_after = _git_head(root, git_runner, deadline=deadline)
     if commit_after is None:
         blockers.append("could not re-read producer repository commit")
     elif commit_before is not None and commit_after != commit_before:
@@ -3958,6 +4405,7 @@ def emit_github_actions_pre_live_bundle(
     producer_uid: int | None = None,
     producer_gid: int | None = None,
     producer_timeout_seconds: float = GITHUB_ACTIONS_PRODUCER_TIMEOUT_SECONDS,
+    verifier_deadline: _VerifierDeadline | None = None,
     _prevalidated_build_binding: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Create the exact canonical bundle uploaded by the provenance CI job."""
@@ -4013,6 +4461,7 @@ def emit_github_actions_pre_live_bundle(
         expected_repository=AUTHORITATIVE_REPOSITORY,
         expected_commit=expected_commit,
         command_runner=git_runner,
+        deadline=verifier_deadline,
     )
     source_context = (
         _component_result(
@@ -4048,6 +4497,7 @@ def emit_github_actions_pre_live_bundle(
             git_runner=git_runner,
             execution_uid=producer_identity[0] if producer_identity else None,
             execution_gid=producer_identity[1] if producer_identity else None,
+            deadline=verifier_deadline,
         )
     else:
         build_binding = _admit_prevalidated_build_binding(
@@ -4090,8 +4540,18 @@ def emit_github_actions_pre_live_bundle(
             micromachine_binary_path=build_binding.get("binary_path"),
             micromachine_binary_sha256=build_binding.get("binary_sha256"),
             node_executable=node_executable,
+            deadline=verifier_deadline,
         )
         blockers.extend(_prefixed_blockers("producer_policy", producer_policy))
+        if not blockers and verifier_deadline is not None:
+            try:
+                verifier_deadline.require_capacity(
+                    cast(float, normalized_producer_timeout)
+                    + GITHUB_ACTIONS_PROVENANCE_CLEANUP_RESERVE_SECONDS,
+                    operation="deterministic journey producer",
+                )
+            except (TimeoutError, ValueError) as exc:
+                blockers.append(str(exc))
         if blockers:
             local_execution = _component_result(
                 ["producer was not executed because its policy was rejected"],
@@ -4119,6 +4579,10 @@ def emit_github_actions_pre_live_bundle(
                 producer_uid=producer_uid,
                 producer_gid=producer_gid,
                 timeout_seconds=cast(float, normalized_producer_timeout),
+                deadline=verifier_deadline,
+                cleanup_reserve_seconds=(
+                    GITHUB_ACTIONS_PROVENANCE_CLEANUP_RESERVE_SECONDS
+                ),
             )
             blockers.extend(_prefixed_blockers("local_execution", local_execution))
             repository_after = attest_repository(
@@ -4126,6 +4590,7 @@ def emit_github_actions_pre_live_bundle(
                 expected_repository=AUTHORITATIVE_REPOSITORY,
                 expected_commit=expected_commit,
                 command_runner=git_runner,
+                deadline=verifier_deadline,
             )
             blockers.extend(_prefixed_blockers("repository_after", repository_after))
             unchanged_build = _verify_admitted_build_snapshots_unchanged(
@@ -5731,6 +6196,7 @@ def _repository_authoritative_upstream_commits(
     *,
     expected_commit: str,
     git_runner: CommandRunner,
+    deadline: _VerifierDeadline | None = None,
 ) -> dict[str, object]:
     relative_path = Path(
         "integrations/micromachine/scripts/build_macos_local.sh"
@@ -5749,6 +6215,11 @@ def _repository_authoritative_upstream_commits(
             capture_output=True,
             text=False,
             shell=False,
+            timeout=_bounded_operation_timeout(
+                deadline,
+                GIT_OPERATION_TIMEOUT_SECONDS,
+                operation="authoritative upstream commit Git lookup",
+            ),
             env=dict(SANITIZED_GIT_ENV),
         )
     except Exception as exc:
@@ -5852,6 +6323,7 @@ def _attest_repository_build_inputs(
     repository_root: Path,
     expected_commit: str,
     git_runner: CommandRunner,
+    deadline: _VerifierDeadline | None = None,
 ) -> dict[str, object]:
     blockers: list[str] = []
     observed_paths: dict[str, object] = {}
@@ -5867,7 +6339,7 @@ def _attest_repository_build_inputs(
             paths=observed_paths,
         )
 
-    head = _git_head(repository_root, git_runner)
+    head = _git_head(repository_root, git_runner, deadline=deadline)
     if head != expected_commit:
         blockers.append(
             "repository build-input HEAD mismatch: "
@@ -5925,6 +6397,11 @@ def _attest_repository_build_inputs(
                 capture_output=True,
                 text=False,
                 shell=False,
+                timeout=_bounded_operation_timeout(
+                    deadline,
+                    GIT_OPERATION_TIMEOUT_SECONDS,
+                    operation=f"committed build input Git lookup {relative_path}",
+                ),
                 env=dict(SANITIZED_GIT_ENV),
             )
         except Exception as exc:
@@ -5999,7 +6476,13 @@ def _run_ctest_command(
     env: Mapping[str, str],
     timeout: float,
     execution_identity: tuple[int, int] | None,
+    deadline: _VerifierDeadline | None = None,
 ) -> subprocess.CompletedProcess[Any]:
+    bounded_timeout = _bounded_operation_timeout(
+        deadline,
+        timeout,
+        operation="CTest command",
+    )
     if execution_identity is None:
         return command_runner(
             list(argv),
@@ -6008,15 +6491,17 @@ def _run_ctest_command(
             capture_output=True,
             text=text,
             shell=False,
+            timeout=bounded_timeout,
             env=dict(env),
         )
     return _run_dedicated_uid_native_command(
         argv,
         cwd=cwd,
         env=env,
-        timeout=timeout,
+        timeout=bounded_timeout,
         uid=execution_identity[0],
         gid=execution_identity[1],
+        deadline=deadline,
     )
 
 
@@ -6026,6 +6511,7 @@ def _run_ctest(
     *,
     execution_uid: int | None = None,
     execution_gid: int | None = None,
+    deadline: _VerifierDeadline | None = None,
 ) -> dict[str, object]:
     build_dir = build_dir.resolve()
     blockers: list[str] = []
@@ -6126,6 +6612,7 @@ def _run_ctest(
                 env=dict(SANITIZED_TEST_ENV),
                 timeout=CTEST_DISCOVERY_TIMEOUT_SECONDS,
                 execution_identity=execution_identity,
+                deadline=deadline,
             )
             registry_returncode = int(registered.returncode)
             registry_stdout = _as_text(registered.stdout)
@@ -6280,6 +6767,7 @@ def _run_ctest(
                 env=dict(SANITIZED_TEST_ENV),
                 timeout=CTEST_DISCOVERY_TIMEOUT_SECONDS,
                 execution_identity=execution_identity,
+                deadline=deadline,
             )
             discovery_returncode = int(discovered.returncode)
             discovery_stdout = _as_text(discovered.stdout)
@@ -6363,6 +6851,7 @@ def _run_ctest(
                 env=dict(SANITIZED_TEST_ENV),
                 timeout=CTEST_EXECUTION_TIMEOUT_SECONDS,
                 execution_identity=execution_identity,
+                deadline=deadline,
             )
             returncode = int(completed.returncode)
             stdout = _as_text(completed.stdout)
@@ -6407,6 +6896,7 @@ def _run_ctest(
                     env=dict(SANITIZED_TEST_ENV),
                     timeout=CTEST_DIRECT_TIMEOUT_SECONDS,
                     execution_identity=execution_identity,
+                    deadline=deadline,
                 )
             except Exception as exc:
                 blockers.append(
@@ -6530,6 +7020,39 @@ def _read_replay_ledger(path: Path) -> dict[str, object]:
     }
 
 
+def _git_inspection_command_runner(
+    runner: CommandRunner,
+    *,
+    deadline: _VerifierDeadline | None,
+) -> Callable[
+    [Sequence[str], Path, Mapping[str, str], float],
+    subprocess.CompletedProcess[object],
+]:
+    def run(
+        argv: Sequence[str],
+        repository_dir: Path,
+        environment: Mapping[str, str],
+        timeout: float,
+    ) -> subprocess.CompletedProcess[object]:
+        return runner(
+            list(argv),
+            cwd=str(repository_dir),
+            stdin=subprocess.DEVNULL,
+            check=False,
+            capture_output=True,
+            text=False,
+            shell=False,
+            timeout=_bounded_operation_timeout(
+                deadline,
+                timeout,
+                operation="repository Git inspection",
+            ),
+            env=dict(environment),
+        )
+
+    return run
+
+
 def _run_text(
     runner: CommandRunner,
     argv: Sequence[str],
@@ -6537,6 +7060,8 @@ def _run_text(
     cwd: Path,
     preserve_whitespace: bool = False,
     env: Mapping[str, str] | None = None,
+    timeout: float = GIT_OPERATION_TIMEOUT_SECONDS,
+    deadline: _VerifierDeadline | None = None,
 ) -> dict[str, object]:
     completed = runner(
         list(argv),
@@ -6545,6 +7070,11 @@ def _run_text(
         capture_output=True,
         text=True,
         shell=False,
+        timeout=_bounded_operation_timeout(
+            deadline,
+            timeout,
+            operation=f"command {' '.join(argv[:2])}",
+        ),
         env=(dict(env) if env is not None else None),
     )
     stdout = _as_text(completed.stdout)
@@ -6557,13 +7087,19 @@ def _run_text(
     }
 
 
-def _git_head(root: Path, runner: CommandRunner) -> str | None:
+def _git_head(
+    root: Path,
+    runner: CommandRunner,
+    *,
+    deadline: _VerifierDeadline | None = None,
+) -> str | None:
     try:
         result = _run_text(
             runner,
             (TRUSTED_GIT_EXECUTABLE, "rev-parse", "HEAD"),
             cwd=root,
             env=SANITIZED_GIT_ENV,
+            deadline=deadline,
         )
     except Exception:
         return None
@@ -6579,6 +7115,7 @@ def _attest_committed_file(
     repository_root: Path,
     expected_commit: str,
     git_runner: CommandRunner,
+    deadline: _VerifierDeadline | None = None,
 ) -> dict[str, object]:
     blockers: list[str] = []
     try:
@@ -6612,12 +7149,17 @@ def _attest_committed_file(
             capture_output=True,
             text=False,
             shell=False,
+            timeout=_bounded_operation_timeout(
+                deadline,
+                GIT_OPERATION_TIMEOUT_SECONDS,
+                operation=f"committed file Git lookup {relative}",
+            ),
             env=dict(SANITIZED_GIT_ENV),
         )
         if int(completed.returncode) != 0:
             raise ValueError("file is not tracked at the exact commit")
         committed_bytes = _as_bytes(completed.stdout)
-    except (TypeError, ValueError) as exc:
+    except (OSError, TimeoutError, TypeError, ValueError) as exc:
         blockers.append(str(exc))
         committed_bytes = b""
     if working_bytes != committed_bytes:
@@ -6637,6 +7179,7 @@ def _attest_committed_python_sources(
     repository_root: Path,
     expected_commit: str,
     git_runner: CommandRunner,
+    deadline: _VerifierDeadline | None = None,
 ) -> dict[str, object]:
     """Bind the producer to its exact committed runtime inputs."""
 
@@ -6664,6 +7207,11 @@ def _attest_committed_python_sources(
                 capture_output=True,
                 text=False,
                 shell=False,
+                timeout=_bounded_operation_timeout(
+                    deadline,
+                    GIT_OPERATION_TIMEOUT_SECONDS,
+                    operation="producer source Git enumeration",
+                ),
                 env=dict(SANITIZED_GIT_ENV),
             )
             if int(completed.returncode) != 0:
@@ -6696,6 +7244,7 @@ def _attest_committed_python_sources(
             repository_root=repository_root,
             expected_commit=expected_commit,
             git_runner=git_runner,
+            deadline=deadline,
         )
         blockers.extend(_prefixed_blockers(f"source {relative}", evidence))
         files.append(
@@ -6827,6 +7376,8 @@ def _run_pinned_command(
     inherited_fds: Sequence[int] = (),
     producer_uid: int | None = None,
     producer_gid: int | None = None,
+    deadline: _VerifierDeadline | None = None,
+    cleanup_reserve_seconds: float = 0.0,
 ) -> subprocess.CompletedProcess[Any]:
     if executable_payload is None or executable_snapshot is None:
         raise OSError("producer executable was not pinned")
@@ -6835,7 +7386,10 @@ def _run_pinned_command(
         producer_gid,
     )
     if producer_identity is not None:
-        _assert_dedicated_producer_identity_available(*producer_identity)
+        _assert_dedicated_producer_identity_available(
+            *producer_identity,
+            deadline=deadline,
+        )
     original_state_mode = stat.S_IMODE(state_dir.stat().st_mode)
     if producer_identity is not None:
         os.chmod(state_dir, 0o711)
@@ -6881,12 +7435,19 @@ def _run_pinned_command(
                             inherited_fds=inherited_fds,
                             producer_uid=producer_uid,
                             producer_gid=producer_gid,
+                            deadline=deadline,
+                            cleanup_reserve_seconds=cleanup_reserve_seconds,
                         )
                 else:
                     if producer_identity is not None:
                         raise OSError(
                             "dedicated producer identity requires the "
                             "authenticated Python launcher"
+                        )
+                    if deadline is not None:
+                        deadline.require_capacity(
+                            timeout + cleanup_reserve_seconds,
+                            operation="pinned producer command",
                         )
                     completed = command_runner(
                         list(argv),
@@ -6896,7 +7457,12 @@ def _run_pinned_command(
                         capture_output=True,
                         text=False,
                         shell=False,
-                        timeout=timeout,
+                        timeout=_bounded_operation_timeout(
+                            deadline,
+                            timeout,
+                            operation="pinned producer command",
+                            reserve_seconds=cleanup_reserve_seconds,
+                        ),
                         env=dict(SANITIZED_PRODUCER_ENV),
                         pass_fds=tuple(inherited_fds),
                     )
@@ -7018,67 +7584,82 @@ def _communicate_process_bounded(
     for thread in threads:
         thread.start()
 
-    deadline = time.monotonic() + timeout
-    failure: str | None = None
-    while process.poll() is None:
-        if overflowed:
-            failure = "output_limit"
-            break
-        if reader_errors:
-            failure = "reader_error"
-            break
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            failure = "timeout"
-            break
-        state_changed.wait(min(0.02, remaining))
-        state_changed.clear()
+    try:
+        deadline = time.monotonic() + timeout
+        failure: str | None = None
+        while process.poll() is None:
+            if overflowed:
+                failure = "output_limit"
+                break
+            if reader_errors:
+                failure = "reader_error"
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                failure = "timeout"
+                break
+            state_changed.wait(min(0.02, remaining))
+            state_changed.clear()
 
-    residual_pids: tuple[int, ...] = ()
-    if failure is not None:
-        _kill_and_reap_process(process, producer_uid=producer_uid)
-    elif producer_uid is not None:
-        residual_pids = _terminate_producer_uid_processes(producer_uid)
+        residual_pids: tuple[int, ...] = ()
+        if failure is not None:
+            _kill_and_reap_process(process, producer_uid=producer_uid)
+        elif producer_uid is not None:
+            residual_pids = _terminate_producer_uid_processes(producer_uid)
 
-    for thread in threads:
-        thread.join(timeout=1.0)
-    if any(thread.is_alive() for thread in threads):
+        for thread in threads:
+            thread.join(timeout=1.0)
+        if any(thread.is_alive() for thread in threads):
+            for pipe in (process.stdout, process.stderr):
+                try:
+                    pipe.close()
+                except (OSError, ValueError):
+                    pass
+            for thread in threads:
+                thread.join(timeout=1.0)
+            if failure is None:
+                failure = "reader_stalled"
+
+        stdout = bytes(buffers["stdout"][: MAX_PROCESS_STDOUT_BYTES])
+        stderr = bytes(buffers["stderr"][: MAX_PROCESS_STDERR_BYTES])
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(
+                list(argv),
+                timeout,
+                output=stdout,
+                stderr=stderr,
+            )
+        if failure == "output_limit" or overflowed:
+            streams = ", ".join(sorted(set(overflowed))) or "process output"
+            raise OSError(
+                f"{streams} exceeded the bounded capture limit"
+            )
+        if failure == "reader_error" or reader_errors:
+            raise OSError(
+                f"bounded process output capture failed: {reader_errors[0]}"
+            )
+        if failure == "reader_stalled":
+            raise OSError("bounded process output readers did not terminate")
+        if residual_pids:
+            raise OSError(
+                residual_error_prefix
+                + ", ".join(str(pid) for pid in residual_pids)
+            )
+        return stdout, stderr
+    except BaseException:
+        if process.poll() is None:
+            _kill_and_reap_process(process, producer_uid=None)
+        if producer_uid is not None:
+            _terminate_producer_uid_processes(producer_uid)
+        raise
+    finally:
         for pipe in (process.stdout, process.stderr):
             try:
                 pipe.close()
-            except OSError:
+            except (OSError, ValueError):
                 pass
         for thread in threads:
             thread.join(timeout=1.0)
-        if failure is None:
-            failure = "reader_stalled"
-
-    stdout = bytes(buffers["stdout"][: MAX_PROCESS_STDOUT_BYTES])
-    stderr = bytes(buffers["stderr"][: MAX_PROCESS_STDERR_BYTES])
-    if failure == "timeout":
-        raise subprocess.TimeoutExpired(
-            list(argv),
-            timeout,
-            output=stdout,
-            stderr=stderr,
-        )
-    if failure == "output_limit" or overflowed:
-        streams = ", ".join(sorted(set(overflowed))) or "process output"
-        raise OSError(
-            f"{streams} exceeded the bounded capture limit"
-        )
-    if failure == "reader_error" or reader_errors:
-        raise OSError(
-            f"bounded process output capture failed: {reader_errors[0]}"
-        )
-    if failure == "reader_stalled":
-        raise OSError("bounded process output readers did not terminate")
-    if residual_pids:
-        raise OSError(
-            residual_error_prefix
-            + ", ".join(str(pid) for pid in residual_pids)
-        )
-    return stdout, stderr
 
 
 def _run_authenticated_python_exec(
@@ -7092,6 +7673,8 @@ def _run_authenticated_python_exec(
     inherited_fds: Sequence[int],
     producer_uid: int | None,
     producer_gid: int | None,
+    deadline: _VerifierDeadline | None,
+    cleanup_reserve_seconds: float,
 ) -> subprocess.CompletedProcess[bytes]:
     """Execute authenticated Python bytes after discarding the parent heap."""
 
@@ -7137,6 +7720,7 @@ def _run_authenticated_python_exec(
     if hasattr(os, "O_NOFOLLOW"):
         bundle_flags |= os.O_NOFOLLOW
     source_fd = os.open(bundle_path, bundle_flags)
+    process: subprocess.Popen[bytes] | None = None
     try:
         bundle_path.unlink()
         _, source_snapshot = _read_open_regular_file_snapshot(
@@ -7172,6 +7756,11 @@ def _run_authenticated_python_exec(
                 "extra_groups": (),
                 "umask": 0o077,
             }
+        if deadline is not None:
+            deadline.require_capacity(
+                timeout + cleanup_reserve_seconds,
+                operation="authenticated producer exec",
+            )
         process = subprocess.Popen(
             exec_argv,
             executable=str(executable_path),
@@ -7188,10 +7777,16 @@ def _run_authenticated_python_exec(
             start_new_session=True,
             **credential_options,
         )
+        supervision_timeout = _bounded_operation_timeout(
+            deadline,
+            timeout,
+            operation="authenticated producer supervision",
+            reserve_seconds=cleanup_reserve_seconds,
+        )
         stdout, stderr = _communicate_process_bounded(
             process,
             argv=argv,
-            timeout=timeout,
+            timeout=supervision_timeout,
             producer_uid=(
                 producer_identity[0]
                 if producer_identity is not None
@@ -7208,6 +7803,10 @@ def _run_authenticated_python_exec(
             stderr,
         )
     finally:
+        if process is not None and process.poll() is None:
+            _kill_and_reap_process(process, producer_uid=None)
+        if producer_identity is not None:
+            _terminate_producer_uid_processes(producer_identity[0])
         os.close(source_fd)
 
 
@@ -7259,13 +7858,24 @@ def _normalize_producer_identity(
     return uid, gid
 
 
-def _process_ids_for_uid(uid: int) -> tuple[int, ...]:
+def _process_ids_for_uid(
+    uid: int,
+    *,
+    timeout: float = PROCESS_ENUMERATION_TIMEOUT_SECONDS,
+    deadline: _VerifierDeadline | None = None,
+) -> tuple[int, ...]:
     completed = subprocess.run(
         [TRUSTED_PS_EXECUTABLE, "-axo", "uid=,pid="],
+        stdin=subprocess.DEVNULL,
         check=False,
         capture_output=True,
         text=True,
         shell=False,
+        timeout=_bounded_operation_timeout(
+            deadline,
+            timeout,
+            operation="dedicated producer UID process enumeration",
+        ),
         env={"PATH": "/usr/bin:/bin"},
     )
     if completed.returncode != 0:
@@ -7291,9 +7901,14 @@ def _process_ids_for_uid(uid: int) -> tuple[int, ...]:
     return tuple(sorted(set(process_ids)))
 
 
-def _assert_dedicated_producer_identity_available(uid: int, gid: int) -> None:
+def _assert_dedicated_producer_identity_available(
+    uid: int,
+    gid: int,
+    *,
+    deadline: _VerifierDeadline | None = None,
+) -> None:
     _normalize_producer_identity(uid, gid)
-    process_ids = _process_ids_for_uid(uid)
+    process_ids = _process_ids_for_uid(uid, deadline=deadline)
     if process_ids:
         raise OSError(
             "dedicated producer UID already owns processes: "
@@ -7301,11 +7916,18 @@ def _assert_dedicated_producer_identity_available(uid: int, gid: int) -> None:
         )
 
 
-def _terminate_producer_uid_processes(uid: int) -> tuple[int, ...]:
+def _terminate_producer_uid_processes(
+    uid: int,
+    *,
+    timeout_seconds: float = PRODUCER_PROCESS_CLEANUP_SECONDS,
+) -> tuple[int, ...]:
     observed: set[int] = set()
-    deadline = time.monotonic() + PRODUCER_PROCESS_CLEANUP_SECONDS
+    cleanup_deadline = _VerifierDeadline(timeout_seconds)
     while True:
-        process_ids = _process_ids_for_uid(uid)
+        process_ids = _process_ids_for_uid(
+            uid,
+            deadline=cleanup_deadline,
+        )
         if not process_ids:
             return tuple(sorted(observed))
         observed.update(process_ids)
@@ -7314,15 +7936,13 @@ def _terminate_producer_uid_processes(uid: int) -> tuple[int, ...]:
                 os.kill(process_id, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-        if time.monotonic() >= deadline:
-            remaining = _process_ids_for_uid(uid)
-            if remaining:
-                raise OSError(
-                    "dedicated producer UID processes survived cleanup: "
-                    + ", ".join(str(pid) for pid in remaining)
-                )
-            return tuple(sorted(observed))
-        time.sleep(0.02)
+        remaining_seconds = cleanup_deadline.remaining_seconds()
+        if remaining_seconds <= 0:
+            raise OSError(
+                "dedicated producer UID processes survived cleanup: "
+                + ", ".join(str(pid) for pid in process_ids)
+            )
+        time.sleep(min(0.02, remaining_seconds))
 
 
 def _run_dedicated_uid_native_command(
@@ -7333,39 +7953,63 @@ def _run_dedicated_uid_native_command(
     timeout: float,
     uid: int,
     gid: int,
+    deadline: _VerifierDeadline | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
-    _assert_dedicated_producer_identity_available(uid, gid)
-    process = subprocess.Popen(
-        list(argv),
-        cwd=cwd,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=False,
-        shell=False,
-        env=dict(env),
-        start_new_session=True,
-        user=uid,
-        group=gid,
-        extra_groups=(),
-        umask=0o077,
-    )
-    stdout, stderr = _communicate_process_bounded(
-        process,
-        argv=argv,
-        timeout=timeout,
-        producer_uid=uid,
-        residual_error_prefix=(
-            "native verifier command left detached descendants under "
-            "dedicated UID: "
-        ),
-    )
-    return subprocess.CompletedProcess(
-        list(argv),
-        process.returncode,
-        stdout,
-        stderr,
-    )
+    process: subprocess.Popen[bytes] | None = None
+    native_environment = dict(env)
+    if sys.platform == "darwin":
+        native_environment["DEVELOPER_DIR"] = TRUSTED_XCODE_DEVELOPER_DIR
+    try:
+        _assert_dedicated_producer_identity_available(
+            uid,
+            gid,
+            deadline=deadline,
+        )
+        if deadline is not None:
+            deadline.require_capacity(
+                timeout,
+                operation="dedicated UID native command",
+            )
+        process = subprocess.Popen(
+            list(argv),
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=False,
+            shell=False,
+            env=native_environment,
+            start_new_session=True,
+            user=uid,
+            group=gid,
+            extra_groups=(),
+            umask=0o077,
+        )
+        supervision_timeout = _bounded_operation_timeout(
+            deadline,
+            timeout,
+            operation="dedicated UID native command supervision",
+        )
+        stdout, stderr = _communicate_process_bounded(
+            process,
+            argv=argv,
+            timeout=supervision_timeout,
+            producer_uid=uid,
+            residual_error_prefix=(
+                "native verifier command left detached descendants under "
+                "dedicated UID: "
+            ),
+        )
+        return subprocess.CompletedProcess(
+            list(argv),
+            process.returncode,
+            stdout,
+            stderr,
+        )
+    finally:
+        if process is not None and process.poll() is None:
+            _kill_and_reap_process(process, producer_uid=None)
+        _terminate_producer_uid_processes(uid)
 
 
 def _kill_and_reap_process(
@@ -7614,6 +8258,7 @@ def _attest_trusted_verifier_runtime(
     repository_dir: Path | str,
     *,
     expected_commit: str,
+    deadline: _VerifierDeadline | None = None,
 ) -> dict[str, object]:
     blockers: list[str] = []
     repository_root = Path(repository_dir).resolve()
@@ -7626,6 +8271,7 @@ def _attest_trusted_verifier_runtime(
         repository_root,
         expected_repository=AUTHORITATIVE_REPOSITORY,
         expected_commit=expected_commit,
+        deadline=deadline,
     )
     blockers.extend(_prefixed_blockers("repository", repository))
     return _component_result(
@@ -7637,6 +8283,143 @@ def _attest_trusted_verifier_runtime(
     )
 
 
+def _github_actions_bundle_main(argv: Sequence[str]) -> int:
+    result_code = 1
+    producer_uid: int | None = None
+    raw_producer_uid = os.environ.get(PRODUCER_UID_ENV)
+    if raw_producer_uid is not None:
+        try:
+            producer_uid = int(raw_producer_uid)
+        except ValueError:
+            producer_uid = None
+    try:
+        result_code = _github_actions_bundle_main_inner(argv)
+    finally:
+        if producer_uid is not None and producer_uid > 0:
+            try:
+                _terminate_producer_uid_processes(producer_uid)
+            except Exception as exc:
+                print(
+                    f"GitHub Actions dedicated UID cleanup failed: {exc}",
+                    file=sys.stderr,
+                )
+                result_code = 1
+    return result_code
+
+
+def _github_actions_bundle_main_inner(argv: Sequence[str]) -> int:
+    try:
+        repository = os.environ["GITHUB_REPOSITORY"]
+        repository_dir = os.environ[CANDIDATE_WORKSPACE_ENV]
+        expected_commit = os.environ["VOI_RELEASE_COMMIT"]
+        workflow_ref = os.environ["GITHUB_WORKFLOW_REF"]
+        workflow_sha = os.environ["GITHUB_WORKFLOW_SHA"]
+        node_executable = os.environ["VOI_NODE_EXECUTABLE"]
+        trusted_verifier_dir = os.environ[TRUSTED_VERIFIER_WORKSPACE_ENV]
+        trusted_verifier_commit = os.environ[TRUSTED_VERIFIER_COMMIT_ENV]
+        run_id = int(os.environ["GITHUB_RUN_ID"])
+        run_attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
+        producer_uid = int(os.environ[PRODUCER_UID_ENV])
+        producer_gid = int(os.environ[PRODUCER_GID_ENV])
+        producer_timeout_seconds = float(
+            os.environ["VOI_PRODUCER_TIMEOUT_SECONDS"]
+        )
+        verifier_timeout_seconds = float(os.environ[VERIFIER_TIMEOUT_ENV])
+        api_base_url = os.environ.get(
+            "GITHUB_API_URL",
+            "https://api.github.com",
+        )
+    except (KeyError, ValueError) as exc:
+        print(
+            f"GitHub Actions bundle environment is invalid: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    if repository != AUTHORITATIVE_REPOSITORY:
+        print(
+            "GitHub Actions bundle repository is not authoritative: "
+            f"{repository!r}",
+            file=sys.stderr,
+        )
+        return 1
+    if producer_timeout_seconds != GITHUB_ACTIONS_PRODUCER_TIMEOUT_SECONDS:
+        print(
+            "GitHub Actions bundle producer timeout must preserve the "
+            "trusted cleanup margin: "
+            f"expected={GITHUB_ACTIONS_PRODUCER_TIMEOUT_SECONDS:g} "
+            f"actual={producer_timeout_seconds!r}",
+            file=sys.stderr,
+        )
+        return 1
+    if verifier_timeout_seconds != GITHUB_ACTIONS_VERIFIER_TIMEOUT_SECONDS:
+        print(
+            "GitHub Actions bundle verifier timeout must preserve the "
+            "workflow cleanup reserve: "
+            f"expected={GITHUB_ACTIONS_VERIFIER_TIMEOUT_SECONDS:g} "
+            f"actual={verifier_timeout_seconds!r}",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        verifier_deadline = _VerifierDeadline(verifier_timeout_seconds)
+    except ValueError as exc:
+        print(f"GitHub Actions verifier timeout is invalid: {exc}", file=sys.stderr)
+        return 2
+    trusted_verifier = _attest_trusted_verifier_runtime(
+        trusted_verifier_dir,
+        expected_commit=trusted_verifier_commit,
+        deadline=verifier_deadline,
+    )
+    if trusted_verifier["ok"] is not True:
+        print(canonical_json_bytes(trusted_verifier).decode("utf-8"))
+        return 1
+    prevalidated_build_binding = attest_build_binding(
+        argv[2],
+        repository_dir=repository_dir,
+        expected_repository_commit=expected_commit,
+        expected_build_dir=argv[3],
+        execution_uid=producer_uid,
+        execution_gid=producer_gid,
+        deadline=verifier_deadline,
+    )
+    if prevalidated_build_binding["ok"] is not True:
+        print(canonical_json_bytes(prevalidated_build_binding).decode("utf-8"))
+        return 1
+    try:
+        token = _read_github_token_from_stdin(sys.stdin.buffer)
+    except ValueError as exc:
+        print(
+            f"GitHub Actions bundle token is invalid: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    report = emit_github_actions_pre_live_bundle(
+        adapter=StdlibGitHubRESTAdapter(
+            token=token,
+            api_base_url=api_base_url,
+            deadline=verifier_deadline,
+        ),
+        repository_dir=repository_dir,
+        expected_commit=expected_commit,
+        run_id=run_id,
+        run_attempt=run_attempt,
+        workflow_ref=workflow_ref,
+        workflow_sha=workflow_sha,
+        build_report_path=argv[2],
+        expected_build_dir=argv[3],
+        output_path=argv[1],
+        node_executable=node_executable,
+        producer_uid=producer_uid,
+        producer_gid=producer_gid,
+        producer_timeout_seconds=producer_timeout_seconds,
+        verifier_deadline=verifier_deadline,
+        _prevalidated_build_binding=prevalidated_build_binding,
+    )
+    report["trusted_verifier"] = trusted_verifier
+    print(canonical_json_bytes(report).decode("utf-8"))
+    return 0 if report["ok"] is True else 1
+
+
 def _main(argv: Sequence[str]) -> int:
     if len(argv) == 2 and argv[0] == "--emit-foundation-evidence":
         try:
@@ -7646,97 +8429,7 @@ def _main(argv: Sequence[str]) -> int:
             return 1
         return 0
     if len(argv) == 4 and argv[0] == "--emit-github-actions-bundle":
-        try:
-            repository = os.environ["GITHUB_REPOSITORY"]
-            repository_dir = os.environ[CANDIDATE_WORKSPACE_ENV]
-            expected_commit = os.environ["VOI_RELEASE_COMMIT"]
-            workflow_ref = os.environ["GITHUB_WORKFLOW_REF"]
-            workflow_sha = os.environ["GITHUB_WORKFLOW_SHA"]
-            node_executable = os.environ["VOI_NODE_EXECUTABLE"]
-            trusted_verifier_dir = os.environ[TRUSTED_VERIFIER_WORKSPACE_ENV]
-            trusted_verifier_commit = os.environ[TRUSTED_VERIFIER_COMMIT_ENV]
-            run_id = int(os.environ["GITHUB_RUN_ID"])
-            run_attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
-            producer_uid = int(os.environ[PRODUCER_UID_ENV])
-            producer_gid = int(os.environ[PRODUCER_GID_ENV])
-            producer_timeout_seconds = float(
-                os.environ["VOI_PRODUCER_TIMEOUT_SECONDS"]
-            )
-            api_base_url = os.environ.get(
-                "GITHUB_API_URL",
-                "https://api.github.com",
-            )
-        except (KeyError, ValueError) as exc:
-            print(
-                f"GitHub Actions bundle environment is invalid: {exc}",
-                file=sys.stderr,
-            )
-            return 2
-        if repository != AUTHORITATIVE_REPOSITORY:
-            print(
-                "GitHub Actions bundle repository is not authoritative: "
-                f"{repository!r}",
-                file=sys.stderr,
-            )
-            return 1
-        if producer_timeout_seconds != GITHUB_ACTIONS_PRODUCER_TIMEOUT_SECONDS:
-            print(
-                "GitHub Actions bundle producer timeout must preserve the "
-                "trusted cleanup margin: "
-                f"expected={GITHUB_ACTIONS_PRODUCER_TIMEOUT_SECONDS:g} "
-                f"actual={producer_timeout_seconds!r}",
-                file=sys.stderr,
-            )
-            return 1
-        trusted_verifier = _attest_trusted_verifier_runtime(
-            trusted_verifier_dir,
-            expected_commit=trusted_verifier_commit,
-        )
-        if trusted_verifier["ok"] is not True:
-            print(canonical_json_bytes(trusted_verifier).decode("utf-8"))
-            return 1
-        prevalidated_build_binding = attest_build_binding(
-            argv[2],
-            repository_dir=repository_dir,
-            expected_repository_commit=expected_commit,
-            expected_build_dir=argv[3],
-            execution_uid=producer_uid,
-            execution_gid=producer_gid,
-        )
-        if prevalidated_build_binding["ok"] is not True:
-            print(canonical_json_bytes(prevalidated_build_binding).decode("utf-8"))
-            return 1
-        try:
-            token = _read_github_token_from_stdin(sys.stdin.buffer)
-        except ValueError as exc:
-            print(
-                f"GitHub Actions bundle token is invalid: {exc}",
-                file=sys.stderr,
-            )
-            return 2
-        report = emit_github_actions_pre_live_bundle(
-            adapter=StdlibGitHubRESTAdapter(
-                token=token,
-                api_base_url=api_base_url,
-            ),
-            repository_dir=repository_dir,
-            expected_commit=expected_commit,
-            run_id=run_id,
-            run_attempt=run_attempt,
-            workflow_ref=workflow_ref,
-            workflow_sha=workflow_sha,
-            build_report_path=argv[2],
-            expected_build_dir=argv[3],
-            output_path=argv[1],
-            node_executable=node_executable,
-            producer_uid=producer_uid,
-            producer_gid=producer_gid,
-            producer_timeout_seconds=producer_timeout_seconds,
-            _prevalidated_build_binding=prevalidated_build_binding,
-        )
-        report["trusted_verifier"] = trusted_verifier
-        print(canonical_json_bytes(report).decode("utf-8"))
-        return 0 if report["ok"] is True else 1
+        return _github_actions_bundle_main(argv)
 
     print(
         "usage: micromachine_pre_live_provenance.py "

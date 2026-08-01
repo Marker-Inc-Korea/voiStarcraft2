@@ -14,6 +14,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import textwrap
 import types
 import unittest
 import urllib.parse
@@ -49,6 +50,9 @@ from starcraft_commander.micromachine_pre_live_provenance import (
     GITHUB_ACTIONS_PRODUCER_TIMEOUT_SECONDS,
     GITHUB_ACTIONS_PROVENANCE_CLEANUP_RESERVE_SECONDS,
     GITHUB_ACTIONS_PROVENANCE_JOB_TIMEOUT_MINUTES,
+    GITHUB_ACTIONS_PROVENANCE_PUBLICATION_RESERVE_SECONDS,
+    GITHUB_ACTIONS_PROVENANCE_SETUP_RESERVE_SECONDS,
+    GITHUB_ACTIONS_VERIFIER_TIMEOUT_SECONDS,
     ISOLATED_PYTHON_BOOTSTRAP,
     PRODUCER_POLICY_RELATIVE_PATH,
     SANITIZED_PRODUCER_ENV,
@@ -191,15 +195,54 @@ def make_replay_ruleset_fixtures() -> tuple[
 class FakeHTTPResponse:
     def __init__(self, payload: bytes) -> None:
         self.payload = payload
+        self.offset = 0
+        self.closed = False
 
     def __enter__(self) -> "FakeHTTPResponse":
         return self
 
     def __exit__(self, *args: object) -> None:
+        self.close()
         return None
 
     def read(self, maximum: int) -> bytes:
-        return self.payload[:maximum]
+        start = self.offset
+        self.offset = min(len(self.payload), start + maximum)
+        return self.payload[start : self.offset]
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class BlockingHTTPResponse:
+    def __init__(self) -> None:
+        self.closed = threading.Event()
+
+    def __enter__(self) -> "BlockingHTTPResponse":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+        return None
+
+    def read(self, maximum: int) -> bytes:
+        del maximum
+        self.closed.wait(timeout=5.0)
+        return b""
+
+    def close(self) -> None:
+        self.closed.set()
+
+
+class FakeMonotonicClock:
+    def __init__(self, now: float = 0.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
 
 
 class FakeGitHubAdapter:
@@ -518,6 +561,336 @@ class FakeGitHubAdapter:
             f"ruleset_{ruleset_id}",
             self.ruleset_details[ruleset_id],
         )
+
+
+class VerifierDeadlineTest(unittest.TestCase):
+    def test_operation_boundaries_receive_shared_remaining_timeout(self) -> None:
+        clock = FakeMonotonicClock(100.0)
+        deadline = provenance_module._VerifierDeadline(
+            10.0,
+            monotonic=clock,
+        )
+        clock.advance(3.0)
+        command_runner = mock.Mock(
+            return_value=subprocess.CompletedProcess(
+                ["/usr/bin/git"],
+                0,
+                "output\n",
+                "",
+            )
+        )
+
+        provenance_module._run_text(
+            command_runner,
+            ("/usr/bin/git", "rev-parse", "HEAD"),
+            cwd=Path("/candidate"),
+            deadline=deadline,
+        )
+        self.assertEqual(7.0, command_runner.call_args.kwargs["timeout"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "producer.py"
+            path.write_bytes(b"print('ok')\n")
+            git_runner = mock.Mock(
+                return_value=subprocess.CompletedProcess(
+                    ["/usr/bin/git"],
+                    0,
+                    path.read_bytes(),
+                    b"",
+                )
+            )
+            report = provenance_module._attest_committed_file(
+                path,
+                repository_root=root,
+                expected_commit=HEAD_SHA,
+                git_runner=git_runner,
+                deadline=deadline,
+            )
+        self.assertTrue(report["ok"], report)
+        self.assertEqual(7.0, git_runner.call_args.kwargs["timeout"])
+
+        ctest_runner = mock.Mock(
+            return_value=subprocess.CompletedProcess(
+                ["/trusted/ctest"],
+                0,
+                "",
+                "",
+            )
+        )
+        provenance_module._run_ctest_command(
+            ctest_runner,
+            ["/trusted/ctest", "--show-only=json-v1"],
+            cwd="/runtime",
+            text=True,
+            env={"PATH": "/usr/bin:/bin"},
+            timeout=120.0,
+            execution_identity=None,
+            deadline=deadline,
+        )
+        self.assertEqual(7.0, ctest_runner.call_args.kwargs["timeout"])
+
+        urlopen = mock.Mock(
+            return_value=FakeHTTPResponse(
+                json.dumps(
+                    {
+                        "id": AUTHORITATIVE_REPOSITORY_ID,
+                        "full_name": REPOSITORY,
+                    }
+                ).encode()
+            )
+        )
+        adapter = StdlibGitHubRESTAdapter(
+            urlopen=urlopen,
+            deadline=deadline,
+        )
+        adapter.get_repository(REPOSITORY)
+        self.assertEqual(7.0, urlopen.call_args.kwargs["timeout"])
+
+        ps_runner = mock.Mock(
+            return_value=subprocess.CompletedProcess(
+                ["/bin/ps"],
+                0,
+                "",
+                "",
+            )
+        )
+        with mock.patch.object(
+            provenance_module.subprocess,
+            "run",
+            ps_runner,
+        ):
+            self.assertEqual(
+                (),
+                provenance_module._process_ids_for_uid(
+                    65001,
+                    deadline=deadline,
+                ),
+            )
+        self.assertEqual(5.0, ps_runner.call_args.kwargs["timeout"])
+        self.assertIs(
+            subprocess.DEVNULL,
+            ps_runner.call_args.kwargs["stdin"],
+        )
+
+    def test_exhausted_deadline_prevents_subprocess_and_api_invocation(
+        self,
+    ) -> None:
+        clock = FakeMonotonicClock()
+        deadline = provenance_module._VerifierDeadline(1.0, monotonic=clock)
+        clock.advance(2.0)
+        command_runner = mock.Mock()
+        with self.assertRaises(TimeoutError):
+            provenance_module._run_text(
+                command_runner,
+                ("/usr/bin/git", "rev-parse", "HEAD"),
+                cwd=Path("/candidate"),
+                deadline=deadline,
+            )
+        command_runner.assert_not_called()
+
+        urlopen = mock.Mock()
+        adapter = StdlibGitHubRESTAdapter(
+            urlopen=urlopen,
+            deadline=deadline,
+        )
+        with self.assertRaisesRegex(
+            TimeoutError,
+            "verifier deadline exhausted",
+        ):
+            adapter.get_repository(REPOSITORY)
+        urlopen.assert_not_called()
+
+    def test_api_slow_response_is_closed_at_absolute_deadline(self) -> None:
+        response = BlockingHTTPResponse()
+        adapter = StdlibGitHubRESTAdapter(
+            urlopen=mock.Mock(return_value=response),
+            timeout_seconds=5.0,
+            deadline=provenance_module._VerifierDeadline(0.05),
+        )
+        started = time.monotonic()
+        with self.assertRaisesRegex(
+            GitHubSourceError,
+            "verifier deadline exhausted",
+        ):
+            adapter.get_repository(REPOSITORY)
+
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertTrue(response.closed.is_set())
+
+    def test_default_api_transport_bounds_open_and_read_in_subprocess(
+        self,
+    ) -> None:
+        clock = FakeMonotonicClock()
+        deadline = provenance_module._VerifierDeadline(
+            10.0,
+            monotonic=clock,
+        )
+        completed = subprocess.CompletedProcess(
+            [sys.executable],
+            0,
+            b'S{"id":1}',
+            b"",
+        )
+        adapter = StdlibGitHubRESTAdapter(
+            token="fixture-token",
+            deadline=deadline,
+        )
+        with mock.patch.object(
+            provenance_module.subprocess,
+            "run",
+            return_value=completed,
+        ) as runner:
+            self.assertEqual(1, adapter.get_repository(REPOSITORY)["id"])
+
+        self.assertEqual(10.0, runner.call_args.kwargs["timeout"])
+        self.assertNotIn(
+            "fixture-token",
+            " ".join(runner.call_args.args[0]),
+        )
+        self.assertNotIn(
+            "fixture-token",
+            " ".join(runner.call_args.kwargs["env"].values()),
+        )
+        request_spec = json.loads(runner.call_args.kwargs["input"])
+        self.assertEqual(
+            "Bearer fixture-token",
+            request_spec["headers"]["Authorization"],
+        )
+
+    def test_default_api_transport_bootstrap_executes_in_isolated_python(
+        self,
+    ) -> None:
+        adapter = StdlibGitHubRESTAdapter()
+        payload = adapter._request_bytes_in_subprocess(
+            path="/fixture",
+            url="data:application/json,%7B%22id%22%3A1%7D",
+            method="GET",
+            headers={},
+            body=None,
+            maximum=1024,
+            request_timeout=5.0,
+        )
+        self.assertEqual(b'{"id":1}', payload)
+
+    def test_cleanup_uses_fresh_deadline_after_work_deadline_expires(
+        self,
+    ) -> None:
+        work_clock = FakeMonotonicClock()
+        expired_work_deadline = provenance_module._VerifierDeadline(
+            1.0,
+            monotonic=work_clock,
+        )
+        work_clock.advance(2.0)
+        cleanup_deadlines: list[object] = []
+
+        def process_ids(
+            uid: int,
+            *,
+            deadline: object,
+        ) -> tuple[int, ...]:
+            self.assertEqual(65001, uid)
+            cleanup_deadlines.append(deadline)
+            return (4321,) if len(cleanup_deadlines) == 1 else ()
+
+        with (
+            mock.patch.object(
+                provenance_module,
+                "_process_ids_for_uid",
+                side_effect=process_ids,
+            ),
+            mock.patch.object(provenance_module.os, "kill"),
+            mock.patch.object(provenance_module.time, "sleep"),
+        ):
+            observed = provenance_module._terminate_producer_uid_processes(
+                65001,
+            )
+
+        self.assertEqual((4321,), observed)
+        self.assertEqual(2, len(cleanup_deadlines))
+        self.assertIs(cleanup_deadlines[0], cleanup_deadlines[1])
+        self.assertIsNot(expired_work_deadline, cleanup_deadlines[0])
+
+    def test_pinned_producer_rechecks_capacity_immediately_before_launch(
+        self,
+    ) -> None:
+        clock = FakeMonotonicClock()
+        deadline = provenance_module._VerifierDeadline(
+            10.0,
+            monotonic=clock,
+        )
+        payload = b"fixture executable"
+        digest = hashlib.sha256(payload).hexdigest()
+        command_runner = mock.Mock()
+        original_open = provenance_module._open_pinned_executable
+
+        def delayed_open(path: Path) -> object:
+            observed = original_open(path)
+            clock.advance(1.0)
+            return observed
+
+        with tempfile.TemporaryDirectory() as directory:
+            state_dir = Path(directory)
+            with (
+                mock.patch.object(
+                    provenance_module,
+                    "_open_pinned_executable",
+                    side_effect=delayed_open,
+                ),
+                self.assertRaisesRegex(
+                    TimeoutError,
+                    "cannot start pinned producer command",
+                ),
+            ):
+                provenance_module._run_pinned_command(
+                    command_runner,
+                    ("/candidate/producer",),
+                    executable_payload=payload,
+                    executable_snapshot=(0, 0, len(payload), 0, digest),
+                    authenticated_python_sources={},
+                    state_dir=state_dir,
+                    cwd=str(state_dir),
+                    timeout=5.0,
+                    deadline=deadline,
+                    cleanup_reserve_seconds=5.0,
+                )
+
+        command_runner.assert_not_called()
+
+    def test_process_capture_interrupt_closes_pipes_and_sweeps_uid(self) -> None:
+        class InterruptedProcess:
+            def __init__(self) -> None:
+                self.stdout = io.BytesIO(b"stdout")
+                self.stderr = io.BytesIO(b"stderr")
+                self.returncode = 0
+                self.poll_count = 0
+
+            def poll(self) -> int:
+                self.poll_count += 1
+                if self.poll_count == 1:
+                    raise KeyboardInterrupt()
+                return 0
+
+        process = InterruptedProcess()
+        with (
+            mock.patch.object(
+                provenance_module,
+                "_terminate_producer_uid_processes",
+                return_value=(),
+            ) as cleanup,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            provenance_module._communicate_process_bounded(
+                process,
+                argv=("producer",),
+                timeout=5.0,
+                producer_uid=65001,
+                residual_error_prefix="residual: ",
+            )
+
+        self.assertTrue(process.stdout.closed)
+        self.assertTrue(process.stderr.closed)
+        cleanup.assert_called_once_with(65001)
 
 
 class RepositoryAttestationTest(unittest.TestCase):
@@ -858,6 +1231,14 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             "          sudo env -u GITHUB_TOKEN -u GH_TOKEN \\\n",
             isolation_job,
         )
+        self.assertNotIn("-m unittest", isolation_job)
+        self.assertIn(
+            '            "${PYTHON_EXECUTABLE}" '
+            "-W error::ResourceWarning -B \\\n"
+            "              tests/test_micromachine_pre_live_provenance.py \\\n"
+            "              -k dedicated_producer_uid\n",
+            isolation_job,
+        )
         self.assertIn("-k dedicated_producer_uid", isolation_job)
         self.assertNotIn("github.token", isolation_job)
         self.assertNotIn("actions: read", isolation_job)
@@ -896,7 +1277,18 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         self.assertNotIn("GITHUB_WORKFLOW_REF:", provenance_job)
         self.assertNotIn("GITHUB_WORKFLOW_SHA:", provenance_job)
         self.assertIn(
-            'VOI_NODE_EXECUTABLE="$(python3 -c ',
+            '          PYTHON_EXECUTABLE="$(\n'
+            "            python3 -I -B -S -c \\\n"
+            "              'import os, sys; print(os.path.realpath(sys.executable))'\n"
+            '          )"\n',
+            provenance_job,
+        )
+        self.assertIn(
+            '          VOI_NODE_EXECUTABLE="$(\n'
+            '            "${PYTHON_EXECUTABLE}" -I -B -S -c \\\n'
+            '              \'import os, shutil; print(os.path.realpath('
+            'shutil.which("node") or ""))\'\n'
+            '          )"\n',
             provenance_job,
         )
         self.assertIn('      VOI_PRODUCER_UID: "65001"\n', provenance_job)
@@ -906,24 +1298,23 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             provenance_job,
         )
         self.assertIn(
+            '      VOI_VERIFIER_TIMEOUT_SECONDS: "4800"\n',
+            provenance_job,
+        )
+        self.assertIn(
             "    timeout-minutes: "
             f"{GITHUB_ACTIONS_PROVENANCE_JOB_TIMEOUT_MINUTES}\n",
             provenance_job,
         )
-        worst_case_seconds = (
-            (2 * provenance_module.CTEST_DISCOVERY_TIMEOUT_SECONDS)
-            + provenance_module.CTEST_EXECUTION_TIMEOUT_SECONDS
-            + (
-                REQUIRED_CTEST_COUNT
-                * provenance_module.CTEST_DIRECT_TIMEOUT_SECONDS
-            )
-            + provenance_module.BUILD_IDENTITY_PROBE_TIMEOUT_SECONDS
-            + GITHUB_ACTIONS_PRODUCER_TIMEOUT_SECONDS
+        required_job_budget_seconds = (
+            GITHUB_ACTIONS_PROVENANCE_SETUP_RESERVE_SECONDS
+            + GITHUB_ACTIONS_VERIFIER_TIMEOUT_SECONDS
             + GITHUB_ACTIONS_PROVENANCE_CLEANUP_RESERVE_SECONDS
+            + GITHUB_ACTIONS_PROVENANCE_PUBLICATION_RESERVE_SECONDS
         )
         self.assertGreater(
             GITHUB_ACTIONS_PROVENANCE_JOB_TIMEOUT_MINUTES * 60,
-            worst_case_seconds,
+            required_job_budget_seconds,
         )
         self.assertIn(
             "      VOI_CANDIDATE_WORKSPACE: "
@@ -958,11 +1349,12 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             "          ref: ${{ github.event.pull_request.head.sha }}\n",
             provenance_job,
         )
-        ownership_step = provenance_job.split(
-            "      - name: Transfer verifier inputs to root ownership\n",
+        emission_step = provenance_job.split(
+            "      - name: Transfer inputs and emit canonical authenticated "
+            "provenance bundle\n",
             1,
         )[1].split(
-            "      - name: Emit canonical authenticated provenance bundle\n",
+            "      - name: Upload canonical authenticated provenance bundle\n",
             1,
         )[0]
         self.assertIn(
@@ -970,24 +1362,62 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             '            "${VOI_CANDIDATE_WORKSPACE}" \\\n'
             '            "${VOI_TRUSTED_VERIFIER_WORKSPACE}" \\\n'
             '            "${ROOT_DIR}"\n',
-            ownership_step,
+            emission_step,
         )
         self.assertIn(
             "          sudo chmod 0755 \\\n"
             '            "${VOI_CANDIDATE_WORKSPACE}" \\\n'
             '            "${VOI_TRUSTED_VERIFIER_WORKSPACE}" \\\n'
             '            "${ROOT_DIR}"\n',
-            ownership_step,
+            emission_step,
         )
         self.assertNotIn("-m unittest", provenance_job)
         self.assertNotIn("-k dedicated_producer_uid", provenance_job)
-        emission_step = provenance_job.split(
-            "      - name: Emit canonical authenticated provenance bundle\n",
+        self.assertIn("          trap cleanup_verifier EXIT\n", emission_step)
+        self.assertIn("          trap 'exit 130' INT\n", emission_step)
+        self.assertIn("          trap 'exit 143' TERM\n", emission_step)
+        self.assertIn(
+            "            sudo env -u GITHUB_TOKEN -u GH_TOKEN \\\n",
+            emission_step,
+        )
+        self.assertIn(
+            "              \"${PYTHON_EXECUTABLE}\" -I -B -S -c '\n",
+            emission_step,
+        )
+        self.assertIn(
+            "deadline = time.monotonic() + 600.0\n",
+            emission_step,
+        )
+        self.assertIn(
+            '        ["/bin/ps", "-axo", "uid=,pid="],\n',
+            emission_step,
+        )
+        self.assertIn(
+            "            os.kill(process_id, signal.SIGKILL)\n",
+            emission_step,
+        )
+        self.assertIn(
+            "            if [ \"${cleanup_status}\" -ne 0 ]; then\n"
+            "              status=1\n"
+            "            else\n",
+            emission_step,
+        )
+        cleanup_source = emission_step.split(
+            "              \"${PYTHON_EXECUTABLE}\" -I -B -S -c '\n",
             1,
         )[1].split(
-            "      - name: Upload canonical authenticated provenance bundle\n",
+            "\n          ' \"${VOI_PRODUCER_UID}\" </dev/null\n",
             1,
         )[0]
+        compile(
+            textwrap.dedent(cleanup_source),
+            "<workflow-cleanup>",
+            "exec",
+        )
+        self.assertLess(
+            emission_step.index("          trap cleanup_verifier EXIT\n"),
+            emission_step.index("          sudo chown -RP 0:0 \\\n"),
+        )
         self.assertIn(
             "          printf '%s' \"${GITHUB_TOKEN}\" | "
             "sudo env -u GITHUB_TOKEN \\\n",
@@ -1019,6 +1449,11 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             emission_step,
         )
         self.assertIn(
+            "            VOI_VERIFIER_TIMEOUT_SECONDS="
+            '"${VOI_VERIFIER_TIMEOUT_SECONDS}" \\\n',
+            emission_step,
+        )
+        self.assertIn(
             "            VOI_TRUSTED_VERIFIER_COMMIT="
             '"${VOI_TRUSTED_VERIFIER_COMMIT}" \\\n',
             emission_step,
@@ -1037,12 +1472,8 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             '          sudo chown "$(id -u):$(id -g)" \\\n',
             emission_step,
         )
-        self.assertIn(
-            "      - name: Restore checkout ownership to the runner\n"
-            "        if: always()\n"
-            "        run: >-\n"
-            '          sudo chown -RP "$(id -u):$(id -g)"\n'
-            '          "${GITHUB_WORKSPACE}"\n',
+        self.assertNotIn(
+            "Restore checkout ownership to the runner",
             provenance_job,
         )
         candidate_job = ci_workflow.split(
@@ -3182,6 +3613,96 @@ class GitHubActionsBundleEmissionTest(unittest.TestCase):
             github_attestation.assert_not_called()
             producer_execution.assert_not_called()
 
+    def test_producer_is_not_launched_without_runtime_and_cleanup_capacity(
+        self,
+    ) -> None:
+        clock = FakeMonotonicClock()
+        deadline = provenance_module._VerifierDeadline(
+            GITHUB_ACTIONS_PRODUCER_TIMEOUT_SECONDS
+            + GITHUB_ACTIONS_PROVENANCE_CLEANUP_RESERVE_SECONDS
+            - 1.0,
+            monotonic=clock,
+        )
+        accepted = {
+            "ok": True,
+            "status": "accepted",
+            "blockers": [],
+        }
+        build = {
+            **accepted,
+            "report_path": "/runtime/voi_build_identity.json",
+            "build_dir": "/runtime",
+        }
+        policy = {
+            **accepted,
+            "cwd": "/candidate",
+            "argv": ["/candidate/producer"],
+            "output_artifact": "/output/producer.json",
+            "policy_sha256": "a" * 64,
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with (
+                mock.patch.object(
+                    provenance_module,
+                    "_normalize_producer_identity",
+                    return_value=(65001, 65001),
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "attest_repository",
+                    return_value=accepted,
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "attest_github_actions_emission_context",
+                    return_value=accepted,
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "_admit_prevalidated_build_binding",
+                    return_value=build,
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "_capture_admitted_build_snapshots",
+                    return_value=accepted,
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "resolve_local_producer_policy",
+                    return_value=policy,
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "run_local_producer",
+                ) as producer,
+            ):
+                report = emit_github_actions_pre_live_bundle(
+                    adapter=FakeGitHubAdapter(),
+                    repository_dir=root,
+                    expected_commit=HEAD_SHA,
+                    run_id=RUN_ID,
+                    run_attempt=RUN_ATTEMPT,
+                    workflow_ref=WORKFLOW_REF,
+                    workflow_sha=WORKFLOW_SHA,
+                    build_report_path="/runtime/voi_build_identity.json",
+                    expected_build_dir="/runtime",
+                    output_path=root.parent / "pre-live.zip",
+                    producer_uid=65001,
+                    producer_gid=65001,
+                    verifier_deadline=deadline,
+                    _prevalidated_build_binding=build,
+                )
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn(
+            "verifier deadline cannot start deterministic journey producer",
+            " ".join(report["blockers"]),
+        )
+        producer.assert_not_called()
+
     def test_deterministic_output_is_bound_to_the_admitted_build(self) -> None:
         raw_output = b"raw deterministic journey output"
         bound_output = b"bound deterministic journey output"
@@ -4158,6 +4679,7 @@ class LocalProducerTest(unittest.TestCase):
             "VOI_PRODUCER_UID": "65001",
             "VOI_PRODUCER_TIMEOUT_SECONDS": "1800",
             "VOI_RELEASE_COMMIT": HEAD_SHA,
+            "VOI_VERIFIER_TIMEOUT_SECONDS": "4800",
             "VOI_TRUSTED_VERIFIER_COMMIT": BASE_SHA,
             "VOI_TRUSTED_VERIFIER_WORKSPACE": "/trusted",
         }
@@ -4187,6 +4709,11 @@ class LocalProducerTest(unittest.TestCase):
                 side_effect=lambda **kwargs: events.append("emit")
                 or {"ok": True},
             ) as emitter,
+            mock.patch.object(
+                provenance_module,
+                "_terminate_producer_uid_processes",
+                return_value=(),
+            ) as uid_cleanup,
             mock.patch("sys.stdout", new_callable=io.StringIO),
         ):
             returncode = provenance_module._main(
@@ -4200,12 +4727,25 @@ class LocalProducerTest(unittest.TestCase):
 
         self.assertEqual(0, returncode)
         self.assertEqual(["trusted", "build", "token", "emit"], events)
-        trusted_attestation.assert_called_once_with(
-            "/trusted",
-            expected_commit=BASE_SHA,
+        verifier_deadline = trusted_attestation.call_args.kwargs["deadline"]
+        self.assertIsInstance(
+            verifier_deadline,
+            provenance_module._VerifierDeadline,
+        )
+        self.assertEqual(
+            ("/trusted",),
+            trusted_attestation.call_args.args,
+        )
+        self.assertEqual(
+            BASE_SHA,
+            trusted_attestation.call_args.kwargs["expected_commit"],
         )
         self.assertEqual(65001, build_attestation.call_args.kwargs["execution_uid"])
         self.assertEqual(65001, build_attestation.call_args.kwargs["execution_gid"])
+        self.assertIs(
+            verifier_deadline,
+            build_attestation.call_args.kwargs["deadline"],
+        )
         self.assertIs(
             build,
             emitter.call_args.kwargs["_prevalidated_build_binding"],
@@ -4218,6 +4758,15 @@ class LocalProducerTest(unittest.TestCase):
             GITHUB_ACTIONS_PRODUCER_TIMEOUT_SECONDS,
             emitter.call_args.kwargs["producer_timeout_seconds"],
         )
+        self.assertIs(
+            verifier_deadline,
+            emitter.call_args.kwargs["verifier_deadline"],
+        )
+        self.assertIs(
+            verifier_deadline,
+            emitter.call_args.kwargs["adapter"]._deadline,
+        )
+        uid_cleanup.assert_called_once_with(65001)
 
     def test_dedicated_ctest_command_uses_bounded_uid_runner(self) -> None:
         completed = subprocess.CompletedProcess(
@@ -4249,9 +4798,15 @@ class LocalProducerTest(unittest.TestCase):
             timeout=120.0,
             uid=65001,
             gid=65001,
+            deadline=None,
         )
 
     def test_build_identity_probe_uses_bounded_uid_runner(self) -> None:
+        clock = FakeMonotonicClock()
+        deadline = provenance_module._VerifierDeadline(
+            20.0,
+            monotonic=clock,
+        )
         with tempfile.TemporaryDirectory(
             dir=BUILD_IDENTITY_REPO_ROOT,
         ) as directory:
@@ -4349,6 +4904,7 @@ class LocalProducerTest(unittest.TestCase):
                     mock.sentinel.config,
                     execution_uid=65001,
                     execution_gid=65001,
+                    deadline=deadline,
                 )
 
         self.assertEqual({"ok": True}, report)
@@ -4361,9 +4917,10 @@ class LocalProducerTest(unittest.TestCase):
                     ),
                     cwd=str(snapshot_path.parent),
                     env=provenance_module.SANITIZED_TEST_ENV,
-                    timeout=provenance_module.BUILD_IDENTITY_PROBE_TIMEOUT_SECONDS,
+                    timeout=20.0,
                     uid=65001,
                     gid=65001,
+                    deadline=deadline,
                 ),
                 mock.call(
                     (
@@ -4374,9 +4931,10 @@ class LocalProducerTest(unittest.TestCase):
                     ),
                     cwd=str(snapshot_path.parent),
                     env=ctest_environment,
-                    timeout=120.0,
+                    timeout=20.0,
                     uid=65001,
                     gid=65001,
+                    deadline=deadline,
                 ),
                 mock.call(
                     (
@@ -4390,9 +4948,10 @@ class LocalProducerTest(unittest.TestCase):
                     ),
                     cwd=str(snapshot_path.parent),
                     env={"PATH": "/usr/bin:/bin"},
-                    timeout=30.0,
+                    timeout=20.0,
                     uid=65001,
                     gid=65001,
+                    deadline=deadline,
                 ),
             ],
             native_runner.call_args_list,
@@ -4403,7 +4962,7 @@ class LocalProducerTest(unittest.TestCase):
     ) -> None:
         producer_uid, producer_gid = self.dedicated_producer_uid()
         with tempfile.TemporaryDirectory(
-            dir=BUILD_IDENTITY_REPO_ROOT,
+            dir="/private/tmp",
         ) as directory:
             root = Path(directory)
             root.chmod(0o711)
@@ -4500,7 +5059,7 @@ class LocalProducerTest(unittest.TestCase):
     ) -> None:
         producer_uid, producer_gid = self.dedicated_producer_uid()
         with tempfile.TemporaryDirectory(
-            dir=BUILD_IDENTITY_REPO_ROOT,
+            dir="/private/tmp",
         ) as directory:
             root = Path(directory)
             root.chmod(0o711)
@@ -4597,11 +5156,39 @@ class LocalProducerTest(unittest.TestCase):
     ) -> None:
         producer_uid, producer_gid = self.dedicated_producer_uid()
         with tempfile.TemporaryDirectory(
-            dir=BUILD_IDENTITY_REPO_ROOT,
+            dir="/private/tmp",
         ) as directory:
             root = Path(directory)
             root.chmod(0o755)
             fixture = make_build_fixture(root / "fixture")
+            build_dir = fixture["config"].micromachine_build_dir.resolve()
+            fake_ctest = root / "ctest"
+            registry = {
+                "tests": [
+                    {
+                        "name": name,
+                        "command": [f"BUILD_DIR/bin/{executable}"],
+                    }
+                    for name, executable in sorted(
+                        MICROMACHINE_REQUIRED_NATIVE_TESTS.items()
+                    )
+                ]
+            }
+            fake_ctest.write_text(
+                "#!/bin/sh\n"
+                'if [ "${3:-}" = "--show-only=json-v1" ]; then\n'
+                f"  printf '%s\\n' '{json.dumps(registry)}' "
+                '| sed "s|BUILD_DIR|${{2}}|g"\n'
+                "else\n"
+                "  printf '%s\\n' "
+                f"'100% tests passed, 0 tests failed out of {REQUIRED_CTEST_COUNT}'\n"
+                "fi\n"
+            )
+            fake_ctest.chmod(0o755)
+            (build_dir / "CMakeCache.txt").write_text(
+                f"CMAKE_CTEST_COMMAND:INTERNAL={fake_ctest.resolve()}\n"
+            )
+            refresh_build_fixture(fixture, fixture["config"])
             producer_io = root / "producer-io"
             producer_io.mkdir(mode=0o700)
             os.chown(producer_io, producer_uid, producer_gid)
@@ -4735,6 +5322,7 @@ class LocalProducerTest(unittest.TestCase):
             "VOI_PRODUCER_UID": "65001",
             "VOI_PRODUCER_TIMEOUT_SECONDS": "1800",
             "VOI_RELEASE_COMMIT": HEAD_SHA,
+            "VOI_VERIFIER_TIMEOUT_SECONDS": "4800",
             "VOI_TRUSTED_VERIFIER_COMMIT": BASE_SHA,
             "VOI_TRUSTED_VERIFIER_WORKSPACE": "/trusted",
         }
@@ -4760,6 +5348,11 @@ class LocalProducerTest(unittest.TestCase):
                 provenance_module,
                 "_read_github_token_from_stdin",
             ) as token_reader,
+            mock.patch.object(
+                provenance_module,
+                "_terminate_producer_uid_processes",
+                return_value=(),
+            ),
             mock.patch("sys.stdout", new_callable=io.StringIO),
         ):
             returncode = provenance_module._main(
