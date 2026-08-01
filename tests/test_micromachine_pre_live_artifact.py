@@ -1970,6 +1970,71 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                     blocker_codes(report),
                 )
 
+    def test_rejects_github_wrapper_descriptor_flag_mismatch(self) -> None:
+        wrapper = raw_zip(
+            {GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME: self.bundle},
+            compression=zipfile.ZIP_DEFLATED,
+        )
+        for signed in (False, True):
+            with self.subTest(signed=signed):
+                report = verify_downloaded_pre_live_artifact(
+                    add_data_descriptor(
+                        wrapper,
+                        signed=signed,
+                        local=False,
+                    )
+                )
+
+                self.assertFalse(report["ok"], report)
+                self.assertEqual("invalid", report["delivery"]["kind"])
+                self.assertIn(
+                    "noncanonical_github_artifact_framing",
+                    blocker_codes(report),
+                )
+
+    def test_accepts_github_wrapper_data_descriptors(self) -> None:
+        wrapper = raw_zip(
+            {GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME: self.bundle},
+            compression=zipfile.ZIP_DEFLATED,
+        )
+        for signed in (False, True):
+            with self.subTest(signed=signed):
+                report = verify_downloaded_pre_live_artifact(
+                    add_data_descriptor(
+                        wrapper,
+                        signed=signed,
+                        local=True,
+                    )
+                )
+
+                self.assertTrue(report["ok"], report["blockers"])
+                self.assertEqual(
+                    "github_artifact_zip",
+                    report["delivery"]["kind"],
+                )
+
+    def test_rejects_github_wrapper_zip64_ambiguity(self) -> None:
+        wrapper = raw_zip(
+            {GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME: self.bundle},
+            compression=zipfile.ZIP_DEFLATED,
+        )
+        for name, malformed in (
+            ("local ZIP64 metadata", add_local_zip64_metadata(wrapper)),
+            (
+                "sentinel-free central ZIP64 extra",
+                add_central_zip64_extra(wrapper),
+            ),
+        ):
+            with self.subTest(name=name):
+                report = verify_downloaded_pre_live_artifact(malformed)
+
+                self.assertFalse(report["ok"], report)
+                self.assertEqual("invalid", report["delivery"]["kind"])
+                self.assertIn(
+                    "noncanonical_github_artifact_framing",
+                    blocker_codes(report),
+                )
+
     def test_rejects_ambiguous_or_wrong_github_artifact_wrapper(self) -> None:
         for name, entries in {
             "extra member": {
@@ -2228,6 +2293,129 @@ def insert_hidden_before_central_directory(
             bundle[:central_offset],
             hidden,
             bundle[central_offset:eocd_offset],
+            artifact_module._END_CENTRAL_DIRECTORY.pack(*eocd),
+        )
+    )
+
+
+def add_data_descriptor(
+    bundle: bytes,
+    *,
+    signed: bool,
+    local: bool,
+) -> bytes:
+    eocd_offset = len(bundle) - artifact_module._END_CENTRAL_DIRECTORY.size
+    eocd = list(
+        artifact_module._END_CENTRAL_DIRECTORY.unpack_from(
+            bundle,
+            eocd_offset,
+        )
+    )
+    central_offset = eocd[6]
+    central = list(
+        artifact_module._CENTRAL_DIRECTORY_HEADER.unpack_from(
+            bundle,
+            central_offset,
+        )
+    )
+    central[3] |= 0x0008
+    descriptor = struct.pack("<III", central[7], central[8], central[9])
+    if signed:
+        descriptor = b"PK\x07\x08" + descriptor
+    eocd[6] += len(descriptor)
+    local_data = bundle[:central_offset]
+    if local:
+        local_header = list(
+            artifact_module._LOCAL_FILE_HEADER.unpack_from(bundle, 0)
+        )
+        local_header[2] |= 0x0008
+        local_header[6:9] = [0, 0, 0]
+        local_data = b"".join(
+            (
+                artifact_module._LOCAL_FILE_HEADER.pack(*local_header),
+                bundle[
+                    artifact_module._LOCAL_FILE_HEADER.size : central_offset
+                ],
+            )
+        )
+    return b"".join(
+        (
+            local_data,
+            descriptor,
+            artifact_module._CENTRAL_DIRECTORY_HEADER.pack(*central),
+            bundle[
+                central_offset
+                + artifact_module._CENTRAL_DIRECTORY_HEADER.size : eocd_offset
+            ],
+            artifact_module._END_CENTRAL_DIRECTORY.pack(*eocd),
+        )
+    )
+
+
+def add_local_zip64_metadata(bundle: bytes) -> bytes:
+    eocd_offset = len(bundle) - artifact_module._END_CENTRAL_DIRECTORY.size
+    eocd = list(
+        artifact_module._END_CENTRAL_DIRECTORY.unpack_from(
+            bundle,
+            eocd_offset,
+        )
+    )
+    central_offset = eocd[6]
+    local = list(artifact_module._LOCAL_FILE_HEADER.unpack_from(bundle, 0))
+    filename_end = artifact_module._LOCAL_FILE_HEADER.size + local[9]
+    extra_end = filename_end + local[10]
+    zip64_extra = struct.pack("<HHQQ", 0x0001, 16, local[7], local[8])
+    local[1] = 45
+    local[7] = 0xFFFFFFFF
+    local[8] = 0xFFFFFFFF
+    local[10] += len(zip64_extra)
+    eocd[6] += len(zip64_extra)
+    return b"".join(
+        (
+            artifact_module._LOCAL_FILE_HEADER.pack(*local),
+            bundle[artifact_module._LOCAL_FILE_HEADER.size : extra_end],
+            zip64_extra,
+            bundle[extra_end:central_offset],
+            bundle[central_offset:eocd_offset],
+            artifact_module._END_CENTRAL_DIRECTORY.pack(*eocd),
+        )
+    )
+
+
+def add_central_zip64_extra(bundle: bytes) -> bytes:
+    eocd_offset = len(bundle) - artifact_module._END_CENTRAL_DIRECTORY.size
+    eocd = list(
+        artifact_module._END_CENTRAL_DIRECTORY.unpack_from(
+            bundle,
+            eocd_offset,
+        )
+    )
+    central_offset = eocd[6]
+    central = list(
+        artifact_module._CENTRAL_DIRECTORY_HEADER.unpack_from(
+            bundle,
+            central_offset,
+        )
+    )
+    filename_end = (
+        central_offset
+        + artifact_module._CENTRAL_DIRECTORY_HEADER.size
+        + central[10]
+    )
+    extra_end = filename_end + central[11]
+    zip64_extra = struct.pack("<HHQQ", 0x0001, 16, central[8], central[9])
+    central[11] += len(zip64_extra)
+    eocd[5] += len(zip64_extra)
+    return b"".join(
+        (
+            bundle[:central_offset],
+            artifact_module._CENTRAL_DIRECTORY_HEADER.pack(*central),
+            bundle[
+                central_offset
+                + artifact_module._CENTRAL_DIRECTORY_HEADER.size : extra_end
+            ],
+            zip64_extra,
+            bundle[extra_end:eocd_offset],
             artifact_module._END_CENTRAL_DIRECTORY.pack(*eocd),
         )
     )
