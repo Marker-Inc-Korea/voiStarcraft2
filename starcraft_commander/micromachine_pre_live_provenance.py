@@ -122,8 +122,15 @@ _SHA256_IDENTITY_RE: Final[re.Pattern[str]] = re.compile(r"^sha256:[0-9a-f]{64}$
 PINNED_NATIVE_EXEC_ROOT_ENV: Final[str] = "VOI_PINNED_NATIVE_EXEC_ROOT"
 PRODUCER_UID_ENV: Final[str] = "VOI_PRODUCER_UID"
 PRODUCER_GID_ENV: Final[str] = "VOI_PRODUCER_GID"
+CANDIDATE_WORKSPACE_ENV: Final[str] = "VOI_CANDIDATE_WORKSPACE"
+TRUSTED_VERIFIER_WORKSPACE_ENV: Final[str] = "VOI_TRUSTED_VERIFIER_WORKSPACE"
+TRUSTED_VERIFIER_COMMIT_ENV: Final[str] = "VOI_TRUSTED_VERIFIER_COMMIT"
 TRUSTED_PS_EXECUTABLE: Final[str] = "/bin/ps"
 PRODUCER_PROCESS_CLEANUP_SECONDS: Final[float] = 5.0
+CTEST_DISCOVERY_TIMEOUT_SECONDS: Final[float] = 120.0
+CTEST_EXECUTION_TIMEOUT_SECONDS: Final[float] = 600.0
+CTEST_DIRECT_TIMEOUT_SECONDS: Final[float] = 120.0
+BUILD_IDENTITY_PROBE_TIMEOUT_SECONDS: Final[float] = 30.0
 _REPOSITORY_RE: Final[re.Pattern[str]] = re.compile(
     r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
 )
@@ -2064,6 +2071,51 @@ def attest_github_source(
     )
 
 
+def _build_micromachine_identity_with_boundary(
+    config: MicroMachineBuildIdentityConfig,
+    *,
+    execution_uid: int | None,
+    execution_gid: int | None,
+) -> dict[str, object]:
+    execution_identity = _normalize_producer_identity(
+        execution_uid,
+        execution_gid,
+    )
+    if execution_identity is None:
+        return build_micromachine_build_identity(config)
+
+    def run_binary_identity_probe(
+        argv: Sequence[str],
+        executable_path: Path,
+    ) -> subprocess.CompletedProcess[object]:
+        if (
+            executable_path.is_symlink()
+            or not executable_path.is_file()
+            or _path_has_symlink_component(executable_path)
+        ):
+            raise OSError("build identity executable snapshot is invalid")
+        os.chmod(executable_path, 0o555)
+        completed = _run_dedicated_uid_native_command(
+            (str(executable_path), *argv[1:]),
+            cwd=str(executable_path.parent),
+            env=SANITIZED_TEST_ENV,
+            timeout=BUILD_IDENTITY_PROBE_TIMEOUT_SECONDS,
+            uid=execution_identity[0],
+            gid=execution_identity[1],
+        )
+        return subprocess.CompletedProcess(
+            list(argv),
+            completed.returncode,
+            completed.stdout,
+            completed.stderr,
+        )
+
+    return build_micromachine_build_identity(
+        config,
+        binary_identity_runner=run_binary_identity_probe,
+    )
+
+
 def attest_build_binding(
     report_path: Path | str,
     *,
@@ -2072,6 +2124,8 @@ def attest_build_binding(
     expected_build_dir: Path | str | None = None,
     command_runner: CommandRunner = subprocess.run,
     git_runner: CommandRunner = subprocess.run,
+    execution_uid: int | None = None,
+    execution_gid: int | None = None,
 ) -> dict[str, object]:
     """Bind supported build identity inputs to one commit and run required CTests."""
 
@@ -2243,7 +2297,11 @@ def attest_build_binding(
             build_dir_bound = False
         if build_dir_bound:
             try:
-                current = build_micromachine_build_identity(config)
+                current = _build_micromachine_identity_with_boundary(
+                    config,
+                    execution_uid=execution_uid,
+                    execution_gid=execution_gid,
+                )
             except Exception as exc:
                 blockers.append(f"current build identity reconstruction failed: {exc}")
             if recorded is not None and current is not None:
@@ -2257,6 +2315,8 @@ def attest_build_binding(
                 ctest_result = _run_ctest(
                     config.micromachine_build_dir,
                     command_runner,
+                    execution_uid=execution_uid,
+                    execution_gid=execution_gid,
                 )
                 if ctest_result["ok"] is not True:
                     blockers.extend(cast(list[str], ctest_result["blockers"]))
@@ -2287,7 +2347,13 @@ def attest_build_binding(
                         f"actual={ctest_result.get('registry_sha256')!r}"
                     )
                 try:
-                    current_after_ctest = build_micromachine_build_identity(config)
+                    current_after_ctest = (
+                        _build_micromachine_identity_with_boundary(
+                            config,
+                            execution_uid=execution_uid,
+                            execution_gid=execution_gid,
+                        )
+                    )
                 except Exception as exc:
                     blockers.append(
                         f"post-CTest build identity reconstruction failed: {exc}"
@@ -3817,6 +3883,7 @@ def emit_github_actions_pre_live_bundle(
     producer_runner: CommandRunner = subprocess.run,
     producer_uid: int | None = None,
     producer_gid: int | None = None,
+    _prevalidated_build_binding: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Create the exact canonical bundle uploaded by the provenance CI job."""
 
@@ -3859,14 +3926,22 @@ def emit_github_actions_pre_live_bundle(
         workflow_ref=workflow_ref,
         workflow_sha=workflow_sha,
     )
-    build_binding = attest_build_binding(
-        build_report_path,
-        repository_dir=repository_root,
-        expected_repository_commit=expected_commit,
-        expected_build_dir=expected_build_dir,
-        command_runner=ctest_runner,
-        git_runner=git_runner,
-    )
+    if _prevalidated_build_binding is None:
+        build_binding = attest_build_binding(
+            build_report_path,
+            repository_dir=repository_root,
+            expected_repository_commit=expected_commit,
+            expected_build_dir=expected_build_dir,
+            command_runner=ctest_runner,
+            git_runner=git_runner,
+        )
+    else:
+        build_binding = _admit_prevalidated_build_binding(
+            _prevalidated_build_binding,
+            expected_repository_commit=expected_commit,
+            expected_report_path=build_report_path,
+            expected_build_dir=expected_build_dir,
+        )
     blockers.extend(_prefixed_blockers("repository", repository_before))
     blockers.extend(_prefixed_blockers("github_context", source_context))
     blockers.extend(_prefixed_blockers("build", build_binding))
@@ -4016,6 +4091,42 @@ def emit_github_actions_pre_live_bundle(
         verification=verification,
         authority=source_context.get("authority"),
     )
+
+
+def _admit_prevalidated_build_binding(
+    candidate: Mapping[str, object],
+    *,
+    expected_repository_commit: str,
+    expected_report_path: Path | str,
+    expected_build_dir: Path | str,
+) -> dict[str, object]:
+    blockers: list[str] = []
+    result = dict(candidate)
+    if result.get("ok") is not True:
+        blockers.append("prevalidated build binding is not accepted")
+    if result.get("repository_commit") != expected_repository_commit:
+        blockers.append("prevalidated build binding commit mismatch")
+    report_path = result.get("report_path")
+    if (
+        not isinstance(report_path, str)
+        or Path(report_path).resolve() != Path(expected_report_path).resolve()
+    ):
+        blockers.append("prevalidated build report path mismatch")
+    binary_path = result.get("binary_path")
+    if not isinstance(binary_path, str):
+        blockers.append("prevalidated build binary path is missing")
+    else:
+        try:
+            Path(binary_path).resolve().relative_to(Path(expected_build_dir).resolve())
+        except ValueError:
+            blockers.append("prevalidated build binary escapes the build directory")
+    if _mapping(result.get("ctest")).get("ok") is not True:
+        blockers.append("prevalidated CTest evidence is not accepted")
+    if blockers:
+        result["ok"] = False
+        result["status"] = "blocked"
+        result["blockers"] = blockers
+    return result
 
 
 def _producer_authenticated_runtime_files(
@@ -5740,12 +5851,57 @@ def _resolve_cmake_ctest_path(build_dir: Path) -> Path:
     return candidate
 
 
+def _run_ctest_command(
+    command_runner: CommandRunner,
+    argv: Sequence[str],
+    *,
+    cwd: str,
+    text: bool,
+    env: Mapping[str, str],
+    timeout: float,
+    execution_identity: tuple[int, int] | None,
+) -> subprocess.CompletedProcess[Any]:
+    if execution_identity is None:
+        return command_runner(
+            list(argv),
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+            text=text,
+            shell=False,
+            env=dict(env),
+        )
+    return _run_dedicated_uid_native_command(
+        argv,
+        cwd=cwd,
+        env=env,
+        timeout=timeout,
+        uid=execution_identity[0],
+        gid=execution_identity[1],
+    )
+
+
 def _run_ctest(
     build_dir: Path,
     command_runner: CommandRunner,
+    *,
+    execution_uid: int | None = None,
+    execution_gid: int | None = None,
 ) -> dict[str, object]:
     build_dir = build_dir.resolve()
     blockers: list[str] = []
+    try:
+        execution_identity = _normalize_producer_identity(
+            execution_uid,
+            execution_gid,
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        execution_identity = None
+        blockers.append(f"CTest execution identity is invalid: {exc}")
+    if execution_identity is not None and command_runner is not subprocess.run:
+        blockers.append(
+            "dedicated CTest identity requires the authenticated subprocess runner"
+        )
     try:
         ctest_path = _resolve_cmake_ctest_path(build_dir)
     except (OSError, ValueError) as exc:
@@ -5818,22 +5974,34 @@ def _run_ctest(
     pinned_test_paths: dict[str, Path] = {}
     original_test_snapshots: dict[str, tuple[int, int, int, int, str]] = {}
     if not blockers:
+        if execution_identity is not None:
+            os.chmod(pinned_root, 0o555)
+            os.chmod(pinned_bin, 0o555)
+            os.chmod(pinned_ctest, 0o555)
         try:
-            registered = command_runner(
+            registered = _run_ctest_command(
+                command_runner,
                 [str(pinned_ctest), *discovery_argv[1:]],
                 cwd=str(build_dir),
-                check=False,
-                capture_output=True,
                 text=True,
-                shell=False,
                 env=dict(SANITIZED_TEST_ENV),
+                timeout=CTEST_DISCOVERY_TIMEOUT_SECONDS,
+                execution_identity=execution_identity,
             )
             registry_returncode = int(registered.returncode)
             registry_stdout = _as_text(registered.stdout)
             registry_stderr = _as_text(registered.stderr)
         except Exception as exc:
             blockers.append(f"CTest registry discovery failed: {exc}")
+            if execution_identity is not None:
+                os.chmod(pinned_root, 0o700)
+                os.chmod(pinned_bin, 0o700)
+                os.chmod(pinned_ctest, 0o500)
         else:
+            if execution_identity is not None:
+                os.chmod(pinned_root, 0o700)
+                os.chmod(pinned_bin, 0o700)
+                os.chmod(pinned_ctest, 0o500)
             if registry_returncode != 0:
                 blockers.append(
                     f"CTest registry discovery exited with code {registry_returncode}"
@@ -5944,9 +6112,24 @@ def _run_ctest(
             pinned_manifest,
             ("\n".join(manifest_lines) + "\n").encode(),
         )
+        if execution_identity is not None:
+            pinned_testing = pinned_root / "Testing"
+            pinned_testing.mkdir(mode=0o700)
+            _chown_private_directory(
+                pinned_testing,
+                uid=execution_identity[0],
+                gid=execution_identity[1],
+            )
+            os.chmod(pinned_root, 0o555)
+            os.chmod(pinned_bin, 0o555)
+            os.chmod(pinned_ctest, 0o555)
+            os.chmod(pinned_manifest, 0o444)
+            for pinned_path in pinned_test_paths.values():
+                os.chmod(pinned_path, 0o555)
     if not blockers:
         try:
-            discovered = command_runner(
+            discovered = _run_ctest_command(
+                command_runner,
                 [
                     str(pinned_ctest),
                     "--test-dir",
@@ -5954,11 +6137,10 @@ def _run_ctest(
                     "--show-only=json-v1",
                 ],
                 cwd=str(pinned_root),
-                check=False,
-                capture_output=True,
                 text=True,
-                shell=False,
                 env=dict(SANITIZED_TEST_ENV),
+                timeout=CTEST_DISCOVERY_TIMEOUT_SECONDS,
+                execution_identity=execution_identity,
             )
             discovery_returncode = int(discovered.returncode)
             discovery_stdout = _as_text(discovered.stdout)
@@ -6029,7 +6211,8 @@ def _run_ctest(
                 blockers.append("CTest discovery wrote to stderr")
     if not blockers:
         try:
-            completed = command_runner(
+            completed = _run_ctest_command(
+                command_runner,
                 [
                     str(pinned_ctest),
                     "--test-dir",
@@ -6037,11 +6220,10 @@ def _run_ctest(
                     "--output-on-failure",
                 ],
                 cwd=str(pinned_root),
-                check=False,
-                capture_output=True,
                 text=True,
-                shell=False,
                 env=dict(SANITIZED_TEST_ENV),
+                timeout=CTEST_EXECUTION_TIMEOUT_SECONDS,
+                execution_identity=execution_identity,
             )
             returncode = int(completed.returncode)
             stdout = _as_text(completed.stdout)
@@ -6078,14 +6260,14 @@ def _run_ctest(
             executable = test_executables[name]
             executable_path = Path(str(executable["path"]))
             try:
-                direct = subprocess.run(
+                direct = _run_ctest_command(
+                    subprocess.run,
                     [str(pinned_test_paths[name])],
                     cwd=str(build_dir),
-                    check=False,
-                    capture_output=True,
                     text=False,
-                    shell=False,
                     env=dict(SANITIZED_TEST_ENV),
+                    timeout=CTEST_DIRECT_TIMEOUT_SECONDS,
+                    execution_identity=execution_identity,
                 )
             except Exception as exc:
                 blockers.append(
@@ -6901,6 +7083,63 @@ def _terminate_producer_uid_processes(uid: int) -> tuple[int, ...]:
         time.sleep(0.02)
 
 
+def _run_dedicated_uid_native_command(
+    argv: Sequence[str],
+    *,
+    cwd: str,
+    env: Mapping[str, str],
+    timeout: float,
+    uid: int,
+    gid: int,
+) -> subprocess.CompletedProcess[bytes]:
+    _assert_dedicated_producer_identity_available(uid, gid)
+    process = subprocess.Popen(
+        list(argv),
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=False,
+        shell=False,
+        env=dict(env),
+        start_new_session=True,
+        user=uid,
+        group=gid,
+        extra_groups=(),
+        umask=0o077,
+    )
+    timed_out = False
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        stdout, stderr = _finish_timed_out_process(
+            process,
+            producer_uid=uid,
+        )
+        raise subprocess.TimeoutExpired(
+            list(argv),
+            timeout,
+            output=stdout,
+            stderr=stderr,
+        ) from exc
+    finally:
+        if not timed_out:
+            residual_pids = _terminate_producer_uid_processes(uid)
+            if residual_pids:
+                raise OSError(
+                    "native verifier command left detached descendants under "
+                    "dedicated UID: "
+                    + ", ".join(str(pid) for pid in residual_pids)
+                )
+    return subprocess.CompletedProcess(
+        list(argv),
+        process.returncode,
+        stdout,
+        stderr,
+    )
+
+
 def _finish_timed_out_process(
     process: subprocess.Popen[bytes],
     *,
@@ -7136,6 +7375,33 @@ def _write_foundation_evidence(output_path: Path | str) -> None:
                 pass
 
 
+def _attest_trusted_verifier_runtime(
+    repository_dir: Path | str,
+    *,
+    expected_commit: str,
+) -> dict[str, object]:
+    blockers: list[str] = []
+    repository_root = Path(repository_dir).resolve()
+    module_root = Path(__file__).resolve().parents[1]
+    if module_root != repository_root:
+        blockers.append(
+            "trusted verifier module was not loaded from its pinned checkout"
+        )
+    repository = attest_repository(
+        repository_root,
+        expected_repository=AUTHORITATIVE_REPOSITORY,
+        expected_commit=expected_commit,
+    )
+    blockers.extend(_prefixed_blockers("repository", repository))
+    return _component_result(
+        blockers,
+        repository_dir=str(repository_root),
+        expected_commit=expected_commit,
+        module_path=str(Path(__file__).resolve()),
+        repository=repository,
+    )
+
+
 def _main(argv: Sequence[str]) -> int:
     if len(argv) == 2 and argv[0] == "--emit-foundation-evidence":
         try:
@@ -7147,16 +7413,17 @@ def _main(argv: Sequence[str]) -> int:
     if len(argv) == 4 and argv[0] == "--emit-github-actions-bundle":
         try:
             repository = os.environ["GITHUB_REPOSITORY"]
-            repository_dir = os.environ["GITHUB_WORKSPACE"]
+            repository_dir = os.environ[CANDIDATE_WORKSPACE_ENV]
             expected_commit = os.environ["VOI_RELEASE_COMMIT"]
             workflow_ref = os.environ["GITHUB_WORKFLOW_REF"]
             workflow_sha = os.environ["GITHUB_WORKFLOW_SHA"]
             node_executable = os.environ["VOI_NODE_EXECUTABLE"]
+            trusted_verifier_dir = os.environ[TRUSTED_VERIFIER_WORKSPACE_ENV]
+            trusted_verifier_commit = os.environ[TRUSTED_VERIFIER_COMMIT_ENV]
             run_id = int(os.environ["GITHUB_RUN_ID"])
             run_attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
             producer_uid = int(os.environ[PRODUCER_UID_ENV])
             producer_gid = int(os.environ[PRODUCER_GID_ENV])
-            token = _read_github_token_from_stdin(sys.stdin.buffer)
             api_base_url = os.environ.get(
                 "GITHUB_API_URL",
                 "https://api.github.com",
@@ -7174,6 +7441,32 @@ def _main(argv: Sequence[str]) -> int:
                 file=sys.stderr,
             )
             return 1
+        trusted_verifier = _attest_trusted_verifier_runtime(
+            trusted_verifier_dir,
+            expected_commit=trusted_verifier_commit,
+        )
+        if trusted_verifier["ok"] is not True:
+            print(canonical_json_bytes(trusted_verifier).decode("utf-8"))
+            return 1
+        prevalidated_build_binding = attest_build_binding(
+            argv[2],
+            repository_dir=repository_dir,
+            expected_repository_commit=expected_commit,
+            expected_build_dir=argv[3],
+            execution_uid=producer_uid,
+            execution_gid=producer_gid,
+        )
+        if prevalidated_build_binding["ok"] is not True:
+            print(canonical_json_bytes(prevalidated_build_binding).decode("utf-8"))
+            return 1
+        try:
+            token = _read_github_token_from_stdin(sys.stdin.buffer)
+        except ValueError as exc:
+            print(
+                f"GitHub Actions bundle token is invalid: {exc}",
+                file=sys.stderr,
+            )
+            return 2
         report = emit_github_actions_pre_live_bundle(
             adapter=StdlibGitHubRESTAdapter(
                 token=token,
@@ -7191,7 +7484,9 @@ def _main(argv: Sequence[str]) -> int:
             node_executable=node_executable,
             producer_uid=producer_uid,
             producer_gid=producer_gid,
+            _prevalidated_build_binding=prevalidated_build_binding,
         )
+        report["trusted_verifier"] = trusted_verifier
         print(canonical_json_bytes(report).decode("utf-8"))
         return 0 if report["ok"] is True else 1
 

@@ -9,7 +9,7 @@ import os
 import stat
 import subprocess
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Final
@@ -43,6 +43,10 @@ MICROMACHINE_REQUIRED_NATIVE_TESTS: Final[dict[str, str]] = {
     "voi_pre_live_journey_adapter": "voi_pre_live_journey_adapter_test",
     "voi_production_path": "voi_production_path_test",
 }
+BinaryIdentityRunner = Callable[
+    [Sequence[str], Path],
+    subprocess.CompletedProcess[object],
+]
 CMAKE_CTEST_COMMAND_PREFIX: Final[str] = "CMAKE_CTEST_COMMAND:INTERNAL="
 DEFAULT_MICROMACHINE_COMMIT: Final[str] = "eb893161371dab975a0a7e600f9e250ac03ec1ef"
 DEFAULT_S2CLIENT_COMMIT: Final[str] = "614acc00abb5355e4c94a1b0279b46e9d845b7ce"
@@ -881,6 +885,8 @@ class MicroMachineBuildIdentityConfig:
 
 def build_micromachine_build_identity(
     config: MicroMachineBuildIdentityConfig,
+    *,
+    binary_identity_runner: BinaryIdentityRunner | None = None,
 ) -> dict[str, object]:
     """Create a machine-readable identity report without modifying worktrees."""
 
@@ -1315,7 +1321,12 @@ def build_micromachine_build_identity(
     expected_build_input_identity = _build_input_identity(checksums)
     embedded_header_identity = _read_embedded_build_identity_header(config)
     embedded_binary_identity = (
-        _read_binary_build_input_identity(config) if binary_is_executable else None
+        _read_binary_build_input_identity(
+            config,
+            command_runner=binary_identity_runner,
+        )
+        if binary_is_executable
+        else None
     )
     if embedded_header_identity != expected_build_input_identity:
         failures.append(
@@ -3053,6 +3064,8 @@ def _read_embedded_build_identity_header(
 
 def _read_binary_build_input_identity(
     config: MicroMachineBuildIdentityConfig,
+    *,
+    command_runner: BinaryIdentityRunner | None = None,
 ) -> str | None:
     descriptor: int | None = None
     snapshot_path: Path | None = None
@@ -3074,14 +3087,18 @@ def _read_binary_build_input_identity(
             descriptor,
             directory=config.binary_path.parent,
         )
-        completed = subprocess.run(
-            [str(config.binary_path), "--voi-build-input-identity"],
-            executable=str(snapshot_path),
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        argv = [str(config.binary_path), "--voi-build-input-identity"]
+        if command_runner is None:
+            completed = subprocess.run(
+                argv,
+                executable=str(snapshot_path),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        else:
+            completed = command_runner(argv, snapshot_path)
     except (OSError, subprocess.SubprocessError):
         return None
     finally:
@@ -3126,7 +3143,17 @@ def _read_binary_build_input_identity(
         return None
     if completed.returncode != 0:
         return None
-    lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    stdout = completed.stdout
+    if isinstance(stdout, bytes):
+        try:
+            stdout_text = stdout.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    elif isinstance(stdout, str):
+        stdout_text = stdout
+    else:
+        return None
+    lines = [line.strip() for line in stdout_text.splitlines() if line.strip()]
     if len(lines) != 1:
         return None
     identity = lines[0]

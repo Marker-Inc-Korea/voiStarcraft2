@@ -3762,6 +3762,243 @@ class LocalProducerTest(unittest.TestCase):
                         io.BytesIO(payload)
                     )
 
+    def test_github_actions_main_prevalidates_before_reading_token(self) -> None:
+        events: list[str] = []
+        trusted = {"ok": True, "status": "accepted", "blockers": []}
+        build = {
+            "ok": True,
+            "status": "accepted",
+            "blockers": [],
+            "report_path": "/runtime/voi_build_identity.json",
+            "repository_commit": HEAD_SHA,
+            "binary_path": "/runtime/bin/MicroMachine",
+            "ctest": {"ok": True},
+        }
+        environment = {
+            "GITHUB_API_URL": "https://api.github.test",
+            "GITHUB_REPOSITORY": REPOSITORY,
+            "GITHUB_RUN_ATTEMPT": str(RUN_ATTEMPT),
+            "GITHUB_RUN_ID": str(RUN_ID),
+            "GITHUB_WORKFLOW_REF": (
+                f"{REPOSITORY}/.github/workflows/ci.yml@refs/pull/137/merge"
+            ),
+            "GITHUB_WORKFLOW_SHA": HEAD_SHA,
+            "VOI_CANDIDATE_WORKSPACE": "/candidate",
+            "VOI_NODE_EXECUTABLE": "/usr/local/bin/node",
+            "VOI_PRODUCER_GID": "65001",
+            "VOI_PRODUCER_UID": "65001",
+            "VOI_RELEASE_COMMIT": HEAD_SHA,
+            "VOI_TRUSTED_VERIFIER_COMMIT": BASE_SHA,
+            "VOI_TRUSTED_VERIFIER_WORKSPACE": "/trusted",
+        }
+
+        with (
+            mock.patch.dict(os.environ, environment, clear=True),
+            mock.patch.object(
+                provenance_module,
+                "_attest_trusted_verifier_runtime",
+                side_effect=lambda *args, **kwargs: events.append("trusted")
+                or trusted,
+            ) as trusted_attestation,
+            mock.patch.object(
+                provenance_module,
+                "attest_build_binding",
+                side_effect=lambda *args, **kwargs: events.append("build")
+                or build,
+            ) as build_attestation,
+            mock.patch.object(
+                provenance_module,
+                "_read_github_token_from_stdin",
+                side_effect=lambda stream: events.append("token") or "ghs_token",
+            ),
+            mock.patch.object(
+                provenance_module,
+                "emit_github_actions_pre_live_bundle",
+                side_effect=lambda **kwargs: events.append("emit")
+                or {"ok": True},
+            ) as emitter,
+            mock.patch("sys.stdout", new_callable=io.StringIO),
+        ):
+            returncode = provenance_module._main(
+                (
+                    "--emit-github-actions-bundle",
+                    "/output/pre-live.zip",
+                    "/runtime/voi_build_identity.json",
+                    "/runtime",
+                )
+            )
+
+        self.assertEqual(0, returncode)
+        self.assertEqual(["trusted", "build", "token", "emit"], events)
+        trusted_attestation.assert_called_once_with(
+            "/trusted",
+            expected_commit=BASE_SHA,
+        )
+        self.assertEqual(65001, build_attestation.call_args.kwargs["execution_uid"])
+        self.assertEqual(65001, build_attestation.call_args.kwargs["execution_gid"])
+        self.assertIs(
+            build,
+            emitter.call_args.kwargs["_prevalidated_build_binding"],
+        )
+        self.assertEqual(
+            "/candidate",
+            emitter.call_args.kwargs["repository_dir"],
+        )
+
+    def test_dedicated_ctest_command_uses_bounded_uid_runner(self) -> None:
+        completed = subprocess.CompletedProcess(
+            ["/trusted/ctest"],
+            0,
+            b"stdout",
+            b"",
+        )
+        with mock.patch.object(
+            provenance_module,
+            "_run_dedicated_uid_native_command",
+            return_value=completed,
+        ) as runner:
+            observed = provenance_module._run_ctest_command(
+                subprocess.run,
+                ["/trusted/ctest", "--show-only=json-v1"],
+                cwd="/runtime",
+                text=True,
+                env={"PATH": "/usr/bin:/bin"},
+                timeout=120.0,
+                execution_identity=(65001, 65001),
+            )
+
+        self.assertIs(completed, observed)
+        runner.assert_called_once_with(
+            ["/trusted/ctest", "--show-only=json-v1"],
+            cwd="/runtime",
+            env={"PATH": "/usr/bin:/bin"},
+            timeout=120.0,
+            uid=65001,
+            gid=65001,
+        )
+
+    def test_build_identity_probe_uses_bounded_uid_runner(self) -> None:
+        with tempfile.TemporaryDirectory(
+            dir=BUILD_IDENTITY_REPO_ROOT,
+        ) as directory:
+            snapshot_path = Path(directory) / "MicroMachine.snapshot"
+            snapshot_path.write_bytes(b"fixture")
+            completed = subprocess.CompletedProcess(
+                [str(snapshot_path), "--voi-build-input-identity"],
+                0,
+                b"sha256:" + (b"a" * 64) + b"\n",
+                b"",
+            )
+
+            def reconstruct(
+                config: object,
+                *,
+                binary_identity_runner: object,
+            ) -> dict[str, object]:
+                self.assertIs(mock.sentinel.config, config)
+                runner = binary_identity_runner
+                self.assertTrue(callable(runner))
+                observed = runner(
+                    (
+                        "/candidate/MicroMachine",
+                        "--voi-build-input-identity",
+                    ),
+                    snapshot_path,
+                )
+                self.assertEqual(completed.stdout, observed.stdout)
+                return {"ok": True}
+
+            with (
+                mock.patch.object(
+                    provenance_module,
+                    "_normalize_producer_identity",
+                    return_value=(65001, 65001),
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "build_micromachine_build_identity",
+                    side_effect=reconstruct,
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "_run_dedicated_uid_native_command",
+                    return_value=completed,
+                ) as native_runner,
+            ):
+                report = provenance_module._build_micromachine_identity_with_boundary(
+                    mock.sentinel.config,
+                    execution_uid=65001,
+                    execution_gid=65001,
+                )
+
+        self.assertEqual({"ok": True}, report)
+        native_runner.assert_called_once_with(
+            (
+                str(snapshot_path),
+                "--voi-build-input-identity",
+            ),
+            cwd=str(snapshot_path.parent),
+            env=provenance_module.SANITIZED_TEST_ENV,
+            timeout=provenance_module.BUILD_IDENTITY_PROBE_TIMEOUT_SECONDS,
+            uid=65001,
+            gid=65001,
+        )
+
+    def test_github_actions_main_does_not_read_token_after_failed_preflight(
+        self,
+    ) -> None:
+        environment = {
+            "GITHUB_REPOSITORY": REPOSITORY,
+            "GITHUB_RUN_ATTEMPT": str(RUN_ATTEMPT),
+            "GITHUB_RUN_ID": str(RUN_ID),
+            "GITHUB_WORKFLOW_REF": (
+                f"{REPOSITORY}/.github/workflows/ci.yml@refs/pull/137/merge"
+            ),
+            "GITHUB_WORKFLOW_SHA": HEAD_SHA,
+            "VOI_CANDIDATE_WORKSPACE": "/candidate",
+            "VOI_NODE_EXECUTABLE": "/usr/local/bin/node",
+            "VOI_PRODUCER_GID": "65001",
+            "VOI_PRODUCER_UID": "65001",
+            "VOI_RELEASE_COMMIT": HEAD_SHA,
+            "VOI_TRUSTED_VERIFIER_COMMIT": BASE_SHA,
+            "VOI_TRUSTED_VERIFIER_WORKSPACE": "/trusted",
+        }
+        rejected_build = {
+            "ok": False,
+            "status": "blocked",
+            "blockers": ["ctest failed"],
+        }
+
+        with (
+            mock.patch.dict(os.environ, environment, clear=True),
+            mock.patch.object(
+                provenance_module,
+                "_attest_trusted_verifier_runtime",
+                return_value={"ok": True},
+            ),
+            mock.patch.object(
+                provenance_module,
+                "attest_build_binding",
+                return_value=rejected_build,
+            ),
+            mock.patch.object(
+                provenance_module,
+                "_read_github_token_from_stdin",
+            ) as token_reader,
+            mock.patch("sys.stdout", new_callable=io.StringIO),
+        ):
+            returncode = provenance_module._main(
+                (
+                    "--emit-github-actions-bundle",
+                    "/output/pre-live.zip",
+                    "/runtime/voi_build_identity.json",
+                    "/runtime",
+                )
+            )
+
+        self.assertEqual(1, returncode)
+        token_reader.assert_not_called()
+
     def test_dedicated_producer_uid_kills_setsided_descendant_on_timeout(
         self,
     ) -> None:
@@ -3879,6 +4116,66 @@ class LocalProducerTest(unittest.TestCase):
             ["killpg", "wait", "uid_cleanup", "communicate"],
             events,
         )
+
+    def test_dedicated_producer_uid_native_command_rejects_descendant(
+        self,
+    ) -> None:
+        producer_uid, producer_gid = self.dedicated_producer_uid()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o711)
+            producer_io = root / "producer-io"
+            producer_io.mkdir(mode=0o700)
+            os.chown(producer_io, producer_uid, producer_gid)
+            child_pid_path = producer_io / "detached-native-child.pid"
+            script = (
+                "from pathlib import Path\n"
+                "import subprocess,sys,time\n"
+                "with open('/dev/null','wb') as sink:\n"
+                "    subprocess.Popen(\n"
+                "        ['/bin/sh','-c','echo $$ > \"$1\"; exec sleep 30',\n"
+                "         'detached-native-child',sys.argv[1]],\n"
+                "        stdin=sink,stdout=sink,stderr=sink,\n"
+                "        start_new_session=True,\n"
+                "    )\n"
+                "pid_path=Path(sys.argv[1])\n"
+                "for _ in range(100):\n"
+                "    if pid_path.is_file():\n"
+                "        break\n"
+                "    time.sleep(0.01)\n"
+            )
+
+            with self.assertRaisesRegex(
+                OSError,
+                "native verifier command left detached descendants",
+            ):
+                provenance_module._run_dedicated_uid_native_command(
+                    (
+                        str(Path(sys.executable).resolve()),
+                        "-I",
+                        "-B",
+                        "-S",
+                        "-c",
+                        script,
+                        str(child_pid_path),
+                    ),
+                    cwd=str(producer_io),
+                    env=SANITIZED_PRODUCER_ENV,
+                    timeout=5.0,
+                    uid=producer_uid,
+                    gid=producer_gid,
+                )
+
+            self.assertTrue(child_pid_path.is_file())
+            child_pid = int(child_pid_path.read_text().strip())
+            self.assertNotIn(
+                child_pid,
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
+            self.assertEqual(
+                (),
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
 
     def test_dedicated_producer_uid_rejects_and_kills_normal_exit_descendant(
         self,
