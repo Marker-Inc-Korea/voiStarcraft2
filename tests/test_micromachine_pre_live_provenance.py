@@ -795,6 +795,60 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             'VOI_NODE_EXECUTABLE="$(python3 -c ',
             provenance_job,
         )
+        self.assertIn('      VOI_PRODUCER_UID: "65001"\n', provenance_job)
+        self.assertIn('      VOI_PRODUCER_GID: "65001"\n', provenance_job)
+        self.assertIn(
+            "      - name: Verify dedicated producer isolation boundary\n",
+            provenance_job,
+        )
+        ownership_step = provenance_job.split(
+            "      - name: Transfer checkout ownership to the root verifier\n",
+            1,
+        )[1].split(
+            "      - name: Verify dedicated producer isolation boundary\n",
+            1,
+        )[0]
+        self.assertIn(
+            '          sudo chown 0:0 "${GITHUB_WORKSPACE}" '
+            '"${GITHUB_WORKSPACE}/.git"\n',
+            ownership_step,
+        )
+        self.assertIn(
+            '          sudo chmod 0755 "${GITHUB_WORKSPACE}"\n',
+            ownership_step,
+        )
+        self.assertIn(
+            "-k dedicated_producer_uid",
+            provenance_job,
+        )
+        emission_step = provenance_job.split(
+            "      - name: Emit canonical authenticated provenance bundle\n",
+            1,
+        )[1].split(
+            "      - name: Upload canonical authenticated provenance bundle\n",
+            1,
+        )[0]
+        self.assertIn("          sudo env \\\n", emission_step)
+        self.assertIn(
+            '            VOI_PRODUCER_UID="${VOI_PRODUCER_UID}" \\\n',
+            emission_step,
+        )
+        self.assertIn(
+            '            VOI_PRODUCER_GID="${VOI_PRODUCER_GID}" \\\n',
+            emission_step,
+        )
+        self.assertIn(
+            '          sudo chown "$(id -u):$(id -g)" \\\n',
+            emission_step,
+        )
+        self.assertIn(
+            "      - name: Restore checkout ownership to the runner\n"
+            "        if: always()\n"
+            "        run: >-\n"
+            '          sudo chown "$(id -u):$(id -g)"\n'
+            '          "${GITHUB_WORKSPACE}" "${GITHUB_WORKSPACE}/.git"\n',
+            provenance_job,
+        )
         self.assertIn(
             "  micromachine-macos-contracts:\n    if: github.event_name == 'push'\n",
             workflow,
@@ -3187,6 +3241,14 @@ class GitHubActionsBundleEmissionTest(unittest.TestCase):
 
 
 class LocalProducerTest(unittest.TestCase):
+    def dedicated_producer_uid(self) -> tuple[int, int]:
+        if os.geteuid() != 0:
+            self.skipTest("dedicated producer UID tests require a root verifier")
+        uid = int(os.environ.get("VOI_PRODUCER_UID", "65001"))
+        gid = int(os.environ.get("VOI_PRODUCER_GID", "65001"))
+        provenance_module._assert_dedicated_producer_identity_available(uid, gid)
+        return uid, gid
+
     def test_checked_in_policy_has_an_executable_production_producer(self) -> None:
         repository = BUILD_IDENTITY_REPO_ROOT.resolve()
         policy_path = repository / PRODUCER_POLICY_RELATIVE_PATH
@@ -3523,6 +3585,222 @@ class LocalProducerTest(unittest.TestCase):
             )
             self.assertNotIn(sentinel_token, output["recovered"])
             self.assertEqual([], output["recovered"])
+
+    def test_dedicated_producer_uid_cannot_read_parent_environment_token(
+        self,
+    ) -> None:
+        producer_uid, producer_gid = self.dedicated_producer_uid()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o711)
+            fixture = make_build_fixture(root / "fixture")
+            sentinel_token = "github-token-visible-only-in-root-parent-environment"
+            commit = replace_fixture_producer_source(
+                fixture,
+                "import json\n"
+                "import os\n"
+                "from pathlib import Path\n"
+                "import subprocess\n"
+                "import sys\n"
+                f"sentinel={sentinel_token!r}\n"
+                "parent_pid=os.getppid()\n"
+                "observed=[]\n"
+                "for ps_path in ('/bin/ps','/usr/bin/ps'):\n"
+                "    if not Path(ps_path).is_file():\n"
+                "        continue\n"
+                "    result=subprocess.run(\n"
+                "        [ps_path,'eww','-p',str(parent_pid)],\n"
+                "        check=False,capture_output=True,text=False,\n"
+                "    )\n"
+                "    observed.extend((result.stdout,result.stderr))\n"
+                "    break\n"
+                "proc_environ=Path('/proc')/str(parent_pid)/'environ'\n"
+                "try:\n"
+                "    observed.append(proc_environ.read_bytes())\n"
+                "except OSError as exc:\n"
+                "    observed.append(str(exc).encode())\n"
+                "combined=b'\\n'.join(observed)\n"
+                "Path(sys.argv[sys.argv.index('--output') + 1]).write_text(\n"
+                "    json.dumps({\n"
+                "        'euid':os.geteuid(),\n"
+                "        'parent_pid':parent_pid,\n"
+                "        'recovered':sentinel.encode() in combined,\n"
+                "    })+'\\n'\n"
+                ")\n",
+            )
+            policy = resolve_local_producer_policy(
+                repository_dir=fixture["repository"],
+                expected_commit=commit,
+                producer_id="fixture_producer",
+            )
+            self.assertTrue(policy["ok"], policy)
+            source_files = policy["runtime_sources"]["files"]
+
+            with mock.patch.dict(
+                os.environ,
+                {"GITHUB_TOKEN": sentinel_token},
+            ):
+                report = run_local_producer(
+                    repository_dir=fixture["repository"],
+                    cwd=policy["cwd"],
+                    argv=policy["argv"],
+                    allowed_argv=(policy["argv"],),
+                    output_artifact=policy["output_artifact"],
+                    authenticated_files=[item["path"] for item in source_files],
+                    authenticated_file_digests={
+                        item["path"]: item["sha256"] for item in source_files
+                    },
+                    producer_uid=producer_uid,
+                    producer_gid=producer_gid,
+                )
+
+            self.assertTrue(report["ok"], report)
+            output = json.loads(
+                Path(str(policy["output_artifact"])).read_bytes()
+            )
+            self.assertEqual(producer_uid, output["euid"])
+            self.assertFalse(output["recovered"], output)
+
+    def test_dedicated_producer_uid_kills_setsided_descendant_on_timeout(
+        self,
+    ) -> None:
+        producer_uid, producer_gid = self.dedicated_producer_uid()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o711)
+            state_dir = root / "state"
+            state_dir.mkdir(mode=0o700)
+            producer_io = root / "producer-io"
+            producer_io.mkdir(mode=0o700)
+            os.chown(producer_io, producer_uid, producer_gid)
+            child_pid_path = producer_io / "detached-child.pid"
+            script = (
+                "import pathlib,subprocess,sys\n"
+                "child=subprocess.Popen(\n"
+                "    ['/bin/sh','-c','echo $$ > \"$1\"; exec sleep 30',\n"
+                "     'detached-child',sys.argv[1]],\n"
+                "    start_new_session=True,\n"
+                ")\n"
+                "child.wait()\n"
+            ).encode()
+            argv = (
+                str(Path(sys.executable).resolve()),
+                "-I",
+                "-B",
+                "-S",
+                "-c",
+                ISOLATED_PYTHON_BOOTSTRAP,
+                str(root),
+                "timeout_producer.py",
+                str(child_pid_path),
+            )
+            executable_payload = Path(argv[0]).read_bytes()
+
+            with self.assertRaises(subprocess.TimeoutExpired):
+                provenance_module._run_pinned_command(
+                    subprocess.run,
+                    argv,
+                    executable_payload=executable_payload,
+                    executable_snapshot=(
+                        0,
+                        0,
+                        len(executable_payload),
+                        0,
+                        hashlib.sha256(executable_payload).hexdigest(),
+                    ),
+                    authenticated_python_sources={
+                        "timeout_producer.py": script,
+                    },
+                    state_dir=state_dir,
+                    cwd=str(producer_io),
+                    timeout=1.0,
+                    producer_uid=producer_uid,
+                    producer_gid=producer_gid,
+                )
+
+            self.assertTrue(child_pid_path.is_file())
+            child_pid = int(child_pid_path.read_text().strip())
+            self.assertNotIn(
+                child_pid,
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
+            self.assertEqual(
+                (),
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
+
+    def test_dedicated_producer_uid_rejects_and_kills_normal_exit_descendant(
+        self,
+    ) -> None:
+        producer_uid, producer_gid = self.dedicated_producer_uid()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o711)
+            state_dir = root / "state"
+            state_dir.mkdir(mode=0o700)
+            producer_io = root / "producer-io"
+            producer_io.mkdir(mode=0o700)
+            os.chown(producer_io, producer_uid, producer_gid)
+            child_pid_path = producer_io / "detached-child.pid"
+            script = (
+                "from pathlib import Path\n"
+                "import subprocess,sys,time\n"
+                "with open('/dev/null','wb') as sink:\n"
+                "    subprocess.Popen(\n"
+                "        ['/bin/sh','-c','echo $$ > \"$1\"; exec sleep 30',\n"
+                "         'detached-child',sys.argv[1]],\n"
+                "        stdin=sink,stdout=sink,stderr=sink,\n"
+                "        start_new_session=True,\n"
+                "    )\n"
+                "pid_path=Path(sys.argv[1])\n"
+                "for _ in range(100):\n"
+                "    if pid_path.is_file():\n"
+                "        break\n"
+                "    time.sleep(0.01)\n"
+            ).encode()
+            argv = (
+                str(Path(sys.executable).resolve()),
+                "-I",
+                "-B",
+                "-S",
+                "-c",
+                ISOLATED_PYTHON_BOOTSTRAP,
+                str(root),
+                "detached_producer.py",
+                str(child_pid_path),
+            )
+            executable_payload = Path(argv[0]).read_bytes()
+
+            with self.assertRaisesRegex(
+                OSError,
+                "detached descendants",
+            ):
+                provenance_module._run_pinned_command(
+                    subprocess.run,
+                    argv,
+                    executable_payload=executable_payload,
+                    executable_snapshot=(
+                        0,
+                        0,
+                        len(executable_payload),
+                        0,
+                        hashlib.sha256(executable_payload).hexdigest(),
+                    ),
+                    authenticated_python_sources={
+                        "detached_producer.py": script,
+                    },
+                    state_dir=state_dir,
+                    cwd=str(producer_io),
+                    timeout=5.0,
+                    producer_uid=producer_uid,
+                    producer_gid=producer_gid,
+                )
+
+            self.assertTrue(child_pid_path.is_file())
+            self.assertEqual(
+                (),
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
 
     def test_rejects_symlinked_output_leaf_without_touching_target(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

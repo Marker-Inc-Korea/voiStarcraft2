@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import fcntl
+import grp
 import hashlib
 import hmac
 import json
@@ -118,6 +119,10 @@ _SHA40_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}$")
 _SHA256_IDENTITY_RE: Final[re.Pattern[str]] = re.compile(r"^sha256:[0-9a-f]{64}$")
 PINNED_NATIVE_EXEC_ROOT_ENV: Final[str] = "VOI_PINNED_NATIVE_EXEC_ROOT"
+PRODUCER_UID_ENV: Final[str] = "VOI_PRODUCER_UID"
+PRODUCER_GID_ENV: Final[str] = "VOI_PRODUCER_GID"
+TRUSTED_PS_EXECUTABLE: Final[str] = "/bin/ps"
+PRODUCER_PROCESS_CLEANUP_SECONDS: Final[float] = 5.0
 _REPOSITORY_RE: Final[re.Pattern[str]] = re.compile(
     r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
 )
@@ -2798,6 +2803,8 @@ def run_local_producer(
     authenticated_files: Sequence[Path | str] = (),
     authenticated_file_digests: Mapping[str, str] | None = None,
     pinned_argv_file_digests: Mapping[str, str] | None = None,
+    producer_uid: int | None = None,
+    producer_gid: int | None = None,
 ) -> dict[str, object]:
     """Run one exact allowlisted producer and derive provenance from execution."""
 
@@ -2860,6 +2867,14 @@ def run_local_producer(
         blockers.append("producer output artifact must not be a symlink")
     if timeout_seconds <= 0:
         blockers.append("producer timeout_seconds must be positive")
+    try:
+        producer_identity = _normalize_producer_identity(
+            producer_uid,
+            producer_gid,
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        producer_identity = None
+        blockers.append(f"producer execution identity is invalid: {exc}")
 
     expected_file_digests = dict(authenticated_file_digests or {})
     authenticated_snapshots: dict[
@@ -2950,6 +2965,14 @@ def run_local_producer(
     stderr = b""
     captured_output: bytes | None = None
     published_output_identity: tuple[int, int, int, int, str] | None = None
+    if (
+        producer_identity is not None
+        and not authenticated_snapshots
+        and not pinned_argv_snapshots
+    ):
+        blockers.append(
+            "dedicated producer identity requires authenticated staged execution"
+        )
     if not blockers:
         if authenticated_snapshots or pinned_argv_snapshots:
             try:
@@ -3008,6 +3031,8 @@ def run_local_producer(
                                     snapshot_payload,
                                     execution_snapshot,
                                 ) = _open_pinned_executable(snapshot_file)
+                                if producer_identity is not None:
+                                    os.fchmod(snapshot_descriptor, 0o555)
                                 if (
                                     snapshot_payload != payload
                                     or execution_snapshot[4]
@@ -3035,6 +3060,13 @@ def run_local_producer(
                             exist_ok=True,
                         )
                         staged_output = staging_root / output_path.name
+                        if producer_identity is not None:
+                            _make_snapshot_tree_read_only(snapshot_root)
+                            _chown_private_directory(
+                                staging_root,
+                                uid=producer_identity[0],
+                                gid=producer_identity[1],
+                            )
                         execution_replacements = {
                             str(root): str(snapshot_root),
                             str(output_path): str(staged_output),
@@ -3063,6 +3095,16 @@ def run_local_producer(
                                 for descriptor, _ in (
                                     pinned_execution_snapshots.values()
                                 )
+                            ),
+                            producer_uid=(
+                                producer_identity[0]
+                                if producer_identity is not None
+                                else None
+                            ),
+                            producer_gid=(
+                                producer_identity[1]
+                                if producer_identity is not None
+                                else None
                             ),
                         )
                         for source, (
@@ -3294,6 +3336,15 @@ def run_local_producer(
                 "size_bytes": None,
                 "published_stat_identity": None,
             }
+        ),
+        execution_identity=(
+            {
+                "boundary": "dedicated_uid",
+                "uid": producer_identity[0],
+                "gid": producer_identity[1],
+            }
+            if producer_identity is not None
+            else None
         ),
     )
 
@@ -3763,6 +3814,8 @@ def emit_github_actions_pre_live_bundle(
     git_runner: CommandRunner = subprocess.run,
     ctest_runner: CommandRunner = subprocess.run,
     producer_runner: CommandRunner = subprocess.run,
+    producer_uid: int | None = None,
+    producer_gid: int | None = None,
 ) -> dict[str, object]:
     """Create the exact canonical bundle uploaded by the provenance CI job."""
 
@@ -3782,6 +3835,13 @@ def emit_github_actions_pre_live_bundle(
         blockers.append("pre-live bundle output parent contains a symlink")
     if os.path.lexists(raw_output) and raw_output.is_symlink():
         blockers.append("pre-live bundle output must not be a symlink")
+    if (
+        producer_id == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+        and (producer_uid is None or producer_gid is None)
+    ):
+        blockers.append(
+            "deterministic journey emission requires a dedicated producer UID/GID"
+        )
 
     repository_before = attest_repository(
         repository_root,
@@ -3859,6 +3919,8 @@ def emit_github_actions_pre_live_bundle(
                 pinned_argv_file_digests=(
                     _producer_pinned_argv_file_digests(producer_policy)
                 ),
+                producer_uid=producer_uid,
+                producer_gid=producer_gid,
             )
             blockers.extend(_prefixed_blockers("local_execution", local_execution))
             repository_after = attest_repository(
@@ -5110,6 +5172,8 @@ def attest_pre_live_provenance(
     ctest_runner: CommandRunner = subprocess.run,
     producer_runner: CommandRunner = subprocess.run,
     untrusted_payload: Mapping[str, object] | None = None,
+    producer_uid: int | None = None,
+    producer_gid: int | None = None,
 ) -> dict[str, object]:
     """Aggregate authenticated source, build, execution, and replay evidence."""
 
@@ -5205,6 +5269,13 @@ def attest_pre_live_provenance(
             )
         blockers.extend(_prefixed_blockers("github", github_source))
     blockers.extend(_production_candidate_producer_blockers(producer_id))
+    if (
+        producer_id == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+        and (producer_uid is None or producer_gid is None)
+    ):
+        blockers.append(
+            "production candidate execution requires a dedicated producer UID/GID"
+        )
 
     if blockers:
         local_execution = _component_result(
@@ -5241,6 +5312,8 @@ def attest_pre_live_provenance(
             pinned_argv_file_digests=(
                 _producer_pinned_argv_file_digests(producer_policy)
             ),
+            producer_uid=producer_uid,
+            producer_gid=producer_gid,
         )
         blockers.extend(_prefixed_blockers("local_execution", local_execution))
         repository_after = attest_repository(
@@ -6430,69 +6503,99 @@ def _run_pinned_command(
     cwd: str,
     timeout: float,
     inherited_fds: Sequence[int] = (),
+    producer_uid: int | None = None,
+    producer_gid: int | None = None,
 ) -> subprocess.CompletedProcess[Any]:
     if executable_payload is None or executable_snapshot is None:
         raise OSError("producer executable was not pinned")
-    with tempfile.TemporaryDirectory(
-        prefix=".producer-executable-",
-        dir=state_dir,
-    ) as executable_directory:
-        executable_path = Path(executable_directory) / "producer"
-        _write_private_executable_file(executable_path, executable_payload)
-        snapshot_fd, snapshot_payload, snapshot_before = _open_pinned_executable(
-            executable_path
-        )
-        try:
-            if (
-                snapshot_payload != executable_payload
-                or snapshot_before[4] != executable_snapshot[4]
-            ):
-                raise OSError("private executable snapshot differs from pinned bytes")
-            if (
-                command_runner is subprocess.run
-                and _is_isolated_python_command(argv)
-            ):
-                with tempfile.TemporaryDirectory(
-                    prefix=".native-execution-",
-                    dir=state_dir,
-                ) as native_execution_root:
-                    completed = _run_authenticated_python_exec(
-                        argv,
-                        executable_path=executable_path,
-                        authenticated_python_sources=(
-                            authenticated_python_sources
-                        ),
-                        native_execution_root=Path(native_execution_root),
-                        cwd=cwd,
-                        timeout=timeout,
-                        inherited_fds=inherited_fds,
+    producer_identity = _normalize_producer_identity(
+        producer_uid,
+        producer_gid,
+    )
+    if producer_identity is not None:
+        _assert_dedicated_producer_identity_available(*producer_identity)
+    original_state_mode = stat.S_IMODE(state_dir.stat().st_mode)
+    if producer_identity is not None:
+        os.chmod(state_dir, 0o711)
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=".producer-executable-",
+            dir=state_dir,
+        ) as executable_directory:
+            executable_root = Path(executable_directory)
+            executable_path = executable_root / "producer"
+            _write_private_executable_file(executable_path, executable_payload)
+            if producer_identity is not None:
+                os.chmod(executable_root, 0o711)
+                os.chmod(executable_path, 0o555)
+            snapshot_fd, snapshot_payload, snapshot_before = (
+                _open_pinned_executable(executable_path)
+            )
+            try:
+                if (
+                    snapshot_payload != executable_payload
+                    or snapshot_before[4] != executable_snapshot[4]
+                ):
+                    raise OSError(
+                        "private executable snapshot differs from pinned bytes"
                     )
-            else:
-                completed = command_runner(
-                    list(argv),
-                    executable=str(executable_path),
-                    cwd=cwd,
-                    check=False,
-                    capture_output=True,
-                    text=False,
-                    shell=False,
-                    timeout=timeout,
-                    env=dict(SANITIZED_PRODUCER_ENV),
-                    pass_fds=tuple(inherited_fds),
+                if (
+                    command_runner is subprocess.run
+                    and _is_isolated_python_command(argv)
+                ):
+                    with tempfile.TemporaryDirectory(
+                        prefix=".native-execution-",
+                        dir=state_dir,
+                    ) as native_execution_root:
+                        completed = _run_authenticated_python_exec(
+                            argv,
+                            executable_path=executable_path,
+                            authenticated_python_sources=(
+                                authenticated_python_sources
+                            ),
+                            native_execution_root=Path(native_execution_root),
+                            cwd=cwd,
+                            timeout=timeout,
+                            inherited_fds=inherited_fds,
+                            producer_uid=producer_uid,
+                            producer_gid=producer_gid,
+                        )
+                else:
+                    if producer_identity is not None:
+                        raise OSError(
+                            "dedicated producer identity requires the "
+                            "authenticated Python launcher"
+                        )
+                    completed = command_runner(
+                        list(argv),
+                        executable=str(executable_path),
+                        cwd=cwd,
+                        check=False,
+                        capture_output=True,
+                        text=False,
+                        shell=False,
+                        timeout=timeout,
+                        env=dict(SANITIZED_PRODUCER_ENV),
+                        pass_fds=tuple(inherited_fds),
+                    )
+                _, snapshot_after = _read_open_regular_file_snapshot(
+                    snapshot_fd,
+                    maximum=MAX_PRODUCER_EXECUTABLE_BYTES,
                 )
-            _, snapshot_after = _read_open_regular_file_snapshot(
-                snapshot_fd,
-                maximum=MAX_PRODUCER_EXECUTABLE_BYTES,
-            )
-            _, path_after = _read_regular_file_snapshot(
-                executable_path,
-                maximum=MAX_PRODUCER_EXECUTABLE_BYTES,
-            )
-            if snapshot_after != snapshot_before or path_after != snapshot_before:
-                raise OSError("private executable snapshot changed during execution")
-            return completed
-        finally:
-            os.close(snapshot_fd)
+                _, path_after = _read_regular_file_snapshot(
+                    executable_path,
+                    maximum=MAX_PRODUCER_EXECUTABLE_BYTES,
+                )
+                if snapshot_after != snapshot_before or path_after != snapshot_before:
+                    raise OSError(
+                        "private executable snapshot changed during execution"
+                    )
+                return completed
+            finally:
+                os.close(snapshot_fd)
+    finally:
+        if producer_identity is not None:
+            os.chmod(state_dir, original_state_mode)
 
 
 def _is_isolated_python_command(argv: Sequence[str]) -> bool:
@@ -6546,6 +6649,8 @@ def _run_authenticated_python_exec(
     cwd: str,
     timeout: float,
     inherited_fds: Sequence[int],
+    producer_uid: int | None,
+    producer_gid: int | None,
 ) -> subprocess.CompletedProcess[bytes]:
     """Execute authenticated Python bytes after discarding the parent heap."""
 
@@ -6572,6 +6677,16 @@ def _run_authenticated_python_exec(
         separators=(",", ":"),
         sort_keys=True,
     ).encode("ascii")
+    producer_identity = _normalize_producer_identity(
+        producer_uid,
+        producer_gid,
+    )
+    if producer_identity is not None:
+        _chown_private_directory(
+            native_execution_root,
+            uid=producer_identity[0],
+            gid=producer_identity[1],
+        )
     bundle_path = (
         native_execution_root
         / f".authenticated-sources-{os.urandom(16).hex()}"
@@ -6608,6 +6723,14 @@ def _run_authenticated_python_exec(
             relative_script,
             *argv[8:],
         ]
+        credential_options: dict[str, object] = {}
+        if producer_identity is not None:
+            credential_options = {
+                "user": producer_identity[0],
+                "group": producer_identity[1],
+                "extra_groups": (),
+                "umask": 0o077,
+            }
         process = subprocess.Popen(
             exec_argv,
             executable=str(executable_path),
@@ -6622,14 +6745,19 @@ def _run_authenticated_python_exec(
                 dict.fromkeys((*inherited_fds, source_fd))
             ),
             start_new_session=True,
+            **credential_options,
         )
+        timed_out = False
         try:
             stdout, stderr = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
+            timed_out = True
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 process.kill()
+            if producer_identity is not None:
+                _terminate_producer_uid_processes(producer_identity[0])
             stdout, stderr = process.communicate()
             raise subprocess.TimeoutExpired(
                 list(argv),
@@ -6637,6 +6765,16 @@ def _run_authenticated_python_exec(
                 output=stdout,
                 stderr=stderr,
             ) from exc
+        finally:
+            if producer_identity is not None and not timed_out:
+                residual_pids = _terminate_producer_uid_processes(
+                    producer_identity[0]
+                )
+                if residual_pids:
+                    raise OSError(
+                        "producer left detached descendants under dedicated UID: "
+                        + ", ".join(str(pid) for pid in residual_pids)
+                    )
         return subprocess.CompletedProcess(
             list(argv),
             process.returncode,
@@ -6660,6 +6798,120 @@ def _write_private_executable_file(path: Path, payload: bytes) -> None:
         os.fchmod(descriptor, 0o500)
     finally:
         os.close(descriptor)
+
+
+def _normalize_producer_identity(
+    uid: int | None,
+    gid: int | None,
+) -> tuple[int, int] | None:
+    if uid is None and gid is None:
+        return None
+    if type(uid) is not int or type(gid) is not int:
+        raise TypeError("producer UID and GID must both be integers")
+    if uid <= 0 or gid <= 0:
+        raise ValueError("producer UID and GID must be non-root positive integers")
+    if os.geteuid() != 0:
+        raise PermissionError("dedicated producer identity requires a root verifier")
+    if uid == os.getuid() or gid == os.getgid():
+        raise ValueError("producer identity must differ from the verifier identity")
+    try:
+        assigned_user = pwd.getpwuid(uid)
+    except KeyError:
+        assigned_user = None
+    if assigned_user is not None:
+        raise ValueError(
+            f"producer UID is assigned to account {assigned_user.pw_name!r}"
+        )
+    try:
+        assigned_group = grp.getgrgid(gid)
+    except KeyError:
+        assigned_group = None
+    if assigned_group is not None:
+        raise ValueError(
+            f"producer GID is assigned to group {assigned_group.gr_name!r}"
+        )
+    return uid, gid
+
+
+def _process_ids_for_uid(uid: int) -> tuple[int, ...]:
+    completed = subprocess.run(
+        [TRUSTED_PS_EXECUTABLE, "-axo", "uid=,pid="],
+        check=False,
+        capture_output=True,
+        text=True,
+        shell=False,
+        env={"PATH": "/usr/bin:/bin"},
+    )
+    if completed.returncode != 0:
+        raise OSError(
+            "could not enumerate producer UID processes: "
+            + completed.stderr.strip()
+        )
+    process_ids: list[int] = []
+    for raw_line in completed.stdout.splitlines():
+        if not raw_line.strip():
+            continue
+        fields = raw_line.split()
+        if len(fields) != 2:
+            raise OSError("producer UID process enumeration was malformed")
+        try:
+            process_uid, process_id = (int(value) for value in fields)
+        except ValueError as exc:
+            raise OSError(
+                "producer UID process enumeration was non-numeric"
+            ) from exc
+        if process_uid == uid and process_id > 1:
+            process_ids.append(process_id)
+    return tuple(sorted(set(process_ids)))
+
+
+def _assert_dedicated_producer_identity_available(uid: int, gid: int) -> None:
+    _normalize_producer_identity(uid, gid)
+    process_ids = _process_ids_for_uid(uid)
+    if process_ids:
+        raise OSError(
+            "dedicated producer UID already owns processes: "
+            + ", ".join(str(pid) for pid in process_ids)
+        )
+
+
+def _terminate_producer_uid_processes(uid: int) -> tuple[int, ...]:
+    observed: set[int] = set()
+    deadline = time.monotonic() + PRODUCER_PROCESS_CLEANUP_SECONDS
+    while True:
+        process_ids = _process_ids_for_uid(uid)
+        if not process_ids:
+            return tuple(sorted(observed))
+        observed.update(process_ids)
+        for process_id in process_ids:
+            try:
+                os.kill(process_id, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if time.monotonic() >= deadline:
+            remaining = _process_ids_for_uid(uid)
+            if remaining:
+                raise OSError(
+                    "dedicated producer UID processes survived cleanup: "
+                    + ", ".join(str(pid) for pid in remaining)
+                )
+            return tuple(sorted(observed))
+        time.sleep(0.02)
+
+
+def _make_snapshot_tree_read_only(root: Path) -> None:
+    for directory, directory_names, file_names in os.walk(root):
+        directory_path = Path(directory)
+        os.chmod(directory_path, 0o555)
+        for name in directory_names:
+            os.chmod(directory_path / name, 0o555)
+        for name in file_names:
+            os.chmod(directory_path / name, 0o444)
+
+
+def _chown_private_directory(path: Path, *, uid: int, gid: int) -> None:
+    os.chown(path, uid, gid)
+    os.chmod(path, 0o700)
 
 
 def _write_output_atomically(
@@ -6871,6 +7123,8 @@ def _main(argv: Sequence[str]) -> int:
             node_executable = os.environ["VOI_NODE_EXECUTABLE"]
             run_id = int(os.environ["GITHUB_RUN_ID"])
             run_attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
+            producer_uid = int(os.environ[PRODUCER_UID_ENV])
+            producer_gid = int(os.environ[PRODUCER_GID_ENV])
             token = os.environ["GITHUB_TOKEN"]
             api_base_url = os.environ.get(
                 "GITHUB_API_URL",
@@ -6904,6 +7158,8 @@ def _main(argv: Sequence[str]) -> int:
             expected_build_dir=argv[3],
             output_path=argv[1],
             node_executable=node_executable,
+            producer_uid=producer_uid,
+            producer_gid=producer_gid,
         )
         print(canonical_json_bytes(report).decode("utf-8"))
         return 0 if report["ok"] is True else 1

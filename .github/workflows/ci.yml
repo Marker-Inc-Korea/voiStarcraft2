@@ -51,6 +51,8 @@ jobs:
       PYTHONDONTWRITEBYTECODE: "1"
       ROOT_DIR: /private/tmp/voi-micromachine-runtime
       BUILD_JOBS: "3"
+      VOI_PRODUCER_UID: "65001"
+      VOI_PRODUCER_GID: "65001"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -59,18 +61,49 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Build exact MicroMachine integration
         run: integrations/micromachine/scripts/build_macos_local.sh
+      - name: Transfer checkout ownership to the root verifier
+        run: |
+          sudo chown 0:0 "${GITHUB_WORKSPACE}" "${GITHUB_WORKSPACE}/.git"
+          sudo chmod 0755 "${GITHUB_WORKSPACE}"
+      - name: Verify dedicated producer isolation boundary
+        run: |
+          PYTHON_EXECUTABLE="$(python3 -c 'import os, sys; print(os.path.realpath(sys.executable))')"
+          sudo env \
+            PYTHONDONTWRITEBYTECODE="1" \
+            VOI_PRODUCER_UID="${VOI_PRODUCER_UID}" \
+            VOI_PRODUCER_GID="${VOI_PRODUCER_GID}" \
+            "${PYTHON_EXECUTABLE}" -B -m unittest \
+              tests/test_micromachine_pre_live_provenance.py \
+              -k dedicated_producer_uid
       - name: Emit canonical authenticated provenance bundle
         env:
           GITHUB_TOKEN: ${{ github.token }}
           VOI_RELEASE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           mkdir -p "${RUNNER_TEMP}/pre-live"
-          VOI_NODE_EXECUTABLE="$(python3 -c 'import os, shutil; print(os.path.realpath(shutil.which("node") or ""))')" \
-          python3 -B -m starcraft_commander.micromachine_pre_live_provenance \
+          PYTHON_EXECUTABLE="$(python3 -c 'import os, sys; print(os.path.realpath(sys.executable))')"
+          VOI_NODE_EXECUTABLE="$(python3 -c 'import os, shutil; print(os.path.realpath(shutil.which("node") or ""))')"
+          sudo env \
+            GITHUB_API_URL="${GITHUB_API_URL}" \
+            GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
+            GITHUB_RUN_ATTEMPT="${GITHUB_RUN_ATTEMPT}" \
+            GITHUB_RUN_ID="${GITHUB_RUN_ID}" \
+            GITHUB_TOKEN="${GITHUB_TOKEN}" \
+            GITHUB_WORKFLOW_REF="${GITHUB_WORKFLOW_REF}" \
+            GITHUB_WORKFLOW_SHA="${GITHUB_WORKFLOW_SHA}" \
+            GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
+            PYTHONDONTWRITEBYTECODE="1" \
+            VOI_NODE_EXECUTABLE="${VOI_NODE_EXECUTABLE}" \
+            VOI_PRODUCER_GID="${VOI_PRODUCER_GID}" \
+            VOI_PRODUCER_UID="${VOI_PRODUCER_UID}" \
+            VOI_RELEASE_COMMIT="${VOI_RELEASE_COMMIT}" \
+            "${PYTHON_EXECUTABLE}" -B -m starcraft_commander.micromachine_pre_live_provenance \
             --emit-github-actions-bundle \
             "${RUNNER_TEMP}/pre-live/pre-live-provenance.zip" \
             "${ROOT_DIR}/MicroMachine/build-latest-api/voi_build_identity.json" \
             "${ROOT_DIR}/MicroMachine/build-latest-api"
+          sudo chown "$(id -u):$(id -g)" \
+            "${RUNNER_TEMP}/pre-live/pre-live-provenance.zip"
       - name: Upload canonical authenticated provenance bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -78,6 +111,11 @@ jobs:
           path: ${{ runner.temp }}/pre-live/pre-live-provenance.zip
           compression-level: 0
           if-no-files-found: error
+      - name: Restore checkout ownership to the runner
+        if: always()
+        run: >-
+          sudo chown "$(id -u):$(id -g)"
+          "${GITHUB_WORKSPACE}" "${GITHUB_WORKSPACE}/.git"
 
   micromachine-macos-contracts:
     if: github.event_name == 'push'
