@@ -26,8 +26,8 @@ SANITIZED_GIT_ENV: Final[dict[str, str]] = {
     "LC_ALL": "C",
     "PATH": "/usr/bin:/bin",
 }
-MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 78
-MICROMACHINE_SOURCE_ATTESTATION_SCHEMA_VERSION: Final[int] = 5
+MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 79
+MICROMACHINE_SOURCE_ATTESTATION_SCHEMA_VERSION: Final[int] = 6
 MICROMACHINE_BUILD_TRANSACTION_SCHEMA_VERSION: Final[int] = 1
 MICROMACHINE_CTEST_REGISTRY_SCHEMA_VERSION: Final[int] = 1
 MICROMACHINE_RUNTIME_MUTABLE_PATHS: Final[tuple[str, ...]] = ("bin/BotConfig.txt",)
@@ -1474,8 +1474,12 @@ def build_micromachine_build_identity(
             "binary_executable": binary_is_executable,
             "embedded_build_input_identity": embedded_binary_identity,
             "native_tests": native_test_attestation,
-            "micromachine_build_root": micromachine_build_root,
-            "s2client_build_root": s2client_build_root,
+            "micromachine_build_root": _transport_directory_root_identity(
+                micromachine_build_root
+            ),
+            "s2client_build_root": _transport_directory_root_identity(
+                s2client_build_root
+            ),
         },
         "paths": {
             "micromachine_dir": str(config.micromachine_dir),
@@ -1868,8 +1872,12 @@ def write_micromachine_source_attestation(
         "micromachine_source_state_sha256": micromachine_source_state,
         "s2client_source_state_sha256": s2client_source_state,
         "s2client_build_state_sha256": s2client_build_state,
-        "micromachine_build_root": micromachine_build_root,
-        "s2client_build_root": s2client_build_root,
+        "micromachine_build_root": _transport_directory_root_identity(
+            micromachine_build_root
+        ),
+        "s2client_build_root": _transport_directory_root_identity(
+            s2client_build_root
+        ),
         "build_transaction": {
             "before": build_transaction_before,
             "after": None,
@@ -3294,7 +3302,17 @@ def _source_attestation_failures(
             observed_s2client_build_root,
         ),
     ):
-        if not isinstance(expected, Mapping):
+        expected_transport = (
+            _transport_directory_root_identity(expected)
+            if isinstance(expected, Mapping)
+            else None
+        )
+        actual_transport = _transport_directory_root_identity(actual)
+        if (
+            expected_transport is None
+            or not isinstance(expected, Mapping)
+            or dict(expected) != expected_transport
+        ):
             failures.append(
                 {
                     "code": "invalid_source_attestation",
@@ -3302,12 +3320,12 @@ def _source_attestation_failures(
                     "path": str(config.source_attestation_path),
                 }
             )
-        elif actual is None or dict(expected) != dict(actual):
+        elif actual_transport is None or expected_transport != actual_transport:
             failures.append(
                 {
                     "code": f"{name}_build_root_mismatch",
-                    "expected": dict(expected),
-                    "actual": dict(actual) if actual is not None else None,
+                    "expected": expected_transport,
+                    "actual": actual_transport,
                 }
             )
     if source_attestation.get("build_input_identity") != expected_input_identity:
@@ -3686,6 +3704,23 @@ def _secure_directory_root_identity(
         "inode": root_stat.st_ino,
         "uid": root_stat.st_uid,
         "mode": root_mode,
+    }
+
+
+def _transport_directory_root_identity(
+    identity: Mapping[str, object] | None,
+) -> dict[str, object] | None:
+    """Project a secure root identity onto fields stable across artifact transport."""
+
+    if identity is None:
+        return None
+    path = identity.get("path")
+    mode = identity.get("mode")
+    if not isinstance(path, str) or not path or type(mode) is not int:
+        return None
+    return {
+        "path": path,
+        "mode": mode,
     }
 
 

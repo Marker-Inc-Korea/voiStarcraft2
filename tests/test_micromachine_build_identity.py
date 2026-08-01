@@ -71,7 +71,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         self.assertEqual(120.0, runner.call_args.kwargs["timeout"])
 
     def test_live_admission_requires_the_supported_schema(self) -> None:
-        self.assertEqual(78, MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION)
+        self.assertEqual(79, MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION)
         passing = {
             "schema_version": MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
             "identity": "sha256:fixture",
@@ -144,6 +144,15 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             )
             self.assertTrue(str(report["identity"]).startswith("sha256:"))
             self.assertEqual(report["identity"], read_build_identity(output))
+            for name in (
+                "micromachine_build_root",
+                "s2client_build_root",
+            ):
+                with self.subTest(root=name):
+                    self.assertEqual(
+                        {"mode", "path"},
+                        set(report["observed"][name]),
+                    )
             self.assertIn(
                 "micromachine_atomic_telemetry_publication_patch",
                 report["paths"],
@@ -3877,6 +3886,45 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             self.assertFalse(report["ok"])
             self.assertIn(
                 "micromachine_attested_commit_mismatch",
+                {failure["code"] for failure in report["failures"]},
+            )
+
+    def test_source_attestation_persists_only_transport_safe_root_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+
+            attestation = json.loads(config.source_attestation_path.read_text())
+
+            for name in (
+                "micromachine_build_root",
+                "s2client_build_root",
+            ):
+                with self.subTest(root=name):
+                    self.assertEqual(
+                        {"mode", "path"},
+                        set(attestation[name]),
+                    )
+
+    def test_source_attestation_rejects_volatile_root_identity_fields(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            attestation = json.loads(config.source_attestation_path.read_text())
+            attestation["micromachine_build_root"]["inode"] = 1
+            config.source_attestation_path.write_text(
+                json.dumps(attestation, indent=2, sort_keys=True) + "\n"
+            )
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"], report)
+            self.assertIn(
+                "invalid_source_attestation",
                 {failure["code"] for failure in report["failures"]},
             )
 
