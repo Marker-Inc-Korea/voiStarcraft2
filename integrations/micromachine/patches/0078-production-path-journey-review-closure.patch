@@ -1,5 +1,5 @@
 diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
-index 3733a2a51bfdd55ff3eedd23cc645740f2ca5a8c..4258e05effb0760f71f5d99c2a0f2824916001fc 100644
+index 3733a2a..4258e05 100644
 --- a/src/CombatCommander.cpp
 +++ b/src/CombatCommander.cpp
 @@ -1,4 +1,7 @@
@@ -655,7 +655,7 @@ index 3733a2a51bfdd55ff3eedd23cc645740f2ca5a8c..4258e05effb0760f71f5d99c2a0f2824
  			default:
  				const int type = action.microActionType;
 diff --git a/src/Micro.cpp b/src/Micro.cpp
-index 344aaa67cd0dcaf436cb70fd217d61e539c8a55f..eafd7989e1ca9e5fa108e72e2e431e3cd47d5e1d 100644
+index 344aaa6..eafd798 100644
 --- a/src/Micro.cpp
 +++ b/src/Micro.cpp
 @@ -2,6 +2,34 @@
@@ -943,7 +943,7 @@ index 344aaa67cd0dcaf436cb70fd217d61e539c8a55f..eafd7989e1ca9e5fa108e72e2e431e3c
  	return MicroActionType::ToggleAbility;
  }
 diff --git a/src/Micro.h b/src/Micro.h
-index f0653da743f8e3979a0c68d6a71addd4c2c4a221..178a50289fed6741fb26f9c577e46b4d9e3c1a2b 100644
+index f0653da..178a502 100644
 --- a/src/Micro.h
 +++ b/src/Micro.h
 @@ -2,6 +2,7 @@
@@ -1047,7 +1047,7 @@ index f0653da743f8e3979a0c68d6a71addd4c2c4a221..178a50289fed6741fb26f9c577e46b4d
 +		VoiProductionSubmissionReceipt * submissionReceipt = nullptr);
 +}
 diff --git a/src/Squad.cpp b/src/Squad.cpp
-index 2c0e02912e3030f7eddb3119cb1943fc10c23020..0173f0d6bb396c41f907455e81c2ea9b7ba0bf93 100644
+index 2c0e029..0173f0d 100644
 --- a/src/Squad.cpp
 +++ b/src/Squad.cpp
 @@ -428,7 +428,7 @@ bool Squad::needsToRegroup()
@@ -1117,7 +1117,7 @@ index 2c0e02912e3030f7eddb3119cb1943fc10c23020..0173f0d6bb396c41f907455e81c2ea9b
  
  bool Squad::containsUnit(const Unit & unit) const
 diff --git a/src/Squad.h b/src/Squad.h
-index def3e92e158d3958808193fddff16155261ed66d..1e0099e2ae783dcec9256f14ca99fb48f8248e64 100644
+index def3e92..1e0099e 100644
 --- a/src/Squad.h
 +++ b/src/Squad.h
 @@ -4,6 +4,7 @@
@@ -1149,7 +1149,7 @@ index def3e92e158d3958808193fddff16155261ed66d..1e0099e2ae783dcec9256f14ca99fb48
      void removeUnit(const Unit & unit);
      void giveBackWorkers();
 diff --git a/src/main.cpp b/src/main.cpp
-index 451c6087564bf5868a9ac335aac968a24a6c9986..65c3468011a41531a1ebd893e739e601f536046d 100644
+index 451c608..9d4b480 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
 @@ -1,6 +1,8 @@
@@ -1169,7 +1169,7 @@ index 451c6087564bf5868a9ac335aac968a24a6c9986..65c3468011a41531a1ebd893e739e601
  #include <string>
  #include <utility>
  #include <vector>
-@@ -122,7 +125,301 @@ public:
+@@ -122,7 +125,430 @@ public:
          {
              setenv(item.first.c_str(), item.second.c_str(), 1);
          }
@@ -1205,16 +1205,104 @@ index 451c6087564bf5868a9ac335aac968a24a6c9986..65c3468011a41531a1ebd893e739e601
 +		return *squad;
 +	}
 +
-+	sc2::Unit * unitFor(std::uint64_t unitTag)
++	static bool concreteUnitTypeId(
++		const std::string & unitType,
++		sc2::UNIT_TYPEID & unitTypeId)
 +	{
++		if (unitType == "TERRAN_MARINE")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_MARINE;
++		}
++		else if (unitType == "TERRAN_MARAUDER")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_MARAUDER;
++		}
++		else if (unitType == "TERRAN_REAPER")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_REAPER;
++		}
++		else if (unitType == "TERRAN_GHOST")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_GHOST;
++		}
++		else if (unitType == "TERRAN_HELLION")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_HELLION;
++		}
++		else if (unitType == "TERRAN_WIDOWMINE")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_WIDOWMINE;
++		}
++		else if (unitType == "TERRAN_CYCLONE")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_CYCLONE;
++		}
++		else if (unitType == "TERRAN_SIEGETANK")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_SIEGETANK;
++		}
++		else if (unitType == "TERRAN_THOR")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_THOR;
++		}
++		else if (unitType == "TERRAN_MEDIVAC")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_MEDIVAC;
++		}
++		else if (unitType == "TERRAN_RAVEN")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_RAVEN;
++		}
++		else if (unitType == "TERRAN_VIKINGFIGHTER")
++		{
++			unitTypeId =
++				sc2::UNIT_TYPEID::TERRAN_VIKINGFIGHTER;
++		}
++		else if (unitType == "TERRAN_BANSHEE")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_BANSHEE;
++		}
++		else if (unitType == "TERRAN_LIBERATOR")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_LIBERATOR;
++		}
++		else if (unitType == "TERRAN_BATTLECRUISER")
++		{
++			unitTypeId =
++				sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER;
++		}
++		else
++		{
++			return false;
++		}
++		return true;
++	}
++
++	sc2::Unit * unitFor(
++		std::uint64_t unitTag,
++		const std::string & unitType,
++		std::string & blocker)
++	{
++		sc2::UNIT_TYPEID unitTypeId =
++			sc2::UNIT_TYPEID::TERRAN_MARINE;
++		if (!concreteUnitTypeId(unitType, unitTypeId))
++		{
++			blocker = "unsupported_pre_live_unit_type";
++			return nullptr;
++		}
 +		const auto existing = m_units.find(unitTag);
 +		if (existing != m_units.end())
 +		{
++			if (existing->second->unit_type != unitTypeId)
++			{
++				blocker = "pre_live_unit_type_mismatch";
++				return nullptr;
++			}
 +			return existing->second;
 +		}
 +		sc2::Unit * unit = new sc2::Unit();
 +		unit->tag = unitTag;
-+		unit->unit_type = sc2::UNIT_TYPEID::TERRAN_MARINE;
++		unit->unit_type = unitTypeId;
 +		unit->build_progress = 1.0f;
 +		m_units[unitTag] = unit;
 +		return unit;
@@ -1330,14 +1418,37 @@ index 451c6087564bf5868a9ac335aac968a24a6c9986..65c3468011a41531a1ebd893e739e601
 +			return receipt;
 +		}
 +		Squad & squad = squadFor(squadName);
++		std::vector<sc2::Unit *> concreteUnits;
++		for (const auto unitTag : unitTags)
++		{
++			std::string blocker;
++			sc2::Unit * unit =
++				unitFor(unitTag, binding.unitType, blocker);
++			if (unit == nullptr)
++			{
++				VoiProductionSquadOrderReceipt receipt;
++				receipt.updateId =
++					binding.identity.updateId;
++				receipt.operationId =
++					binding.identity.operationId;
++				receipt.generation =
++					binding.identity.generation;
++				receipt.squadName = squadName;
++				receipt.action = binding.action;
++				receipt.unitTags = unitTags;
++				receipt.blocker = blocker;
++				return receipt;
++			}
++			concreteUnits.push_back(unit);
++		}
 +		const auto previousUnits = squad.getUnits();
 +		for (const auto & unit : previousUnits)
 +		{
 +			squad.removeUnit(unit);
 +		}
-+		for (const auto unitTag : unitTags)
++		for (auto * unit : concreteUnits)
 +		{
-+			squad.addUnit(Unit(unitFor(unitTag), *m_bot));
++			squad.addUnit(Unit(unit, *m_bot));
 +		}
 +		return squad.setSquadOrder(
 +			SquadOrder(
@@ -1357,9 +1468,25 @@ index 451c6087564bf5868a9ac335aac968a24a6c9986..65c3468011a41531a1ebd893e739e601
 +		const std::string & dispatchAction,
 +		std::uint64_t unitTag) override
 +	{
-+		sc2::Unit * unit = unitFor(unitTag);
++		std::string unitBlocker;
++		sc2::Unit * unit =
++			unitFor(unitTag, binding.unitType, unitBlocker);
 +		bool commandIssued = false;
 +		VoiProductionSubmissionReceipt receipt;
++		if (unit == nullptr)
++		{
++			receipt.updateId = binding.identity.updateId;
++			receipt.operationId =
++				binding.identity.operationId;
++			receipt.generation =
++				binding.identity.generation;
++			receipt.action = binding.action;
++			receipt.dispatchAction = dispatchAction;
++			receipt.unitType = binding.unitType;
++			receipt.unitTags = {unitTag};
++			receipt.blocker = unitBlocker;
++			return receipt;
++		}
 +		if (dispatchAction == "attack_move")
 +		{
 +			Micro::SmartAttackMove(
@@ -1412,6 +1539,7 @@ index 451c6087564bf5868a9ac335aac968a24a6c9986..65c3468011a41531a1ebd893e739e601
 +					binding.identity.generation;
 +				receipt.action = binding.action;
 +				receipt.dispatchAction = dispatchAction;
++				receipt.unitType = binding.unitType;
 +				receipt.unitTags = {unitTag};
 +				receipt.blocker =
 +					"unsupported_pre_live_ability";
@@ -1463,6 +1591,7 @@ index 451c6087564bf5868a9ac335aac968a24a6c9986..65c3468011a41531a1ebd893e739e601
 +				binding.identity.generation;
 +			receipt.action = binding.action;
 +			receipt.dispatchAction = dispatchAction;
++			receipt.unitType = binding.unitType;
 +			receipt.unitTags = {unitTag};
 +			receipt.blocker =
 +				"unsupported_pre_live_dispatch_action";
@@ -1472,7 +1601,7 @@ index 451c6087564bf5868a9ac335aac968a24a6c9986..65c3468011a41531a1ebd893e739e601
  };
  
  void handler(int sig) {
-@@ -243,11 +540,16 @@ int main(int argc, char* argv[])
+@@ -243,11 +669,16 @@ int main(int argc, char* argv[])
  			argv[1] == nullptr ? "" : argv[1])
  			== "--voi-pre-live-journey-adapter")
  	{
@@ -1492,7 +1621,7 @@ index 451c6087564bf5868a9ac335aac968a24a6c9986..65c3468011a41531a1ebd893e739e601
  	signal(SIGABRT, handler);
 diff --git a/src/voi_explicit_ability_catalog.hpp b/src/voi_explicit_ability_catalog.hpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..afff43f2a16813263b623b8f27b8d5eba554e88e
+index 0000000..afff43f
 --- /dev/null
 +++ b/src/voi_explicit_ability_catalog.hpp
 @@ -0,0 +1,206 @@
@@ -1704,7 +1833,7 @@ index 0000000000000000000000000000000000000000..afff43f2a16813263b623b8f27b8d5eb
 +}
 diff --git a/src/voi_explicit_ability_spec.hpp b/src/voi_explicit_ability_spec.hpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..3eb739d26d058b17d6634cedc5186cb6e4a5bfa2
+index 0000000..3eb739d
 --- /dev/null
 +++ b/src/voi_explicit_ability_spec.hpp
 @@ -0,0 +1,3 @@
@@ -1713,7 +1842,7 @@ index 0000000000000000000000000000000000000000..3eb739d26d058b17d6634cedc5186cb6
 +#include "voi_explicit_ability_catalog.hpp"
 diff --git a/src/voi_operation_observation.hpp b/src/voi_operation_observation.hpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..4e1671b5145ce606774662150ca226f59e7f297c
+index 0000000..4e1671b
 --- /dev/null
 +++ b/src/voi_operation_observation.hpp
 @@ -0,0 +1,66 @@
@@ -1784,7 +1913,7 @@ index 0000000000000000000000000000000000000000..4e1671b5145ce606774662150ca226f5
 +	return decision;
 +}
 diff --git a/src/voi_pre_live_journey_adapter.hpp b/src/voi_pre_live_journey_adapter.hpp
-index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399edd02fb7e 100644
+index 5adac66..1646337 100644
 --- a/src/voi_pre_live_journey_adapter.hpp
 +++ b/src/voi_pre_live_journey_adapter.hpp
 @@ -2,9 +2,12 @@
@@ -1800,10 +1929,11 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  #include "voi_runtime_convergence.hpp"
  
  #include <algorithm>
-@@ -70,9 +73,24 @@ struct VoiPreLiveOperationState
+@@ -70,9 +73,25 @@ struct VoiPreLiveOperationState
  	std::string status = "RECEIVED";
  	std::string blocker;
  	std::string action;
++	std::string unitType;
 +	std::string squadOrderReceiptId;
 +	std::string dispatchAction;
 +	std::string squadOrderKind;
@@ -1825,7 +1955,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  	int minimumUnits = 0;
  	int maximumUnits = 0;
  	bool allowPartial = false;
-@@ -84,12 +102,34 @@ struct VoiPreLiveOperationState
+@@ -84,12 +103,34 @@ struct VoiPreLiveOperationState
  	double priority = 0.0;
  	std::vector<VoiPreLiveRequirementState> requirements;
  	std::vector<std::uint64_t> assignedTags;
@@ -1861,7 +1991,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  	std::map<std::string, VoiPreLiveOperationState> m_operations;
  	std::map<std::string, int> m_protectedMinimum;
  	std::set<std::string> m_structures;
-@@ -102,6 +142,19 @@ class VoiPreLiveJourneyAdapter
+@@ -102,6 +143,19 @@ class VoiPreLiveJourneyAdapter
  	bool m_baseThreatened = false;
  	std::string m_baseId = "self_main";
  	std::size_t m_requiredDefenders = 0;
@@ -1881,7 +2011,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  
  	static bool hasForbiddenAuthorityInput(
  		const VoiPreLiveJson & value,
-@@ -161,7 +214,9 @@ class VoiPreLiveJourneyAdapter
+@@ -161,7 +215,9 @@ class VoiPreLiveJourneyAdapter
  	{
  		if (!operation.ability.empty())
  		{
@@ -1892,7 +2022,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  		}
  		if (operation.taskType == "scout_with_units")
  		{
-@@ -175,7 +230,11 @@ class VoiPreLiveJourneyAdapter
+@@ -175,7 +231,11 @@ class VoiPreLiveJourneyAdapter
  		{
  			return "squad_order:harass";
  		}
@@ -1905,7 +2035,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  	}
  
  	static std::string canonicalTask(
-@@ -193,7 +252,145 @@ class VoiPreLiveJourneyAdapter
+@@ -193,7 +253,145 @@ class VoiPreLiveJourneyAdapter
  		{
  			return "harass";
  		}
@@ -2052,7 +2182,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  	}
  
  	void emit(
-@@ -265,6 +462,68 @@ class VoiPreLiveJourneyAdapter
+@@ -265,6 +463,68 @@ class VoiPreLiveJourneyAdapter
  		return tags;
  	}
  
@@ -2121,7 +2251,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  	static std::string jsonString(
  		const VoiPreLiveJson & value,
  		const char * key,
-@@ -318,6 +577,14 @@ class VoiPreLiveJourneyAdapter
+@@ -318,6 +578,14 @@ class VoiPreLiveJourneyAdapter
  
  	void loadInitialState(const VoiPreLiveJson & state)
  	{
@@ -2136,7 +2266,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  		const auto protectedMinimum =
  			state.find("protected_minimum");
  		if (protectedMinimum != state.end()
-@@ -464,13 +731,28 @@ class VoiPreLiveJourneyAdapter
+@@ -464,13 +732,28 @@ class VoiPreLiveJourneyAdapter
  				{
  					if (selected.is_object())
  					{
@@ -2172,9 +2302,19 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  					}
  				}
  			}
-@@ -526,6 +808,44 @@ class VoiPreLiveJourneyAdapter
+@@ -525,7 +808,54 @@ class VoiPreLiveJourneyAdapter
+ 			throw std::runtime_error(
  				"operation identity or task is invalid");
  		}
++		operation.unitType =
++			operation.requirements.empty()
++				? ""
++				: operation.requirements.front().unitType;
++		if (operation.unitType.empty())
++		{
++			throw std::runtime_error(
++				"operation concrete unit type is invalid");
++		}
  		operation.action = taskAction(operation);
 +		if (operation.action.empty())
 +		{
@@ -2217,7 +2357,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  		return operation;
  	}
  
-@@ -547,7 +867,7 @@ class VoiPreLiveJourneyAdapter
+@@ -547,7 +877,7 @@ class VoiPreLiveJourneyAdapter
  			}
  			const auto owner = m_owners.find(unit.tag);
  			if (owner == m_owners.end()
@@ -2226,7 +2366,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  			{
  				tags.push_back(unit.tag);
  			}
-@@ -585,25 +905,21 @@ class VoiPreLiveJourneyAdapter
+@@ -585,25 +915,21 @@ class VoiPreLiveJourneyAdapter
  		return tags;
  	}
  
@@ -2262,7 +2402,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  		operation.assignedTags.clear();
  		std::vector<VoiRuntimeRequirementSnapshot> convergenceRows;
  		for (auto & requirement : operation.requirements)
-@@ -633,7 +949,19 @@ class VoiPreLiveJourneyAdapter
+@@ -633,7 +959,19 @@ class VoiPreLiveJourneyAdapter
  			for (std::size_t index = 0; index < count; ++index)
  			{
  				const auto tag = candidates[index];
@@ -2283,7 +2423,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  				requirement.assignedTags.push_back(tag);
  				operation.assignedTags.push_back(tag);
  			}
-@@ -654,7 +982,8 @@ class VoiPreLiveJourneyAdapter
+@@ -654,7 +992,8 @@ class VoiPreLiveJourneyAdapter
  			for (const auto & prerequisite :
  				snapshot.prerequisites)
  			{
@@ -2293,7 +2433,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  					== m_structures.end())
  				{
  					snapshot.missingPrerequisites.push_back(
-@@ -667,6 +996,22 @@ class VoiPreLiveJourneyAdapter
+@@ -667,6 +1006,22 @@ class VoiPreLiveJourneyAdapter
  				snapshot.productionBlocker =
  					"missing_prerequisites";
  			}
@@ -2316,7 +2456,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  			convergenceRows.push_back(snapshot);
  		}
  		std::sort(
-@@ -701,7 +1046,7 @@ class VoiPreLiveJourneyAdapter
+@@ -701,7 +1056,7 @@ class VoiPreLiveJourneyAdapter
  						&& unit.selfOwned
  						&& unit.combat
  						&& (owner == m_owners.end()
@@ -2325,7 +2465,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  								== operation.operationId))
  					{
  						++eligibleCount;
-@@ -721,7 +1066,9 @@ class VoiPreLiveJourneyAdapter
+@@ -721,7 +1076,9 @@ class VoiPreLiveJourneyAdapter
  									0,
  									requirement.targetCount)));
  			}
@@ -2336,7 +2476,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  			operation.assignedTags.clear();
  			for (auto & requirement : operation.requirements)
  			{
-@@ -792,20 +1139,45 @@ class VoiPreLiveJourneyAdapter
+@@ -792,20 +1149,45 @@ class VoiPreLiveJourneyAdapter
  				{ "partial",
  					operation.assignedTags.size()
  						< static_cast<std::size_t>(
@@ -2384,7 +2524,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  		}
  		emit(
  			"ownership_snapshot",
-@@ -814,6 +1186,7 @@ class VoiPreLiveJourneyAdapter
+@@ -814,6 +1196,7 @@ class VoiPreLiveJourneyAdapter
  			{
  				{ "action", "assign" },
  				{ "owners", owners },
@@ -2392,7 +2532,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  				{ "assigned_unit_tags", operation.assignedTags },
  			});
  	}
-@@ -826,6 +1199,132 @@ class VoiPreLiveJourneyAdapter
+@@ -826,6 +1209,135 @@ class VoiPreLiveJourneyAdapter
  		{
  			return;
  		}
@@ -2416,6 +2556,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
 +		const VoiProductionActionBinding binding = {
 +			identity,
 +			operation.action,
++			operation.unitType,
 +			operation.ability,
 +			operation.abilityId,
 +			operation.abilityTargetKind,
@@ -2503,6 +2644,8 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
 +					{ "action", submission.action },
 +					{ "dispatch_action",
 +						submission.dispatchAction },
++					{ "unit_type",
++						submission.unitType },
 +					{ "ability_name",
 +						submission.abilityName },
 +					{ "ability_id",
@@ -2525,7 +2668,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  		operation.submitted = true;
  		for (auto & requirement : operation.requirements)
  		{
-@@ -865,7 +1364,14 @@ class VoiPreLiveJourneyAdapter
+@@ -865,7 +1377,14 @@ class VoiPreLiveJourneyAdapter
  			"order_issued",
  			{
  				{ "action", operation.action },
@@ -2541,13 +2684,14 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  			});
  		emit(
  			"submission",
-@@ -873,7 +1379,17 @@ class VoiPreLiveJourneyAdapter
+@@ -873,7 +1392,18 @@ class VoiPreLiveJourneyAdapter
  			"submitted",
  			{
  				{ "action", operation.action },
 -				{ "unit_tags", operation.assignedTags },
 +				{ "dispatch_action",
 +					operation.dispatchAction },
++				{ "unit_type", operation.unitType },
 +				{ "ability_name", operation.ability },
 +				{ "ability_id", operation.abilityId },
 +				{ "target_kind",
@@ -2560,7 +2704,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  			});
  		operation.status = "EXECUTING";
  	}
-@@ -961,6 +1477,22 @@ class VoiPreLiveJourneyAdapter
+@@ -961,6 +1491,22 @@ class VoiPreLiveJourneyAdapter
  			first.editAction == "transfer_in"
  				? &first
  				: &second;
@@ -2583,7 +2727,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  		const auto existingSource =
  			m_operations.find(source->operationId);
  		if (existingSource == m_operations.end())
-@@ -970,33 +1502,429 @@ class VoiPreLiveJourneyAdapter
+@@ -970,33 +1516,429 @@ class VoiPreLiveJourneyAdapter
  					"transfer_pair_not_active";
  			return;
  		}
@@ -3025,7 +3169,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  		emit(
  			"transfer",
  			*source,
-@@ -1005,6 +1933,22 @@ class VoiPreLiveJourneyAdapter
+@@ -1005,6 +1947,22 @@ class VoiPreLiveJourneyAdapter
  				{ "action", "transfer_out" },
  				{ "counterpart_operation_id",
  					destination->operationId },
@@ -3048,7 +3192,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  				{ "unit_tags", selected },
  				{ "resolution", "applied" },
  			});
-@@ -1046,6 +1990,9 @@ class VoiPreLiveJourneyAdapter
+@@ -1046,6 +2004,9 @@ class VoiPreLiveJourneyAdapter
  					continue;
  				}
  				operation.action = "retreat";
@@ -3058,7 +3202,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  				operation.updateId = updateId;
  				operation.submitted = false;
  				emit(
-@@ -1093,6 +2040,24 @@ class VoiPreLiveJourneyAdapter
+@@ -1093,6 +2054,24 @@ class VoiPreLiveJourneyAdapter
  				if (existing != m_operations.end())
  				{
  					auto cancelled = existing->second;
@@ -3083,7 +3227,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  					cancelled.updateId = operation.updateId;
  					cancelled.generation =
  						operation.generation;
-@@ -1103,8 +2068,38 @@ class VoiPreLiveJourneyAdapter
+@@ -1103,8 +2082,38 @@ class VoiPreLiveJourneyAdapter
  					cancelled.completionReason =
  						"cancelled_by_user";
  					cancelled.completionFrame = m_frame;
@@ -3124,7 +3268,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  					emit(
  						"cancellation",
  						cancelled,
-@@ -1113,9 +2108,11 @@ class VoiPreLiveJourneyAdapter
+@@ -1113,9 +2122,11 @@ class VoiPreLiveJourneyAdapter
  							{ "action", "cancel" },
  							{ "reason",
  								"cancelled_by_user" },
@@ -3138,7 +3282,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  				}
  				continue;
  			}
-@@ -1144,6 +2141,40 @@ class VoiPreLiveJourneyAdapter
+@@ -1144,6 +2155,40 @@ class VoiPreLiveJourneyAdapter
  					existing->second.targetReached;
  			}
  			operation.submitted = false;
@@ -3179,7 +3323,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  			m_operations[operation.operationId] = operation;
  			assignOperation(
  				m_operations[operation.operationId]);
-@@ -1270,26 +2301,84 @@ class VoiPreLiveJourneyAdapter
+@@ -1270,26 +2315,84 @@ class VoiPreLiveJourneyAdapter
  				{
  					continue;
  				}
@@ -3272,12 +3416,13 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  			}
  			if (!abilityEffects.empty())
  			{
-@@ -1402,6 +2491,16 @@ class VoiPreLiveJourneyAdapter
+@@ -1402,6 +2505,17 @@ class VoiPreLiveJourneyAdapter
  			"effect_observed",
  			{
  				{ "action", operation.action },
 +				{ "dispatch_action",
 +					operation.dispatchAction },
++				{ "unit_type", operation.unitType },
 +				{ "ability_name", operation.ability },
 +				{ "ability_id", operation.abilityId },
 +				{ "target_kind",
@@ -3289,7 +3434,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  				{ "unit_tags", tags },
  				{ "effect_kind", effectKind },
  			});
-@@ -1413,6 +2512,8 @@ class VoiPreLiveJourneyAdapter
+@@ -1413,6 +2527,8 @@ class VoiPreLiveJourneyAdapter
  
  	void applyResourceObservation(const VoiPreLiveJson & step)
  	{
@@ -3298,7 +3443,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  		const auto structures = step.find("structures");
  		if (structures != step.end() && structures->is_array())
  		{
-@@ -1569,9 +2670,15 @@ class VoiPreLiveJourneyAdapter
+@@ -1569,9 +2685,15 @@ class VoiPreLiveJourneyAdapter
  			});
  		}
  		VoiPreLiveJson owners = VoiPreLiveJson::object();
@@ -3315,7 +3460,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  		}
  		VoiPreLiveJson operations = VoiPreLiveJson::array();
  		for (const auto & entry : m_operations)
-@@ -1585,6 +2692,19 @@ class VoiPreLiveJourneyAdapter
+@@ -1585,6 +2707,19 @@ class VoiPreLiveJourneyAdapter
  				{ "active", operation.active },
  				{ "assigned_unit_tags",
  					operation.assignedTags },
@@ -3335,7 +3480,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  				{ "action", operation.action },
  				{ "blocker", operation.blocker },
  			});
-@@ -1593,12 +2713,22 @@ class VoiPreLiveJourneyAdapter
+@@ -1593,12 +2728,22 @@ class VoiPreLiveJourneyAdapter
  			{ "frame", m_frame },
  			{ "units", units },
  			{ "owners", owners },
@@ -3358,7 +3503,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  		};
  	}
  
-@@ -1638,13 +2768,13 @@ class VoiPreLiveJourneyAdapter
+@@ -1638,13 +2783,13 @@ class VoiPreLiveJourneyAdapter
  			if (owner != m_owners.end())
  			{
  				const auto operation =
@@ -3375,7 +3520,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  						+ "#" + std::to_string(generation));
  			}
  			if (!source.autonomousOwner.empty())
-@@ -1948,11 +3078,141 @@ class VoiPreLiveJourneyAdapter
+@@ -1948,11 +3093,143 @@ class VoiPreLiveJourneyAdapter
  		};
  	}
  
@@ -3414,6 +3559,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
 +				{ "action", receipt.action },
 +				{ "dispatch_action",
 +					receipt.dispatchAction },
++				{ "unit_type", receipt.unitType },
 +				{ "ability_name",
 +					receipt.abilityName },
 +				{ "ability_id", receipt.abilityId },
@@ -3460,6 +3606,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
 +				{ "action", receipt.action },
 +				{ "dispatch_action",
 +					receipt.dispatchAction },
++				{ "unit_type", receipt.unitType },
 +				{ "ability_name",
 +					receipt.abilityName },
 +				{ "ability_id", receipt.abilityId },
@@ -3518,7 +3665,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  		{
  			throw std::runtime_error(
  				"pre-live adapter schema_version is unsupported");
-@@ -2016,14 +3276,17 @@ public:
+@@ -2016,14 +3293,17 @@ public:
  			}
  			else if (kind == "client_reconnect")
  			{
@@ -3539,7 +3686,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  					});
  				recordSnapshot("client_reconnect");
  			}
-@@ -2040,13 +3303,14 @@ public:
+@@ -2040,13 +3320,14 @@ public:
  				voiBattlefieldProjectionJson(projection));
  		const auto director = operationDirectorJson();
  		return {
@@ -3555,7 +3702,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  			{ "telemetry", {
  				{ "protocol_version", "voi-mm-bridge/v1" },
  				{ "frame", m_frame },
-@@ -2070,9 +3334,10 @@ public:
+@@ -2070,9 +3351,10 @@ public:
  };
  
  inline VoiPreLiveJson voiRunPreLiveJourneyAdapter(
@@ -3568,7 +3715,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  	return adapter.run(input);
  }
  
-@@ -2080,7 +3345,8 @@ inline int voiRunPreLiveJourneyAdapterFile(
+@@ -2080,7 +3362,8 @@ inline int voiRunPreLiveJourneyAdapterFile(
  	const std::string & path,
  	std::istream & standardInput,
  	std::ostream & output,
@@ -3578,7 +3725,7 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  {
  	try
  	{
-@@ -2099,7 +3365,9 @@ inline int voiRunPreLiveJourneyAdapterFile(
+@@ -2099,7 +3382,9 @@ inline int voiRunPreLiveJourneyAdapterFile(
  		}
  		VoiPreLiveJson payload;
  		*input >> payload;
@@ -3591,10 +3738,10 @@ index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399e
  	}
 diff --git a/src/voi_production_path.hpp b/src/voi_production_path.hpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ae479ad1100a277317e8ed7de0a576bb2e2aa0eb
+index 0000000..05d8f65
 --- /dev/null
 +++ b/src/voi_production_path.hpp
-@@ -0,0 +1,448 @@
+@@ -0,0 +1,456 @@
 +#pragma once
 +
 +#include <algorithm>
@@ -3735,6 +3882,7 @@ index 0000000000000000000000000000000000000000..ae479ad1100a277317e8ed7de0a576bb
 +{
 +	VoiProductionOperationIdentity identity;
 +	std::string action;
++	std::string unitType;
 +	std::string abilityName;
 +	std::uint32_t abilityId = 0;
 +	std::string targetKind;
@@ -3811,6 +3959,9 @@ index 0000000000000000000000000000000000000000..ae479ad1100a277317e8ed7de0a576bb
 +	canonical << "|";
 +	if (binding != nullptr)
 +	{
++		voiProductionAppendDeterministicField(
++			canonical,
++			binding->unitType);
 +		voiProductionAppendDeterministicField(
 +			canonical,
 +			binding->abilityName);
@@ -3893,6 +4044,7 @@ index 0000000000000000000000000000000000000000..ae479ad1100a277317e8ed7de0a576bb
 +	std::uint64_t generation = 0;
 +	std::string action;
 +	std::string dispatchAction;
++	std::string unitType;
 +	std::string abilityName;
 +	std::uint32_t abilityId = 0;
 +	std::string targetKind;
@@ -3920,6 +4072,7 @@ index 0000000000000000000000000000000000000000..ae479ad1100a277317e8ed7de0a576bb
 +	receipt.dispatchAction = dispatchAction;
 +	if (binding != nullptr)
 +	{
++		receipt.unitType = binding->unitType;
 +		receipt.abilityName = binding->abilityName;
 +		receipt.abilityId = binding->abilityId;
 +		receipt.targetKind = binding->targetKind;
@@ -3931,7 +4084,9 @@ index 0000000000000000000000000000000000000000..ae479ad1100a277317e8ed7de0a576bb
 +		receipt.blocker = "invalid_sc2_submission_identity";
 +		return receipt;
 +	}
-+	if (action.empty() || dispatchAction.empty())
++	if (action.empty()
++		|| dispatchAction.empty()
++		|| (binding != nullptr && binding->unitType.empty()))
 +	{
 +		receipt.blocker = "invalid_sc2_submission";
 +		return receipt;
@@ -4044,7 +4199,7 @@ index 0000000000000000000000000000000000000000..ae479ad1100a277317e8ed7de0a576bb
 +		dispatch);
 +}
 diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
-index 3ddbf11d2e439417f4f15a8e09f2d35ce921fde4..66bccb7a1e8e6fa5f4e219301f27934609516f0c 100644
+index 3ddbf11..66bccb7 100644
 --- a/tests/CMakeLists.txt
 +++ b/tests/CMakeLists.txt
 @@ -142,3 +142,17 @@ add_test(
@@ -4066,7 +4221,7 @@ index 3ddbf11d2e439417f4f15a8e09f2d35ce921fde4..66bccb7a1e8e6fa5f4e219301f279346
 +    COMMAND voi_production_path_test
 +)
 diff --git a/tests/pre_live_journey_adapter_test.cpp b/tests/pre_live_journey_adapter_test.cpp
-index 5aad7ef44cc680ba359b6102f836f375e7782a62..93a43c7c2482e2b8ea813e4ac359122fa9f3c1a5 100644
+index 5aad7ef..2b399d8 100644
 --- a/tests/pre_live_journey_adapter_test.cpp
 +++ b/tests/pre_live_journey_adapter_test.cpp
 @@ -2,7 +2,9 @@
@@ -4427,7 +4582,7 @@ index 5aad7ef44cc680ba359b6102f836f375e7782a62..93a43c7c2482e2b8ea813e4ac359122f
  	CHECK(
  		output["battlefield_overview"]["authority"]
  			== "micromachine_cpp");
-@@ -152,6 +445,197 @@ int main()
+@@ -152,6 +445,202 @@ int main()
  			["family_evidence"][0]["effect_kind"]
  			== "movement");
  	CHECK(output["hud"]["rows"].is_array());
@@ -4517,6 +4672,7 @@ index 5aad7ef44cc680ba359b6102f836f375e7782a62..93a43c7c2482e2b8ea813e4ac359122f
 +		CHECK(submission["generation"] == 1);
 +		CHECK(submission["action"] == "squad_order:attack");
 +		CHECK(submission["dispatch_action"] == "attack_move");
++		CHECK(submission["unit_type"] == "TERRAN_MARINE");
 +		CHECK(submission["unit_tags"].size() == 1);
 +		CHECK(submission["callback_executed"] == true);
 +		CHECK(submission["dispatch_proof"] == true);
@@ -4525,13 +4681,14 @@ index 5aad7ef44cc680ba359b6102f836f375e7782a62..93a43c7c2482e2b8ea813e4ac359122f
 +		CHECK(
 +			submissionId.find("voi-sc2-submission-") == 0);
 +		submissionIds.insert(submissionId);
-+		CHECK(dispatched.size() == 12);
++		CHECK(dispatched.size() == 13);
 +		CHECK(dispatched["submission_id"] == submissionId);
 +		CHECK(dispatched["update_id"] == "adapter-test");
 +		CHECK(dispatched["operation_id"] == "assault-alpha");
 +		CHECK(dispatched["generation"] == 1);
 +		CHECK(dispatched["action"] == "squad_order:attack");
 +		CHECK(dispatched["dispatch_action"] == "attack_move");
++		CHECK(dispatched["unit_type"] == submission["unit_type"]);
 +		CHECK(dispatched["unit_tags"] == submission["unit_tags"]);
 +	}
 +	CHECK(submissionIds.size() == 2);
@@ -4571,6 +4728,7 @@ index 5aad7ef44cc680ba359b6102f836f375e7782a62..93a43c7c2482e2b8ea813e4ac359122f
 +			CHECK(payload["generation"] == 1);
 +			CHECK(payload["action"] == "squad_order:attack");
 +			CHECK(payload["dispatch_action"] == "attack_move");
++			CHECK(payload["unit_type"] == "TERRAN_MARINE");
 +			CHECK(payload["unit_tags"].size() == 1);
 +			CHECK(payload["dispatch_proof"] == true);
 +			submissionReceiptEventIds.insert(
@@ -4604,6 +4762,7 @@ index 5aad7ef44cc680ba359b6102f836f375e7782a62..93a43c7c2482e2b8ea813e4ac359122f
 +		{
 +			canonicalSubmissionObserved =
 +				payload["dispatch_action"] == "attack_move"
++				&& payload["unit_type"] == "TERRAN_MARINE"
 +				&& payload["submission_ids"]
 +					== expectedSubmissionIds
 +				&& payload["unit_tags"]
@@ -4613,6 +4772,7 @@ index 5aad7ef44cc680ba359b6102f836f375e7782a62..93a43c7c2482e2b8ea813e4ac359122f
 +		{
 +			canonicalEffectObserved =
 +				payload["dispatch_action"] == "attack_move"
++				&& payload["unit_type"] == "TERRAN_MARINE"
 +				&& payload["submission_ids"]
 +					== expectedSubmissionIds
 +				&& payload["unit_tags"]
@@ -4625,7 +4785,7 @@ index 5aad7ef44cc680ba359b6102f836f375e7782a62..93a43c7c2482e2b8ea813e4ac359122f
  
  	auto multiRole = validInput();
  	multiRole["initial_state"]["units"].push_back({
-@@ -186,7 +670,7 @@ int main()
+@@ -186,7 +675,7 @@ int main()
  		},
  	};
  	const auto multiRoleOutput =
@@ -4634,7 +4794,7 @@ index 5aad7ef44cc680ba359b6102f836f375e7782a62..93a43c7c2482e2b8ea813e4ac359122f
  	CHECK(
  		multiRoleOutput["operation_director"][0]["assigned_count"]
  			== 5);
-@@ -220,11 +704,21 @@ int main()
+@@ -220,11 +709,21 @@ int main()
  	protectedMinimum["steps"].erase(
  		protectedMinimum["steps"].begin() + 1);
  	const auto protectedOutput =
@@ -4657,7 +4817,7 @@ index 5aad7ef44cc680ba359b6102f836f375e7782a62..93a43c7c2482e2b8ea813e4ac359122f
  	for (const auto & event : protectedOutput["events"])
  	{
  		protectedRejectionObserved =
-@@ -232,14 +726,299 @@ int main()
+@@ -232,14 +731,299 @@ int main()
  			|| (event["event_type"] == "rejection"
  				&& event["payload"]["reason"]
  					== "protected_minimum_violation");
@@ -4958,7 +5118,7 @@ index 5aad7ef44cc680ba359b6102f836f375e7782a62..93a43c7c2482e2b8ea813e4ac359122f
  		CHECK(false);
  	}
  	catch (const std::runtime_error & error)
-@@ -254,7 +1033,7 @@ int main()
+@@ -254,7 +1038,7 @@ int main()
  	regressive["steps"][1]["frame"] = 99;
  	try
  	{
@@ -4967,7 +5127,7 @@ index 5aad7ef44cc680ba359b6102f836f375e7782a62..93a43c7c2482e2b8ea813e4ac359122f
  		CHECK(false);
  	}
  	catch (const std::runtime_error & error)
-@@ -263,3 +1042,6 @@ int main()
+@@ -263,3 +1047,6 @@ int main()
  			std::string(error.what()).find("regressed")
  				!= std::string::npos);
  	}
@@ -4976,10 +5136,10 @@ index 5aad7ef44cc680ba359b6102f836f375e7782a62..93a43c7c2482e2b8ea813e4ac359122f
 +}
 diff --git a/tests/production_path_test.cpp b/tests/production_path_test.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..ac60ebabcec93513b5b27fcf3d2fd3a099ddf349
+index 0000000..7bac1a8
 --- /dev/null
 +++ b/tests/production_path_test.cpp
-@@ -0,0 +1,398 @@
+@@ -0,0 +1,420 @@
 +#include "voi_production_path.hpp"
 +
 +#include <iostream>
@@ -5158,7 +5318,8 @@ index 0000000000000000000000000000000000000000..ac60ebabcec93513b5b27fcf3d2fd3a0
 +	int rejectedDispatchCallbackCount = 0;
 +	const VoiProductionActionBinding binding = {
 +		identity,
-+		"squad_order:attack"
++		"squad_order:attack",
++		"TERRAN_MARINE"
 +	};
 +	CHECK(!voiProductionDispatchSc2ActionAndRecord(
 +		&binding,
@@ -5194,6 +5355,7 @@ index 0000000000000000000000000000000000000000..ac60ebabcec93513b5b27fcf3d2fd3a0
 +	CHECK(acceptedSubmission.generation == 3);
 +	CHECK(acceptedSubmission.action == "squad_order:attack");
 +	CHECK(acceptedSubmission.dispatchAction == "attack_move");
++	CHECK(acceptedSubmission.unitType == "TERRAN_MARINE");
 +	CHECK(
 +		acceptedSubmission.unitTags
 +			== std::vector<std::uint64_t>({11}));
@@ -5234,6 +5396,26 @@ index 0000000000000000000000000000000000000000..ac60ebabcec93513b5b27fcf3d2fd3a0
 +	CHECK(retargetedSubmission.submitted);
 +	CHECK(
 +		retargetedSubmission.submissionId
++			!= acceptedSubmission.submissionId);
++	auto changedUnitTypeBinding = binding;
++	changedUnitTypeBinding.unitType = "TERRAN_MARAUDER";
++	const auto changedUnitTypeSubmission =
++		voiProductionSubmitSc2Action(
++			identity,
++			"squad_order:attack",
++			"attack_move",
++			std::vector<std::uint64_t>({11}),
++			&changedUnitTypeBinding,
++			[]()
++			{
++				return true;
++			});
++	CHECK(changedUnitTypeSubmission.submitted);
++	CHECK(
++		changedUnitTypeSubmission.unitType
++			== "TERRAN_MARAUDER");
++	CHECK(
++		changedUnitTypeSubmission.submissionId
 +			!= acceptedSubmission.submissionId);
 +
 +	bool directDispatchCommandIssued = false;

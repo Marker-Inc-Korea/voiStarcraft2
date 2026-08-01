@@ -1140,33 +1140,43 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                 *,
                 binary_placeholder: str = "{micromachine_binary}",
                 node_placeholder: str = "{node}",
+                raw_argv: list[str] | None = None,
+                cwd: str = ".",
+                output: str = (
+                    "producer/deterministic-journeys.zip"
+                ),
             ) -> bytes:
+                default_argv = [
+                    "{python}",
+                    "-I",
+                    "-B",
+                    "-S",
+                    "-c",
+                    provenance.ISOLATED_PYTHON_BOOTSTRAP,
+                    "{repository}",
+                    (
+                        "starcraft_commander/"
+                        "micromachine_pre_live_journeys.py"
+                    ),
+                    "--emit-bundle",
+                    "{output}",
+                    "--micromachine-binary",
+                    binary_placeholder,
+                    "--node-executable",
+                    node_placeholder,
+                ]
                 return canonical_json_bytes(
                     {
                         "schema_version": 1,
                         "producers": {
                             PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID: {
-                                "argv": [
-                                    "{python}",
-                                    "-I",
-                                    "-B",
-                                    "-S",
-                                    "-c",
-                                    provenance.ISOLATED_PYTHON_BOOTSTRAP,
-                                    "{repository}",
-                                    (
-                                        "starcraft_commander/"
-                                        "micromachine_pre_live_journeys.py"
-                                    ),
-                                    "--emit-bundle",
-                                    "{output}",
-                                    "--micromachine-binary",
-                                    binary_placeholder,
-                                    "--node-executable",
-                                    node_placeholder,
-                                ],
-                                "cwd": ".",
-                                "output": "producer/journeys.zip",
+                                "argv": (
+                                    default_argv
+                                    if raw_argv is None
+                                    else raw_argv
+                                ),
+                                "cwd": cwd,
+                                "output": output,
                             }
                         },
                     }
@@ -1261,6 +1271,18 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                 provenance._producer_pinned_argv_file_digests(accepted),
             )
 
+            required_argv = list(
+                provenance.DETERMINISTIC_JOURNEY_PRODUCER_RAW_ARGV
+            )
+            substituted_script = list(required_argv)
+            substituted_script[7] = (
+                "starcraft_commander/micromachine_pre_live_provenance.py"
+            )
+            reordered_argv = list(required_argv)
+            reordered_argv[8], reordered_argv[10] = (
+                reordered_argv[10],
+                reordered_argv[8],
+            )
             rejected = {
                 "missing binary placeholder": resolve(
                     policy_bytes(binary_placeholder=str(binary_path))
@@ -1283,6 +1305,24 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                 "relative node path": resolve(
                     policy_bytes(),
                     candidate_node=Path("tools/node"),
+                ),
+                "script substitution": resolve(
+                    policy_bytes(raw_argv=substituted_script)
+                ),
+                "extra argv": resolve(
+                    policy_bytes(raw_argv=[*required_argv, "--forged"])
+                ),
+                "missing argv": resolve(
+                    policy_bytes(raw_argv=required_argv[:-1])
+                ),
+                "reordered argv": resolve(
+                    policy_bytes(raw_argv=reordered_argv)
+                ),
+                "cwd substitution": resolve(
+                    policy_bytes(cwd="starcraft_commander")
+                ),
+                "output substitution": resolve(
+                    policy_bytes(output="producer/forged.zip")
                 ),
             }
             for name, result in rejected.items():

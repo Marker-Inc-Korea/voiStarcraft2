@@ -796,7 +796,7 @@ index 0000000000000000000000000000000000000000..f196a9284ab3168076a3f68eed9bcf54
 +				operation,
 +				"production_wait",
 +				{
-+					{ "action", "wait" },
++					{ "action", operation.action },
 +					{ "target_count", decision.targetCount },
 +					{ "assigned_count", decision.assignedCount },
 +					{ "represented_count", decision.representedCount },
@@ -808,7 +808,7 @@ index 0000000000000000000000000000000000000000..f196a9284ab3168076a3f68eed9bcf54
 +				operation,
 +				"prerequisite_wait",
 +				{
-+					{ "action", "wait" },
++					{ "action", operation.action },
 +					{ "blocker", decision.blocker },
 +					{ "submission_count", 0 },
 +				});

@@ -105,13 +105,38 @@ _EFFECT_EVENT_TYPES: Final[frozenset[str]] = frozenset(
 _WEB_LIFECYCLE_EVENT_TYPES: Final[frozenset[str]] = frozenset(
     {"ownership_snapshot", "submission", "movement", "engagement"}
 )
+_NATIVE_EVENT_TYPES: Final[frozenset[str]] = frozenset(
+    {
+        "ability_effect",
+        "autonomous_defense",
+        "cancellation",
+        "client_reconnect",
+        "engagement",
+        "family_action_attempt",
+        "launch_decision",
+        "movement",
+        "ownership_snapshot",
+        "preemption",
+        "prerequisite_wait",
+        "production_decision",
+        "production_path_receipt",
+        "rejection",
+        "squad_order",
+        "submission",
+        "transfer",
+    }
+)
 _NATIVE_ACTION_METADATA_FIELDS: Final[tuple[str, ...]] = (
+    "unit_type",
     "dispatch_action",
     "ability_name",
     "ability_id",
     "target_kind",
     "target_x",
     "target_y",
+)
+_ALL_TERRAN_COMPOSITION_BLOCKER: Final[str] = (
+    "composition_prerequisites_pending"
 )
 _NATIVE_ACTION_PROOF_FIELDS: Final[tuple[str, ...]] = (
     *_NATIVE_ACTION_METADATA_FIELDS,
@@ -1674,9 +1699,17 @@ def _validate_native_output_payload(
         raise ValueError("native pre-live adapter schema is unsupported")
     _validate_native_final_state(output)
     if expected_input is not None:
+        _validate_native_lifecycle_sequence(
+            output.get("events"),
+            validate_causality=False,
+        )
         _validate_native_compiler_identity_bindings(output, expected_input)
+        _validate_native_reconnect_cursor(output, expected_input)
     _validate_native_lifecycle_sequence(output.get("events"))
-    _validate_native_production_path(output)
+    _validate_native_production_path(
+        output,
+        expected_input=expected_input,
+    )
     return output
 
 
@@ -1700,7 +1733,42 @@ def _validate_native_final_state(output: Mapping[str, object]) -> None:
         raise ValueError("native final_state does not match the terminal snapshot")
 
 
-def _validate_native_lifecycle_sequence(events: object) -> None:
+def _validate_native_reconnect_cursor(
+    output: Mapping[str, object],
+    expected_input: Mapping[str, object],
+) -> None:
+    initial_state = expected_input.get("initial_state")
+    if not isinstance(initial_state, Mapping) or "event_cursor" not in initial_state:
+        return
+    expected_cursor = initial_state.get("event_cursor")
+    if type(expected_cursor) is not int or expected_cursor < 0:
+        raise ValueError("manifest reconnect cursor is invalid")
+    reconnects = [
+        event
+        for event in _mapping_sequence(output.get("events"))
+        if event.get("event_type") == "client_reconnect"
+    ]
+    final_state = output.get("final_state")
+    if (
+        len(reconnects) != 1
+        or not isinstance(reconnects[0].get("payload"), Mapping)
+        or cast(Mapping[str, object], reconnects[0]["payload"]).get(
+            "after_event_seq"
+        )
+        != expected_cursor
+        or not isinstance(final_state, Mapping)
+        or final_state.get("event_cursor") != expected_cursor
+    ):
+        raise ValueError(
+            "native reconnect cursor does not match the manifest initial cursor"
+        )
+
+
+def _validate_native_lifecycle_sequence(
+    events: object,
+    *,
+    validate_causality: bool = True,
+) -> None:
     if not isinstance(events, Sequence) or isinstance(
         events,
         (str, bytes, bytearray),
@@ -1751,9 +1819,14 @@ def _validate_native_lifecycle_sequence(events: object) -> None:
         identity_key = (update_id, operation_id, generation)
         action_key = (*identity_key, str(payload.get("action", "") or ""))
         event_type = event.get("event_type")
-        if not isinstance(event_type, str) or not event_type:
+        if (
+            not isinstance(event_type, str)
+            or event_type not in _NATIVE_EVENT_TYPES
+        ):
             raise ValueError("native lifecycle event type is invalid")
         index = expected_seq - 1
+        if not validate_causality:
+            continue
         if (
             event_type == "launch_decision"
             and identity.get("stage") == "launch_admitted"
@@ -1790,13 +1863,35 @@ def _validate_native_compiler_identity_bindings(
     native_input: Mapping[str, object],
 ) -> None:
     allowed = _compiler_requested_operation_identities(native_input)
+    caster_unit_types = _compiler_requested_caster_unit_types(native_input)
     identities: list[tuple[str, str, int]] = []
     for event in _mapping_sequence(output.get("events")):
         identity = event.get("identity")
         if not isinstance(identity, Mapping):
             raise ValueError("native event identity is malformed")
         if str(identity.get("operation_id", "") or ""):
-            identities.append(_native_identity_tuple(identity))
+            identity_key = _native_identity_tuple(identity)
+            identities.append(identity_key)
+            payload = event.get("payload")
+            event_type = event.get("event_type")
+            is_sc2_receipt = (
+                event_type == "production_path_receipt"
+                and isinstance(payload, Mapping)
+                and payload.get("entrypoint")
+                == "voiProductionSubmitSc2Action"
+            )
+            if event_type in {
+                "submission",
+                *_EFFECT_EVENT_TYPES,
+            } or is_sc2_receipt:
+                if (
+                    not isinstance(payload, Mapping)
+                    or payload.get("unit_type")
+                    != caster_unit_types.get(identity_key)
+                ):
+                    raise ValueError(
+                        "native SC2 caster unit type is not compiler-bound"
+                    )
     for row in _mapping_sequence(output.get("operation_director")):
         policy_update_id = row.get("policy_update_id")
         operation_id = row.get("operation_id")
@@ -1807,7 +1902,7 @@ def _validate_native_compiler_identity_bindings(
             or type(generation) is not int
             or generation < 0
         ):
-            raise ValueError("native operation director identity is malformed")
+            raise ValueError("native operation director identity is invalid")
         identities.append((policy_update_id, operation_id, generation))
         for evidence in _mapping_sequence(row.get("family_evidence")):
             identities.append(_native_identity_tuple(evidence))
@@ -1815,14 +1910,23 @@ def _validate_native_compiler_identity_bindings(
     if isinstance(production_path, Mapping):
         for field_name in (
             "applied_squad_orders",
-            "dispatched_sc2_actions",
             "squad_order_receipts",
-            "sc2_submission_receipts",
         ):
             identities.extend(
                 _native_identity_tuple(row)
                 for row in _mapping_sequence(production_path.get(field_name))
             )
+        for field_name in (
+            "dispatched_sc2_actions",
+            "sc2_submission_receipts",
+        ):
+            for row in _mapping_sequence(production_path.get(field_name)):
+                identity_key = _native_identity_tuple(row)
+                identities.append(identity_key)
+                if row.get("unit_type") != caster_unit_types.get(identity_key):
+                    raise ValueError(
+                        "native SC2 caster unit type is not compiler-bound"
+                    )
     if any(identity not in allowed for identity in identities):
         raise ValueError(
             "native evidence is not bound to a compiler-requested operation identity"
@@ -1892,6 +1996,77 @@ def _compiler_requested_operation_identities(
     return allowed
 
 
+def _compiler_requested_caster_unit_types(
+    native_input: Mapping[str, object],
+) -> dict[tuple[str, str, int], str]:
+    steps = native_input.get("steps")
+    if not isinstance(steps, Sequence) or isinstance(
+        steps,
+        (str, bytes, bytearray),
+    ):
+        raise ValueError("native input steps are malformed")
+    caster_unit_types: dict[tuple[str, str, int], str] = {}
+    active: dict[str, tuple[int, str]] = {}
+    for step in steps:
+        if not isinstance(step, Mapping) or step.get("kind") != "policy_update":
+            continue
+        update = step.get("update")
+        if not isinstance(update, Mapping):
+            raise ValueError("native policy update is malformed")
+        update_id = str(update.get("update_id", "") or "")
+        operations = _update_operations(update)
+        if operations:
+            requested: dict[str, tuple[int, str]] = {}
+            for operation in operations:
+                requirements = _operation_requirements(operation)
+                if not requirements:
+                    raise ValueError(
+                        "compiler-requested operation lacks a caster unit type"
+                    )
+                operation_id = operation.get("operation_id")
+                generation = operation.get("generation")
+                unit_type = requirements[0].get("unit_type")
+                if (
+                    type(operation_id) is not str
+                    or not operation_id
+                    or type(generation) is not int
+                    or generation <= 0
+                    or type(unit_type) is not str
+                    or not unit_type
+                ):
+                    raise ValueError(
+                        "compiler-requested caster unit type is malformed"
+                    )
+                requested[operation_id] = (generation, unit_type)
+            active = requested
+        else:
+            vector = update.get("vector")
+            emergency = (
+                vector.get("emergency")
+                if isinstance(vector, Mapping)
+                else None
+            )
+            requested = (
+                active
+                if isinstance(emergency, Mapping)
+                and any(value is True for value in emergency.values())
+                else {}
+            )
+        for operation_id, (generation, unit_type) in requested.items():
+            identity = (update_id, operation_id, generation)
+            if not update_id:
+                raise ValueError(
+                    "compiler-requested caster unit type is malformed"
+                )
+            prior = caster_unit_types.get(identity)
+            if prior is not None and prior != unit_type:
+                raise ValueError(
+                    "compiler-requested caster unit type is ambiguous"
+                )
+            caster_unit_types[identity] = unit_type
+    return caster_unit_types
+
+
 def _compiled_operation_action(operation: Mapping[str, object]) -> str:
     task = operation.get("tactical_task")
     if not isinstance(task, Mapping):
@@ -1909,7 +2084,11 @@ def _compiled_operation_action(operation: Mapping[str, object]) -> str:
     }.get(task_type, "squad_order:attack")
 
 
-def _validate_native_production_path(output: Mapping[str, object]) -> None:
+def _validate_native_production_path(
+    output: Mapping[str, object],
+    *,
+    expected_input: Mapping[str, object] | None = None,
+) -> None:
     production_path = output.get("production_path")
     if (
         not isinstance(production_path, Mapping)
@@ -2097,6 +2276,7 @@ def _validate_native_production_path(output: Mapping[str, object]) -> None:
                 "operation_id",
                 "generation",
                 "action",
+                "unit_type",
                 "dispatch_action",
                 "ability_name",
                 "ability_id",
@@ -2116,6 +2296,7 @@ def _validate_native_production_path(output: Mapping[str, object]) -> None:
                 "operation_id",
                 "generation",
                 "action",
+                "unit_type",
                 "dispatch_action",
                 "ability_name",
                 "ability_id",
@@ -2133,6 +2314,11 @@ def _validate_native_production_path(output: Mapping[str, object]) -> None:
     _validate_native_family_effect_causality(
         events,
         output.get("operation_director"),
+        require_submitted_effects=(
+            expected_input is not None
+            and expected_input.get("journey_id")
+            == "all_terran_family_ability_blocker_matrix"
+        ),
     )
 
 
@@ -2181,6 +2367,7 @@ def _validate_native_dispatched_sc2_action_payload(
         "operation_id",
         "generation",
         "action",
+        "unit_type",
         "dispatch_action",
         "ability_name",
         "ability_id",
@@ -2298,6 +2485,7 @@ def _validate_native_submission_receipt_payload(
         "operation_id",
         "generation",
         "action",
+        "unit_type",
         "dispatch_action",
         "ability_name",
         "ability_id",
@@ -2314,6 +2502,7 @@ def _validate_native_submission_receipt_payload(
             "operation_id",
             "generation",
             "action",
+            "unit_type",
             "dispatch_action",
             "ability_name",
             "ability_id",
@@ -2327,7 +2516,7 @@ def _validate_native_submission_receipt_payload(
     if set(payload) != expected:
         raise ValueError("native SC2 submission receipt field set is invalid")
     binding = _native_receipt_binding(payload, identity)
-    dispatch_action = _native_action_metadata(payload)[0]
+    dispatch_action = _native_action_metadata(payload)[1]
     if payload.get("dispatch_proof") is not True:
         raise ValueError("native SC2 submission receipt lacks dispatch proof")
     if not event_payload and payload.get("callback_executed") is not True:
@@ -2380,7 +2569,8 @@ def _native_finite_number(
 
 def _native_action_metadata(
     payload: Mapping[str, object],
-) -> tuple[str, str, int, str, object, object]:
+) -> tuple[str, str, str, int, str, object, object]:
+    unit_type = str(payload.get("unit_type", "") or "")
     dispatch_action = str(payload.get("dispatch_action", "") or "")
     ability_name = str(payload.get("ability_name", "") or "")
     ability_id = payload.get("ability_id")
@@ -2400,7 +2590,8 @@ def _native_action_metadata(
         "ability_target",
     }
     if (
-        dispatch_action not in supported_dispatches
+        not unit_type
+        or dispatch_action not in supported_dispatches
         or type(ability_id) is not int
         or ability_id < 0
         or not _native_finite_number(target_x)
@@ -2417,6 +2608,7 @@ def _native_action_metadata(
     elif ability_name or ability_id != 0 or target_kind:
         raise ValueError("native non-ability action has ability metadata")
     return (
+        unit_type,
         dispatch_action,
         ability_name,
         ability_id,
@@ -2464,7 +2656,9 @@ def _production_receipt_id(
     binding: tuple[str, str, int, str, tuple[int, ...]],
     *,
     dispatch_action: str,
-    action_metadata: tuple[str, str, int, str, object, object] | None = None,
+    action_metadata: (
+        tuple[str, str, str, int, str, object, object] | None
+    ) = None,
 ) -> str:
     update_id, operation_id, generation, action, unit_tags = binding
     fields = (prefix, update_id, operation_id)
@@ -2476,6 +2670,7 @@ def _production_receipt_id(
     canonical += "|"
     if action_metadata is not None:
         (
+            unit_type,
             _metadata_dispatch,
             ability_name,
             ability_id,
@@ -2483,6 +2678,7 @@ def _production_receipt_id(
             target_x,
             target_y,
         ) = action_metadata
+        canonical += f"{len(unit_type)}:{unit_type}|"
         canonical += f"{len(ability_name)}:{ability_name}|"
         canonical += f"{ability_id}|"
         canonical += f"{len(target_kind)}:{target_kind}|"
@@ -2733,6 +2929,7 @@ def _validate_native_submission_causality(
             operation_id,
             generation,
             action,
+            unit_type,
             dispatch_action,
             ability_name,
             ability_id,
@@ -2745,6 +2942,7 @@ def _validate_native_submission_causality(
             "operation_id": operation_id,
             "generation": generation,
             "action": action,
+            "unit_type": unit_type,
             "dispatch_action": dispatch_action,
             "ability_name": ability_name,
             "ability_id": ability_id,
@@ -2792,6 +2990,8 @@ def _validate_native_submission_causality(
 def _validate_native_family_effect_causality(
     events: Sequence[object],
     operation_director: object,
+    *,
+    require_submitted_effects: bool = False,
 ) -> None:
     rows = _mapping_sequence(operation_director)
     if not isinstance(operation_director, Sequence) or isinstance(
@@ -2846,14 +3046,20 @@ def _validate_native_family_effect_causality(
             if type(effect_count) is not int or effect_count < 0:
                 raise ValueError("native family effect count is invalid")
             submitted_count = raw_evidence.get("submitted_count")
-            if (
-                effect_count == 0
-                or type(submitted_count) is not int
-                or submitted_count <= 0
+            if type(submitted_count) is not int or submitted_count < 0:
+                raise ValueError("native family submitted count is invalid")
+            if require_submitted_effects and (
+                (submitted_count > 0 and effect_count == 0)
+                or (effect_count > 0 and submitted_count == 0)
             ):
+                raise ValueError(
+                    "native submitted all-Terran family action lacks an effect"
+                )
+            if effect_count == 0 or submitted_count == 0:
                 continue
             effect_kind = str(raw_evidence.get("effect_kind", "") or "")
             event_type = effect_types.get(effect_kind)
+            unit_type = str(raw_evidence.get("unit_type", "") or "")
             evidence_generation = raw_evidence.get("generation")
             evidence_frame = raw_evidence.get("effect_frame")
             evidence_tags = _native_unit_tags(
@@ -2864,6 +3070,7 @@ def _validate_native_family_effect_causality(
             )
             if (
                 event_type is None
+                or not unit_type
                 or raw_evidence.get("update_id") != update_id
                 or raw_evidence.get("operation_id") != operation_id
                 or evidence_generation != generation
@@ -2882,6 +3089,7 @@ def _validate_native_family_effect_causality(
                     "operation_id": operation_id,
                     "generation": generation,
                     "action": action,
+                    "unit_type": unit_type,
                     "game_frame": evidence_frame,
                     "effect_kind": effect_kind,
                     "unit_tags": list(evidence_tags),
@@ -2925,6 +3133,7 @@ def _native_family_effect_event_matches(
         and identity.get("generation") == binding.get("generation")
         and identity.get("game_frame") == binding.get("game_frame")
         and payload.get("action") == binding.get("action")
+        and payload.get("unit_type") == binding.get("unit_type")
         and payload.get("effect_kind") == binding.get("effect_kind")
         and payload.get("unit_tags") == binding.get("unit_tags")
     )
@@ -3076,18 +3285,51 @@ def _derive_blocked_launch_events(
     native: Mapping[str, object],
 ) -> None:
     rows = _mapping_sequence(native.get("operation_director"))
+    native_events = _mapping_sequence(native.get("events"))
     native_event_types = {
-        str(event.get("event_type", ""))
-        for event in _mapping_sequence(native.get("events"))
+        str(event.get("event_type", "")) for event in native_events
     }
     if "launch_decision" in native_event_types and "rejection" in native_event_types:
         return
+    prerequisite_evidence: dict[
+        tuple[str, str, int, str, str],
+        set[str],
+    ] = {}
+    for event in native_events:
+        event_type = str(event.get("event_type", "") or "")
+        if event_type not in {"production_decision", "prerequisite_wait"}:
+            continue
+        identity = event.get("identity")
+        payload = event.get("payload")
+        if not isinstance(identity, Mapping) or not isinstance(payload, Mapping):
+            continue
+        key = (
+            str(identity.get("update_id", "") or ""),
+            str(identity.get("operation_id", "") or ""),
+            int(identity.get("generation", 0) or 0),
+            str(payload.get("action", "") or ""),
+            str(payload.get("blocker", "") or ""),
+        )
+        prerequisite_evidence.setdefault(key, set()).add(event_type)
     for row in rows:
         blocker = str(row.get("blocker", "") or "")
         submitted = row.get("submission_observed") is True
         if not blocker or submitted:
             continue
         identity = _operation_row_identity(execution, row)
+        action = str(row.get("last_action", "") or "launch")
+        prerequisite_key = (
+            str(identity["update_id"]),
+            str(identity["operation_id"]),
+            int(identity["generation"]),
+            action,
+            blocker,
+        )
+        if prerequisite_evidence.get(prerequisite_key) == {
+            "production_decision",
+            "prerequisite_wait",
+        }:
+            continue
         if "launch_decision" not in native_event_types:
             execution.emit(
                 "launch_decision",
@@ -3108,7 +3350,7 @@ def _derive_blocked_launch_events(
                 stage="blocked",
                 game_frame=int(row.get("last_action_frame", 0) or 0),
                 payload={
-                    "action": str(row.get("last_action", "") or "launch"),
+                    "action": action,
                     "reason": blocker,
                 },
                 order=22,
@@ -3292,7 +3534,19 @@ def _consume_web_event_reconnect(
         )
     reconnect_identity = cast(Mapping[str, object], reconnect["identity"])
     reconnect_payload = cast(Mapping[str, object], reconnect["payload"])
-    cursor = int(reconnect_payload.get("after_event_seq", 0) or 0)
+    initial_state = execution.spec.get("initial_state")
+    expected_cursor = (
+        initial_state.get("event_cursor")
+        if isinstance(initial_state, Mapping)
+        else None
+    )
+    if type(expected_cursor) is not int or expected_cursor < 0:
+        raise ValueError("manifest reconnect cursor is invalid")
+    if reconnect_payload.get("after_event_seq") != expected_cursor:
+        raise ValueError(
+            "native reconnect cursor does not match the manifest initial cursor"
+        )
+    cursor = expected_cursor
     available, replay = journal.replay_batch(cursor)
     execution.emit(
         "replay_batch",
@@ -4109,7 +4363,7 @@ def verify_pre_live_journey_events(
     elif stop_type == "all_terran_families_accounted":
         blockers.extend(_verify_all_terran_events(spec, normalized))
     elif stop_type == "replayed_events_counted_once":
-        _verify_reconnect(normalized, blockers)
+        _verify_reconnect(spec, normalized, blockers)
     elif stop_type == "projection_identity_consistent":
         _verify_projection_identity(normalized, blockers)
     else:
@@ -5007,43 +5261,7 @@ def _verify_all_terran_events(
         for item in all_terran_capability_matrix()
     }
     try:
-        execution = _JourneyExecution(spec)
-        native_input = _compile_native_input(execution)
-        bindings: dict[tuple[str, str, int], tuple[str, str, str]] = {}
-        for step in cast(
-            Sequence[Mapping[str, object]],
-            native_input["steps"],
-        ):
-            if step.get("kind") != "policy_update":
-                continue
-            update = cast(Mapping[str, object], step["update"])
-            for operation in _update_operations(update):
-                task = operation.get("tactical_task")
-                requirements = _operation_requirements(operation)
-                if not isinstance(task, Mapping) or not requirements:
-                    raise ValueError("all-Terran operation is malformed")
-                ability = task.get("ability")
-                unit_type = requirements[0].get("unit_type")
-                if (
-                    type(ability) is not str
-                    or not ability
-                    or type(unit_type) is not str
-                    or not unit_type
-                ):
-                    raise ValueError("all-Terran operation binding is malformed")
-                identity = (
-                    str(update["update_id"]),
-                    str(operation["operation_id"]),
-                    int(operation["generation"]),
-                )
-                binding = (
-                    canonical_terran_unit_family(unit_type),
-                    ability,
-                    _compiled_operation_action(operation),
-                )
-                if identity in bindings and bindings[identity] != binding:
-                    raise ValueError("all-Terran operation binding is ambiguous")
-                bindings[identity] = binding
+        bindings = _all_terran_compiler_bindings(spec)
     except (KeyError, TypeError, ValueError) as exc:
         return [f"all-Terran compiler binding failed closed: {exc}"]
 
@@ -5052,15 +5270,19 @@ def _verify_all_terran_events(
         for family, abilities in expected.items()
         for ability in abilities
     }
-    if {(family, ability) for family, ability, _ in bindings.values()} != (
-        expected_pairs
-    ):
+    if {
+        (str(binding["family"]), str(binding["ability"]))
+        for binding in bindings.values()
+    } != expected_pairs:
         blockers.append("all-Terran compiler bindings do not match the matrix")
 
-    attempts: dict[str, set[str]] = {}
-    submissions: set[tuple[str, str]] = set()
-    effects: set[tuple[str, str]] = set()
-    blockers_by_action: set[tuple[str, str]] = set()
+    observed: dict[
+        tuple[str, str, int],
+        dict[str, list[Mapping[str, object]]],
+    ] = {
+        identity: {}
+        for identity in bindings
+    }
     for event in events:
         payload = event.get("payload")
         identity = event.get("identity")
@@ -5074,7 +5296,12 @@ def _verify_all_terran_events(
         binding = bindings.get(key)
         if binding is None:
             continue
-        family, ability, expected_action = binding
+        event_type = str(event.get("event_type", "") or "")
+        observed[key].setdefault(event_type, []).append(event)
+        family = str(binding["family"])
+        ability = str(binding["ability"])
+        unit_type = str(binding["unit_type"])
+        expected_action = str(binding["action"])
         action = str(payload.get("action", ""))
         if "family" in payload and payload.get("family") != family:
             blockers.append(f"{key[1]} family label is not compiler-bound")
@@ -5082,46 +5309,180 @@ def _verify_all_terran_events(
             blockers.append(f"{key[1]} ability label is not compiler-bound")
         if payload.get("ability_name") not in (None, "", ability):
             blockers.append(f"{key[1]} ability_name is not compiler-bound")
-        if event.get("event_type") in {"terran_lowering", "family_action_attempt"}:
-            if action != expected_action:
-                blockers.append(f"{family}/{ability} attempt action is incorrect")
-            attempts.setdefault(family, set()).add(ability)
-        elif event.get("event_type") == "submission":
-            if action != expected_action:
-                blockers.append(
-                    f"{family}/{ability} submission action is incorrect"
-                )
-            submissions.add((family, ability))
-        elif event.get("event_type") == "ability_effect":
-            if action != expected_action:
-                blockers.append(f"{family}/{ability} effect action is incorrect")
-            effects.add((family, ability))
-        elif (
-            event.get("event_type")
-            in {"production_decision", "prerequisite_wait", "rejection"}
-            and str(payload.get("blocker", "") or payload.get("reason", ""))
+        if event_type in {
+            "terran_lowering",
+            "family_action_attempt",
+            "submission",
+            "ability_effect",
+        } and payload.get("unit_type") != unit_type:
+            blockers.append(f"{family}/{ability} unit type is not compiler-bound")
+        if (
+            event_type == "production_path_receipt"
+            and payload.get("entrypoint") == "voiProductionSubmitSc2Action"
+            and payload.get("unit_type") != unit_type
         ):
-            blockers_by_action.add((family, ability))
-    if set(attempts) != set(expected):
-        blockers.append("all-Terran matrix does not cover exactly 15 families")
-    for family, abilities in expected.items():
-        if attempts.get(family, set()) != abilities:
-            blockers.append(f"{family} ability attempts are incomplete")
-        for ability in abilities:
-            if (
-                (family, ability) not in submissions
-                and (family, ability) not in blockers_by_action
-            ):
-                blockers.append(f"{family}/{ability} lacks submission or blocker")
-            if (
-                (family, ability) not in effects
-                and (family, ability) not in blockers_by_action
-            ):
-                blockers.append(f"{family}/{ability} lacks effect or blocker")
+            blockers.append(
+                f"{family}/{ability} receipt unit type is not compiler-bound"
+            )
+        if event_type in {
+            "terran_lowering",
+            "family_action_attempt",
+            "submission",
+            "ability_effect",
+            "production_decision",
+            "prerequisite_wait",
+        } and action != expected_action:
+            blockers.append(f"{family}/{ability} action is not compiler-bound")
+
+    for identity, binding in bindings.items():
+        family = str(binding["family"])
+        ability = str(binding["ability"])
+        rows = observed[identity]
+        lowerings = rows.get("terran_lowering", [])
+        attempts = rows.get("family_action_attempt", [])
+        submissions = rows.get("submission", [])
+        effects = rows.get("ability_effect", [])
+        decisions = rows.get("production_decision", [])
+        waits = rows.get("prerequisite_wait", [])
+        rejections = rows.get("rejection", [])
+        if len(lowerings) != 1:
+            blockers.append(
+                f"{family}/{ability} lowering evidence is not unique"
+            )
+        if binding["blocked"] is True:
+            expected_blocker = str(binding["blocker"])
+            if attempts or submissions or effects:
+                blockers.append(
+                    f"{family}/{ability} blocked action reached execution"
+                )
+            if len(decisions) != 1 or len(waits) != 1:
+                blockers.append(
+                    f"{family}/{ability} lacks exact prerequisite blocker evidence"
+                )
+            for row in (*decisions, *waits):
+                payload = cast(Mapping[str, object], row.get("payload", {}))
+                if payload.get("blocker") != expected_blocker:
+                    blockers.append(
+                        f"{family}/{ability} blocker is not compiler-derived"
+                    )
+            if rejections:
+                blockers.append(
+                    f"{family}/{ability} used rejection instead of prerequisite wait"
+                )
+        else:
+            if len(attempts) != 1:
+                blockers.append(
+                    f"{family}/{ability} family attempt is not unique"
+                )
+            if len(submissions) != 1:
+                blockers.append(
+                    f"{family}/{ability} submission is not unique"
+                )
+            if len(effects) != 1:
+                blockers.append(f"{family}/{ability} effect is not unique")
+            blocker_rows = [
+                row
+                for row in (*decisions, *waits, *rejections)
+                if str(
+                    cast(Mapping[str, object], row.get("payload", {})).get(
+                        "blocker",
+                        "",
+                    )
+                    or cast(Mapping[str, object], row.get("payload", {})).get(
+                        "reason",
+                        "",
+                    )
+                )
+            ]
+            if blocker_rows:
+                blockers.append(
+                    f"{family}/{ability} has unexpected blocker evidence"
+                )
     return blockers
 
 
+def _all_terran_compiler_bindings(
+    spec: Mapping[str, object],
+) -> dict[tuple[str, str, int], dict[str, object]]:
+    execution = _JourneyExecution(spec)
+    native_input = _compile_native_input(execution)
+    initial_state = native_input.get("initial_state")
+    if not isinstance(initial_state, Mapping):
+        raise ValueError("all-Terran initial state is malformed")
+    available: dict[str, int] = {}
+    for unit in _mapping_sequence(initial_state.get("units")):
+        unit_type = unit.get("unit_type")
+        if type(unit_type) is not str or not unit_type:
+            raise ValueError("all-Terran initial unit type is malformed")
+        available[unit_type] = available.get(unit_type, 0) + 1
+    bindings: dict[tuple[str, str, int], dict[str, object]] = {}
+    for step in cast(
+        Sequence[Mapping[str, object]],
+        native_input["steps"],
+    ):
+        if step.get("kind") != "policy_update":
+            continue
+        update = cast(Mapping[str, object], step["update"])
+        for operation in _update_operations(update):
+            task = operation.get("tactical_task")
+            requirements = _operation_requirements(operation)
+            if not isinstance(task, Mapping) or not requirements:
+                raise ValueError("all-Terran operation is malformed")
+            ability = task.get("ability")
+            unit_type = requirements[0].get("unit_type")
+            required: dict[str, int] = {}
+            for requirement in requirements:
+                required_type = requirement.get("unit_type")
+                count = requirement.get("count")
+                if (
+                    type(required_type) is not str
+                    or not required_type
+                    or type(count) is not int
+                    or count <= 0
+                ):
+                    raise ValueError(
+                        "all-Terran composition requirement is malformed"
+                    )
+                required[required_type] = (
+                    required.get(required_type, 0) + count
+                )
+            if (
+                type(ability) is not str
+                or not ability
+                or type(unit_type) is not str
+                or not unit_type
+            ):
+                raise ValueError("all-Terran operation binding is malformed")
+            blocked = any(
+                available.get(required_type, 0) < count
+                for required_type, count in required.items()
+            )
+            if not blocked:
+                for required_type, count in required.items():
+                    available[required_type] -= count
+            identity = (
+                str(update["update_id"]),
+                str(operation["operation_id"]),
+                int(operation["generation"]),
+            )
+            binding = {
+                "family": canonical_terran_unit_family(unit_type),
+                "ability": ability,
+                "unit_type": unit_type,
+                "action": _compiled_operation_action(operation),
+                "blocked": blocked,
+                "blocker": (
+                    _ALL_TERRAN_COMPOSITION_BLOCKER if blocked else ""
+                ),
+            }
+            if identity in bindings and bindings[identity] != binding:
+                raise ValueError("all-Terran operation binding is ambiguous")
+            bindings[identity] = binding
+    return bindings
+
+
 def _verify_reconnect(
+    spec: Mapping[str, object],
     events: Sequence[Mapping[str, object]],
     blockers: list[str],
 ) -> None:
@@ -5262,10 +5623,23 @@ def _verify_reconnect(
             "game_frame",
         )
     )
+    initial_state = spec.get("initial_state")
+    expected_cursor = (
+        initial_state.get("event_cursor")
+        if isinstance(initial_state, Mapping)
+        else None
+    )
+    if type(expected_cursor) is not int or expected_cursor < 0:
+        blockers.append("manifest reconnect cursor is missing or invalid")
+        expected_cursor = 0
     cursor = reconnect.get("after_event_seq")
     if type(cursor) is not int or cursor < 0:
         blockers.append("reconnect cursor is missing or invalid")
         cursor = 0
+    elif cursor != expected_cursor:
+        blockers.append(
+            "reconnect cursor does not match the manifest initial cursor"
+        )
     valid_source_sequences = (
         bool(web_rows)
         and all(type(event_seq) is int and event_seq > 0 for event_seq in event_seqs)
@@ -5460,22 +5834,49 @@ def _state_owner_bindings_match(
 def _before_after_states(
     events: Sequence[Mapping[str, object]],
 ) -> tuple[Mapping[str, object], Mapping[str, object]] | None:
-    before: Mapping[str, object] | None = None
-    after: Mapping[str, object] | None = None
-    for event in events:
-        if event.get("event_type") != "state_snapshot":
-            continue
-        payload = event.get("payload")
-        if not isinstance(payload, Mapping) or not isinstance(
-            payload.get("state"),
-            Mapping,
-        ):
-            continue
-        if payload.get("phase") == "before":
-            before = cast(Mapping[str, object], payload["state"])
-        elif payload.get("phase") == "after":
-            after = cast(Mapping[str, object], payload["state"])
-    return (before, after) if before is not None and after is not None else None
+    snapshots = [
+        event
+        for event in events
+        if event.get("event_type") == "state_snapshot"
+    ]
+    if len(snapshots) != 2:
+        return None
+    before_event, after_event = snapshots
+    before_identity = before_event.get("identity")
+    after_identity = after_event.get("identity")
+    before_payload = before_event.get("payload")
+    after_payload = after_event.get("payload")
+    if (
+        not isinstance(before_identity, Mapping)
+        or not isinstance(after_identity, Mapping)
+        or set(before_identity) != _RAW_EVENT_IDENTITY_FIELDS
+        or set(after_identity) != _RAW_EVENT_IDENTITY_FIELDS
+        or not isinstance(before_payload, Mapping)
+        or not isinstance(after_payload, Mapping)
+        or set(before_payload) != {"phase", "state"}
+        or set(after_payload) != {"phase", "state"}
+        or before_payload.get("phase") != "before"
+        or after_payload.get("phase") != "after"
+        or before_identity.get("stage") != "state_before"
+        or after_identity.get("stage") != "state_after"
+        or any(
+            before_identity.get(field_name)
+            != after_identity.get(field_name)
+            for field_name in (
+                "update_id",
+                "operation_id",
+                "generation",
+                "game_frame",
+            )
+        )
+        or not isinstance(before_payload.get("state"), Mapping)
+        or not isinstance(after_payload.get("state"), Mapping)
+    ):
+        return None
+    return (
+        cast(Mapping[str, object], before_payload["state"]),
+        cast(Mapping[str, object], after_payload["state"]),
+    )
 
 
 def _event_frames(
@@ -6701,6 +7102,7 @@ def _preflight_product_path_blockers(
             )
         _validate_native_output_payload(
             deepcopy(native_adapter.get("output")),
+            expected_input=expected_input,
         )
     except (KeyError, TypeError, ValueError) as exc:
         blockers.append(f"native adapter structure is invalid: {exc}")

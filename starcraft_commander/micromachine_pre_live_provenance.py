@@ -157,6 +157,26 @@ ISOLATED_PYTHON_BOOTSTRAP: Final[str] = (
     "sys.argv=[script,*args];"
     "runpy.run_path(script,run_name='__main__')"
 )
+DETERMINISTIC_JOURNEY_PRODUCER_RAW_ARGV: Final[tuple[str, ...]] = (
+    "{python}",
+    "-I",
+    "-B",
+    "-S",
+    "-c",
+    ISOLATED_PYTHON_BOOTSTRAP,
+    "{repository}",
+    DETERMINISTIC_JOURNEY_MODULE_RELATIVE_PATH.as_posix(),
+    "--emit-bundle",
+    "{output}",
+    "--micromachine-binary",
+    "{micromachine_binary}",
+    "--node-executable",
+    "{node}",
+)
+DETERMINISTIC_JOURNEY_PRODUCER_CWD: Final[str] = "."
+DETERMINISTIC_JOURNEY_PRODUCER_OUTPUT: Final[str] = (
+    "producer/deterministic-journeys.zip"
+)
 SANITIZED_PRODUCER_ENV: Final[dict[str, str]] = {
     "LANG": "C",
     "LC_ALL": "C",
@@ -2372,6 +2392,22 @@ def resolve_local_producer_policy(
     if not isinstance(output_value, str):
         blockers.append("producer policy output must be a string")
         output_value = ""
+    if producer_id == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID:
+        if raw_argv != list(DETERMINISTIC_JOURNEY_PRODUCER_RAW_ARGV):
+            blockers.append(
+                "deterministic journey producer argv does not match the "
+                "required raw policy"
+            )
+        if cwd_value != DETERMINISTIC_JOURNEY_PRODUCER_CWD:
+            blockers.append(
+                "deterministic journey producer cwd does not match the "
+                "required raw policy"
+            )
+        if output_value != DETERMINISTIC_JOURNEY_PRODUCER_OUTPUT:
+            blockers.append(
+                "deterministic journey producer output does not match the "
+                "required raw policy"
+            )
 
     state_dir: Path | None = None
     try:

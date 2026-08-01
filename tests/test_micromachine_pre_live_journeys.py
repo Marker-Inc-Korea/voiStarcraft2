@@ -707,6 +707,96 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
         ):
             _validate_native_output_payload(native)
 
+    def test_native_output_rejects_python_derived_event_types(self) -> None:
+        native = deepcopy(
+            self.artifacts["transfer_rejection_preserves_active"][
+                "products"
+            ]["native_adapter"]["output"]
+        )
+        source = native["events"][-1]
+        native["events"].append(
+            {
+                "seq": len(native["events"]) + 1,
+                "event_type": "state_snapshot",
+                "identity": {
+                    **deepcopy(source["identity"]),
+                    "stage": "state_after",
+                },
+                "payload": {
+                    "phase": "after",
+                    "state": deepcopy(native["final_state"]),
+                },
+            }
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "lifecycle event type is invalid",
+        ):
+            _validate_native_output_payload(native)
+
+    def test_native_reconnect_cursor_is_bound_to_manifest(self) -> None:
+        adapter = deepcopy(
+            self.artifacts["event_reconnect_replay"]["products"][
+                "native_adapter"
+            ]
+        )
+        reconnect = next(
+            event
+            for event in adapter["output"]["events"]
+            if event["event_type"] == "client_reconnect"
+        )
+        reconnect["payload"]["after_event_seq"] = 0
+        adapter["output"]["final_state"]["event_cursor"] = 0
+        adapter["output"]["snapshots"][-1]["state"]["event_cursor"] = 0
+        with self.assertRaisesRegex(
+            ValueError,
+            "manifest initial cursor",
+        ):
+            _validate_native_output_payload(
+                adapter["output"],
+                expected_input=adapter["input"],
+            )
+
+    def test_native_sc2_receipt_id_binds_caster_unit_type(self) -> None:
+        native = deepcopy(
+            self.artifacts["all_terran_family_ability_blocker_matrix"][
+                "products"
+            ]["native_adapter"]["output"]
+        )
+        receipt = next(
+            row
+            for row in native["production_path"]["sc2_submission_receipts"]
+            if row["unit_type"] == "TERRAN_MARAUDER"
+        )
+        receipt["unit_type"] = "TERRAN_MARINE"
+        with self.assertRaisesRegex(
+            ValueError,
+            "submission id is invalid",
+        ):
+            _validate_native_output_payload(native)
+
+    def test_native_sc2_caster_unit_type_is_compiler_bound(self) -> None:
+        adapter = deepcopy(
+            self.artifacts["all_terran_family_ability_blocker_matrix"][
+                "products"
+            ]["native_adapter"]
+        )
+        submission = next(
+            event
+            for event in adapter["output"]["events"]
+            if event["event_type"] == "submission"
+            and event["payload"]["unit_type"] == "TERRAN_MARAUDER"
+        )
+        submission["payload"]["unit_type"] = "TERRAN_MARINE"
+        with self.assertRaisesRegex(
+            ValueError,
+            "caster unit type is not compiler-bound",
+        ):
+            _validate_native_output_payload(
+                adapter["output"],
+                expected_input=adapter["input"],
+            )
+
     def test_native_lifecycle_preserves_causal_sequence(self) -> None:
         native = deepcopy(
             self.artifacts["safe_partial_launch"]["products"][
@@ -1549,6 +1639,134 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
             blockers,
         )
 
+    def test_all_terran_prerequisite_wait_is_not_replayed_as_rejection(
+        self,
+    ) -> None:
+        events = self._events(
+            "all_terran_family_ability_blocker_matrix"
+        )
+        blocked = [
+            event
+            for event in events
+            if event["identity"]["operation_id"]
+            == "matrix-ghost-tactical_nuke"
+        ]
+
+        self.assertEqual(
+            ["production_decision", "prerequisite_wait"],
+            [
+                event["event_type"]
+                for event in blocked
+                if event["event_type"]
+                in {
+                    "production_decision",
+                    "prerequisite_wait",
+                    "rejection",
+                }
+            ],
+        )
+
+    def test_all_terran_missing_effect_cannot_be_replaced_by_blocker(
+        self,
+    ) -> None:
+        journey_id = "all_terran_family_ability_blocker_matrix"
+        events = self._events(journey_id)
+        operation_id = "matrix-widow_mine-widow_mine_unburrow"
+        source = next(
+            event
+            for event in events
+            if event["event_type"] == "family_action_attempt"
+            and event["identity"]["operation_id"] == operation_id
+        )
+        events = [
+            event
+            for event in events
+            if not (
+                event["event_type"] == "ability_effect"
+                and event["identity"]["operation_id"] == operation_id
+            )
+        ]
+        events.append(
+            {
+                "seq": len(events) + 1,
+                "event_type": "production_decision",
+                "identity": {
+                    **deepcopy(source["identity"]),
+                    "stage": "production_wait",
+                    "game_frame": max(
+                        event["identity"]["game_frame"]
+                        for event in events
+                    ),
+                },
+                "payload": {
+                    "action": source["payload"]["action"],
+                    "blocker": "unrelated_synthetic_blocker",
+                },
+            }
+        )
+        _resequence(events)
+
+        verdict = verify_pre_live_journey_events(
+            self.specs[journey_id],
+            events,
+        )
+
+        self.assertFalse(verdict["ok"], verdict)
+        self.assertTrue(
+            any(
+                "effect is not unique" in blocker
+                or "unexpected blocker" in blocker
+                for blocker in verdict["blockers"]
+            ),
+            verdict,
+        )
+
+    def test_raw_stream_rejects_duplicate_state_snapshot_pair(self) -> None:
+        journey_id = "transfer_rejection_preserves_active"
+        events = self._events(journey_id)
+        snapshots = [
+            event
+            for event in events
+            if event["event_type"] == "state_snapshot"
+        ]
+        duplicate_frame = max(
+            event["identity"]["game_frame"]
+            for event in events
+        )
+        for snapshot in snapshots:
+            duplicate = deepcopy(snapshot)
+            duplicate["identity"]["game_frame"] = duplicate_frame
+            events.append(duplicate)
+        _resequence(events)
+
+        verdict = verify_pre_live_journey_events(
+            self.specs[journey_id],
+            events,
+        )
+
+        self.assertFalse(verdict["ok"], verdict)
+        self.assertIn(
+            "forbidden action lacks native before/after state",
+            verdict["blockers"],
+        )
+
+    def test_raw_reconnect_cursor_is_bound_to_manifest(self) -> None:
+        journey_id = "event_reconnect_replay"
+        events = self._events(journey_id)
+        reconnect = _first_event(events, "client_reconnect")
+        reconnect["payload"]["after_event_seq"] = 0
+
+        verdict = verify_pre_live_journey_events(
+            self.specs[journey_id],
+            events,
+        )
+
+        self.assertFalse(verdict["ok"], verdict)
+        self.assertIn(
+            "reconnect cursor does not match the manifest initial cursor",
+            verdict["blockers"],
+        )
+
     def test_negative_raw_stream_matrix_fails_closed(self) -> None:
         cases = {
             "duplicate owner": self._duplicate_owner,
@@ -2212,8 +2430,9 @@ def _resequence(events: list[dict[str, object]]) -> None:
 
 def _receipt_action_metadata(
     payload: dict[str, object],
-) -> tuple[str, str, int, str, object, object]:
+) -> tuple[str, str, str, int, str, object, object]:
     return (
+        str(payload["unit_type"]),
         str(payload["dispatch_action"]),
         str(payload["ability_name"]),
         int(payload["ability_id"]),
