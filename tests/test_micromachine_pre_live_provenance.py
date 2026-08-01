@@ -1909,6 +1909,28 @@ class BuildBindingTest(unittest.TestCase):
             self.assertEqual([], ctest_calls)
 
         with tempfile.TemporaryDirectory() as directory:
+            fixture = make_build_fixture(Path(directory))
+            report_payload = dict(fixture["report"])
+            report_payload["schema_version"] = float(
+                MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION
+            )
+            fixture["report_path"].write_text(json.dumps(report_payload))
+            ctest_calls = []
+
+            float_schema = attest_build_binding(
+                fixture["report_path"],
+                repository_dir=fixture["repository"],
+                expected_repository_commit=fixture["repository_commit"],
+                command_runner=forbidden_ctest,
+            )
+            self.assertFalse(float_schema["ok"], float_schema)
+            self.assertEqual([], ctest_calls)
+            self.assertIn(
+                "unsupported build report schema",
+                " ".join(float_schema["blockers"]),
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             fixture = make_build_fixture(root / "fixture")
             linked_report = root / "voi_build_identity.json"

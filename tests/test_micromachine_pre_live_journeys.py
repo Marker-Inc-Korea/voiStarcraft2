@@ -1329,6 +1329,68 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
                     rejected,
                 )
 
+    def test_bundle_preflights_tactical_radio_before_node_replay(self) -> None:
+        base_entries = _read_zip(
+            build_pre_live_journey_bundle(MICROMACHINE_BINARY)
+        )
+        journey_id = "voice_readback_callout_identity"
+        product_name = f"product/{journey_id}.json"
+        cases = {
+            "float schema": (
+                lambda runtime: runtime.update({"schema_version": 1.0}),
+                "production Tactical Radio product schema is unsupported",
+            ),
+            "unexpected field": (
+                lambda runtime: runtime.update({"attacker_field": True}),
+                "production Tactical Radio product field set is invalid",
+            ),
+            "float count": (
+                lambda runtime: runtime.update({"muted_caption_delta": 1.0}),
+                (
+                    "production Tactical Radio product is invalid: "
+                    "production Tactical Radio queue/mute behavior is invalid"
+                ),
+            ),
+        }
+        for name, (mutate, blocker) in cases.items():
+            with self.subTest(name=name):
+                entries = dict(base_entries)
+                products = json.loads(entries[product_name])
+                mutate(products["tactical_radio_runtime"])
+                entries[product_name] = canonical_json_bytes(products)
+
+                matrix = json.loads(entries["derived/journey-matrix.json"])
+                journey = next(
+                    item
+                    for item in matrix["journeys"]
+                    if item["id"] == journey_id
+                )
+                journey["product_paths"] = products
+                entries["derived/journey-matrix.json"] = canonical_json_bytes(
+                    matrix
+                )
+                entries["report.md"] = _markdown_report(matrix).encode("utf-8")
+
+                with mock.patch(
+                    (
+                        "starcraft_commander.micromachine_pre_live_journeys."
+                        "_execute_tactical_radio_runtime"
+                    ),
+                    side_effect=AssertionError(
+                        "malformed Tactical Radio product must stop before Node"
+                    ),
+                ) as node_replay:
+                    rejected = verify_pre_live_journey_bundle(
+                        _rebuild_journey_bundle(entries)
+                    )
+
+                node_replay.assert_not_called()
+                self.assertFalse(rejected["ok"], rejected)
+                self.assertIn(
+                    f"{journey_id}: {blocker}",
+                    rejected["blockers"],
+                )
+
     def test_forged_product_matrix_and_report_fail_executable_replay(
         self,
     ) -> None:

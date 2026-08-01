@@ -331,6 +331,37 @@ _TACTICAL_RADIO_CALLOUT_KINDS: Final[frozenset[str]] = frozenset(
         "submitted",
     }
 )
+_TACTICAL_RADIO_RESULT_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "schema_version",
+        "primary_accepted",
+        "secondary_accepted",
+        "duplicate_primary_accepted",
+        "duplicate_secondary_accepted",
+        "stale_accepted",
+        "production_announcement_calls",
+        "muted_accepted",
+        "queue_length_before_drain",
+        "queue_length_after_drain",
+        "caption_count",
+        "spoken",
+        "muted_caption_delta",
+        "muted_speech_delta",
+        "final_muted",
+        "primary_callout",
+        "secondary_callout",
+        "frame_high_water",
+        "timeline_high_water",
+    }
+)
+_TACTICAL_RADIO_RUNTIME_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        *_TACTICAL_RADIO_RESULT_FIELDS,
+        "runtime",
+        "node_sha256",
+        "source_sha256",
+    }
+)
 CommandRunner = Callable[..., subprocess.CompletedProcess[Any]]
 
 
@@ -3755,30 +3786,10 @@ def _validate_tactical_radio_result(
     primary_event: Mapping[str, object],
     secondary_event: Mapping[str, object],
 ) -> dict[str, object]:
-    expected_fields = {
-        "schema_version",
-        "primary_accepted",
-        "secondary_accepted",
-        "duplicate_primary_accepted",
-        "duplicate_secondary_accepted",
-        "stale_accepted",
-        "production_announcement_calls",
-        "muted_accepted",
-        "queue_length_before_drain",
-        "queue_length_after_drain",
-        "caption_count",
-        "spoken",
-        "muted_caption_delta",
-        "muted_speech_delta",
-        "final_muted",
-        "primary_callout",
-        "secondary_callout",
-        "frame_high_water",
-        "timeline_high_water",
-    }
-    if not isinstance(result, dict) or set(result) != expected_fields:
+    if not isinstance(result, dict) or set(result) != _TACTICAL_RADIO_RESULT_FIELDS:
         raise ValueError("production Tactical Radio result field set is invalid")
-    if result.get("schema_version") != 1:
+    schema_version = result.get("schema_version")
+    if type(schema_version) is not int or schema_version != 1:
         raise ValueError("production Tactical Radio result schema is unsupported")
     expected_bools = {
         "primary_accepted": True,
@@ -3799,7 +3810,10 @@ def _validate_tactical_radio_result(
         "muted_speech_delta": 0,
         "production_announcement_calls": 5,
     }
-    if any(result.get(key) != value for key, value in expected_counts.items()):
+    if any(
+        type(result.get(key)) is not int or result.get(key) != value
+        for key, value in expected_counts.items()
+    ):
         raise ValueError("production Tactical Radio queue/mute behavior is invalid")
     spoken = result.get("spoken")
     if (
@@ -3816,15 +3830,30 @@ def _validate_tactical_radio_result(
     ):
         raise ValueError("production Tactical Radio callout evidence is missing")
     for callout in (primary_callout, secondary_callout):
+        caption = callout.get("caption")
+        speech = callout.get("speech")
+        dedupe_key = callout.get("dedupeKey")
         if (
-            not str(callout.get("caption", "") or "")
-            or not str(callout.get("speech", "") or "")
+            not isinstance(caption, str)
+            or not caption
+            or not isinstance(speech, str)
+            or not speech
+            or not isinstance(dedupe_key, str)
+            or not dedupe_key
             or callout.get("fromReplay") is not True
         ):
             raise ValueError("production Tactical Radio callout is malformed")
-    if result.get("frame_high_water") != secondary_event.get("game_frame"):
+    frame_high_water = result.get("frame_high_water")
+    timeline_high_water = result.get("timeline_high_water")
+    if (
+        type(frame_high_water) is not int
+        or frame_high_water != secondary_event.get("game_frame")
+    ):
         raise ValueError("production Tactical Radio frame high-water is invalid")
-    if result.get("timeline_high_water") != secondary_event.get("timeline_seq"):
+    if (
+        type(timeline_high_water) is not int
+        or timeline_high_water != secondary_event.get("timeline_seq")
+    ):
         raise ValueError("production Tactical Radio timeline high-water is invalid")
     if str(primary_event.get("kind", "")).lower() not in (
         str(primary_callout.get("dedupeKey", "")).lower()
@@ -6148,31 +6177,54 @@ def _product_path_blockers(
                 blockers.append("one or more battlefield projections were rejected")
                 break
     if spec is not None and spec.get("kind") == "voice_identity":
-        tactical_radio = products.get("tactical_radio_runtime")
-        if (
-            not isinstance(tactical_radio, Mapping)
-            or tactical_radio.get("runtime")
-            != "production_web_gui_tactical_radio_js"
-            or not isinstance(tactical_radio.get("node_sha256"), str)
-            or len(cast(str, tactical_radio["node_sha256"])) != 64
-            or any(
-                character not in "0123456789abcdef"
-                for character in cast(str, tactical_radio["node_sha256"])
-            )
-            or tactical_radio.get("primary_accepted") is not True
-            or tactical_radio.get("secondary_accepted") is not True
-            or tactical_radio.get("duplicate_primary_accepted") is not False
-            or tactical_radio.get("duplicate_secondary_accepted") is not False
-            or tactical_radio.get("stale_accepted") is not False
-            or tactical_radio.get("muted_accepted") is not True
-            or tactical_radio.get("muted_caption_delta") != 1
-            or tactical_radio.get("muted_speech_delta") != 0
-            or tactical_radio.get("final_muted") is not False
-        ):
-            blockers.append(
-                "production Tactical Radio behavior was not exercised exactly"
-            )
+        blockers.extend(_preflight_tactical_radio_product(products))
     return blockers
+
+
+def _preflight_tactical_radio_product(
+    products: Mapping[str, object],
+) -> list[str]:
+    tactical_radio = products.get("tactical_radio_runtime")
+    if (
+        not isinstance(tactical_radio, Mapping)
+        or set(tactical_radio) != _TACTICAL_RADIO_RUNTIME_FIELDS
+    ):
+        return ["production Tactical Radio product field set is invalid"]
+    schema_version = tactical_radio.get("schema_version")
+    if type(schema_version) is not int or schema_version != 1:
+        return ["production Tactical Radio product schema is unsupported"]
+    if tactical_radio.get("runtime") != "production_web_gui_tactical_radio_js":
+        return ["production Tactical Radio runtime identity is invalid"]
+    for field_name in ("node_sha256", "source_sha256"):
+        if not _is_lower_hex_sha256(tactical_radio.get(field_name)):
+            return [f"production Tactical Radio {field_name} is invalid"]
+    timeline_results = products.get("timeline_results")
+    if not isinstance(timeline_results, list) or not timeline_results:
+        return ["production Tactical Radio timeline evidence is missing"]
+    timeline = timeline_results[0]
+    if not isinstance(timeline, Mapping):
+        return ["production Tactical Radio timeline evidence is malformed"]
+    operation_events = timeline.get("operation_events")
+    if (
+        not isinstance(operation_events, Sequence)
+        or isinstance(operation_events, (str, bytes, bytearray))
+        or len(operation_events) < 2
+        or not isinstance(operation_events[-2], Mapping)
+        or not isinstance(operation_events[-1], Mapping)
+    ):
+        return ["production Tactical Radio timeline evidence is malformed"]
+    result = {
+        key: tactical_radio[key] for key in _TACTICAL_RADIO_RESULT_FIELDS
+    }
+    try:
+        _validate_tactical_radio_result(
+            result,
+            primary_event=cast(Mapping[str, object], operation_events[-2]),
+            secondary_event=cast(Mapping[str, object], operation_events[-1]),
+        )
+    except ValueError as exc:
+        return [f"production Tactical Radio product is invalid: {exc}"]
+    return []
 
 
 def _preflight_raw_event_structure(

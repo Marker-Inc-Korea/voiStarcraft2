@@ -1984,22 +1984,28 @@ def attest_build_binding(
             blockers.append(f"build report is missing or unreadable: {exc}")
         else:
             try:
-                payload = json.loads(raw)
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                payload = json.loads(
+                    raw,
+                    object_pairs_hook=_reject_duplicate_json_object_keys,
+                    parse_constant=_reject_nonfinite_json,
+                )
+            except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
                 blockers.append(f"build report is malformed: {exc}")
             else:
                 if not isinstance(payload, Mapping):
                     blockers.append("build report must contain a JSON object")
                 else:
                     recorded = cast(Mapping[str, object], payload)
+                    schema_version = recorded.get("schema_version")
                     if (
-                        recorded.get("schema_version")
+                        type(schema_version) is not int
+                        or schema_version
                         != MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION
                     ):
                         blockers.append(
                             "unsupported build report schema: "
                             f"expected={MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION} "
-                            f"actual={recorded.get('schema_version')!r}"
+                            f"actual={schema_version!r}"
                         )
                     elif recorded.get("ok") is not True:
                         blockers.append(
@@ -7341,6 +7347,21 @@ def _json_safe_mapping(value: Mapping[str, object]) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise ValueError("mapping did not serialize to a JSON object")
     return cast(dict[str, object], payload)
+
+
+def _reject_duplicate_json_object_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key: {key}")
+        result[key] = value
+    return result
+
+
+def _reject_nonfinite_json(value: str) -> object:
+    raise ValueError(f"non-finite JSON number is not supported: {value}")
 
 
 def _canonical_json(value: object) -> bytes:
