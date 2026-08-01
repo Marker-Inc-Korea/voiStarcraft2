@@ -1992,6 +1992,27 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                     blocker_codes(report),
                 )
 
+    def test_rejects_github_wrapper_local_flag_mismatch(self) -> None:
+        wrapper = raw_zip(
+            {GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME: self.bundle},
+            compression=zipfile.ZIP_DEFLATED,
+        )
+        for name, flag in (
+            ("encryption", 0x0001),
+            ("strong encryption", 0x0040),
+        ):
+            with self.subTest(name=name):
+                report = verify_downloaded_pre_live_artifact(
+                    add_local_flags(wrapper, flag)
+                )
+
+                self.assertFalse(report["ok"], report)
+                self.assertEqual("invalid", report["delivery"]["kind"])
+                self.assertIn(
+                    "noncanonical_github_artifact_framing",
+                    blocker_codes(report),
+                )
+
     def test_accepts_github_wrapper_data_descriptors(self) -> None:
         wrapper = raw_zip(
             {GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME: self.bundle},
@@ -2350,6 +2371,13 @@ def add_data_descriptor(
             artifact_module._END_CENTRAL_DIRECTORY.pack(*eocd),
         )
     )
+
+
+def add_local_flags(bundle: bytes, flags: int) -> bytes:
+    mutated = bytearray(bundle)
+    local_flags = struct.unpack_from("<H", mutated, 6)[0]
+    struct.pack_into("<H", mutated, 6, local_flags | flags)
+    return bytes(mutated)
 
 
 def add_local_zip64_metadata(bundle: bytes) -> bytes:

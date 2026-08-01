@@ -1430,7 +1430,10 @@ def verify_downloaded_pre_live_artifact(
             "GitHub bundle member name must be one safe root ZIP filename",
         )
         return _download_verification_result(blockers, direct)
-    framing_error = _archive_framing_error(artifact_bytes)
+    framing_error = _archive_framing_error(
+        artifact_bytes,
+        require_exact_local_flags=True,
+    )
     if framing_error is not None:
         _add_blocker(
             blockers,
@@ -1447,6 +1450,7 @@ def verify_downloaded_pre_live_artifact(
             framing_error = _archive_framing_error(
                 artifact_bytes,
                 parsed_entry_count=len(infos),
+                require_exact_local_flags=True,
             )
             if framing_error is not None:
                 _add_blocker(
@@ -2293,6 +2297,7 @@ def _archive_framing_error(
     bundle: bytes,
     *,
     parsed_entry_count: int | None = None,
+    require_exact_local_flags: bool = False,
 ) -> str | None:
     if len(bundle) < _END_CENTRAL_DIRECTORY.size:
         return "ZIP is shorter than an end-of-central-directory record"
@@ -2430,8 +2435,11 @@ def _archive_framing_error(
             return "ZIP64 local file headers are not allowed"
         if local_extract_version != entry.extract_version:
             return "ZIP local and central extract versions differ"
-        if (local_flags ^ entry.flags) & 0x0008:
+        flag_delta = local_flags ^ entry.flags
+        if flag_delta & 0x0008:
             return "ZIP local and central data-descriptor flags differ"
+        if require_exact_local_flags and flag_delta:
+            return "ZIP local and central general-purpose flags differ"
         if local_compression != entry.compression:
             return "ZIP local and central compression methods differ"
         if (
