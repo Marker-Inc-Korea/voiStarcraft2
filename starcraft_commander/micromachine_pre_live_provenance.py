@@ -2327,7 +2327,11 @@ def resolve_local_producer_policy(
             committed_bytes = _as_bytes(completed.stdout)
             if policy_path.read_bytes() != committed_bytes:
                 raise ValueError("producer policy differs from the exact commit")
-            payload = json.loads(committed_bytes)
+            payload = json.loads(
+                committed_bytes,
+                object_pairs_hook=_reject_duplicate_json_object_keys,
+                parse_constant=_reject_nonfinite_json,
+            )
         except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             blockers.append(f"producer policy could not be authenticated: {exc}")
             payload = {}
@@ -2336,11 +2340,15 @@ def resolve_local_producer_policy(
     if not isinstance(payload, Mapping):
         blockers.append("producer policy must contain a JSON object")
         payload = {}
-    if payload.get("schema_version") != PRODUCER_POLICY_SCHEMA_VERSION:
+    schema_version = payload.get("schema_version")
+    if (
+        type(schema_version) is not int
+        or schema_version != PRODUCER_POLICY_SCHEMA_VERSION
+    ):
         blockers.append(
             "producer policy schema mismatch: "
             f"expected={PRODUCER_POLICY_SCHEMA_VERSION} "
-            f"actual={payload.get('schema_version')!r}"
+            f"actual={schema_version!r}"
         )
     producers = payload.get("producers")
     if not isinstance(producers, Mapping):
@@ -5055,6 +5063,8 @@ def attest_pre_live_provenance(
                 [f"GitHub source attestation setup failed: {exc}"],
             )
         blockers.extend(_prefixed_blockers("github", github_source))
+    blockers.extend(_production_candidate_producer_blockers(producer_id))
+
     if blockers:
         local_execution = _component_result(
             ["producer not executed because authenticated prerequisites failed"],
@@ -5113,8 +5123,6 @@ def attest_pre_live_provenance(
             local_execution=local_execution,
         )
         blockers.extend(_prefixed_blockers("artifact_binding", artifact_binding))
-
-    blockers.extend(_production_candidate_producer_blockers(producer_id))
 
     replay_digest: str | None = None
     if blockers:
@@ -5597,7 +5605,7 @@ def _run_ctest(
     if not blockers:
         try:
             registered = command_runner(
-                list(discovery_argv),
+                [str(pinned_ctest), *discovery_argv[1:]],
                 cwd=str(build_dir),
                 check=False,
                 capture_output=True,
@@ -5616,8 +5624,12 @@ def _run_ctest(
                     f"CTest registry discovery exited with code {registry_returncode}"
                 )
             try:
-                registry_payload = json.loads(registry_stdout)
-            except json.JSONDecodeError as exc:
+                registry_payload = json.loads(
+                    registry_stdout,
+                    object_pairs_hook=_reject_duplicate_json_object_keys,
+                    parse_constant=_reject_nonfinite_json,
+                )
+            except (ValueError, json.JSONDecodeError) as exc:
                 blockers.append(
                     f"CTest registry discovery returned malformed JSON: {exc}"
                 )
@@ -5744,8 +5756,12 @@ def _run_ctest(
                     f"CTest discovery exited with code {discovery_returncode}"
                 )
             try:
-                discovery = json.loads(discovery_stdout)
-            except json.JSONDecodeError as exc:
+                discovery = json.loads(
+                    discovery_stdout,
+                    object_pairs_hook=_reject_duplicate_json_object_keys,
+                    parse_constant=_reject_nonfinite_json,
+                )
+            except (ValueError, json.JSONDecodeError) as exc:
                 blockers.append(f"CTest discovery returned malformed JSON: {exc}")
             else:
                 tests = (
@@ -5842,7 +5858,7 @@ def _run_ctest(
         blockers.append("ctest executable changed during execution")
 
     direct_passed = 0
-    if test_executables:
+    if test_executables and not blockers:
         for name in sorted(test_executables):
             executable = test_executables[name]
             executable_path = Path(str(executable["path"]))

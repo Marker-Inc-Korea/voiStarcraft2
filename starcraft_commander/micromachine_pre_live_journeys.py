@@ -143,6 +143,30 @@ _OPERATION_IDENTITY_EVENT_TYPES: Final[frozenset[str]] = frozenset(
         "voice_callout",
     }
 )
+_GENERATION_ACTIVATION_EVENT_TYPES: Final[frozenset[str]] = frozenset(
+    {
+        "ownership_snapshot",
+        "family_action_attempt",
+        "squad_order",
+        "submission",
+        "movement",
+        "engagement",
+        "ability_effect",
+    }
+)
+_GENERATION_LIFECYCLE_EVENT_TYPES: Final[frozenset[str]] = frozenset(
+    {
+        *_GENERATION_ACTIVATION_EVENT_TYPES,
+        "launch_decision",
+        "production_decision",
+        "prerequisite_wait",
+        "production_path_receipt",
+        "transfer",
+        "cancellation",
+        "preemption",
+        "autonomous_defense",
+    }
+)
 _NATIVE_OUTPUT_FIELDS: Final[frozenset[str]] = frozenset(
     {
         "schema_version",
@@ -430,6 +454,7 @@ def load_pre_live_journey_manifest(
     payload = json.loads(
         Path(path).read_text(encoding="utf-8"),
         object_pairs_hook=_reject_duplicate_json_object_keys,
+        parse_constant=_reject_nonfinite_json,
     )
     return _validate_pre_live_journey_manifest_payload(payload)
 
@@ -439,7 +464,11 @@ def _validate_pre_live_journey_manifest_payload(
 ) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise ValueError("pre-live journey manifest must be a JSON object")
-    if payload.get("schema_version") != PRE_LIVE_JOURNEY_SCHEMA_VERSION:
+    schema_version = payload.get("schema_version")
+    if (
+        type(schema_version) is not int
+        or schema_version != PRE_LIVE_JOURNEY_SCHEMA_VERSION
+    ):
         raise ValueError("pre-live journey manifest schema_version is unsupported")
     if set(payload) != {
         "schema_version",
@@ -456,6 +485,9 @@ def _validate_pre_live_journey_manifest_payload(
         "game_frame",
     ]:
         raise ValueError("pre-live journey identity_fields contract drifted")
+    suite_id = payload.get("suite_id")
+    if type(suite_id) is not str or not suite_id:
+        raise ValueError("pre-live journey manifest suite_id must be a string")
     journeys = payload.get("journeys")
     if not isinstance(journeys, list) or len(journeys) != 14:
         raise ValueError("pre-live journey manifest must define exactly 14 journeys")
@@ -474,7 +506,13 @@ def _validate_pre_live_journey_manifest_payload(
     for index, journey in enumerate(journeys):
         if not isinstance(journey, dict) or set(journey) != required:
             raise ValueError(f"journey {index} has an invalid field set")
-        journey_id = str(journey.get("id", ""))
+        for field_name in ("id", "title", "kind"):
+            value = journey.get(field_name)
+            if type(value) is not str or not value:
+                raise ValueError(
+                    f"journey {index} {field_name} must be a non-empty string"
+                )
+        journey_id = cast(str, journey["id"])
         if not journey_id or journey_id in seen:
             raise ValueError("journey ids must be non-empty and unique")
         seen.add(journey_id)
@@ -503,11 +541,52 @@ def _validate_pre_live_journey_manifest_payload(
             if not isinstance(item, Mapping):
                 raise ValueError(f"{journey_id} ordered input must be an object")
             command = "command_text" in item or "preset" in item
-            observation = isinstance(item.get("kind"), str)
+            observation = type(item.get("kind")) is str
             if command == observation:
                 raise ValueError(
                     f"{journey_id} input must be one command or one observation"
                 )
+            for field_name in ("command_text", "preset"):
+                if field_name in item and (
+                    type(item[field_name]) is not str or not item[field_name]
+                ):
+                    raise ValueError(
+                        f"{journey_id} input {field_name} must be a "
+                        "non-empty string"
+                    )
+            if "kind" in item and not item["kind"]:
+                raise ValueError(
+                    f"{journey_id} input kind must be a non-empty string"
+                )
+            if "base_id" in item and (
+                type(item["base_id"]) is not str or not item["base_id"]
+            ):
+                raise ValueError(
+                    f"{journey_id} input base_id must be a non-empty string"
+                )
+            if "structures" in item:
+                _string_list(
+                    item["structures"],
+                    label=f"{journey_id} input structures",
+                )
+            input_units = item.get("units")
+            if isinstance(input_units, Mapping) and any(
+                type(unit_type) is not str or not unit_type
+                for unit_type in input_units
+            ):
+                raise ValueError(
+                    f"{journey_id} input unit types must be strings"
+                )
+            if isinstance(input_units, list):
+                for descriptor in input_units:
+                    if (
+                        not isinstance(descriptor, Mapping)
+                        or type(descriptor.get("unit_type")) is not str
+                        or not descriptor.get("unit_type")
+                    ):
+                        raise ValueError(
+                            f"{journey_id} input unit descriptor is invalid"
+                        )
         expected = journey.get("expected_raw_event_types")
         if (
             not isinstance(expected, list)
@@ -521,12 +600,36 @@ def _validate_pre_live_journey_manifest_payload(
             not isinstance(stop, Mapping)
             or "type" not in stop
             or "count" not in stop
-            or not isinstance(stop.get("type"), str)
+            or type(stop.get("type")) is not str
             or not stop.get("type")
             or type(stop.get("count")) is not int
             or cast(int, stop["count"]) < 0
         ):
             raise ValueError(f"{journey_id} stop_condition is invalid")
+        for field_name in (
+            "destination_operation_id",
+            "expected_rejection_reason",
+            "operation_id",
+            "selected_operation_id",
+            "sibling_operation_id",
+            "source_operation_id",
+        ):
+            if field_name in stop and (
+                type(stop[field_name]) is not str or not stop[field_name]
+            ):
+                raise ValueError(
+                    f"{journey_id} stop_condition.{field_name} is invalid"
+                )
+        for field_name in (
+            "preserved_active_operation_ids",
+            "preserved_operation_ids",
+            "preserved_state_fields",
+        ):
+            if field_name in stop:
+                _string_list(
+                    stop[field_name],
+                    label=f"{journey_id} stop_condition.{field_name}",
+                )
         if (
             type(journey.get("timeout_frames")) is not int
             or cast(int, journey["timeout_frames"]) <= 0
@@ -1787,6 +1890,23 @@ def _compiler_requested_operation_identities(
                 raise ValueError("compiler-requested operation identity is malformed")
             allowed.add((update_id, operation_id, generation))
     return allowed
+
+
+def _compiled_operation_action(operation: Mapping[str, object]) -> str:
+    task = operation.get("tactical_task")
+    if not isinstance(task, Mapping):
+        raise ValueError("compiled operation tactical task is malformed")
+    ability = task.get("ability")
+    task_type = task.get("task_type")
+    if type(ability) is not str or type(task_type) is not str or not task_type:
+        raise ValueError("compiled operation action is malformed")
+    if ability:
+        return f"ability:{ability}"
+    return {
+        "scout_with_units": "squad_order:scout",
+        "defend_with_units": "squad_order:defend",
+        "harass_with_units": "squad_order:harass",
+    }.get(task_type, "squad_order:attack")
 
 
 def _validate_native_production_path(output: Mapping[str, object]) -> None:
@@ -3987,7 +4107,7 @@ def verify_pre_live_journey_events(
     elif stop_type == "affected_offense_preempted":
         _verify_emergency_preemption(stop, normalized, blockers)
     elif stop_type == "all_terran_families_accounted":
-        blockers.extend(_verify_all_terran_events(normalized))
+        blockers.extend(_verify_all_terran_events(spec, normalized))
     elif stop_type == "replayed_events_counted_once":
         _verify_reconnect(normalized, blockers)
     elif stop_type == "projection_identity_consistent":
@@ -4009,6 +4129,49 @@ def verify_pre_live_journey_events(
     }
 
 
+def _observed_generation_activation_timeline(
+    events: Sequence[Mapping[str, object]],
+) -> dict[str, list[tuple[int, int]]]:
+    timeline: dict[str, list[tuple[int, int]]] = {}
+    for event in events:
+        event_type = event.get("event_type")
+        identity = event.get("identity")
+        payload = event.get("payload")
+        if (
+            type(event_type) is not str
+            or not isinstance(identity, Mapping)
+            or not isinstance(payload, Mapping)
+        ):
+            continue
+        activates = event_type in _GENERATION_ACTIVATION_EVENT_TYPES
+        if event_type == "launch_decision":
+            activates = identity.get("stage") == "launch_admitted"
+        elif event_type == "transfer":
+            activates = payload.get("resolution") == "applied"
+        if not activates:
+            continue
+        operation_id = identity.get("operation_id")
+        generation = identity.get("generation")
+        frame = identity.get("game_frame")
+        if (
+            type(operation_id) is not str
+            or not operation_id
+            or type(generation) is not int
+            or generation <= 0
+            or type(frame) is not int
+            or frame < 0
+        ):
+            continue
+        activation = (frame, generation)
+        entries = timeline.setdefault(operation_id, [])
+        if activation not in entries:
+            entries.append(activation)
+    return {
+        operation_id: sorted(entries)
+        for operation_id, entries in timeline.items()
+    }
+
+
 def _verify_event_identities(
     spec: Mapping[str, object],
     events: Sequence[Mapping[str, object]],
@@ -4023,6 +4186,7 @@ def _verify_event_identities(
     except (KeyError, TypeError, ValueError) as exc:
         blockers.append(f"compiler identity derivation failed closed: {exc}")
         allowed_identities = set()
+    generation_timeline = _observed_generation_activation_timeline(events)
     raw_inputs = cast(Sequence[Mapping[str, object]], spec.get("ordered_inputs", ()))
     start_frame = int(raw_inputs[0]["frame"]) if raw_inputs else 0
     timeout = int(spec.get("timeout_frames", 0) or 0)
@@ -4067,6 +4231,26 @@ def _verify_event_identities(
             blockers.append(
                 f"{event_type} is not bound to a compiler-requested "
                 "operation identity"
+            )
+        active_generation = max(
+            (
+                candidate_generation
+                for activation_frame, candidate_generation in (
+                    generation_timeline.get(operation_id, ())
+                )
+                if activation_frame <= frame
+            ),
+            default=0,
+        )
+        if (
+            event_type in _GENERATION_LIFECYCLE_EVENT_TYPES
+            and operation_id
+            and active_generation > generation
+        ):
+            blockers.append(
+                f"{event_type} uses superseded generation "
+                f"{operation_id}#{generation} after #{active_generation} "
+                "became active"
             )
         key = (update_id, operation_id, generation)
         previous = last_frame.get(key, -1)
@@ -4274,22 +4458,14 @@ def _verify_required_effects(
     blockers: list[str],
 ) -> None:
     effects = [event for event in events if event.get("event_type") in _EFFECT_EVENT_TYPES]
-    keys = {
-        (
-            str(cast(Mapping[str, object], event["identity"])["update_id"]),
-            str(cast(Mapping[str, object], event["identity"])["operation_id"]),
-            int(cast(Mapping[str, object], event["identity"])["generation"]),
-            str(cast(Mapping[str, object], event["payload"]).get("action", "")),
-        )
-        for event in effects
-    }
+    keys = {_event_action_binding(event) for event in effects}
     if len(keys) < int(stop.get("count", 1) or 1):
         blockers.append("required matching effects were not observed")
-    required_identities = _required_effect_identities(spec, stop_type)
-    observed_identities = {key[:3] for key in keys}
-    if not required_identities.issubset(observed_identities):
+    required_bindings = _required_effect_identities(spec, stop_type)
+    if not required_bindings.issubset(keys):
         blockers.append(
-            "required compiler-requested operations lack exact effect coverage"
+            "required compiler-requested operation actions lack exact "
+            "effect coverage"
         )
     if stop_type == "effect_after_prerequisite_convergence":
         waits = _event_frames(events, "prerequisite_wait")
@@ -4309,22 +4485,64 @@ def _verify_required_effects(
         if not any(key[:3] in generations for key in keys):
             blockers.append("updated generation lacks a matching effect")
     if stop_type == "offense_restored_after_defense":
-        restored = [
-            int(cast(Mapping[str, object], event["identity"])["game_frame"])
+        defenses = [
+            (_event_action_binding(event)[:3], _event_frame(event))
+            for event in events
+            if event.get("event_type") == "autonomous_defense"
+            and cast(Mapping[str, object], event["payload"]).get("action")
+            == "defend"
+        ]
+        restorations = [
+            (_event_action_binding(event)[:3], _event_frame(event))
             for event in events
             if event.get("event_type") == "autonomous_defense"
             and cast(Mapping[str, object], event["payload"]).get("action")
             == "restore_offense"
         ]
-        effect_frames = _event_frames(effects)
-        if not restored or not effect_frames or max(effect_frames) < max(restored):
+        if not defenses:
+            blockers.append("autonomous defense was not observed")
+        valid_restorations = [
+            (identity, frame)
+            for identity, frame in restorations
+            if any(
+                defense_identity == identity and defense_frame < frame
+                for defense_identity, defense_frame in defenses
+            )
+        ]
+        if restorations and not valid_restorations:
+            blockers.append("offense restoration lacks prior autonomous defense")
+        if not valid_restorations or not any(
+            effect_binding[:3] == identity
+            and effect_binding in required_bindings
+            and _event_frame(effect) > restoration_frame
+            for identity, restoration_frame in valid_restorations
+            for effect in effects
+            for effect_binding in [_event_action_binding(effect)]
+        ):
             blockers.append("offense effect did not follow defense restoration")
+
+
+def _event_action_binding(
+    event: Mapping[str, object],
+) -> tuple[str, str, int, str]:
+    identity = cast(Mapping[str, object], event["identity"])
+    payload = cast(Mapping[str, object], event["payload"])
+    return (
+        str(identity["update_id"]),
+        str(identity["operation_id"]),
+        int(identity["generation"]),
+        str(payload.get("action", "")),
+    )
+
+
+def _event_frame(event: Mapping[str, object]) -> int:
+    return int(cast(Mapping[str, object], event["identity"])["game_frame"])
 
 
 def _required_effect_identities(
     spec: Mapping[str, object],
     stop_type: str,
-) -> set[tuple[str, str, int]]:
+) -> set[tuple[str, str, int, str]]:
     execution = _JourneyExecution(spec)
     native_input = _compile_native_input(execution)
     policy_updates = [
@@ -4337,17 +4555,22 @@ def _required_effect_identities(
     ]
     if stop_type == "updated_generation_effect_observed":
         previous: dict[str, int] = {}
-        changed: set[tuple[str, str, int]] = set()
+        changed: set[tuple[str, str, int, str]] = set()
         for update in policy_updates:
-            current = {
-                str(operation["operation_id"]): int(operation["generation"])
+            operations = {
+                str(operation["operation_id"]): operation
                 for operation in _update_operations(update)
+            }
+            current = {
+                operation_id: int(operation["generation"])
+                for operation_id, operation in operations.items()
             }
             changed.update(
                 (
                     str(update["update_id"]),
                     operation_id,
                     generation,
+                    _compiled_operation_action(operations[operation_id]),
                 )
                 for operation_id, generation in current.items()
                 if operation_id in previous
@@ -4363,6 +4586,7 @@ def _required_effect_identities(
                     str(update["update_id"]),
                     str(operation["operation_id"]),
                     int(operation["generation"]),
+                    _compiled_operation_action(operation),
                 )
                 for operation in operations
             }
@@ -4771,6 +4995,7 @@ def _verify_emergency_preemption(
 
 
 def _verify_all_terran_events(
+    spec: Mapping[str, object],
     events: Sequence[Mapping[str, object]],
 ) -> list[str]:
     blockers: list[str] = []
@@ -4781,11 +5006,61 @@ def _verify_all_terran_events(
         }
         for item in all_terran_capability_matrix()
     }
+    try:
+        execution = _JourneyExecution(spec)
+        native_input = _compile_native_input(execution)
+        bindings: dict[tuple[str, str, int], tuple[str, str, str]] = {}
+        for step in cast(
+            Sequence[Mapping[str, object]],
+            native_input["steps"],
+        ):
+            if step.get("kind") != "policy_update":
+                continue
+            update = cast(Mapping[str, object], step["update"])
+            for operation in _update_operations(update):
+                task = operation.get("tactical_task")
+                requirements = _operation_requirements(operation)
+                if not isinstance(task, Mapping) or not requirements:
+                    raise ValueError("all-Terran operation is malformed")
+                ability = task.get("ability")
+                unit_type = requirements[0].get("unit_type")
+                if (
+                    type(ability) is not str
+                    or not ability
+                    or type(unit_type) is not str
+                    or not unit_type
+                ):
+                    raise ValueError("all-Terran operation binding is malformed")
+                identity = (
+                    str(update["update_id"]),
+                    str(operation["operation_id"]),
+                    int(operation["generation"]),
+                )
+                binding = (
+                    canonical_terran_unit_family(unit_type),
+                    ability,
+                    _compiled_operation_action(operation),
+                )
+                if identity in bindings and bindings[identity] != binding:
+                    raise ValueError("all-Terran operation binding is ambiguous")
+                bindings[identity] = binding
+    except (KeyError, TypeError, ValueError) as exc:
+        return [f"all-Terran compiler binding failed closed: {exc}"]
+
+    expected_pairs = {
+        (family, ability)
+        for family, abilities in expected.items()
+        for ability in abilities
+    }
+    if {(family, ability) for family, ability, _ in bindings.values()} != (
+        expected_pairs
+    ):
+        blockers.append("all-Terran compiler bindings do not match the matrix")
+
     attempts: dict[str, set[str]] = {}
     submissions: set[tuple[str, str]] = set()
     effects: set[tuple[str, str]] = set()
     blockers_by_action: set[tuple[str, str]] = set()
-    family_by_identity: dict[tuple[str, str, int], str] = {}
     for event in events:
         payload = event.get("payload")
         identity = event.get("identity")
@@ -4796,27 +5071,34 @@ def _verify_all_terran_events(
             str(identity.get("operation_id", "")),
             int(identity.get("generation", 0) or 0),
         )
+        binding = bindings.get(key)
+        if binding is None:
+            continue
+        family, ability, expected_action = binding
         action = str(payload.get("action", ""))
-        ability = str(payload.get("ability", "")) or (
-            action.removeprefix("ability:")
-            if action.startswith("ability:")
-            else ""
-        )
-        family = str(payload.get("family", "")) or family_by_identity.get(key, "")
+        if "family" in payload and payload.get("family") != family:
+            blockers.append(f"{key[1]} family label is not compiler-bound")
+        if "ability" in payload and payload.get("ability") != ability:
+            blockers.append(f"{key[1]} ability label is not compiler-bound")
+        if payload.get("ability_name") not in (None, "", ability):
+            blockers.append(f"{key[1]} ability_name is not compiler-bound")
         if event.get("event_type") in {"terran_lowering", "family_action_attempt"}:
-            if family:
-                family_by_identity[key] = family
-            if family and ability:
-                attempts.setdefault(family, set()).add(ability)
-        elif event.get("event_type") == "submission" and family and ability:
+            if action != expected_action:
+                blockers.append(f"{family}/{ability} attempt action is incorrect")
+            attempts.setdefault(family, set()).add(ability)
+        elif event.get("event_type") == "submission":
+            if action != expected_action:
+                blockers.append(
+                    f"{family}/{ability} submission action is incorrect"
+                )
             submissions.add((family, ability))
-        elif event.get("event_type") == "ability_effect" and family and ability:
+        elif event.get("event_type") == "ability_effect":
+            if action != expected_action:
+                blockers.append(f"{family}/{ability} effect action is incorrect")
             effects.add((family, ability))
         elif (
             event.get("event_type")
             in {"production_decision", "prerequisite_wait", "rejection"}
-            and family
-            and ability
             and str(payload.get("blocker", "") or payload.get("reason", ""))
         ):
             blockers_by_action.add((family, ability))
@@ -6540,8 +6822,10 @@ def _string_list(value: object, *, label: str) -> list[str]:
         (str, bytes, bytearray),
     ):
         raise ValueError(f"{label} must be an array")
-    result = [str(item) for item in value]
-    if any(not item for item in result) or len(result) != len(set(result)):
+    if any(type(item) is not str or not item for item in value):
+        raise ValueError(f"{label} contains invalid values")
+    result = cast(list[str], list(value))
+    if len(result) != len(set(result)):
         raise ValueError(f"{label} contains invalid values")
     return sorted(result)
 
@@ -6555,6 +6839,10 @@ def _reject_duplicate_json_object_keys(
             raise ValueError(f"duplicate JSON key: {key}")
         result[key] = value
     return result
+
+
+def _reject_nonfinite_json(value: str) -> object:
+    raise ValueError(f"non-finite JSON number is not supported: {value}")
 
 
 def _sha256_file(path: Path) -> str:

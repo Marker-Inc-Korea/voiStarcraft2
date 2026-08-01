@@ -31,6 +31,8 @@ from starcraft_commander.micromachine_pre_live_journeys import (
     _production_receipt_id,
     _run_native_command,
     _sha256_file,
+    _verify_all_terran_events,
+    _verify_required_effects,
     _validate_pre_live_journey_manifest_payload,
     _validate_native_output_payload,
     build_pre_live_journey_bundle,
@@ -1483,6 +1485,70 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
             )
             self.assertTrue(verification["ok"], verification)
 
+    def test_required_effects_are_bound_to_compiler_requested_actions(
+        self,
+    ) -> None:
+        journey_id = "safe_partial_launch"
+        spec = self.specs[journey_id]
+        effect = deepcopy(_first_event(self._events(journey_id), "movement"))
+        effect["payload"]["action"] = "squad_order:scout"
+        blockers: list[str] = []
+
+        _verify_required_effects(
+            spec,
+            str(spec["stop_condition"]["type"]),
+            spec["stop_condition"],
+            [effect],
+            blockers,
+        )
+
+        self.assertIn(
+            "required compiler-requested operation actions lack exact "
+            "effect coverage",
+            blockers,
+        )
+
+    def test_all_terran_semantics_are_bound_to_compiler_operations(
+        self,
+    ) -> None:
+        journey_id = "all_terran_family_ability_blocker_matrix"
+        events = self._events(journey_id)
+        swaps = {
+            "matrix-marine-marine_stimpack": (
+                "marauder",
+                "marauder_stimpack",
+            ),
+            "matrix-marauder-marauder_stimpack": (
+                "marine",
+                "marine_stimpack",
+            ),
+        }
+        for event in events:
+            identity = event["identity"]
+            replacement = swaps.get(identity["operation_id"])
+            if replacement is None:
+                continue
+            family, ability = replacement
+            payload = event["payload"]
+            if "family" in payload:
+                payload["family"] = family
+            if "ability" in payload:
+                payload["ability"] = ability
+            if "ability_name" in payload and payload["ability_name"]:
+                payload["ability_name"] = ability
+            if str(payload.get("action", "")).startswith("ability:"):
+                payload["action"] = f"ability:{ability}"
+
+        blockers = _verify_all_terran_events(
+            self.specs[journey_id],
+            events,
+        )
+
+        self.assertTrue(
+            any("compiler-bound" in blocker for blocker in blockers),
+            blockers,
+        )
+
     def test_negative_raw_stream_matrix_fails_closed(self) -> None:
         cases = {
             "duplicate owner": self._duplicate_owner,
@@ -1502,6 +1568,8 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
             "cancellation sibling binding": self._mutate_sibling_owner_binding,
             "emergency preemption": self._remove_preemption,
             "ability movement": self._ability_movement,
+            "superseded generation": self._append_superseded_generation,
+            "autonomous defense missing": self._remove_autonomous_defense,
             "reconnect duplicate": self._duplicate_reconnect_event,
             "web source payload": self._mutate_web_source_payload,
             "web source multiplicity": self._remove_web_source,
@@ -1727,6 +1795,42 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
         effect["payload"]["action"] = "move_ability"
         return journey_id, events
 
+    def _append_superseded_generation(
+        self,
+    ) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "reinforcement_generation_update"
+        events = self._events(journey_id)
+        stale = deepcopy(
+            next(
+                event
+                for event in events
+                if event["event_type"] == "family_action_attempt"
+                and event["identity"]["operation_id"] == "assault-bravo"
+                and event["identity"]["generation"] == 1
+            )
+        )
+        stale["seq"] = len(events) + 1
+        stale["identity"]["game_frame"] = (
+            max(event["identity"]["game_frame"] for event in events) + 1
+        )
+        events.append(stale)
+        return journey_id, events
+
+    def _remove_autonomous_defense(
+        self,
+    ) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "autonomous_defense_restoration"
+        events = [
+            event
+            for event in self._events(journey_id)
+            if not (
+                event["event_type"] == "autonomous_defense"
+                and event["payload"]["action"] == "defend"
+            )
+        ]
+        _resequence(events)
+        return journey_id, events
+
     def _duplicate_reconnect_event(
         self,
     ) -> tuple[str, list[dict[str, object]]]:
@@ -1950,6 +2054,48 @@ class PreLiveJourneyManifestTest(unittest.TestCase):
             "required journey ids",
         ):
             _validate_pre_live_journey_manifest_payload(replacement)
+
+    def test_manifest_rejects_noncanonical_values_before_native_admission(
+        self,
+    ) -> None:
+        raw = DEFAULT_JOURNEY_MANIFEST.read_text(encoding="utf-8")
+        payload = json.loads(raw)
+        title_number = deepcopy(payload)
+        title_number["journeys"][0]["title"] = 7
+        preset_number = deepcopy(payload)
+        preset_number["journeys"][0]["ordered_inputs"][0]["preset"] = 7
+        cases = {
+            "float schema": raw.replace(
+                '"schema_version": 1',
+                '"schema_version": 1.0',
+                1,
+            ),
+            "non-finite schema": raw.replace(
+                '"schema_version": 1',
+                '"schema_version": NaN',
+                1,
+            ),
+            "numeric title": json.dumps(title_number),
+            "numeric preset": json.dumps(preset_number),
+        }
+        for name, document in cases.items():
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as directory:
+                    manifest = Path(directory) / "journeys.json"
+                    manifest.write_text(document, encoding="utf-8")
+                    with mock.patch(
+                        (
+                            "starcraft_commander."
+                            "micromachine_pre_live_journeys."
+                            "_validate_micromachine_binary"
+                        )
+                    ) as native_admission:
+                        with self.assertRaises(ValueError):
+                            execute_pre_live_journeys(
+                                "must-not-run",
+                                manifest,
+                            )
+                    native_admission.assert_not_called()
 
 
 def _first_event(

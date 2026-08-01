@@ -2244,6 +2244,197 @@ class BuildBindingTest(unittest.TestCase):
                 " ".join(result["blockers"]),
             )
 
+    def test_initial_ctest_registry_uses_authenticated_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = make_build_fixture(Path(directory))
+            build_dir = fixture["config"].micromachine_build_dir.resolve()
+            original_ctest = provenance_module._resolve_cmake_ctest_path(
+                build_dir
+            ).resolve()
+            registry_executables: list[Path] = []
+
+            def recording_runner(
+                *args: object,
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess:
+                argv = list(args[0])
+                if (
+                    "--show-only=json-v1" in argv
+                    and Path(argv[argv.index("--test-dir") + 1]).resolve()
+                    == build_dir
+                ):
+                    registry_executables.append(Path(argv[0]).resolve())
+                return passing_ctest(*args, **kwargs)
+
+            result = attest_build_binding(
+                fixture["report_path"],
+                repository_dir=fixture["repository"],
+                expected_repository_commit=fixture["repository_commit"],
+                command_runner=recording_runner,
+            )
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(1, len(registry_executables))
+            self.assertNotEqual(original_ctest, registry_executables[0])
+            self.assertEqual("ctest", registry_executables[0].name)
+
+    def test_rejects_noncanonical_ctest_discovery_json(self) -> None:
+        cases = {
+            "duplicate registry key": (
+                True,
+                '{"tests":[],"tests":[]}',
+                "CTest registry discovery returned malformed JSON",
+            ),
+            "non-finite discovery value": (
+                False,
+                '{"tests":[],"attacker":NaN}',
+                "CTest discovery returned malformed JSON",
+            ),
+        }
+        for name, (attack_registry, document, blocker) in cases.items():
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as directory:
+                    fixture = make_build_fixture(Path(directory))
+                    build_dir = (
+                        fixture["config"].micromachine_build_dir.resolve()
+                    )
+
+                    def malformed_json(
+                        *args: object,
+                        **kwargs: object,
+                    ) -> subprocess.CompletedProcess:
+                        argv = list(args[0])
+                        if "--show-only=json-v1" not in argv:
+                            return passing_ctest(*args, **kwargs)
+                        test_dir = Path(
+                            argv[argv.index("--test-dir") + 1]
+                        ).resolve()
+                        is_registry = test_dir == build_dir
+                        if is_registry == attack_registry:
+                            return subprocess.CompletedProcess(
+                                argv,
+                                0,
+                                stdout=document,
+                                stderr="",
+                            )
+                        return passing_ctest(*args, **kwargs)
+
+                    result = attest_build_binding(
+                        fixture["report_path"],
+                        repository_dir=fixture["repository"],
+                        expected_repository_commit=(
+                            fixture["repository_commit"]
+                        ),
+                        command_runner=malformed_json,
+                    )
+
+                    self.assertFalse(result["ok"], result)
+                    self.assertIn(blocker, " ".join(result["blockers"]))
+
+    def test_ctest_blockers_prevent_all_direct_native_execution(self) -> None:
+        cases = {
+            "registry exit": "registry_exit",
+            "registry stderr": "registry_stderr",
+            "discovery JSON": "discovery_json",
+            "CTest exit": "ctest_exit",
+            "missing test": "missing_test",
+        }
+        real_run = subprocess.run
+        for name, mode in cases.items():
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as directory:
+                    fixture = make_build_fixture(Path(directory))
+                    build_dir = (
+                        fixture["config"].micromachine_build_dir.resolve()
+                    )
+
+                    def blocked_ctest(
+                        *args: object,
+                        **kwargs: object,
+                    ) -> subprocess.CompletedProcess:
+                        argv = list(args[0])
+                        show_only = "--show-only=json-v1" in argv
+                        test_dir = Path(
+                            argv[argv.index("--test-dir") + 1]
+                        ).resolve()
+                        is_registry = test_dir == build_dir
+                        if mode == "registry_exit" and show_only and is_registry:
+                            return subprocess.CompletedProcess(
+                                argv,
+                                1,
+                                stdout='{"tests":[]}',
+                                stderr="",
+                            )
+                        if mode == "registry_stderr" and show_only and is_registry:
+                            passed = passing_ctest(*args, **kwargs)
+                            return subprocess.CompletedProcess(
+                                argv,
+                                0,
+                                stdout=passed.stdout,
+                                stderr="unexpected registry stderr",
+                            )
+                        if (
+                            mode == "discovery_json"
+                            and show_only
+                            and not is_registry
+                        ):
+                            return subprocess.CompletedProcess(
+                                argv,
+                                0,
+                                stdout="{",
+                                stderr="",
+                            )
+                        if mode == "ctest_exit" and not show_only:
+                            return subprocess.CompletedProcess(
+                                argv,
+                                1,
+                                stdout="",
+                                stderr="CTest failed",
+                            )
+                        if mode == "missing_test" and show_only and is_registry:
+                            passed = passing_ctest(*args, **kwargs)
+                            payload = json.loads(passed.stdout)
+                            payload["tests"].pop()
+                            return subprocess.CompletedProcess(
+                                argv,
+                                0,
+                                stdout=json.dumps(payload),
+                                stderr="",
+                            )
+                        return passing_ctest(*args, **kwargs)
+
+                    def forbid_direct_native(
+                        *args: object,
+                        **kwargs: object,
+                    ) -> subprocess.CompletedProcess:
+                        argv = list(args[0])
+                        executable = Path(argv[0])
+                        if (
+                            executable.parent.name == "bin"
+                            and ".voi-ctest-" in str(executable)
+                        ):
+                            raise AssertionError(
+                                "direct native test ran after a CTest blocker"
+                            )
+                        return real_run(*args, **kwargs)
+
+                    with mock.patch.object(
+                        provenance_module.subprocess,
+                        "run",
+                        side_effect=forbid_direct_native,
+                    ):
+                        result = attest_build_binding(
+                            fixture["report_path"],
+                            repository_dir=fixture["repository"],
+                            expected_repository_commit=(
+                                fixture["repository_commit"]
+                            ),
+                            command_runner=blocked_ctest,
+                        )
+
+                    self.assertFalse(result["ok"], result)
+                    self.assertEqual(0, result["ctest"]["passed"])
+
     def test_rejects_noncanonical_ctest_registry_command_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = make_build_fixture(Path(directory))
@@ -3075,6 +3266,61 @@ class LocalProducerTest(unittest.TestCase):
                 "differs from the exact commit",
                 " ".join(tampered["blockers"]),
             )
+
+    def test_rejects_noncanonical_committed_producer_policy_json(self) -> None:
+        cases = {
+            "float schema": (
+                '{"schema_version":1.0,"producers":{}}\n',
+                "producer policy schema mismatch",
+            ),
+            "non-finite schema": (
+                '{"schema_version":NaN,"producers":{}}\n',
+                "non-finite JSON number",
+            ),
+            "duplicate schema": (
+                (
+                    '{"schema_version":1,"schema_version":1,'
+                    '"producers":{}}\n'
+                ),
+                "duplicate JSON object key",
+            ),
+        }
+        for name, (document, blocker) in cases.items():
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as directory:
+                    fixture = make_build_fixture(Path(directory))
+                    repository = fixture["repository"]
+                    policy_path = repository / PRODUCER_POLICY_RELATIVE_PATH
+                    policy_path.write_text(document)
+                    git(
+                        repository,
+                        "add",
+                        PRODUCER_POLICY_RELATIVE_PATH.as_posix(),
+                    )
+                    git(
+                        repository,
+                        "-c",
+                        "user.name=Test",
+                        "-c",
+                        "user.email=test@example.com",
+                        "commit",
+                        "-m",
+                        "malformed producer policy",
+                    )
+                    commit = git(
+                        repository,
+                        "rev-parse",
+                        "HEAD",
+                    ).stdout.strip()
+
+                    policy = resolve_local_producer_policy(
+                        repository_dir=repository,
+                        expected_commit=commit,
+                        producer_id="fixture_producer",
+                    )
+
+                    self.assertFalse(policy["ok"], policy)
+                    self.assertIn(blocker, " ".join(policy["blockers"]))
 
     def test_executes_from_committed_snapshot_not_ignored_python_module(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -4681,10 +4927,7 @@ class AggregateProvenanceTest(unittest.TestCase):
 
                     self.assertFalse(report["ok"], report)
                     self.assertEqual("blocked", report["status"])
-                    self.assertEqual(
-                        1 if producer_id == "fixture_producer" else 0,
-                        len(producer_calls),
-                    )
+                    self.assertEqual(0, len(producer_calls))
                     self.assertEqual({}, adapter.references)
                     self.assertIn(
                         "production candidate evidence requires producer_id="
@@ -4956,24 +5199,29 @@ class AggregateProvenanceTest(unittest.TestCase):
                 output.write_text('{"trusted":"execution"}\n')
                 return subprocess.CompletedProcess(args[0], 0, b"out", b"")
 
-            report = self.attest(
-                root / "global-replay",
-                repository_dir=repository,
-                expected_commit=commit,
-                github_adapter=adapter,
-                issue_number=138,
-                pull_number=137,
-                run_id=RUN_ID,
-                run_attempt=RUN_ATTEMPT,
-                job_id=JOB_ID,
-                artifact_id=ARTIFACT_ID,
-                expected_head_sha=commit,
-                build_report_path=build["report_path"],
-                expected_build_dir=build["config"].micromachine_build_dir,
-                producer_id="fixture_producer",
-                ctest_runner=passing_ctest,
-                producer_runner=producer,
-            )
+            with mock.patch.object(
+                provenance_module,
+                "_production_candidate_producer_blockers",
+                return_value=[],
+            ):
+                report = self.attest(
+                    root / "global-replay",
+                    repository_dir=repository,
+                    expected_commit=commit,
+                    github_adapter=adapter,
+                    issue_number=138,
+                    pull_number=137,
+                    run_id=RUN_ID,
+                    run_attempt=RUN_ATTEMPT,
+                    job_id=JOB_ID,
+                    artifact_id=ARTIFACT_ID,
+                    expected_head_sha=commit,
+                    build_report_path=build["report_path"],
+                    expected_build_dir=build["config"].micromachine_build_dir,
+                    producer_id="fixture_producer",
+                    ctest_runner=passing_ctest,
+                    producer_runner=producer,
+                )
 
             self.assertFalse(report["ok"], report)
             self.assertIn(
@@ -5010,24 +5258,29 @@ class AggregateProvenanceTest(unittest.TestCase):
                 output.write_text('{"trusted":"execution"}\n')
                 return subprocess.CompletedProcess(args[0], 0, b"out", b"")
 
-            report = self.attest(
-                root / "global-replay",
-                repository_dir=repository,
-                expected_commit=commit,
-                github_adapter=adapter,
-                issue_number=138,
-                pull_number=137,
-                run_id=RUN_ID,
-                run_attempt=RUN_ATTEMPT,
-                job_id=JOB_ID,
-                artifact_id=ARTIFACT_ID,
-                expected_head_sha=commit,
-                build_report_path=build["report_path"],
-                expected_build_dir=build["config"].micromachine_build_dir,
-                producer_id="fixture_producer",
-                ctest_runner=passing_ctest,
-                producer_runner=producer,
-            )
+            with mock.patch.object(
+                provenance_module,
+                "_production_candidate_producer_blockers",
+                return_value=[],
+            ):
+                report = self.attest(
+                    root / "global-replay",
+                    repository_dir=repository,
+                    expected_commit=commit,
+                    github_adapter=adapter,
+                    issue_number=138,
+                    pull_number=137,
+                    run_id=RUN_ID,
+                    run_attempt=RUN_ATTEMPT,
+                    job_id=JOB_ID,
+                    artifact_id=ARTIFACT_ID,
+                    expected_head_sha=commit,
+                    build_report_path=build["report_path"],
+                    expected_build_dir=build["config"].micromachine_build_dir,
+                    producer_id="fixture_producer",
+                    ctest_runner=passing_ctest,
+                    producer_runner=producer,
+                )
 
             self.assertFalse(report["ok"], report)
             self.assertIn("stdout_sha256", " ".join(report["blockers"]))
