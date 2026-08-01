@@ -18,7 +18,7 @@ def _identity(
     *,
     update_id: str = "voi-mm-current",
     scope: str = "battlefield",
-    session_epoch: int = 1700000000000,
+    session_epoch: int | str = "1700000000000",
     generation: int = 7,
     stage: str = "observed",
     game_frame: int = 320,
@@ -1884,6 +1884,68 @@ class BattlefieldProjectionValidationTest(unittest.TestCase):
                 self.assertFalse(result.ok)
                 self.assertIn(code, _blocker_codes(result))
                 self.assertFalse(result.integrity["monotonic"])
+
+    def test_uint64_session_epoch_remains_exact_decimal_string(self) -> None:
+        epochs = (
+            "18446744073709551614",
+            "18446744073709551615",
+        )
+        fingerprints: list[str] = []
+        for epoch in epochs:
+            with self.subTest(epoch=epoch):
+                telemetry = _telemetry()
+                telemetry["battlefield_overview"]["identity"][
+                    "session_epoch"
+                ] = epoch
+                for operation in telemetry["battlefield_overview"][
+                    "operation_ownership"
+                ]:
+                    operation["identity"]["session_epoch"] = epoch
+
+                result = validate_battlefield_overview(
+                    telemetry,
+                    expected_scope="battlefield",
+                )
+
+                self.assertTrue(result.ok, result.to_dict())
+                self.assertEqual(
+                    epoch,
+                    result.battlefield_overview["identity"]["session_epoch"],
+                )
+                self.assertTrue(
+                    all(
+                        operation["identity"]["session_epoch"] == epoch
+                        for operation in result.battlefield_overview[
+                            "operation_ownership"
+                        ]
+                    )
+                )
+                self.assertEqual(epoch, result.identity.to_dict()["session_epoch"])
+                fingerprints.append(
+                    battlefield_overview_fingerprint(
+                        result.battlefield_overview
+                    )
+                )
+        self.assertNotEqual(fingerprints[0], fingerprints[1])
+
+    def test_unsafe_numeric_session_epoch_fails_closed(self) -> None:
+        telemetry = _telemetry()
+        unsafe_epoch = 9_007_199_254_740_992
+        telemetry["battlefield_overview"]["identity"]["session_epoch"] = (
+            unsafe_epoch
+        )
+        for operation in telemetry["battlefield_overview"][
+            "operation_ownership"
+        ]:
+            operation["identity"]["session_epoch"] = unsafe_epoch
+
+        result = validate_battlefield_overview(
+            telemetry,
+            expected_scope="battlefield",
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("invalid_identity", _blocker_codes(result))
 
     def test_newer_session_epoch_allows_safe_game_frame_reset(self) -> None:
         previous = BattlefieldProjectionIdentity(

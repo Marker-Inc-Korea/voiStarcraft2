@@ -20622,11 +20622,16 @@ function battlefieldOperationLaneFromProjection(operation, matchedData) {
   if (matchedData) {
     var scopeId = String(matchedData.blackboard_scope_id || "");
     var operationId = String(matchedData.operation_id || "");
+    var matchedIdentityKey =
+      battlefieldManagerEvidenceExactIdentityKey(matchedData);
     var record = operationRecords[
       operationRecordKey(scopeId, operationId)
     ];
     if (
       record &&
+      matchedIdentityKey &&
+      battlefieldManagerEvidenceExactIdentityKey(record.data) ===
+        matchedIdentityKey &&
       Number(record.operationGeneration || 0) ===
         Number(matchedData.operation_generation || 0)
     ) {

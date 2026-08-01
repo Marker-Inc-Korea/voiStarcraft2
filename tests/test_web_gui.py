@@ -6021,7 +6021,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     reset["battlefield_projection"],
                 )
                 self.assertEqual(
-                    1700000000100,
+                    "1700000000100",
                     reset["battlefield_projection_identity"][
                         "session_epoch"
                     ],
@@ -6046,7 +6046,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     replacement["battlefield_projection"],
                 )
                 self.assertEqual(
-                    1600000000000,
+                    "1600000000000",
                     replacement["battlefield_projection_identity"][
                         "session_epoch"
                     ],
@@ -6321,7 +6321,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     "/api/micromachine/status?blackboard_dir=" + directory
                 )
                 self.assertEqual(
-                    1700000000100,
+                    "1700000000100",
                     initial["battlefield_overview"]["identity"][
                         "session_epoch"
                     ],
@@ -6357,11 +6357,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 attached["battlefield_projection"],
             )
             self.assertEqual(
-                1700000000100,
+                "1700000000100",
                 attached["battlefield_projection_identity"]["session_epoch"],
             )
             self.assertEqual(
-                1700000000100,
+                "1700000000100",
                 attached["battlefield_overview"]["identity"][
                     "session_epoch"
                 ],
@@ -19735,6 +19735,90 @@ const assert = require("assert");
     ),
     null
   );
+  var highEpochCanonical = JSON.parse(JSON.stringify(
+    detailedDefense.battlefield_operation
+  ));
+  highEpochCanonical.identity.session_epoch =
+    "18446744073709551614";
+  var highEpochForeign = JSON.parse(JSON.stringify(highEpochCanonical));
+  highEpochForeign.identity.session_epoch =
+    "18446744073709551615";
+  assert.notStrictEqual(
+    battlefieldOperationExactIdentityKey(highEpochCanonical),
+    battlefieldOperationExactIdentityKey(highEpochForeign)
+  );
+
+  var foreignFirstCanonical = operationResult(
+    "foreign-first-lane",
+    "canonical-lane-update",
+    "canonical executing lane",
+    "defense",
+    328,
+    "action_issued",
+    actionStages("defense"),
+    1
+  );
+  var foreignFirstManager = JSON.parse(JSON.stringify(
+    foreignFirstCanonical
+  ));
+  foreignFirstManager.update_id = "foreign-lane-update";
+  foreignFirstManager.operation_console_execution_owner_update_id =
+    "foreign-lane-update";
+  foreignFirstManager.command_text = "foreign waiting lane";
+  foreignFirstManager.intervention.command_execution.command_id =
+    "foreign-lane-update";
+  foreignFirstManager.intervention.command_execution.state =
+    "queued_or_assigned";
+  foreignFirstManager.intervention.command_execution.stages =
+    actionStages("defense").slice(0, 4);
+  foreignFirstManager.battlefield_operation.identity.update_id =
+    "foreign-lane-update";
+  var foreignFirstOverview = JSON.parse(JSON.stringify(
+    authoritativeOverview
+  ));
+  foreignFirstOverview.identity.game_frame = 328;
+  foreignFirstOverview.operation_ownership = [
+    foreignFirstCanonical.battlefield_operation
+  ];
+  foreignFirstOverview.bases = [];
+  foreignFirstOverview.autonomous_ownership = [];
+  foreignFirstOverview.transfer_availability.entries = [];
+  var foreignFirstData = {
+    blackboard_scope_id: OPERATION_SCOPE,
+    battlefield_overview: foreignFirstOverview,
+    battlefield_projection_integrity: {
+      status: "valid",
+      blocker_count: 0
+    },
+    operations: [foreignFirstManager, foreignFirstCanonical]
+  };
+  renderOperationConsole(foreignFirstData);
+  renderBattlefieldControlOverview(foreignFirstData);
+  assert(
+    nodes["battlefield-operation-details"].textContent.includes(
+      "foreign-first-lane#1"
+    )
+  );
+  assert(
+    nodes["battlefield-operation-details"].textContent.includes(
+      "lane executing"
+    ),
+    nodes["battlefield-operation-details"].textContent
+  );
+  assert(
+    !nodes["battlefield-operation-details"].textContent.includes(
+      "lane waiting"
+    ),
+    nodes["battlefield-operation-details"].textContent
+  );
+  var foreignFirstRecordKey = operationRecordKey(
+    OPERATION_SCOPE,
+    "foreign-first-lane"
+  );
+  delete operationRecords[foreignFirstRecordKey];
+  operationRecordOrder = operationRecordOrder.filter(function(key) {
+    return key !== foreignFirstRecordKey;
+  });
   renderBattlefieldControlOverview({
     battlefield_overview: authoritativeOverview,
     battlefield_projection_integrity: {

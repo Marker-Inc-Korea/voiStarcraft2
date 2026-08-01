@@ -85,6 +85,7 @@ BATTLEFIELD_IDENTITY_TRANSFER_INTEGRITY_PATCH_FILE="${REPO_ROOT}/integrations/mi
 ATOMIC_TELEMETRY_PUBLICATION_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0072-atomic-telemetry-publication.patch"
 CONTEXTUAL_TRANSFER_CHOICE_PROJECTION_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0073-contextual-transfer-choice-projection.patch"
 AUTONOMOUS_OWNER_COMPOSITION_EVIDENCE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0074-autonomous-owner-composition-evidence.patch"
+BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0075-battlefield-review-closure.patch"
 S2CLIENT_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0001-s2client-macos-launchservices.patch"
 BLACKBOARD_HEADER_FILE="${REPO_ROOT}/integrations/micromachine/voi_policy_blackboard.hpp"
 HOOK_MANIFEST_FILE="${REPO_ROOT}/integrations/micromachine/HOOK_MANIFEST.json"
@@ -408,6 +409,8 @@ git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whi
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${CONTEXTUAL_TRANSFER_CHOICE_PROJECTION_PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${AUTONOMOUS_OWNER_COMPOSITION_EVIDENCE_PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${AUTONOMOUS_OWNER_COMPOSITION_EVIDENCE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE}"
 cp "${BLACKBOARD_HEADER_FILE}" "${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"
 
 require_secure_build_root \
@@ -445,6 +448,7 @@ python3 -m starcraft_commander.micromachine_build_identity \
   --micromachine-atomic-telemetry-publication-patch "${ATOMIC_TELEMETRY_PUBLICATION_PATCH_FILE}" \
   --micromachine-contextual-transfer-choice-projection-patch "${CONTEXTUAL_TRANSFER_CHOICE_PROJECTION_PATCH_FILE}" \
   --micromachine-autonomous-owner-composition-evidence-patch "${AUTONOMOUS_OWNER_COMPOSITION_EVIDENCE_PATCH_FILE}" \
+  --micromachine-battlefield-review-closure-patch "${BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE}" \
   --hook-manifest "${HOOK_MANIFEST_FILE}" \
   --write-embedded-identity-header \
   --initialize-source-attestation
@@ -545,6 +549,7 @@ python3 -m starcraft_commander.micromachine_build_identity \
   --micromachine-atomic-telemetry-publication-patch "${ATOMIC_TELEMETRY_PUBLICATION_PATCH_FILE}" \
   --micromachine-contextual-transfer-choice-projection-patch "${CONTEXTUAL_TRANSFER_CHOICE_PROJECTION_PATCH_FILE}" \
   --micromachine-autonomous-owner-composition-evidence-patch "${AUTONOMOUS_OWNER_COMPOSITION_EVIDENCE_PATCH_FILE}" \
+  --micromachine-battlefield-review-closure-patch "${BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE}" \
   --s2client-patch "${S2CLIENT_PATCH_FILE}" \
   --hook-manifest "${HOOK_MANIFEST_FILE}" \
   --finalize-build-attestation \

@@ -378,6 +378,11 @@
       "path": "patches/0074-autonomous-owner-composition-evidence.patch",
       "order": 74,
       "scope": "project privacy-safe authoritative autonomous owner composition by canonical Terran family, native ownership role, represented count, and ground or air capability; fail closed on missing family or role evidence; and keep raw owner tags out of the public cockpit schema"
+    },
+    {
+      "path": "patches/0075-battlefield-review-closure.patch",
+      "order": 75,
+      "scope": "close battlefield review findings by joining cached browser manager evidence only on exact update identity, merging active exact-target defense operation squads into native base readiness, failing readiness closed when matching squad evidence is missing, and serializing full uint64 session epochs as exact decimal strings"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {

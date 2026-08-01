@@ -276,6 +276,11 @@ AUTONOMOUS_OWNER_COMPOSITION_EVIDENCE_PATCH_FILE = (
     / "patches"
     / "0074-autonomous-owner-composition-evidence.patch"
 )
+BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0075-battlefield-review-closure.patch"
+)
 S2CLIENT_PATCH_FILE = KIT_DIR / "patches" / "0001-s2client-macos-launchservices.patch"
 BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
 PROBE_SCRIPT = KIT_DIR / "scripts" / "probe_macos_local.sh"
@@ -1000,12 +1005,12 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
         self.assertEqual(
             [patch["order"] for patch in bundle],
-            list(range(1, 75)),
+            list(range(1, 76)),
         )
-        self.assertEqual(len(set(manifest_paths)), 74)
+        self.assertEqual(len(set(manifest_paths)), 75)
         self.assertEqual(
             manifest_paths[-1],
-            "patches/0074-autonomous-owner-composition-evidence.patch",
+            "patches/0075-battlefield-review-closure.patch",
         )
         self.assertTrue(
             all((KIT_DIR / path).is_file() for path in manifest_paths)
@@ -1209,8 +1214,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 "order": 68,
             },
             {
-                "path": manifest["patch_bundle"][-7]["path"],
-                "order": manifest["patch_bundle"][-7]["order"],
+                "path": manifest["patch_bundle"][67]["path"],
+                "order": manifest["patch_bundle"][67]["order"],
             },
         )
         build_script = BUILD_SCRIPT.read_text()
@@ -1351,8 +1356,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 "order": 70,
             },
             {
-                "path": manifest["patch_bundle"][-5]["path"],
-                "order": manifest["patch_bundle"][-5]["order"],
+                "path": manifest["patch_bundle"][69]["path"],
+                "order": manifest["patch_bundle"][69]["order"],
             },
         )
         build_script = BUILD_SCRIPT.read_text()
@@ -1414,8 +1419,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 "order": 71,
             },
             {
-                "path": manifest["patch_bundle"][-4]["path"],
-                "order": manifest["patch_bundle"][-4]["order"],
+                "path": manifest["patch_bundle"][70]["path"],
+                "order": manifest["patch_bundle"][70]["order"],
             },
         )
         build_script = BUILD_SCRIPT.read_text()
@@ -1487,8 +1492,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 "order": 72,
             },
             {
-                "path": manifest["patch_bundle"][-3]["path"],
-                "order": manifest["patch_bundle"][-3]["order"],
+                "path": manifest["patch_bundle"][71]["path"],
+                "order": manifest["patch_bundle"][71]["order"],
             },
         )
         build_script = BUILD_SCRIPT.read_text()
@@ -1572,8 +1577,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 "order": 73,
             },
             {
-                "path": manifest["patch_bundle"][-2]["path"],
-                "order": manifest["patch_bundle"][-2]["order"],
+                "path": manifest["patch_bundle"][72]["path"],
+                "order": manifest["patch_bundle"][72]["order"],
             },
         )
         build_script = BUILD_SCRIPT.read_text()
@@ -1652,8 +1657,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 "order": 74,
             },
             {
-                "path": manifest["patch_bundle"][-1]["path"],
-                "order": manifest["patch_bundle"][-1]["order"],
+                "path": manifest["patch_bundle"][73]["path"],
+                "order": manifest["patch_bundle"][73]["order"],
             },
         )
         build_script = BUILD_SCRIPT.read_text()
@@ -1693,6 +1698,74 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 "apply",
                 "--numstat",
                 str(AUTONOMOUS_OWNER_COMPOSITION_EVIDENCE_PATCH_FILE),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, parse_result.returncode, parse_result.stderr)
+
+    def test_battlefield_review_closure_patch_is_required(self) -> None:
+        patch = _read_patch_text(BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE)
+        for contract in (
+            "VoiBattlefieldDefenseOperationInput",
+            "voiBattlefieldCollectBaseDefenders",
+            "targetMatchesBase",
+            "squadEvidencePresent",
+            "getBaseContainingPosition",
+            "projectedBase.readinessEvidencePresent",
+            '\\"session_epoch\\":\\"',
+            "18446744073709551615",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, patch)
+
+        manifest = json.loads((KIT_DIR / "HOOK_MANIFEST.json").read_text())
+        self.assertEqual(
+            {
+                "path": "patches/0075-battlefield-review-closure.patch",
+                "order": 75,
+            },
+            {
+                "path": manifest["patch_bundle"][74]["path"],
+                "order": manifest["patch_bundle"][74]["order"],
+            },
+        )
+        build_script = BUILD_SCRIPT.read_text()
+        patch_variable = "BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE"
+        self.assertIn(
+            f'{patch_variable}="${{REPO_ROOT}}/integrations/'
+            "micromachine/patches/"
+            '0075-battlefield-review-closure.patch"',
+            build_script,
+        )
+        prior_apply = build_script.index(
+            "apply --recount --ignore-space-change --whitespace=nowarn "
+            '"${AUTONOMOUS_OWNER_COMPOSITION_EVIDENCE_PATCH_FILE}"'
+        )
+        patch_check = build_script.index(
+            "apply --recount --check --ignore-space-change "
+            '--whitespace=nowarn "${BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE}"'
+        )
+        patch_apply = build_script.index(
+            "apply --recount --ignore-space-change --whitespace=nowarn "
+            '"${BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE}"'
+        )
+        self.assertLess(prior_apply, patch_check)
+        self.assertLess(patch_check, patch_apply)
+        self.assertEqual(
+            2,
+            build_script.count(
+                "--micromachine-battlefield-review-closure-patch "
+                '"${BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE}"'
+            ),
+        )
+        parse_result = subprocess.run(
+            [
+                "git",
+                "apply",
+                "--numstat",
+                str(BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE),
             ],
             check=False,
             capture_output=True,
@@ -5529,7 +5602,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "patches/0072-atomic-telemetry-publication.patch",
             "patches/0073-contextual-transfer-choice-projection.patch",
             "patches/0074-autonomous-owner-composition-evidence.patch",
-            "through `0074`",
+            "patches/0075-battlefield-review-closure.patch",
+            "through `0075`",
         )
         for term in required_terms:
             with self.subTest(term=term):
@@ -6373,6 +6447,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "0072-atomic-telemetry-publication.patch",
             "0073-contextual-transfer-choice-projection.patch",
             "0074-autonomous-owner-composition-evidence.patch",
+            "0075-battlefield-review-closure.patch",
             "0001-s2client-macos-launchservices.patch",
             "OPERATION_STATE_PATCH_FILE",
             "ADDON_RECOVERY_PATCH_FILE",
@@ -6430,6 +6505,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "ATOMIC_TELEMETRY_PUBLICATION_PATCH_FILE",
             "CONTEXTUAL_TRANSFER_CHOICE_PROJECTION_PATCH_FILE",
             "AUTONOMOUS_OWNER_COMPOSITION_EVIDENCE_PATCH_FILE",
+            "BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE",
             "--micromachine-explicit-ability-production-isolation-patch",
             "--micromachine-explicit-ability-attempt-lifecycle-patch",
             "--micromachine-explicit-ability-review-closure-patch",
@@ -6446,6 +6522,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "--micromachine-atomic-telemetry-publication-patch",
             "--micromachine-contextual-transfer-choice-projection-patch",
             "--micromachine-autonomous-owner-composition-evidence-patch",
+            "--micromachine-battlefield-review-closure-patch",
             "--write-embedded-identity-header",
             "DSC2Api_SC2API_LIB",
             "reset --hard",

@@ -1905,7 +1905,7 @@ def attest_build_binding(
     command_runner: CommandRunner = subprocess.run,
     git_runner: CommandRunner = subprocess.run,
 ) -> dict[str, object]:
-    """Bind schema-74 inputs to one commit and run the exact required CTests."""
+    """Bind schema-75 inputs to one commit and run the exact required CTests."""
 
     blockers: list[str] = []
     path = Path(report_path).absolute()
@@ -1965,10 +1965,10 @@ def attest_build_binding(
                             f"actual={recorded.get('schema_version')!r}"
                         )
                     elif recorded.get("ok") is not True:
-                        blockers.append("schema-74 build report is not accepted")
+                        blockers.append("schema-75 build report is not accepted")
                     elif recorded.get("failures") != []:
                         blockers.append(
-                            "schema-74 build report contains recorded failures"
+                            "schema-75 build report contains recorded failures"
                         )
                     elif upstream_commit_policy.get("ok") is True:
                         try:
@@ -2105,7 +2105,7 @@ def attest_build_binding(
                     != expected_registry_sha256
                 ):
                     blockers.append(
-                        "CTest registry digest differs from the schema-74 "
+                        "CTest registry digest differs from the schema-75 "
                         "build identity: "
                         f"expected={expected_registry_sha256!r} "
                         f"actual={ctest_result.get('registry_sha256')!r}"

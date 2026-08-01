@@ -23,6 +23,7 @@ from starcraft_commander.micromachine_terran_capabilities import (
 
 BATTLEFIELD_OVERVIEW_SCHEMA_VERSION: Final[int] = 2
 BATTLEFIELD_OVERVIEW_AUTHORITY: Final[str] = "micromachine_cpp"
+JSON_SAFE_INTEGER_MAX: Final[int] = 9_007_199_254_740_991
 
 _TERMINAL_COMPLETION_STATES: Final[frozenset[str]] = frozenset(
     {"completed", "failed", "cancelled", "expired", "superseded"}
@@ -59,7 +60,7 @@ class BattlefieldProjectionIdentity:
         return {
             "update_id": self.update_id,
             "scope": self.scope,
-            "session_epoch": self.session_epoch,
+            "session_epoch": str(self.session_epoch),
             "generation": self.generation,
             "stage": self.stage,
             "game_frame": self.game_frame,
@@ -192,7 +193,7 @@ class _Validation:
         }
         return BattlefieldProjectionResult(
             battlefield_overview=(
-                deepcopy(dict(overview))
+                _public_battlefield_overview(overview)
                 if overview is not None and not self.blockers
                 else None
             ),
@@ -3384,7 +3385,7 @@ def _read_identity_components(
         path=f"{path}.identity.scope",
         validation=validation,
     )
-    session_epoch = _identity_positive_int(
+    session_epoch = _identity_session_epoch(
         nested.get("session_epoch"),
         path=f"{path}.identity.session_epoch",
         validation=validation,
@@ -3421,7 +3422,12 @@ def _read_identity_components(
         ("game_frame", game_frame),
     ):
         direct = value.get(field_name)
-        if direct is not None and direct != identity_value:
+        comparable_direct = (
+            _exact_decimal_int(direct)
+            if field_name == "session_epoch"
+            else direct
+        )
+        if direct is not None and comparable_direct != identity_value:
             validation.block(
                 "identity_field_mismatch",
                 f"{path}.{field_name}",
@@ -3886,6 +3892,30 @@ def _identity_positive_int(
     return parsed
 
 
+def _identity_session_epoch(
+    value: object,
+    *,
+    path: str,
+    validation: _Validation,
+) -> int | None:
+    parsed = _exact_decimal_int(value)
+    unsafe_json_integer = (
+        type(value) is int and int(value) > JSON_SAFE_INTEGER_MAX
+    )
+    if parsed is None or parsed <= 0 or unsafe_json_integer:
+        validation.block(
+            "invalid_identity",
+            path,
+            (
+                "Identity session_epoch must be a positive canonical decimal "
+                "string, or a JSON-safe positive integer."
+            ),
+            actual=value,
+        )
+        return None
+    return parsed
+
+
 def _identity_nonnegative_int(
     value: object,
     *,
@@ -3908,6 +3938,43 @@ def _exact_int(value: object) -> int | None:
     if type(value) is not int:
         return None
     return value
+
+
+def _exact_decimal_int(value: object) -> int | None:
+    if type(value) is int:
+        return int(value)
+    if (
+        not isinstance(value, str)
+        or not value
+        or not value.isascii()
+        or not value.isdigit()
+        or (len(value) > 1 and value.startswith("0"))
+    ):
+        return None
+    return int(value)
+
+
+def _public_battlefield_overview(
+    overview: Mapping[str, object],
+) -> dict[str, object]:
+    result = deepcopy(dict(overview))
+    identity = result.get("identity")
+    if isinstance(identity, dict) and "session_epoch" in identity:
+        identity["session_epoch"] = str(identity["session_epoch"])
+    operations = result.get("operation_ownership")
+    if isinstance(operations, list):
+        for operation in operations:
+            if not isinstance(operation, dict):
+                continue
+            operation_identity = operation.get("identity")
+            if (
+                isinstance(operation_identity, dict)
+                and "session_epoch" in operation_identity
+            ):
+                operation_identity["session_epoch"] = str(
+                    operation_identity["session_epoch"]
+                )
+    return result
 
 
 def _is_sequence(value: object) -> bool:
