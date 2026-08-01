@@ -1362,7 +1362,12 @@ def make_ctest_evidence(build_dir: str) -> dict[str, object]:
                 for name, descriptor in test_executables.items()
             }
         )["sha256"],
-        "stdout_sha256": sha256(b"100% tests passed, 0 tests failed out of 6\n"),
+        "stdout_sha256": sha256(
+            (
+                "100% tests passed, 0 tests failed out of "
+                f"{len(MICROMACHINE_REQUIRED_NATIVE_TESTS)}\n"
+            ).encode()
+        ),
         "stderr_sha256": sha256(b""),
     }
 

@@ -1788,6 +1788,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "currentFrame - candidate.terminalFrame",
             "voiSelectOperationHud",
             "selection.operationIndices",
+            "for (const auto operationIndex : selection.operationIndices)",
             "selection.hiddenCount",
             '" operations hidden"',
             "voiOperationHudMarkerVisible",
@@ -1796,6 +1797,10 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "testSameFrameTieBreak",
             "testInvalidTerminalFramesFailClosed",
             "testTerminalGraceBoundary",
+            "voiOperationHudLatchTerminalFrame",
+            "voiOperationHudRetainTerminalHistory",
+            "testTerminalFrameLatchesOnFirstTransition",
+            "testPolicyOmissionRetainsOnlyTerminalHistory",
             "testHiddenCountBoundaryAndAgedOutExclusion",
             "testMarkerEligibilityUsesSelection",
             "testSelectionDoesNotMutateCanonicalState",
@@ -1804,6 +1809,50 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         ):
             with self.subTest(contract=contract):
                 self.assertIn(contract, patch)
+
+        release_start = patch.index(
+            "void CombatCommander::releaseVoiOperation("
+        )
+        draw_start = patch.index("void CombatCommander::drawVoiOperationHud()")
+        release_delta = patch[release_start:draw_start]
+        self.assertIn("const bool wasTerminal = operation.completed;", release_delta)
+        self.assertIn(
+            "voiOperationHudLatchTerminalFrame(",
+            release_delta,
+        )
+        self.assertIn(
+            "voiOperationHudRetainTerminalHistory(",
+            release_delta,
+        )
+        retention_gate = release_delta.index(
+            "voiOperationHudRetainTerminalHistory("
+        )
+        omitted_release = release_delta.index(
+            "const auto transferBlocker =",
+            retention_gate,
+        )
+        self.assertLess(retention_gate, omitted_release)
+
+        draw_end = patch.index(
+            "CCPosition CombatCommander::getMainAttackLocation()",
+            draw_start,
+        )
+        draw_delta = patch[draw_start:draw_end]
+        marker_gate = draw_delta.index("voiOperationHudMarkerVisible(")
+        target_marker = draw_delta.index(
+            "if (operation.targetPosition != CCPosition()",
+            marker_gate,
+        )
+        self.assertLess(marker_gate, target_marker)
+        for mutation in (
+            "m_voiOperations.erase",
+            "m_voiOperationUnitOwners.erase",
+            "unitActions.erase",
+            "m_squadData.removeSquad",
+            "releaseVoiOperation(",
+        ):
+            with self.subTest(mutation=mutation):
+                self.assertNotIn(mutation, draw_delta)
 
         manifest = json.loads((KIT_DIR / "HOOK_MANIFEST.json").read_text())
         self.assertEqual(

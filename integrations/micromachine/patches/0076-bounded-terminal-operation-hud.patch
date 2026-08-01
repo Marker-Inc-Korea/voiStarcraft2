@@ -1,5 +1,5 @@
 diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
-index 6949175..b90279d 100644
+index 6949175..6df94db 100644
 --- a/src/CombatCommander.cpp
 +++ b/src/CombatCommander.cpp
 @@ -1,6 +1,7 @@
@@ -10,7 +10,41 @@ index 6949175..b90279d 100644
  #include "voi_operation_transfer_admission.hpp"
  #include "voi_runtime_convergence.hpp"
  #include <algorithm>
-@@ -15035,9 +15036,37 @@ void CombatCommander::drawVoiOperationHud()
+@@ -3806,6 +3807,7 @@ void CombatCommander::releaseVoiOperation(
+ 	const std::string & reason,
+ 	bool terminal)
+ {
++	const bool wasTerminal = operation.completed;
+ 	const bool cleanupAlreadyRecorded =
+ 		operation.lastActionFrame > 0
+ 		&& (operation.lastAction.rfind(
+@@ -3917,7 +3919,11 @@ void CombatCommander::releaseVoiOperation(
+ 	{
+ 		operation.completed = true;
+ 		operation.completionReason = reason;
+-		operation.completionFrame = m_bot.GetGameLoop();
++		operation.completionFrame =
++			voiOperationHudLatchTerminalFrame(
++				wasTerminal,
++				operation.completionFrame,
++				m_bot.GetGameLoop());
+ 		operation.status = "COMPLETED";
+ 	}
+ 	else
+@@ -6741,6 +6747,12 @@ void CombatCommander::updateVoiOperations()
+ 				existing.operationId);
+ 		if (requested == nullptr)
+ 		{
++			if (voiOperationHudRetainTerminalHistory(
++					existing.completed))
++			{
++				++index;
++				continue;
++			}
+ 			const auto transferBlocker =
+ 				transferBlockers.find(
+ 					existing.operationId);
+@@ -15035,9 +15047,37 @@ void CombatCommander::drawVoiOperationHud()
  	{
  		return;
  	}
@@ -49,7 +83,20 @@ index 6949175..b90279d 100644
  		const auto * battlefieldOperation =
  			voiFindBattlefieldOperationProjection(
  				m_voiBattlefieldProjection,
-@@ -15268,6 +15297,15 @@ void CombatCommander::drawVoiOperationHud()
+@@ -15197,6 +15237,12 @@ void CombatCommander::drawVoiOperationHud()
+ 			color);
+ 		screenY += 0.025f;
+ 
++		if (!voiOperationHudMarkerVisible(
++				selection,
++				operationIndex))
++		{
++			continue;
++		}
+ 		if (operation.targetPosition != CCPosition()
+ 			&& m_bot.Map().isValidPosition(
+ 				operation.targetPosition))
+@@ -15268,6 +15314,15 @@ void CombatCommander::drawVoiOperationHud()
  				color);
  		}
  	}
@@ -67,10 +114,10 @@ index 6949175..b90279d 100644
  CCPosition CombatCommander::getMainAttackLocation()
 diff --git a/src/voi_operation_hud_selection.hpp b/src/voi_operation_hud_selection.hpp
 new file mode 100644
-index 0000000..26bb5b0
+index 0000000..2c14311
 --- /dev/null
 +++ b/src/voi_operation_hud_selection.hpp
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,120 @@
 +#pragma once
 +
 +#include <algorithm>
@@ -98,6 +145,19 @@ index 0000000..26bb5b0
 +	std::vector<std::size_t> operationIndices;
 +	std::size_t hiddenCount = 0;
 +};
++
++inline std::uint64_t voiOperationHudLatchTerminalFrame(
++	bool wasTerminal,
++	std::uint64_t terminalFrame,
++	std::uint64_t currentFrame)
++{
++	return wasTerminal ? terminalFrame : currentFrame;
++}
++
++inline bool voiOperationHudRetainTerminalHistory(bool terminal)
++{
++	return terminal;
++}
 +
 +inline bool voiOperationHudTerminalEligible(
 +	const VoiOperationHudCandidate & candidate,
@@ -221,10 +281,10 @@ index cdfc8a6..8815736 100644
 +)
 diff --git a/tests/operation_hud_selection_test.cpp b/tests/operation_hud_selection_test.cpp
 new file mode 100644
-index 0000000..d972610
+index 0000000..619bcc3
 --- /dev/null
 +++ b/tests/operation_hud_selection_test.cpp
-@@ -0,0 +1,229 @@
+@@ -0,0 +1,253 @@
 +#include "voi_operation_hud_selection.hpp"
 +
 +#include <algorithm>
@@ -380,6 +440,28 @@ index 0000000..d972610
 +		.operationIndices.empty());
 +}
 +
++void testTerminalFrameLatchesOnFirstTransition()
++{
++	CHECK(voiOperationHudLatchTerminalFrame(
++		false,
++		0,
++		400) == 400);
++	CHECK(voiOperationHudLatchTerminalFrame(
++		true,
++		400,
++		401) == 400);
++	CHECK(voiOperationHudLatchTerminalFrame(
++		true,
++		0,
++		401) == 0);
++}
++
++void testPolicyOmissionRetainsOnlyTerminalHistory()
++{
++	CHECK(voiOperationHudRetainTerminalHistory(true));
++	CHECK(!voiOperationHudRetainTerminalHistory(false));
++}
++
 +void testHiddenCountBoundaryAndAgedOutExclusion()
 +{
 +	std::vector<VoiOperationHudCandidate> candidates;
@@ -449,6 +531,8 @@ index 0000000..d972610
 +	testSameFrameTieBreak();
 +	testInvalidTerminalFramesFailClosed();
 +	testTerminalGraceBoundary();
++	testTerminalFrameLatchesOnFirstTransition();
++	testPolicyOmissionRetainsOnlyTerminalHistory();
 +	testHiddenCountBoundaryAndAgedOutExclusion();
 +	testMarkerEligibilityUsesSelection();
 +	testSelectionDoesNotMutateCanonicalState();
