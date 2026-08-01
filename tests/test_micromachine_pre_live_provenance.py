@@ -732,7 +732,15 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         workflow = workflow_path.read_text()
 
         self.assertIn("permissions:\n  contents: read\n", workflow)
+        self.assertIn("  pre-live-build:\n", workflow)
         self.assertIn(f"  {AUTHORITATIVE_PROVENANCE_JOB_NAME}:\n", workflow)
+        build_job = workflow.split(
+            "  pre-live-build:\n",
+            1,
+        )[1].split(
+            f"\n  {AUTHORITATIVE_PROVENANCE_JOB_NAME}:\n",
+            1,
+        )[0]
         provenance_job = workflow.split(
             f"  {AUTHORITATIVE_PROVENANCE_JOB_NAME}:\n",
             1,
@@ -752,7 +760,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             workflow,
         )
         self.assertEqual(
-            2,
+            3,
             workflow.count(
                 "      ROOT_DIR: /private/tmp/voi-micromachine-runtime\n"
             ),
@@ -770,7 +778,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             for block in job_blocks
             if "if: github.event_name == 'push'" not in block
         ]
-        self.assertGreaterEqual(len(pull_request_job_blocks), 2)
+        self.assertGreaterEqual(len(pull_request_job_blocks), 3)
         for job_block in pull_request_job_blocks:
             with self.subTest(job=job_block.split(":\n", 1)[0].strip()):
                 checkout_block = job_block.split(
@@ -781,14 +789,42 @@ class GitHubSourceAttestationTest(unittest.TestCase):
                     "          persist-credentials: false",
                     checkout_block,
                 )
-        build_step = provenance_job.split(
-            "      - name: Build exact MicroMachine integration\n",
-            1,
-        )[1].split(
-            "      - name: Emit canonical authenticated provenance bundle\n",
-            1,
-        )[0]
-        self.assertNotIn("GITHUB_TOKEN", build_step)
+        self.assertIn(
+            "      - name: Build exact MicroMachine integration "
+            "without credentials\n",
+            build_job,
+        )
+        self.assertIn(
+            "      - name: Archive exact MicroMachine runtime\n",
+            build_job,
+        )
+        self.assertIn(
+            "      - name: Upload exact MicroMachine runtime\n",
+            build_job,
+        )
+        self.assertIn(
+            "          name: pre-live-build-runtime\n",
+            build_job,
+        )
+        self.assertNotIn("GITHUB_TOKEN", build_job)
+        self.assertNotIn("github.token", build_job)
+        self.assertNotIn(
+            "Build exact MicroMachine integration",
+            provenance_job,
+        )
+        self.assertIn(
+            "      - name: Download exact MicroMachine runtime\n",
+            provenance_job,
+        )
+        self.assertIn(
+            "        uses: actions/download-artifact@"
+            "d3f86a106a0bac45b974a628896c90dbdf5c8093\n",
+            provenance_job,
+        )
+        self.assertIn(
+            "      - name: Restore exact MicroMachine runtime\n",
+            provenance_job,
+        )
         self.assertNotIn("GITHUB_WORKFLOW_REF:", provenance_job)
         self.assertNotIn("GITHUB_WORKFLOW_SHA:", provenance_job)
         self.assertIn(
@@ -802,20 +838,29 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             provenance_job,
         )
         ownership_step = provenance_job.split(
-            "      - name: Transfer checkout ownership to the root verifier\n",
+            "      - name: Transfer verifier inputs to root ownership\n",
             1,
         )[1].split(
-            "      - name: Verify dedicated producer isolation boundary\n",
+            "      - name: Emit canonical authenticated provenance bundle\n",
             1,
         )[0]
         self.assertIn(
-            '          sudo chown 0:0 "${GITHUB_WORKSPACE}" '
-            '"${GITHUB_WORKSPACE}/.git"\n',
+            '          sudo chown -RP 0:0 "${GITHUB_WORKSPACE}" '
+            '"${ROOT_DIR}"\n',
             ownership_step,
         )
         self.assertIn(
-            '          sudo chmod 0755 "${GITHUB_WORKSPACE}"\n',
+            '          sudo chmod 0755 "${GITHUB_WORKSPACE}" '
+            '"${ROOT_DIR}"\n',
             ownership_step,
+        )
+        self.assertLess(
+            provenance_job.index(
+                "      - name: Emit canonical authenticated provenance bundle\n"
+            ),
+            provenance_job.index(
+                "      - name: Verify dedicated producer isolation boundary\n"
+            ),
         )
         self.assertIn(
             "-k dedicated_producer_uid",
@@ -853,8 +898,8 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             "      - name: Restore checkout ownership to the runner\n"
             "        if: always()\n"
             "        run: >-\n"
-            '          sudo chown "$(id -u):$(id -g)"\n'
-            '          "${GITHUB_WORKSPACE}" "${GITHUB_WORKSPACE}/.git"\n',
+            '          sudo chown -RP "$(id -u):$(id -g)"\n'
+            '          "${GITHUB_WORKSPACE}"\n',
             provenance_job,
         )
         self.assertIn(
@@ -3784,6 +3829,56 @@ class LocalProducerTest(unittest.TestCase):
                 (),
                 provenance_module._process_ids_for_uid(producer_uid),
             )
+
+    def test_timeout_reaps_main_before_dedicated_uid_cleanup(self) -> None:
+        events: list[str] = []
+
+        class TimedOutProcess:
+            pid = 4321
+            returncode: int | None = None
+
+            def kill(self) -> None:
+                events.append("kill")
+
+            def wait(self, *, timeout: float) -> int:
+                self.assert_timeout(timeout)
+                events.append("wait")
+                self.returncode = -9
+                return self.returncode
+
+            def communicate(self) -> tuple[bytes, bytes]:
+                events.append("communicate")
+                return b"stdout", b"stderr"
+
+            @staticmethod
+            def assert_timeout(timeout: float) -> None:
+                if timeout != 1.0:
+                    raise AssertionError(f"unexpected timeout: {timeout}")
+
+        process = TimedOutProcess()
+        with (
+            mock.patch.object(
+                provenance_module.os,
+                "killpg",
+                side_effect=lambda pid, sig: events.append("killpg"),
+            ),
+            mock.patch.object(
+                provenance_module,
+                "_terminate_producer_uid_processes",
+                side_effect=lambda uid: events.append("uid_cleanup") or (),
+            ),
+        ):
+            stdout, stderr = provenance_module._finish_timed_out_process(
+                process,
+                producer_uid=65001,
+            )
+
+        self.assertEqual(b"stdout", stdout)
+        self.assertEqual(b"stderr", stderr)
+        self.assertEqual(
+            ["killpg", "wait", "uid_cleanup", "communicate"],
+            events,
+        )
 
     def test_dedicated_producer_uid_rejects_and_kills_normal_exit_descendant(
         self,

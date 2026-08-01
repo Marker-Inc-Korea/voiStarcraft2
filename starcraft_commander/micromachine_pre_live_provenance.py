@@ -6753,13 +6753,14 @@ def _run_authenticated_python_exec(
             stdout, stderr = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             timed_out = True
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                process.kill()
-            if producer_identity is not None:
-                _terminate_producer_uid_processes(producer_identity[0])
-            stdout, stderr = process.communicate()
+            stdout, stderr = _finish_timed_out_process(
+                process,
+                producer_uid=(
+                    producer_identity[0]
+                    if producer_identity is not None
+                    else None
+                ),
+            )
             raise subprocess.TimeoutExpired(
                 list(argv),
                 timeout,
@@ -6898,6 +6899,35 @@ def _terminate_producer_uid_processes(uid: int) -> tuple[int, ...]:
                 )
             return tuple(sorted(observed))
         time.sleep(0.02)
+
+
+def _finish_timed_out_process(
+    process: subprocess.Popen[bytes],
+    *,
+    producer_uid: int | None,
+) -> tuple[bytes, bytes]:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        process.kill()
+    try:
+        process.wait(timeout=1.0)
+    except subprocess.TimeoutExpired as exc:
+        process.kill()
+        try:
+            process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired as final_exc:
+            raise OSError("timed-out producer main process could not be reaped") from (
+                final_exc
+            )
+        else:
+            if process.returncode is None:
+                raise OSError(
+                    "timed-out producer main process has no reaped status"
+                ) from exc
+    if producer_uid is not None:
+        _terminate_producer_uid_processes(producer_uid)
+    return process.communicate()
 
 
 def _make_snapshot_tree_read_only(root: Path) -> None:
