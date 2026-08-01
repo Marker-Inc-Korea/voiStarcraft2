@@ -24,7 +24,10 @@ from starcraft_commander.micromachine_pre_live_journeys import (
     DEFAULT_JOURNEY_MANIFEST,
     DETERMINISTIC_ZIP_TIMESTAMP,
     _close_native_path_monitor,
+    _compile_native_input,
     _execute_tactical_radio_runtime,
+    _JourneyExecution,
+    _all_terran_compiler_bindings_from_native_input,
     _markdown_report,
     _native_path_monitor_changed,
     _open_native_path_monitor,
@@ -1638,6 +1641,37 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
             any("compiler-bound" in blocker for blocker in blockers),
             blockers,
         )
+
+    def test_all_terran_rejects_wrong_transformed_caster_form(self) -> None:
+        spec = self.specs["all_terran_family_ability_blocker_matrix"]
+        native_input = _compile_native_input(_JourneyExecution(spec))
+        operation = next(
+            operation
+            for step in native_input["steps"]
+            if step["kind"] == "policy_update"
+            for operation in step["update"]["vector"]["operations"]
+            if operation["operation_id"] == "matrix-siege_tank-unsiege"
+        )
+        operation["composition_requirements"][0]["unit_type"] = (
+            "TERRAN_SIEGETANK"
+        )
+
+        with self.assertRaisesRegex(ValueError, "wrong ability caster form"):
+            _all_terran_compiler_bindings_from_native_input(native_input)
+
+    def test_all_terran_rejects_wrong_caster_cloak_state(self) -> None:
+        spec = self.specs["all_terran_family_ability_blocker_matrix"]
+        native_input = _compile_native_input(_JourneyExecution(spec))
+        ghost_decloak = next(
+            unit
+            for unit in native_input["initial_state"]["units"]
+            if unit.get("cloak_state") == "cloaked"
+            and unit["unit_type"] == "TERRAN_GHOST"
+        )
+        ghost_decloak["cloak_state"] = "not_cloaked"
+
+        with self.assertRaisesRegex(ValueError, "wrong ability cloak state"):
+            _all_terran_compiler_bindings_from_native_input(native_input)
 
     def test_all_terran_prerequisite_wait_is_not_replayed_as_rejection(
         self,

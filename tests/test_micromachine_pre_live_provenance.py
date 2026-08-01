@@ -2956,6 +2956,118 @@ class BuildBindingTest(unittest.TestCase):
 
 
 class GitHubActionsBundleEmissionTest(unittest.TestCase):
+    def test_emitter_forwards_preflighted_identity_to_build_fallback(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = make_build_fixture(root / "fixture")
+            adapter = FakeGitHubAdapter(
+                head_sha=fixture["repository_commit"],
+            )
+            blocked_build = {
+                "ok": False,
+                "status": "blocked",
+                "blockers": ["stop after identity observation"],
+            }
+
+            with (
+                mock.patch.object(
+                    provenance_module,
+                    "_normalize_producer_identity",
+                    return_value=(65001, 65002),
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "attest_build_binding",
+                    return_value=blocked_build,
+                ) as build_attestation,
+                mock.patch.object(
+                    provenance_module,
+                    "attest_github_actions_emission_context",
+                    return_value={
+                        "ok": False,
+                        "status": "blocked",
+                        "blockers": ["stop after identity observation"],
+                    },
+                ) as github_attestation,
+            ):
+                report = emit_github_actions_pre_live_bundle(
+                    adapter=adapter,
+                    repository_dir=fixture["repository"],
+                    expected_commit=fixture["repository_commit"],
+                    run_id=RUN_ID,
+                    run_attempt=RUN_ATTEMPT,
+                    workflow_ref=WORKFLOW_REF,
+                    workflow_sha=WORKFLOW_SHA,
+                    build_report_path=fixture["report_path"],
+                    expected_build_dir=(
+                        fixture["config"].micromachine_build_dir
+                    ),
+                    output_path=root / GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME,
+                    producer_uid=65001,
+                    producer_gid=65002,
+                )
+
+            self.assertFalse(report["ok"], report)
+            self.assertEqual(
+                65001,
+                build_attestation.call_args.kwargs["execution_uid"],
+            )
+            self.assertEqual(
+                65002,
+                build_attestation.call_args.kwargs["execution_gid"],
+            )
+            github_attestation.assert_called_once()
+
+    def test_invalid_identity_preflight_never_calls_github(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = make_build_fixture(root / "fixture")
+            adapter = FakeGitHubAdapter(
+                head_sha=fixture["repository_commit"],
+            )
+
+            with (
+                mock.patch.object(
+                    provenance_module,
+                    "_normalize_producer_identity",
+                    side_effect=ValueError("invalid dedicated identity"),
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "attest_build_binding",
+                    return_value={
+                        "ok": False,
+                        "status": "blocked",
+                        "blockers": ["identity rejected"],
+                    },
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "attest_github_actions_emission_context",
+                ) as github_attestation,
+            ):
+                report = emit_github_actions_pre_live_bundle(
+                    adapter=adapter,
+                    repository_dir=fixture["repository"],
+                    expected_commit=fixture["repository_commit"],
+                    run_id=RUN_ID,
+                    run_attempt=RUN_ATTEMPT,
+                    workflow_ref=WORKFLOW_REF,
+                    workflow_sha=WORKFLOW_SHA,
+                    build_report_path=fixture["report_path"],
+                    expected_build_dir=(
+                        fixture["config"].micromachine_build_dir
+                    ),
+                    output_path=root / GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME,
+                    producer_uid=65001,
+                    producer_gid=65002,
+                )
+
+            self.assertFalse(report["ok"], report)
+            github_attestation.assert_not_called()
+
     def test_deterministic_output_is_bound_to_the_admitted_build(self) -> None:
         raw_output = b"raw deterministic journey output"
         bound_output = b"bound deterministic journey output"
@@ -4411,7 +4523,7 @@ class LocalProducerTest(unittest.TestCase):
                     expected_build_dir=(
                         fixture["config"].micromachine_build_dir
                     ),
-                    command_runner=passing_ctest,
+                    command_runner=subprocess.run,
                     execution_uid=producer_uid,
                     execution_gid=producer_gid,
                 )
@@ -6379,8 +6491,27 @@ class AggregateProvenanceTest(unittest.TestCase):
                     node_executable.read_bytes()
                 ).hexdigest(),
             }
+            admitted_build = attest_build_binding(
+                build["report_path"],
+                repository_dir=build["repository"],
+                expected_repository_commit=commit,
+                expected_build_dir=(
+                    build["config"].micromachine_build_dir
+                ),
+                command_runner=passing_ctest,
+            )
 
             with (
+                mock.patch.object(
+                    provenance_module,
+                    "_normalize_producer_identity",
+                    return_value=(65001, 65002),
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "attest_build_binding",
+                    return_value=admitted_build,
+                ) as build_attestation,
                 mock.patch.object(
                     provenance_module,
                     "resolve_local_producer_policy",
@@ -6417,9 +6548,19 @@ class AggregateProvenanceTest(unittest.TestCase):
                     ),
                     node_executable=node_executable,
                     ctest_runner=passing_ctest,
+                    producer_uid=65001,
+                    producer_gid=65002,
                 )
 
             self.assertFalse(report["ok"], report)
+            self.assertEqual(
+                65001,
+                build_attestation.call_args.kwargs["execution_uid"],
+            )
+            self.assertEqual(
+                65002,
+                build_attestation.call_args.kwargs["execution_gid"],
+            )
             descriptor = github_attestation.call_args.kwargs[
                 "node_executable"
             ]

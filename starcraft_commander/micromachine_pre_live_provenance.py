@@ -3935,6 +3935,22 @@ def emit_github_actions_pre_live_bundle(
     """Create the exact canonical bundle uploaded by the provenance CI job."""
 
     blockers: list[str] = []
+    producer_identity: tuple[int, int] | None = None
+    producer_identity_blocked = False
+    if producer_id == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID:
+        try:
+            producer_identity = _normalize_producer_identity(
+                producer_uid,
+                producer_gid,
+            )
+            if producer_identity is None:
+                raise ValueError(
+                    "deterministic journey emission requires a dedicated "
+                    "producer UID/GID"
+                )
+        except (OSError, TypeError, ValueError) as exc:
+            producer_identity_blocked = True
+            blockers.append(f"producer execution identity is invalid: {exc}")
     repository_root = Path(repository_dir).resolve()
     raw_output = Path(output_path).absolute()
     output = raw_output.parent.resolve() / raw_output.name
@@ -3950,28 +3966,30 @@ def emit_github_actions_pre_live_bundle(
         blockers.append("pre-live bundle output parent contains a symlink")
     if os.path.lexists(raw_output) and raw_output.is_symlink():
         blockers.append("pre-live bundle output must not be a symlink")
-    if (
-        producer_id == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
-        and (producer_uid is None or producer_gid is None)
-    ):
-        blockers.append(
-            "deterministic journey emission requires a dedicated producer UID/GID"
-        )
-
     repository_before = attest_repository(
         repository_root,
         expected_repository=AUTHORITATIVE_REPOSITORY,
         expected_commit=expected_commit,
         command_runner=git_runner,
     )
-    source_context = attest_github_actions_emission_context(
-        adapter,
-        repository=AUTHORITATIVE_REPOSITORY,
-        run_id=run_id,
-        run_attempt=run_attempt,
-        expected_head_sha=expected_commit,
-        workflow_ref=workflow_ref,
-        workflow_sha=workflow_sha,
+    source_context = (
+        _component_result(
+            [
+                "GitHub Actions emission context was not evaluated because "
+                "the producer execution identity failed preflight"
+            ],
+            status="not_evaluated",
+        )
+        if producer_identity_blocked
+        else attest_github_actions_emission_context(
+            adapter,
+            repository=AUTHORITATIVE_REPOSITORY,
+            run_id=run_id,
+            run_attempt=run_attempt,
+            expected_head_sha=expected_commit,
+            workflow_ref=workflow_ref,
+            workflow_sha=workflow_sha,
+        )
     )
     if _prevalidated_build_binding is None:
         build_binding = attest_build_binding(
@@ -3981,6 +3999,8 @@ def emit_github_actions_pre_live_bundle(
             expected_build_dir=expected_build_dir,
             command_runner=ctest_runner,
             git_runner=git_runner,
+            execution_uid=producer_identity[0] if producer_identity else None,
+            execution_gid=producer_identity[1] if producer_identity else None,
         )
     else:
         build_binding = _admit_prevalidated_build_binding(
@@ -5337,6 +5357,20 @@ def attest_pre_live_provenance(
     """Aggregate authenticated source, build, execution, and replay evidence."""
 
     blockers: list[str] = []
+    producer_identity: tuple[int, int] | None = None
+    if producer_id == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID:
+        try:
+            producer_identity = _normalize_producer_identity(
+                producer_uid,
+                producer_gid,
+            )
+            if producer_identity is None:
+                raise ValueError(
+                    "production candidate execution requires a dedicated "
+                    "producer UID/GID"
+                )
+        except (OSError, TypeError, ValueError) as exc:
+            blockers.append(f"producer execution identity is invalid: {exc}")
     repository_before = attest_repository(
         repository_dir,
         expected_repository=AUTHORITATIVE_REPOSITORY,
@@ -5350,6 +5384,8 @@ def attest_pre_live_provenance(
         expected_build_dir=expected_build_dir,
         command_runner=ctest_runner,
         git_runner=git_runner,
+        execution_uid=producer_identity[0] if producer_identity else None,
+        execution_gid=producer_identity[1] if producer_identity else None,
     )
     if expected_head_sha != expected_commit:
         blockers.append(
@@ -5428,14 +5464,6 @@ def attest_pre_live_provenance(
             )
         blockers.extend(_prefixed_blockers("github", github_source))
     blockers.extend(_production_candidate_producer_blockers(producer_id))
-    if (
-        producer_id == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
-        and (producer_uid is None or producer_gid is None)
-    ):
-        blockers.append(
-            "production candidate execution requires a dedicated producer UID/GID"
-        )
-
     if blockers:
         local_execution = _component_result(
             ["producer not executed because authenticated prerequisites failed"],

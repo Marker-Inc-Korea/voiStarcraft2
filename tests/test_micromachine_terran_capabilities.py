@@ -11,6 +11,8 @@ from starcraft_commander.micromachine_terran_capabilities import (
     lower_terran_natural_language_operation,
     lower_terran_natural_language_units,
     operation_family_evidence,
+    terran_ability_caster_state,
+    terran_ability_caster_state_matches,
     terran_production_targets,
     terran_unit_form_prerequisites,
     validate_terran_capability_contract,
@@ -228,6 +230,41 @@ TERRAN_OPERATION_LANGUAGE_CASES = (
     ("본진 수비해", "defend_with_units", "defense", "home"),
 )
 
+EXPECTED_ABILITY_CASTER_STATES = {
+    "marine_stimpack": ("TERRAN_MARINE", ""),
+    "marauder_stimpack": ("TERRAN_MARAUDER", ""),
+    "kd8_charge": ("TERRAN_REAPER", ""),
+    "emp": ("TERRAN_GHOST", ""),
+    "snipe": ("TERRAN_GHOST", ""),
+    "ghost_cloak": ("TERRAN_GHOST", "not_cloaked"),
+    "ghost_decloak": ("TERRAN_GHOST", "cloaked"),
+    "tactical_nuke": ("TERRAN_GHOST", ""),
+    "hellbat_mode": ("TERRAN_HELLION", ""),
+    "hellion_mode": ("TERRAN_HELLIONTANK", ""),
+    "widow_mine_burrow": ("TERRAN_WIDOWMINE", ""),
+    "widow_mine_unburrow": ("TERRAN_WIDOWMINEBURROWED", ""),
+    "lock_on": ("TERRAN_CYCLONE", ""),
+    "siege_mode": ("TERRAN_SIEGETANK", ""),
+    "unsiege": ("TERRAN_SIEGETANKSIEGED", ""),
+    "thor_high_impact_mode": ("TERRAN_THOR", ""),
+    "thor_explosive_mode": ("TERRAN_THORAP", ""),
+    "medivac_afterburners": ("TERRAN_MEDIVAC", ""),
+    "medivac_heal": ("TERRAN_MEDIVAC", ""),
+    "medivac_load": ("TERRAN_MEDIVAC", ""),
+    "medivac_unload_all": ("TERRAN_MEDIVAC", ""),
+    "auto_turret": ("TERRAN_RAVEN", ""),
+    "interference_matrix": ("TERRAN_RAVEN", ""),
+    "anti_armor_missile": ("TERRAN_RAVEN", ""),
+    "viking_fighter_mode": ("TERRAN_VIKINGASSAULT", ""),
+    "viking_assault_mode": ("TERRAN_VIKINGFIGHTER", ""),
+    "banshee_cloak": ("TERRAN_BANSHEE", "not_cloaked"),
+    "banshee_decloak": ("TERRAN_BANSHEE", "cloaked"),
+    "liberator_defender_mode": ("TERRAN_LIBERATOR", ""),
+    "liberator_fighter_mode": ("TERRAN_LIBERATORAG", ""),
+    "yamato": ("TERRAN_BATTLECRUISER", ""),
+    "tactical_jump": ("TERRAN_BATTLECRUISER", ""),
+}
+
 
 class MicroMachineTerranCapabilitiesTest(unittest.TestCase):
     def test_matrix_has_exactly_15_unique_canonical_families(self) -> None:
@@ -295,6 +332,37 @@ class MicroMachineTerranCapabilitiesTest(unittest.TestCase):
 
     def test_capability_contract_has_no_internal_drift(self) -> None:
         self.assertEqual((), validate_terran_capability_contract())
+
+    def test_every_ability_has_an_exact_caster_form_and_cloak_state(self) -> None:
+        observed = {}
+        for row in all_terran_capability_matrix():
+            for ability in row["abilities"]:
+                state = terran_ability_caster_state(ability)
+                self.assertIsNotNone(state, ability)
+                assert state is not None
+                observed[str(ability)] = (state.unit_type, state.cloak_state)
+                self.assertTrue(
+                    terran_ability_caster_state_matches(
+                        ability,
+                        state.unit_type,
+                        cloak_state=state.cloak_state,
+                    )
+                )
+
+        self.assertEqual(EXPECTED_ABILITY_CASTER_STATES, observed)
+        self.assertFalse(
+            terran_ability_caster_state_matches(
+                "unsiege",
+                "TERRAN_SIEGETANK",
+            )
+        )
+        self.assertFalse(
+            terran_ability_caster_state_matches(
+                "banshee_decloak",
+                "TERRAN_BANSHEE",
+                cloak_state="not_cloaked",
+            )
+        )
 
     def test_all_15_families_lower_deterministically_for_every_operation(
         self,

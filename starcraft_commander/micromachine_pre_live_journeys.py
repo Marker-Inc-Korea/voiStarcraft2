@@ -50,6 +50,7 @@ from starcraft_commander.micromachine_terran_capabilities import (
     canonical_terran_unit_family,
     lower_terran_natural_language_units,
     operation_family_evidence,
+    terran_ability_caster_state,
     terran_production_targets,
 )
 
@@ -429,6 +430,7 @@ class _JourneyExecution:
     compiled_updates: list[dict[str, object]] = field(default_factory=list)
     native_steps: list[dict[str, object]] = field(default_factory=list)
     initial_units: list[dict[str, object]] = field(default_factory=list)
+    matrix_ability_by_tag: dict[int, str] = field(default_factory=dict)
     next_tag: int = 1000
 
     @property
@@ -462,12 +464,22 @@ class _JourneyExecution:
             }
         )
 
-    def allocate_unit(self, unit_type: str) -> dict[str, object]:
+    def allocate_unit(
+        self,
+        unit_type: str,
+        *,
+        cloak_state: str = "",
+        matrix_ability: str = "",
+    ) -> dict[str, object]:
         unit = {
             "tag": self.next_tag,
             "unit_type": unit_type,
             "home_distance": 0.0,
         }
+        if cloak_state:
+            unit["cloak_state"] = cloak_state
+        if matrix_ability:
+            self.matrix_ability_by_tag[self.next_tag] = matrix_ability
         self.next_tag += 1
         self.initial_units.append(unit)
         return unit
@@ -888,9 +900,17 @@ def _expand_initial_state(
                 execution.allocate_unit(str(unit_type))
     elif raw_units == "all_terran_families":
         for row in all_terran_capability_matrix():
-            unit_type = str(cast(Sequence[object], row["unit_types"])[0])
-            for _ in cast(Sequence[object], row["abilities"]):
-                execution.allocate_unit(unit_type)
+            for ability in cast(Sequence[object], row["abilities"]):
+                caster_state = terran_ability_caster_state(ability)
+                if caster_state is None:
+                    raise ValueError(
+                        f"ability caster state is missing: {ability}"
+                    )
+                execution.allocate_unit(
+                    caster_state.unit_type,
+                    cloak_state=caster_state.cloak_state,
+                    matrix_ability=caster_state.ability,
+                )
     else:
         raise ValueError("initial_state.units is unsupported")
     raw_structures = source.get("structures", ())
@@ -1155,21 +1175,15 @@ def _expand_unit_observations(
     item: Mapping[str, object],
 ) -> list[dict[str, object]]:
     if item.get("matrix_observed_abilities") is True:
-        abilities_by_family = {
-            str(row["family"]): [
-                str(value) for value in cast(Sequence[object], row["abilities"])
-            ]
-            for row in all_terran_capability_matrix()
-        }
         return [
             {
                 "tag": int(unit["tag"]),
-                "observed_abilities": abilities_by_family.get(
-                    canonical_terran_unit_family(unit["unit_type"]),
-                    [],
-                ),
+                "observed_abilities": [
+                    execution.matrix_ability_by_tag[int(unit["tag"])]
+                ],
             }
             for unit in execution.initial_units
+            if int(unit["tag"]) in execution.matrix_ability_by_tag
         ]
     raw_units = item.get("units")
     if not isinstance(raw_units, Sequence) or isinstance(
@@ -5406,15 +5420,27 @@ def _all_terran_compiler_bindings(
 ) -> dict[tuple[str, str, int], dict[str, object]]:
     execution = _JourneyExecution(spec)
     native_input = _compile_native_input(execution)
+    return _all_terran_compiler_bindings_from_native_input(native_input)
+
+
+def _all_terran_compiler_bindings_from_native_input(
+    native_input: Mapping[str, object],
+) -> dict[tuple[str, str, int], dict[str, object]]:
     initial_state = native_input.get("initial_state")
     if not isinstance(initial_state, Mapping):
         raise ValueError("all-Terran initial state is malformed")
-    available: dict[str, int] = {}
+    available: dict[tuple[str, str], int] = {}
+    available_by_type: dict[str, int] = {}
     for unit in _mapping_sequence(initial_state.get("units")):
         unit_type = unit.get("unit_type")
         if type(unit_type) is not str or not unit_type:
             raise ValueError("all-Terran initial unit type is malformed")
-        available[unit_type] = available.get(unit_type, 0) + 1
+        cloak_state = unit.get("cloak_state", "")
+        if type(cloak_state) is not str:
+            raise ValueError("all-Terran initial cloak state is malformed")
+        key = (unit_type, cloak_state)
+        available[key] = available.get(key, 0) + 1
+        available_by_type[unit_type] = available_by_type.get(unit_type, 0) + 1
     bindings: dict[tuple[str, str, int], dict[str, object]] = {}
     for step in cast(
         Sequence[Mapping[str, object]],
@@ -5453,13 +5479,39 @@ def _all_terran_compiler_bindings(
                 or not unit_type
             ):
                 raise ValueError("all-Terran operation binding is malformed")
+            caster_state = terran_ability_caster_state(ability)
+            if (
+                caster_state is None
+                or caster_state.unit_type != unit_type
+            ):
+                raise ValueError(
+                    "all-Terran operation uses the wrong ability caster form"
+                )
+            caster_count = required.get(unit_type, 0)
+            caster_inventory_key = (
+                caster_state.unit_type,
+                caster_state.cloak_state,
+            )
+            if (
+                available_by_type.get(unit_type, 0) >= caster_count
+                and available.get(caster_inventory_key, 0) < caster_count
+            ):
+                raise ValueError(
+                    "all-Terran operation uses the wrong ability cloak state"
+                )
             blocked = any(
-                available.get(required_type, 0) < count
+                (
+                    available.get(caster_inventory_key, 0) < count
+                    if required_type == unit_type
+                    else available_by_type.get(required_type, 0) < count
+                )
                 for required_type, count in required.items()
             )
             if not blocked:
                 for required_type, count in required.items():
-                    available[required_type] -= count
+                    if required_type == unit_type:
+                        available[caster_inventory_key] -= count
+                    available_by_type[required_type] -= count
             identity = (
                 str(update["update_id"]),
                 str(operation["operation_id"]),
@@ -6693,14 +6745,18 @@ def _provider_output(preset: str) -> dict[str, object]:
         operations: list[dict[str, object]] = []
         for row in all_terran_capability_matrix():
             family = str(row["family"])
-            unit_type = str(cast(Sequence[object], row["unit_types"])[0])
             role = str(row["default_role"])
             for ability in cast(Sequence[object], row["abilities"]):
                 ability_name = str(ability)
+                caster_state = terran_ability_caster_state(ability_name)
+                if caster_state is None:
+                    raise ValueError(
+                        f"ability caster state is missing: {ability_name}"
+                    )
                 operation = _operation_provider(
                     f"matrix-{family}-{ability_name}",
                     "execute_ability",
-                    unit_type,
+                    caster_state.unit_type,
                     1,
                     role,
                 )

@@ -1408,6 +1408,51 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "CHECK(liveBinding.unitType == liveUnitTypeCase.second);",
             patch,
         )
+        for contract in (
+            "VoiExplicitAbilityCasterState",
+            "voiResolveExplicitAbilityCasterState(",
+            "voiExplicitAbilityCasterStateMatches(",
+            'state = {"TERRAN_HELLIONTANK", ""};',
+            'state = {"TERRAN_WIDOWMINEBURROWED", ""};',
+            'state = {"TERRAN_SIEGETANKSIEGED", ""};',
+            'state = {"TERRAN_THORAP", ""};',
+            'state = {"TERRAN_VIKINGASSAULT", ""};',
+            'state = {"TERRAN_LIBERATORAG", ""};',
+            'state = {"TERRAN_GHOST", "not_cloaked"};',
+            'state = {"TERRAN_GHOST", "cloaked"};',
+            'state = {"TERRAN_BANSHEE", "not_cloaked"};',
+            'state = {"TERRAN_BANSHEE", "cloaked"};',
+            'jsonString(item, "cloak_state")',
+            '"operation ability caster unit type is invalid"',
+            '"assigned ability caster cloak state is invalid"',
+            "unitFor(unitTag, binding, blocker)",
+            "unitFor(unitTag, binding, unitBlocker)",
+            "sc2::Unit::Cloaked",
+            "sc2::Unit::NotCloaked",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, patch)
+        for transformed_type in (
+            "TERRAN_HELLIONTANK",
+            "TERRAN_WIDOWMINEBURROWED",
+            "TERRAN_SIEGETANKSIEGED",
+            "TERRAN_THORAP",
+            "TERRAN_VIKINGASSAULT",
+            "TERRAN_LIBERATORAG",
+        ):
+            with self.subTest(concrete_type=transformed_type):
+                self.assertIn(
+                    f"sc2::UNIT_TYPEID::{transformed_type};",
+                    patch,
+                )
+        self.assertIn(
+            '"operation ability caster unit type is invalid");',
+            patch,
+        )
+        self.assertIn(
+            '"assigned ability caster cloak state is invalid");',
+            patch,
+        )
 
     def test_battlefield_projection_patch_has_authoritative_runtime_contract(
         self,
