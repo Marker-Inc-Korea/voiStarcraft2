@@ -41,6 +41,7 @@ MICROMACHINE_REQUIRED_NATIVE_TESTS: Final[dict[str, str]] = {
     "voi_operation_hud_selection": "voi_operation_hud_selection_test",
     "voi_operation_hud_selection_ndebug": "voi_operation_hud_selection_ndebug_test",
     "voi_pre_live_journey_adapter": "voi_pre_live_journey_adapter_test",
+    "voi_production_path": "voi_production_path_test",
 }
 CMAKE_CTEST_COMMAND_PREFIX: Final[str] = "CMAKE_CTEST_COMMAND:INTERNAL="
 DEFAULT_MICROMACHINE_COMMIT: Final[str] = "eb893161371dab975a0a7e600f9e250ac03ec1ef"

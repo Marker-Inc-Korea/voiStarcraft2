@@ -1,5 +1,5 @@
 diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
-index 3733a2a..594c7af 100644
+index 3733a2a51bfdd55ff3eedd23cc645740f2ca5a8c..b38bb385a4214d912d6eccc7fc5bebe8b62410e4 100644
 --- a/src/CombatCommander.cpp
 +++ b/src/CombatCommander.cpp
 @@ -1,4 +1,5 @@
@@ -8,7 +8,91 @@ index 3733a2a..594c7af 100644
  #include "Util.h"
  #include "CCBot.h"
  #include "voi_operation_hud_selection.hpp"
-@@ -4738,10 +4739,15 @@ void CombatCommander::reconcileVoiOperation(
+@@ -2236,7 +2237,9 @@ float voiOperationSquadOrderRadius(const std::string & taskType)
+ 	return DefaultOrderRadius;
+ }
+ 
+-void voiSetOperationSquadOrder(
++std::string voiSquadOrderName(size_t orderType);
++
++bool voiSetOperationSquadOrder(
+ 	VoiOperationState & operation,
+ 	Squad & squad,
+ 	size_t orderType,
+@@ -2244,10 +2247,38 @@ void voiSetOperationSquadOrder(
+ 	float radius,
+ 	const std::string & status)
+ {
++	const SquadOrder squadOrder(
++		orderType,
++		position,
++		radius,
++		status);
++	if (operation.assignedUnitTags.empty())
++	{
++		squad.setSquadOrder(squadOrder);
++		operation.squadOrderType = orderType;
++		operation.squadOrderRadius = radius;
++		return true;
++	}
++	const VoiProductionOperationIdentity identity = {
++		operation.policyUpdateId,
++		operation.operationId,
++		operation.generation
++	};
++	const auto receipt = squad.setSquadOrder(
++		squadOrder,
++		identity,
++		"squad_order:" + voiSquadOrderName(orderType),
++		operation.assignedUnitTags);
++	BOT_ASSERT(
++		receipt.accepted,
++		"VOI production squad order application failed");
++	if (!receipt.accepted)
++	{
++		return false;
++	}
+ 	operation.squadOrderType = orderType;
+ 	operation.squadOrderRadius = radius;
+-	squad.setSquadOrder(
+-		SquadOrder(orderType, position, radius, status));
++	return true;
+ }
+ 
+ std::string voiSquadOrderName(size_t orderType)
+@@ -4254,10 +4285,8 @@ void CombatCommander::observeVoiOperations()
+ 				operation.activeTargetPosition,
+ 				8.0f) >= majority)
+ 		{
+-			operation.routeStageComplete = true;
+-			operation.activeTargetPosition =
+-				operation.targetPosition;
+-			voiSetOperationSquadOrder(
++			const bool orderApplied =
++				voiSetOperationSquadOrder(
+ 				operation,
+ 				squad,
+ 				voiOperationSquadOrderType(
+@@ -4266,6 +4295,18 @@ void CombatCommander::observeVoiOperations()
+ 				voiOperationSquadOrderRadius(
+ 					operation.taskType),
+ 				operation.status);
++			if (orderApplied)
++			{
++				operation.routeStageComplete = true;
++				operation.activeTargetPosition =
++					operation.targetPosition;
++			}
++			else
++			{
++				operation.status = "BLOCKED";
++				operation.blockedReason =
++					"squad_order_not_applied";
++			}
+ 		}
+ 
+ 		const float completionRadius =
+@@ -4738,10 +4779,15 @@ void CombatCommander::reconcileVoiOperation(
  				restoreSquad;
  			operation.assignedRoleByTag[unit.getTag()] = role;
  			m_squadData.assignUnitToSquad(unit, squad);
@@ -26,160 +110,660 @@ index 3733a2a..594c7af 100644
  		};
  	auto sortedCandidates =
  		[&](const std::string & requiredType)
+@@ -5027,13 +5073,17 @@ void CombatCommander::reconcileVoiOperation(
+ 		operation.status = "BLOCKED";
+ 		operation.blockedReason =
+ 			"emergency_retreat_preempted";
+-		voiSetOperationSquadOrder(
++		if (!voiSetOperationSquadOrder(
+ 			operation,
+ 			squad,
+ 			SquadOrderTypes::Retreat,
+ 			voiHomePosition(m_bot),
+ 			DefaultOrderRadius,
+-			"Retreat");
++			"Retreat"))
++		{
++			operation.blockedReason =
++				"squad_order_not_applied";
++		}
+ 		return;
+ 	}
+ 	const bool enoughUnits =
+@@ -5047,13 +5097,18 @@ void CombatCommander::reconcileVoiOperation(
+ 	{
+ 		operation.status = convergence.status;
+ 		operation.blockedReason = convergence.blocker;
+-		voiSetOperationSquadOrder(
++		if (!voiSetOperationSquadOrder(
+ 			operation,
+ 			squad,
+ 			SquadOrderTypes::Idle,
+ 			voiHomePosition(m_bot),
+ 			DefaultOrderRadius,
+-			operation.status);
++			operation.status))
++		{
++			operation.status = "BLOCKED";
++			operation.blockedReason =
++				"squad_order_not_applied";
++		}
+ 		return;
+ 	}
+ 	if (operation.assignedFrame == 0)
+@@ -5068,7 +5123,7 @@ void CombatCommander::reconcileVoiOperation(
+ 	{
+ 		operation.status = "ASSIGNED";
+ 	}
+-	voiSetOperationSquadOrder(
++	if (!voiSetOperationSquadOrder(
+ 		operation,
+ 		squad,
+ 		voiOperationSquadOrderType(
+@@ -5076,7 +5131,12 @@ void CombatCommander::reconcileVoiOperation(
+ 		operation.activeTargetPosition,
+ 		voiOperationSquadOrderRadius(
+ 			operation.taskType),
+-		operation.status);
++		operation.status))
++	{
++		operation.status = "BLOCKED";
++		operation.blockedReason =
++			"squad_order_not_applied";
++	}
+ }
+ 
+ void CombatCommander::updateVoiOperations()
+@@ -16394,6 +16454,20 @@ void CombatCommander::ExecuteActions()
+ 			&& commandEpochOperation->submittedPositions.find(
+ 				rangedUnit->tag)
+ 				== commandEpochOperation->submittedPositions.end();
++		VoiProductionActionBinding productionBinding;
++		const VoiProductionActionBinding *
++			productionBindingPtr = nullptr;
++		if (commandEpochOperation != nullptr)
++		{
++			productionBinding.identity = {
++				commandEpochOperation->policyUpdateId,
++				commandEpochOperation->operationId,
++				commandEpochOperation->generation
++			};
++			productionBinding.action =
++				voiOperationFamilyActionName(action);
++			productionBindingPtr = &productionBinding;
++		}
+ 
+ 		/*if (m_logVikingActions && rangedUnit->unit_type == sc2::UNIT_TYPEID::TERRAN_VIKINGFIGHTER)
+ 		{
+@@ -16487,13 +16561,22 @@ void CombatCommander::ExecuteActions()
+ 				{
+ 					if (rangedUnit->unit_type == sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER)
+ 					{
+-						Micro::SmartMove(rangedUnit, action.position, m_bot);
++						Micro::SmartMove(
++							rangedUnit,
++							action.position,
++							m_bot,
++							productionBindingPtr,
++							&issuedCommand);
+ 					}
+ 					else
+ 					{
+-						Micro::SmartAttackMove(rangedUnit, action.position, m_bot);
++						Micro::SmartAttackMove(
++							rangedUnit,
++							action.position,
++							m_bot,
++							productionBindingPtr,
++							&issuedCommand);
+ 					}
+-					issuedCommand = true;
+ 				}
+ 				break;
+ 			case MicroActionType::AttackUnit:
+@@ -16504,8 +16587,12 @@ void CombatCommander::ExecuteActions()
+ 					skip = true;
+ 				if (!skip)
+ 				{
+-					Micro::SmartAttackUnit(rangedUnit, action.target, m_bot);
+-					issuedCommand = true;
++					Micro::SmartAttackUnit(
++						rangedUnit,
++						action.target,
++						m_bot,
++						productionBindingPtr,
++						&issuedCommand);
+ 				}
+ 				break;
+ 			case MicroActionType::Move:
+@@ -16531,8 +16618,12 @@ void CombatCommander::ExecuteActions()
+ 				}
+ 				if (!skip)
+ 				{
+-					Micro::SmartMove(rangedUnit, action.position, m_bot);
+-					issuedCommand = true;
++					Micro::SmartMove(
++						rangedUnit,
++						action.position,
++						m_bot,
++						productionBindingPtr,
++						&issuedCommand);
+ 				}
+ 				break;
+ 			case MicroActionType::Ability:
+@@ -16550,8 +16641,12 @@ void CombatCommander::ExecuteActions()
+ 				}
+ 				else
+ 				{
+-					Micro::SmartAbility(rangedUnit, action.abilityID, m_bot);
+-					issuedCommand = true;
++					Micro::SmartAbility(
++						rangedUnit,
++						action.abilityID,
++						m_bot,
++						productionBindingPtr,
++						&issuedCommand);
+ 				}
+ 				break;
+ 			case MicroActionType::AbilityPosition:
+@@ -16638,8 +16733,9 @@ void CombatCommander::ExecuteActions()
+ 						rangedUnit,
+ 						action.abilityID,
+ 						action.position,
+-						m_bot);
+-					issuedCommand = true;
++						m_bot,
++						productionBindingPtr,
++						&issuedCommand);
+ 				}
+ 				break;
+ 			case MicroActionType::AbilityTarget:
+@@ -16695,8 +16791,9 @@ void CombatCommander::ExecuteActions()
+ 						rangedUnit,
+ 						action.abilityID,
+ 						action.target,
+-						m_bot);
+-					issuedCommand = true;
++						m_bot,
++						productionBindingPtr,
++						&issuedCommand);
+ 				}
+ 				break;
+ 			case MicroActionType::Stop:
+@@ -16706,12 +16803,20 @@ void CombatCommander::ExecuteActions()
+ 				skip = true;
+ 				break;
+ 			case MicroActionType::RightClick:
+-				Micro::SmartRightClick(rangedUnit, action.target, m_bot);
+-				issuedCommand = true;
++				Micro::SmartRightClick(
++					rangedUnit,
++					action.target,
++					m_bot,
++					productionBindingPtr,
++					&issuedCommand);
+ 				break;
+ 			case MicroActionType::ToggleAbility:
+-				Micro::SmartToggleAutoCast(rangedUnit, action.abilityID, m_bot);
+-				issuedCommand = true;
++				Micro::SmartToggleAutoCast(
++					rangedUnit,
++					action.abilityID,
++					m_bot,
++					productionBindingPtr,
++					&issuedCommand);
+ 				break;
+ 			default:
+ 				const int type = action.microActionType;
 diff --git a/src/Micro.cpp b/src/Micro.cpp
-index 344aaa6..2f7c040 100644
+index 344aaa67cd0dcaf436cb70fd217d61e539c8a55f..38f435ad45aa7d035aa3731c43c59a4b057dfffa 100644
 --- a/src/Micro.cpp
 +++ b/src/Micro.cpp
-@@ -2,6 +2,7 @@
+@@ -2,6 +2,32 @@
  #include "Util.h"
  #include "CCBot.h"
  #include "sc2api/sc2_api.h"
 +#include "voi_production_path.hpp"
++
++namespace
++{
++template <typename Dispatch>
++bool voiDispatchSc2Action(
++	const VoiProductionActionBinding * productionBinding,
++	const std::string & dispatchAction,
++	std::uint64_t unitTag,
++	bool * commandIssued,
++	Dispatch dispatch)
++{
++	const bool dispatched = voiProductionDispatchSc2ActionAndRecord(
++		productionBinding,
++		dispatchAction,
++		unitTag,
++		commandIssued,
++		dispatch);
++	BOT_ASSERT(
++		dispatched,
++		productionBinding == nullptr
++			? "SC2 action dispatch failed"
++			: "VOI production SC2 action submission failed");
++	return dispatched;
++}
++}
  
  const float dotRadius = 0.1f;
  
-@@ -17,14 +18,34 @@ MicroActionType Micro::SmartAttackUnit(const sc2::Unit * attacker, const sc2::Un
+@@ -13,29 +39,81 @@ MicroActionType Micro::SmartStop(const sc2::Unit * attacker, CCBot & bot)
+ 	return MicroActionType::Stop;
+ }
+ 
+-MicroActionType Micro::SmartAttackUnit(const sc2::Unit * attacker, const sc2::Unit * target, CCBot & bot)
++MicroActionType Micro::SmartAttackUnit(
++	const sc2::Unit * attacker,
++	const sc2::Unit * target,
++	CCBot & bot,
++	const VoiProductionActionBinding * productionBinding,
++	bool * commandIssued)
  {
      BOT_ASSERT(attacker != nullptr, "Attacker is null");
      BOT_ASSERT(target != nullptr, "Target is null");
 -    bot.Actions()->UnitCommand(attacker, sc2::ABILITY_ID::ATTACK, target);
-+	const auto receipt = voiProductionSubmitSc2Action(
++	voiDispatchSc2Action(
++		productionBinding,
 +		"attack_unit",
 +		attacker->tag,
++		commandIssued,
 +		[&]()
 +		{
 +			bot.Actions()->UnitCommand(
 +				attacker,
 +				sc2::ABILITY_ID::ATTACK,
 +				target);
++			return true;
 +		});
-+	BOT_ASSERT(receipt.submitted, "VOI attack-unit submission failed");
  	return MicroActionType::AttackUnit;
  }
  
- MicroActionType Micro::SmartAttackMove(const sc2::Unit * attacker, const sc2::Point2D & targetPosition, CCBot & bot)
+-MicroActionType Micro::SmartAttackMove(const sc2::Unit * attacker, const sc2::Point2D & targetPosition, CCBot & bot)
++MicroActionType Micro::SmartAttackMove(
++	const sc2::Unit * attacker,
++	const sc2::Point2D & targetPosition,
++	CCBot & bot,
++	const VoiProductionActionBinding * productionBinding,
++	bool * commandIssued)
  {
      BOT_ASSERT(attacker != nullptr, "Attacker is null");
 -    bot.Actions()->UnitCommand(attacker, sc2::ABILITY_ID::ATTACK, targetPosition);
-+	const auto receipt = voiProductionSubmitSc2Action(
++	voiDispatchSc2Action(
++		productionBinding,
 +		"attack_move",
 +		attacker->tag,
++		commandIssued,
 +		[&]()
 +		{
 +			bot.Actions()->UnitCommand(
 +				attacker,
 +				sc2::ABILITY_ID::ATTACK,
 +				targetPosition);
++			return true;
 +		});
-+	BOT_ASSERT(receipt.submitted, "VOI attack-move submission failed");
  	return MicroActionType::AttackMove;
  }
  
-@@ -35,7 +56,17 @@ MicroActionType Micro::SmartMove(const sc2::Unit * unit, const sc2::Point2D & ta
+-MicroActionType Micro::SmartMove(const sc2::Unit * unit, const sc2::Point2D & targetPosition, CCBot & bot)
++MicroActionType Micro::SmartMove(
++	const sc2::Unit * unit,
++	const sc2::Point2D & targetPosition,
++	CCBot & bot,
++	const VoiProductionActionBinding * productionBinding,
++	bool * commandIssued)
+ {
+     BOT_ASSERT(unit != nullptr, "Unit is null");
++	voiProductionResetCommandIssue(commandIssued);
+ 	if (bot.Commander().shouldSuppressRepeatedWorkerCommand(unit, sc2::ABILITY_ID::MOVE, 0, targetPosition, "micro_smart_move_position"))
  	{
  		return MicroActionType::Move;
  	}
 -    bot.Actions()->UnitCommand(unit, sc2::ABILITY_ID::MOVE, targetPosition);
-+	const auto receipt = voiProductionSubmitSc2Action(
++	voiDispatchSc2Action(
++		productionBinding,
 +		"move",
 +		unit->tag,
++		commandIssued,
 +		[&]()
 +		{
 +			bot.Actions()->UnitCommand(
 +				unit,
 +				sc2::ABILITY_ID::MOVE,
 +				targetPosition);
++			return true;
 +		});
-+	BOT_ASSERT(receipt.submitted, "VOI move submission failed");
  	return MicroActionType::Move;
  }
  
-@@ -77,7 +108,14 @@ MicroActionType Micro::SmartRepair(const sc2::Unit * unit, const sc2::Unit * tar
- MicroActionType Micro::SmartAbility(const sc2::Unit * unit, const sc2::AbilityID & abilityID, CCBot & bot)
+@@ -46,14 +124,32 @@ MicroActionType Micro::SmartHold(const sc2::Unit * unit, bool queued, CCBot & bo
+ 	return MicroActionType::Move;
+ }
+ 
+-MicroActionType Micro::SmartRightClick(const sc2::Unit * unit, const sc2::Unit * target, CCBot & bot)
++MicroActionType Micro::SmartRightClick(
++	const sc2::Unit * unit,
++	const sc2::Unit * target,
++	CCBot & bot,
++	const VoiProductionActionBinding * productionBinding,
++	bool * commandIssued)
+ {
+ 	BOT_ASSERT(unit != nullptr, "Unit is null");
++	voiProductionResetCommandIssue(commandIssued);
+ 	if (target != nullptr && bot.Commander().shouldSuppressRepeatedWorkerCommand(unit, sc2::ABILITY_ID::SMART, target->tag, target->pos, "unit_ptr"))
+ 	{
+ 		return MicroActionType::RightClick;
+ 	}
+-	bot.Actions()->UnitCommand(unit, sc2::ABILITY_ID::SMART, target);
++	voiDispatchSc2Action(
++		productionBinding,
++		"right_click",
++		unit->tag,
++		commandIssued,
++		[&]()
++		{
++			bot.Actions()->UnitCommand(
++				unit,
++				sc2::ABILITY_ID::SMART,
++				target);
++			return true;
++		});
+ 	return MicroActionType::RightClick;
+ }
+ 
+@@ -74,39 +170,101 @@ MicroActionType Micro::SmartRepair(const sc2::Unit * unit, const sc2::Unit * tar
+ 	return MicroActionType::RightClick;
+ }
+ 
+-MicroActionType Micro::SmartAbility(const sc2::Unit * unit, const sc2::AbilityID & abilityID, CCBot & bot)
++MicroActionType Micro::SmartAbility(
++	const sc2::Unit * unit,
++	const sc2::AbilityID & abilityID,
++	CCBot & bot,
++	const VoiProductionActionBinding * productionBinding,
++	bool * commandIssued)
  {
  	BOT_ASSERT(unit != nullptr, "Unit using smart ability is null");
 -	bot.Actions()->UnitCommand(unit, abilityID);
-+	const auto receipt = voiProductionSubmitSc2Action(
++	voiDispatchSc2Action(
++		productionBinding,
 +		"ability",
 +		unit->tag,
++		commandIssued,
 +		[&]()
 +		{
 +			bot.Actions()->UnitCommand(unit, abilityID);
++			return true;
 +		});
-+	BOT_ASSERT(receipt.submitted, "VOI ability submission failed");
  	return MicroActionType::Ability;
  }
  
-@@ -88,7 +126,16 @@ MicroActionType Micro::SmartAbility(const sc2::Unit * unit, const sc2::AbilityID
+-MicroActionType Micro::SmartAbility(const sc2::Unit * unit, const sc2::AbilityID & abilityID, CCPosition position, CCBot & bot)
++MicroActionType Micro::SmartAbility(
++	const sc2::Unit * unit,
++	const sc2::AbilityID & abilityID,
++	CCPosition position,
++	CCBot & bot,
++	const VoiProductionActionBinding * productionBinding,
++	bool * commandIssued)
+ {
+ 	BOT_ASSERT(unit != nullptr, "Unit using smart ability is null");
++	voiProductionResetCommandIssue(commandIssued);
+ 	if (bot.Commander().shouldSuppressRepeatedWorkerCommand(unit, abilityID, 0, position, "ability_position"))
  	{
  		return MicroActionType::AbilityPosition;
  	}
 -	bot.Actions()->UnitCommand(unit, abilityID, position);
-+	const auto receipt = voiProductionSubmitSc2Action(
++	voiDispatchSc2Action(
++		productionBinding,
 +		"ability_position",
 +		unit->tag,
++		commandIssued,
 +		[&]()
 +		{
 +			bot.Actions()->UnitCommand(unit, abilityID, position);
++			return true;
 +		});
-+	BOT_ASSERT(
-+		receipt.submitted,
-+		"VOI ability-position submission failed");
  	return MicroActionType::AbilityPosition;
  }
  
-@@ -100,7 +147,16 @@ MicroActionType Micro::SmartAbility(const sc2::Unit * unit, const sc2::AbilityID
+-MicroActionType Micro::SmartAbility(const sc2::Unit * unit, const sc2::AbilityID & abilityID, const sc2::Unit * target, CCBot & bot)
++MicroActionType Micro::SmartAbility(
++	const sc2::Unit * unit,
++	const sc2::AbilityID & abilityID,
++	const sc2::Unit * target,
++	CCBot & bot,
++	const VoiProductionActionBinding * productionBinding,
++	bool * commandIssued)
+ {
+ 	BOT_ASSERT(unit != nullptr, "Unit using smart ability is null");
+ 	BOT_ASSERT(target != nullptr, "Target of smart ability is null");
++	voiProductionResetCommandIssue(commandIssued);
+ 	if (bot.Commander().shouldSuppressRepeatedWorkerCommand(unit, abilityID, target->tag, target->pos, "ability_target"))
  	{
  		return MicroActionType::AbilityTarget;
  	}
 -	bot.Actions()->UnitCommand(unit, abilityID, target);
-+	const auto receipt = voiProductionSubmitSc2Action(
++	voiDispatchSc2Action(
++		productionBinding,
 +		"ability_target",
 +		unit->tag,
++		commandIssued,
 +		[&]()
 +		{
 +			bot.Actions()->UnitCommand(unit, abilityID, target);
++			return true;
 +		});
-+	BOT_ASSERT(
-+		receipt.submitted,
-+		"VOI ability-target submission failed");
  	return MicroActionType::AbilityTarget;
  }
  
+-MicroActionType Micro::SmartToggleAutoCast(const sc2::Unit * unit, const sc2::AbilityID & abilityID, CCBot & bot)
++MicroActionType Micro::SmartToggleAutoCast(
++	const sc2::Unit * unit,
++	const sc2::AbilityID & abilityID,
++	CCBot & bot,
++	const VoiProductionActionBinding * productionBinding,
++	bool * commandIssued)
+ {
+ 	BOT_ASSERT(unit != nullptr, "Unit using smart toggle auto cast is null");
+-	bot.Actions()->ToggleAutocast(unit->tag, abilityID);
++	voiDispatchSc2Action(
++		productionBinding,
++		"toggle_autocast",
++		unit->tag,
++		commandIssued,
++		[&]()
++		{
++			bot.Actions()->ToggleAutocast(
++				unit->tag,
++				abilityID);
++			return true;
++		});
+ 	return MicroActionType::ToggleAbility;
+ }
+diff --git a/src/Micro.h b/src/Micro.h
+index f0653da743f8e3979a0c68d6a71addd4c2c4a221..162f537b7f11194b7de9d189c4778b63ca613255 100644
+--- a/src/Micro.h
++++ b/src/Micro.h
+@@ -2,6 +2,7 @@
+ 
+ #include "Common.h"
+ #include "sc2api/sc2_api.h"
++#include "voi_production_path.hpp"
+ 
+ class CCBot;
+ 
+@@ -24,16 +25,69 @@ const std::string MicroActionTypeAccronyms[] = {"S", "AU", "AM", "M", "RC", "A",
+ 
+ namespace Micro
+ {
+-	MicroActionType SmartStop          (const sc2::Unit * attacker,  CCBot & bot);
+-	MicroActionType SmartAttackUnit    (const sc2::Unit * attacker,  const sc2::Unit * target, CCBot & bot);
+-	MicroActionType SmartAttackMove    (const sc2::Unit * attacker,  const sc2::Point2D & targetPosition, CCBot & bot);
+-	MicroActionType SmartMove          (const sc2::Unit * unit,  const sc2::Point2D & targetPosition, CCBot & bot);
+-	MicroActionType SmartHold          (const sc2::Unit * unit, bool queued, CCBot & bot);
+-	MicroActionType SmartRightClick    (const sc2::Unit * unit,      const sc2::Unit * target, CCBot & bot);
+-	MicroActionType SmartRightClick    (const sc2::Units & units, const sc2::Unit * target, CCBot & bot);
+-	MicroActionType SmartRepair        (const sc2::Unit * unit,      const sc2::Unit * target, CCBot & bot);
+-	MicroActionType SmartAbility	   (const sc2::Unit * unit, const sc2::AbilityID & abilityID, CCBot & bot);
+-	MicroActionType SmartAbility	   (const sc2::Unit * unit, const sc2::AbilityID & abilityID, CCPosition position, CCBot & bot);
+-	MicroActionType SmartAbility	   (const sc2::Unit * unit, const sc2::AbilityID & abilityID, const sc2::Unit * target, CCBot & bot);
+-	MicroActionType SmartToggleAutoCast(const sc2::Unit * unit, const sc2::AbilityID & abilityID, CCBot & bot);
+-};
+\ No newline at end of file
++	MicroActionType SmartStop(
++		const sc2::Unit * attacker,
++		CCBot & bot);
++	MicroActionType SmartAttackUnit(
++		const sc2::Unit * attacker,
++		const sc2::Unit * target,
++		CCBot & bot,
++		const VoiProductionActionBinding * productionBinding = nullptr,
++		bool * commandIssued = nullptr);
++	MicroActionType SmartAttackMove(
++		const sc2::Unit * attacker,
++		const sc2::Point2D & targetPosition,
++		CCBot & bot,
++		const VoiProductionActionBinding * productionBinding = nullptr,
++		bool * commandIssued = nullptr);
++	MicroActionType SmartMove(
++		const sc2::Unit * unit,
++		const sc2::Point2D & targetPosition,
++		CCBot & bot,
++		const VoiProductionActionBinding * productionBinding = nullptr,
++		bool * commandIssued = nullptr);
++	MicroActionType SmartHold(
++		const sc2::Unit * unit,
++		bool queued,
++		CCBot & bot);
++	MicroActionType SmartRightClick(
++		const sc2::Unit * unit,
++		const sc2::Unit * target,
++		CCBot & bot,
++		const VoiProductionActionBinding * productionBinding = nullptr,
++		bool * commandIssued = nullptr);
++	MicroActionType SmartRightClick(
++		const sc2::Units & units,
++		const sc2::Unit * target,
++		CCBot & bot);
++	MicroActionType SmartRepair(
++		const sc2::Unit * unit,
++		const sc2::Unit * target,
++		CCBot & bot);
++	MicroActionType SmartAbility(
++		const sc2::Unit * unit,
++		const sc2::AbilityID & abilityID,
++		CCBot & bot,
++		const VoiProductionActionBinding * productionBinding = nullptr,
++		bool * commandIssued = nullptr);
++	MicroActionType SmartAbility(
++		const sc2::Unit * unit,
++		const sc2::AbilityID & abilityID,
++		CCPosition position,
++		CCBot & bot,
++		const VoiProductionActionBinding * productionBinding = nullptr,
++		bool * commandIssued = nullptr);
++	MicroActionType SmartAbility(
++		const sc2::Unit * unit,
++		const sc2::AbilityID & abilityID,
++		const sc2::Unit * target,
++		CCBot & bot,
++		const VoiProductionActionBinding * productionBinding = nullptr,
++		bool * commandIssued = nullptr);
++	MicroActionType SmartToggleAutoCast(
++		const sc2::Unit * unit,
++		const sc2::AbilityID & abilityID,
++		CCBot & bot,
++		const VoiProductionActionBinding * productionBinding = nullptr,
++		bool * commandIssued = nullptr);
++}
 diff --git a/src/Squad.cpp b/src/Squad.cpp
-index 2c0e029..bf8b1bd 100644
+index 2c0e02912e3030f7eddb3119cb1943fc10c23020..959f57e8f92fc411bcb414b3f50a118013969186 100644
 --- a/src/Squad.cpp
 +++ b/src/Squad.cpp
-@@ -1,4 +1,5 @@
- #include "Squad.h"
-+#include "voi_production_path.hpp"
- #include "CCBot.h"
- #include "Util.h"
+@@ -428,7 +428,7 @@ bool Squad::needsToRegroup()
+     return shouldRegroup;
+ }
  
-@@ -430,6 +431,21 @@ bool Squad::needsToRegroup()
- 
- void Squad::setSquadOrder(const SquadOrder & so)
+-void Squad::setSquadOrder(const SquadOrder & so)
++bool Squad::applySquadOrderState(const SquadOrder & so)
  {
-+	std::vector<std::uint64_t> unitTags;
-+	for (const auto & unit : m_units)
-+	{
-+		unitTags.push_back(unit.getTag());
-+	}
-+	if (!unitTags.empty())
-+	{
-+		const auto receipt = voiProductionIssueSquadOrder(
-+			m_name,
-+			std::to_string(so.getType()),
-+			unitTags);
-+		BOT_ASSERT(
-+			receipt.accepted,
-+			"VOI production squad order admission failed");
-+	}
  	if (so.getType() == SquadOrderTypes::Regroup && m_order.getType() != SquadOrderTypes::Regroup)
  		m_regroupStartFrame = m_bot.GetCurrentFrame();
- 	else if (so.getType() == SquadOrderTypes::Retreat && m_order.getType() != SquadOrderTypes::Retreat)
+@@ -438,7 +438,34 @@ void Squad::setSquadOrder(const SquadOrder & so)
+ 		m_lastRegroupFrame = m_bot.GetCurrentFrame();
+ 	if (so.getType() != SquadOrderTypes::Retreat)
+ 		m_retreatStartFrame = 0;
+-    m_order = so;
++	m_order = so;
++	return m_order.getType() == so.getType()
++		&& m_order.getPosition() == so.getPosition()
++		&& m_order.getRadius() == so.getRadius()
++		&& m_order.getStatus() == so.getStatus();
++}
++
++void Squad::setSquadOrder(const SquadOrder & so)
++{
++	const bool applied = applySquadOrderState(so);
++	BOT_ASSERT(applied, "Squad order mutation failed");
++}
++
++VoiProductionSquadOrderReceipt Squad::setSquadOrder(
++	const SquadOrder & so,
++	const VoiProductionOperationIdentity & identity,
++	const std::string & action,
++	const std::vector<std::uint64_t> & unitTags)
++{
++	return voiProductionIssueSquadOrder(
++		identity,
++		m_name,
++		action,
++		unitTags,
++		[&]()
++		{
++			return applySquadOrderState(so);
++		});
+ }
+ 
+ bool Squad::containsUnit(const Unit & unit) const
+diff --git a/src/Squad.h b/src/Squad.h
+index def3e92e158d3958808193fddff16155261ed66d..1e0099e2ae783dcec9256f14ca99fb48f8248e64 100644
+--- a/src/Squad.h
++++ b/src/Squad.h
+@@ -4,6 +4,7 @@
+ #include "MeleeManager.h"
+ #include "RangedManager.h"
+ #include "SquadOrder.h"
++#include "voi_production_path.hpp"
+ #include <ctime>
+ 
+ class CCBot;
+@@ -45,6 +46,7 @@ class Squad
+ 
+     bool isUnitNearEnemy(const Unit & unit) const;
+     int  squadUnitsNear(const CCPosition & pos) const;
++    bool applySquadOrderState(const SquadOrder & so);
+ 
+ public:
+ 
+@@ -58,6 +60,11 @@ public:
+ 
+     void onFrame();
+     void setSquadOrder(const SquadOrder & so);
++    VoiProductionSquadOrderReceipt setSquadOrder(
++        const SquadOrder & so,
++        const VoiProductionOperationIdentity & identity,
++        const std::string & action,
++        const std::vector<std::uint64_t> & unitTags);
+     void addUnit(const Unit & unit);
+     void removeUnit(const Unit & unit);
+     void giveBackWorkers();
 diff --git a/src/voi_pre_live_journey_adapter.hpp b/src/voi_pre_live_journey_adapter.hpp
-index 1a79e02..158c030 100644
+index 1a79e0284d33c7f045bf809561eabe440bc3bc44..2b56a413b8ff0c2bb9b3dc45d367d590d627c7b2 100644
 --- a/src/voi_pre_live_journey_adapter.hpp
 +++ b/src/voi_pre_live_journey_adapter.hpp
 @@ -5,6 +5,7 @@
@@ -190,7 +774,22 @@ index 1a79e02..158c030 100644
  #include "voi_runtime_convergence.hpp"
  
  #include <algorithm>
-@@ -88,7 +89,7 @@ struct VoiPreLiveOperationState
+@@ -69,6 +70,8 @@ struct VoiPreLiveOperationState
+ 	std::string status = "RECEIVED";
+ 	std::string blocker;
+ 	std::string action;
++	std::string squadOrderReceiptId;
++	std::string dispatchAction;
+ 	std::string editAction;
+ 	std::string counterpartOperationId;
+ 	std::size_t transferCount = 0;
+@@ -83,12 +86,13 @@ struct VoiPreLiveOperationState
+ 	double priority = 0.0;
+ 	std::vector<VoiPreLiveRequirementState> requirements;
+ 	std::vector<std::uint64_t> assignedTags;
++	std::vector<std::string> submissionIds;
+ };
+ 
  class VoiPreLiveJourneyAdapter
  {
  	std::map<std::uint64_t, VoiPreLiveUnitState> m_units;
@@ -199,7 +798,7 @@ index 1a79e02..158c030 100644
  	std::map<std::string, VoiPreLiveOperationState> m_operations;
  	std::map<std::string, int> m_protectedMinimum;
  	std::set<std::string> m_structures;
-@@ -101,6 +102,15 @@ class VoiPreLiveJourneyAdapter
+@@ -101,6 +105,20 @@ class VoiPreLiveJourneyAdapter
  	bool m_baseThreatened = false;
  	std::string m_baseId = "self_main";
  	std::size_t m_requiredDefenders = 0;
@@ -212,13 +811,43 @@ index 1a79e02..158c030 100644
 +	std::size_t m_operationOwnershipReceiptCount = 0;
 +	std::size_t m_squadOrderReceiptCount = 0;
 +	std::size_t m_sc2SubmissionReceiptCount = 0;
++	VoiProductionDeterministicCommandSink m_commandSink;
++	std::vector<VoiProductionSquadOrderReceipt>
++		m_squadOrderReceipts;
++	std::vector<VoiProductionSubmissionReceipt>
++		m_sc2SubmissionReceipts;
  
  	static bool hasForbiddenAuthorityInput(
  		const VoiPreLiveJson & value,
-@@ -195,6 +205,20 @@ class VoiPreLiveJourneyAdapter
+@@ -195,6 +213,45 @@ class VoiPreLiveJourneyAdapter
  		return "attack";
  	}
  
++	static VoiProductionOperationIdentity productionIdentity(
++		const VoiPreLiveOperationState & operation)
++	{
++		return {
++			operation.updateId,
++			operation.operationId,
++			operation.generation
++		};
++	}
++
++	static std::string deterministicDispatchAction(
++		const VoiPreLiveOperationState & operation)
++	{
++		if (!operation.ability.empty())
++		{
++			return "ability";
++		}
++		if (operation.action == "retreat"
++			|| operation.action == "squad_order:scout")
++		{
++			return "move";
++		}
++		return "attack_move";
++	}
++
 +	static std::pair<int, int> unitResourceCost(
 +		const std::string & unitType)
 +	{
@@ -236,7 +865,7 @@ index 1a79e02..158c030 100644
  	void emit(
  		const std::string & eventType,
  		const VoiPreLiveOperationState & operation,
-@@ -317,6 +341,14 @@ class VoiPreLiveJourneyAdapter
+@@ -317,6 +374,14 @@ class VoiPreLiveJourneyAdapter
  
  	void loadInitialState(const VoiPreLiveJson & state)
  	{
@@ -251,7 +880,7 @@ index 1a79e02..158c030 100644
  		const auto protectedMinimum =
  			state.find("protected_minimum");
  		if (protectedMinimum != state.end()
-@@ -546,7 +578,7 @@ class VoiPreLiveJourneyAdapter
+@@ -546,7 +611,7 @@ class VoiPreLiveJourneyAdapter
  			}
  			const auto owner = m_owners.find(unit.tag);
  			if (owner == m_owners.end()
@@ -260,7 +889,7 @@ index 1a79e02..158c030 100644
  			{
  				tags.push_back(unit.tag);
  			}
-@@ -586,18 +618,9 @@ class VoiPreLiveJourneyAdapter
+@@ -586,18 +651,9 @@ class VoiPreLiveJourneyAdapter
  
  	void releaseOperationOwnership(const std::string & operationId)
  	{
@@ -282,7 +911,7 @@ index 1a79e02..158c030 100644
  	}
  
  	void assignOperation(VoiPreLiveOperationState & operation)
-@@ -632,7 +655,29 @@ class VoiPreLiveJourneyAdapter
+@@ -632,7 +688,29 @@ class VoiPreLiveJourneyAdapter
  			for (std::size_t index = 0; index < count; ++index)
  			{
  				const auto tag = candidates[index];
@@ -313,7 +942,7 @@ index 1a79e02..158c030 100644
  				requirement.assignedTags.push_back(tag);
  				operation.assignedTags.push_back(tag);
  			}
-@@ -653,7 +698,8 @@ class VoiPreLiveJourneyAdapter
+@@ -653,7 +731,8 @@ class VoiPreLiveJourneyAdapter
  			for (const auto & prerequisite :
  				snapshot.prerequisites)
  			{
@@ -323,7 +952,7 @@ index 1a79e02..158c030 100644
  					== m_structures.end())
  				{
  					snapshot.missingPrerequisites.push_back(
-@@ -666,6 +712,22 @@ class VoiPreLiveJourneyAdapter
+@@ -666,6 +745,22 @@ class VoiPreLiveJourneyAdapter
  				snapshot.productionBlocker =
  					"missing_prerequisites";
  			}
@@ -346,7 +975,7 @@ index 1a79e02..158c030 100644
  			convergenceRows.push_back(snapshot);
  		}
  		std::sort(
-@@ -700,7 +762,7 @@ class VoiPreLiveJourneyAdapter
+@@ -700,7 +795,7 @@ class VoiPreLiveJourneyAdapter
  						&& unit.selfOwned
  						&& unit.combat
  						&& (owner == m_owners.end()
@@ -355,7 +984,7 @@ index 1a79e02..158c030 100644
  								== operation.operationId))
  					{
  						++eligibleCount;
-@@ -804,7 +866,7 @@ class VoiPreLiveJourneyAdapter
+@@ -804,7 +899,7 @@ class VoiPreLiveJourneyAdapter
  		std::map<std::string, std::vector<std::uint64_t>> owners;
  		for (const auto & owner : m_owners)
  		{
@@ -364,14 +993,29 @@ index 1a79e02..158c030 100644
  		}
  		emit(
  			"ownership_snapshot",
-@@ -825,6 +887,52 @@ class VoiPreLiveJourneyAdapter
+@@ -825,6 +920,109 @@ class VoiPreLiveJourneyAdapter
  		{
  			return;
  		}
++		operation.squadOrderReceiptId.clear();
++		operation.dispatchAction.clear();
++		operation.submissionIds.clear();
++		const auto identity = productionIdentity(operation);
++		const std::string squadName =
++			"VoiOp:" + operation.operationId;
 +		const auto squadOrder = voiProductionIssueSquadOrder(
-+			"VoiOp:" + operation.operationId,
++			identity,
++			squadName,
 +			operation.action,
-+			operation.assignedTags);
++			operation.assignedTags,
++			[&]()
++			{
++				return m_commandSink.applySquadOrder(
++					identity,
++					squadName,
++					operation.action,
++					operation.assignedTags);
++			});
 +		if (!squadOrder.accepted)
 +		{
 +			throw std::runtime_error(
@@ -379,6 +1023,9 @@ index 1a79e02..158c030 100644
 +				+ squadOrder.blocker);
 +		}
 +		++m_squadOrderReceiptCount;
++		m_squadOrderReceipts.push_back(squadOrder);
++		operation.squadOrderReceiptId =
++			squadOrder.receiptId;
 +		emit(
 +			"production_path_receipt",
 +			operation,
@@ -386,16 +1033,36 @@ index 1a79e02..158c030 100644
 +			{
 +				{ "entrypoint",
 +					"voiProductionIssueSquadOrder" },
++				{ "receipt_id", squadOrder.receiptId },
++				{ "update_id", squadOrder.updateId },
++				{ "operation_id", squadOrder.operationId },
++				{ "generation", squadOrder.generation },
++				{ "action", squadOrder.action },
 +				{ "unit_tags", squadOrder.unitTags },
++				{ "applied_proof",
++					squadOrder.appliedProof },
 +			});
 +		std::vector<std::uint64_t> submittedTags;
++		const std::string dispatchAction =
++			deterministicDispatchAction(operation);
++		operation.dispatchAction = dispatchAction;
 +		for (const auto tag : operation.assignedTags)
 +		{
++			const std::vector<std::uint64_t> unitTags = {tag};
 +			const auto submission =
 +				voiProductionSubmitSc2Action(
++					identity,
 +					operation.action,
-+					tag,
-+					[]() {});
++					dispatchAction,
++					unitTags,
++					[&]()
++					{
++						return m_commandSink.dispatchSc2Action(
++							identity,
++							operation.action,
++							dispatchAction,
++							unitTags);
++					});
 +			if (!submission.submitted)
 +			{
 +				throw std::runtime_error(
@@ -403,7 +1070,10 @@ index 1a79e02..158c030 100644
 +					+ submission.blocker);
 +			}
 +			submittedTags.push_back(tag);
++			operation.submissionIds.push_back(
++				submission.submissionId);
 +			++m_sc2SubmissionReceiptCount;
++			m_sc2SubmissionReceipts.push_back(submission);
 +			emit(
 +				"production_path_receipt",
 +				operation,
@@ -411,31 +1081,53 @@ index 1a79e02..158c030 100644
 +				{
 +					{ "entrypoint",
 +						"voiProductionSubmitSc2Action" },
-+					{ "unit_tag", tag },
++					{ "submission_id",
++						submission.submissionId },
++					{ "update_id", submission.updateId },
++					{ "operation_id",
++						submission.operationId },
++					{ "generation",
++						submission.generation },
++					{ "action", submission.action },
++					{ "dispatch_action",
++						submission.dispatchAction },
++					{ "unit_tags",
++						submission.unitTags },
++					{ "dispatch_proof",
++						submission.dispatchProof },
 +				});
 +		}
++		std::sort(
++			operation.submissionIds.begin(),
++			operation.submissionIds.end());
  		operation.submitted = true;
  		for (auto & requirement : operation.requirements)
  		{
-@@ -864,7 +972,7 @@ class VoiPreLiveJourneyAdapter
+@@ -864,7 +1062,9 @@ class VoiPreLiveJourneyAdapter
  			"order_issued",
  			{
  				{ "action", operation.action },
 -				{ "unit_tags", operation.assignedTags },
++				{ "receipt_id",
++					operation.squadOrderReceiptId },
 +				{ "unit_tags", squadOrder.unitTags },
  			});
  		emit(
  			"submission",
-@@ -872,7 +980,7 @@ class VoiPreLiveJourneyAdapter
+@@ -872,7 +1072,11 @@ class VoiPreLiveJourneyAdapter
  			"submitted",
  			{
  				{ "action", operation.action },
 -				{ "unit_tags", operation.assignedTags },
++				{ "dispatch_action",
++					operation.dispatchAction },
++				{ "submission_ids",
++					operation.submissionIds },
 +				{ "unit_tags", submittedTags },
  			});
  		operation.status = "EXECUTING";
  	}
-@@ -985,11 +1093,13 @@ class VoiPreLiveJourneyAdapter
+@@ -985,11 +1189,13 @@ class VoiPreLiveJourneyAdapter
  			existingSource->second.assignedTags.end()
  				- source->transferCount,
  			existingSource->second.assignedTags.end());
@@ -451,7 +1143,18 @@ index 1a79e02..158c030 100644
  		{
  			first.blocker =
  				second.blocker =
-@@ -1412,6 +1522,8 @@ class VoiPreLiveJourneyAdapter
+@@ -1401,6 +1607,10 @@ class VoiPreLiveJourneyAdapter
+ 			"effect_observed",
+ 			{
+ 				{ "action", operation.action },
++				{ "dispatch_action",
++					operation.dispatchAction },
++				{ "submission_ids",
++					operation.submissionIds },
+ 				{ "unit_tags", tags },
+ 				{ "effect_kind", effectKind },
+ 			});
+@@ -1412,6 +1622,8 @@ class VoiPreLiveJourneyAdapter
  
  	void applyResourceObservation(const VoiPreLiveJson & step)
  	{
@@ -460,7 +1163,7 @@ index 1a79e02..158c030 100644
  		const auto structures = step.find("structures");
  		if (structures != step.end() && structures->is_array())
  		{
-@@ -1570,7 +1682,7 @@ class VoiPreLiveJourneyAdapter
+@@ -1570,7 +1782,7 @@ class VoiPreLiveJourneyAdapter
  		VoiPreLiveJson owners = VoiPreLiveJson::object();
  		for (const auto & owner : m_owners)
  		{
@@ -469,7 +1172,7 @@ index 1a79e02..158c030 100644
  		}
  		VoiPreLiveJson operations = VoiPreLiveJson::array();
  		for (const auto & entry : m_operations)
-@@ -1598,6 +1710,15 @@ class VoiPreLiveJourneyAdapter
+@@ -1598,6 +1810,15 @@ class VoiPreLiveJourneyAdapter
  					m_structures.begin(),
  					m_structures.end()) },
  			{ "base_threatened", m_baseThreatened },
@@ -485,7 +1188,7 @@ index 1a79e02..158c030 100644
  		};
  	}
  
-@@ -1637,13 +1758,13 @@ class VoiPreLiveJourneyAdapter
+@@ -1637,13 +1858,13 @@ class VoiPreLiveJourneyAdapter
  			if (owner != m_owners.end())
  			{
  				const auto operation =
@@ -502,7 +1205,118 @@ index 1a79e02..158c030 100644
  						+ "#" + std::to_string(generation));
  			}
  			if (!source.autonomousOwner.empty())
-@@ -1951,7 +2072,7 @@ public:
+@@ -1947,11 +2168,118 @@ class VoiPreLiveJourneyAdapter
+ 		};
+ 	}
+ 
++	VoiPreLiveJson productionPathJson() const
++	{
++		VoiPreLiveJson appliedSquadOrders =
++			VoiPreLiveJson::array();
++		for (const auto & order :
++			m_commandSink.appliedSquadOrders())
++		{
++			appliedSquadOrders.push_back({
++				{ "receipt_id",
++					voiProductionDeterministicReceiptId(
++						"voi-squad-order",
++						order.identity,
++						order.action,
++						"",
++						order.unitTags) },
++				{ "update_id", order.identity.updateId },
++				{ "operation_id",
++					order.identity.operationId },
++				{ "generation", order.identity.generation },
++				{ "squad_name", order.squadName },
++				{ "action", order.action },
++				{ "unit_tags", order.unitTags },
++			});
++		}
++		VoiPreLiveJson dispatchedSc2Actions =
++			VoiPreLiveJson::array();
++		for (const auto & submission :
++			m_commandSink.dispatchedSc2Actions())
++		{
++			dispatchedSc2Actions.push_back({
++				{ "submission_id",
++					voiProductionDeterministicReceiptId(
++						"voi-sc2-submission",
++						submission.identity,
++						submission.action,
++						submission.dispatchAction,
++						submission.unitTags) },
++				{ "update_id", submission.identity.updateId },
++				{ "operation_id",
++					submission.identity.operationId },
++				{ "generation",
++					submission.identity.generation },
++				{ "action", submission.action },
++				{ "dispatch_action",
++					submission.dispatchAction },
++				{ "unit_tags", submission.unitTags },
++			});
++		}
++		VoiPreLiveJson squadOrderReceipts =
++			VoiPreLiveJson::array();
++		for (const auto & receipt : m_squadOrderReceipts)
++		{
++			squadOrderReceipts.push_back({
++				{ "receipt_id", receipt.receiptId },
++				{ "update_id", receipt.updateId },
++				{ "operation_id", receipt.operationId },
++				{ "generation", receipt.generation },
++				{ "squad_name", receipt.squadName },
++				{ "action", receipt.action },
++				{ "unit_tags", receipt.unitTags },
++				{ "callback_executed",
++					receipt.callbackExecuted },
++				{ "applied_proof", receipt.appliedProof },
++			});
++		}
++		VoiPreLiveJson submissionReceipts =
++			VoiPreLiveJson::array();
++		for (const auto & receipt : m_sc2SubmissionReceipts)
++		{
++			submissionReceipts.push_back({
++				{ "submission_id", receipt.submissionId },
++				{ "update_id", receipt.updateId },
++				{ "operation_id", receipt.operationId },
++				{ "generation", receipt.generation },
++				{ "action", receipt.action },
++				{ "dispatch_action",
++					receipt.dispatchAction },
++				{ "unit_tags", receipt.unitTags },
++				{ "callback_executed",
++					receipt.callbackExecuted },
++				{ "dispatch_proof",
++					receipt.dispatchProof },
++			});
++		}
++		return {
++			{ "operation_manager_entrypoint",
++				"voiProductionAssignOperationOwner" },
++			{ "squad_order_entrypoint",
++				"voiProductionIssueSquadOrder" },
++			{ "sc2_submission_entrypoint",
++				"voiProductionSubmitSc2Action" },
++			{ "operation_ownership_receipt_count",
++				m_operationOwnershipReceiptCount },
++			{ "squad_order_receipt_count",
++				m_squadOrderReceiptCount },
++			{ "sc2_submission_receipt_count",
++				m_sc2SubmissionReceiptCount },
++			{ "applied_squad_orders", appliedSquadOrders },
++			{ "dispatched_sc2_actions",
++				dispatchedSc2Actions },
++			{ "squad_order_receipts",
++				squadOrderReceipts },
++			{ "sc2_submission_receipts",
++				submissionReceipts },
++		};
++	}
++
+ public:
  	VoiPreLiveJson run(const VoiPreLiveJson & input)
  	{
  		if (!input.is_object()
@@ -511,7 +1325,7 @@ index 1a79e02..158c030 100644
  		{
  			throw std::runtime_error(
  				"pre-live adapter schema_version is unsupported");
-@@ -2015,14 +2136,17 @@ public:
+@@ -2015,14 +2343,17 @@ public:
  			}
  			else if (kind == "client_reconnect")
  			{
@@ -532,7 +1346,7 @@ index 1a79e02..158c030 100644
  					});
  				recordSnapshot("client_reconnect");
  			}
-@@ -2039,13 +2163,27 @@ public:
+@@ -2039,13 +2370,14 @@ public:
  				voiBattlefieldProjectionJson(projection));
  		const auto director = operationDirectorJson();
  		return {
@@ -544,33 +1358,24 @@ index 1a79e02..158c030 100644
  			{ "operation_director", director },
  			{ "battlefield_overview", battlefield },
  			{ "hud", hudJson() },
-+			{ "production_path", {
-+				{ "operation_manager_entrypoint",
-+					"voiProductionAssignOperationOwner" },
-+				{ "squad_order_entrypoint",
-+					"voiProductionIssueSquadOrder" },
-+				{ "sc2_submission_entrypoint",
-+					"voiProductionSubmitSc2Action" },
-+				{ "operation_ownership_receipt_count",
-+					m_operationOwnershipReceiptCount },
-+				{ "squad_order_receipt_count",
-+					m_squadOrderReceiptCount },
-+				{ "sc2_submission_receipt_count",
-+					m_sc2SubmissionReceiptCount },
-+			} },
++			{ "production_path", productionPathJson() },
  			{ "telemetry", {
  				{ "protocol_version", "voi-mm-bridge/v1" },
  				{ "frame", m_frame },
 diff --git a/src/voi_production_path.hpp b/src/voi_production_path.hpp
 new file mode 100644
-index 0000000..1d60e3f
+index 0000000000000000000000000000000000000000..b34abc23e56d21f5b404a75bee887c73f9eade58
 --- /dev/null
 +++ b/src/voi_production_path.hpp
-@@ -0,0 +1,156 @@
+@@ -0,0 +1,451 @@
 +#pragma once
 +
++#include <algorithm>
 +#include <cstdint>
++#include <iomanip>
 +#include <map>
++#include <set>
++#include <sstream>
 +#include <string>
 +#include <utility>
 +#include <vector>
@@ -673,26 +1478,153 @@ index 0000000..1d60e3f
 +struct VoiProductionSquadOrderReceipt
 +{
 +	bool accepted = false;
++	bool callbackExecuted = false;
++	bool appliedProof = false;
++	std::string updateId;
++	std::string operationId;
++	std::uint64_t generation = 0;
 +	std::string squadName;
 +	std::string action;
 +	std::vector<std::uint64_t> unitTags;
++	std::string receiptId;
 +	std::string blocker;
 +};
 +
-+inline VoiProductionSquadOrderReceipt voiProductionIssueSquadOrder(
-+	const std::string & squadName,
++struct VoiProductionOperationIdentity
++{
++	std::string updateId;
++	std::string operationId;
++	std::uint64_t generation = 0;
++};
++
++struct VoiProductionActionBinding
++{
++	VoiProductionOperationIdentity identity;
++	std::string action;
++};
++
++inline bool voiProductionOperationIdentityIsValid(
++	const VoiProductionOperationIdentity & identity)
++{
++	return !identity.updateId.empty()
++		&& !identity.operationId.empty()
++		&& identity.generation > 0;
++}
++
++inline bool voiProductionCanonicalizeUnitTags(
++	const std::vector<std::uint64_t> & unitTags,
++	std::vector<std::uint64_t> & canonical,
++	std::string & blocker)
++{
++	if (unitTags.empty())
++	{
++		blocker = "missing_production_unit_tags";
++		return false;
++	}
++	canonical = unitTags;
++	std::sort(canonical.begin(), canonical.end());
++	if (canonical.front() == 0)
++	{
++		blocker = "invalid_production_unit_tag";
++		return false;
++	}
++	if (std::adjacent_find(canonical.begin(), canonical.end())
++		!= canonical.end())
++	{
++		blocker = "duplicate_production_unit_tag";
++		return false;
++	}
++	return true;
++}
++
++inline void voiProductionAppendDeterministicField(
++	std::ostringstream & canonical,
++	const std::string & value)
++{
++	canonical << value.size() << ":" << value << "|";
++}
++
++inline std::string voiProductionDeterministicReceiptId(
++	const std::string & prefix,
++	const VoiProductionOperationIdentity & identity,
 +	const std::string & action,
++	const std::string & dispatchAction,
 +	const std::vector<std::uint64_t> & unitTags)
 +{
++	std::ostringstream canonical;
++	voiProductionAppendDeterministicField(canonical, prefix);
++	voiProductionAppendDeterministicField(
++		canonical,
++		identity.updateId);
++	voiProductionAppendDeterministicField(
++		canonical,
++		identity.operationId);
++	canonical << identity.generation << "|";
++	voiProductionAppendDeterministicField(canonical, action);
++	voiProductionAppendDeterministicField(
++		canonical,
++		dispatchAction);
++	for (const auto unitTag : unitTags)
++	{
++		canonical << unitTag << ",";
++	}
++
++	std::uint64_t hash = 1469598103934665603ULL;
++	for (const unsigned char value : canonical.str())
++	{
++		hash ^= static_cast<std::uint64_t>(value);
++		hash *= 1099511628211ULL;
++	}
++	std::ostringstream receiptId;
++	receiptId << prefix << "-"
++		<< std::hex << std::setfill('0') << std::setw(16) << hash;
++	return receiptId.str();
++}
++
++template <typename Apply>
++VoiProductionSquadOrderReceipt voiProductionIssueSquadOrder(
++	const VoiProductionOperationIdentity & identity,
++	const std::string & squadName,
++	const std::string & action,
++	const std::vector<std::uint64_t> & unitTags,
++	Apply apply)
++{
 +	VoiProductionSquadOrderReceipt receipt;
++	receipt.updateId = identity.updateId;
++	receipt.operationId = identity.operationId;
++	receipt.generation = identity.generation;
 +	receipt.squadName = squadName;
 +	receipt.action = action;
-+	receipt.unitTags = unitTags;
-+	if (squadName.empty() || action.empty() || unitTags.empty())
++	if (!voiProductionOperationIdentityIsValid(identity))
++	{
++		receipt.blocker = "invalid_squad_order_identity";
++		return receipt;
++	}
++	if (squadName.empty() || action.empty())
 +	{
 +		receipt.blocker = "invalid_squad_order";
 +		return receipt;
 +	}
++	if (!voiProductionCanonicalizeUnitTags(
++			unitTags,
++			receipt.unitTags,
++			receipt.blocker))
++	{
++		return receipt;
++	}
++	receipt.callbackExecuted = true;
++	receipt.appliedProof = static_cast<bool>(apply());
++	if (!receipt.appliedProof)
++	{
++		receipt.blocker = "squad_order_not_applied";
++		return receipt;
++	}
++	receipt.receiptId = voiProductionDeterministicReceiptId(
++		"voi-squad-order",
++		identity,
++		action,
++		"",
++		receipt.unitTags);
 +	receipt.accepted = true;
 +	return receipt;
 +}
@@ -700,34 +1632,228 @@ index 0000000..1d60e3f
 +struct VoiProductionSubmissionReceipt
 +{
 +	bool submitted = false;
++	bool callbackExecuted = false;
++	bool dispatchProof = false;
++	std::string updateId;
++	std::string operationId;
++	std::uint64_t generation = 0;
 +	std::string action;
-+	std::uint64_t unitTag = 0;
++	std::string dispatchAction;
++	std::vector<std::uint64_t> unitTags;
++	std::string submissionId;
 +	std::string blocker;
 +};
 +
 +template <typename Submit>
 +VoiProductionSubmissionReceipt voiProductionSubmitSc2Action(
++	const VoiProductionOperationIdentity & identity,
 +	const std::string & action,
-+	std::uint64_t unitTag,
++	const std::string & dispatchAction,
++	const std::vector<std::uint64_t> & unitTags,
 +	Submit submit)
 +{
 +	VoiProductionSubmissionReceipt receipt;
++	receipt.updateId = identity.updateId;
++	receipt.operationId = identity.operationId;
++	receipt.generation = identity.generation;
 +	receipt.action = action;
-+	receipt.unitTag = unitTag;
-+	if (action.empty() || unitTag == 0)
++	receipt.dispatchAction = dispatchAction;
++	if (!voiProductionOperationIdentityIsValid(identity))
++	{
++		receipt.blocker = "invalid_sc2_submission_identity";
++		return receipt;
++	}
++	if (action.empty() || dispatchAction.empty())
 +	{
 +		receipt.blocker = "invalid_sc2_submission";
 +		return receipt;
 +	}
-+	submit();
++	if (!voiProductionCanonicalizeUnitTags(
++			unitTags,
++			receipt.unitTags,
++			receipt.blocker))
++	{
++		return receipt;
++	}
++	receipt.callbackExecuted = true;
++	receipt.dispatchProof = static_cast<bool>(submit());
++	if (!receipt.dispatchProof)
++	{
++		receipt.blocker = "sc2_action_not_dispatched";
++		return receipt;
++	}
++	receipt.submissionId = voiProductionDeterministicReceiptId(
++		"voi-sc2-submission",
++		identity,
++		action,
++		dispatchAction,
++		receipt.unitTags);
 +	receipt.submitted = true;
 +	return receipt;
 +}
++
++inline void voiProductionResetCommandIssue(bool * commandIssued)
++{
++	if (commandIssued != nullptr)
++	{
++		*commandIssued = false;
++	}
++}
++
++template <typename Dispatch>
++bool voiProductionDispatchSc2ActionAndRecord(
++	const VoiProductionActionBinding * productionBinding,
++	const std::string & dispatchAction,
++	std::uint64_t unitTag,
++	bool * commandIssued,
++	Dispatch dispatch)
++{
++	voiProductionResetCommandIssue(commandIssued);
++	bool dispatched = false;
++	if (productionBinding == nullptr)
++	{
++		dispatched = static_cast<bool>(dispatch());
++	}
++	else
++	{
++		const auto receipt = voiProductionSubmitSc2Action(
++			productionBinding->identity,
++			productionBinding->action,
++			dispatchAction,
++			std::vector<std::uint64_t>({unitTag}),
++			dispatch);
++		dispatched = receipt.submitted;
++	}
++	if (commandIssued != nullptr)
++	{
++		*commandIssued = dispatched;
++	}
++	return dispatched;
++}
++
++struct VoiProductionAppliedSquadOrder
++{
++	VoiProductionOperationIdentity identity;
++	std::string squadName;
++	std::string action;
++	std::vector<std::uint64_t> unitTags;
++};
++
++struct VoiProductionDispatchedSc2Action
++{
++	VoiProductionOperationIdentity identity;
++	std::string action;
++	std::string dispatchAction;
++	std::vector<std::uint64_t> unitTags;
++};
++
++class VoiProductionDeterministicCommandSink
++{
++	std::vector<VoiProductionAppliedSquadOrder> m_appliedSquadOrders;
++	std::vector<VoiProductionDispatchedSc2Action> m_dispatchedSc2Actions;
++
++public:
++	bool applySquadOrder(
++		const VoiProductionOperationIdentity & identity,
++		const std::string & squadName,
++		const std::string & action,
++		const std::vector<std::uint64_t> & unitTags)
++	{
++		std::vector<std::uint64_t> canonicalTags;
++		std::string blocker;
++		if (!voiProductionOperationIdentityIsValid(identity)
++			|| squadName.empty()
++			|| action.empty()
++			|| !voiProductionCanonicalizeUnitTags(
++				unitTags,
++				canonicalTags,
++				blocker))
++		{
++			return false;
++		}
++		m_appliedSquadOrders.push_back({
++			identity,
++			squadName,
++			action,
++			canonicalTags
++		});
++		return true;
++	}
++
++	bool dispatchSc2Action(
++		const VoiProductionOperationIdentity & identity,
++		const std::string & action,
++		const std::string & dispatchAction,
++		const std::vector<std::uint64_t> & unitTags)
++	{
++		std::vector<std::uint64_t> canonicalTags;
++		std::string blocker;
++		if (!voiProductionOperationIdentityIsValid(identity)
++			|| action.empty()
++			|| dispatchAction.empty()
++			|| !voiProductionCanonicalizeUnitTags(
++				unitTags,
++				canonicalTags,
++				blocker))
++		{
++			return false;
++		}
++		m_dispatchedSc2Actions.push_back({
++			identity,
++			action,
++			dispatchAction,
++			canonicalTags
++		});
++		return true;
++	}
++
++	const std::vector<VoiProductionAppliedSquadOrder> &
++	appliedSquadOrders() const
++	{
++		return m_appliedSquadOrders;
++	}
++
++	const std::vector<VoiProductionDispatchedSc2Action> &
++	dispatchedSc2Actions() const
++	{
++		return m_dispatchedSc2Actions;
++	}
++};
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 3ddbf11d2e439417f4f15a8e09f2d35ce921fde4..66bccb7a1e8e6fa5f4e219301f27934609516f0c 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -142,3 +142,17 @@ add_test(
+     NAME voi_pre_live_journey_adapter
+     COMMAND voi_pre_live_journey_adapter_test
+ )
++
++add_executable(
++    voi_production_path_test
++    production_path_test.cpp
++)
++target_include_directories(
++    voi_production_path_test
++    PRIVATE
++    "${PROJECT_SOURCE_DIR}/src"
++)
++add_test(
++    NAME voi_production_path
++    COMMAND voi_production_path_test
++)
 diff --git a/tests/pre_live_journey_adapter_test.cpp b/tests/pre_live_journey_adapter_test.cpp
-index 355d691..f48bfe0 100644
+index 355d691a9c88e98fdc9e33dd132775f5e38a9b88..aae9bf07ed53bc8f4494941b13cead52b9e84872 100644
 --- a/tests/pre_live_journey_adapter_test.cpp
 +++ b/tests/pre_live_journey_adapter_test.cpp
-@@ -70,8 +70,12 @@ VoiPreLiveJson operationUpdate()
+@@ -1,6 +1,7 @@
+ #include "voi_pre_live_journey_adapter.hpp"
+ 
+ #include <iostream>
++#include <set>
+ #include <string>
+ 
+ namespace
+@@ -70,8 +71,12 @@ VoiPreLiveJson operationUpdate()
  VoiPreLiveJson validInput()
  {
  	return {
@@ -741,7 +1867,7 @@ index 355d691..f48bfe0 100644
  			{ "protected_minimum", {
  				{ "TERRAN_MARINE", 0 },
  			} },
-@@ -90,6 +94,8 @@ VoiPreLiveJson validInput()
+@@ -90,6 +95,8 @@ VoiPreLiveJson validInput()
  					{ "home_distance", 0.0 },
  				},
  			} },
@@ -750,7 +1876,7 @@ index 355d691..f48bfe0 100644
  		} },
  		{ "steps", {
  			{
-@@ -120,9 +126,17 @@ int main()
+@@ -120,9 +127,17 @@ int main()
  {
  	const auto output =
  		voiRunPreLiveJourneyAdapter(validInput());
@@ -769,7 +1895,7 @@ index 355d691..f48bfe0 100644
  	CHECK(
  		output["battlefield_overview"]["authority"]
  			== "micromachine_cpp");
-@@ -137,6 +151,33 @@ int main()
+@@ -137,6 +152,188 @@ int main()
  			["family_evidence"][0]["effect_kind"]
  			== "movement");
  	CHECK(output["hud"]["rows"].is_array());
@@ -791,15 +1917,591 @@ index 355d691..f48bfe0 100644
 +	CHECK(
 +		output["production_path"]["sc2_submission_receipt_count"]
 +			== 2);
++	CHECK(
++		output["production_path"]["applied_squad_orders"].size()
++			== 1);
++	CHECK(
++		output["production_path"]["dispatched_sc2_actions"].size()
++			== 2);
++	CHECK(
++		output["production_path"]["squad_order_receipts"].size()
++			== 1);
++	CHECK(
++		output["production_path"]["sc2_submission_receipts"].size()
++			== 2);
++	const auto & squadOrderReceipt =
++		output["production_path"]["squad_order_receipts"][0];
++	CHECK(
++		squadOrderReceipt["update_id"] == "adapter-test");
++	CHECK(
++		squadOrderReceipt["operation_id"] == "assault-alpha");
++	CHECK(squadOrderReceipt["generation"] == 1);
++	CHECK(
++		squadOrderReceipt["action"] == "squad_order:attack");
++	CHECK(
++		squadOrderReceipt["unit_tags"]
++			== VoiPreLiveJson::array({11, 12}));
++	CHECK(squadOrderReceipt["callback_executed"] == true);
++	CHECK(squadOrderReceipt["applied_proof"] == true);
++	CHECK(
++		squadOrderReceipt["receipt_id"]
++			.get<std::string>().find("voi-squad-order-") == 0);
++	CHECK(
++		output["production_path"]["applied_squad_orders"][0]
++			["receipt_id"] == squadOrderReceipt["receipt_id"]);
++	const auto & appliedOrder =
++		output["production_path"]["applied_squad_orders"][0];
++	CHECK(appliedOrder.size() == 7);
++	CHECK(appliedOrder["update_id"] == "adapter-test");
++	CHECK(appliedOrder["operation_id"] == "assault-alpha");
++	CHECK(appliedOrder["generation"] == 1);
++	CHECK(appliedOrder["squad_name"] == "VoiOp:assault-alpha");
++	CHECK(appliedOrder["action"] == "squad_order:attack");
++	CHECK(
++		appliedOrder["unit_tags"]
++			== VoiPreLiveJson::array({11, 12}));
++	std::set<std::string> submissionIds;
++	const auto & submissions =
++		output["production_path"]["sc2_submission_receipts"];
++	const auto & dispatchedActions =
++		output["production_path"]["dispatched_sc2_actions"];
++	for (std::size_t index = 0;
++		index < submissions.size();
++		++index)
++	{
++		const auto & submission = submissions[index];
++		const auto & dispatched = dispatchedActions[index];
++		CHECK(submission["update_id"] == "adapter-test");
++		CHECK(submission["operation_id"] == "assault-alpha");
++		CHECK(submission["generation"] == 1);
++		CHECK(submission["action"] == "squad_order:attack");
++		CHECK(submission["dispatch_action"] == "attack_move");
++		CHECK(submission["unit_tags"].size() == 1);
++		CHECK(submission["callback_executed"] == true);
++		CHECK(submission["dispatch_proof"] == true);
++		const std::string submissionId =
++			submission["submission_id"].get<std::string>();
++		CHECK(
++			submissionId.find("voi-sc2-submission-") == 0);
++		submissionIds.insert(submissionId);
++		CHECK(dispatched.size() == 7);
++		CHECK(dispatched["submission_id"] == submissionId);
++		CHECK(dispatched["update_id"] == "adapter-test");
++		CHECK(dispatched["operation_id"] == "assault-alpha");
++		CHECK(dispatched["generation"] == 1);
++		CHECK(dispatched["action"] == "squad_order:attack");
++		CHECK(dispatched["dispatch_action"] == "attack_move");
++		CHECK(dispatched["unit_tags"] == submission["unit_tags"]);
++	}
++	CHECK(submissionIds.size() == 2);
 +	std::size_t productionPathReceiptCount = 0;
++	bool squadOrderReceiptEventObserved = false;
++	std::set<std::string> submissionReceiptEventIds;
 +	for (const auto & event : output["events"])
 +	{
 +		productionPathReceiptCount +=
 +			event["event_type"] == "production_path_receipt"
 +				? 1
 +				: 0;
++		if (event["event_type"] != "production_path_receipt")
++		{
++			continue;
++		}
++		const auto & payload = event["payload"];
++		if (payload["entrypoint"]
++			== "voiProductionIssueSquadOrder")
++		{
++			squadOrderReceiptEventObserved =
++				payload["receipt_id"]
++					== squadOrderReceipt["receipt_id"]
++				&& payload["update_id"] == "adapter-test"
++				&& payload["operation_id"] == "assault-alpha"
++				&& payload["generation"] == 1
++				&& payload["action"] == "squad_order:attack"
++				&& payload["unit_tags"]
++					== VoiPreLiveJson::array({11, 12})
++				&& payload["applied_proof"] == true;
++		}
++		else if (payload["entrypoint"]
++			== "voiProductionSubmitSc2Action")
++		{
++			CHECK(payload["update_id"] == "adapter-test");
++			CHECK(payload["operation_id"] == "assault-alpha");
++			CHECK(payload["generation"] == 1);
++			CHECK(payload["action"] == "squad_order:attack");
++			CHECK(payload["dispatch_action"] == "attack_move");
++			CHECK(payload["unit_tags"].size() == 1);
++			CHECK(payload["dispatch_proof"] == true);
++			submissionReceiptEventIds.insert(
++				payload["submission_id"].get<std::string>());
++		}
 +	}
 +	CHECK(productionPathReceiptCount == 5);
++	CHECK(squadOrderReceiptEventObserved);
++	CHECK(submissionReceiptEventIds == submissionIds);
++	VoiPreLiveJson expectedSubmissionIds =
++		VoiPreLiveJson::array();
++	for (const auto & submissionId : submissionIds)
++	{
++		expectedSubmissionIds.push_back(submissionId);
++	}
++	bool canonicalSquadOrderObserved = false;
++	bool canonicalSubmissionObserved = false;
++	bool canonicalEffectObserved = false;
++	for (const auto & event : output["events"])
++	{
++		const auto & payload = event["payload"];
++		if (event["event_type"] == "squad_order")
++		{
++			canonicalSquadOrderObserved =
++				payload["receipt_id"]
++					== squadOrderReceipt["receipt_id"]
++				&& payload["unit_tags"]
++					== VoiPreLiveJson::array({11, 12});
++		}
++		else if (event["event_type"] == "submission")
++		{
++			canonicalSubmissionObserved =
++				payload["dispatch_action"] == "attack_move"
++				&& payload["submission_ids"]
++					== expectedSubmissionIds
++				&& payload["unit_tags"]
++					== VoiPreLiveJson::array({11, 12});
++		}
++		else if (event["event_type"] == "movement")
++		{
++			canonicalEffectObserved =
++				payload["dispatch_action"] == "attack_move"
++				&& payload["submission_ids"]
++					== expectedSubmissionIds
++				&& payload["unit_tags"]
++					== VoiPreLiveJson::array({11, 12});
++		}
++	}
++	CHECK(canonicalSquadOrderObserved);
++	CHECK(canonicalSubmissionObserved);
++	CHECK(canonicalEffectObserved);
  
  	auto multiRole = validInput();
  	multiRole["initial_state"]["units"].push_back({
+diff --git a/tests/production_path_test.cpp b/tests/production_path_test.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..19013f1ef500e20e724cd14e57c5a396594d51f2
+--- /dev/null
++++ b/tests/production_path_test.cpp
+@@ -0,0 +1,415 @@
++#include "voi_production_path.hpp"
++
++#include <iostream>
++#include <string>
++#include <vector>
++
++namespace
++{
++int failures = 0;
++
++#define CHECK(condition)                                                     \
++	do                                                                       \
++	{                                                                        \
++		if (!(condition))                                                     \
++		{                                                                    \
++			std::cerr << __FILE__ << ":" << __LINE__                         \
++				<< ": CHECK failed: " #condition << "\n";                    \
++			++failures;                                                       \
++		}                                                                    \
++	} while (false)
++}
++
++int main()
++{
++	const VoiProductionOperationIdentity identity = {
++		"update-17",
++		"operation-alpha",
++		3
++	};
++	const std::vector<std::uint64_t> unorderedTags = {12, 11};
++
++	int invalidOrderCallbackCount = 0;
++	const auto invalidOrder = voiProductionIssueSquadOrder(
++		VoiProductionOperationIdentity(),
++		"VoiOp:operation-alpha",
++		"squad_order:attack",
++		unorderedTags,
++		[&]()
++		{
++			++invalidOrderCallbackCount;
++			return true;
++		});
++	CHECK(!invalidOrder.accepted);
++	CHECK(!invalidOrder.callbackExecuted);
++	CHECK(invalidOrderCallbackCount == 0);
++	CHECK(invalidOrder.receiptId.empty());
++	CHECK(invalidOrder.blocker == "invalid_squad_order_identity");
++
++	int rejectedOrderCallbackCount = 0;
++	const auto rejectedOrder = voiProductionIssueSquadOrder(
++		identity,
++		"VoiOp:operation-alpha",
++		"squad_order:attack",
++		unorderedTags,
++		[&]()
++		{
++			++rejectedOrderCallbackCount;
++			return false;
++		});
++	CHECK(!rejectedOrder.accepted);
++	CHECK(rejectedOrder.callbackExecuted);
++	CHECK(!rejectedOrder.appliedProof);
++	CHECK(rejectedOrderCallbackCount == 1);
++	CHECK(rejectedOrder.receiptId.empty());
++	CHECK(rejectedOrder.blocker == "squad_order_not_applied");
++
++	bool orderApplied = false;
++	const auto acceptedOrder = voiProductionIssueSquadOrder(
++		identity,
++		"VoiOp:operation-alpha",
++		"squad_order:attack",
++		unorderedTags,
++		[&]()
++		{
++			orderApplied = true;
++			return orderApplied;
++		});
++	CHECK(acceptedOrder.accepted);
++	CHECK(acceptedOrder.callbackExecuted);
++	CHECK(acceptedOrder.appliedProof);
++	CHECK(orderApplied);
++	CHECK(acceptedOrder.updateId == "update-17");
++	CHECK(acceptedOrder.operationId == "operation-alpha");
++	CHECK(acceptedOrder.generation == 3);
++	CHECK(acceptedOrder.action == "squad_order:attack");
++	CHECK(acceptedOrder.unitTags
++		== std::vector<std::uint64_t>({11, 12}));
++	CHECK(!acceptedOrder.receiptId.empty());
++
++	const auto repeatedOrder = voiProductionIssueSquadOrder(
++		identity,
++		"VoiOp:operation-alpha",
++		"squad_order:attack",
++		std::vector<std::uint64_t>({11, 12}),
++		[]()
++		{
++			return true;
++		});
++	CHECK(repeatedOrder.receiptId == acceptedOrder.receiptId);
++
++	int invalidOrderPayloadCallbackCount = 0;
++	const auto invalidOrderPayload = voiProductionIssueSquadOrder(
++		identity,
++		"VoiOp:operation-alpha",
++		"",
++		std::vector<std::uint64_t>({11}),
++		[&]()
++		{
++			++invalidOrderPayloadCallbackCount;
++			return true;
++		});
++	CHECK(!invalidOrderPayload.accepted);
++	CHECK(!invalidOrderPayload.callbackExecuted);
++	CHECK(invalidOrderPayloadCallbackCount == 0);
++
++	int invalidSubmissionCallbackCount = 0;
++	const auto invalidSubmission = voiProductionSubmitSc2Action(
++		VoiProductionOperationIdentity(),
++		"squad_order:attack",
++		"attack_move",
++		std::vector<std::uint64_t>({11}),
++		[&]()
++		{
++			++invalidSubmissionCallbackCount;
++			return true;
++		});
++	CHECK(!invalidSubmission.submitted);
++	CHECK(!invalidSubmission.callbackExecuted);
++	CHECK(invalidSubmissionCallbackCount == 0);
++	CHECK(invalidSubmission.submissionId.empty());
++	CHECK(
++		invalidSubmission.blocker
++			== "invalid_sc2_submission_identity");
++
++	bool suppressedCommandIssued = true;
++	voiProductionResetCommandIssue(&suppressedCommandIssued);
++	CHECK(!suppressedCommandIssued);
++
++	bool invalidDispatchCommandIssued = true;
++	int invalidDispatchCallbackCount = 0;
++	const VoiProductionActionBinding invalidBinding;
++	CHECK(!voiProductionDispatchSc2ActionAndRecord(
++		&invalidBinding,
++		"attack_move",
++		11,
++		&invalidDispatchCommandIssued,
++		[&]()
++		{
++			++invalidDispatchCallbackCount;
++			return true;
++		}));
++	CHECK(!invalidDispatchCommandIssued);
++	CHECK(invalidDispatchCallbackCount == 0);
++
++	int rejectedSubmissionCallbackCount = 0;
++	const auto rejectedSubmission = voiProductionSubmitSc2Action(
++		identity,
++		"squad_order:attack",
++		"attack_move",
++		std::vector<std::uint64_t>({11}),
++		[&]()
++		{
++			++rejectedSubmissionCallbackCount;
++			return false;
++		});
++	CHECK(!rejectedSubmission.submitted);
++	CHECK(rejectedSubmission.callbackExecuted);
++	CHECK(!rejectedSubmission.dispatchProof);
++	CHECK(rejectedSubmissionCallbackCount == 1);
++	CHECK(rejectedSubmission.submissionId.empty());
++	CHECK(
++		rejectedSubmission.blocker
++			== "sc2_action_not_dispatched");
++
++	bool rejectedDispatchCommandIssued = true;
++	int rejectedDispatchCallbackCount = 0;
++	const VoiProductionActionBinding binding = {
++		identity,
++		"squad_order:attack"
++	};
++	CHECK(!voiProductionDispatchSc2ActionAndRecord(
++		&binding,
++		"attack_move",
++		11,
++		&rejectedDispatchCommandIssued,
++		[&]()
++		{
++			++rejectedDispatchCallbackCount;
++			return false;
++		}));
++	CHECK(!rejectedDispatchCommandIssued);
++	CHECK(rejectedDispatchCallbackCount == 1);
++
++	bool actionDispatched = false;
++	const auto acceptedSubmission = voiProductionSubmitSc2Action(
++		identity,
++		"squad_order:attack",
++		"attack_move",
++		std::vector<std::uint64_t>({11}),
++		[&]()
++		{
++			actionDispatched = true;
++			return actionDispatched;
++		});
++	CHECK(acceptedSubmission.submitted);
++	CHECK(acceptedSubmission.callbackExecuted);
++	CHECK(acceptedSubmission.dispatchProof);
++	CHECK(actionDispatched);
++	CHECK(acceptedSubmission.updateId == "update-17");
++	CHECK(acceptedSubmission.operationId == "operation-alpha");
++	CHECK(acceptedSubmission.generation == 3);
++	CHECK(acceptedSubmission.action == "squad_order:attack");
++	CHECK(acceptedSubmission.dispatchAction == "attack_move");
++	CHECK(
++		acceptedSubmission.unitTags
++			== std::vector<std::uint64_t>({11}));
++	CHECK(!acceptedSubmission.submissionId.empty());
++
++	bool acceptedDispatchCommandIssued = false;
++	int acceptedDispatchCallbackCount = 0;
++	CHECK(voiProductionDispatchSc2ActionAndRecord(
++		&binding,
++		"attack_move",
++		11,
++		&acceptedDispatchCommandIssued,
++		[&]()
++		{
++			++acceptedDispatchCallbackCount;
++			return true;
++		}));
++	CHECK(acceptedDispatchCommandIssued);
++	CHECK(acceptedDispatchCallbackCount == 1);
++
++	bool directDispatchCommandIssued = false;
++	CHECK(voiProductionDispatchSc2ActionAndRecord(
++		nullptr,
++		"attack_move",
++		11,
++		&directDispatchCommandIssued,
++		[]()
++		{
++			return true;
++		}));
++	CHECK(directDispatchCommandIssued);
++
++	const auto repeatedSubmission = voiProductionSubmitSc2Action(
++		identity,
++		"squad_order:attack",
++		"attack_move",
++		std::vector<std::uint64_t>({11}),
++		[]()
++		{
++			return true;
++		});
++	CHECK(
++		repeatedSubmission.submissionId
++			== acceptedSubmission.submissionId);
++
++	const auto changedDispatchSubmission =
++		voiProductionSubmitSc2Action(
++		identity,
++		"squad_order:attack",
++		"move",
++		std::vector<std::uint64_t>({11}),
++		[]()
++		{
++			return true;
++		});
++	CHECK(
++		changedDispatchSubmission.submissionId
++			!= acceptedSubmission.submissionId);
++	const auto changedUpdateSubmission =
++		voiProductionSubmitSc2Action(
++			{"update-18", "operation-alpha", 3},
++			"squad_order:attack",
++			"attack_move",
++			std::vector<std::uint64_t>({11}),
++			[]()
++			{
++				return true;
++			});
++	const auto changedOperationSubmission =
++		voiProductionSubmitSc2Action(
++			{"update-17", "operation-beta", 3},
++			"squad_order:attack",
++			"attack_move",
++			std::vector<std::uint64_t>({11}),
++			[]()
++			{
++				return true;
++			});
++	const auto changedGenerationSubmission =
++		voiProductionSubmitSc2Action(
++			{"update-17", "operation-alpha", 4},
++			"squad_order:attack",
++			"attack_move",
++			std::vector<std::uint64_t>({11}),
++			[]()
++			{
++				return true;
++			});
++	const auto changedActionSubmission =
++		voiProductionSubmitSc2Action(
++			identity,
++			"squad_order:defend",
++			"attack_move",
++			std::vector<std::uint64_t>({11}),
++			[]()
++			{
++				return true;
++			});
++	const auto changedTagsSubmission =
++		voiProductionSubmitSc2Action(
++			identity,
++			"squad_order:attack",
++			"attack_move",
++			std::vector<std::uint64_t>({12}),
++			[]()
++			{
++				return true;
++			});
++	CHECK(
++		changedUpdateSubmission.submissionId
++			!= acceptedSubmission.submissionId);
++	CHECK(
++		changedOperationSubmission.submissionId
++			!= acceptedSubmission.submissionId);
++	CHECK(
++		changedGenerationSubmission.submissionId
++			!= acceptedSubmission.submissionId);
++	CHECK(
++		changedActionSubmission.submissionId
++			!= acceptedSubmission.submissionId);
++	CHECK(
++		changedTagsSubmission.submissionId
++			!= acceptedSubmission.submissionId);
++
++	int invalidTagsCallbackCount = 0;
++	const auto invalidTagsSubmission =
++		voiProductionSubmitSc2Action(
++			identity,
++			"squad_order:attack",
++			"attack_move",
++			std::vector<std::uint64_t>({0}),
++			[&]()
++			{
++				++invalidTagsCallbackCount;
++				return true;
++			});
++	CHECK(!invalidTagsSubmission.submitted);
++	CHECK(!invalidTagsSubmission.callbackExecuted);
++	CHECK(invalidTagsCallbackCount == 0);
++
++	int duplicateTagsCallbackCount = 0;
++	const auto duplicateTagsSubmission =
++		voiProductionSubmitSc2Action(
++			identity,
++			"squad_order:attack",
++			"attack_move",
++			std::vector<std::uint64_t>({11, 11}),
++			[&]()
++			{
++				++duplicateTagsCallbackCount;
++				return true;
++			});
++	CHECK(!duplicateTagsSubmission.submitted);
++	CHECK(!duplicateTagsSubmission.callbackExecuted);
++	CHECK(duplicateTagsCallbackCount == 0);
++
++	VoiProductionDeterministicCommandSink commandSink;
++	const auto sinkOrder = voiProductionIssueSquadOrder(
++		identity,
++		"VoiOp:operation-alpha",
++		"squad_order:attack",
++		unorderedTags,
++		[&]()
++		{
++			return commandSink.applySquadOrder(
++				identity,
++				"VoiOp:operation-alpha",
++				"squad_order:attack",
++				unorderedTags);
++		});
++	const auto sinkSubmission = voiProductionSubmitSc2Action(
++		identity,
++		"squad_order:attack",
++		"attack_move",
++		std::vector<std::uint64_t>({11}),
++		[&]()
++		{
++			return commandSink.dispatchSc2Action(
++				identity,
++				"squad_order:attack",
++				"attack_move",
++				std::vector<std::uint64_t>({11}));
++		});
++	CHECK(sinkOrder.accepted);
++	CHECK(sinkSubmission.submitted);
++	CHECK(commandSink.appliedSquadOrders().size() == 1);
++	CHECK(commandSink.dispatchedSc2Actions().size() == 1);
++	CHECK(
++		commandSink.appliedSquadOrders()[0].unitTags
++			== std::vector<std::uint64_t>({11, 12}));
++	CHECK(
++		commandSink.dispatchedSc2Actions()[0]
++				.identity.updateId == "update-17");
++	CHECK(
++		commandSink.dispatchedSc2Actions()[0]
++				.identity.operationId == "operation-alpha");
++	CHECK(
++		commandSink.dispatchedSc2Actions()[0]
++				.identity.generation == 3);
++
++	return failures == 0 ? 0 : 1;
++}

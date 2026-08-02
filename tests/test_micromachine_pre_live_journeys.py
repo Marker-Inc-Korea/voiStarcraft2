@@ -20,7 +20,10 @@ from starcraft_commander.micromachine_pre_live_artifact import (
 from starcraft_commander.micromachine_pre_live_journeys import (
     DEFAULT_JOURNEY_MANIFEST,
     DETERMINISTIC_ZIP_TIMESTAMP,
+    _execute_tactical_radio_runtime,
     _markdown_report,
+    _production_receipt_id,
+    _validate_native_output_payload,
     build_pre_live_journey_bundle,
     execute_pre_live_journeys,
     load_pre_live_journey_manifest,
@@ -144,6 +147,161 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
             by_entrypoint["voiProductionSubmitSc2Action"],
             production_path["sc2_submission_receipt_count"],
         )
+        self.assertEqual(
+            production_path["squad_order_receipt_count"],
+            len(production_path["applied_squad_orders"]),
+        )
+        self.assertEqual(
+            production_path["sc2_submission_receipt_count"],
+            len(production_path["dispatched_sc2_actions"]),
+        )
+        for receipt in production_path["squad_order_receipts"]:
+            self.assertIs(True, receipt["callback_executed"])
+            self.assertIs(True, receipt["applied_proof"])
+            self.assertTrue(receipt["receipt_id"].startswith("voi-squad-order-"))
+        for receipt in production_path["sc2_submission_receipts"]:
+            self.assertIs(True, receipt["callback_executed"])
+            self.assertIs(True, receipt["dispatch_proof"])
+            self.assertTrue(
+                receipt["submission_id"].startswith("voi-sc2-submission-")
+            )
+
+    def test_native_receipts_fail_closed_without_execution_proof(self) -> None:
+        native = deepcopy(
+            self.artifacts["safe_partial_launch"]["products"][
+                "native_adapter"
+            ]["output"]
+        )
+        native["production_path"]["sc2_submission_receipts"][0][
+            "callback_executed"
+        ] = False
+        with self.assertRaisesRegex(ValueError, "callback was not executed"):
+            _validate_native_output_payload(native)
+
+    def test_native_sink_rows_require_exact_field_sets(self) -> None:
+        original = self.artifacts["safe_partial_launch"]["products"][
+            "native_adapter"
+        ]["output"]
+        cases = (
+            (
+                "applied Squad order",
+                "applied_squad_orders",
+                lambda row: row.update({"fabricated_proof": True}),
+            ),
+            (
+                "dispatched SC2 action",
+                "dispatched_sc2_actions",
+                lambda row: row.pop("dispatch_action"),
+            ),
+        )
+        for message, field_name, mutate in cases:
+            with self.subTest(field_name=field_name):
+                native = deepcopy(original)
+                mutate(native["production_path"][field_name][0])
+                with self.assertRaisesRegex(ValueError, message):
+                    _validate_native_output_payload(native)
+
+    def test_native_effect_proof_is_bound_to_submission_receipts(self) -> None:
+        original = self.artifacts["safe_partial_launch"]["products"][
+            "native_adapter"
+        ]["output"]
+        cases = (
+            ("unit_tags", [9999]),
+            ("submission_ids", ["voi-sc2-submission-forged"]),
+            ("dispatch_action", "forged_dispatch"),
+        )
+        for field_name, value in cases:
+            with self.subTest(field_name=field_name):
+                native = deepcopy(original)
+                receipt = native["production_path"][
+                    "sc2_submission_receipts"
+                ][0]
+                effect = next(
+                    event
+                    for event in native["events"]
+                    if event["event_type"]
+                    in {"movement", "engagement", "ability_effect"}
+                    and event["identity"]["update_id"] == receipt["update_id"]
+                    and event["identity"]["operation_id"]
+                    == receipt["operation_id"]
+                    and event["identity"]["generation"]
+                    == receipt["generation"]
+                    and event["payload"]["action"] == receipt["action"]
+                )
+                effect["payload"][field_name] = value
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "not bound to effect proof",
+                ):
+                    _validate_native_output_payload(native)
+
+    def test_native_sc2_dispatch_tags_match_applied_squad_order(self) -> None:
+        native = deepcopy(
+            self.artifacts["safe_partial_launch"]["products"][
+                "native_adapter"
+            ]["output"]
+        )
+        _rebind_sc2_evidence_unit_tags(native, tag_offset=900_000)
+        with self.assertRaisesRegex(
+            ValueError,
+            "Squad order and SC2 submission unit tags do not match",
+        ):
+            _validate_native_output_payload(native)
+
+    def test_production_tactical_radio_executes_runtime_behavior(self) -> None:
+        runtime = self.artifacts["voice_readback_callout_identity"]["products"][
+            "tactical_radio_runtime"
+        ]
+        self.assertEqual(
+            "production_web_gui_tactical_radio_js",
+            runtime["runtime"],
+        )
+        self.assertIs(True, runtime["primary_accepted"])
+        self.assertIs(True, runtime["secondary_accepted"])
+        self.assertIs(False, runtime["duplicate_primary_accepted"])
+        self.assertIs(False, runtime["duplicate_secondary_accepted"])
+        self.assertIs(False, runtime["stale_accepted"])
+        self.assertIs(True, runtime["muted_accepted"])
+        self.assertEqual(1, runtime["queue_length_before_drain"])
+        self.assertEqual(0, runtime["queue_length_after_drain"])
+        self.assertEqual(3, runtime["caption_count"])
+        self.assertEqual(2, len(runtime["spoken"]))
+        self.assertEqual(1, runtime["muted_caption_delta"])
+        self.assertEqual(0, runtime["muted_speech_delta"])
+        self.assertIs(False, runtime["final_muted"])
+        self.assertEqual(1460, runtime["frame_high_water"])
+        self.assertEqual(6, runtime["timeline_high_water"])
+
+    def test_production_tactical_radio_rejects_foreign_timeline_update(
+        self,
+    ) -> None:
+        artifact = self.artifacts["voice_readback_callout_identity"]
+        timeline = deepcopy(
+            artifact["products"]["timeline_results"][0]["operation_events"]
+        )
+        primary_event, secondary_event = timeline[-2:]
+        for event in (primary_event, secondary_event):
+            event["update_id"] = "foreign-timeline-update"
+            event["technical"]["update_id"] = "foreign-timeline-update"
+        row = artifact["products"]["native_adapter"]["output"][
+            "operation_director"
+        ][0]
+        expected_identity = {
+            "update_id": row["policy_update_id"],
+            "operation_id": row["operation_id"],
+            "generation": row["generation"],
+        }
+        with self.assertRaisesRegex(
+            ValueError,
+            "does not match operation identity",
+        ):
+            _execute_tactical_radio_runtime(
+                primary_event,
+                secondary_event,
+                scope_id="voice_readback_callout_identity",
+                expected_identity=expected_identity,
+                command_runner=subprocess.run,
+            )
 
     def test_transfer_rejection_preserves_byte_identical_active_endpoints(
         self,
@@ -271,7 +429,13 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
             "emergency preemption": self._remove_preemption,
             "ability movement": self._ability_movement,
             "reconnect duplicate": self._duplicate_reconnect_event,
+            "receipt unit tag": self._receipt_unit_tag,
+            "receipt action": self._receipt_action,
+            "receipt identity": self._receipt_identity,
+            "submission receipt link": self._submission_receipt_link,
+            "squad dispatch tag divergence": self._squad_dispatch_tag_divergence,
             "projection mismatch": self._projection_identity_mismatch,
+            "callout mismatch": self._callout_identity_mismatch,
             "timeout": self._exceed_timeout,
         }
         for name, mutate in cases.items():
@@ -433,6 +597,64 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
         ]
         return journey_id, events
 
+    def _receipt_unit_tag(self) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "safe_partial_launch"
+        events = self._events(journey_id)
+        receipt = next(
+            event
+            for event in events
+            if event["event_type"] == "production_path_receipt"
+            and event["payload"]["entrypoint"]
+            == "voiProductionSubmitSc2Action"
+        )
+        receipt["payload"]["unit_tags"][0] = 9999
+        return journey_id, events
+
+    def _receipt_action(self) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "safe_partial_launch"
+        events = self._events(journey_id)
+        receipt = next(
+            event
+            for event in events
+            if event["event_type"] == "production_path_receipt"
+            and event["payload"]["entrypoint"]
+            == "voiProductionIssueSquadOrder"
+        )
+        receipt["payload"]["action"] = "squad_order:scout"
+        return journey_id, events
+
+    def _receipt_identity(self) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "safe_partial_launch"
+        events = self._events(journey_id)
+        receipt = next(
+            event
+            for event in events
+            if event["event_type"] == "production_path_receipt"
+            and event["payload"]["entrypoint"]
+            == "voiProductionSubmitSc2Action"
+        )
+        receipt["payload"]["update_id"] = "foreign-receipt-update"
+        return journey_id, events
+
+    def _submission_receipt_link(
+        self,
+    ) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "safe_partial_launch"
+        events = self._events(journey_id)
+        submission = _first_event(events, "submission")
+        submission["payload"]["submission_ids"][0] = (
+            "voi-sc2-submission-forged"
+        )
+        return journey_id, events
+
+    def _squad_dispatch_tag_divergence(
+        self,
+    ) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "safe_partial_launch"
+        events = self._events(journey_id)
+        _rebind_sc2_event_unit_tags(events, tag_offset=900_000)
+        return journey_id, events
+
     def _projection_identity_mismatch(
         self,
     ) -> tuple[str, list[dict[str, object]]]:
@@ -440,6 +662,15 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
         events = self._events(journey_id)
         projection = _first_event(events, "voice_projection")
         projection["identity"]["generation"] += 1
+        return journey_id, events
+
+    def _callout_identity_mismatch(
+        self,
+    ) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "voice_readback_callout_identity"
+        events = self._events(journey_id)
+        callout = _first_event(events, "voice_callout")
+        callout["identity"]["update_id"] = "foreign-callout-update"
         return journey_id, events
 
     def _exceed_timeout(self) -> tuple[str, list[dict[str, object]]]:
@@ -467,6 +698,102 @@ def _first_event(
     return next(
         event for event in events if event["event_type"] == event_type
     )
+
+
+def _rebind_sc2_evidence_unit_tags(
+    native: dict[str, object],
+    *,
+    tag_offset: int,
+) -> None:
+    production_path = native["production_path"]
+    receipts = production_path["sc2_submission_receipts"]
+    dispatched = production_path["dispatched_sc2_actions"]
+    events = native["events"]
+    replacements: dict[str, tuple[str, list[int]]] = {}
+    for receipt in receipts:
+        old_id = receipt["submission_id"]
+        new_tags = [tag + tag_offset for tag in receipt["unit_tags"]]
+        binding = (
+            receipt["update_id"],
+            receipt["operation_id"],
+            receipt["generation"],
+            receipt["action"],
+            tuple(new_tags),
+        )
+        new_id = _production_receipt_id(
+            "voi-sc2-submission",
+            binding,
+            dispatch_action=receipt["dispatch_action"],
+        )
+        receipt["unit_tags"] = new_tags
+        receipt["submission_id"] = new_id
+        replacements[old_id] = (new_id, new_tags)
+    for row in dispatched:
+        new_id, new_tags = replacements[row["submission_id"]]
+        row["submission_id"] = new_id
+        row["unit_tags"] = new_tags
+    _rebind_sc2_event_unit_tags(
+        events,
+        tag_offset=tag_offset,
+        replacements=replacements,
+    )
+
+
+def _rebind_sc2_event_unit_tags(
+    events: list[dict[str, object]],
+    *,
+    tag_offset: int,
+    replacements: dict[str, tuple[str, list[int]]] | None = None,
+) -> None:
+    resolved = replacements or {}
+    receipt_events = [
+        event
+        for event in events
+        if event["event_type"] == "production_path_receipt"
+        and event["payload"]["entrypoint"]
+        == "voiProductionSubmitSc2Action"
+    ]
+    for event in receipt_events:
+        payload = event["payload"]
+        old_id = payload["submission_id"]
+        if old_id in resolved:
+            new_id, new_tags = resolved[old_id]
+        else:
+            new_tags = [tag + tag_offset for tag in payload["unit_tags"]]
+            binding = (
+                payload["update_id"],
+                payload["operation_id"],
+                payload["generation"],
+                payload["action"],
+                tuple(new_tags),
+            )
+            new_id = _production_receipt_id(
+                "voi-sc2-submission",
+                binding,
+                dispatch_action=payload["dispatch_action"],
+            )
+            resolved[old_id] = (new_id, new_tags)
+        payload["submission_id"] = new_id
+        payload["unit_tags"] = new_tags
+    new_ids = sorted(new_id for new_id, _tags in resolved.values())
+    new_tags = sorted(
+        tag
+        for _new_id, tags in resolved.values()
+        for tag in tags
+    )
+    for event in events:
+        if event["event_type"] not in {
+            "submission",
+            "movement",
+            "engagement",
+            "ability_effect",
+        }:
+            continue
+        payload = event["payload"]
+        if "submission_ids" in payload:
+            payload["submission_ids"] = new_ids
+        if "unit_tags" in payload:
+            payload["unit_tags"] = new_tags
 
 
 def _resequence(events: list[dict[str, object]]) -> None:

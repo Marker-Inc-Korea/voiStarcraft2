@@ -3238,10 +3238,21 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 },
             )
 
-    def test_pre_live_journey_adapter_native_test_is_required(self) -> None:
+    def test_pre_live_journey_native_tests_are_required(self) -> None:
         self.assertEqual(
-            "voi_pre_live_journey_adapter_test",
-            MICROMACHINE_REQUIRED_NATIVE_TESTS["voi_pre_live_journey_adapter"],
+            {
+                "voi_pre_live_journey_adapter": (
+                    "voi_pre_live_journey_adapter_test"
+                ),
+                "voi_production_path": "voi_production_path_test",
+            },
+            {
+                name: MICROMACHINE_REQUIRED_NATIVE_TESTS[name]
+                for name in (
+                    "voi_pre_live_journey_adapter",
+                    "voi_production_path",
+                )
+            },
         )
 
     def test_operation_hud_selection_native_tests_are_required(self) -> None:

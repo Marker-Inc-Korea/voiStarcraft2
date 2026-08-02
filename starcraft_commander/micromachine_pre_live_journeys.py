@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -58,6 +59,7 @@ MAX_JOURNEY_BUNDLE_BYTES: Final[int] = 64 * 1024 * 1024
 MAX_JOURNEY_BUNDLE_ENTRIES: Final[int] = 64
 MAX_JOURNEY_MEMBER_BYTES: Final[int] = 32 * 1024 * 1024
 MAX_NATIVE_ADAPTER_OUTPUT_BYTES: Final[int] = 32 * 1024 * 1024
+MAX_TACTICAL_RADIO_OUTPUT_BYTES: Final[int] = 256 * 1024
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
 DEFAULT_JOURNEY_MANIFEST: Final[Path] = (
     REPO_ROOT / "integrations" / "micromachine" / "PRE_LIVE_JOURNEYS.json"
@@ -119,6 +121,10 @@ _NATIVE_PRODUCTION_PATH_FIELDS: Final[frozenset[str]] = frozenset(
         "operation_ownership_receipt_count",
         "squad_order_receipt_count",
         "sc2_submission_receipt_count",
+        "applied_squad_orders",
+        "dispatched_sc2_actions",
+        "squad_order_receipts",
+        "sc2_submission_receipts",
     }
 )
 _NATIVE_PRODUCTION_ENTRYPOINTS: Final[dict[str, str]] = {
@@ -187,6 +193,62 @@ _CANONICAL_EVENT_STAGES: Final[dict[str, frozenset[str]]] = {
     "web_projection": frozenset({"assigned", "effect_observed"}),
 }
 _SHA256_IDENTITY_PREFIX: Final[str] = "sha256:"
+_TACTICAL_RADIO_VARIABLE_ANCHORS: Final[tuple[str, ...]] = (
+    "var TACTICAL_RADIO_MAX_QUEUE =",
+    "var TACTICAL_RADIO_MAX_CAPTION_HISTORY =",
+    "var TACTICAL_RADIO_MAX_SPEECH_CHARS =",
+    "var TACTICAL_RADIO_MAX_OPERATION_HIGH_WATER =",
+    "var TACTICAL_RADIO_PRIORITY_INTERVAL_MS =",
+    "var TACTICAL_RADIO_DEDUPE_TTL_MS =",
+    "var TACTICAL_RADIO_REPLAY_MAX_AGE_MS =",
+    "var tacticalRadio =",
+)
+_TACTICAL_RADIO_FUNCTION_NAMES: Final[tuple[str, ...]] = (
+    "tacticalRadioNow",
+    "tacticalRadioUiState",
+    "renderTacticalRadioState",
+    "renderTacticalRadioCaptions",
+    "appendTacticalRadioCaption",
+    "clearTacticalRadioTimer",
+    "interruptTacticalRadioSpeech",
+    "cancelTacticalRadioSpeechAndQueue",
+    "resetTacticalRadio",
+    "ensureTacticalRadioScope",
+    "rememberBoundedTacticalRadioValue",
+    "tacticalRadioOperationKey",
+    "rememberTacticalRadioHighWater",
+    "tacticalRadioDedupeExpired",
+    "tacticalRadioSpeechText",
+    "tacticalRadioQueueSort",
+    "compactTacticalRadioQueue",
+    "speakNextTacticalRadioCallout",
+    "queueTacticalRadioCallout",
+    "tacticalRadioSetMuted",
+    "normalizedTacticalReason",
+    "operationEventMatchesRecordUpdate",
+    "tacticalLifecycleCallout",
+    "announceOperationLifecycleEvent",
+)
+_TACTICAL_RADIO_CALLOUT_KINDS: Final[frozenset[str]] = frozenset(
+    {
+        "assigned",
+        "partially_assigned",
+        "movement_observed",
+        "moving",
+        "engagement_observed",
+        "engaged",
+        "target_reached",
+        "reached",
+        "completed",
+        "blocked",
+        "waiting",
+        "emergency_retreat",
+        "base_under_attack",
+        "critical_ability_failure",
+        "force_loss",
+        "submitted",
+    }
+)
 CommandRunner = Callable[..., subprocess.CompletedProcess[Any]]
 
 
@@ -466,7 +528,11 @@ def execute_pre_live_journeys(
                 expected_sha256=binary_sha256,
                 command_runner=command_runner,
             )
-            _consume_native_output(execution, native_output)
+            _consume_native_output(
+                execution,
+                native_output,
+                command_runner=command_runner,
+            )
             _finalize_events(execution)
             execution.products["native_adapter"] = {
                 "schema_version": PRE_LIVE_NATIVE_ADAPTER_SCHEMA_VERSION,
@@ -481,7 +547,7 @@ def execute_pre_live_journeys(
         verdict = verify_pre_live_journey_events(spec, execution.events)
         blockers = [
             *cast(list[str], verdict["blockers"]),
-            *_product_path_blockers(execution.products),
+            *_product_path_blockers(execution.products, spec=spec),
         ]
         report = {
             **verdict,
@@ -1010,6 +1076,10 @@ def _validate_native_production_path(output: Mapping[str, object]) -> None:
         (str, bytes, bytearray),
     ):
         raise ValueError("native production path lacks event evidence")
+    receipt_events: dict[str, list[dict[str, object]]] = {
+        "voiProductionIssueSquadOrder": [],
+        "voiProductionSubmitSc2Action": [],
+    }
     for event in events:
         if not isinstance(event, Mapping):
             raise ValueError("native production path event is malformed")
@@ -1026,24 +1096,27 @@ def _validate_native_production_path(output: Mapping[str, object]) -> None:
         entrypoint = str(payload.get("entrypoint", ""))
         if entrypoint not in observed:
             raise ValueError("native production path receipt is unsupported")
-        if entrypoint == "voiProductionIssueSquadOrder":
-            unit_tags = payload.get("unit_tags")
-            if (
-                set(payload) != {"entrypoint", "unit_tags"}
-                or not isinstance(unit_tags, Sequence)
-                or isinstance(unit_tags, (str, bytes, bytearray))
-                or not unit_tags
-                or any(type(tag) is not int or tag <= 0 for tag in unit_tags)
-                or len(set(unit_tags)) != len(unit_tags)
-            ):
-                raise ValueError("native squad-order receipt is malformed")
-        else:
+        if entrypoint == "voiProductionAssignOperationOwner":
             if (
                 set(payload) != {"entrypoint", "unit_tag"}
                 or type(payload.get("unit_tag")) is not int
                 or cast(int, payload["unit_tag"]) <= 0
             ):
                 raise ValueError("native unit receipt is malformed")
+        elif entrypoint == "voiProductionIssueSquadOrder":
+            _validate_native_squad_receipt_payload(
+                payload,
+                identity=identity,
+                event_payload=True,
+            )
+            receipt_events[entrypoint].append(dict(payload))
+        else:
+            _validate_native_submission_receipt_payload(
+                payload,
+                identity=identity,
+                event_payload=True,
+            )
+            receipt_events[entrypoint].append(dict(payload))
         observed[entrypoint] += 1
     for count_field, entrypoint in _NATIVE_PRODUCTION_ENTRYPOINTS.items():
         entrypoint_field = _NATIVE_PRODUCTION_ENTRYPOINT_FIELDS[count_field]
@@ -1056,11 +1129,523 @@ def _validate_native_production_path(output: Mapping[str, object]) -> None:
             raise ValueError(
                 "native production path receipt count does not match raw events"
             )
+    squad_receipts = _native_production_rows(
+        production_path,
+        "squad_order_receipts",
+    )
+    applied_orders = _native_production_rows(
+        production_path,
+        "applied_squad_orders",
+    )
+    submission_receipts = _native_production_rows(
+        production_path,
+        "sc2_submission_receipts",
+    )
+    dispatched_actions = _native_production_rows(
+        production_path,
+        "dispatched_sc2_actions",
+    )
+    if len(squad_receipts) != production_path["squad_order_receipt_count"]:
+        raise ValueError("native squad-order receipt rows do not match count")
+    if len(applied_orders) != len(squad_receipts):
+        raise ValueError("native applied Squad orders do not match receipts")
+    if len(submission_receipts) != production_path["sc2_submission_receipt_count"]:
+        raise ValueError("native SC2 receipt rows do not match count")
+    if len(dispatched_actions) != len(submission_receipts):
+        raise ValueError("native dispatched SC2 actions do not match receipts")
+    squad_ids: set[str] = set()
+    for receipt in squad_receipts:
+        _validate_native_squad_receipt_payload(
+            receipt,
+            identity=receipt,
+            event_payload=False,
+        )
+        receipt_id = str(receipt["receipt_id"])
+        if receipt_id in squad_ids:
+            raise ValueError("native squad-order receipt id is duplicated")
+        squad_ids.add(receipt_id)
+        event_receipt = _unique_native_row(
+            receipt_events["voiProductionIssueSquadOrder"],
+            "receipt_id",
+            receipt_id,
+        )
+        applied = _unique_native_row(
+            applied_orders,
+            "receipt_id",
+            receipt_id,
+        )
+        _validate_native_applied_squad_order_payload(applied)
+        _require_native_binding_fields(
+            receipt,
+            event_receipt,
+            (
+                "receipt_id",
+                "update_id",
+                "operation_id",
+                "generation",
+                "action",
+                "unit_tags",
+                "applied_proof",
+            ),
+        )
+        _require_native_binding_fields(
+            receipt,
+            applied,
+            (
+                "receipt_id",
+                "update_id",
+                "operation_id",
+                "generation",
+                "squad_name",
+                "action",
+                "unit_tags",
+            ),
+        )
+    submission_ids: set[str] = set()
+    for receipt in submission_receipts:
+        _validate_native_submission_receipt_payload(
+            receipt,
+            identity=receipt,
+            event_payload=False,
+        )
+        submission_id = str(receipt["submission_id"])
+        if submission_id in submission_ids:
+            raise ValueError("native SC2 submission id is duplicated")
+        submission_ids.add(submission_id)
+        event_receipt = _unique_native_row(
+            receipt_events["voiProductionSubmitSc2Action"],
+            "submission_id",
+            submission_id,
+        )
+        dispatched = _unique_native_row(
+            dispatched_actions,
+            "submission_id",
+            submission_id,
+        )
+        _validate_native_dispatched_sc2_action_payload(dispatched)
+        _require_native_binding_fields(
+            receipt,
+            event_receipt,
+            (
+                "submission_id",
+                "update_id",
+                "operation_id",
+                "generation",
+                "action",
+                "dispatch_action",
+                "unit_tags",
+                "dispatch_proof",
+            ),
+        )
+        _require_native_binding_fields(
+            receipt,
+            dispatched,
+            (
+                "submission_id",
+                "update_id",
+                "operation_id",
+                "generation",
+                "action",
+                "dispatch_action",
+                "unit_tags",
+            ),
+        )
+    _validate_native_submission_causality(events, squad_receipts, submission_receipts)
+
+
+def _validate_native_applied_squad_order_payload(
+    payload: Mapping[str, object],
+) -> None:
+    expected = {
+        "receipt_id",
+        "update_id",
+        "operation_id",
+        "generation",
+        "squad_name",
+        "action",
+        "unit_tags",
+    }
+    if set(payload) != expected:
+        raise ValueError("native applied Squad order field set is invalid")
+    if (
+        not str(payload.get("receipt_id", "") or "")
+        or not str(payload.get("update_id", "") or "")
+        or not str(payload.get("operation_id", "") or "")
+        or type(payload.get("generation")) is not int
+        or cast(int, payload["generation"]) <= 0
+        or not str(payload.get("squad_name", "") or "")
+        or not str(payload.get("action", "") or "")
+    ):
+        raise ValueError("native applied Squad order is malformed")
+    _native_unit_tags(payload.get("unit_tags"))
+
+
+def _validate_native_dispatched_sc2_action_payload(
+    payload: Mapping[str, object],
+) -> None:
+    expected = {
+        "submission_id",
+        "update_id",
+        "operation_id",
+        "generation",
+        "action",
+        "dispatch_action",
+        "unit_tags",
+    }
+    if set(payload) != expected:
+        raise ValueError("native dispatched SC2 action field set is invalid")
+    if (
+        not str(payload.get("submission_id", "") or "")
+        or not str(payload.get("update_id", "") or "")
+        or not str(payload.get("operation_id", "") or "")
+        or type(payload.get("generation")) is not int
+        or cast(int, payload["generation"]) <= 0
+        or not str(payload.get("action", "") or "")
+        or not str(payload.get("dispatch_action", "") or "")
+    ):
+        raise ValueError("native dispatched SC2 action is malformed")
+    _native_unit_tags(payload.get("unit_tags"))
+
+
+def _native_production_rows(
+    production_path: Mapping[str, object],
+    field_name: str,
+) -> list[dict[str, object]]:
+    value = production_path.get(field_name)
+    if not isinstance(value, Sequence) or isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        raise ValueError(f"native production path {field_name} is not an array")
+    if any(not isinstance(row, Mapping) for row in value):
+        raise ValueError(f"native production path {field_name} has malformed rows")
+    return [dict(cast(Mapping[str, object], row)) for row in value]
+
+
+def _validate_native_squad_receipt_payload(
+    payload: Mapping[str, object],
+    *,
+    identity: Mapping[str, object],
+    event_payload: bool,
+) -> None:
+    expected = {
+        "entrypoint",
+        "receipt_id",
+        "update_id",
+        "operation_id",
+        "generation",
+        "action",
+        "unit_tags",
+        "applied_proof",
+    }
+    if not event_payload:
+        expected = {
+            "receipt_id",
+            "update_id",
+            "operation_id",
+            "generation",
+            "squad_name",
+            "action",
+            "unit_tags",
+            "callback_executed",
+            "applied_proof",
+        }
+    if set(payload) != expected:
+        raise ValueError("native squad-order receipt field set is invalid")
+    binding = _native_receipt_binding(payload, identity)
+    if payload.get("applied_proof") is not True:
+        raise ValueError("native squad-order receipt lacks applied proof")
+    if not event_payload and payload.get("callback_executed") is not True:
+        raise ValueError("native squad-order callback was not executed")
+    if not event_payload and not str(payload.get("squad_name", "") or ""):
+        raise ValueError("native squad-order receipt lacks squad name")
+    expected_id = _production_receipt_id(
+        "voi-squad-order",
+        binding,
+        dispatch_action="",
+    )
+    if payload.get("receipt_id") != expected_id:
+        raise ValueError("native squad-order receipt id is invalid")
+
+
+def _validate_native_submission_receipt_payload(
+    payload: Mapping[str, object],
+    *,
+    identity: Mapping[str, object],
+    event_payload: bool,
+) -> None:
+    expected = {
+        "entrypoint",
+        "submission_id",
+        "update_id",
+        "operation_id",
+        "generation",
+        "action",
+        "dispatch_action",
+        "unit_tags",
+        "dispatch_proof",
+    }
+    if not event_payload:
+        expected = {
+            "submission_id",
+            "update_id",
+            "operation_id",
+            "generation",
+            "action",
+            "dispatch_action",
+            "unit_tags",
+            "callback_executed",
+            "dispatch_proof",
+        }
+    if set(payload) != expected:
+        raise ValueError("native SC2 submission receipt field set is invalid")
+    binding = _native_receipt_binding(payload, identity)
+    dispatch_action = str(payload.get("dispatch_action", "") or "")
+    if not dispatch_action or payload.get("dispatch_proof") is not True:
+        raise ValueError("native SC2 submission receipt lacks dispatch proof")
+    if not event_payload and payload.get("callback_executed") is not True:
+        raise ValueError("native SC2 submission callback was not executed")
+    expected_id = _production_receipt_id(
+        "voi-sc2-submission",
+        binding,
+        dispatch_action=dispatch_action,
+    )
+    if payload.get("submission_id") != expected_id:
+        raise ValueError("native SC2 submission id is invalid")
+
+
+def _native_receipt_binding(
+    payload: Mapping[str, object],
+    identity: Mapping[str, object],
+) -> tuple[str, str, int, str, tuple[int, ...]]:
+    update_id = str(payload.get("update_id", "") or "")
+    operation_id = str(payload.get("operation_id", "") or "")
+    generation = payload.get("generation")
+    action = str(payload.get("action", "") or "")
+    unit_tags = _native_unit_tags(payload.get("unit_tags"))
+    if (
+        not update_id
+        or not operation_id
+        or type(generation) is not int
+        or generation <= 0
+        or not action
+        or update_id != str(identity.get("update_id", "") or "")
+        or operation_id != str(identity.get("operation_id", "") or "")
+        or generation != identity.get("generation")
+    ):
+        raise ValueError("native production receipt identity is invalid")
+    return update_id, operation_id, generation, action, unit_tags
+
+
+def _native_unit_tags(value: object) -> tuple[int, ...]:
+    if not isinstance(value, Sequence) or isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        raise ValueError("native production unit tags are malformed")
+    tags = tuple(value)
+    if (
+        not tags
+        or any(type(tag) is not int or tag <= 0 for tag in tags)
+        or tuple(sorted(tags)) != tags
+        or len(set(tags)) != len(tags)
+    ):
+        raise ValueError("native production unit tags are invalid")
+    return cast(tuple[int, ...], tags)
+
+
+def _production_receipt_id(
+    prefix: str,
+    binding: tuple[str, str, int, str, tuple[int, ...]],
+    *,
+    dispatch_action: str,
+) -> str:
+    update_id, operation_id, generation, action, unit_tags = binding
+    fields = (prefix, update_id, operation_id)
+    canonical = "".join(f"{len(value)}:{value}|" for value in fields)
+    canonical += f"{generation}|"
+    canonical += f"{len(action)}:{action}|"
+    canonical += f"{len(dispatch_action)}:{dispatch_action}|"
+    canonical += "".join(f"{tag}," for tag in unit_tags)
+    digest = 1_469_598_103_934_665_603
+    for value in canonical.encode("utf-8"):
+        digest ^= value
+        digest = (digest * 1_099_511_628_211) & 0xFFFFFFFFFFFFFFFF
+    return f"{prefix}-{digest:016x}"
+
+
+def _unique_native_row(
+    rows: Sequence[Mapping[str, object]],
+    field_name: str,
+    expected: str,
+) -> Mapping[str, object]:
+    matching = [row for row in rows if row.get(field_name) == expected]
+    if len(matching) != 1:
+        raise ValueError(f"native production binding is not unique: {field_name}")
+    return matching[0]
+
+
+def _require_native_binding_fields(
+    expected: Mapping[str, object],
+    observed: Mapping[str, object],
+    fields: Sequence[str],
+) -> None:
+    if any(expected.get(field) != observed.get(field) for field in fields):
+        raise ValueError("native production receipt binding is inconsistent")
+
+
+def _validate_native_submission_causality(
+    events: Sequence[object],
+    squad_receipts: Sequence[Mapping[str, object]],
+    submission_receipts: Sequence[Mapping[str, object]],
+) -> None:
+    canonical_events = [
+        event for event in events if isinstance(event, Mapping)
+    ]
+    squad_action_tags: dict[tuple[str, str, int, str], set[int]] = {}
+    for receipt in squad_receipts:
+        if not _matching_native_action_event(
+            canonical_events,
+            "squad_order",
+            receipt,
+        ):
+            raise ValueError("native squad-order receipt lacks canonical order")
+        squad_key = (
+            str(receipt["update_id"]),
+            str(receipt["operation_id"]),
+            int(receipt["generation"]),
+            str(receipt["action"]),
+        )
+        squad_action_tags.setdefault(squad_key, set()).update(
+            _native_unit_tags(receipt["unit_tags"])
+        )
+    grouped_tags: dict[tuple[str, str, int, str, str], set[int]] = {}
+    grouped_ids: dict[tuple[str, str, int, str, str], set[str]] = {}
+    submission_action_tags: dict[tuple[str, str, int, str], set[int]] = {}
+    for receipt in submission_receipts:
+        key = (
+            str(receipt["update_id"]),
+            str(receipt["operation_id"]),
+            int(receipt["generation"]),
+            str(receipt["action"]),
+            str(receipt["dispatch_action"]),
+        )
+        receipt_tags = _native_unit_tags(receipt["unit_tags"])
+        grouped_tags.setdefault(key, set()).update(receipt_tags)
+        grouped_ids.setdefault(key, set()).add(
+            str(receipt["submission_id"])
+        )
+        submission_action_tags.setdefault(key[:4], set()).update(receipt_tags)
+    if set(squad_action_tags) != set(submission_action_tags):
+        raise ValueError(
+            "native Squad orders and SC2 submissions have different action bindings"
+        )
+    if any(
+        squad_action_tags[key] != submission_action_tags[key]
+        for key in squad_action_tags
+    ):
+        raise ValueError(
+            "native Squad order and SC2 submission unit tags do not match"
+        )
+    for (
+        update_id,
+        operation_id,
+        generation,
+        action,
+        dispatch_action,
+    ), unit_tags in grouped_tags.items():
+        binding = {
+            "update_id": update_id,
+            "operation_id": operation_id,
+            "generation": generation,
+            "action": action,
+            "dispatch_action": dispatch_action,
+            "submission_ids": sorted(
+                grouped_ids[
+                    (
+                        update_id,
+                        operation_id,
+                        generation,
+                        action,
+                        dispatch_action,
+                    )
+                ]
+            ),
+            "unit_tags": sorted(unit_tags),
+        }
+        if not _matching_native_action_event(
+            canonical_events,
+            "submission",
+            binding,
+        ):
+            raise ValueError("native SC2 receipts lack canonical submission")
+        effects = [
+            event
+            for event in canonical_events
+            if event.get("event_type") in _EFFECT_EVENT_TYPES
+            and _native_action_event_identity_matches(event, binding)
+        ]
+        if effects and not any(
+            _native_action_event_matches(event, binding)
+            for event in effects
+        ):
+            raise ValueError("native SC2 receipts are not bound to effect proof")
+
+
+def _matching_native_action_event(
+    events: Sequence[Mapping[str, object]],
+    event_type: str,
+    binding: Mapping[str, object],
+) -> bool:
+    return any(
+        event.get("event_type") == event_type
+        and _native_action_event_matches(event, binding)
+        for event in events
+    )
+
+
+def _native_action_event_matches(
+    event: Mapping[str, object],
+    binding: Mapping[str, object],
+) -> bool:
+    payload = event.get("payload")
+    return bool(
+        _native_action_event_identity_matches(event, binding)
+        and isinstance(payload, Mapping)
+        and all(
+            payload.get(field_name) == binding.get(field_name)
+            for field_name in (
+                "unit_tags",
+                "receipt_id",
+                "submission_ids",
+                "dispatch_action",
+            )
+            if field_name in binding
+        )
+    )
+
+
+def _native_action_event_identity_matches(
+    event: Mapping[str, object],
+    binding: Mapping[str, object],
+) -> bool:
+    identity = event.get("identity")
+    payload = event.get("payload")
+    return bool(
+        isinstance(identity, Mapping)
+        and isinstance(payload, Mapping)
+        and identity.get("update_id") == binding.get("update_id")
+        and identity.get("operation_id") == binding.get("operation_id")
+        and identity.get("generation") == binding.get("generation")
+        and payload.get("action") == binding.get("action")
+    )
 
 
 def _consume_native_output(
     execution: _JourneyExecution,
     native: Mapping[str, object],
+    *,
+    command_runner: CommandRunner = subprocess.run,
 ) -> None:
     raw_events = native.get("events")
     if not isinstance(raw_events, Sequence) or isinstance(
@@ -1083,7 +1668,11 @@ def _consume_native_output(
     _derive_blocked_launch_events(execution, native)
     _consume_runtime_products(execution, native)
     _consume_web_event_reconnect(execution, native)
-    _consume_projection_events(execution, native)
+    _consume_projection_events(
+        execution,
+        native,
+        command_runner=command_runner,
+    )
 
 
 def _derive_state_snapshot_events(
@@ -1276,10 +1865,24 @@ def _consume_runtime_products(
     dashboard = execution.backend.dashboard_snapshot(
         current_frame=int(telemetry.get("frame", 0) or 0)
     ).to_dict()
+    overview = cast(Mapping[str, object], telemetry.get("battlefield_overview", {}))
+    overview_identity = cast(Mapping[str, object], overview.get("identity", {}))
+    session_epoch = str(overview_identity.get("session_epoch", "") or "")
+    if not session_epoch:
+        raise ValueError("native battlefield overview lacks a session epoch")
+    result_stream = [
+        {
+            "status": "published",
+            "update": deepcopy(update),
+            "battlefield_session_epoch": session_epoch,
+        }
+        for update in execution.compiled_updates
+    ]
     status = web_gui._micromachine_status_payload(
         dashboard,
         telemetry=telemetry,
         battlefield_projection=selected,
+        result_stream=result_stream,
     )
     reduced = cast(
         web_gui._OperationSemanticTimelineReducer,
@@ -1380,6 +1983,8 @@ def _consume_web_event_reconnect(
 def _consume_projection_events(
     execution: _JourneyExecution,
     native: Mapping[str, object],
+    *,
+    command_runner: CommandRunner,
 ) -> None:
     rows = _mapping_sequence(native.get("operation_director"))
     final_frame = int(
@@ -1406,7 +2011,8 @@ def _consume_projection_events(
                 "timeline_event_count": sum(
                     1
                     for event in timeline_events
-                    if event.get("operation_id") == identity["operation_id"]
+                    if event.get("update_id") == identity["update_id"]
+                    and event.get("operation_id") == identity["operation_id"]
                     and int(event.get("generation", 0) or 0)
                     == identity["generation"]
                 ),
@@ -1454,12 +2060,35 @@ def _consume_projection_events(
     matching = [
         event
         for event in timeline_events
-        if event.get("operation_id") == identity["operation_id"]
+        if event.get("update_id") == identity["update_id"]
+        and event.get("operation_id") == identity["operation_id"]
         and int(event.get("generation", 0) or 0) == identity["generation"]
     ]
     if not matching:
         raise ValueError("voice journey lacks a matching semantic timeline event")
-    callout = matching[-1]
+    callout_events = [
+        event
+        for event in matching
+        if str(event.get("kind", "")).lower()
+        in _TACTICAL_RADIO_CALLOUT_KINDS
+    ]
+    if len(callout_events) < 2:
+        raise ValueError(
+            "voice journey lacks two production-admissible lifecycle events"
+        )
+    primary_event, secondary_event = callout_events[-2:]
+    radio_result = _execute_tactical_radio_runtime(
+        primary_event,
+        secondary_event,
+        scope_id=execution.journey_id,
+        expected_identity=identity,
+        command_runner=command_runner,
+    )
+    execution.products["tactical_radio_runtime"] = radio_result
+    secondary_callout = cast(
+        Mapping[str, object],
+        radio_result["secondary_callout"],
+    )
     stage = (
         "effect_observed" if row.get("completed") is True else "assigned"
     )
@@ -1470,8 +2099,8 @@ def _consume_projection_events(
         game_frame=final_frame,
         payload={
             "action": "project",
-            "timeline_seq": int(callout["timeline_seq"]),
-            "kind": str(callout["kind"]),
+            "timeline_seq": int(secondary_event["timeline_seq"]),
+            "kind": str(secondary_event["kind"]),
         },
         order=52,
     )
@@ -1482,11 +2111,487 @@ def _consume_projection_events(
         game_frame=final_frame,
         payload={
             "action": "speak",
-            "timeline_seq": int(callout["timeline_seq"]),
-            "text": str(callout["summary"]),
+            "timeline_seq": int(secondary_event["timeline_seq"]),
+            "caption": str(secondary_callout["caption"]),
+            "text": str(secondary_callout["speech"]),
         },
         order=53,
     )
+
+
+def _execute_tactical_radio_runtime(
+    primary_event: Mapping[str, object],
+    secondary_event: Mapping[str, object],
+    *,
+    scope_id: str,
+    expected_identity: Mapping[str, object],
+    command_runner: CommandRunner,
+) -> dict[str, object]:
+    node = shutil.which("node")
+    if node is None:
+        raise ValueError("Node.js is required for production Tactical Radio replay")
+    primary_identity = _timeline_event_identity(primary_event)
+    secondary_identity = _timeline_event_identity(secondary_event)
+    if primary_identity[:3] != secondary_identity[:3]:
+        raise ValueError("Tactical Radio lifecycle identities do not match")
+    expected = (
+        str(expected_identity.get("update_id", "") or ""),
+        str(expected_identity.get("operation_id", "") or ""),
+        expected_identity.get("generation"),
+    )
+    if (
+        not expected[0]
+        or not expected[1]
+        or type(expected[2]) is not int
+        or cast(int, expected[2]) <= 0
+    ):
+        raise ValueError("Tactical Radio operation identity is malformed")
+    if primary_identity[:3] != expected:
+        raise ValueError(
+            "Tactical Radio lifecycle identity does not match operation identity"
+        )
+    if (
+        secondary_identity[3] <= primary_identity[3]
+        or secondary_identity[4] < primary_identity[4]
+    ):
+        raise ValueError("Tactical Radio lifecycle evidence is stale")
+    session_epoch = str(primary_event.get("session_epoch", "") or "")
+    if not session_epoch or session_epoch != str(
+        secondary_event.get("session_epoch", "") or ""
+    ):
+        raise ValueError("Tactical Radio lifecycle session epoch is invalid")
+    runtime_source = _production_tactical_radio_source()
+    completed = command_runner(
+        [node, "-e", _tactical_radio_node_harness(runtime_source)],
+        input=canonical_json_bytes(
+            {
+                "schema_version": 1,
+                "now_unix_ms": 1_700_000_000_000,
+                "scope_id": scope_id,
+                "session_epoch": session_epoch,
+                "expected_identity": dict(expected_identity),
+                "primary_event": dict(primary_event),
+                "secondary_event": dict(secondary_event),
+            }
+        ),
+        check=False,
+        capture_output=True,
+        text=False,
+        shell=False,
+    )
+    if int(completed.returncode) != 0:
+        stderr = _as_bytes(completed.stderr).decode(
+            "utf-8",
+            errors="replace",
+        )
+        raise ValueError(
+            f"production Tactical Radio replay failed: {stderr.strip()}"
+        )
+    stdout = _as_bytes(completed.stdout)
+    if not stdout or len(stdout) > MAX_TACTICAL_RADIO_OUTPUT_BYTES:
+        raise ValueError("production Tactical Radio output size is invalid")
+    result = json.loads(
+        stdout,
+        object_pairs_hook=_reject_duplicate_json_object_keys,
+    )
+    validated = _validate_tactical_radio_result(
+        result,
+        primary_event=primary_event,
+        secondary_event=secondary_event,
+    )
+    return {
+        "schema_version": 1,
+        "runtime": "production_web_gui_tactical_radio_js",
+        "source_sha256": hashlib.sha256(
+            runtime_source.encode("utf-8")
+        ).hexdigest(),
+        **validated,
+    }
+
+
+def _timeline_event_identity(
+    event: Mapping[str, object],
+) -> tuple[str, str, int, int, int]:
+    update_id = str(event.get("update_id", "") or "")
+    operation_id = str(event.get("operation_id", "") or "")
+    generation = event.get("generation")
+    timeline_seq = event.get("timeline_seq")
+    game_frame = event.get("game_frame")
+    if (
+        not update_id
+        or not operation_id
+        or type(generation) is not int
+        or generation <= 0
+        or type(timeline_seq) is not int
+        or timeline_seq <= 0
+        or type(game_frame) is not int
+        or game_frame < 0
+    ):
+        raise ValueError("Tactical Radio lifecycle identity is malformed")
+    return update_id, operation_id, generation, timeline_seq, game_frame
+
+
+def _production_tactical_radio_source() -> str:
+    page = web_gui.render_web_gui_page()
+    declarations = [
+        *(
+            _extract_javascript_statement(page, anchor)
+            for anchor in _TACTICAL_RADIO_VARIABLE_ANCHORS
+        ),
+        *(
+            _extract_javascript_function(page, name)
+            for name in _TACTICAL_RADIO_FUNCTION_NAMES
+        ),
+    ]
+    return "\n\n".join(declarations) + "\n"
+
+
+def _extract_javascript_statement(source: str, anchor: str) -> str:
+    start = source.find(anchor)
+    if start < 0:
+        raise ValueError(f"production JavaScript statement is missing: {anchor}")
+    end = source.find(";\n", start)
+    if end < 0:
+        raise ValueError(f"production JavaScript statement is unterminated: {anchor}")
+    return source[start : end + 1]
+
+
+def _extract_javascript_function(source: str, name: str) -> str:
+    anchor = f"function {name}("
+    start = source.find(anchor)
+    if start < 0:
+        raise ValueError(f"production JavaScript function is missing: {name}")
+    body_start = source.find("{", start)
+    if body_start < 0:
+        raise ValueError(f"production JavaScript function is malformed: {name}")
+    depth = 0
+    quote = ""
+    escaped = False
+    line_comment = False
+    block_comment = False
+    index = body_start
+    while index < len(source):
+        character = source[index]
+        next_character = source[index + 1] if index + 1 < len(source) else ""
+        if line_comment:
+            if character == "\n":
+                line_comment = False
+            index += 1
+            continue
+        if block_comment:
+            if character == "*" and next_character == "/":
+                block_comment = False
+                index += 2
+            else:
+                index += 1
+            continue
+        if quote:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = ""
+            index += 1
+            continue
+        if character in {"'", '"', "`"}:
+            quote = character
+            index += 1
+            continue
+        if character == "/" and next_character == "/":
+            line_comment = True
+            index += 2
+            continue
+        if character == "/" and next_character == "*":
+            block_comment = True
+            index += 2
+            continue
+        if character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : index + 1]
+        index += 1
+    raise ValueError(f"production JavaScript function is unterminated: {name}")
+
+
+def _tactical_radio_node_harness(runtime_source: str) -> str:
+    preamble = r"""
+"use strict";
+var fs = require("fs");
+var input = JSON.parse(fs.readFileSync(0, "utf8"));
+var nowMs = Number(input.now_unix_ms || 0);
+Date.now = function() { return nowMs; };
+var spoken = [];
+var utterances = [];
+function FakeSpeechSynthesisUtterance(text) {
+  this.text = String(text || "");
+  this.lang = "";
+  this.onend = null;
+  this.onerror = null;
+}
+var window = {
+  SpeechSynthesisUtterance: FakeSpeechSynthesisUtterance,
+  speechSynthesis: {
+    speak: function(utterance) {
+      spoken.push(utterance.text);
+      utterances.push(utterance);
+    },
+    cancel: function() {}
+  },
+  setTimeout: function(callback, delay) {
+    nowMs += Math.max(0, Number(delay || 0));
+    callback();
+    return 1;
+  },
+  clearTimeout: function() {}
+};
+var document = {
+  getElementById: function() { return null; },
+  createElement: function() {
+    return {
+      appendChild: function() {},
+      setAttribute: function() {},
+      textContent: "",
+      className: ""
+    };
+  }
+};
+var currentLang = "en";
+var operationConsoleSessionEpoch = String(input.session_epoch || "");
+function t(key) {
+  var labels = {
+    tacticalForceAssigned: "Force assigned",
+    tacticalForcePartiallyAssigned: "Force partially assigned",
+    tacticalMoving: "Operation moving",
+    tacticalEngaged: "Operation engaged",
+    tacticalTargetReached: "Target reached",
+    tacticalCompleted: "Operation completed",
+    tacticalRouteUnavailable: "Route unavailable",
+    tacticalBlocked: "Operation blocked",
+    tacticalEmergencyRetreat: "Emergency retreat",
+    tacticalBaseAttack: "Base under attack",
+    tacticalCriticalAbilityFailure: "Critical ability failure",
+    tacticalForceLoss: "Operation force loss",
+    tacticalSubmittedCaption: "Action submitted",
+    tacticalRadioSpeaking: "Speaking",
+    tacticalRadioMuted: "Muted",
+    tacticalRadioUnavailable: "Unavailable",
+    tacticalRadioReady: "Ready",
+    tacticalRadioMute: "Mute",
+    tacticalRadioUnmute: "Unmute"
+  };
+  return labels[key] || String(key || "");
+}
+"""
+    suffix = r"""
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+function envelopeFor(payload) {
+  return {
+    update_id: String(payload.update_id || ""),
+    created_at_unix_ms: Number(input.now_unix_ms || 0)
+  };
+}
+var record = {
+  updateId: String(input.expected_identity.update_id || ""),
+  operationGeneration: Number(input.expected_identity.generation || 0),
+  requestedOperationGeneration: Number(
+    input.primary_event.requested_generation ||
+    input.expected_identity.generation ||
+    0
+  ),
+  sessionEpoch: String(input.session_epoch || ""),
+  data: {
+    operation_console_execution_owner_update_id: String(
+      input.expected_identity.update_id || ""
+    )
+  }
+};
+var primaryPayload = clone(input.primary_event);
+var primaryEnvelope = envelopeFor(primaryPayload);
+var primaryCallout = tacticalLifecycleCallout(
+  primaryEnvelope,
+  primaryPayload,
+  String(input.scope_id || ""),
+  record
+);
+var primaryAccepted = primaryCallout
+  ? queueTacticalRadioCallout(primaryCallout)
+  : false;
+var duplicatePrimaryAccepted = primaryCallout
+  ? queueTacticalRadioCallout(clone(primaryCallout))
+  : false;
+var stalePayload = clone(primaryPayload);
+stalePayload.timeline_seq = Math.max(
+  1,
+  Number(stalePayload.timeline_seq || 1) - 1
+);
+stalePayload.game_frame = Math.max(
+  0,
+  Number(stalePayload.game_frame || 0) - 1
+);
+var staleAccepted = announceOperationLifecycleEvent(
+  envelopeFor(stalePayload),
+  stalePayload,
+  String(input.scope_id || ""),
+  record
+);
+var secondaryPayload = clone(input.secondary_event);
+var secondaryEnvelope = envelopeFor(secondaryPayload);
+var secondaryCallout = tacticalLifecycleCallout(
+  secondaryEnvelope,
+  secondaryPayload,
+  String(input.scope_id || ""),
+  record
+);
+var secondaryAccepted = secondaryCallout
+  ? queueTacticalRadioCallout(secondaryCallout)
+  : false;
+var duplicateSecondaryAccepted = secondaryCallout
+  ? queueTacticalRadioCallout(clone(secondaryCallout))
+  : false;
+var queueLengthBeforeDrain = tacticalRadio.queue.length;
+if (utterances[0] && utterances[0].onend) {
+  utterances[0].onend();
+}
+var queueLengthAfterDrain = tacticalRadio.queue.length;
+if (utterances[1] && utterances[1].onend) {
+  utterances[1].onend();
+}
+var captionCountBeforeMute = tacticalRadio.captions.length;
+var speechCountBeforeMute = spoken.length;
+tacticalRadioSetMuted(true);
+var mutedAccepted = queueTacticalRadioCallout({
+  priority: 1,
+  caption: "Muted deterministic caption",
+  speech: "Muted speech must not play",
+  dedupeKey: "muted-deterministic-caption",
+  createdAt: Number(input.now_unix_ms || 0)
+});
+var mutedCaptionDelta = tacticalRadio.captions.length - captionCountBeforeMute;
+var mutedSpeechDelta = spoken.length - speechCountBeforeMute;
+tacticalRadioSetMuted(false);
+var operationKey = tacticalRadioOperationKey(
+  String(input.scope_id || ""),
+  String(input.session_epoch || ""),
+  String(input.expected_identity.operation_id || ""),
+  Number(input.expected_identity.generation || 0)
+);
+process.stdout.write(JSON.stringify({
+  schema_version: 1,
+  primary_accepted: primaryAccepted,
+  secondary_accepted: secondaryAccepted,
+  duplicate_primary_accepted: duplicatePrimaryAccepted,
+  duplicate_secondary_accepted: duplicateSecondaryAccepted,
+  stale_accepted: staleAccepted,
+  muted_accepted: mutedAccepted,
+  queue_length_before_drain: queueLengthBeforeDrain,
+  queue_length_after_drain: queueLengthAfterDrain,
+  caption_count: tacticalRadio.captions.length,
+  spoken: spoken,
+  muted_caption_delta: mutedCaptionDelta,
+  muted_speech_delta: mutedSpeechDelta,
+  final_muted: tacticalRadio.muted,
+  primary_callout: primaryCallout,
+  secondary_callout: secondaryCallout,
+  frame_high_water: Number(
+    tacticalRadio.frameHighWater[operationKey] || -1
+  ),
+  timeline_high_water: Number(
+    tacticalRadio.timelineHighWater[operationKey] || 0
+  )
+}));
+"""
+    return preamble + "\n" + runtime_source + "\n" + suffix
+
+
+def _validate_tactical_radio_result(
+    result: object,
+    *,
+    primary_event: Mapping[str, object],
+    secondary_event: Mapping[str, object],
+) -> dict[str, object]:
+    expected_fields = {
+        "schema_version",
+        "primary_accepted",
+        "secondary_accepted",
+        "duplicate_primary_accepted",
+        "duplicate_secondary_accepted",
+        "stale_accepted",
+        "muted_accepted",
+        "queue_length_before_drain",
+        "queue_length_after_drain",
+        "caption_count",
+        "spoken",
+        "muted_caption_delta",
+        "muted_speech_delta",
+        "final_muted",
+        "primary_callout",
+        "secondary_callout",
+        "frame_high_water",
+        "timeline_high_water",
+    }
+    if not isinstance(result, dict) or set(result) != expected_fields:
+        raise ValueError("production Tactical Radio result field set is invalid")
+    if result.get("schema_version") != 1:
+        raise ValueError("production Tactical Radio result schema is unsupported")
+    expected_bools = {
+        "primary_accepted": True,
+        "secondary_accepted": True,
+        "duplicate_primary_accepted": False,
+        "duplicate_secondary_accepted": False,
+        "stale_accepted": False,
+        "muted_accepted": True,
+        "final_muted": False,
+    }
+    if any(result.get(key) is not value for key, value in expected_bools.items()):
+        raise ValueError("production Tactical Radio admission behavior is invalid")
+    expected_counts = {
+        "queue_length_before_drain": 1,
+        "queue_length_after_drain": 0,
+        "caption_count": 3,
+        "muted_caption_delta": 1,
+        "muted_speech_delta": 0,
+    }
+    if any(result.get(key) != value for key, value in expected_counts.items()):
+        raise ValueError("production Tactical Radio queue/mute behavior is invalid")
+    spoken = result.get("spoken")
+    if (
+        not isinstance(spoken, list)
+        or len(spoken) != 2
+        or any(not isinstance(item, str) or not item for item in spoken)
+    ):
+        raise ValueError("production Tactical Radio speech behavior is invalid")
+    primary_callout = result.get("primary_callout")
+    secondary_callout = result.get("secondary_callout")
+    if not isinstance(primary_callout, Mapping) or not isinstance(
+        secondary_callout,
+        Mapping,
+    ):
+        raise ValueError("production Tactical Radio callout evidence is missing")
+    for callout in (primary_callout, secondary_callout):
+        if (
+            not str(callout.get("caption", "") or "")
+            or not str(callout.get("speech", "") or "")
+            or callout.get("fromReplay") is not True
+        ):
+            raise ValueError("production Tactical Radio callout is malformed")
+    if result.get("frame_high_water") != secondary_event.get("game_frame"):
+        raise ValueError("production Tactical Radio frame high-water is invalid")
+    if result.get("timeline_high_water") != secondary_event.get("timeline_seq"):
+        raise ValueError("production Tactical Radio timeline high-water is invalid")
+    if str(primary_event.get("kind", "")).lower() not in (
+        str(primary_callout.get("dedupeKey", "")).lower()
+    ):
+        raise ValueError("primary Tactical Radio callout lost lifecycle identity")
+    if str(secondary_event.get("kind", "")).lower() not in (
+        str(secondary_callout.get("dedupeKey", "")).lower()
+    ):
+        raise ValueError("secondary Tactical Radio callout lost lifecycle identity")
+    return deepcopy(result)
 
 
 def _operation_row_identity(
@@ -1720,6 +2825,60 @@ def _verify_event_identities(
                         blockers.append(f"duplicate owner for unit tag {raw_tag}")
                     else:
                         owner_by_tag[raw_tag] = str(owner)
+    _verify_production_receipt_bindings(events, blockers)
+
+
+def _verify_production_receipt_bindings(
+    events: Sequence[Mapping[str, object]],
+    blockers: list[str],
+) -> None:
+    squad_receipts: list[dict[str, object]] = []
+    submission_receipts: list[dict[str, object]] = []
+    try:
+        for event in events:
+            if event.get("event_type") != "production_path_receipt":
+                continue
+            identity = event.get("identity")
+            payload = event.get("payload")
+            if not isinstance(identity, Mapping) or not isinstance(
+                payload,
+                Mapping,
+            ):
+                raise ValueError("production receipt event is malformed")
+            entrypoint = str(payload.get("entrypoint", "") or "")
+            if entrypoint == "voiProductionAssignOperationOwner":
+                continue
+            if entrypoint == "voiProductionIssueSquadOrder":
+                _validate_native_squad_receipt_payload(
+                    payload,
+                    identity=identity,
+                    event_payload=True,
+                )
+                squad_receipts.append(dict(payload))
+            elif entrypoint == "voiProductionSubmitSc2Action":
+                _validate_native_submission_receipt_payload(
+                    payload,
+                    identity=identity,
+                    event_payload=True,
+                )
+                submission_receipts.append(dict(payload))
+            else:
+                raise ValueError("production receipt entrypoint is unsupported")
+        squad_ids = [str(receipt["receipt_id"]) for receipt in squad_receipts]
+        submission_ids = [
+            str(receipt["submission_id"]) for receipt in submission_receipts
+        ]
+        if len(squad_ids) != len(set(squad_ids)):
+            raise ValueError("squad-order receipt id is duplicated")
+        if len(submission_ids) != len(set(submission_ids)):
+            raise ValueError("SC2 submission id is duplicated")
+        _validate_native_submission_causality(
+            list(events),
+            squad_receipts,
+            submission_receipts,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        blockers.append(f"production receipt binding invalid: {exc}")
 
 
 def _verify_forbidden_submission(
@@ -2125,12 +3284,17 @@ def _verify_projection_identity(
         dict(cast(Mapping[str, object], event["identity"]))
         for event in events
         if event.get("event_type")
-        in {"web_projection", "hud_projection", "voice_projection"}
+        in {
+            "web_projection",
+            "hud_projection",
+            "voice_projection",
+            "voice_callout",
+        }
     ]
-    if len(projections) < 3:
-        blockers.append("web/HUD/voice projections are incomplete")
+    if len(projections) < 4:
+        blockers.append("web/HUD/voice/callout projections are incomplete")
     elif any(identity != projections[0] for identity in projections[1:]):
-        blockers.append("web/HUD/voice projection identity mismatch")
+        blockers.append("web/HUD/voice/callout projection identity mismatch")
 
 
 def _before_after_states(
@@ -2838,7 +4002,11 @@ def _operation_requirements(
     ]
 
 
-def _product_path_blockers(products: Mapping[str, object]) -> list[str]:
+def _product_path_blockers(
+    products: Mapping[str, object],
+    *,
+    spec: Mapping[str, object] | None = None,
+) -> list[str]:
     blockers: list[str] = []
     if products.get("execution_error"):
         blockers.append(f"journey execution failed: {products['execution_error']}")
@@ -2880,6 +4048,25 @@ def _product_path_blockers(products: Mapping[str, object]) -> list[str]:
             ):
                 blockers.append("one or more battlefield projections were rejected")
                 break
+    if spec is not None and spec.get("kind") == "voice_identity":
+        tactical_radio = products.get("tactical_radio_runtime")
+        if (
+            not isinstance(tactical_radio, Mapping)
+            or tactical_radio.get("runtime")
+            != "production_web_gui_tactical_radio_js"
+            or tactical_radio.get("primary_accepted") is not True
+            or tactical_radio.get("secondary_accepted") is not True
+            or tactical_radio.get("duplicate_primary_accepted") is not False
+            or tactical_radio.get("duplicate_secondary_accepted") is not False
+            or tactical_radio.get("stale_accepted") is not False
+            or tactical_radio.get("muted_accepted") is not True
+            or tactical_radio.get("muted_caption_delta") != 1
+            or tactical_radio.get("muted_speech_delta") != 0
+            or tactical_radio.get("final_muted") is not False
+        ):
+            blockers.append(
+                "production Tactical Radio behavior was not exercised exactly"
+            )
     return blockers
 
 
@@ -2888,7 +4075,7 @@ def _rederive_product_path_blockers(
     events: Sequence[Mapping[str, object]],
     products: Mapping[str, object],
 ) -> list[str]:
-    blockers = _product_path_blockers(products)
+    blockers = _product_path_blockers(products, spec=spec)
     native_adapter = products.get("native_adapter")
     if not isinstance(native_adapter, Mapping):
         return blockers
