@@ -12532,6 +12532,35 @@ function captureCockpitLocaleState() {
       disclosures.push({ node: node, open: node.open === true });
     }
   );
+  var rebuiltDisclosures = [];
+  var rebuiltDisclosureRoots = [];
+  var pendingRoot = pendingAggregateNode ||
+    document.getElementById(pendingAggregateId);
+  if (pendingRoot) {
+    rebuiltDisclosureRoots.push(pendingRoot);
+  }
+  Object.keys(voiceSessionsByPendingId).forEach(function(pendingId) {
+    var session = voiceSessionsByPendingId[pendingId];
+    if (
+      session &&
+      session.node &&
+      rebuiltDisclosureRoots.indexOf(session.node) < 0
+    ) {
+      rebuiltDisclosureRoots.push(session.node);
+    }
+  });
+  rebuiltDisclosureRoots.forEach(function(root) {
+    Array.prototype.forEach.call(
+      root.querySelectorAll(".message-expander"),
+      function(node, index) {
+        rebuiltDisclosures.push({
+          root: root,
+          index: index,
+          open: node.open === true
+        });
+      }
+    );
+  });
   var liveRegions = [];
   Array.prototype.forEach.call(
     document.querySelectorAll("[aria-live]"),
@@ -12546,6 +12575,7 @@ function captureCockpitLocaleState() {
   return {
     scrollPositions: scrollPositions,
     disclosures: disclosures,
+    rebuiltDisclosures: rebuiltDisclosures,
     liveRegions: liveRegions
   };
 }
@@ -12573,6 +12603,13 @@ function restoreCockpitLocaleState(state) {
   state = state || {};
   (state.disclosures || []).forEach(function(entry) {
     if (entry.node) { entry.node.open = entry.open; }
+  });
+  (state.rebuiltDisclosures || []).forEach(function(entry) {
+    if (!entry.root) { return; }
+    var disclosures = entry.root.querySelectorAll(".message-expander");
+    if (disclosures[entry.index]) {
+      disclosures[entry.index].open = entry.open;
+    }
   });
   restoreCockpitScrollPositions(state.scrollPositions);
   var liveRegionsRestored = false;
@@ -18915,6 +18952,41 @@ function contextualTransferOpaqueHash(value) {
   );
 }
 
+function contextualTransferChoiceContext(payload) {
+  payload = payload || {};
+  return {
+    contextGeneration: microMachineBlackboardContextGeneration,
+    blackboardDir: String(
+      payload.blackboard_dir ||
+      currentEventBlackboardDirectory()
+    ).trim(),
+    scopeId: String(payload.blackboard_scope_id || ""),
+    sessionEpoch: String(payload.session_epoch || "")
+  };
+}
+
+function contextualTransferChoiceContextIsCurrent(context) {
+  if (!context || typeof context !== "object") { return false; }
+  var currentScope = String(
+    operationConsoleScopeId ||
+    activeCommandConsoleRecord.scopeId ||
+    ""
+  );
+  var currentEpoch = String(
+    operationConsoleSessionEpoch ||
+    activeCommandConsoleRecord.sessionEpoch ||
+    ""
+  );
+  return Boolean(
+    Number(context.contextGeneration) ===
+      microMachineBlackboardContextGeneration &&
+    String(context.blackboardDir || "") ===
+      currentEventBlackboardDirectory() &&
+    String(context.scopeId || "") === currentScope &&
+    String(context.sessionEpoch || "") === currentEpoch
+  );
+}
+
 function rememberContextualTransferChoice(payload) {
   var choiceId = String(payload && payload.choice_id || "");
   if (!choiceId) { return false; }
@@ -18939,8 +19011,25 @@ function rememberContextualTransferChoice(payload) {
   });
   contextualTransferChoiceOrder = synchronizedOrder;
   var existing = contextualTransferChoiceRecords[choiceId];
+  var context = contextualTransferChoiceContext(payload);
   if (existing) {
+    if (
+      existing.inFlight === true &&
+      !contextualTransferChoiceContextIsCurrent(
+        existing.inFlightContext || existing.context
+      )
+    ) {
+      contextualTransferChoiceRecords[choiceId] = {
+        payload: payload,
+        context: context,
+        inFlight: false,
+        inFlightContext: null,
+        promise: null
+      };
+      return true;
+    }
     existing.payload = payload;
+    existing.context = context;
     return true;
   }
   if (!existing) {
@@ -18976,7 +19065,9 @@ function rememberContextualTransferChoice(payload) {
   }
   contextualTransferChoiceRecords[choiceId] = {
     payload: payload,
+    context: context,
     inFlight: false,
+    inFlightContext: null,
     promise: null
   };
   return true;
@@ -19292,7 +19383,13 @@ function renderContextualTransferInFlightStatus() {
   var hasInFlightChoice = contextualTransferChoiceOrder.some(
     function(choiceId) {
       var stored = contextualTransferChoiceRecords[choiceId];
-      return Boolean(stored && stored.inFlight);
+      return Boolean(
+        stored &&
+        stored.inFlight &&
+        contextualTransferChoiceContextIsCurrent(
+          stored.inFlightContext || stored.context
+        )
+      );
     }
   );
   if (!hasInFlightChoice) { return false; }
@@ -19314,10 +19411,22 @@ function submitContextualTransferChoice(choiceId) {
     );
   }
   if (stored.inFlight && stored.promise) {
-    return stored.promise;
+    if (
+      contextualTransferChoiceContextIsCurrent(
+        stored.inFlightContext || stored.context
+      )
+    ) {
+      return stored.promise;
+    }
+    return Promise.reject(
+      new Error("contextual_transfer_choice_context_retired")
+    );
   }
   var payload = JSON.parse(JSON.stringify(stored.payload));
+  var submissionContext = contextualTransferChoiceContext(payload);
+  stored.context = submissionContext;
   stored.inFlight = true;
+  stored.inFlightContext = submissionContext;
   setContextualTransferChoiceInFlight(choiceId, true);
   var statusNode = document.getElementById("micromachine-status");
   renderContextualTransferInFlightStatus();
@@ -19331,26 +19440,37 @@ function submitContextualTransferChoice(choiceId) {
   )
     .then(parseJsonResponse)
     .then(function(data) {
+      var completionContextIsCurrent =
+        contextualTransferChoiceContextIsCurrent(submissionContext);
       stored.inFlight = false;
+      stored.inFlightContext = null;
       stored.promise = null;
-      setContextualTransferChoiceInFlight(choiceId, false);
-      renderOperationRecords();
-      announceAcceptedTacticalPlan(data, "contextual_transfer");
-      safeRenderMicroMachineStatus(data);
-      if (!renderContextualTransferInFlightStatus()) {
-        renderMicroMachineStatusSummary(data);
+      if (completionContextIsCurrent) {
+        setContextualTransferChoiceInFlight(choiceId, false);
+        renderOperationRecords();
+        announceAcceptedTacticalPlan(data, "contextual_transfer");
+        safeRenderMicroMachineStatus(data);
+        if (!renderContextualTransferInFlightStatus()) {
+          renderMicroMachineStatusSummary(data);
+        }
+        renderOperationConsole(data);
       }
-      renderOperationConsole(data);
       return data;
     })
     .catch(function(error) {
+      var completionContextIsCurrent =
+        contextualTransferChoiceContextIsCurrent(submissionContext);
       stored.inFlight = false;
+      stored.inFlightContext = null;
       stored.promise = null;
-      setContextualTransferChoiceInFlight(choiceId, false);
-      if (statusNode) {
-        statusNode.textContent = t("microMachineFailed") + ": " + error.message;
+      if (completionContextIsCurrent) {
+        setContextualTransferChoiceInFlight(choiceId, false);
+        if (statusNode) {
+          statusNode.textContent =
+            t("microMachineFailed") + ": " + error.message;
+        }
+        renderOperationRecords();
       }
-      renderOperationRecords();
       throw error;
     });
   return stored.promise;
@@ -19454,10 +19574,18 @@ function renderOperationResolutionActions(record, data) {
     var contextualChoiceRecord = contextualChoiceId
       ? contextualTransferChoiceRecords[contextualChoiceId]
       : null;
+    var contextualChoiceInFlight = Boolean(
+      contextualChoiceRecord &&
+      contextualChoiceRecord.inFlight === true &&
+      contextualTransferChoiceContextIsCurrent(
+        contextualChoiceRecord.inFlightContext ||
+        contextualChoiceRecord.context
+      )
+    );
     button.setAttribute(
       "aria-disabled",
       choice.safe === true &&
-      !(contextualChoiceRecord && contextualChoiceRecord.inFlight === true)
+      !contextualChoiceInFlight
         ? "false"
         : "true"
     );
@@ -22126,10 +22254,17 @@ function renderMicroMachineStatus(data, options) {
   }
   latestMicroMachineStatus = data;
   if (
-    data.battlefield_overview &&
-    typeof data.battlefield_overview === "object"
+    Object.prototype.hasOwnProperty.call(
+      data,
+      "battlefield_overview"
+    )
   ) {
-    latestBattlefieldOverviewStatus = data;
+    latestBattlefieldOverviewStatus = (
+      data.battlefield_overview &&
+      typeof data.battlefield_overview === "object"
+    )
+      ? data
+      : null;
   }
   renderBattlefieldControlOverview(data);
   renderMicroMachineStatusSummary(data);

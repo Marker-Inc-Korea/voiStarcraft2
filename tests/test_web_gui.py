@@ -20576,7 +20576,7 @@ const assert = require("assert");
       }
     };
   }
-  renderOperationConsole(serverResult({
+  var typedTransferStatus = serverResult({
     status: "published",
     battlefield_projection_identity: {
       session_epoch: typedTransferSessionEpoch,
@@ -20603,7 +20603,8 @@ const assert = require("assert");
       }
     },
     operations: [typedTransferSource]
-  }, OPERATION_SCOPE));
+  }, OPERATION_SCOPE);
+  renderOperationConsole(typedTransferStatus);
   assaultRecord = operationRecords[assaultKey];
   var typedTransferButtons = assaultRecord.node.querySelector(
     ".operation-resolution-actions"
@@ -20692,6 +20693,20 @@ const assert = require("assert");
   assert.strictEqual(
     contextualTransferChoiceRecords[destinationCharlieChoiceId].inFlight,
     true
+  );
+  assert(
+    contextualTransferChoiceContextIsCurrent(
+      contextualTransferChoiceRecords[destinationCharlieChoiceId]
+        .inFlightContext
+    ),
+    JSON.stringify({
+      stored: contextualTransferChoiceRecords[destinationCharlieChoiceId]
+        .inFlightContext,
+      generation: microMachineBlackboardContextGeneration,
+      directory: currentEventBlackboardDirectory(),
+      scope: operationConsoleScopeId,
+      epoch: operationConsoleSessionEpoch
+    })
   );
   var transferInFlightStatusByLang = {
     en: "Atomically revalidating the authoritative transfer identity.",
@@ -20898,6 +20913,20 @@ const assert = require("assert");
   ].forEach(function(field) {
     assert.strictEqual(typedTransferBody[field], undefined);
   });
+  assert(
+    contextualTransferChoiceContextIsCurrent(
+      contextualTransferChoiceRecords[destinationCharlieChoiceId]
+        .inFlightContext
+    ),
+    JSON.stringify({
+      stored: contextualTransferChoiceRecords[destinationCharlieChoiceId]
+        .inFlightContext,
+      generation: microMachineBlackboardContextGeneration,
+      directory: currentEventBlackboardDirectory(),
+      scope: operationConsoleScopeId,
+      epoch: operationConsoleSessionEpoch
+    })
+  );
   typedTransferRequest.deferred.resolve(response(202, {
     ok: true,
     accepted: true,
@@ -20917,6 +20946,27 @@ const assert = require("assert");
   assert.strictEqual(
     contextualTransferChoiceRecords[destinationCharlieChoiceId].inFlight,
     false
+  );
+  var remainingInFlightChoices = contextualTransferChoiceOrder
+    .map(function(choiceId) {
+      var stored = contextualTransferChoiceRecords[choiceId];
+      return stored && stored.inFlight
+        ? {
+          choiceId: choiceId,
+          context: stored.inFlightContext || stored.context,
+          current: contextualTransferChoiceContextIsCurrent(
+            stored.inFlightContext || stored.context
+          ),
+          destination: stored.payload &&
+            stored.payload.destination_operation_id
+        }
+        : null;
+    })
+    .filter(Boolean);
+  assert.deepStrictEqual(
+    remainingInFlightChoices,
+    [],
+    JSON.stringify(remainingInFlightChoices)
   );
   assert.notStrictEqual(
     nodes["micromachine-status"].textContent,
@@ -21016,6 +21066,163 @@ const assert = require("assert");
       "The battlefield projection frame changed."
     )
   );
+  applyLanguage("ko");
+  assert(flushCockpitLiveRegionRestoreForTest());
+
+  // Completion callbacks from a retired blackboard context cannot write
+  // status, re-enable controls, or revive progress during locale rerenders.
+  renderOperationConsole(typedTransferStatus);
+  var operationRegistryBeforeRetiredTransfer = operationRecordOrder
+    .map(function(key) {
+      var record = operationRecords[key];
+      return record && record.data
+        ? JSON.parse(JSON.stringify(record.data))
+        : null;
+    })
+    .filter(Boolean);
+  assert.strictEqual(operationRegistryBeforeRetiredTransfer.length, 2);
+  assaultRecord = operationRecords[assaultKey];
+  var retiredSuccessButton = assaultRecord.node
+    .querySelectorAll("button").find(function(button) {
+      var choiceId = button.getAttribute("data-contextual-choice-id");
+      var stored = contextualTransferChoiceRecords[choiceId];
+      return stored && stored.payload.destination_operation_id ===
+        "destination-charlie";
+    });
+  assert(retiredSuccessButton);
+  var retiredSuccessChoiceId = retiredSuccessButton.getAttribute(
+    "data-contextual-choice-id"
+  );
+  var retiredSuccessChoice =
+    contextualTransferChoiceRecords[retiredSuccessChoiceId];
+  assert.strictEqual(
+    retiredSuccessButton.getAttribute("aria-disabled"),
+    "false"
+  );
+  assert.strictEqual(retiredSuccessChoice.inFlight, false);
+  assert(
+    contextualTransferChoiceContextIsCurrent(retiredSuccessChoice.context),
+    JSON.stringify({
+      stored: retiredSuccessChoice.context,
+      generation: microMachineBlackboardContextGeneration,
+      directory: currentEventBlackboardDirectory(),
+      scope: operationConsoleScopeId,
+      epoch: operationConsoleSessionEpoch
+    })
+  );
+  assert.strictEqual(
+    retiredSuccessChoice.payload.destination_operation_id,
+    "destination-charlie"
+  );
+  var retiredSuccessRequestStart = requests.length;
+  retiredSuccessButton.dispatchEvent({
+    type: "click",
+    preventDefault: function() {}
+  });
+  assert.strictEqual(
+    requests.length,
+    retiredSuccessRequestStart + 1,
+    "retired success click must create a contextual transfer request"
+  );
+  var retiredSuccessRequest = requests[retiredSuccessRequestStart];
+  nodes["micromachine-blackboard-dir"].value =
+    "/tmp/voi-mm-retired-transfer-success";
+  synchronizeMicroMachineBlackboardDirectory(
+    "/tmp/voi-mm-retired-transfer-success"
+  );
+  applyLanguage("en");
+  assert(flushCockpitLiveRegionRestoreForTest());
+  var retiredSuccessStatusBefore =
+    nodes["micromachine-status"].textContent;
+  assert.notStrictEqual(
+    retiredSuccessStatusBefore,
+    transferInFlightStatusByLang.en
+  );
+  retiredSuccessRequest.deferred.resolve(response(202, {
+    ok: true,
+    accepted: true,
+    status: "retired-context-transfer-success",
+    blackboard_scope_id: OPERATION_SCOPE,
+    battlefield_projection_identity: {
+      session_epoch: typedTransferSessionEpoch,
+      game_frame: 330
+    }
+  }));
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(
+    nodes["micromachine-status"].textContent,
+    retiredSuccessStatusBefore
+  );
+  assert(
+    !nodes["micromachine-status"].textContent.includes(
+      "retired-context-transfer-success"
+    )
+  );
+
+  nodes["micromachine-blackboard-dir"].value =
+    "/tmp/voi-mm-retired-transfer-rejection-source";
+  synchronizeMicroMachineBlackboardDirectory(
+    "/tmp/voi-mm-retired-transfer-rejection-source"
+  );
+  renderOperationConsole(typedTransferStatus);
+  assaultRecord = operationRecords[assaultKey];
+  var retiredRejectionButton = assaultRecord.node
+    .querySelectorAll("button").find(function(button) {
+      var choiceId = button.getAttribute("data-contextual-choice-id");
+      var stored = contextualTransferChoiceRecords[choiceId];
+      return stored && stored.payload.destination_operation_id ===
+        "destination-bravo";
+    });
+  assert(retiredRejectionButton);
+  var retiredRejectionRequestStart = requests.length;
+  retiredRejectionButton.dispatchEvent({
+    type: "click",
+    preventDefault: function() {}
+  });
+  assert.strictEqual(requests.length, retiredRejectionRequestStart + 1);
+  var retiredRejectionRequest = requests[retiredRejectionRequestStart];
+  nodes["micromachine-blackboard-dir"].value =
+    "/tmp/voi-mm-retired-transfer-rejection-destination";
+  synchronizeMicroMachineBlackboardDirectory(
+    "/tmp/voi-mm-retired-transfer-rejection-destination"
+  );
+  applyLanguage("zh");
+  assert(flushCockpitLiveRegionRestoreForTest());
+  var retiredRejectionStatusBefore =
+    nodes["micromachine-status"].textContent;
+  assert.notStrictEqual(
+    retiredRejectionStatusBefore,
+    transferInFlightStatusByLang.zh
+  );
+  retiredRejectionRequest.deferred.resolve(response(409, {
+    accepted: false,
+    status: "rejected",
+    blocker: {
+      code: "retired_context_rejection",
+      message: "retired context must not write this rejection"
+    }
+  }));
+  await flushPromises();
+  await flushPromises();
+  assert.strictEqual(
+    nodes["micromachine-status"].textContent,
+    retiredRejectionStatusBefore
+  );
+  assert(
+    !nodes["micromachine-status"].textContent.includes(
+      "retired context must not write this rejection"
+    )
+  );
+  nodes["micromachine-blackboard-dir"].value =
+    "/tmp/voi-mm-operation-cards";
+  synchronizeMicroMachineBlackboardDirectory(
+    "/tmp/voi-mm-operation-cards"
+  );
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: operationRegistryBeforeRetiredTransfer
+  }, OPERATION_SCOPE));
   applyLanguage("ko");
   assert(flushCockpitLiveRegionRestoreForTest());
 
@@ -25139,6 +25346,83 @@ const assert = require("assert");
   applyLanguage("ko");
   assert(flushCockpitLiveRegionRestoreForTest());
 
+  // Explicit null clears a retained same-epoch overview cache, while
+  // omission continues to retain the latest authoritative overview.
+  var sameEpochOverviewStatus = {
+    enabled: true,
+    status: "same-epoch-overview-present",
+    blackboard_scope_id: retainedOverviewScope,
+    operation_registry_authoritative: true,
+    battlefield_projection_identity: {
+      session_epoch: nextOverviewEpoch,
+      game_frame: 1
+    },
+    battlefield_overview: {
+      authority: "micromachine_cpp",
+      identity: {
+        session_epoch: nextOverviewEpoch,
+        game_frame: 1
+      },
+      eligible_combat_count: 55,
+      explicit_operation_owned_count: 55,
+      autonomous_owned_count: 0,
+      unassigned_count: 0,
+      duplicate_owner_count: 0,
+      operation_ownership: [],
+      bases: []
+    },
+    operations: []
+  };
+  renderMicroMachineStatus(sameEpochOverviewStatus);
+  assert.strictEqual(
+    latestBattlefieldOverviewStatus,
+    sameEpochOverviewStatus
+  );
+  var sameEpochOverviewOmitted = {
+    enabled: true,
+    status: "same-epoch-overview-omitted",
+    blackboard_scope_id: retainedOverviewScope,
+    operation_registry_authoritative: true,
+    battlefield_projection_identity: {
+      session_epoch: nextOverviewEpoch,
+      game_frame: 2
+    },
+    operations: []
+  };
+  renderMicroMachineStatus(sameEpochOverviewOmitted);
+  assert.strictEqual(
+    latestBattlefieldOverviewStatus,
+    sameEpochOverviewStatus
+  );
+  renderMicroMachineStatus({
+    enabled: true,
+    status: "same-epoch-overview-explicit-null",
+    blackboard_scope_id: retainedOverviewScope,
+    operation_registry_authoritative: true,
+    battlefield_projection_identity: {
+      session_epoch: nextOverviewEpoch,
+      game_frame: 3
+    },
+    battlefield_overview: null,
+    operations: []
+  });
+  assert.strictEqual(latestBattlefieldOverviewStatus, null);
+  assert(
+    nodes["battlefield-control-summary"].textContent.includes(
+      "권위 battlefield_overview를 기다리는 중"
+    )
+  );
+  applyLanguage("en");
+  assert(flushCockpitLiveRegionRestoreForTest());
+  assert(
+    nodes["battlefield-control-summary"].textContent.includes(
+      "Waiting for the authoritative battlefield_overview."
+    )
+  );
+  assert(!nodes["battlefield-control-summary"].textContent.includes("55"));
+  applyLanguage("ko");
+  assert(flushCockpitLiveRegionRestoreForTest());
+
   // Disabled status is the canonical latest state. Locale-only rerenders
   // must not revive status, overview, or intervention data from before it.
   latestMicroMachineStatus = retainedPriorRuntimeStatus;
@@ -25171,6 +25455,55 @@ const assert = require("assert");
       "retained-prior-runtime"
     )
   );
+  applyLanguage("ko");
+  assert(flushCockpitLiveRegionRestoreForTest());
+
+  // Pending text and voice expanders are rebuilt for localization without
+  // losing their disclosure state or persistent entry identity.
+  var longPendingText = "긴 pending command " + "x".repeat(320);
+  var longPendingId = appendPendingCommand(longPendingText);
+  var longPendingRoot = pendingAggregateNode;
+  var longPendingDisclosure = longPendingRoot.querySelector(
+    ".message-expander"
+  );
+  assert(longPendingDisclosure);
+  longPendingDisclosure.open = true;
+  applyLanguage("en");
+  assert(flushCockpitLiveRegionRestoreForTest());
+  assert.strictEqual(pendingAggregateNode, longPendingRoot);
+  assert.strictEqual(
+    longPendingRoot.querySelector(".message-expander").open,
+    true
+  );
+  removePendingById(longPendingId);
+
+  var longVoiceText = "긴 voice pending command " + "y".repeat(320);
+  var longVoiceSession = appendVoiceRecordingBubble();
+  longVoiceSession.finalText = longVoiceText;
+  var longVoicePendingId = appendPendingCommand(
+    longVoiceText,
+    longVoiceSession
+  );
+  var longVoiceRoot = longVoiceSession.node;
+  var longVoiceDisclosure = longVoiceRoot.querySelector(
+    ".message-expander"
+  );
+  assert(longVoiceDisclosure);
+  longVoiceDisclosure.open = true;
+  applyLanguage("zh");
+  assert(flushCockpitLiveRegionRestoreForTest());
+  assert.strictEqual(longVoiceSession.node, longVoiceRoot);
+  assert.strictEqual(
+    longVoiceRoot.querySelector(".message-expander").open,
+    true
+  );
+  removePendingById(longVoicePendingId, true);
+  renderVoiceSessionTerminal(
+    longVoiceSession,
+    "executed",
+    "voice disclosure locale test complete"
+  );
+  updateAssistantPendingState();
   applyLanguage("ko");
   assert(flushCockpitLiveRegionRestoreForTest());
 
@@ -25244,13 +25577,10 @@ const assert = require("assert");
         self.assertIn('className = "operation-resolution-actions"', page)
         self.assertIn('"operation_event",', page)
         self.assertIn(
-            'button.setAttribute(\n'
-            '      "aria-disabled",\n'
-            "      choice.safe === true &&\n"
-            "      !(contextualChoiceRecord && contextualChoiceRecord.inFlight === true)\n"
-            '        ? "false"\n'
-            '        : "true"\n'
-            "    );",
+            "var contextualChoiceInFlight = Boolean(\n"
+            "      contextualChoiceRecord &&\n"
+            "      contextualChoiceRecord.inFlight === true &&\n"
+            "      contextualTransferChoiceContextIsCurrent(",
             page,
         )
         self.assertIn('reason.className = "operation-resolution-reason"', page)
