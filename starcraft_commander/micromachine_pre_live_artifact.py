@@ -2297,12 +2297,28 @@ def _archive_framing_error(
     if central_offset + central_size != eocd_offset:
         return "ZIP central directory has hidden or noncanonical framing data"
     offset = central_offset
+    central_entries: list[tuple[int, int, int, int, int]] = []
     for _ in range(total_entries):
         if offset + _CENTRAL_DIRECTORY_HEADER.size > eocd_offset:
             return "ZIP central directory entry is truncated"
         fields = _CENTRAL_DIRECTORY_HEADER.unpack_from(bundle, offset)
         if fields[0] != b"PK\x01\x02":
             return "ZIP central directory entry signature is invalid"
+        if (
+            fields[8] == 0xFFFFFFFF
+            or fields[9] == 0xFFFFFFFF
+            or fields[16] == 0xFFFFFFFF
+        ):
+            return "ZIP64 entries are not allowed"
+        central_entries.append(
+            (
+                fields[16],
+                fields[3],
+                fields[7],
+                fields[8],
+                fields[9],
+            )
+        )
         entry_size = (
             _CENTRAL_DIRECTORY_HEADER.size
             + fields[10]
@@ -2314,6 +2330,71 @@ def _archive_framing_error(
             return "ZIP central directory entry is truncated"
     if offset != eocd_offset:
         return "ZIP central directory has hidden or noncanonical framing data"
+    ordered_entries = sorted(central_entries)
+    if ordered_entries and ordered_entries[0][0] != 0:
+        return "ZIP local file data has hidden or noncanonical prefix framing"
+    for index, entry in enumerate(ordered_entries):
+        (
+            local_offset,
+            central_flags,
+            central_crc32,
+            central_compressed_size,
+            central_uncompressed_size,
+        ) = entry
+        next_offset = (
+            ordered_entries[index + 1][0]
+            if index + 1 < len(ordered_entries)
+            else central_offset
+        )
+        if (
+            local_offset + _LOCAL_FILE_HEADER.size > next_offset
+            or local_offset + _LOCAL_FILE_HEADER.size > len(bundle)
+        ):
+            return "ZIP local file header is truncated or overlaps another section"
+        local_fields = _LOCAL_FILE_HEADER.unpack_from(bundle, local_offset)
+        if local_fields[0] != b"PK\x03\x04":
+            return "ZIP local file header signature is invalid"
+        (
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+            local_filename_size,
+            local_extra_size,
+        ) = local_fields
+        payload_end = (
+            local_offset
+            + _LOCAL_FILE_HEADER.size
+            + local_filename_size
+            + local_extra_size
+            + central_compressed_size
+        )
+        if payload_end > next_offset:
+            return "ZIP local file data is truncated or overlaps another section"
+        trailing = bundle[payload_end:next_offset]
+        if central_flags & 0x0008:
+            descriptor = struct.pack(
+                "<III",
+                central_crc32,
+                central_compressed_size,
+                central_uncompressed_size,
+            )
+            if trailing not in {descriptor, b"PK\x07\x08" + descriptor}:
+                return (
+                    "ZIP data descriptor has hidden or noncanonical framing data"
+                )
+        elif trailing:
+            if index + 1 == len(ordered_entries):
+                return (
+                    "ZIP local file data is not contiguous with the "
+                    "central directory"
+                )
+            return "ZIP local file data has hidden or noncanonical framing data"
     return None
 
 

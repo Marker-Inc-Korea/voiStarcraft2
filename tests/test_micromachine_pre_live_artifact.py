@@ -1952,6 +1952,13 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                 "forged trailing EOCD",
                 append_forged_eocd(wrapper, b"hidden-suffix"),
             ),
+            (
+                "hidden before central directory",
+                insert_hidden_before_central_directory(
+                    wrapper,
+                    b"hidden-before-central-directory",
+                ),
+            ),
         ):
             with self.subTest(name=name):
                 report = verify_downloaded_pre_live_artifact(malformed)
@@ -2198,6 +2205,29 @@ def append_forged_eocd(bundle: bytes, hidden: bytes) -> bytes:
         (
             bundle,
             hidden,
+            artifact_module._END_CENTRAL_DIRECTORY.pack(*eocd),
+        )
+    )
+
+
+def insert_hidden_before_central_directory(
+    bundle: bytes,
+    hidden: bytes,
+) -> bytes:
+    eocd_offset = len(bundle) - artifact_module._END_CENTRAL_DIRECTORY.size
+    eocd = list(
+        artifact_module._END_CENTRAL_DIRECTORY.unpack_from(
+            bundle,
+            eocd_offset,
+        )
+    )
+    central_offset = eocd[6]
+    eocd[6] += len(hidden)
+    return b"".join(
+        (
+            bundle[:central_offset],
+            hidden,
+            bundle[central_offset:eocd_offset],
             artifact_module._END_CENTRAL_DIRECTORY.pack(*eocd),
         )
     )
