@@ -19819,6 +19819,179 @@ function operationTimelineKindLabel(kind) {
   return commandUiText("사건", "Event", "事件");
 }
 
+function operationTimelineTechnicalCount(technical, key) {
+  var value = Number(technical && technical[key]);
+  return Number.isFinite(value) && value >= 0 ? value : -1;
+}
+
+function operationTimelineSummaryText(event, record, generation) {
+  event = event && typeof event === "object" ? event : {};
+  var technical = event.technical &&
+    typeof event.technical === "object" &&
+    !Array.isArray(event.technical)
+    ? event.technical
+    : {};
+  var kind = String(event.kind || "").toLowerCase();
+  var operationId = String(
+    event.operation_id ||
+    technical.operation_id ||
+    record && record.operationId ||
+    ""
+  );
+  var identity = operationId + "#" + Number(generation || 0);
+  var canonicalSummary = String(event.summary || "").trim();
+  var ownerCount = operationTimelineTechnicalCount(
+    technical,
+    "owner_count"
+  );
+  var requiredCount = operationTimelineTechnicalCount(
+    technical,
+    "required_count"
+  );
+  var representedCount = operationTimelineTechnicalCount(
+    technical,
+    "represented_count"
+  );
+  var assignedCount = ownerCount >= 0 ? ownerCount : representedCount;
+  var blocker = String(technical.blocker || "").trim();
+
+  if (kind === "received") {
+    return commandUiText(
+      "작전 " + identity + " 명령을 수신했습니다.",
+      "Operation " + identity + " was received.",
+      "已收到作战 " + identity + " 的命令。"
+    );
+  }
+  if (kind === "planned") {
+    return commandUiText(
+      "작전 " + identity + " 계획이 확인되었습니다.",
+      "Operation " + identity + " was planned.",
+      "已确认作战 " + identity + " 的计划。"
+    );
+  }
+  if (kind === "assigned" && assignedCount >= 0) {
+    return commandUiText(
+      assignedCount + "기 배정됨",
+      assignedCount + " units assigned",
+      "已分配 " + assignedCount + " 个单位"
+    );
+  }
+  if (
+    kind === "partially_assigned" &&
+    ownerCount >= 0 &&
+    requiredCount >= 0
+  ) {
+    var missingCount = Math.max(0, requiredCount - ownerCount);
+    return commandUiText(
+      ownerCount + "/" + requiredCount + "기 배정 · " +
+        missingCount + "기 추가 필요",
+      ownerCount + "/" + requiredCount + " units assigned · " +
+        missingCount + " still needed",
+      "已分配 " + ownerCount + "/" + requiredCount + " 个单位 · 仍需 " +
+        missingCount + " 个"
+    );
+  }
+  if (kind === "waiting") {
+    var waitingReason = blocker || canonicalSummary;
+    var waitingAllocation = (
+      ownerCount >= 0 && requiredCount >= 0
+    ) ? ownerCount + "/" + requiredCount : "";
+    if (waitingReason && waitingAllocation) {
+      return commandUiText(
+        "차단 사유: " + waitingReason + " · 배정 " + waitingAllocation,
+        "Blocker: " + waitingReason + " · assigned " + waitingAllocation,
+        "阻塞原因：" + waitingReason + " · 已分配 " + waitingAllocation
+      );
+    }
+    if (waitingReason) {
+      return commandUiText(
+        "차단 사유: " + waitingReason,
+        "Blocker: " + waitingReason,
+        "阻塞原因：" + waitingReason
+      );
+    }
+    if (waitingAllocation) {
+      return commandUiText(
+        "조건 대기 · 배정 " + waitingAllocation,
+        "Waiting for conditions · assigned " + waitingAllocation,
+        "等待条件 · 已分配 " + waitingAllocation
+      );
+    }
+  }
+  if (kind === "force_loss") {
+    var previousOwnerCount = operationTimelineTechnicalCount(
+      technical,
+      "previous_owner_count"
+    );
+    if (
+      previousOwnerCount >= 0 &&
+      ownerCount >= 0 &&
+      requiredCount >= 0
+    ) {
+      return commandUiText(
+        "병력 " + previousOwnerCount + " -> " + ownerCount +
+          " · 최소 " + requiredCount,
+        "Force " + previousOwnerCount + " -> " + ownerCount +
+          " · minimum " + requiredCount,
+        "兵力 " + previousOwnerCount + " -> " + ownerCount +
+          " · 最低 " + requiredCount
+      );
+    }
+  }
+  if (kind === "critical_ability_failure") {
+    var ability = String(technical.ability || "").trim();
+    var abilityFailure = blocker || canonicalSummary;
+    if (ability || abilityFailure) {
+      return commandUiText(
+        (ability || "능력") + " 실패" +
+          (abilityFailure ? ": " + abilityFailure : ""),
+        (ability || "Ability") + " failed" +
+          (abilityFailure ? ": " + abilityFailure : ""),
+        (ability || "技能") + " 失败" +
+          (abilityFailure ? "：" + abilityFailure : "")
+      );
+    }
+  }
+  var operationEdit = technical.operation_edit &&
+    typeof technical.operation_edit === "object"
+    ? technical.operation_edit
+    : {};
+  if (kind === "ownership_transferred") {
+    var transferredIn = operationTimelineTechnicalCount(
+      operationEdit,
+      "transferred_in_count"
+    );
+    if (transferredIn >= 0) {
+      return commandUiText(
+        transferredIn + "기 작전 편입",
+        transferredIn + " units transferred in",
+        "转入 " + transferredIn + " 个单位"
+      );
+    }
+  }
+  if (kind === "ownership_released") {
+    var transferredOut = operationTimelineTechnicalCount(
+      operationEdit,
+      "transferred_out_count"
+    );
+    if (transferredOut >= 0) {
+      return commandUiText(
+        transferredOut + "기 작전 해제",
+        transferredOut + " units released",
+        "释放 " + transferredOut + " 个单位"
+      );
+    }
+  }
+  if (canonicalSummary) {
+    return commandUiText(
+      "근거: " + canonicalSummary,
+      "Evidence: " + canonicalSummary,
+      "依据：" + canonicalSummary
+    );
+  }
+  return identity;
+}
+
 function renderOperationTimeline(record) {
   var list = document.getElementById("operation-timeline");
   var selection = document.getElementById("operation-timeline-selection");
@@ -19895,8 +20068,11 @@ function renderOperationTimeline(record) {
     kind.textContent = localizedKind;
     var summary = document.createElement("strong");
     summary.className = "operation-timeline-summary";
-    summary.textContent = localizedKind + " · " +
-      String(record.operationId || "") + "#" + generation;
+    summary.textContent = operationTimelineSummaryText(
+      event,
+      record,
+      generation
+    );
     var frame = document.createElement("span");
     frame.className = "operation-timeline-frame";
     frame.textContent = Number(event.game_frame || -1) >= 0
@@ -20564,7 +20740,8 @@ function boundedAuthoritativeOperationPayloads(operations) {
   }).slice(-limit);
 }
 
-function renderOperationConsole(data) {
+function renderOperationConsole(data, options) {
+  options = options || {};
   if (!data || typeof data !== "object") { return false; }
   var operations = commandOperationPayloads(data);
   var scopeId = microMachineScopeId(data);
@@ -20619,7 +20796,10 @@ function renderOperationConsole(data) {
     var record = reconcileOperationRecord(operation, data);
     if (record) { authoritativeKeys[record.key] = true; }
   });
-  if (data.operation_registry_authoritative === true) {
+  if (
+    data.operation_registry_authoritative === true &&
+    !options.preserveAbsentAuthoritativeRecords
+  ) {
     reconcileAuthoritativeOperationMembership(authoritativeKeys);
   }
   renderOperationRecords();
@@ -22416,7 +22596,14 @@ function renderMicroMachineStatus(data, options) {
     clearContextualTransferFailure();
     return;
   }
-  renderOperationConsole(data);
+  var canonicalFrameIsStale =
+    microMachineStatusCanonicalFrameIsStale(data);
+  var activeCommandStatusIsStale =
+    microMachineStatusIsStaleForActiveCommand(data);
+  renderOperationConsole(data, {
+    preserveAbsentAuthoritativeRecords:
+      canonicalFrameIsStale || activeCommandStatusIsStale
+  });
   var modulationResults = Array.isArray(data.modulation_results)
     ? data.modulation_results
     : [];
@@ -22438,8 +22625,6 @@ function renderMicroMachineStatus(data, options) {
     announceAcceptedTacticalPlan(data, "status");
   }
   maybeAppendMicroMachineAsyncCompletion(data);
-  var activeCommandStatusIsStale =
-    microMachineStatusIsStaleForActiveCommand(data);
   if (
     !(data && data.command_console_skip_render) &&
     !activeCommandStatusIsStale
@@ -22447,7 +22632,7 @@ function renderMicroMachineStatus(data, options) {
     renderActiveCommandConsole(data);
   }
   if (
-    microMachineStatusCanonicalFrameIsStale(data) ||
+    canonicalFrameIsStale ||
     activeCommandStatusIsStale
   ) {
     return;

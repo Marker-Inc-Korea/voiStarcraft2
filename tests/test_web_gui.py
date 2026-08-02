@@ -19350,7 +19350,7 @@ const assert = require("assert");
       .textContent.includes("future_private_kind")
   );
   assert(
-    !canonicalSummaryItem.querySelector(".operation-timeline-summary")
+    canonicalSummaryItem.querySelector(".operation-timeline-summary")
       .textContent.includes("canonical backend-only summary")
   );
   var canonicalTechnicalText = canonicalSummaryItem.querySelector("pre")
@@ -19359,6 +19359,57 @@ const assert = require("assert");
   assert(canonicalTechnicalText.includes(
     '"canonical_summary": "canonical backend-only summary"'
   ));
+  var waitingSummaryRecord = {
+    key: "timeline-waiting-summary-test",
+    operationId: "timeline-waiting-operation",
+    operationGeneration: 2,
+    data: {
+      semantic_timeline: [
+        {
+          timeline_seq: 1,
+          kind: "waiting",
+          game_frame: 304,
+          summary: "production_capacity_wait",
+          technical: {
+            owner_count: 1,
+            required_count: 4,
+            blocker: "production_capacity_wait"
+          }
+        },
+        {
+          timeline_seq: 2,
+          kind: "waiting",
+          game_frame: 305,
+          summary: "route_safety_wait",
+          technical: {
+            owner_count: 2,
+            required_count: 4,
+            blocker: "route_safety_wait"
+          }
+        }
+      ]
+    }
+  };
+  [
+    ["en", "Blocker:", "assigned"],
+    ["zh", "阻塞原因：", "已分配"],
+    ["ko", "차단 사유:", "배정"]
+  ].forEach(function(localeExpectation) {
+    applyLanguage(localeExpectation[0]);
+    assert(flushCockpitLiveRegionRestoreForTest());
+    renderOperationTimeline(waitingSummaryRecord);
+    var waitingSummaries = nodes["operation-timeline"]
+      .querySelectorAll(".operation-timeline-summary")
+      .map(function(node) { return node.textContent; });
+    assert.strictEqual(waitingSummaries.length, 2);
+    assert(waitingSummaries[0].includes(localeExpectation[1]));
+    assert(waitingSummaries[0].includes(localeExpectation[2]));
+    assert(waitingSummaries[0].includes("production_capacity_wait"));
+    assert(waitingSummaries[0].includes("1/4"));
+    assert(waitingSummaries[1].includes("route_safety_wait"));
+    assert(waitingSummaries[1].includes("2/4"));
+    assert.notStrictEqual(waitingSummaries[0], waitingSummaries[1]);
+  });
   renderOperationTimeline(reconRecord);
 
   // Locale rerenders interleaved with an SSE lane move and reconnect
@@ -25531,6 +25582,35 @@ const assert = require("assert");
 
   // Canonical status surfaces cannot regress on either projection or
   // telemetry frame, including identity-bearing disabled responses.
+  function monotonicOperation(
+    operationId,
+    updateId,
+    frame
+  ) {
+    var operation = operationResult(
+      operationId,
+      updateId,
+      operationId + " canonical operation",
+      "attack",
+      frame,
+      "queued_or_assigned",
+      observedExecutionStages().slice(0, 4),
+      1
+    );
+    operation.battlefield_operation.identity.session_epoch =
+      nextOverviewEpoch;
+    return operation;
+  }
+  var monotonicOperationA = monotonicOperation(
+    "monotonic-operation-a",
+    "monotonic-update-a",
+    4
+  );
+  var monotonicOperationB = monotonicOperation(
+    "monotonic-operation-b",
+    "monotonic-update-b",
+    4
+  );
   var monotonicCurrentStatus = {
     enabled: true,
     status: "canonical-frame-current",
@@ -25542,10 +25622,26 @@ const assert = require("assert");
     },
     battlefield_overview: null,
     intervention: { telemetry_frame: 4 },
-    operations: []
+    operations: [monotonicOperationA, monotonicOperationB]
   };
   renderMicroMachineStatus(monotonicCurrentStatus);
   var monotonicStatusText = nodes["micromachine-status"].textContent;
+  var monotonicOperationBKey = operationRecordKey(
+    retainedOverviewScope,
+    "monotonic-operation-b"
+  );
+  var monotonicOperationBRecord =
+    operationRecords[monotonicOperationBKey];
+  assert(monotonicOperationBRecord);
+  var monotonicOperationBNode = monotonicOperationBRecord.node;
+  selectedOperationKey = monotonicOperationBKey;
+  renderOperationRecords();
+  var monotonicOperationBView = monotonicOperationBNode
+    .querySelectorAll("button").find(function(button) {
+      return button.getAttribute("data-operation-action") === "view";
+    });
+  assert(monotonicOperationBView);
+  monotonicOperationBView.focus({ preventScroll: true });
   [
     {
       enabled: true,
@@ -25557,7 +25653,13 @@ const assert = require("assert");
         game_frame: 3
       },
       intervention: { telemetry_frame: 5 },
-      operations: []
+      operations: [
+        monotonicOperation(
+          "monotonic-operation-a",
+          "monotonic-update-a",
+          3
+        )
+      ]
     },
     {
       enabled: true,
@@ -25590,6 +25692,16 @@ const assert = require("assert");
       nodes["micromachine-status"].textContent,
       monotonicStatusText
     );
+    assert.strictEqual(
+      operationRecords[monotonicOperationBKey],
+      monotonicOperationBRecord
+    );
+    assert.strictEqual(
+      operationRecords[monotonicOperationBKey].node,
+      monotonicOperationBNode
+    );
+    assert.strictEqual(selectedOperationKey, monotonicOperationBKey);
+    assert.strictEqual(document.activeElement, monotonicOperationBView);
   });
 
   // Disabled status is the canonical latest state. Locale-only rerenders

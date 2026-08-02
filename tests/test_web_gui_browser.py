@@ -1553,6 +1553,11 @@ def _battlefield_overview_browser_fixture_page() -> str:
       var expectedTimelineKind = operationTimelineKindLabel(
         source.semantic_timeline[0].kind
       );
+      var expectedTimelineSummary = operationTimelineSummaryText(
+        source.semantic_timeline[0],
+        sourceRecord,
+        sourceGeneration
+      );
       var laneTitles = operationLaneDefinitions().map(function(definition) {
         return definition[1];
       });
@@ -1660,11 +1665,10 @@ def _battlefield_overview_browser_fixture_page() -> str:
         ),
         timelineSummary: Boolean(
           timelineSummary &&
-          timelineSummary.textContent ===
-            expectedTimelineKind + " · hold-main#2" &&
+          timelineSummary.textContent === expectedTimelineSummary &&
           timelineSummary.textContent.indexOf(
-            "canonical timeline event"
-          ) < 0
+            "canonical timeline event 1"
+          ) >= 0
         ),
         timelineTechnical: Boolean(
           timelineTechnical &&
