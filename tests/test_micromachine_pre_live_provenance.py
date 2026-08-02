@@ -69,6 +69,7 @@ from starcraft_commander.micromachine_pre_live_provenance import (
 from starcraft_commander.micromachine_pre_live_artifact import (
     GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME,
     PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION,
+    PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID,
     PreLiveArtifactMetadata,
     build_pre_live_artifact_bundle,
     canonical_ctest_evidence_bytes,
@@ -2453,6 +2454,51 @@ class BuildBindingTest(unittest.TestCase):
 
 
 class GitHubActionsBundleEmissionTest(unittest.TestCase):
+    def test_deterministic_output_is_bound_to_the_admitted_build(self) -> None:
+        raw_output = b"raw deterministic journey output"
+        bound_output = b"bound deterministic journey output"
+        build_report = b"canonical build report"
+        binary = b"exact MicroMachine binary"
+
+        with mock.patch.object(
+            provenance_module,
+            "bind_deterministic_journey_bundle_to_build",
+            return_value=bound_output,
+        ) as binder:
+            result = (
+                provenance_module._bind_producer_output_to_admitted_build(
+                    producer_id=(
+                        PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+                    ),
+                    producer_output=raw_output,
+                    build_report=build_report,
+                    binary=binary,
+                )
+            )
+
+        self.assertEqual(bound_output, result)
+        binder.assert_called_once_with(
+            raw_output,
+            build_report_bytes=build_report,
+            binary_bytes=binary,
+        )
+
+        with mock.patch.object(
+            provenance_module,
+            "bind_deterministic_journey_bundle_to_build",
+        ) as unused_binder:
+            passthrough = (
+                provenance_module._bind_producer_output_to_admitted_build(
+                    producer_id="fixture_producer",
+                    producer_output=raw_output,
+                    build_report=build_report,
+                    binary=binary,
+                )
+            )
+
+        self.assertEqual(raw_output, passthrough)
+        unused_binder.assert_not_called()
+
     def test_emitter_accepts_dynamic_single_closing_issue(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

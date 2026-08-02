@@ -87,6 +87,7 @@ CONTEXTUAL_TRANSFER_CHOICE_PROJECTION_PATCH_FILE="${REPO_ROOT}/integrations/micr
 AUTONOMOUS_OWNER_COMPOSITION_EVIDENCE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0074-autonomous-owner-composition-evidence.patch"
 BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0075-battlefield-review-closure.patch"
 BOUNDED_TERMINAL_OPERATION_HUD_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0076-bounded-terminal-operation-hud.patch"
+DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0077-deterministic-pre-live-journey-adapter.patch"
 S2CLIENT_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0001-s2client-macos-launchservices.patch"
 BLACKBOARD_HEADER_FILE="${REPO_ROOT}/integrations/micromachine/voi_policy_blackboard.hpp"
 HOOK_MANIFEST_FILE="${REPO_ROOT}/integrations/micromachine/HOOK_MANIFEST.json"
@@ -414,6 +415,8 @@ git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whi
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${BOUNDED_TERMINAL_OPERATION_HUD_PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${BOUNDED_TERMINAL_OPERATION_HUD_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH_FILE}"
 cp "${BLACKBOARD_HEADER_FILE}" "${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"
 
 require_secure_build_root \
@@ -453,6 +456,7 @@ python3 -m starcraft_commander.micromachine_build_identity \
   --micromachine-autonomous-owner-composition-evidence-patch "${AUTONOMOUS_OWNER_COMPOSITION_EVIDENCE_PATCH_FILE}" \
   --micromachine-battlefield-review-closure-patch "${BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE}" \
   --micromachine-bounded-terminal-operation-hud-patch "${BOUNDED_TERMINAL_OPERATION_HUD_PATCH_FILE}" \
+  --micromachine-deterministic-pre-live-journey-adapter-patch "${DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH_FILE}" \
   --hook-manifest "${HOOK_MANIFEST_FILE}" \
   --write-embedded-identity-header \
   --initialize-source-attestation
@@ -555,6 +559,7 @@ python3 -m starcraft_commander.micromachine_build_identity \
   --micromachine-autonomous-owner-composition-evidence-patch "${AUTONOMOUS_OWNER_COMPOSITION_EVIDENCE_PATCH_FILE}" \
   --micromachine-battlefield-review-closure-patch "${BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE}" \
   --micromachine-bounded-terminal-operation-hud-patch "${BOUNDED_TERMINAL_OPERATION_HUD_PATCH_FILE}" \
+  --micromachine-deterministic-pre-live-journey-adapter-patch "${DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH_FILE}" \
   --s2client-patch "${S2CLIENT_PATCH_FILE}" \
   --hook-manifest "${HOOK_MANIFEST_FILE}" \
   --finalize-build-attestation \

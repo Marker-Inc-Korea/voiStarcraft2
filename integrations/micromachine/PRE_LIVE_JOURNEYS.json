@@ -1,0 +1,758 @@
+{
+  "schema_version": 1,
+  "suite_id": "micromachine_deterministic_pre_live_v1",
+  "identity_fields": [
+    "update_id",
+    "operation_id",
+    "generation",
+    "stage",
+    "game_frame"
+  ],
+  "journeys": [
+    {
+      "id": "parallel_scout_attack_defend",
+      "title": "Parallel scout, attack, and defend",
+      "kind": "parallel_operations",
+      "initial_state": {
+        "units": {
+          "TERRAN_MARINE": 8,
+          "TERRAN_SIEGETANK": 1
+        },
+        "structures": [
+          "FACTORY_TECHLAB",
+          "TERRAN_BARRACKS",
+          "TERRAN_FACTORY"
+        ],
+        "protected_minimum": {
+          "TERRAN_MARINE": 2
+        }
+      },
+      "ordered_inputs": [
+        {
+          "frame": 100,
+          "command_text": "마린 정찰, 마린 공격, 탱크 입구 방어를 동시에 수행해",
+          "preset": "parallel_scout_attack_defend"
+        },
+        {
+          "frame": 140,
+          "kind": "unit_observation",
+          "units": [
+            {
+              "unit_type": "TERRAN_MARINE",
+              "home_distance": 18.0
+            },
+            {
+              "unit_type": "TERRAN_SIEGETANK",
+              "engaged": true
+            }
+          ]
+        }
+      ],
+      "expected_raw_event_types": [
+        "command_input",
+        "blackboard_update",
+        "ownership_snapshot",
+        "squad_order",
+        "submission",
+        "movement",
+        "engagement",
+        "web_projection"
+      ],
+      "stop_condition": {
+        "type": "all_operations_effect_observed",
+        "count": 3
+      },
+      "timeout_frames": 1200,
+      "allowed_nondeterminism": []
+    },
+    {
+      "id": "shortage_prerequisite_wait",
+      "title": "Shortage and prerequisite wait",
+      "kind": "shortage_wait",
+      "initial_state": {
+        "units": {},
+        "structures": [
+          "TERRAN_COMMANDCENTER"
+        ],
+        "minerals": 100,
+        "vespene": 0
+      },
+      "ordered_inputs": [
+        {
+          "frame": 200,
+          "command_text": "공성전차 한 기로 앞마당을 압박해",
+          "preset": "single_tank_attack"
+        },
+        {
+          "frame": 260,
+          "kind": "resource_observation",
+          "structures": [
+            "FACTORY_TECHLAB",
+            "TERRAN_FACTORY"
+          ],
+          "units": {
+            "TERRAN_SIEGETANK": 1
+          }
+        },
+        {
+          "frame": 300,
+          "kind": "unit_observation",
+          "units": [
+            {
+              "unit_type": "TERRAN_SIEGETANK",
+              "home_distance": 16.0
+            }
+          ]
+        }
+      ],
+      "expected_raw_event_types": [
+        "production_decision",
+        "prerequisite_wait",
+        "ownership_snapshot",
+        "submission",
+        "movement"
+      ],
+      "stop_condition": {
+        "type": "effect_after_prerequisite_convergence",
+        "count": 1
+      },
+      "timeout_frames": 1800,
+      "allowed_nondeterminism": []
+    },
+    {
+      "id": "safe_partial_launch",
+      "title": "Safe partial launch",
+      "kind": "safe_partial_launch",
+      "initial_state": {
+        "units": {
+          "TERRAN_MARINE": 5
+        },
+        "structures": [
+          "TERRAN_BARRACKS"
+        ],
+        "protected_minimum": {
+          "TERRAN_MARINE": 2
+        }
+      },
+      "ordered_inputs": [
+        {
+          "frame": 300,
+          "command_text": "마린 최대 네 기로 공격하되 세 기면 안전하게 먼저 출발해",
+          "preset": "safe_partial_attack"
+        },
+        {
+          "frame": 340,
+          "kind": "unit_observation",
+          "units": [
+            {
+              "unit_type": "TERRAN_MARINE",
+              "home_distance": 14.0
+            }
+          ]
+        }
+      ],
+      "expected_raw_event_types": [
+        "launch_decision",
+        "ownership_snapshot",
+        "submission",
+        "movement"
+      ],
+      "stop_condition": {
+        "type": "matching_effect_observed",
+        "count": 1
+      },
+      "timeout_frames": 900,
+      "allowed_nondeterminism": []
+    },
+    {
+      "id": "protected_minimum_partial_rejection",
+      "title": "Protected-minimum partial-launch rejection",
+      "kind": "protected_minimum_rejection",
+      "initial_state": {
+        "units": {
+          "TERRAN_MARINE": 5
+        },
+        "structures": [
+          "TERRAN_BARRACKS"
+        ],
+        "protected_minimum": {
+          "TERRAN_MARINE": 3
+        }
+      },
+      "ordered_inputs": [
+        {
+          "frame": 400,
+          "command_text": "마린 네 기를 공격에 보내",
+          "preset": "strict_marine_attack"
+        }
+      ],
+      "expected_raw_event_types": [
+        "launch_decision",
+        "state_snapshot",
+        "rejection"
+      ],
+      "stop_condition": {
+        "type": "forbidden_submission_and_state_preserved",
+        "count": 0,
+        "operation_id": "strict-assault",
+        "preserved_state_fields": [
+          "units",
+          "owners",
+          "operations",
+          "structures",
+          "base_threatened"
+        ]
+      },
+      "timeout_frames": 300,
+      "allowed_nondeterminism": []
+    },
+    {
+      "id": "transfer_success",
+      "title": "Transfer success",
+      "kind": "transfer_success",
+      "initial_state": {
+        "units": {
+          "TERRAN_MARINE": 6,
+          "TERRAN_SIEGETANK": 1
+        },
+        "structures": [
+          "FACTORY_TECHLAB",
+          "TERRAN_BARRACKS",
+          "TERRAN_FACTORY"
+        ],
+        "protected_minimum": {
+          "TERRAN_MARINE": 0
+        }
+      },
+      "ordered_inputs": [
+        {
+          "frame": 500,
+          "command_text": "정찰과 공격과 방어 작전을 시작해",
+          "preset": "transfer_baseline"
+        },
+        {
+          "frame": 520,
+          "kind": "unit_observation",
+          "units": [
+            {
+              "unit_type": "TERRAN_MARINE",
+              "home_distance": 10.0
+            },
+            {
+              "unit_type": "TERRAN_SIEGETANK",
+              "home_distance": 8.0
+            }
+          ]
+        },
+        {
+          "frame": 540,
+          "command_text": "recon-alpha 마린 한 기를 assault-bravo로 이관해",
+          "preset": "transfer_one_marine"
+        }
+      ],
+      "expected_raw_event_types": [
+        "ownership_snapshot",
+        "transfer",
+        "blackboard_update",
+        "submission",
+        "movement"
+      ],
+      "stop_condition": {
+        "type": "transfer_applied_and_siblings_preserved",
+        "count": 1,
+        "source_operation_id": "recon-alpha",
+        "destination_operation_id": "assault-bravo",
+        "preserved_operation_ids": [
+          "defense-charlie"
+        ]
+      },
+      "timeout_frames": 900,
+      "allowed_nondeterminism": []
+    },
+    {
+      "id": "transfer_rejection_preserves_active",
+      "title": "Transfer rejection preserving active operations",
+      "kind": "transfer_rejection",
+      "initial_state": {
+        "units": {
+          "TERRAN_MARINE": 6
+        },
+        "structures": [
+          "TERRAN_BARRACKS"
+        ],
+        "protected_minimum": {
+          "TERRAN_MARINE": 2
+        }
+      },
+      "ordered_inputs": [
+        {
+          "frame": 600,
+          "command_text": "정찰과 공격 작전을 시작해",
+          "preset": "transfer_rejection_baseline"
+        },
+        {
+          "frame": 620,
+          "kind": "unit_observation",
+          "units": [
+            {
+              "unit_type": "TERRAN_MARINE",
+              "home_distance": 10.0
+            }
+          ]
+        },
+        {
+          "frame": 640,
+          "command_text": "recon-alpha 병력을 모두 assault-bravo로 넘겨",
+          "preset": "unsafe_transfer_all"
+        }
+      ],
+      "expected_raw_event_types": [
+        "state_snapshot",
+        "rejection",
+        "ownership_snapshot"
+      ],
+      "stop_condition": {
+        "type": "forbidden_submission_and_state_preserved",
+        "count": 0,
+        "operation_id": "recon-alpha",
+        "preserved_state_fields": [
+          "units",
+          "owners",
+          "operations",
+          "structures",
+          "base_threatened"
+        ]
+      },
+      "timeout_frames": 300,
+      "allowed_nondeterminism": []
+    },
+    {
+      "id": "reinforcement_generation_update",
+      "title": "Reinforcement generation update",
+      "kind": "reinforcement",
+      "initial_state": {
+        "units": {
+          "TERRAN_MARINE": 8
+        },
+        "structures": [
+          "TERRAN_BARRACKS"
+        ]
+      },
+      "ordered_inputs": [
+        {
+          "frame": 700,
+          "command_text": "정찰과 마린 네 기 공격을 시작해",
+          "preset": "reinforcement_baseline"
+        },
+        {
+          "frame": 720,
+          "kind": "unit_observation",
+          "units": [
+            {
+              "unit_type": "TERRAN_MARINE",
+              "home_distance": 10.0
+            }
+          ]
+        },
+        {
+          "frame": 740,
+          "command_text": "assault-bravo를 마린 여섯 기로 증원해",
+          "preset": "reinforce_assault"
+        },
+        {
+          "frame": 780,
+          "kind": "unit_observation",
+          "units": [
+            {
+              "unit_type": "TERRAN_MARINE",
+              "home_distance": 20.0
+            }
+          ]
+        }
+      ],
+      "expected_raw_event_types": [
+        "blackboard_update",
+        "generation_change",
+        "ownership_snapshot",
+        "submission",
+        "movement"
+      ],
+      "stop_condition": {
+        "type": "updated_generation_effect_observed",
+        "count": 1
+      },
+      "timeout_frames": 900,
+      "allowed_nondeterminism": []
+    },
+    {
+      "id": "retarget",
+      "title": "Retarget active operation",
+      "kind": "retarget",
+      "initial_state": {
+        "units": {
+          "TERRAN_MARINE": 4
+        },
+        "structures": [
+          "TERRAN_BARRACKS"
+        ]
+      },
+      "ordered_inputs": [
+        {
+          "frame": 800,
+          "command_text": "assault-bravo로 적 앞마당을 공격해",
+          "preset": "retarget_baseline"
+        },
+        {
+          "frame": 820,
+          "kind": "unit_observation",
+          "units": [
+            {
+              "unit_type": "TERRAN_MARINE",
+              "home_distance": 10.0
+            }
+          ]
+        },
+        {
+          "frame": 840,
+          "command_text": "assault-bravo 목표를 적 본진으로 바꿔",
+          "preset": "retarget_enemy_main"
+        },
+        {
+          "frame": 880,
+          "kind": "unit_observation",
+          "units": [
+            {
+              "unit_type": "TERRAN_MARINE",
+              "home_distance": 20.0
+            }
+          ]
+        }
+      ],
+      "expected_raw_event_types": [
+        "blackboard_update",
+        "generation_change",
+        "squad_order",
+        "submission",
+        "movement"
+      ],
+      "stop_condition": {
+        "type": "updated_generation_effect_observed",
+        "count": 1
+      },
+      "timeout_frames": 900,
+      "allowed_nondeterminism": []
+    },
+    {
+      "id": "selective_cancellation",
+      "title": "Selective cancellation",
+      "kind": "selective_cancellation",
+      "initial_state": {
+        "units": {
+          "TERRAN_MARINE": 2,
+          "TERRAN_SIEGETANK": 1
+        },
+        "structures": [
+          "FACTORY_TECHLAB",
+          "TERRAN_BARRACKS",
+          "TERRAN_FACTORY"
+        ]
+      },
+      "ordered_inputs": [
+        {
+          "frame": 900,
+          "command_text": "정찰과 공격 작전을 병렬로 시작해",
+          "preset": "selective_cancel_baseline"
+        },
+        {
+          "frame": 920,
+          "kind": "unit_observation",
+          "units": [
+            {
+              "unit_type": "TERRAN_MARINE",
+              "home_distance": 10.0
+            },
+            {
+              "unit_type": "TERRAN_SIEGETANK",
+              "home_distance": 8.0
+            }
+          ]
+        },
+        {
+          "frame": 940,
+          "command_text": "recon-alpha 정찰만 취소해",
+          "preset": "cancel_recon_only"
+        },
+        {
+          "frame": 980,
+          "kind": "unit_observation",
+          "units": [
+            {
+              "unit_type": "TERRAN_SIEGETANK",
+              "home_distance": 18.0
+            }
+          ]
+        }
+      ],
+      "expected_raw_event_types": [
+        "blackboard_update",
+        "cancellation",
+        "state_snapshot",
+        "submission",
+        "movement"
+      ],
+      "stop_condition": {
+        "type": "selected_operation_cancelled_sibling_active",
+        "count": 1,
+        "selected_operation_id": "recon-alpha",
+        "sibling_operation_id": "assault-bravo"
+      },
+      "timeout_frames": 600,
+      "allowed_nondeterminism": []
+    },
+    {
+      "id": "emergency_preemption",
+      "title": "Emergency preemption",
+      "kind": "emergency_preemption",
+      "initial_state": {
+        "units": {
+          "TERRAN_MARINE": 4
+        },
+        "structures": [
+          "TERRAN_BARRACKS"
+        ]
+      },
+      "ordered_inputs": [
+        {
+          "frame": 1000,
+          "command_text": "마린으로 적 본진을 공격해",
+          "preset": "emergency_attack_baseline"
+        },
+        {
+          "frame": 1020,
+          "kind": "unit_observation",
+          "units": [
+            {
+              "unit_type": "TERRAN_MARINE",
+              "home_distance": 12.0
+            }
+          ]
+        },
+        {
+          "frame": 1040,
+          "command_text": "즉시 후퇴해서 병력을 보존해",
+          "preset": "emergency_retreat"
+        },
+        {
+          "frame": 1060,
+          "kind": "unit_observation",
+          "units": [
+            {
+              "unit_type": "TERRAN_MARINE",
+              "home_distance": 22.0
+            }
+          ]
+        }
+      ],
+      "expected_raw_event_types": [
+        "blackboard_update",
+        "preemption",
+        "squad_order",
+        "submission",
+        "movement"
+      ],
+      "stop_condition": {
+        "type": "affected_offense_preempted",
+        "count": 1
+      },
+      "timeout_frames": 300,
+      "allowed_nondeterminism": []
+    },
+    {
+      "id": "autonomous_defense_restoration",
+      "title": "Autonomous defense and restoration",
+      "kind": "autonomous_defense",
+      "initial_state": {
+        "units": {
+          "TERRAN_MARINE": 6
+        },
+        "structures": [
+          "TERRAN_BARRACKS"
+        ],
+        "protected_minimum": {
+          "TERRAN_MARINE": 2
+        }
+      },
+      "ordered_inputs": [
+        {
+          "frame": 1100,
+          "command_text": "마린 네 기로 공격해",
+          "preset": "autonomous_defense_attack"
+        },
+        {
+          "frame": 1120,
+          "kind": "base_threat_observation",
+          "base_id": "self_main",
+          "required_defenders": 2,
+          "threat_strength": 0.8
+        },
+        {
+          "frame": 1180,
+          "kind": "base_clear_observation",
+          "base_id": "self_main",
+          "required_defenders": 0,
+          "threat_strength": 0.0
+        },
+        {
+          "frame": 1220,
+          "kind": "unit_observation",
+          "units": [
+            {
+              "unit_type": "TERRAN_MARINE",
+              "home_distance": 18.0
+            }
+          ]
+        }
+      ],
+      "expected_raw_event_types": [
+        "autonomous_defense",
+        "launch_decision",
+        "ownership_snapshot",
+        "submission",
+        "movement"
+      ],
+      "stop_condition": {
+        "type": "offense_restored_after_defense",
+        "count": 1
+      },
+      "timeout_frames": 900,
+      "allowed_nondeterminism": []
+    },
+    {
+      "id": "all_terran_family_ability_blocker_matrix",
+      "title": "All-Terran family, ability, and blocker matrix",
+      "kind": "all_terran_matrix",
+      "initial_state": {
+        "units": "all_terran_families",
+        "prerequisites": "all_available"
+      },
+      "ordered_inputs": [
+        {
+          "frame": 1200,
+          "command_text": "모든 테란 전투 유닛 계열의 작전과 능력을 검증해",
+          "preset": "all_terran_matrix"
+        },
+        {
+          "frame": 1240,
+          "kind": "unit_observation",
+          "matrix_observed_abilities": true
+        }
+      ],
+      "expected_raw_event_types": [
+        "terran_lowering",
+        "production_decision",
+        "family_action_attempt",
+        "submission",
+        "ability_effect"
+      ],
+      "stop_condition": {
+        "type": "all_terran_families_accounted",
+        "count": 15
+      },
+      "timeout_frames": 2400,
+      "allowed_nondeterminism": []
+    },
+    {
+      "id": "event_reconnect_replay",
+      "title": "Event reconnect and replay",
+      "kind": "event_reconnect",
+      "initial_state": {
+        "event_cursor": 0,
+        "structures": [
+          "TERRAN_BARRACKS"
+        ],
+        "units": {
+          "TERRAN_MARINE": 1
+        }
+      },
+      "ordered_inputs": [
+        {
+          "frame": 1300,
+          "command_text": "정찰 작전을 시작해",
+          "preset": "reconnect_recon"
+        },
+        {
+          "frame": 1340,
+          "kind": "unit_observation",
+          "units": [
+            {
+              "unit_type": "TERRAN_MARINE",
+              "home_distance": 14.0
+            }
+          ]
+        },
+        {
+          "frame": 1360,
+          "kind": "client_reconnect",
+          "after_event_seq": 0
+        }
+      ],
+      "expected_raw_event_types": [
+        "web_event",
+        "replay_batch",
+        "replay_deduplicated"
+      ],
+      "stop_condition": {
+        "type": "replayed_events_counted_once",
+        "count": 1
+      },
+      "timeout_frames": 300,
+      "allowed_nondeterminism": [
+        "wall_clock_timestamp_removed"
+      ]
+    },
+    {
+      "id": "voice_readback_callout_identity",
+      "title": "Voice readback and callout identity",
+      "kind": "voice_identity",
+      "initial_state": {
+        "voice_enabled": true,
+        "muted": false,
+        "structures": [
+          "TERRAN_BARRACKS"
+        ],
+        "units": {
+          "TERRAN_MARINE": 2
+        }
+      },
+      "ordered_inputs": [
+        {
+          "frame": 1400,
+          "command_text": "마린 두 기 정찰을 음성으로 확인해",
+          "preset": "voice_recon"
+        },
+        {
+          "frame": 1460,
+          "kind": "unit_observation",
+          "units": [
+            {
+              "unit_type": "TERRAN_MARINE",
+              "home_distance": 16.0
+            }
+          ]
+        }
+      ],
+      "expected_raw_event_types": [
+        "web_projection",
+        "hud_projection",
+        "voice_projection",
+        "voice_callout"
+      ],
+      "stop_condition": {
+        "type": "projection_identity_consistent",
+        "count": 3
+      },
+      "timeout_frames": 600,
+      "allowed_nondeterminism": []
+    }
+  ]
+}

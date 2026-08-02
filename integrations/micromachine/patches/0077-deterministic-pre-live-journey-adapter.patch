@@ -1,0 +1,2420 @@
+diff --git a/src/main.cpp b/src/main.cpp
+index 725f46af15259acba3a454251bddab7619621d6f..ad8a10e9a401996509ce65fee539baa8e0c8b5a3 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -3,6 +3,7 @@
+ #include "JSONTools.h"
+ #include "Util.h"
+ #include "voi_build_identity.hpp"
++#include "voi_pre_live_journey_adapter.hpp"
+ #include "LadderInterface.h"
+ #include <cstdio>
+ #include <csignal>
+@@ -237,6 +238,16 @@ int main(int argc, char* argv[])
+ 		std::cout << VOI_BUILD_INPUT_IDENTITY << std::endl;
+ 		return 0;
+ 	}
++	if (argc == 3
++		&& std::string(
++			argv[1] == nullptr ? "" : argv[1])
++			== "--voi-pre-live-journey-adapter")
++	{
++		return voiRunPreLiveJourneyAdapterFile(
++			argv[2] == nullptr ? "" : argv[2],
++			std::cout,
++			std::cerr);
++	}
+ 
+ 	signal(SIGABRT, handler);
+ #ifdef _WINDOWS
+diff --git a/src/voi_pre_live_journey_adapter.hpp b/src/voi_pre_live_journey_adapter.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..1a79e0284d33c7f045bf809561eabe440bc3bc44
+--- /dev/null
++++ b/src/voi_pre_live_journey_adapter.hpp
+@@ -0,0 +1,2104 @@
++#pragma once
++
++#include "json/json.hpp"
++#include "voi_battlefield_projection.hpp"
++#include "voi_family_effect_lifecycle.hpp"
++#include "voi_operation_hud_selection.hpp"
++#include "voi_operation_transfer_admission.hpp"
++#include "voi_runtime_convergence.hpp"
++
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++#include <fstream>
++#include <map>
++#include <set>
++#include <sstream>
++#include <string>
++#include <utility>
++#include <vector>
++
++using VoiPreLiveJson = nlohmann::json;
++
++struct VoiPreLiveUnitState
++{
++	std::uint64_t tag = 0;
++	std::string unitType;
++	std::string family;
++	bool alive = true;
++	bool complete = true;
++	bool selfOwned = true;
++	bool combat = true;
++	bool canAttackGround = true;
++	bool canAttackAir = true;
++	double homeDistance = 0.0;
++	bool engaged = false;
++	std::set<std::string> observedAbilities;
++	std::string autonomousOwner;
++};
++
++struct VoiPreLiveRequirementState
++{
++	std::string unitType;
++	std::string role;
++	int targetCount = 0;
++	std::vector<std::uint64_t> assignedTags;
++	std::uint64_t attemptGeneration = 0;
++	std::uint32_t attemptedFrame = 0;
++	std::uint32_t submittedFrame = 0;
++	std::uint32_t effectFrame = 0;
++	std::string action;
++	std::string effectKind;
++	std::set<std::uint64_t> effectTags;
++	std::string blocker;
++};
++
++struct VoiPreLiveOperationState
++{
++	std::string updateId;
++	std::string operationId;
++	std::uint64_t generation = 0;
++	std::uint64_t issuedAtFrame = 0;
++	std::string taskType;
++	std::string ability;
++	std::string locationIntent;
++	std::string lifetimeMode;
++	std::string completionState;
++	std::string completionReason;
++	std::uint64_t completionFrame = 0;
++	std::string status = "RECEIVED";
++	std::string blocker;
++	std::string action;
++	std::string editAction;
++	std::string counterpartOperationId;
++	std::size_t transferCount = 0;
++	int minimumUnits = 0;
++	int maximumUnits = 0;
++	bool allowPartial = false;
++	bool active = true;
++	bool submitted = false;
++	bool movementObserved = false;
++	bool engagementObserved = false;
++	bool targetReached = false;
++	double priority = 0.0;
++	std::vector<VoiPreLiveRequirementState> requirements;
++	std::vector<std::uint64_t> assignedTags;
++};
++
++class VoiPreLiveJourneyAdapter
++{
++	std::map<std::uint64_t, VoiPreLiveUnitState> m_units;
++	std::map<std::uint64_t, std::string> m_owners;
++	std::map<std::string, VoiPreLiveOperationState> m_operations;
++	std::map<std::string, int> m_protectedMinimum;
++	std::set<std::string> m_structures;
++	std::vector<VoiPreLiveJson> m_events;
++	std::vector<VoiPreLiveJson> m_snapshots;
++	std::uint64_t m_frame = 0;
++	std::uint64_t m_seq = 0;
++	std::uint64_t m_sessionEpoch = 1700000000000ULL;
++	std::string m_latestUpdateId = "micromachine-autonomous";
++	bool m_baseThreatened = false;
++	std::string m_baseId = "self_main";
++	std::size_t m_requiredDefenders = 0;
++
++	static bool hasForbiddenAuthorityInput(
++		const VoiPreLiveJson & value,
++		std::string & path,
++		const std::string & prefix = "")
++	{
++		static const std::set<std::string> forbidden = {
++			"authority",
++			"battlefield_authority",
++			"effect_observed",
++			"effect_success",
++			"owner_valid",
++			"ownership_valid",
++			"submission_success",
++			"submitted",
++			"submitted_success",
++		};
++		if (value.is_object())
++		{
++			for (auto item = value.begin(); item != value.end(); ++item)
++			{
++				const std::string current = prefix.empty()
++					? item.key()
++					: prefix + "." + item.key();
++				if (forbidden.find(item.key()) != forbidden.end())
++				{
++					path = current;
++					return true;
++				}
++				if (hasForbiddenAuthorityInput(
++						item.value(),
++						path,
++						current))
++				{
++					return true;
++				}
++			}
++		}
++		else if (value.is_array())
++		{
++			for (std::size_t index = 0; index < value.size(); ++index)
++			{
++				if (hasForbiddenAuthorityInput(
++						value[index],
++						path,
++						prefix + "["
++							+ std::to_string(index) + "]"))
++				{
++					return true;
++				}
++			}
++		}
++		return false;
++	}
++
++	static std::string taskAction(const VoiPreLiveOperationState & operation)
++	{
++		if (!operation.ability.empty())
++		{
++			return "ability:" + operation.ability;
++		}
++		if (operation.taskType == "scout_with_units")
++		{
++			return "squad_order:scout";
++		}
++		if (operation.taskType == "defend_with_units")
++		{
++			return "squad_order:defend";
++		}
++		if (operation.taskType == "harass_with_units")
++		{
++			return "squad_order:harass";
++		}
++		return "squad_order:attack";
++	}
++
++	static std::string canonicalTask(
++		const VoiPreLiveOperationState & operation)
++	{
++		if (operation.taskType == "scout_with_units")
++		{
++			return "scout";
++		}
++		if (operation.taskType == "defend_with_units")
++		{
++			return "defend";
++		}
++		if (operation.taskType == "harass_with_units")
++		{
++			return "harass";
++		}
++		return "attack";
++	}
++
++	void emit(
++		const std::string & eventType,
++		const VoiPreLiveOperationState & operation,
++		const std::string & stage,
++		const VoiPreLiveJson & payload)
++	{
++		VoiPreLiveJson identity = {
++			{ "update_id", operation.updateId },
++			{ "operation_id", operation.operationId },
++			{ "generation", operation.generation },
++			{ "stage", stage },
++			{ "game_frame", m_frame },
++		};
++		m_events.push_back({
++			{ "seq", ++m_seq },
++			{ "event_type", eventType },
++			{ "identity", identity },
++			{ "payload", payload },
++		});
++	}
++
++	void emitGlobal(
++		const std::string & eventType,
++		const std::string & stage,
++		const VoiPreLiveJson & payload)
++	{
++		m_events.push_back({
++			{ "seq", ++m_seq },
++			{ "event_type", eventType },
++			{ "identity", {
++				{ "update_id", m_latestUpdateId },
++				{ "operation_id", "" },
++				{ "generation", 0 },
++				{ "stage", stage },
++				{ "game_frame", m_frame },
++			} },
++			{ "payload", payload },
++		});
++	}
++
++	static std::vector<std::uint64_t> jsonTags(
++		const VoiPreLiveJson & value)
++	{
++		std::vector<std::uint64_t> tags;
++		if (!value.is_array())
++		{
++			return tags;
++		}
++		for (const auto & item : value)
++		{
++			if (item.is_number_unsigned()
++				|| item.is_number_integer())
++			{
++				const std::int64_t raw =
++					item.get<std::int64_t>();
++				if (raw > 0)
++				{
++					tags.push_back(
++						static_cast<std::uint64_t>(raw));
++				}
++			}
++		}
++		std::sort(tags.begin(), tags.end());
++		tags.erase(
++			std::unique(tags.begin(), tags.end()),
++			tags.end());
++		return tags;
++	}
++
++	static std::string jsonString(
++		const VoiPreLiveJson & value,
++		const char * key,
++		const std::string & fallback = "")
++	{
++		const auto found = value.find(key);
++		return found != value.end() && found->is_string()
++			? found->get<std::string>()
++			: fallback;
++	}
++
++	static int jsonInt(
++		const VoiPreLiveJson & value,
++		const char * key,
++		int fallback = 0)
++	{
++		const auto found = value.find(key);
++		return found != value.end() && found->is_number_integer()
++			? found->get<int>()
++			: fallback;
++	}
++
++	static std::uint64_t jsonUint64(
++		const VoiPreLiveJson & value,
++		const char * key,
++		std::uint64_t fallback = 0)
++	{
++		const auto found = value.find(key);
++		if (found == value.end()
++			|| (!found->is_number_unsigned()
++				&& !found->is_number_integer()))
++		{
++			return fallback;
++		}
++		const std::int64_t raw = found->get<std::int64_t>();
++		return raw >= 0
++			? static_cast<std::uint64_t>(raw)
++			: fallback;
++	}
++
++	static bool jsonBool(
++		const VoiPreLiveJson & value,
++		const char * key,
++		bool fallback)
++	{
++		const auto found = value.find(key);
++		return found != value.end() && found->is_boolean()
++			? found->get<bool>()
++			: fallback;
++	}
++
++	void loadInitialState(const VoiPreLiveJson & state)
++	{
++		const auto protectedMinimum =
++			state.find("protected_minimum");
++		if (protectedMinimum != state.end()
++			&& protectedMinimum->is_object())
++		{
++			for (auto item = protectedMinimum->begin();
++				item != protectedMinimum->end();
++				++item)
++			{
++				if (item.value().is_number_integer())
++				{
++					m_protectedMinimum[item.key()] =
++						std::max(0, item.value().get<int>());
++				}
++			}
++		}
++		const auto structures = state.find("structures");
++		if (structures != state.end() && structures->is_array())
++		{
++			for (const auto & item : *structures)
++			{
++				if (item.is_string())
++				{
++					m_structures.insert(item.get<std::string>());
++				}
++			}
++		}
++		const auto units = state.find("units");
++		if (units == state.end() || !units->is_array())
++		{
++			throw std::runtime_error(
++				"initial_state.units must be an array");
++		}
++		for (const auto & item : *units)
++		{
++			if (!item.is_object())
++			{
++				throw std::runtime_error(
++					"initial_state unit must be an object");
++			}
++			VoiPreLiveUnitState unit;
++			unit.tag = jsonUint64(item, "tag");
++			unit.unitType = jsonString(item, "unit_type");
++			if (unit.tag == 0 || unit.unitType.empty())
++			{
++				throw std::runtime_error(
++					"initial_state unit identity is invalid");
++			}
++			unit.family =
++				voiCanonicalTerranFamilyForUnitType(
++					unit.unitType);
++			unit.alive = jsonBool(item, "alive", true);
++			unit.complete = jsonBool(item, "complete", true);
++			unit.selfOwned = jsonBool(item, "self_owned", true);
++			unit.combat = jsonBool(item, "combat", true);
++			unit.canAttackGround =
++				jsonBool(item, "can_attack_ground", true);
++			unit.canAttackAir =
++				jsonBool(item, "can_attack_air", true);
++			const auto distance = item.find("home_distance");
++			if (distance != item.end() && distance->is_number())
++			{
++				unit.homeDistance = distance->get<double>();
++			}
++			if (!m_units.emplace(unit.tag, unit).second)
++			{
++				throw std::runtime_error(
++					"initial_state contains duplicate unit tags");
++			}
++		}
++		recordSnapshot("initial");
++	}
++
++	VoiPreLiveOperationState parseOperation(
++		const VoiPreLiveJson & item,
++		const std::string & updateId,
++		std::uint64_t issuedAtFrame) const
++	{
++		VoiPreLiveOperationState operation;
++		operation.updateId = updateId;
++		operation.operationId =
++			jsonString(item, "operation_id");
++		operation.generation =
++			jsonUint64(item, "generation");
++		operation.issuedAtFrame =
++			jsonUint64(item, "issued_at_frame", issuedAtFrame);
++		const auto task = item.find("tactical_task");
++		if (task == item.end() || !task->is_object())
++		{
++			throw std::runtime_error(
++				"operation tactical_task is missing");
++		}
++		operation.taskType =
++			jsonString(*task, "task_type");
++		operation.ability =
++			jsonString(*task, "ability");
++		operation.locationIntent =
++			jsonString(*task, "location_intent");
++		operation.minimumUnits =
++			std::max(0, jsonInt(*task, "min_units"));
++		operation.maximumUnits =
++			std::max(
++				operation.minimumUnits,
++				jsonInt(
++					*task,
++					"max_units",
++					operation.minimumUnits));
++		operation.allowPartial =
++			jsonBool(*task, "allow_partial", false);
++		const auto priority = task->find("priority");
++		if (priority != task->end() && priority->is_number())
++		{
++			operation.priority = priority->get<double>();
++		}
++		const auto lifetime = item.find("lifetime");
++		if (lifetime != item.end() && lifetime->is_object())
++		{
++			operation.lifetimeMode =
++				jsonString(*lifetime, "mode");
++			operation.completionState =
++				jsonString(
++					*lifetime,
++					"completion_state",
++					"active");
++			operation.active =
++				operation.completionState != "cancelled"
++				&& operation.completionState != "completed";
++		}
++		const auto edit = item.find("operation_edit");
++		if (edit != item.end() && edit->is_object())
++		{
++			operation.editAction =
++				jsonString(*edit, "action");
++			operation.counterpartOperationId =
++				jsonString(
++					*edit,
++					"counterpart_operation_id");
++			const auto selection =
++				edit->find("unit_selection");
++			if (selection != edit->end()
++				&& selection->is_array())
++			{
++				for (const auto & selected : *selection)
++				{
++					if (selected.is_object())
++					{
++						operation.transferCount +=
++							static_cast<std::size_t>(
++								std::max(
++									0,
++									jsonInt(
++										selected,
++										"count")));
++					}
++				}
++			}
++		}
++		const auto requirements =
++			item.find("composition_requirements");
++		if (requirements != item.end()
++			&& requirements->is_array())
++		{
++			for (const auto & raw : *requirements)
++			{
++				if (!raw.is_object())
++				{
++					continue;
++				}
++				VoiPreLiveRequirementState requirement;
++				requirement.unitType =
++					jsonString(raw, "unit_type");
++				requirement.role =
++					jsonString(raw, "role");
++				requirement.targetCount =
++					std::max(0, jsonInt(raw, "count"));
++				if (!requirement.unitType.empty()
++					&& requirement.targetCount > 0)
++				{
++					operation.requirements.push_back(
++						requirement);
++				}
++			}
++		}
++		if (operation.requirements.empty())
++		{
++			const auto classes = task->find("unit_classes");
++			if (classes != task->end()
++				&& classes->is_array()
++				&& !classes->empty()
++				&& (*classes)[0].is_string())
++			{
++				VoiPreLiveRequirementState requirement;
++				requirement.unitType =
++					(*classes)[0].get<std::string>();
++				requirement.targetCount =
++					std::max(1, operation.minimumUnits);
++				operation.requirements.push_back(
++					requirement);
++			}
++		}
++		if (operation.operationId.empty()
++			|| operation.generation == 0
++			|| operation.taskType.empty())
++		{
++			throw std::runtime_error(
++				"operation identity or task is invalid");
++		}
++		operation.action = taskAction(operation);
++		return operation;
++	}
++
++	std::vector<std::uint64_t> availableTags(
++		const std::string & unitType,
++		const std::string & operationId) const
++	{
++		std::vector<std::uint64_t> tags;
++		for (const auto & unitEntry : m_units)
++		{
++			const auto & unit = unitEntry.second;
++			if (unit.unitType != unitType
++				|| !unit.alive
++				|| !unit.complete
++				|| !unit.selfOwned
++				|| !unit.combat)
++			{
++				continue;
++			}
++			const auto owner = m_owners.find(unit.tag);
++			if (owner == m_owners.end()
++				|| owner->second == operationId)
++			{
++				tags.push_back(unit.tag);
++			}
++		}
++		std::sort(tags.begin(), tags.end());
++		const int protectedCount =
++			m_protectedMinimum.count(unitType)
++				? m_protectedMinimum.at(unitType)
++				: 0;
++		std::vector<std::uint64_t> unowned;
++		for (const auto tag : tags)
++		{
++			if (m_owners.find(tag) == m_owners.end())
++			{
++				unowned.push_back(tag);
++			}
++		}
++		const std::set<std::uint64_t> reserved(
++			unowned.begin(),
++			unowned.begin()
++				+ std::min<std::size_t>(
++					unowned.size(),
++					static_cast<std::size_t>(
++						std::max(0, protectedCount))));
++		tags.erase(
++			std::remove_if(
++				tags.begin(),
++				tags.end(),
++				[&](std::uint64_t tag)
++				{
++					return reserved.find(tag)
++						!= reserved.end();
++				}),
++			tags.end());
++		return tags;
++	}
++
++	void releaseOperationOwnership(const std::string & operationId)
++	{
++		for (auto owner = m_owners.begin();
++			owner != m_owners.end();)
++		{
++			if (owner->second == operationId)
++			{
++				owner = m_owners.erase(owner);
++			}
++			else
++			{
++				++owner;
++			}
++		}
++	}
++
++	void assignOperation(VoiPreLiveOperationState & operation)
++	{
++		releaseOperationOwnership(operation.operationId);
++		operation.assignedTags.clear();
++		std::vector<VoiRuntimeRequirementSnapshot> convergenceRows;
++		for (auto & requirement : operation.requirements)
++		{
++			requirement.assignedTags.clear();
++			auto candidates = availableTags(
++				requirement.unitType,
++				operation.operationId);
++			candidates.erase(
++				std::remove_if(
++					candidates.begin(),
++					candidates.end(),
++					[&](std::uint64_t tag)
++					{
++						return std::find(
++								operation.assignedTags.begin(),
++								operation.assignedTags.end(),
++								tag)
++							!= operation.assignedTags.end();
++					}),
++				candidates.end());
++			const std::size_t requested =
++				static_cast<std::size_t>(
++					std::max(0, requirement.targetCount));
++			const std::size_t count =
++				std::min(requested, candidates.size());
++			for (std::size_t index = 0; index < count; ++index)
++			{
++				const auto tag = candidates[index];
++				m_owners[tag] = operation.operationId;
++				requirement.assignedTags.push_back(tag);
++				operation.assignedTags.push_back(tag);
++			}
++			VoiRuntimeRequirementSnapshot snapshot;
++			snapshot.unitType = requirement.unitType;
++			snapshot.role = requirement.role;
++			snapshot.targetCount = requirement.targetCount;
++			snapshot.assignedCount =
++				static_cast<int>(
++					requirement.assignedTags.size());
++			snapshot.completedCount =
++				snapshot.assignedCount;
++			snapshot.representedCount =
++				snapshot.assignedCount;
++			snapshot.prerequisites =
++				voiTerranPrerequisiteChain(
++					requirement.unitType);
++			for (const auto & prerequisite :
++				snapshot.prerequisites)
++			{
++				if (m_structures.find(prerequisite)
++					== m_structures.end())
++				{
++					snapshot.missingPrerequisites.push_back(
++						prerequisite);
++				}
++			}
++			if (!snapshot.missingPrerequisites.empty())
++			{
++				snapshot.representedCount = 0;
++				snapshot.productionBlocker =
++					"missing_prerequisites";
++			}
++			convergenceRows.push_back(snapshot);
++		}
++		std::sort(
++			operation.assignedTags.begin(),
++			operation.assignedTags.end());
++		const auto decision =
++			voiEvaluateOperationConvergence(
++				convergenceRows,
++				operation.minimumUnits,
++				operation.allowPartial);
++		operation.status = decision.status;
++		operation.blocker = decision.blocker;
++		if (!decision.ready)
++		{
++			bool protectedMinimumBlocked = false;
++			for (const auto & requirement : operation.requirements)
++			{
++				const int protectedCount =
++					m_protectedMinimum.count(
++						requirement.unitType)
++						? m_protectedMinimum.at(
++							requirement.unitType)
++						: 0;
++				std::size_t eligibleCount = 0;
++				for (const auto & unitEntry : m_units)
++				{
++					const auto & unit = unitEntry.second;
++					const auto owner = m_owners.find(unit.tag);
++					if (unit.unitType == requirement.unitType
++						&& unit.alive
++						&& unit.complete
++						&& unit.selfOwned
++						&& unit.combat
++						&& (owner == m_owners.end()
++							|| owner->second
++								== operation.operationId))
++					{
++						++eligibleCount;
++					}
++				}
++				protectedMinimumBlocked =
++					protectedMinimumBlocked
++					|| (protectedCount > 0
++						&& eligibleCount
++							>= static_cast<std::size_t>(
++								std::max(
++									0,
++									requirement.targetCount))
++						&& requirement.assignedTags.size()
++							< static_cast<std::size_t>(
++								std::max(
++									0,
++									requirement.targetCount)));
++			}
++			releaseOperationOwnership(operation.operationId);
++			operation.assignedTags.clear();
++			for (auto & requirement : operation.requirements)
++			{
++				requirement.assignedTags.clear();
++				requirement.blocker =
++					protectedMinimumBlocked
++						? "protected_minimum_violation"
++						: decision.blocker;
++			}
++			if (protectedMinimumBlocked)
++			{
++				operation.status = "REJECTED";
++				operation.blocker =
++					"protected_minimum_violation";
++				emit(
++					"launch_decision",
++					operation,
++					"launch_rejected",
++					{
++						{ "action", "wait" },
++						{ "launch_count", 0 },
++						{ "blocker", operation.blocker },
++					});
++				emit(
++					"rejection",
++					operation,
++					"blocked",
++					{
++						{ "action", operation.action },
++						{ "reason", operation.blocker },
++					});
++				return;
++			}
++			emit(
++				"production_decision",
++				operation,
++				"production_wait",
++				{
++					{ "action", "wait" },
++					{ "target_count", decision.targetCount },
++					{ "assigned_count", decision.assignedCount },
++					{ "represented_count", decision.representedCount },
++					{ "missing_count", decision.missingCount },
++					{ "blocker", decision.blocker },
++				});
++			emit(
++				"prerequisite_wait",
++				operation,
++				"prerequisite_wait",
++				{
++					{ "action", "wait" },
++					{ "blocker", decision.blocker },
++					{ "submission_count", 0 },
++				});
++			return;
++		}
++		operation.status = "ASSIGNED";
++		operation.blocker.clear();
++		emit(
++			"launch_decision",
++			operation,
++			"launch_admitted",
++			{
++				{ "action", "launch" },
++				{ "launch_count", operation.assignedTags.size() },
++				{ "minimum_units", operation.minimumUnits },
++				{ "maximum_units", operation.maximumUnits },
++				{ "partial",
++					operation.assignedTags.size()
++						< static_cast<std::size_t>(
++							operation.maximumUnits) },
++			});
++		emitOwnership(operation, "assigned");
++		submitOperation(operation);
++	}
++
++	void emitOwnership(
++		const VoiPreLiveOperationState & operation,
++		const std::string & stage)
++	{
++		std::map<std::string, std::vector<std::uint64_t>> owners;
++		for (const auto & owner : m_owners)
++		{
++			owners[owner.second].push_back(owner.first);
++		}
++		emit(
++			"ownership_snapshot",
++			operation,
++			stage,
++			{
++				{ "action", "assign" },
++				{ "owners", owners },
++				{ "assigned_unit_tags", operation.assignedTags },
++			});
++	}
++
++	void submitOperation(VoiPreLiveOperationState & operation)
++	{
++		if (operation.assignedTags.empty()
++			|| !operation.active
++			|| operation.submitted)
++		{
++			return;
++		}
++		operation.submitted = true;
++		for (auto & requirement : operation.requirements)
++		{
++			if (requirement.assignedTags.empty())
++			{
++				continue;
++			}
++			requirement.attemptGeneration =
++				voiNextMonotonicAttemptGeneration(
++					operation.generation,
++					requirement.attemptGeneration,
++					requirement.attemptGeneration);
++			requirement.attemptedFrame =
++				static_cast<std::uint32_t>(m_frame);
++			requirement.submittedFrame =
++				static_cast<std::uint32_t>(m_frame);
++			requirement.action = operation.action;
++			emit(
++				"family_action_attempt",
++				operation,
++				"attempted",
++				{
++					{ "action", operation.action },
++					{ "family",
++						voiCanonicalTerranFamilyForUnitType(
++							requirement.unitType) },
++					{ "unit_type", requirement.unitType },
++					{ "role", requirement.role },
++					{ "attempt_generation",
++						requirement.attemptGeneration },
++					{ "unit_tags", requirement.assignedTags },
++				});
++		}
++		emit(
++			"squad_order",
++			operation,
++			"order_issued",
++			{
++				{ "action", operation.action },
++				{ "unit_tags", operation.assignedTags },
++			});
++		emit(
++			"submission",
++			operation,
++			"submitted",
++			{
++				{ "action", operation.action },
++				{ "unit_tags", operation.assignedTags },
++			});
++		operation.status = "EXECUTING";
++	}
++
++	void applyTransferPair(
++		std::vector<VoiPreLiveOperationState> & requested)
++	{
++		std::vector<std::size_t> transferIndices;
++		for (std::size_t index = 0; index < requested.size(); ++index)
++		{
++			if (requested[index].editAction == "transfer_in"
++				|| requested[index].editAction == "transfer_out")
++			{
++				transferIndices.push_back(index);
++			}
++		}
++		if (transferIndices.empty())
++		{
++			return;
++		}
++		if (transferIndices.size() != 2)
++		{
++			for (const auto index : transferIndices)
++			{
++				requested[index].blocker =
++					"transfer_counterpart_missing";
++			}
++			return;
++		}
++		auto & first = requested[transferIndices[0]];
++		auto & second = requested[transferIndices[1]];
++		const auto firstExisting =
++			m_operations.find(first.operationId);
++		const auto secondExisting =
++			m_operations.find(second.operationId);
++		VoiOperationTransferEndpoint firstEndpoint;
++		firstEndpoint.operationId = first.operationId;
++		firstEndpoint.counterpartOperationId =
++			first.counterpartOperationId;
++		firstEndpoint.editAction = first.editAction;
++		firstEndpoint.requestedGeneration = first.generation;
++		firstEndpoint.requestedPresent = true;
++		firstEndpoint.existingActive =
++			firstExisting != m_operations.end()
++			&& firstExisting->second.active;
++		firstEndpoint.existingGeneration =
++			firstExisting != m_operations.end()
++				? firstExisting->second.generation
++				: 0;
++		firstEndpoint.terminal =
++			firstExisting != m_operations.end()
++			&& !firstExisting->second.active;
++		VoiOperationTransferEndpoint secondEndpoint;
++		secondEndpoint.operationId = second.operationId;
++		secondEndpoint.counterpartOperationId =
++			second.counterpartOperationId;
++		secondEndpoint.editAction = second.editAction;
++		secondEndpoint.requestedGeneration = second.generation;
++		secondEndpoint.requestedPresent = true;
++		secondEndpoint.existingActive =
++			secondExisting != m_operations.end()
++			&& secondExisting->second.active;
++		secondEndpoint.existingGeneration =
++			secondExisting != m_operations.end()
++				? secondExisting->second.generation
++				: 0;
++		secondEndpoint.terminal =
++			secondExisting != m_operations.end()
++			&& !secondExisting->second.active;
++		const auto admission =
++			voiDecideOperationTransferAdmission(
++				firstEndpoint,
++				secondEndpoint);
++		if (!admission.admitted)
++		{
++			first.blocker = admission.blocker;
++			second.blocker = admission.blocker;
++			return;
++		}
++		VoiPreLiveOperationState * source =
++			first.editAction == "transfer_out"
++				? &first
++				: &second;
++		VoiPreLiveOperationState * destination =
++			first.editAction == "transfer_in"
++				? &first
++				: &second;
++		const auto existingSource =
++			m_operations.find(source->operationId);
++		if (existingSource == m_operations.end())
++		{
++			first.blocker =
++				second.blocker =
++					"transfer_pair_not_active";
++			return;
++		}
++		const std::size_t protectedCount =
++			static_cast<std::size_t>(
++				std::max(0, source->minimumUnits));
++		if (source->transferCount == 0
++			|| existingSource->second.assignedTags.size()
++				< source->transferCount + protectedCount)
++		{
++			first.blocker =
++				second.blocker =
++					"source_operation_minimum_violation";
++			return;
++		}
++		std::vector<std::uint64_t> selected(
++			existingSource->second.assignedTags.end()
++				- source->transferCount,
++			existingSource->second.assignedTags.end());
++		if (!voiTransferOwnershipAtomically(
++				m_owners,
++				selected,
++				source->operationId,
++				destination->operationId))
++		{
++			first.blocker =
++				second.blocker =
++					"transfer_runtime_ownership_mismatch";
++			return;
++		}
++		emit(
++			"transfer",
++			*source,
++			"applied",
++			{
++				{ "action", "transfer_out" },
++				{ "counterpart_operation_id",
++					destination->operationId },
++				{ "unit_tags", selected },
++				{ "resolution", "applied" },
++			});
++	}
++
++	void applyPolicyUpdate(const VoiPreLiveJson & update)
++	{
++		if (!update.is_object())
++		{
++			throw std::runtime_error(
++				"policy_update.update must be an object");
++		}
++		const std::string updateId =
++			jsonString(update, "update_id");
++		if (updateId.empty())
++		{
++			throw std::runtime_error(
++				"policy update_id is missing");
++		}
++		m_latestUpdateId = updateId;
++		const auto vector = update.find("vector");
++		if (vector == update.end() || !vector->is_object())
++		{
++			throw std::runtime_error(
++				"policy update vector is missing");
++		}
++		const auto emergency = vector->find("emergency");
++		if (emergency != vector->end()
++			&& emergency->is_object()
++			&& (jsonBool(*emergency, "cancel_attacks", false)
++				|| jsonBool(*emergency, "force_retreat", false)))
++		{
++			for (auto & entry : m_operations)
++			{
++				auto & operation = entry.second;
++				if (!operation.active
++					|| canonicalTask(operation) != "attack")
++				{
++					continue;
++				}
++				operation.action = "retreat";
++				operation.updateId = updateId;
++				operation.submitted = false;
++				emit(
++					"preemption",
++					operation,
++					"preempted",
++					{
++						{ "action", "retreat" },
++						{ "reason", "emergency_policy" },
++					});
++				submitOperation(operation);
++			}
++			recordSnapshot("policy_update");
++			return;
++		}
++		const auto rawOperations = vector->find("operations");
++		if (rawOperations == vector->end()
++			|| !rawOperations->is_array())
++		{
++			throw std::runtime_error(
++				"policy update operations are missing");
++		}
++		std::vector<VoiPreLiveOperationState> requested;
++		for (const auto & raw : *rawOperations)
++		{
++			if (raw.is_object())
++			{
++				requested.push_back(
++					parseOperation(
++						raw,
++						updateId,
++						jsonUint64(
++							update,
++							"issued_at_frame",
++							m_frame)));
++			}
++		}
++		applyTransferPair(requested);
++		for (auto & operation : requested)
++		{
++			const auto existing =
++				m_operations.find(operation.operationId);
++			if (!operation.active)
++			{
++				if (existing != m_operations.end())
++				{
++					auto cancelled = existing->second;
++					cancelled.updateId = operation.updateId;
++					cancelled.generation =
++						operation.generation;
++					cancelled.active = false;
++					cancelled.status = "COMPLETED";
++					cancelled.completionState =
++						"cancelled";
++					cancelled.completionReason =
++						"cancelled_by_user";
++					cancelled.completionFrame = m_frame;
++					releaseOperationOwnership(
++						cancelled.operationId);
++					emit(
++						"cancellation",
++						cancelled,
++						"cancelled",
++						{
++							{ "action", "cancel" },
++							{ "reason",
++								"cancelled_by_user" },
++						});
++					m_operations[cancelled.operationId] =
++						cancelled;
++				}
++				continue;
++			}
++			if (!operation.blocker.empty())
++			{
++				emit(
++					"rejection",
++					operation,
++					"blocked",
++					{
++						{ "action",
++							operation.editAction.empty()
++								? operation.action
++								: operation.editAction },
++						{ "reason", operation.blocker },
++					});
++				continue;
++			}
++			if (existing != m_operations.end())
++			{
++				operation.movementObserved =
++					existing->second.movementObserved;
++				operation.engagementObserved =
++					existing->second.engagementObserved;
++				operation.targetReached =
++					existing->second.targetReached;
++			}
++			operation.submitted = false;
++			m_operations[operation.operationId] = operation;
++			assignOperation(
++				m_operations[operation.operationId]);
++			if (m_operations[operation.operationId].status
++				== "REJECTED")
++			{
++				m_operations.erase(operation.operationId);
++			}
++		}
++		recordSnapshot("policy_update");
++	}
++
++	void reconcileWaitingOperations()
++	{
++		for (auto & entry : m_operations)
++		{
++			auto & operation = entry.second;
++			if (!operation.active
++				|| operation.status != "WAITING_FOR_UNITS")
++			{
++				continue;
++			}
++			assignOperation(operation);
++		}
++	}
++
++	void applyUnitObservation(const VoiPreLiveJson & step)
++	{
++		const auto units = step.find("units");
++		if (units == step.end() || !units->is_array())
++		{
++			throw std::runtime_error(
++				"unit_observation.units must be an array");
++		}
++		std::map<std::uint64_t, double> previousDistance;
++		std::map<std::uint64_t, bool> previousEngaged;
++		std::map<std::uint64_t, std::set<std::string>>
++			previousAbilities;
++		for (const auto & item : *units)
++		{
++			if (!item.is_object())
++			{
++				continue;
++			}
++			const auto tag = jsonUint64(item, "tag");
++			if (tag == 0)
++			{
++				continue;
++			}
++			auto unit = m_units.find(tag);
++			if (unit == m_units.end())
++			{
++				VoiPreLiveUnitState created;
++				created.tag = tag;
++				created.unitType =
++					jsonString(item, "unit_type");
++				if (created.unitType.empty())
++				{
++					throw std::runtime_error(
++						"observed new unit lacks unit_type");
++				}
++				created.family =
++					voiCanonicalTerranFamilyForUnitType(
++						created.unitType);
++				unit = m_units.emplace(tag, created).first;
++			}
++			previousDistance[tag] = unit->second.homeDistance;
++			previousEngaged[tag] = unit->second.engaged;
++			previousAbilities[tag] =
++				unit->second.observedAbilities;
++			const auto distance =
++				item.find("home_distance");
++			if (distance != item.end()
++				&& distance->is_number())
++			{
++				unit->second.homeDistance =
++					distance->get<double>();
++			}
++			unit->second.engaged =
++				jsonBool(
++					item,
++					"engaged",
++					unit->second.engaged);
++			unit->second.alive =
++				jsonBool(
++					item,
++					"alive",
++					unit->second.alive);
++			unit->second.complete =
++				jsonBool(
++					item,
++					"complete",
++					unit->second.complete);
++			const auto abilities =
++				item.find("observed_abilities");
++			if (abilities != item.end()
++				&& abilities->is_array())
++			{
++				unit->second.observedAbilities.clear();
++				for (const auto & ability : *abilities)
++				{
++					if (ability.is_string())
++					{
++						unit->second.observedAbilities.insert(
++							ability.get<std::string>());
++					}
++				}
++			}
++		}
++		for (auto & entry : m_operations)
++		{
++			auto & operation = entry.second;
++			if (!operation.submitted || !operation.active)
++			{
++				continue;
++			}
++			std::vector<std::uint64_t> moved;
++			std::vector<std::uint64_t> engaged;
++			std::vector<std::uint64_t> abilityEffects;
++			for (const auto tag : operation.assignedTags)
++			{
++				const auto unit = m_units.find(tag);
++				if (unit == m_units.end())
++				{
++					continue;
++				}
++				if (unit->second.homeDistance
++					> previousDistance[tag] + 0.5)
++				{
++					moved.push_back(tag);
++				}
++				if (unit->second.engaged
++					&& !previousEngaged[tag])
++				{
++					engaged.push_back(tag);
++				}
++				if (!operation.ability.empty()
++					&& unit->second.observedAbilities.find(
++							operation.ability)
++						!= unit->second.observedAbilities.end()
++					&& previousAbilities[tag].find(
++							operation.ability)
++						== previousAbilities[tag].end())
++				{
++					abilityEffects.push_back(tag);
++				}
++			}
++			if (!abilityEffects.empty())
++			{
++				recordEffect(
++					operation,
++					"ability_effect",
++					"ability_state",
++					abilityEffects);
++			}
++			else if (!engaged.empty())
++			{
++				recordEffect(
++					operation,
++					"engagement",
++					"engagement",
++					engaged);
++			}
++			else if (!moved.empty())
++			{
++				recordEffect(
++					operation,
++					"movement",
++					"movement",
++					moved);
++			}
++		}
++		recordSnapshot("unit_observation");
++	}
++
++	void recordEffect(
++		VoiPreLiveOperationState & operation,
++		const std::string & eventType,
++		const std::string & effectKind,
++		const std::vector<std::uint64_t> & tags)
++	{
++		if (eventType == "movement")
++		{
++			operation.movementObserved = true;
++		}
++		else if (eventType == "engagement")
++		{
++			operation.engagementObserved = true;
++		}
++		for (auto & requirement : operation.requirements)
++		{
++			std::vector<std::uint64_t> matching;
++			for (const auto tag : tags)
++			{
++				if (std::find(
++						requirement.assignedTags.begin(),
++						requirement.assignedTags.end(),
++						tag)
++					!= requirement.assignedTags.end())
++				{
++					matching.push_back(tag);
++				}
++			}
++			if (matching.empty())
++			{
++				continue;
++			}
++			VoiFamilyEffectTelemetrySnapshot snapshot;
++			snapshot.policyUpdateId = operation.updateId;
++			snapshot.operationGeneration =
++				operation.generation;
++			snapshot.action = operation.action;
++			snapshot.requiredEffect =
++				operation.ability.empty()
++					? "movement_or_engagement"
++					: "ability_state_or_effect";
++			snapshot.attemptGeneration =
++				requirement.attemptGeneration;
++			snapshot.attemptedCount =
++				static_cast<int>(
++					requirement.assignedTags.size());
++			snapshot.attemptedFrame =
++				requirement.attemptedFrame;
++			snapshot.attemptedUnitTags.insert(
++				requirement.assignedTags.begin(),
++				requirement.assignedTags.end());
++			snapshot.submittedCount =
++				snapshot.attemptedCount;
++			snapshot.submittedFrame =
++				requirement.submittedFrame;
++			snapshot.submittedUnitTags =
++				snapshot.attemptedUnitTags;
++			snapshot.effectKind = effectKind;
++			snapshot.effectCount = matching.size();
++			snapshot.effectFrame =
++				static_cast<std::uint32_t>(m_frame);
++			snapshot.effectUnitTags.insert(
++				matching.begin(),
++				matching.end());
++			if (!voiFamilyEffectTelemetryLifecycleIsValid(
++					snapshot,
++					true))
++			{
++				throw std::runtime_error(
++					"derived family effect lifecycle is invalid");
++			}
++			requirement.effectFrame =
++				snapshot.effectFrame;
++			requirement.effectKind = effectKind;
++			requirement.effectTags =
++				snapshot.effectUnitTags;
++		}
++		emit(
++			eventType,
++			operation,
++			"effect_observed",
++			{
++				{ "action", operation.action },
++				{ "unit_tags", tags },
++				{ "effect_kind", effectKind },
++			});
++		operation.status = "COMPLETED";
++		operation.completionState = "completed";
++		operation.completionReason = "effect_observed";
++		operation.completionFrame = m_frame;
++	}
++
++	void applyResourceObservation(const VoiPreLiveJson & step)
++	{
++		const auto structures = step.find("structures");
++		if (structures != step.end() && structures->is_array())
++		{
++			for (const auto & structure : *structures)
++			{
++				if (structure.is_string())
++				{
++					m_structures.insert(
++						structure.get<std::string>());
++				}
++			}
++		}
++		const auto units = step.find("units");
++		if (units != step.end() && units->is_array())
++		{
++			for (const auto & item : *units)
++			{
++				if (!item.is_object())
++				{
++					continue;
++				}
++				const auto tag = jsonUint64(item, "tag");
++				const auto unitType =
++					jsonString(item, "unit_type");
++				if (tag == 0 || unitType.empty())
++				{
++					throw std::runtime_error(
++						"resource observation unit is invalid");
++				}
++				VoiPreLiveUnitState unit;
++				unit.tag = tag;
++				unit.unitType = unitType;
++				unit.family =
++					voiCanonicalTerranFamilyForUnitType(
++						unitType);
++				m_units[tag] = unit;
++			}
++		}
++		reconcileWaitingOperations();
++		recordSnapshot("resource_observation");
++	}
++
++	void applyBaseObservation(
++		const VoiPreLiveJson & step,
++		bool threatened)
++	{
++		m_baseThreatened = threatened;
++		m_baseId =
++			jsonString(step, "base_id", "self_main");
++		m_requiredDefenders =
++			static_cast<std::size_t>(
++				std::max(
++					0,
++					jsonInt(
++						step,
++						"required_defenders",
++						threatened ? 2 : 0)));
++		if (threatened)
++		{
++			std::size_t claimed = 0;
++			for (auto & unitEntry : m_units)
++			{
++				auto & unit = unitEntry.second;
++				if (claimed >= m_requiredDefenders
++					|| !unit.alive
++					|| !unit.complete
++					|| !unit.combat
++					|| m_owners.find(unit.tag)
++						!= m_owners.end())
++				{
++					continue;
++				}
++				if (voiAutonomousDefenseMayClaim(
++						unit.tag,
++						operationOwnedTags()))
++				{
++					unit.autonomousOwner =
++						"squad:BaseDefense:" + m_baseId;
++					++claimed;
++				}
++			}
++		}
++		else
++		{
++			for (auto & unitEntry : m_units)
++			{
++				unitEntry.second.autonomousOwner.clear();
++			}
++		}
++		VoiPreLiveOperationState * operation = nullptr;
++		for (auto & entry : m_operations)
++		{
++			if (entry.second.active)
++			{
++				operation = &entry.second;
++				break;
++			}
++		}
++		if (operation != nullptr)
++		{
++			emit(
++				"autonomous_defense",
++				*operation,
++				threatened ? "preempted" : "restored",
++				{
++					{ "action",
++						threatened
++							? "defend"
++							: "restore_offense" },
++					{ "base_id", m_baseId },
++					{ "threat_strength",
++						step.value(
++							"threat_strength",
++							0.0) },
++				});
++		}
++		recordSnapshot(
++			threatened
++				? "base_threat_observation"
++				: "base_clear_observation");
++	}
++
++	std::set<std::uint64_t> operationOwnedTags() const
++	{
++		std::set<std::uint64_t> tags;
++		for (const auto & owner : m_owners)
++		{
++			tags.insert(owner.first);
++		}
++		return tags;
++	}
++
++	VoiPreLiveJson stateJson() const
++	{
++		VoiPreLiveJson units = VoiPreLiveJson::array();
++		for (const auto & entry : m_units)
++		{
++			const auto & unit = entry.second;
++			units.push_back({
++				{ "tag", unit.tag },
++				{ "unit_type", unit.unitType },
++				{ "family", unit.family },
++				{ "alive", unit.alive },
++				{ "complete", unit.complete },
++				{ "self_owned", unit.selfOwned },
++				{ "home_distance", unit.homeDistance },
++				{ "engaged", unit.engaged },
++				{ "observed_abilities",
++					std::vector<std::string>(
++						unit.observedAbilities.begin(),
++						unit.observedAbilities.end()) },
++				{ "autonomous_owner",
++					unit.autonomousOwner },
++			});
++		}
++		VoiPreLiveJson owners = VoiPreLiveJson::object();
++		for (const auto & owner : m_owners)
++		{
++			owners[owner.second].push_back(owner.first);
++		}
++		VoiPreLiveJson operations = VoiPreLiveJson::array();
++		for (const auto & entry : m_operations)
++		{
++			const auto & operation = entry.second;
++			operations.push_back({
++				{ "update_id", operation.updateId },
++				{ "operation_id", operation.operationId },
++				{ "generation", operation.generation },
++				{ "status", operation.status },
++				{ "active", operation.active },
++				{ "assigned_unit_tags",
++					operation.assignedTags },
++				{ "action", operation.action },
++				{ "blocker", operation.blocker },
++			});
++		}
++		return {
++			{ "frame", m_frame },
++			{ "units", units },
++			{ "owners", owners },
++			{ "operations", operations },
++			{ "structures",
++				std::vector<std::string>(
++					m_structures.begin(),
++					m_structures.end()) },
++			{ "base_threatened", m_baseThreatened },
++		};
++	}
++
++	void recordSnapshot(const std::string & phase)
++	{
++		m_snapshots.push_back({
++			{ "phase", phase },
++			{ "state", stateJson() },
++		});
++	}
++
++	VoiBattlefieldProjection makeBattlefieldProjection() const
++	{
++		VoiBattlefieldProjectionInput input;
++		input.frame = m_frame;
++		input.updateId = m_latestUpdateId;
++		input.scope = "battlefield";
++		input.sessionEpoch = m_sessionEpoch;
++		input.generation = 1;
++		input.stage = "observed";
++		input.ownershipEvidencePresent = true;
++		input.baseEvidencePresent = true;
++		for (const auto & unitEntry : m_units)
++		{
++			const auto & source = unitEntry.second;
++			VoiBattlefieldUnitInput unit;
++			unit.tag = source.tag;
++			unit.alive = source.alive;
++			unit.selfOwned = source.selfOwned;
++			unit.complete = source.complete;
++			unit.combat = source.combat;
++			unit.canAttackGround =
++				source.canAttackGround;
++			unit.canAttackAir = source.canAttackAir;
++			unit.family = source.family;
++			const auto owner = m_owners.find(source.tag);
++			if (owner != m_owners.end())
++			{
++				const auto operation =
++					m_operations.find(owner->second);
++				const std::uint64_t generation =
++					operation != m_operations.end()
++						? operation->second.generation
++						: 0;
++				unit.explicitOwners.push_back(
++					"operation:" + owner->second
++						+ "#" + std::to_string(generation));
++			}
++			if (!source.autonomousOwner.empty())
++			{
++				unit.autonomousOwners.push_back(
++					source.autonomousOwner);
++				unit.autonomousRoleByOwner[
++					source.autonomousOwner] =
++						"base_defender";
++			}
++			input.units.push_back(unit);
++		}
++		VoiBattlefieldBaseInput base;
++		base.baseId = m_baseId;
++		base.semanticAnchor = "self_main";
++		base.occupied = true;
++		base.readinessEvidencePresent = true;
++		base.threatEvidencePresent = true;
++		base.threatened = m_baseThreatened;
++		base.threatEvidence =
++			m_baseThreatened
++				? "deterministic_raw_enemy_observation"
++				: "deterministic_raw_clear_observation";
++		base.evidenceClass = "deterministic_observation";
++		base.threatFrame = m_frame;
++		base.groundThreat =
++			m_baseThreatened ? 2.0f : 0.0f;
++		base.observedEnemyStrength =
++			base.groundThreat;
++		base.requiredDefenderCount =
++			m_requiredDefenders;
++		base.requiredGroundDefenderCount =
++			m_requiredDefenders;
++		for (const auto & unitEntry : m_units)
++		{
++			if (!unitEntry.second.autonomousOwner.empty())
++			{
++				base.defenderTags.push_back(
++					unitEntry.first);
++			}
++		}
++		input.bases.push_back(base);
++		for (const auto & operationEntry : m_operations)
++		{
++			const auto & source = operationEntry.second;
++			VoiBattlefieldOperationInput operation;
++			operation.scope =
++				"operation:" + source.operationId;
++			operation.operationId = source.operationId;
++			operation.generation = source.generation;
++			operation.updateId = source.updateId;
++			operation.identityStage =
++				source.status == "COMPLETED"
++					? "effect_observed"
++					: "assigned";
++			operation.status = source.status;
++			operation.active = source.active;
++			operation.ownershipEvidencePresent = true;
++			operation.assignedTags = source.assignedTags;
++			operation.minimumUnits =
++				static_cast<std::size_t>(
++					std::max(0, source.minimumUnits));
++			operation.maximumUnits =
++				static_cast<std::size_t>(
++					std::max(
++						source.minimumUnits,
++						source.maximumUnits));
++			operation.allowPartial = source.allowPartial;
++			operation.requestedRouteType = "direct";
++			operation.routeType = "direct";
++			operation.targetIntent =
++				source.locationIntent;
++			operation.targetType =
++				source.locationIntent;
++			operation.resolvedTargetLabel =
++				source.locationIntent.empty()
++					? "target"
++					: source.locationIntent;
++			operation.targetEvidence =
++				"compiled_policy_and_raw_observation";
++			operation.targetX = 80.0f;
++			operation.targetY = 40.0f;
++			operation.lifetimeMode =
++				source.lifetimeMode.empty()
++					? "until_completed"
++					: source.lifetimeMode;
++			operation.completionConditions =
++				"target_reached,cancelled_by_user";
++			operation.issuedAtFrame =
++				source.issuedAtFrame;
++			operation.completed =
++				source.status == "COMPLETED";
++			operation.completionReason =
++				source.completionReason;
++			operation.completionFrame =
++				source.completionFrame;
++			operation.movementObserved =
++				source.movementObserved;
++			operation.engagementObserved =
++				source.engagementObserved;
++			operation.targetReached =
++				source.targetReached;
++			input.operations.push_back(operation);
++		}
++		return voiMakeBattlefieldProjection(input);
++	}
++
++	VoiPreLiveJson operationDirectorJson() const
++	{
++		VoiPreLiveJson rows = VoiPreLiveJson::array();
++		for (const auto & entry : m_operations)
++		{
++			const auto & operation = entry.second;
++			VoiPreLiveJson requirements =
++				VoiPreLiveJson::array();
++			VoiPreLiveJson familyEvidence =
++				VoiPreLiveJson::array();
++			int targetCount = 0;
++			for (const auto & requirement :
++				operation.requirements)
++			{
++				targetCount += requirement.targetCount;
++				requirements.push_back({
++					{ "unit_type", requirement.unitType },
++					{ "role", requirement.role },
++					{ "target_count",
++						requirement.targetCount },
++					{ "assigned_count",
++						requirement.assignedTags.size() },
++				});
++				familyEvidence.push_back({
++					{ "update_id", operation.updateId },
++					{ "operation_id",
++						operation.operationId },
++					{ "generation",
++						operation.generation },
++					{ "family",
++						voiCanonicalTerranFamilyForUnitType(
++							requirement.unitType) },
++					{ "unit_type",
++						requirement.unitType },
++					{ "role", requirement.role },
++					{ "assigned",
++						requirement.assignedTags.size() },
++					{ "represented",
++						requirement.assignedTags.size() },
++					{ "assigned_unit_tags",
++						requirement.assignedTags },
++					{ "attempted_unit_tags",
++						requirement.assignedTags },
++					{ "submitted_unit_tags",
++						operation.submitted
++							? requirement.assignedTags
++							: std::vector<std::uint64_t>() },
++					{ "effect_unit_tags",
++						std::vector<std::uint64_t>(
++							requirement.effectTags.begin(),
++							requirement.effectTags.end()) },
++					{ "action", requirement.action },
++					{ "required_effect",
++						operation.ability.empty()
++							? "movement_or_engagement"
++							: "ability_state_or_effect" },
++					{ "attempt_generation",
++						requirement.attemptGeneration },
++					{ "attempted_count",
++						requirement.attemptedFrame > 0
++							? requirement.assignedTags.size()
++							: 0 },
++					{ "attempted_frame",
++						requirement.attemptedFrame },
++					{ "submitted_count",
++						requirement.submittedFrame > 0
++							? requirement.assignedTags.size()
++							: 0 },
++					{ "submitted_frame",
++						requirement.submittedFrame },
++					{ "effect_kind",
++						requirement.effectKind },
++					{ "effect_count",
++						requirement.effectTags.size() },
++					{ "effect_frame",
++						requirement.effectFrame },
++					{ "blocker_manager",
++						requirement.blocker.empty()
++							? ""
++							: "RuntimeConvergence" },
++					{ "blocker",
++						requirement.blocker },
++				});
++			}
++			rows.push_back({
++				{ "policy_update_id", operation.updateId },
++				{ "operation_id", operation.operationId },
++				{ "generation", operation.generation },
++				{ "requested_task_type",
++					operation.taskType },
++				{ "task_type", canonicalTask(operation) },
++				{ "squad_order", operation.action },
++				{ "status", operation.status },
++				{ "received_frame",
++					operation.issuedAtFrame },
++				{ "assigned_frame",
++					operation.assignedTags.empty()
++						? 0
++						: operation.issuedAtFrame },
++				{ "submitted_frame",
++					operation.submitted
++						? operation.issuedAtFrame
++						: 0 },
++				{ "last_action_frame", m_frame },
++				{ "assigned_unit_tags",
++					operation.assignedTags },
++				{ "ever_assigned_unit_tags",
++					operation.assignedTags },
++				{ "assigned_count",
++					operation.assignedTags.size() },
++				{ "ever_assigned_count",
++					operation.assignedTags.size() },
++				{ "max_home_distance",
++					maximumHomeDistance(operation) },
++				{ "engaged",
++					operation.engagementObserved },
++				{ "completed",
++					operation.status == "COMPLETED" },
++				{ "submission_observed",
++					operation.submitted },
++				{ "last_action", operation.action },
++				{ "requirement_progress", requirements },
++				{ "requirement_target_count",
++					targetCount },
++				{ "requested_unit_tags",
++					operation.assignedTags },
++				{ "family_evidence", familyEvidence },
++				{ "blocker", operation.blocker },
++			});
++		}
++		return rows;
++	}
++
++	double maximumHomeDistance(
++		const VoiPreLiveOperationState & operation) const
++	{
++		double result = 0.0;
++		for (const auto tag : operation.assignedTags)
++		{
++			const auto unit = m_units.find(tag);
++			if (unit != m_units.end())
++			{
++				result = std::max(
++					result,
++					unit->second.homeDistance);
++			}
++		}
++		return result;
++	}
++
++	VoiPreLiveJson hudJson() const
++	{
++		std::vector<VoiOperationHudCandidate> candidates;
++		std::vector<std::string> operationIds;
++		for (const auto & entry : m_operations)
++		{
++			const auto & operation = entry.second;
++			VoiOperationHudCandidate candidate;
++			candidate.sourceIndex = operationIds.size();
++			candidate.operationId = operation.operationId;
++			candidate.generation = operation.generation;
++			candidate.canonicalFrame =
++				operation.issuedAtFrame;
++			candidate.priority =
++				static_cast<float>(operation.priority);
++			candidate.terminal =
++				operation.status == "COMPLETED";
++			candidate.terminalFramePresent =
++				operation.completionFrame != 0;
++			candidate.terminalFrame =
++				operation.completionFrame;
++			candidates.push_back(candidate);
++			operationIds.push_back(operation.operationId);
++		}
++		const auto selection =
++			voiSelectOperationHud(candidates, m_frame);
++		VoiPreLiveJson rows = VoiPreLiveJson::array();
++		for (const auto index : selection.operationIndices)
++		{
++			if (index < operationIds.size())
++			{
++				rows.push_back({
++					{ "operation_id", operationIds[index] },
++					{ "marker_visible",
++						voiOperationHudMarkerVisible(
++							selection,
++							index) },
++				});
++			}
++		}
++		return {
++			{ "rows", rows },
++			{ "hidden_count", selection.hiddenCount },
++		};
++	}
++
++public:
++	VoiPreLiveJson run(const VoiPreLiveJson & input)
++	{
++		if (!input.is_object()
++			|| input.value("schema_version", 0) != 1)
++		{
++			throw std::runtime_error(
++				"pre-live adapter schema_version is unsupported");
++		}
++		std::string forbiddenPath;
++		if (hasForbiddenAuthorityInput(input, forbiddenPath))
++		{
++			throw std::runtime_error(
++				"authoritative input field is forbidden: "
++				+ forbiddenPath);
++		}
++		const auto initial = input.find("initial_state");
++		if (initial == input.end() || !initial->is_object())
++		{
++			throw std::runtime_error(
++				"initial_state is missing");
++		}
++		loadInitialState(*initial);
++		const auto steps = input.find("steps");
++		if (steps == input.end() || !steps->is_array())
++		{
++			throw std::runtime_error(
++				"steps must be an array");
++		}
++		std::uint64_t previousFrame = 0;
++		for (const auto & step : *steps)
++		{
++			if (!step.is_object())
++			{
++				throw std::runtime_error(
++					"adapter step must be an object");
++			}
++			m_frame = jsonUint64(step, "frame");
++			if (m_frame < previousFrame)
++			{
++				throw std::runtime_error(
++					"adapter step frame regressed");
++			}
++			previousFrame = m_frame;
++			const std::string kind =
++				jsonString(step, "kind");
++			if (kind == "policy_update")
++			{
++				applyPolicyUpdate(step.at("update"));
++			}
++			else if (kind == "unit_observation")
++			{
++				applyUnitObservation(step);
++			}
++			else if (kind == "resource_observation")
++			{
++				applyResourceObservation(step);
++			}
++			else if (kind == "base_threat_observation")
++			{
++				applyBaseObservation(step, true);
++			}
++			else if (kind == "base_clear_observation")
++			{
++				applyBaseObservation(step, false);
++			}
++			else if (kind == "client_reconnect")
++			{
++				emitGlobal(
++					"client_reconnect",
++					"observed",
++					{
++						{ "after_event_seq",
++							jsonUint64(
++								step,
++								"after_event_seq") },
++					});
++				recordSnapshot("client_reconnect");
++			}
++			else
++			{
++				throw std::runtime_error(
++					"unsupported adapter step kind: "
++					+ kind);
++			}
++		}
++		const auto projection = makeBattlefieldProjection();
++		const VoiPreLiveJson battlefield =
++			VoiPreLiveJson::parse(
++				voiBattlefieldProjectionJson(projection));
++		const auto director = operationDirectorJson();
++		return {
++			{ "schema_version", 1 },
++			{ "events", m_events },
++			{ "snapshots", m_snapshots },
++			{ "final_state", stateJson() },
++			{ "operation_director", director },
++			{ "battlefield_overview", battlefield },
++			{ "hud", hudJson() },
++			{ "telemetry", {
++				{ "protocol_version", "voi-mm-bridge/v1" },
++				{ "frame", m_frame },
++				{ "bot_name", "MicroMachine" },
++				{ "race", "Terran" },
++				{ "active_modulation_ids",
++					std::vector<std::string>({
++						m_latestUpdateId }) },
++				{ "managers", {
++					{ "OperationDirector", {
++						{ "operations", director },
++					} },
++				} },
++				{ "battlefield_overview", battlefield },
++				{ "last_failure", nullptr },
++				{ "runtime_instance_id",
++					"11111111111111111111111111111111" },
++			} },
++		};
++	}
++};
++
++inline VoiPreLiveJson voiRunPreLiveJourneyAdapter(
++	const VoiPreLiveJson & input)
++{
++	VoiPreLiveJourneyAdapter adapter;
++	return adapter.run(input);
++}
++
++inline int voiRunPreLiveJourneyAdapterFile(
++	const std::string & path,
++	std::ostream & output,
++	std::ostream & error)
++{
++	try
++	{
++		std::ifstream input(path.c_str(), std::ios::binary);
++		if (!input.good())
++		{
++			error << "cannot read pre-live journey input: "
++				<< path << "\n";
++			return 2;
++		}
++		VoiPreLiveJson payload;
++		input >> payload;
++		output << voiRunPreLiveJourneyAdapter(payload).dump()
++			<< "\n";
++		return 0;
++	}
++	catch (const std::exception & exception)
++	{
++		error << "pre-live journey adapter failed: "
++			<< exception.what() << "\n";
++		return 2;
++	}
++}
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 88157366335a9ccd6d9e185e77df95f75e1ec643..3ddbf11d2e439417f4f15a8e09f2d35ce921fde4 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -128,3 +128,17 @@ add_test(
+     NAME voi_operation_hud_selection_ndebug
+     COMMAND voi_operation_hud_selection_ndebug_test
+ )
++
++add_executable(
++    voi_pre_live_journey_adapter_test
++    pre_live_journey_adapter_test.cpp
++)
++target_include_directories(
++    voi_pre_live_journey_adapter_test
++    PRIVATE
++    "${PROJECT_SOURCE_DIR}/src"
++)
++add_test(
++    NAME voi_pre_live_journey_adapter
++    COMMAND voi_pre_live_journey_adapter_test
++)
+diff --git a/tests/pre_live_journey_adapter_test.cpp b/tests/pre_live_journey_adapter_test.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..355d691a9c88e98fdc9e33dd132775f5e38a9b88
+--- /dev/null
++++ b/tests/pre_live_journey_adapter_test.cpp
+@@ -0,0 +1,253 @@
++#include "voi_pre_live_journey_adapter.hpp"
++
++#include <iostream>
++#include <string>
++
++namespace
++{
++int failures = 0;
++
++#define CHECK(condition)                                                     \
++	do                                                                       \
++	{                                                                        \
++		if (!(condition))                                                     \
++		{                                                                    \
++			std::cerr << __FILE__ << ":" << __LINE__                         \
++				<< ": CHECK failed: " #condition << "\n";                    \
++			++failures;                                                       \
++		}                                                                    \
++	} while (false)
++
++VoiPreLiveJson operationUpdate()
++{
++	return {
++		{ "protocol_version", "voi-mm-bridge/v1" },
++		{ "update_id", "adapter-test" },
++		{ "issued_at_frame", 100 },
++		{ "vector", {
++			{ "emergency", {
++				{ "cancel_attacks", false },
++				{ "force_retreat", false },
++			} },
++			{ "operations", {
++				{
++					{ "operation_id", "assault-alpha" },
++					{ "generation", 1 },
++					{ "issued_at_frame", 100 },
++					{ "tactical_task", {
++						{ "task_type",
++							"pressure_with_main_army" },
++						{ "ability", "" },
++						{ "location_intent", "enemy_main" },
++						{ "priority", 0.9 },
++						{ "min_units", 2 },
++						{ "max_units", 2 },
++						{ "allow_partial", false },
++					} },
++					{ "lifetime", {
++						{ "mode", "until_completed" },
++						{ "completion_state", "active" },
++					} },
++					{ "composition_requirements", {
++						{
++							{ "unit_type", "TERRAN_MARINE" },
++							{ "count", 2 },
++							{ "role", "frontline" },
++						},
++					} },
++					{ "operation_edit", {
++						{ "action", "" },
++						{ "counterpart_operation_id", "" },
++						{ "unit_selection",
++							VoiPreLiveJson::array() },
++					} },
++				},
++			} },
++		} },
++	};
++}
++
++VoiPreLiveJson validInput()
++{
++	return {
++		{ "schema_version", 1 },
++		{ "initial_state", {
++			{ "protected_minimum", {
++				{ "TERRAN_MARINE", 0 },
++			} },
++			{ "structures", {
++				"TERRAN_BARRACKS",
++			} },
++			{ "units", {
++				{
++					{ "tag", 11 },
++					{ "unit_type", "TERRAN_MARINE" },
++					{ "home_distance", 0.0 },
++				},
++				{
++					{ "tag", 12 },
++					{ "unit_type", "TERRAN_MARINE" },
++					{ "home_distance", 0.0 },
++				},
++			} },
++		} },
++		{ "steps", {
++			{
++				{ "frame", 100 },
++				{ "kind", "policy_update" },
++				{ "update", operationUpdate() },
++			},
++			{
++				{ "frame", 120 },
++				{ "kind", "unit_observation" },
++				{ "units", {
++					{
++						{ "tag", 11 },
++						{ "home_distance", 12.0 },
++					},
++					{
++						{ "tag", 12 },
++						{ "home_distance", 13.0 },
++					},
++				} },
++			},
++		} },
++	};
++}
++}
++
++int main()
++{
++	const auto output =
++		voiRunPreLiveJourneyAdapter(validInput());
++	CHECK(output["schema_version"] == 1);
++	CHECK(output["events"].is_array());
++	CHECK(output["events"].size() >= 6);
++	CHECK(
++		output["battlefield_overview"]["authority"]
++			== "micromachine_cpp");
++	CHECK(
++		output["operation_director"][0]["status"]
++			== "COMPLETED");
++	CHECK(
++		output["operation_director"][0]
++			["submission_observed"] == true);
++	CHECK(
++		output["operation_director"][0]
++			["family_evidence"][0]["effect_kind"]
++			== "movement");
++	CHECK(output["hud"]["rows"].is_array());
++
++	auto multiRole = validInput();
++	multiRole["initial_state"]["units"].push_back({
++		{ "tag", 13 },
++		{ "unit_type", "TERRAN_MARINE" },
++		{ "home_distance", 0.0 },
++	});
++	multiRole["initial_state"]["units"].push_back({
++		{ "tag", 14 },
++		{ "unit_type", "TERRAN_MARINE" },
++		{ "home_distance", 0.0 },
++	});
++	multiRole["initial_state"]["units"].push_back({
++		{ "tag", 15 },
++		{ "unit_type", "TERRAN_MARINE" },
++		{ "home_distance", 0.0 },
++	});
++	auto & multiRoleOperation =
++		multiRole["steps"][0]["update"]["vector"]["operations"][0];
++	multiRoleOperation["tactical_task"]["min_units"] = 5;
++	multiRoleOperation["tactical_task"]["max_units"] = 5;
++	multiRoleOperation["composition_requirements"] = {
++		{
++			{ "unit_type", "TERRAN_MARINE" },
++			{ "count", 4 },
++			{ "role", "frontline" },
++		},
++		{
++			{ "unit_type", "TERRAN_MARINE" },
++			{ "count", 1 },
++			{ "role", "scout" },
++		},
++	};
++	const auto multiRoleOutput =
++		voiRunPreLiveJourneyAdapter(multiRole);
++	CHECK(
++		multiRoleOutput["operation_director"][0]["assigned_count"]
++			== 5);
++	CHECK(
++		multiRoleOutput["operation_director"][0]
++			["assigned_unit_tags"].size() == 5);
++
++	auto protectedMinimum = validInput();
++	protectedMinimum["initial_state"]["protected_minimum"]
++		["TERRAN_MARINE"] = 3;
++	protectedMinimum["initial_state"]["units"].push_back({
++		{ "tag", 13 },
++		{ "unit_type", "TERRAN_MARINE" },
++		{ "home_distance", 0.0 },
++	});
++	protectedMinimum["initial_state"]["units"].push_back({
++		{ "tag", 14 },
++		{ "unit_type", "TERRAN_MARINE" },
++		{ "home_distance", 0.0 },
++	});
++	protectedMinimum["initial_state"]["units"].push_back({
++		{ "tag", 15 },
++		{ "unit_type", "TERRAN_MARINE" },
++		{ "home_distance", 0.0 },
++	});
++	auto & protectedOperation =
++		protectedMinimum["steps"][0]["update"]["vector"]["operations"][0];
++	protectedOperation["tactical_task"]["min_units"] = 4;
++	protectedOperation["tactical_task"]["max_units"] = 4;
++	protectedOperation["composition_requirements"][0]["count"] = 4;
++	protectedMinimum["steps"].erase(
++		protectedMinimum["steps"].begin() + 1);
++	const auto protectedOutput =
++		voiRunPreLiveJourneyAdapter(protectedMinimum);
++	CHECK(protectedOutput["operation_director"].empty());
++	CHECK(protectedOutput["final_state"]["operations"].empty());
++	CHECK(protectedOutput["final_state"]["owners"].empty());
++	bool protectedRejectionObserved = false;
++	for (const auto & event : protectedOutput["events"])
++	{
++		protectedRejectionObserved =
++			protectedRejectionObserved
++			|| (event["event_type"] == "rejection"
++				&& event["payload"]["reason"]
++					== "protected_minimum_violation");
++	}
++	CHECK(protectedRejectionObserved);
++
++	auto forbidden = validInput();
++	forbidden["steps"][0]["submission_success"] = true;
++	try
++	{
++		(void)voiRunPreLiveJourneyAdapter(forbidden);
++		CHECK(false);
++	}
++	catch (const std::runtime_error & error)
++	{
++		CHECK(
++			std::string(error.what()).find(
++				"authoritative input field is forbidden")
++				!= std::string::npos);
++	}
++
++	auto regressive = validInput();
++	regressive["steps"][1]["frame"] = 99;
++	try
++	{
++		(void)voiRunPreLiveJourneyAdapter(regressive);
++		CHECK(false);
++	}
++	catch (const std::runtime_error & error)
++	{
++		CHECK(
++			std::string(error.what()).find("regressed")
++				!= std::string::npos);
++	}
++
++	return failures == 0 ? 0 : 1;
++}

@@ -13,6 +13,8 @@ Verified upstream:
 | File | Purpose |
 | --- | --- |
 | `HOOK_MANIFEST.json` | Real upstream source/function hook manifest for manager-level modulation. |
+| `PRE_LIVE_JOURNEYS.json` | Versioned 14-journey deterministic integration manifest with initial state, ordered inputs, required raw events, stop conditions, frame timeouts, and allowed nondeterminism. |
+| `PRE_LIVE_PRODUCERS.json` | Authenticated isolated-producer policy for deterministic journey and provenance evidence emitted by CI. |
 | `voi_policy_blackboard.hpp` | Header-only C++17 reader for `latest_modulation.kv`. |
 | `patches/0001-macos-latest-s2client-policy-blackboard.patch` | Verified patch bundle for current `s2client-api`, libvoxelbot linking, and the voi blackboard hook. |
 | `patches/0002-live-tactical-operation-fixes.patch` | Live tactical fixes for addon relocation ownership, exact composition rally/launch, tank siege gating, Scout/MainAttack ownership, and Viking objective following. |
@@ -89,7 +91,8 @@ Verified upstream:
 | `patches/0073-contextual-transfer-choice-projection.patch` | Makes contextual transfer choices reachable from native telemetry by preserving every active `(source_operation_id, destination_operation_id)` endpoint, both current generations, source protected minimum, destination capacity, deterministic transferable tags, and safe `transfer_available_units`/`transfer_two_units` recommendations. The patch is a required schema-73 build input bound into build identity and source attestation. |
 | `patches/0074-autonomous-owner-composition-evidence.patch` | Publishes privacy-safe autonomous owner composition from the authoritative C++ unit projection, grouped by canonical Terran family and native ownership role with represented, ground-capable, and air-capable counts. Missing family or role evidence fails ownership integrity closed. The patch is a required schema-74 build input bound into build identity and source attestation. |
 | `patches/0075-battlefield-review-closure.patch` | Closes independent-review blockers by merging active exact-target explicit defense squads with legacy autonomous base defenders, failing readiness closed on missing matching squad evidence, and serializing full `uint64_t` session epochs as exact decimal strings. The patch is a required schema-75 build input bound into build identity and source attestation. |
-| `patches/0076-bounded-terminal-operation-hud.patch` | Bounds the in-game HUD to eight deterministic operation rows while prioritizing nonterminal work and higher operation priority, latches terminal completion frames on the first transition, retains omitted terminal lifecycle/history/ownership evidence across production synchronization and zero-operation policy updates, displays only canonical terminal rows aged `0..109`, renders `+N operations hidden` outside the row cap, and draws target, route, squad, and unit markers only for the selected rows. Header-only native tests execute the same selection and production-used omission contract in Debug and NDEBUG without mutating terminal lifecycle, ownership history, or operation order. The patch is a required schema-76 build input bound into build identity and source attestation. |
+| `patches/0076-bounded-terminal-operation-hud.patch` | Bounds the in-game HUD to eight deterministic operation rows while prioritizing nonterminal work and higher operation priority, latches terminal completion frames on the first transition, retains omitted terminal lifecycle/history/ownership evidence across production synchronization and zero-operation policy updates, displays only canonical terminal rows aged `0..109`, renders `+N operations hidden` outside the row cap, and draws target, route, squad, and unit markers only for the selected rows. Header-only native tests execute the same selection and production-used omission contract in Debug and NDEBUG without mutating terminal lifecycle, ownership history, or operation order. |
+| `patches/0077-deterministic-pre-live-journey-adapter.patch` | Adds the deterministic native pre-live journey adapter and runtime contract test. The patch is the required schema-77 build input bound into build identity and source attestation. |
 | `scripts/build_macos_local.sh` | Reproducible macOS build script for `s2client-api` plus patched MicroMachine. |
 | `scripts/probe_macos_local.sh` | Standalone `s2client-api` bootstrap probe that proves CreateGame/JoinGame produces own starting units before MicroMachine is evaluated. |
 | `scripts/smoke_macos_local.sh` | Local StarCraft II smoke script that writes modulation and requires both telemetry and real macro-opening evidence. |
@@ -109,6 +112,32 @@ The Python sidecar writes these files through
 | `modulation_updates.jsonl` | Append-only update audit log. |
 | `latest_telemetry.json` | Latest MicroMachine telemetry emitted back to Python. |
 | `telemetry.jsonl` | Append-only telemetry audit log. |
+
+## Deterministic Pre-Live Journeys
+
+`PRE_LIVE_JOURNEYS.json` defines 14 deterministic journeys covering parallel
+operations, production shortages and prerequisites, safe and rejected partial
+launches, transfer success and rollback, reinforcement and retargeting,
+cancellation and emergency preemption, autonomous defense restoration, all
+Terran families and abilities, reconnect replay, and voice identity.
+
+The runner executes the repository command compiler, production/prerequisite
+reducers, ownership and Squad bridge, submission/effect classifier,
+battlefield validator, and web/HUD/voice reducer. It preserves command,
+blackboard, production, ownership, Squad, submission, effect, and projection
+events as raw JSONL and derives every journey verdict from those files. The
+bundle verifier reloads the versioned manifest and raw artifacts, recomputes
+identity, ordering, timeout, forbidden-submission, and effect contracts, and
+rejects a fabricated green matrix.
+
+CI selects the `deterministic_journeys` producer from
+`PRE_LIVE_PRODUCERS.json`. The resulting deterministic journey ZIP is nested
+inside the authenticated pre-live provenance artifact, where the outer
+verifier binds the exact repository commit, build identity, producer policy,
+runtime sources, manifest, and output digest and then independently verifies
+the nested ZIP. This gate proves deterministic product-path behavior only;
+manual StarCraft II live QA remains the final user gate, and human multiplayer
+is deferred.
 
 ## Wiring Steps
 
@@ -163,10 +192,10 @@ how to act.
 `scripts/build_macos_local.sh` writes
 `$MICROMACHINE_BUILD_DIR/voi_build_identity.json` after a successful build. The
 clean build applies the MicroMachine patch bundle in numeric order from `0001`
-through `0076`, runs the runtime CTest contracts, then copies the blackboard
+through `0077`, runs the runtime CTest contracts, then copies the blackboard
 header and generates the embedded
 identity header before compilation. The
-schema-76 report includes pinned MicroMachine and `s2client-api` commits, every patch
+schema-77 report includes pinned MicroMachine and `s2client-api` commits, every patch
 checksum, config/header checksums, binary path, and binary checksum. A pre-build
 source attestation is finalized only after the executable exists, binding its
 hash, size, and executable-reported build-input identity to the attested source

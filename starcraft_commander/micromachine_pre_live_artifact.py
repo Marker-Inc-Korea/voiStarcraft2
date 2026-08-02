@@ -36,6 +36,16 @@ PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION: Final[int] = 2
 PRE_LIVE_CANDIDATE_AUTHORITY_SCOPE: Final[str] = "candidate_pr"
 PRE_LIVE_ARTIFACT_MANIFEST_NAME: Final[str] = "manifest.json"
 GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME: Final[str] = "pre-live-provenance.zip"
+PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID: Final[str] = (
+    "deterministic_journeys"
+)
+PRE_LIVE_DETERMINISTIC_JOURNEY_MEMBER_NAME: Final[str] = (
+    "payload/deterministic-journeys.zip"
+)
+PRE_LIVE_DETERMINISTIC_JOURNEY_BUILD_BINDING_SCHEMA: Final[str] = (
+    "voi.micromachine.pre_live.deterministic_journey_build_binding"
+)
+PRE_LIVE_DETERMINISTIC_JOURNEY_BUILD_BINDING_SCHEMA_VERSION: Final[int] = 1
 DETERMINISTIC_ZIP_TIMESTAMP: Final[tuple[int, int, int, int, int, int]] = (
     1980,
     1,
@@ -210,6 +220,26 @@ _CTEST_EXECUTABLE_KEYS: Final[frozenset[str]] = frozenset(
 _REQUIRED_CTEST_EXECUTABLES: Final[dict[str, str]] = dict(
     MICROMACHINE_REQUIRED_NATIVE_TESTS
 )
+_DETERMINISTIC_JOURNEY_ROOT_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "schema_version",
+        "evidence_kind",
+        "suite_id",
+        "journey_count",
+        "failed_count",
+        "report_sha256",
+        "members",
+    }
+)
+_DETERMINISTIC_JOURNEY_BUILD_BINDING_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "schema",
+        "schema_version",
+        "source",
+        "binary_sha256",
+        "embedded_build_input_identity",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -347,6 +377,320 @@ def canonical_ctest_evidence_bytes(value: Mapping[str, object]) -> bytes:
     if blockers:
         raise ValueError(_format_builder_blockers(blockers))
     return canonical_json_bytes(payload)
+
+
+def bind_deterministic_journey_bundle_to_build(
+    bundle: bytes,
+    *,
+    build_report_bytes: bytes,
+    binary_bytes: bytes,
+) -> bytes:
+    """Bind verified journey evidence to one admitted MicroMachine build."""
+
+    from starcraft_commander.micromachine_pre_live_journeys import (
+        verify_pre_live_journey_bundle,
+    )
+
+    if not isinstance(bundle, bytes):
+        raise TypeError("deterministic journey bundle must be bytes")
+    if not isinstance(build_report_bytes, bytes):
+        raise TypeError("build report must be bytes")
+    if not isinstance(binary_bytes, bytes):
+        raise TypeError("MicroMachine binary must be bytes")
+    verification = verify_pre_live_journey_bundle(bundle)
+    if verification.get("ok") is not True:
+        raise ValueError(
+            "deterministic_journey_bundle_rejected: "
+            f"{verification.get('blockers')!r}"
+        )
+    binding = _deterministic_journey_build_binding(
+        build_report_bytes,
+        binary_bytes,
+    )
+    root, payloads = _read_deterministic_journey_archive(bundle)
+    if set(root) != _DETERMINISTIC_JOURNEY_ROOT_KEYS:
+        raise ValueError("deterministic journey root manifest is unsupported")
+    root["build_binding"] = binding
+    return _write_deterministic_journey_archive(root, payloads)
+
+
+def _deterministic_journey_build_binding(
+    build_report_bytes: bytes,
+    binary_bytes: bytes | None,
+) -> dict[str, object]:
+    try:
+        report = json.loads(
+            build_report_bytes,
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=_reject_nonfinite_json,
+        )
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"build report is invalid JSON: {exc}") from exc
+    if not isinstance(report, Mapping):
+        raise ValueError("build report must be a JSON object")
+    if (
+        report.get("schema_version")
+        != MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION
+        or report.get("ok") is not True
+        or report.get("failures") != []
+    ):
+        raise ValueError("build report is not an admitted build identity")
+    report_identity = report.get("identity")
+    observed = report.get("observed")
+    if not isinstance(report_identity, str) or not _SHA256_IDENTITY_RE.fullmatch(
+        report_identity
+    ):
+        raise ValueError("build report identity is not canonical")
+    if not isinstance(observed, Mapping):
+        raise ValueError("build report observed evidence is missing")
+    observed_binary_sha256 = observed.get("binary_sha256")
+    if (
+        not isinstance(observed_binary_sha256, str)
+        or not _SHA256_RE.fullmatch(observed_binary_sha256)
+    ):
+        raise ValueError("build report binary digest is not canonical")
+    binary_sha256 = (
+        hashlib.sha256(binary_bytes).hexdigest()
+        if binary_bytes is not None
+        else observed_binary_sha256
+    )
+    if observed_binary_sha256 != binary_sha256:
+        raise ValueError("build report binary digest does not match binary bytes")
+    embedded_identity = observed.get("embedded_build_input_identity")
+    if not isinstance(embedded_identity, str) or not _SHA256_IDENTITY_RE.fullmatch(
+        embedded_identity
+    ):
+        raise ValueError("embedded build input identity is not canonical")
+    return {
+        "schema": PRE_LIVE_DETERMINISTIC_JOURNEY_BUILD_BINDING_SCHEMA,
+        "schema_version": (
+            PRE_LIVE_DETERMINISTIC_JOURNEY_BUILD_BINDING_SCHEMA_VERSION
+        ),
+        "source": "micromachine_binary_runtime",
+        "binary_sha256": binary_sha256,
+        "embedded_build_input_identity": embedded_identity,
+    }
+
+
+def _read_deterministic_journey_archive(
+    bundle: bytes,
+) -> tuple[dict[str, object], dict[str, bytes]]:
+    with zipfile.ZipFile(io.BytesIO(bundle), mode="r") as archive:
+        infos = archive.infolist()
+        names = [info.filename for info in infos]
+        if (
+            not names
+            or names[0] != PRE_LIVE_ARTIFACT_MANIFEST_NAME
+            or names[1:] != sorted(names[1:])
+            or len(names) != len(set(names))
+        ):
+            raise ValueError(
+                "deterministic journey ZIP members are not canonical"
+            )
+        if archive.comment:
+            raise ValueError("deterministic journey ZIP comment is forbidden")
+        payloads: dict[str, bytes] = {}
+        for info in infos:
+            if (
+                info.date_time != DETERMINISTIC_ZIP_TIMESTAMP
+                or info.compress_type != zipfile.ZIP_STORED
+                or info.create_system != 3
+                or info.external_attr != _REGULAR_FILE_MODE << 16
+                or info.extra
+                or info.comment
+                or info.flag_bits & ~_ALLOWED_GENERAL_PURPOSE_FLAGS
+            ):
+                raise ValueError(
+                    "deterministic journey ZIP metadata is noncanonical: "
+                    f"{info.filename}"
+                )
+            payloads[info.filename] = archive.read(info)
+    raw_root = payloads.pop(PRE_LIVE_ARTIFACT_MANIFEST_NAME)
+    try:
+        root = json.loads(
+            raw_root,
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=_reject_nonfinite_json,
+        )
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"deterministic journey root manifest is invalid: {exc}"
+        ) from exc
+    if not isinstance(root, dict):
+        raise ValueError("deterministic journey root manifest must be an object")
+    if canonical_json_bytes(root) != raw_root:
+        raise ValueError(
+            "deterministic journey root manifest must use canonical JSON"
+        )
+    return root, payloads
+
+
+def _write_deterministic_journey_archive(
+    root: Mapping[str, object],
+    payloads: Mapping[str, bytes],
+) -> bytes:
+    output = io.BytesIO()
+    with zipfile.ZipFile(
+        output,
+        mode="w",
+        compression=zipfile.ZIP_STORED,
+        allowZip64=False,
+    ) as archive:
+        _write_deterministic_member(
+            archive,
+            PRE_LIVE_ARTIFACT_MANIFEST_NAME,
+            canonical_json_bytes(root),
+        )
+        for name in sorted(payloads):
+            _write_deterministic_member(archive, name, payloads[name])
+    return output.getvalue()
+
+
+def _verify_bound_deterministic_journey_bundle(
+    bundle: bytes,
+    *,
+    build_report_bytes: bytes | None,
+    manifest: Mapping[str, object],
+) -> dict[str, object]:
+    from starcraft_commander.micromachine_pre_live_journeys import (
+        verify_pre_live_journey_bundle,
+    )
+
+    blockers: list[dict[str, object]] = []
+    binding: Mapping[str, object] = {}
+    raw_verification: Mapping[str, object] = {}
+    try:
+        root, payloads = _read_deterministic_journey_archive(bundle)
+    except (OSError, RuntimeError, ValueError, zipfile.BadZipFile) as exc:
+        _add_blocker(
+            blockers,
+            "deterministic_journey_bundle_rejected",
+            "$.producer.output_member",
+            "deterministic journey producer output is not a canonical bound ZIP",
+            error=str(exc),
+        )
+        return {
+            "ok": False,
+            "blockers": blockers,
+            "build_binding": {},
+            "raw_evidence": {},
+        }
+
+    if "authority" in root:
+        _add_blocker(
+            blockers,
+            "deterministic_journey_fabricated_authority",
+            "$.producer.output.manifest.authority",
+            "nested journey evidence cannot declare its own build authority",
+        )
+    expected_root_keys = _DETERMINISTIC_JOURNEY_ROOT_KEYS | {"build_binding"}
+    if set(root) != expected_root_keys:
+        _add_blocker(
+            blockers,
+            "deterministic_journey_build_binding_schema_mismatch",
+            "$.producer.output.manifest",
+            "bound journey root manifest has an invalid field set",
+            expected=sorted(expected_root_keys),
+            actual=sorted(root),
+        )
+    raw_binding = root.get("build_binding")
+    if not isinstance(raw_binding, Mapping):
+        _add_blocker(
+            blockers,
+            "deterministic_journey_build_binding_missing",
+            "$.producer.output.manifest.build_binding",
+            "nested journey evidence is not bound to the outer build",
+        )
+    else:
+        binding = raw_binding
+        if "authority" in binding:
+            _add_blocker(
+                blockers,
+                "deterministic_journey_fabricated_authority",
+                "$.producer.output.manifest.build_binding.authority",
+                "nested journey build binding cannot assert authority",
+            )
+        if set(binding) != _DETERMINISTIC_JOURNEY_BUILD_BINDING_KEYS:
+            _add_blocker(
+                blockers,
+                "deterministic_journey_build_binding_schema_mismatch",
+                "$.producer.output.manifest.build_binding",
+                "nested journey build binding has an invalid field set",
+                expected=sorted(_DETERMINISTIC_JOURNEY_BUILD_BINDING_KEYS),
+                actual=sorted(binding),
+            )
+
+    unbound_root = {
+        key: value for key, value in root.items() if key != "build_binding"
+    }
+    unbound_bundle = _write_deterministic_journey_archive(
+        unbound_root,
+        payloads,
+    )
+    raw_verification = verify_pre_live_journey_bundle(unbound_bundle)
+    if raw_verification.get("ok") is not True:
+        _add_blocker(
+            blockers,
+            "deterministic_journey_bundle_rejected",
+            "$.producer.output_member",
+            "deterministic journey producer output failed raw-evidence verification",
+            inner_blockers=raw_verification.get("blockers"),
+        )
+
+    build = _mapping(manifest.get("build"))
+    if build_report_bytes is None:
+        _add_blocker(
+            blockers,
+            "deterministic_journey_outer_build_report_missing",
+            "$.build.report_member",
+            "outer build report bytes are unavailable for journey binding",
+        )
+    else:
+        try:
+            expected_binding = _deterministic_journey_build_binding(
+                build_report_bytes,
+                None,
+            )
+        except ValueError:
+            expected_binding = {}
+        if expected_binding:
+            expected_binding["binary_sha256"] = build.get("binary_sha256")
+            mismatch_codes = {
+                "binary_sha256": (
+                    "deterministic_journey_binary_digest_mismatch"
+                ),
+                "embedded_build_input_identity": (
+                    "deterministic_journey_embedded_build_identity_mismatch"
+                ),
+            }
+            for key, expected in expected_binding.items():
+                actual = binding.get(key)
+                if actual == expected:
+                    continue
+                _add_blocker(
+                    blockers,
+                    mismatch_codes.get(
+                        key,
+                        "deterministic_journey_build_binding_mismatch",
+                    ),
+                    f"$.producer.output.manifest.build_binding.{key}",
+                    "nested journey build binding does not match outer build evidence",
+                    expected=expected,
+                    actual=actual,
+                )
+        else:
+            _add_blocker(
+                blockers,
+                "deterministic_journey_outer_build_report_rejected",
+                "$.build.report_member",
+                "outer build report cannot derive the journey build binding",
+            )
+    return {
+        "ok": not blockers,
+        "blockers": blockers,
+        "build_binding": dict(binding),
+        "raw_evidence": dict(raw_verification),
+    }
 
 
 def build_pre_live_artifact_bundle(
@@ -659,6 +1003,11 @@ def verify_pre_live_artifact_bundle(
                 cast(str, build["ctest_member"]),
                 cast(str, producer["provenance_member"]),
             }
+            if (
+                producer.get("policy_id")
+                == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+            ):
+                captured_role_names.add(cast(str, producer["output_member"]))
             captured_members: dict[str, bytes] = {}
             for name in sorted(declared_names):
                 info = info_by_name[name]
@@ -767,6 +1116,37 @@ def verify_pre_live_artifact_bundle(
                 )
                 if producer_provenance is not None:
                     role_evidence["producer_provenance"] = producer_provenance
+            if (
+                producer.get("policy_id")
+                == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+            ):
+                journey_member = cast(str, producer["output_member"])
+                journey_bytes = captured_members.get(journey_member)
+                if journey_bytes is None:
+                    _add_blocker(
+                        blockers,
+                        "deterministic_journey_bundle_missing",
+                        "$.producer.output_member",
+                        "deterministic journey producer output was not captured",
+                    )
+                else:
+                    journey_verification = (
+                        _verify_bound_deterministic_journey_bundle(
+                            journey_bytes,
+                            build_report_bytes=report_bytes,
+                            manifest=manifest,
+                        )
+                    )
+                    role_evidence["deterministic_journeys"] = (
+                        journey_verification
+                    )
+                    if journey_verification.get("ok") is not True:
+                        blockers.extend(
+                            cast(
+                                list[dict[str, object]],
+                                journey_verification.get("blockers", []),
+                            )
+                        )
     except (OSError, RuntimeError, ValueError, zipfile.BadZipFile) as exc:
         _add_blocker(
             blockers,

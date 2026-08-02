@@ -9,11 +9,14 @@ import json
 from pathlib import Path
 import stat
 import struct
+import subprocess
 import tempfile
 import unittest
+from unittest import mock
 import warnings
 import zipfile
 
+from starcraft_commander import micromachine_pre_live_provenance as provenance
 from starcraft_commander.micromachine_build_identity import (
     MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
     MICROMACHINE_REQUIRED_NATIVE_TESTS,
@@ -26,9 +29,12 @@ from starcraft_commander.micromachine_pre_live_artifact import (
     PRE_LIVE_ARTIFACT_SCHEMA,
     PRE_LIVE_ARTIFACT_SCHEMA_VERSION,
     PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION,
+    PRE_LIVE_DETERMINISTIC_JOURNEY_MEMBER_NAME,
+    PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID,
     PreLiveArtifactLimits,
     PreLiveArtifactMetadata,
     PreLiveBuildAdmissionSnapshot,
+    bind_deterministic_journey_bundle_to_build,
     build_pre_live_artifact_bundle,
     canonical_ctest_evidence_bytes,
     canonical_json_bytes,
@@ -333,6 +339,275 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                 manifest["artifact"]["sha256"],
                 manifest["producer"]["output_sha256"],
             )
+
+    def test_deterministic_journey_output_is_semantically_verified(self) -> None:
+        metadata = replace(
+            self.metadata,
+            producer_policy_id=PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID,
+            artifact_member=PRE_LIVE_DETERMINISTIC_JOURNEY_MEMBER_NAME,
+            producer_output_member=PRE_LIVE_DETERMINISTIC_JOURNEY_MEMBER_NAME,
+        )
+
+        def journey_members(output: bytes) -> dict[str, bytes]:
+            members = dict(self.members)
+            del members[self.metadata.producer_output_member]
+            members[PRE_LIVE_DETERMINISTIC_JOURNEY_MEMBER_NAME] = output
+            provenance = json.loads(
+                members[self.metadata.producer_provenance_member]
+            )
+            provenance["producer_id"] = (
+                PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+            )
+            provenance["output_sha256"] = sha256(output)
+            members[self.metadata.producer_provenance_member] = (
+                canonical_json_bytes(provenance)
+            )
+            return members
+
+        raw_verifier = (
+            "starcraft_commander.micromachine_pre_live_journeys."
+            "verify_pre_live_journey_bundle"
+        )
+        with mock.patch(
+            raw_verifier,
+            return_value={"ok": True, "blockers": []},
+        ):
+            unbound_journeys = make_stub_deterministic_journey_bundle()
+            pretty_build_report = json.dumps(
+                json.loads(
+                    self.members[self.metadata.build_report_member]
+                ),
+                indent=2,
+            ).encode("utf-8")
+            pretty_bound_journeys = (
+                bind_deterministic_journey_bundle_to_build(
+                    unbound_journeys,
+                    build_report_bytes=pretty_build_report,
+                    binary_bytes=self.binary,
+                )
+            )
+            bound_journeys = bind_deterministic_journey_bundle_to_build(
+                unbound_journeys,
+                build_report_bytes=(
+                    self.members[self.metadata.build_report_member]
+                ),
+                binary_bytes=self.binary,
+            )
+            self.assertEqual(bound_journeys, pretty_bound_journeys)
+            bundle = build_pre_live_artifact_bundle(
+                metadata,
+                journey_members(bound_journeys),
+                admission_snapshot=self.admission_snapshot,
+            )
+            report = verify_pre_live_artifact_bundle(
+                bundle,
+                admission_snapshot=self.admission_snapshot,
+            )
+            self.assertTrue(report["ok"], report)
+            self.assertTrue(
+                report["role_evidence"]["deterministic_journeys"]["ok"]
+            )
+            binding = report["role_evidence"]["deterministic_journeys"][
+                "build_binding"
+            ]
+            self.assertEqual(sha256(self.binary), binding["binary_sha256"])
+            self.assertEqual(
+                self.repository_input_identity,
+                binding["embedded_build_input_identity"],
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "deterministic_journey_build_binding_missing",
+            ):
+                build_pre_live_artifact_bundle(
+                    metadata,
+                    journey_members(unbound_journeys),
+                    admission_snapshot=self.admission_snapshot,
+                )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "deterministic_journey_bundle_rejected",
+            ):
+                build_pre_live_artifact_bundle(
+                    metadata,
+                    journey_members(b"not-a-journey-zip"),
+                    admission_snapshot=self.admission_snapshot,
+                )
+
+            mismatch_mutations = {
+                "binary": (
+                    "deterministic_journey_binary_digest_mismatch",
+                    lambda root: root["build_binding"].update(
+                        {"binary_sha256": "0" * 64}
+                    ),
+                ),
+                "embedded identity": (
+                    "deterministic_journey_embedded_build_identity_mismatch",
+                    lambda root: root["build_binding"].update(
+                        {
+                            "embedded_build_input_identity": (
+                                "sha256:" + ("0" * 64)
+                            )
+                        }
+                    ),
+                ),
+                "fabricated authority": (
+                    "deterministic_journey_fabricated_authority",
+                    lambda root: root["build_binding"].update(
+                        {"authority": "micromachine_cpp"}
+                    ),
+                ),
+            }
+            for name, (code, mutation) in mismatch_mutations.items():
+                with self.subTest(name=name), self.assertRaisesRegex(
+                    ValueError,
+                    code,
+                ):
+                    build_pre_live_artifact_bundle(
+                        metadata,
+                        journey_members(
+                            mutate_nested_journey_manifest(
+                                bound_journeys,
+                                mutation,
+                            )
+                        ),
+                        admission_snapshot=self.admission_snapshot,
+                    )
+
+    def test_deterministic_policy_requires_exact_admitted_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            policy_path = root / provenance.PRODUCER_POLICY_RELATIVE_PATH
+            policy_path.parent.mkdir(parents=True)
+            state_dir = root / ".state"
+            state_dir.mkdir()
+            binary_path = root / "build" / "MicroMachine"
+            binary_path.parent.mkdir()
+            binary_path.write_bytes(self.binary)
+            binary_path.chmod(0o755)
+            expected_digest = sha256(self.binary)
+
+            def policy_bytes(
+                *,
+                binary_placeholder: str = "{micromachine_binary}",
+            ) -> bytes:
+                return canonical_json_bytes(
+                    {
+                        "schema_version": 1,
+                        "producers": {
+                            PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID: {
+                                "argv": [
+                                    "{python}",
+                                    "-I",
+                                    "-B",
+                                    "-S",
+                                    "-c",
+                                    provenance.ISOLATED_PYTHON_BOOTSTRAP,
+                                    "{repository}",
+                                    (
+                                        "starcraft_commander/"
+                                        "micromachine_pre_live_journeys.py"
+                                    ),
+                                    "--emit-bundle",
+                                    "{output}",
+                                    "--micromachine-binary",
+                                    binary_placeholder,
+                                ],
+                                "cwd": ".",
+                                "output": "producer/journeys.zip",
+                            }
+                        },
+                    }
+                )
+
+            def resolve(
+                payload: bytes,
+                *,
+                candidate_path: Path | str | None = binary_path,
+                candidate_digest: str | None = expected_digest,
+            ) -> dict[str, object]:
+                policy_path.write_bytes(payload)
+
+                def git_runner(
+                    *args: object,
+                    **kwargs: object,
+                ) -> subprocess.CompletedProcess[bytes]:
+                    return subprocess.CompletedProcess(
+                        args[0],
+                        0,
+                        payload,
+                        b"",
+                    )
+
+                accepted_component = {
+                    "ok": True,
+                    "status": "accepted",
+                    "blockers": [],
+                    "files": [],
+                    "digest": "sha256:" + ("1" * 64),
+                }
+                with (
+                    mock.patch.object(
+                        provenance,
+                        "canonical_pre_live_state_dir",
+                        return_value=state_dir,
+                    ),
+                    mock.patch.object(
+                        provenance,
+                        "_attest_committed_file",
+                        return_value=accepted_component,
+                    ),
+                    mock.patch.object(
+                        provenance,
+                        "_attest_committed_python_sources",
+                        return_value=accepted_component,
+                    ),
+                ):
+                    return provenance.resolve_local_producer_policy(
+                        repository_dir=root,
+                        expected_commit="a" * 40,
+                        producer_id=(
+                            PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+                        ),
+                        git_runner=git_runner,
+                        micromachine_binary_path=candidate_path,
+                        micromachine_binary_sha256=candidate_digest,
+                    )
+
+            accepted = resolve(policy_bytes())
+            self.assertTrue(accepted["ok"], accepted)
+            binary_index = accepted["argv"].index("--micromachine-binary") + 1
+            self.assertEqual(
+                str(binary_path),
+                accepted["argv"][binary_index],
+            )
+            self.assertEqual(
+                str(binary_path),
+                accepted["micromachine_binary_path"],
+            )
+            self.assertEqual(
+                expected_digest,
+                accepted["micromachine_binary_sha256"],
+            )
+
+            rejected = {
+                "missing placeholder": resolve(
+                    policy_bytes(binary_placeholder=str(binary_path))
+                ),
+                "relative path": resolve(
+                    policy_bytes(),
+                    candidate_path=Path("build/MicroMachine"),
+                ),
+                "digest mismatch": resolve(
+                    policy_bytes(),
+                    candidate_digest="0" * 64,
+                ),
+            }
+            for name, result in rejected.items():
+                with self.subTest(name=name):
+                    self.assertFalse(result["ok"], result)
 
     def test_rejects_toctou_replacement_after_build_admission(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1493,6 +1768,55 @@ def mutate_manifest(
     all_replacements = dict(replacements or {})
     all_replacements[PRE_LIVE_ARTIFACT_MANIFEST_NAME] = canonical_json_bytes(manifest)
     return rewrite_bundle(bundle, replacements=all_replacements)
+
+
+def mutate_nested_journey_manifest(
+    bundle: bytes,
+    mutation: object,
+) -> bytes:
+    entries = read_entries(bundle)
+    manifest = json.loads(entries[PRE_LIVE_ARTIFACT_MANIFEST_NAME])
+    mutation(manifest)
+    return rewrite_bundle(
+        bundle,
+        replacements={
+            PRE_LIVE_ARTIFACT_MANIFEST_NAME: canonical_json_bytes(manifest)
+        },
+    )
+
+
+def make_stub_deterministic_journey_bundle() -> bytes:
+    manifest = canonical_json_bytes(
+        {
+            "schema_version": 1,
+            "evidence_kind": (
+                "deterministic_micromachine_pre_live_journeys"
+            ),
+            "suite_id": "unit-test-native-verifier-stub",
+            "journey_count": 0,
+            "failed_count": 0,
+            "report_sha256": sha256(b""),
+            "members": [],
+        }
+    )
+    output = io.BytesIO()
+    with zipfile.ZipFile(
+        output,
+        mode="w",
+        compression=zipfile.ZIP_STORED,
+        allowZip64=False,
+    ) as archive:
+        info = zipfile.ZipInfo(
+            PRE_LIVE_ARTIFACT_MANIFEST_NAME,
+            date_time=DETERMINISTIC_ZIP_TIMESTAMP,
+        )
+        info.compress_type = zipfile.ZIP_STORED
+        info.create_system = 3
+        info.create_version = 20
+        info.extract_version = 20
+        info.external_attr = 0o100644 << 16
+        archive.writestr(info, manifest)
+    return output.getvalue()
 
 
 def member_descriptor(

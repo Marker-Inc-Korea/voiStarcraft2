@@ -28,7 +28,7 @@ from starcraft_commander.micromachine_build_identity import (
 
 class MicroMachineBuildIdentityTest(unittest.TestCase):
     def test_live_admission_requires_the_supported_schema(self) -> None:
-        self.assertEqual(76, MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION)
+        self.assertEqual(77, MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION)
         passing = {
             "schema_version": MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
             "identity": "sha256:fixture",
@@ -139,6 +139,14 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             )
             self.assertIn(
                 "micromachine_bounded_terminal_operation_hud_patch_sha256",
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_deterministic_pre_live_journey_adapter_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                "micromachine_deterministic_pre_live_journey_adapter_patch_sha256",
                 report["checksums"],
             )
             self.assertIn(
@@ -2336,6 +2344,18 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             Path(args.micromachine_bounded_terminal_operation_hud_patch).name,
         )
 
+    def test_deterministic_pre_live_journey_adapter_cli_defaults_to_patch_0077(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0077-deterministic-pre-live-journey-adapter.patch",
+            Path(
+                args.micromachine_deterministic_pre_live_journey_adapter_patch
+            ).name,
+        )
+
     def test_operation_edit_ownership_handoff_patch_changes_identity(
         self,
     ) -> None:
@@ -3103,6 +3123,60 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                     if failure["code"] == "missing_required_build_input"
                 },
             )
+
+    def test_deterministic_pre_live_journey_adapter_patch_changes_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            checksum = (
+                "micromachine_deterministic_pre_live_journey_adapter_patch_sha256"
+            )
+
+            config.micromachine_deterministic_pre_live_journey_adapter_patch.write_text(
+                "changed deterministic pre-live journey adapter\n"
+            )
+            second = build_micromachine_build_identity(config)
+
+            self.assertTrue(first["ok"], first)
+            self.assertFalse(second["ok"], second)
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+            self.assertIn(
+                "source_attestation_input_mismatch",
+                {failure["code"] for failure in second["failures"]},
+            )
+
+    def test_missing_deterministic_pre_live_journey_adapter_patch_fails_closed(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_deterministic_pre_live_journey_adapter_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"], report)
+            self.assertIn(
+                "micromachine_deterministic_pre_live_journey_adapter_patch_sha256",
+                {
+                    failure.get("checksum")
+                    for failure in report["failures"]
+                    if failure["code"] == "missing_required_build_input"
+                },
+            )
+
+    def test_pre_live_journey_adapter_native_test_is_required(self) -> None:
+        self.assertEqual(
+            "voi_pre_live_journey_adapter_test",
+            MICROMACHINE_REQUIRED_NATIVE_TESTS["voi_pre_live_journey_adapter"],
+        )
 
     def test_operation_hud_selection_native_tests_are_required(self) -> None:
         self.assertEqual(
@@ -3964,6 +4038,9 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         micromachine_bounded_terminal_operation_hud_patch = (
             root / "micromachine-bounded-terminal-operation-hud.patch"
         )
+        micromachine_deterministic_pre_live_journey_adapter_patch = (
+            root / "micromachine-deterministic-pre-live-journey-adapter.patch"
+        )
         s2client_patch = root / "s2client.patch"
         hook_manifest = root / "HOOK_MANIFEST.json"
         map_pool = root / "MICROMACHINE_MAP_POOL.json"
@@ -4045,6 +4122,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             micromachine_autonomous_owner_composition_evidence_patch,
             micromachine_battlefield_review_closure_patch,
             micromachine_bounded_terminal_operation_hud_patch,
+            micromachine_deterministic_pre_live_journey_adapter_patch,
             s2client_patch,
             hook_manifest,
             map_pool,
@@ -4271,6 +4349,9 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             ),
             micromachine_bounded_terminal_operation_hud_patch=(
                 micromachine_bounded_terminal_operation_hud_patch
+            ),
+            micromachine_deterministic_pre_live_journey_adapter_patch=(
+                micromachine_deterministic_pre_live_journey_adapter_patch
             ),
             s2client_patch=s2client_patch,
             hook_manifest=hook_manifest,

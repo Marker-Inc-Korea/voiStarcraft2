@@ -41,8 +41,11 @@ from starcraft_commander.micromachine_pre_live_artifact import (
     GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME,
     PRE_LIVE_CANDIDATE_AUTHORITY_SCOPE,
     PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION,
+    PRE_LIVE_DETERMINISTIC_JOURNEY_MEMBER_NAME,
+    PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID,
     PreLiveArtifactMetadata,
     PreLiveBuildAdmissionSnapshot,
+    bind_deterministic_journey_bundle_to_build,
     build_pre_live_artifact_bundle,
     canonical_ctest_evidence_bytes,
     canonical_json_bytes,
@@ -68,6 +71,12 @@ AUTHORITATIVE_REPLAY_IMMUTABLE_RULESET_NAME: Final[str] = (
 AUTHORITATIVE_REPLAY_CLAIMER_USER_ID: Final[int] = 60_510_718
 PRODUCER_POLICY_RELATIVE_PATH: Final[Path] = Path(
     "integrations/micromachine/PRE_LIVE_PRODUCERS.json"
+)
+DETERMINISTIC_JOURNEY_MANIFEST_RELATIVE_PATH: Final[Path] = Path(
+    "integrations/micromachine/PRE_LIVE_JOURNEYS.json"
+)
+DETERMINISTIC_JOURNEY_MODULE_RELATIVE_PATH: Final[Path] = Path(
+    "starcraft_commander/micromachine_pre_live_journeys.py"
 )
 GLOBAL_REPLAY_STATE_ROOT: Final[Path] = (
     Path(pwd.getpwuid(os.getuid()).pw_dir)
@@ -2248,6 +2257,8 @@ def resolve_local_producer_policy(
     producer_id: str,
     git_runner: CommandRunner = subprocess.run,
     python_executable: Path | str = sys.executable,
+    micromachine_binary_path: Path | str | None = None,
+    micromachine_binary_sha256: str | None = None,
 ) -> dict[str, object]:
     """Load one exact producer command from the policy committed at HEAD."""
 
@@ -2362,11 +2373,88 @@ def resolve_local_producer_policy(
             blockers.append("producer output artifact must not be a symlink")
 
     python_path = Path(python_executable).resolve()
+    binary_path: Path | None = None
+    binary_placeholder_count = raw_argv.count("{micromachine_binary}")
+    if producer_id == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID:
+        if binary_placeholder_count != 1:
+            blockers.append(
+                "deterministic journey producer argv must contain exactly one "
+                "{micromachine_binary} placeholder"
+            )
+        else:
+            placeholder_index = raw_argv.index("{micromachine_binary}")
+            if (
+                placeholder_index == 0
+                or raw_argv[placeholder_index - 1]
+                != "--micromachine-binary"
+            ):
+                blockers.append(
+                    "{micromachine_binary} must be the value of "
+                    "--micromachine-binary"
+                )
+        if (
+            not isinstance(micromachine_binary_sha256, str)
+            or not re.fullmatch(
+                r"[0-9a-f]{64}",
+                micromachine_binary_sha256,
+            )
+        ):
+            blockers.append(
+                "deterministic journey producer requires the admitted "
+                "MicroMachine binary SHA-256"
+            )
+        if micromachine_binary_path is None:
+            blockers.append(
+                "deterministic journey producer requires the admitted "
+                "MicroMachine binary path"
+            )
+        else:
+            raw_binary_path = Path(micromachine_binary_path)
+            if not raw_binary_path.is_absolute():
+                blockers.append(
+                    "admitted MicroMachine binary path must be absolute"
+                )
+            elif _path_has_symlink_component(raw_binary_path):
+                blockers.append(
+                    "admitted MicroMachine binary path contains a symlink"
+                )
+            else:
+                try:
+                    binary_stat = raw_binary_path.stat()
+                except OSError as exc:
+                    blockers.append(
+                        f"admitted MicroMachine binary is unreadable: {exc}"
+                    )
+                else:
+                    if not stat.S_ISREG(binary_stat.st_mode):
+                        blockers.append(
+                            "admitted MicroMachine binary is not a regular file"
+                        )
+                    elif binary_stat.st_mode & 0o111 == 0:
+                        blockers.append(
+                            "admitted MicroMachine binary is not executable"
+                        )
+                    elif (
+                        _sha256_file(raw_binary_path)
+                        != micromachine_binary_sha256
+                    ):
+                        blockers.append(
+                            "admitted MicroMachine binary digest mismatch"
+                        )
+                    else:
+                        binary_path = raw_binary_path.resolve()
+    elif binary_placeholder_count:
+        blockers.append(
+            "{micromachine_binary} is reserved for deterministic journeys"
+        )
     replacements = {
         "{python}": str(python_path),
         "{repository}": str(root),
         "{state_dir}": str(state_dir) if state_dir is not None else "",
         "{output}": str(output),
+        "{micromachine_binary}": (
+            str(binary_path) if binary_path is not None else ""
+        ),
     }
     argv: list[str] = []
     for value in raw_argv:
@@ -2447,6 +2535,12 @@ def resolve_local_producer_policy(
         argv_sha256=argv_digest,
         cwd=str(cwd),
         output_artifact=str(output),
+        micromachine_binary_path=(
+            str(binary_path) if binary_path is not None else None
+        ),
+        micromachine_binary_sha256=(
+            micromachine_binary_sha256 if binary_path is not None else None
+        ),
         module=module_evidence,
         runtime_sources=runtime_sources,
     )
@@ -3280,7 +3374,7 @@ def emit_github_actions_pre_live_bundle(
     build_report_path: Path | str,
     expected_build_dir: Path | str,
     output_path: Path | str,
-    producer_id: str = "provenance_qualification",
+    producer_id: str = PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID,
     git_runner: CommandRunner = subprocess.run,
     ctest_runner: CommandRunner = subprocess.run,
     producer_runner: CommandRunner = subprocess.run,
@@ -3351,6 +3445,8 @@ def emit_github_actions_pre_live_bundle(
             expected_commit=expected_commit,
             producer_id=producer_id,
             git_runner=git_runner,
+            micromachine_binary_path=build_binding.get("binary_path"),
+            micromachine_binary_sha256=build_binding.get("binary_sha256"),
         )
         blockers.extend(_prefixed_blockers("producer_policy", producer_policy))
         if blockers:
@@ -3555,6 +3651,20 @@ def _assemble_github_actions_pre_live_bundle(
 ) -> bytes:
     ctest = _mapping(build_binding.get("ctest"))
     local_artifact = _mapping(local_execution.get("output_artifact"))
+    report_payload = admitted_build.get("report_payload")
+    binary_payload = admitted_build.get("binary_payload")
+    if not isinstance(report_payload, bytes) or not isinstance(binary_payload, bytes):
+        raise ValueError("admitted build payloads are missing")
+    producer_output_path = Path(str(local_artifact["path"]))
+    producer_output_payload = _bind_producer_output_to_admitted_build(
+        producer_id=str(producer_policy.get("producer_id", "")),
+        producer_output=producer_output_path.read_bytes(),
+        build_report=report_payload,
+        binary=binary_payload,
+    )
+    producer_output_sha256 = hashlib.sha256(
+        producer_output_payload
+    ).hexdigest()
     repository_input = canonical_json_bytes(
         _repository_input_evidence_payload(
             build_binding,
@@ -3572,7 +3682,7 @@ def _assemble_github_actions_pre_live_bundle(
             "repository_commit": expected_commit,
             "argv_sha256": hashlib.sha256(argv_bytes).hexdigest(),
             "executable_sha256": local_execution.get("executable_sha256"),
-            "output_sha256": local_artifact.get("sha256"),
+            "output_sha256": producer_output_sha256,
             "exit_code": local_execution.get("exit_code"),
             "started_at": local_execution.get("started_at"),
             "ended_at": local_execution.get("ended_at"),
@@ -3582,11 +3692,12 @@ def _assemble_github_actions_pre_live_bundle(
     )
     policy_path = repository_root / PRODUCER_POLICY_RELATIVE_PATH
     executable_path = Path(cast(list[str], producer_policy["argv"])[0])
-    producer_output_path = Path(str(local_artifact["path"]))
-    report_payload = admitted_build.get("report_payload")
-    binary_payload = admitted_build.get("binary_payload")
-    if not isinstance(report_payload, bytes) or not isinstance(binary_payload, bytes):
-        raise ValueError("admitted build payloads are missing")
+    producer_output_member = (
+        PRE_LIVE_DETERMINISTIC_JOURNEY_MEMBER_NAME
+        if producer_policy.get("producer_id")
+        == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+        else "payload/provenance-foundation.json"
+    )
     members = {
         "build/voi_build_identity.json": report_payload,
         "build/MicroMachine": binary_payload,
@@ -3595,7 +3706,7 @@ def _assemble_github_actions_pre_live_bundle(
         "producer/policy.json": policy_path.read_bytes(),
         "producer/executable": executable_path.read_bytes(),
         "producer/argv.json": argv_bytes,
-        "payload/provenance-foundation.json": producer_output_path.read_bytes(),
+        producer_output_member: producer_output_payload,
         "producer/provenance.json": provenance_bytes,
     }
     authority = _mapping(source_context.get("authority"))
@@ -3630,7 +3741,7 @@ def _assemble_github_actions_pre_live_bundle(
         job_id=int(source_context["job_id"]),
         job_name=str(source_context["job_name"]),
         artifact_logical_name="pre-live",
-        artifact_member="payload/provenance-foundation.json",
+        artifact_member=producer_output_member,
         build_report_identity=str(build_binding["current_identity"]),
         build_report_member="build/voi_build_identity.json",
         binary_member="build/MicroMachine",
@@ -3641,13 +3752,29 @@ def _assemble_github_actions_pre_live_bundle(
         producer_policy_member="producer/policy.json",
         producer_executable_member="producer/executable",
         producer_argv_member="producer/argv.json",
-        producer_output_member="payload/provenance-foundation.json",
+        producer_output_member=producer_output_member,
         producer_provenance_member="producer/provenance.json",
     )
     return build_pre_live_artifact_bundle(
         metadata,
         members,
         admission_snapshot=_admission_snapshot_from_mapping(admitted_build),
+    )
+
+
+def _bind_producer_output_to_admitted_build(
+    *,
+    producer_id: str,
+    producer_output: bytes,
+    build_report: bytes,
+    binary: bytes,
+) -> bytes:
+    if producer_id != PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID:
+        return producer_output
+    return bind_deterministic_journey_bundle_to_build(
+        producer_output,
+        build_report_bytes=build_report,
+        binary_bytes=binary,
     )
 
 
@@ -4424,6 +4551,8 @@ def attest_pre_live_provenance(
             expected_commit=expected_commit,
             producer_id=producer_id,
             git_runner=git_runner,
+            micromachine_binary_path=build_binding.get("binary_path"),
+            micromachine_binary_sha256=build_binding.get("binary_sha256"),
         )
         blockers.extend(_prefixed_blockers("producer_policy", producer_policy))
         if blockers:
@@ -5452,10 +5581,14 @@ def _attest_committed_python_sources(
     expected_commit: str,
     git_runner: CommandRunner,
 ) -> dict[str, object]:
-    """Bind the producer to an exact committed Python runtime snapshot."""
+    """Bind the producer to its exact committed runtime inputs."""
 
     blockers: list[str] = []
     relative_paths = {module_relative.as_posix()}
+    if module_relative == DETERMINISTIC_JOURNEY_MODULE_RELATIVE_PATH:
+        relative_paths.add(
+            DETERMINISTIC_JOURNEY_MANIFEST_RELATIVE_PATH.as_posix()
+        )
     if module_relative.parts and module_relative.parts[0] == "starcraft_commander":
         try:
             completed = git_runner(
@@ -5493,7 +5626,11 @@ def _attest_committed_python_sources(
         if (
             relative_path.is_absolute()
             or ".." in relative_path.parts
-            or relative_path.suffix != ".py"
+            or (
+                relative_path.suffix != ".py"
+                and relative_path
+                != DETERMINISTIC_JOURNEY_MANIFEST_RELATIVE_PATH
+            )
         ):
             blockers.append(f"invalid producer source path: {relative}")
             continue

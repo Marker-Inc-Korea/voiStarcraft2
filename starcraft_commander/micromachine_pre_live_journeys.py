@@ -1,0 +1,2686 @@
+"""Deterministic MicroMachine pre-live journeys from raw runtime evidence."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import io
+import json
+import os
+import stat
+import subprocess
+import tempfile
+import zipfile
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from copy import deepcopy
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Final, cast
+
+from starcraft_commander import web_gui
+from starcraft_commander.micromachine_battlefield_projection import (
+    select_latest_battlefield_projection,
+    validate_battlefield_overview,
+)
+from starcraft_commander.micromachine_bridge import (
+    validate_micromachine_blackboard_update,
+)
+from starcraft_commander.micromachine_command_execution import (
+    classify_micromachine_operation_executions,
+)
+from starcraft_commander.micromachine_live_session import (
+    MicroMachineLiveTextSession,
+    StaticJsonPolicyModulationProvider,
+)
+from starcraft_commander.micromachine_pre_live_artifact import (
+    canonical_json_bytes,
+)
+from starcraft_commander.micromachine_runtime import (
+    MicroMachineInMemoryBlackboard,
+)
+from starcraft_commander.micromachine_tactical_evidence import (
+    classify_micromachine_tactical_evidence,
+)
+from starcraft_commander.micromachine_terran_capabilities import (
+    all_terran_capability_matrix,
+    canonical_terran_unit_family,
+    lower_terran_natural_language_units,
+    operation_family_evidence,
+    terran_production_targets,
+)
+
+
+PRE_LIVE_JOURNEY_SCHEMA_VERSION: Final[int] = 1
+PRE_LIVE_JOURNEY_BUNDLE_SCHEMA_VERSION: Final[int] = 1
+PRE_LIVE_JOURNEY_REPORT_SCHEMA_VERSION: Final[int] = 1
+PRE_LIVE_NATIVE_ADAPTER_SCHEMA_VERSION: Final[int] = 1
+MAX_JOURNEY_BUNDLE_BYTES: Final[int] = 64 * 1024 * 1024
+MAX_JOURNEY_BUNDLE_ENTRIES: Final[int] = 64
+MAX_JOURNEY_MEMBER_BYTES: Final[int] = 32 * 1024 * 1024
+MAX_NATIVE_ADAPTER_OUTPUT_BYTES: Final[int] = 32 * 1024 * 1024
+REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
+DEFAULT_JOURNEY_MANIFEST: Final[Path] = (
+    REPO_ROOT / "integrations" / "micromachine" / "PRE_LIVE_JOURNEYS.json"
+)
+DETERMINISTIC_ZIP_TIMESTAMP: Final[tuple[int, int, int, int, int, int]] = (
+    1980,
+    1,
+    1,
+    0,
+    0,
+    0,
+)
+_REGULAR_FILE_MODE: Final[int] = 0o100644
+_EFFECT_EVENT_TYPES: Final[frozenset[str]] = frozenset(
+    {"movement", "engagement", "ability_effect"}
+)
+_OPERATION_IDENTITY_EVENT_TYPES: Final[frozenset[str]] = frozenset(
+    {
+        "ownership_snapshot",
+        "squad_order",
+        "submission",
+        "movement",
+        "engagement",
+        "ability_effect",
+        "launch_decision",
+        "production_decision",
+        "prerequisite_wait",
+        "transfer",
+        "generation_change",
+        "cancellation",
+        "preemption",
+        "autonomous_defense",
+        "family_action_attempt",
+        "web_projection",
+        "hud_projection",
+        "voice_projection",
+        "voice_callout",
+    }
+)
+_NATIVE_OUTPUT_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "schema_version",
+        "events",
+        "snapshots",
+        "final_state",
+        "operation_director",
+        "battlefield_overview",
+        "hud",
+        "telemetry",
+    }
+)
+_SHA256_IDENTITY_PREFIX: Final[str] = "sha256:"
+CommandRunner = Callable[..., subprocess.CompletedProcess[Any]]
+
+
+@dataclass
+class _JourneyExecution:
+    spec: Mapping[str, object]
+    backend: MicroMachineInMemoryBlackboard = field(
+        default_factory=MicroMachineInMemoryBlackboard
+    )
+    timeline: object = field(
+        default_factory=web_gui._OperationSemanticTimelineReducer
+    )
+    journal: object = field(default_factory=web_gui._WebEventJournal)
+    events: list[dict[str, object]] = field(default_factory=list)
+    products: dict[str, object] = field(default_factory=dict)
+    compiled_updates: list[dict[str, object]] = field(default_factory=list)
+    native_steps: list[dict[str, object]] = field(default_factory=list)
+    initial_units: list[dict[str, object]] = field(default_factory=list)
+    next_tag: int = 1000
+
+    @property
+    def journey_id(self) -> str:
+        return str(self.spec["id"])
+
+    def emit(
+        self,
+        event_type: str,
+        *,
+        update_id: str,
+        operation_id: str = "",
+        generation: int = 0,
+        stage: str,
+        game_frame: int,
+        payload: Mapping[str, object] | None = None,
+        order: int = 10,
+    ) -> None:
+        self.events.append(
+            {
+                "_order": order,
+                "event_type": event_type,
+                "identity": {
+                    "update_id": update_id,
+                    "operation_id": operation_id,
+                    "generation": generation,
+                    "stage": stage,
+                    "game_frame": game_frame,
+                },
+                "payload": deepcopy(dict(payload or {})),
+            }
+        )
+
+    def allocate_unit(self, unit_type: str) -> dict[str, object]:
+        unit = {
+            "tag": self.next_tag,
+            "unit_type": unit_type,
+            "home_distance": 0.0,
+        }
+        self.next_tag += 1
+        self.initial_units.append(unit)
+        return unit
+
+
+def load_pre_live_journey_manifest(
+    path: Path | str = DEFAULT_JOURNEY_MANIFEST,
+) -> dict[str, object]:
+    payload = json.loads(
+        Path(path).read_text(encoding="utf-8"),
+        object_pairs_hook=_reject_duplicate_json_object_keys,
+    )
+    return _validate_pre_live_journey_manifest_payload(payload)
+
+
+def _validate_pre_live_journey_manifest_payload(
+    payload: object,
+) -> dict[str, object]:
+    if not isinstance(payload, dict):
+        raise ValueError("pre-live journey manifest must be a JSON object")
+    if payload.get("schema_version") != PRE_LIVE_JOURNEY_SCHEMA_VERSION:
+        raise ValueError("pre-live journey manifest schema_version is unsupported")
+    if set(payload) != {
+        "schema_version",
+        "suite_id",
+        "identity_fields",
+        "journeys",
+    }:
+        raise ValueError("pre-live journey manifest has unexpected top-level fields")
+    if payload.get("identity_fields") != [
+        "update_id",
+        "operation_id",
+        "generation",
+        "stage",
+        "game_frame",
+    ]:
+        raise ValueError("pre-live journey identity_fields contract drifted")
+    journeys = payload.get("journeys")
+    if not isinstance(journeys, list) or len(journeys) != 14:
+        raise ValueError("pre-live journey manifest must define exactly 14 journeys")
+    required = {
+        "id",
+        "title",
+        "kind",
+        "initial_state",
+        "ordered_inputs",
+        "expected_raw_event_types",
+        "stop_condition",
+        "timeout_frames",
+        "allowed_nondeterminism",
+    }
+    seen: set[str] = set()
+    for index, journey in enumerate(journeys):
+        if not isinstance(journey, dict) or set(journey) != required:
+            raise ValueError(f"journey {index} has an invalid field set")
+        journey_id = str(journey.get("id", ""))
+        if not journey_id or journey_id in seen:
+            raise ValueError("journey ids must be non-empty and unique")
+        seen.add(journey_id)
+        if not isinstance(journey.get("initial_state"), Mapping):
+            raise ValueError(f"{journey_id} initial_state must be an object")
+        ordered_inputs = journey.get("ordered_inputs")
+        if not isinstance(ordered_inputs, list) or not ordered_inputs:
+            raise ValueError(f"{journey_id} requires ordered_inputs")
+        frames = [
+            item.get("frame")
+            for item in ordered_inputs
+            if isinstance(item, Mapping)
+        ]
+        if (
+            len(frames) != len(ordered_inputs)
+            or any(type(frame) is not int or frame < 0 for frame in frames)
+            or frames != sorted(frames)
+        ):
+            raise ValueError(f"{journey_id} ordered input frames are invalid")
+        for item in ordered_inputs:
+            if not isinstance(item, Mapping):
+                raise ValueError(f"{journey_id} ordered input must be an object")
+            command = "command_text" in item or "preset" in item
+            observation = isinstance(item.get("kind"), str)
+            if command == observation:
+                raise ValueError(
+                    f"{journey_id} input must be one command or one observation"
+                )
+        expected = journey.get("expected_raw_event_types")
+        if (
+            not isinstance(expected, list)
+            or not expected
+            or any(not isinstance(item, str) or not item for item in expected)
+            or len(expected) != len(set(expected))
+        ):
+            raise ValueError(f"{journey_id} expected raw events are invalid")
+        stop = journey.get("stop_condition")
+        if (
+            not isinstance(stop, Mapping)
+            or "type" not in stop
+            or "count" not in stop
+            or not isinstance(stop.get("type"), str)
+            or not stop.get("type")
+            or type(stop.get("count")) is not int
+            or cast(int, stop["count"]) < 0
+        ):
+            raise ValueError(f"{journey_id} stop_condition is invalid")
+        if (
+            type(journey.get("timeout_frames")) is not int
+            or cast(int, journey["timeout_frames"]) <= 0
+        ):
+            raise ValueError(f"{journey_id} timeout_frames must be positive")
+        allowed = journey.get("allowed_nondeterminism")
+        if (
+            not isinstance(allowed, list)
+            or len(allowed) != len(set(allowed))
+            or any(
+                item not in {"wall_clock_timestamp_removed"}
+                for item in allowed
+            )
+        ):
+            raise ValueError(f"{journey_id} allowed_nondeterminism is invalid")
+    return payload
+
+
+def execute_pre_live_journeys(
+    micromachine_binary: Path | str,
+    manifest_path: Path | str = DEFAULT_JOURNEY_MANIFEST,
+    *,
+    command_runner: CommandRunner = subprocess.run,
+) -> dict[str, object]:
+    manifest = load_pre_live_journey_manifest(manifest_path)
+    binary = _validate_micromachine_binary(micromachine_binary)
+    binary_sha256 = _sha256_file(binary)
+    embedded_identity = _query_embedded_build_identity(
+        binary,
+        expected_sha256=binary_sha256,
+        command_runner=command_runner,
+    )
+    reports: list[dict[str, object]] = []
+    artifacts: dict[str, dict[str, object]] = {}
+    for spec in cast(list[dict[str, object]], manifest["journeys"]):
+        execution = _JourneyExecution(spec)
+        try:
+            native_input = _compile_native_input(execution)
+            native_output = _invoke_native_adapter(
+                binary,
+                native_input,
+                expected_sha256=binary_sha256,
+                command_runner=command_runner,
+            )
+            _consume_native_output(execution, native_output)
+            _finalize_events(execution)
+            execution.products["native_adapter"] = {
+                "schema_version": PRE_LIVE_NATIVE_ADAPTER_SCHEMA_VERSION,
+                "binary_sha256": binary_sha256,
+                "embedded_build_input_identity": embedded_identity,
+                "input": native_input,
+                "output": native_output,
+            }
+        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            execution.products["execution_error"] = str(exc)
+            _finalize_events(execution)
+        verdict = verify_pre_live_journey_events(spec, execution.events)
+        blockers = [
+            *cast(list[str], verdict["blockers"]),
+            *_product_path_blockers(execution.products),
+        ]
+        report = {
+            **verdict,
+            "ok": not blockers,
+            "status": "passed" if not blockers else "failed",
+            "blockers": blockers,
+            "product_paths": dict(execution.products),
+        }
+        reports.append(report)
+        artifacts[execution.journey_id] = {
+            "events": execution.events,
+            "products": execution.products,
+        }
+    failures = [report["id"] for report in reports if report["ok"] is not True]
+    return {
+        "schema_version": PRE_LIVE_JOURNEY_REPORT_SCHEMA_VERSION,
+        "suite_id": manifest["suite_id"],
+        "manifest_sha256": hashlib.sha256(
+            canonical_json_bytes(manifest)
+        ).hexdigest(),
+        "journey_count": len(reports),
+        "passed_count": len(reports) - len(failures),
+        "failed_count": len(failures),
+        "failures": failures,
+        "ok": not failures,
+        "status": "passed" if not failures else "failed",
+        "journeys": reports,
+        "artifacts": artifacts,
+        "binary_sha256": binary_sha256,
+        "embedded_build_input_identity": embedded_identity,
+    }
+
+
+def _compile_native_input(execution: _JourneyExecution) -> dict[str, object]:
+    initial_state = _expand_initial_state(execution)
+    previous_operations: dict[str, dict[str, object]] = {}
+    command_index = 0
+    for item in cast(Sequence[Mapping[str, object]], execution.spec["ordered_inputs"]):
+        frame = int(item["frame"])
+        if "command_text" in item or "preset" in item:
+            update_id = f"{execution.journey_id}-update-{command_index + 1}"
+            update = _compile_command(
+                execution,
+                item,
+                frame=frame,
+                update_id=update_id,
+            )
+            execution.native_steps.append(
+                {
+                    "frame": frame,
+                    "kind": "policy_update",
+                    "update": update,
+                }
+            )
+            current_operations = {
+                str(operation["operation_id"]): operation
+                for operation in _update_operations(update)
+            }
+            _emit_generation_changes(
+                execution,
+                previous_operations,
+                current_operations,
+                update_id=update_id,
+                frame=frame,
+            )
+            previous_operations = current_operations
+            command_index += 1
+        else:
+            execution.native_steps.append(
+                _expand_observation_step(execution, item)
+            )
+    return {
+        "schema_version": PRE_LIVE_NATIVE_ADAPTER_SCHEMA_VERSION,
+        "journey_id": execution.journey_id,
+        "initial_state": initial_state,
+        "steps": execution.native_steps,
+    }
+
+
+def _expand_initial_state(
+    execution: _JourneyExecution,
+) -> dict[str, object]:
+    source = cast(Mapping[str, object], execution.spec["initial_state"])
+    raw_units = source.get("units", {})
+    if isinstance(raw_units, Mapping):
+        for unit_type, raw_count in sorted(raw_units.items()):
+            if type(raw_count) is not int or raw_count < 0:
+                raise ValueError("initial unit counts must be non-negative ints")
+            for _ in range(raw_count):
+                execution.allocate_unit(str(unit_type))
+    elif raw_units == "all_terran_families":
+        for row in all_terran_capability_matrix():
+            unit_type = str(cast(Sequence[object], row["unit_types"])[0])
+            for _ in cast(Sequence[object], row["abilities"]):
+                execution.allocate_unit(unit_type)
+    else:
+        raise ValueError("initial_state.units is unsupported")
+    raw_structures = source.get("structures", ())
+    structures = _string_list(raw_structures, label="initial structures")
+    if source.get("prerequisites") == "all_available":
+        structures = sorted(
+            {
+                *structures,
+                *{
+                    str(prerequisite)
+                    for row in all_terran_capability_matrix()
+                    for prerequisite in cast(Sequence[object], row["prerequisites"])
+                },
+            }
+        )
+    protected = source.get("protected_minimum", {})
+    if not isinstance(protected, Mapping):
+        raise ValueError("protected_minimum must be an object")
+    return {
+        "units": deepcopy(execution.initial_units),
+        "structures": structures,
+        "protected_minimum": {
+            str(key): int(value)
+            for key, value in sorted(protected.items())
+            if type(value) is int and value >= 0
+        },
+    }
+
+
+def _compile_command(
+    execution: _JourneyExecution,
+    item: Mapping[str, object],
+    *,
+    frame: int,
+    update_id: str,
+) -> dict[str, object]:
+    preset = str(item.get("preset", ""))
+    command_text = str(item.get("command_text", ""))
+    provider_output = _provider_output(preset)
+    execution.emit(
+        "command_input",
+        update_id=update_id,
+        stage="input",
+        game_frame=frame,
+        payload={"command_text": command_text, "preset": preset},
+        order=0,
+    )
+    session = MicroMachineLiveTextSession(
+        execution.backend,
+        StaticJsonPolicyModulationProvider(provider_output),
+    )
+    result = session.submit_text(
+        command_text,
+        current_frame=frame,
+        update_id=update_id,
+    )
+    result_dict = result.to_dict()
+    execution.products.setdefault("compiler_results", [])
+    cast(list[object], execution.products["compiler_results"]).append(result_dict)
+    if not result.ok or result.update is None:
+        raise ValueError(f"{preset} did not compile: {result_dict!r}")
+    update = result.update.to_dict()
+    execution.compiled_updates.append(update)
+    execution.emit(
+        "blackboard_update",
+        update_id=update_id,
+        stage="published",
+        game_frame=frame,
+        payload={"update": update, "command_queue": result.command_queue or {}},
+        order=1,
+    )
+    validation = validate_micromachine_blackboard_update(
+        update,
+        current_frame=frame,
+    )
+    validation_dict = validation.to_dict()
+    execution.products.setdefault("bridge_validations", [])
+    cast(list[object], execution.products["bridge_validations"]).append(
+        validation_dict
+    )
+    if not validation.accepted:
+        raise ValueError(
+            f"published update failed bridge validation: {validation.reason}"
+        )
+    if preset == "all_terran_matrix":
+        _emit_all_terran_lowering(execution, update, frame=frame)
+    return update
+
+
+def _emit_generation_changes(
+    execution: _JourneyExecution,
+    previous: Mapping[str, Mapping[str, object]],
+    current: Mapping[str, Mapping[str, object]],
+    *,
+    update_id: str,
+    frame: int,
+) -> None:
+    for operation_id, operation in current.items():
+        prior = previous.get(operation_id)
+        generation = int(operation.get("generation", 0) or 0)
+        prior_generation = (
+            int(prior.get("generation", 0) or 0) if prior is not None else 0
+        )
+        if prior is None or generation <= prior_generation:
+            continue
+        execution.emit(
+            "generation_change",
+            update_id=update_id,
+            operation_id=operation_id,
+            generation=generation,
+            stage="published",
+            game_frame=frame,
+            payload={
+                "action": _generation_change_action(prior, operation),
+                "previous_generation": prior_generation,
+                "generation": generation,
+            },
+            order=2,
+        )
+
+
+def _generation_change_action(
+    previous: Mapping[str, object],
+    current: Mapping[str, object],
+) -> str:
+    current_edit = current.get("operation_edit")
+    if isinstance(current_edit, Mapping) and current_edit.get("action"):
+        return str(current_edit["action"])
+    previous_task = cast(Mapping[str, object], previous.get("tactical_task", {}))
+    current_task = cast(Mapping[str, object], current.get("tactical_task", {}))
+    if previous_task.get("location_intent") != current_task.get("location_intent"):
+        return "retarget"
+    if previous_task.get("max_units") != current_task.get("max_units"):
+        return "reinforce"
+    return "update"
+
+
+def _emit_all_terran_lowering(
+    execution: _JourneyExecution,
+    update: Mapping[str, object],
+    *,
+    frame: int,
+) -> None:
+    for operation in _update_operations(update):
+        task = cast(Mapping[str, object], operation.get("tactical_task", {}))
+        ability = str(task.get("ability", ""))
+        requirements = _operation_requirements(operation)
+        if not ability or not requirements:
+            continue
+        unit_type = str(requirements[0]["unit_type"])
+        family = canonical_terran_unit_family(unit_type)
+        matrix_row = next(
+            (
+                row
+                for row in all_terran_capability_matrix()
+                if row["family"] == family
+            ),
+            None,
+        )
+        alias = (
+            str(cast(Sequence[object], matrix_row["aliases"])[0])
+            if matrix_row is not None
+            else unit_type
+        )
+        intents = lower_terran_natural_language_units(
+            f"1 {alias}",
+            default_count=1,
+        )
+        execution.emit(
+            "terran_lowering",
+            update_id=str(update["update_id"]),
+            operation_id=str(operation["operation_id"]),
+            generation=int(operation["generation"]),
+            stage="parsed",
+            game_frame=frame,
+            payload={
+                "action": f"ability:{ability}",
+                "family": family,
+                "ability": ability,
+                "unit_type": unit_type,
+                "intent_count": len(intents),
+                "production_targets": list(terran_production_targets(intents)),
+            },
+            order=2,
+        )
+
+
+def _expand_observation_step(
+    execution: _JourneyExecution,
+    item: Mapping[str, object],
+) -> dict[str, object]:
+    frame = int(item["frame"])
+    kind = str(item["kind"])
+    if kind == "unit_observation":
+        return {
+            "frame": frame,
+            "kind": kind,
+            "units": _expand_unit_observations(execution, item),
+        }
+    if kind == "resource_observation":
+        units: list[dict[str, object]] = []
+        raw_units = item.get("units", {})
+        if not isinstance(raw_units, Mapping):
+            raise ValueError("resource observation units must be an object")
+        for unit_type, raw_count in sorted(raw_units.items()):
+            if type(raw_count) is not int or raw_count < 0:
+                raise ValueError("resource observation counts are invalid")
+            for _ in range(raw_count):
+                units.append(execution.allocate_unit(str(unit_type)))
+        return {
+            "frame": frame,
+            "kind": kind,
+            "structures": _string_list(
+                item.get("structures", ()),
+                label="resource observation structures",
+            ),
+            "units": units,
+        }
+    if kind in {"base_threat_observation", "base_clear_observation"}:
+        return {
+            "frame": frame,
+            "kind": kind,
+            "base_id": str(item.get("base_id", "self_main")),
+            "required_defenders": int(item.get("required_defenders", 0) or 0),
+            "threat_strength": float(item.get("threat_strength", 0.0) or 0.0),
+        }
+    if kind == "client_reconnect":
+        return {
+            "frame": frame,
+            "kind": kind,
+            "after_event_seq": int(item.get("after_event_seq", 0) or 0),
+        }
+    raise ValueError(f"unsupported journey observation kind: {kind}")
+
+
+def _expand_unit_observations(
+    execution: _JourneyExecution,
+    item: Mapping[str, object],
+) -> list[dict[str, object]]:
+    if item.get("matrix_observed_abilities") is True:
+        abilities_by_family = {
+            str(row["family"]): [
+                str(value) for value in cast(Sequence[object], row["abilities"])
+            ]
+            for row in all_terran_capability_matrix()
+        }
+        return [
+            {
+                "tag": int(unit["tag"]),
+                "observed_abilities": abilities_by_family.get(
+                    canonical_terran_unit_family(unit["unit_type"]),
+                    [],
+                ),
+            }
+            for unit in execution.initial_units
+        ]
+    raw_units = item.get("units")
+    if not isinstance(raw_units, Sequence) or isinstance(
+        raw_units,
+        (str, bytes, bytearray),
+    ):
+        raise ValueError("unit observation units must be an array")
+    observations: list[dict[str, object]] = []
+    for descriptor in raw_units:
+        if not isinstance(descriptor, Mapping):
+            raise ValueError("unit observation descriptor must be an object")
+        unit_type = str(descriptor.get("unit_type", ""))
+        raw_tags = descriptor.get("tags")
+        tags = (
+            [int(value) for value in cast(Sequence[object], raw_tags)]
+            if isinstance(raw_tags, Sequence)
+            and not isinstance(raw_tags, (str, bytes, bytearray))
+            else [
+                int(unit["tag"])
+                for unit in execution.initial_units
+                if unit["unit_type"] == unit_type
+            ]
+        )
+        if not tags:
+            raise ValueError(f"unit observation matched no units: {unit_type}")
+        for tag in tags:
+            row: dict[str, object] = {"tag": tag}
+            for key in (
+                "home_distance",
+                "engaged",
+                "alive",
+                "complete",
+                "observed_abilities",
+            ):
+                if key in descriptor:
+                    row[key] = deepcopy(descriptor[key])
+            observations.append(row)
+    return observations
+
+
+def _validate_micromachine_binary(path: Path | str) -> Path:
+    raw = Path(path)
+    if not raw.is_absolute():
+        raise ValueError("MicroMachine binary path must be absolute")
+    if raw.is_symlink():
+        raise ValueError("MicroMachine binary path must not be a symlink")
+    file_stat = raw.stat()
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise ValueError("MicroMachine binary must be a regular file")
+    if file_stat.st_mode & 0o111 == 0:
+        raise ValueError("MicroMachine binary must be executable")
+    return raw.resolve()
+
+
+def _query_embedded_build_identity(
+    binary: Path,
+    *,
+    expected_sha256: str,
+    command_runner: CommandRunner,
+) -> str:
+    completed = command_runner(
+        [str(binary), "--voi-build-input-identity"],
+        check=False,
+        capture_output=True,
+        text=False,
+        shell=False,
+    )
+    if int(completed.returncode) != 0:
+        raise ValueError("MicroMachine build-input identity query failed")
+    identity = _as_bytes(completed.stdout).decode("utf-8").strip()
+    if (
+        not identity.startswith(_SHA256_IDENTITY_PREFIX)
+        or len(identity) != len(_SHA256_IDENTITY_PREFIX) + 64
+        or any(character not in "0123456789abcdef" for character in identity[7:])
+    ):
+        raise ValueError("MicroMachine embedded build-input identity is invalid")
+    if _sha256_file(binary) != expected_sha256:
+        raise ValueError("MicroMachine binary changed during identity query")
+    return identity
+
+
+def _invoke_native_adapter(
+    binary: Path,
+    native_input: Mapping[str, object],
+    *,
+    expected_sha256: str,
+    command_runner: CommandRunner,
+) -> dict[str, object]:
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=".voi-pre-live-input-",
+            suffix=".json",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            temporary.write(canonical_json_bytes(native_input))
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.chmod(temporary_path, 0o600)
+        completed = command_runner(
+            [
+                str(binary),
+                "--voi-pre-live-journey-adapter",
+                str(temporary_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=False,
+            shell=False,
+        )
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+    if int(completed.returncode) != 0:
+        stderr = _as_bytes(completed.stderr).decode("utf-8", errors="replace")
+        raise ValueError(f"native pre-live adapter failed: {stderr.strip()}")
+    stdout = _as_bytes(completed.stdout)
+    if not stdout or len(stdout) > MAX_NATIVE_ADAPTER_OUTPUT_BYTES:
+        raise ValueError("native pre-live adapter output size is invalid")
+    output = json.loads(
+        stdout,
+        object_pairs_hook=_reject_duplicate_json_object_keys,
+    )
+    if not isinstance(output, dict) or set(output) != _NATIVE_OUTPUT_FIELDS:
+        raise ValueError("native pre-live adapter output field set is invalid")
+    if output.get("schema_version") != PRE_LIVE_NATIVE_ADAPTER_SCHEMA_VERSION:
+        raise ValueError("native pre-live adapter schema is unsupported")
+    if _sha256_file(binary) != expected_sha256:
+        raise ValueError("MicroMachine binary changed during adapter execution")
+    return output
+
+
+def _consume_native_output(
+    execution: _JourneyExecution,
+    native: Mapping[str, object],
+) -> None:
+    raw_events = native.get("events")
+    if not isinstance(raw_events, Sequence) or isinstance(
+        raw_events,
+        (str, bytes, bytearray),
+    ):
+        raise ValueError("native events must be an array")
+    if [event.get("seq") for event in raw_events if isinstance(event, Mapping)] != list(
+        range(1, len(raw_events) + 1)
+    ):
+        raise ValueError("native event sequence is not contiguous")
+    for event in raw_events:
+        if not isinstance(event, Mapping):
+            raise ValueError("native event must be an object")
+        normalized = deepcopy(dict(event))
+        normalized["_order"] = 20
+        normalized.pop("seq", None)
+        execution.events.append(normalized)
+    _derive_state_snapshot_events(execution, native)
+    _derive_blocked_launch_events(execution, native)
+    _consume_runtime_products(execution, native)
+    _consume_web_event_reconnect(execution, native)
+    _consume_projection_events(execution, native)
+
+
+def _derive_state_snapshot_events(
+    execution: _JourneyExecution,
+    native: Mapping[str, object],
+) -> None:
+    stop = cast(Mapping[str, object], execution.spec["stop_condition"])
+    if stop.get("type") not in {
+        "forbidden_submission_and_state_preserved",
+        "transfer_applied_and_siblings_preserved",
+        "selected_operation_cancelled_sibling_active",
+    }:
+        return
+    snapshots = native.get("snapshots")
+    if not isinstance(snapshots, Sequence) or len(snapshots) != len(
+        execution.native_steps
+    ) + 1:
+        raise ValueError("native snapshots do not align with adapter steps")
+    policy_indices = [
+        index
+        for index, step in enumerate(execution.native_steps)
+        if step.get("kind") == "policy_update"
+    ]
+    if not policy_indices:
+        raise ValueError("state-preservation journey has no policy step")
+    step_index = policy_indices[-1]
+    step = execution.native_steps[step_index]
+    update = cast(Mapping[str, object], step["update"])
+    operation_id = str(stop.get("operation_id", ""))
+    operation = (
+        _operation_by_id(update, operation_id)
+        if operation_id
+        else (_update_operations(update)[0] if _update_operations(update) else {})
+    )
+    identity = {
+        "update_id": str(update["update_id"]),
+        "operation_id": str(operation.get("operation_id", "")),
+        "generation": int(operation.get("generation", 0) or 0),
+    }
+    before = cast(Mapping[str, object], snapshots[step_index])
+    after = cast(Mapping[str, object], snapshots[step_index + 1])
+    for phase, snapshot, order in (
+        ("before", before, 10),
+        ("after", after, 30),
+    ):
+        state = snapshot.get("state")
+        if not isinstance(state, Mapping):
+            raise ValueError("native state snapshot is malformed")
+        execution.emit(
+            "state_snapshot",
+            update_id=identity["update_id"],
+            operation_id=identity["operation_id"],
+            generation=identity["generation"],
+            stage=f"state_{phase}",
+            game_frame=int(step["frame"]),
+            payload={"phase": phase, "state": dict(state)},
+            order=order,
+        )
+
+
+def _derive_blocked_launch_events(
+    execution: _JourneyExecution,
+    native: Mapping[str, object],
+) -> None:
+    rows = _mapping_sequence(native.get("operation_director"))
+    native_event_types = {
+        str(event.get("event_type", ""))
+        for event in _mapping_sequence(native.get("events"))
+    }
+    if "launch_decision" in native_event_types and "rejection" in native_event_types:
+        return
+    for row in rows:
+        blocker = str(row.get("blocker", "") or "")
+        submitted = row.get("submission_observed") is True
+        if not blocker or submitted:
+            continue
+        identity = _operation_row_identity(execution, row)
+        if "launch_decision" not in native_event_types:
+            execution.emit(
+                "launch_decision",
+                **identity,
+                stage="launch_rejected",
+                game_frame=int(row.get("last_action_frame", 0) or 0),
+                payload={
+                    "action": "wait",
+                    "launch_count": 0,
+                    "blocker": blocker,
+                },
+                order=21,
+            )
+        if "rejection" not in native_event_types:
+            execution.emit(
+                "rejection",
+                **identity,
+                stage="blocked",
+                game_frame=int(row.get("last_action_frame", 0) or 0),
+                payload={
+                    "action": str(row.get("last_action", "") or "launch"),
+                    "reason": blocker,
+                },
+                order=22,
+            )
+
+
+def _consume_runtime_products(
+    execution: _JourneyExecution,
+    native: Mapping[str, object],
+) -> None:
+    telemetry = native.get("telemetry")
+    if not isinstance(telemetry, Mapping):
+        raise ValueError("native telemetry is missing")
+    execution.backend.ingest_telemetry(telemetry)
+    execution.products["native_snapshots"] = deepcopy(native["snapshots"])
+    execution.products["native_final_state"] = deepcopy(native["final_state"])
+    execution.products["native_hud"] = deepcopy(native["hud"])
+    reports: list[object] = []
+    for update in execution.compiled_updates:
+        reports.append(
+            [
+                report.to_dict()
+                for report in classify_micromachine_operation_executions(
+                    latest_update=update,
+                    latest_telemetry=telemetry,
+                    latest_frame=int(telemetry.get("frame", 0) or 0),
+                )
+            ]
+        )
+    execution.products["operation_execution_reports"] = reports
+    expected_effects = _expected_tactical_effects(
+        _mapping_sequence(native.get("events"))
+    )
+    tactical = classify_micromachine_tactical_evidence(
+        latest_telemetry=telemetry,
+        expected_effects=expected_effects,
+    )
+    execution.products["tactical_evidence"] = [tactical.to_dict()]
+    native_rows = {
+        (
+            str(row.get("operation_id", "")),
+            int(row.get("generation", 0) or 0),
+        ): row
+        for row in _mapping_sequence(native.get("operation_director"))
+    }
+    family_batches: list[dict[str, object]] = []
+    for update in execution.compiled_updates:
+        for operation in _update_operations(update):
+            identity = {
+                "update_id": str(update["update_id"]),
+                "operation_id": str(operation["operation_id"]),
+                "generation": int(operation["generation"]),
+            }
+            row = native_rows.get(
+                (identity["operation_id"], identity["generation"])
+            )
+            evidence = (
+                list(
+                    operation_family_evidence(
+                        row,
+                        expected_update_id=identity["update_id"],
+                        expected_operation_id=identity["operation_id"],
+                        expected_generation=identity["generation"],
+                        snapshot_frame=int(telemetry.get("frame", 0) or 0),
+                    )
+                )
+                if row is not None
+                else []
+            )
+            family_batches.append(
+                {
+                    **identity,
+                    "native_row_present": row is not None,
+                    "evidence": evidence,
+                }
+            )
+    execution.products["family_evidence"] = family_batches
+    validated = validate_battlefield_overview(
+        telemetry,
+        expected_scope="battlefield",
+    )
+    selected = select_latest_battlefield_projection(
+        latest_telemetry=telemetry,
+        expected_scope="battlefield",
+    )
+    execution.products["battlefield_projections"] = [
+        {
+            "validated": validated.to_dict(),
+            "selected": selected.to_dict(),
+        }
+    ]
+    dashboard = execution.backend.dashboard_snapshot(
+        current_frame=int(telemetry.get("frame", 0) or 0)
+    ).to_dict()
+    status = web_gui._micromachine_status_payload(
+        dashboard,
+        telemetry=telemetry,
+        battlefield_projection=selected,
+    )
+    reduced = cast(
+        web_gui._OperationSemanticTimelineReducer,
+        execution.timeline,
+    ).observe(
+        status,
+        blackboard_scope_id=execution.journey_id,
+    )
+    execution.products["web_status"] = [status]
+    execution.products["timeline_results"] = [reduced]
+
+
+def _consume_web_event_reconnect(
+    execution: _JourneyExecution,
+    native: Mapping[str, object],
+) -> None:
+    reconnect = next(
+        (
+            event
+            for event in _mapping_sequence(native.get("events"))
+            if event.get("event_type") == "client_reconnect"
+        ),
+        None,
+    )
+    if reconnect is None:
+        return
+    journal = cast(web_gui._WebEventJournal, execution.journal)
+    lifecycle_events = [
+        event
+        for event in _mapping_sequence(native.get("events"))
+        if event.get("event_type")
+        in {"ownership_snapshot", "submission", "movement", "engagement"}
+    ]
+    published_events: list[dict[str, object]] = []
+    for event in lifecycle_events:
+        identity = cast(Mapping[str, object], event["identity"])
+        logical_id = f"native:{event['seq']}:{event['event_type']}"
+        published = journal.publish(
+            str(event["event_type"]),
+            {"logical_event_id": logical_id},
+            update_id=str(identity["update_id"]),
+            operation_id=str(identity["operation_id"]),
+            generation=int(identity["generation"]),
+            game_frame=int(identity["game_frame"]),
+            blackboard_scope_id=execution.journey_id,
+        )
+        published_events.append(published)
+        execution.emit(
+            "web_event",
+            update_id=str(identity["update_id"]),
+            operation_id=str(identity["operation_id"]),
+            generation=int(identity["generation"]),
+            stage="web_event",
+            game_frame=int(identity["game_frame"]),
+            payload={
+                "action": str(event["event_type"]),
+                "logical_event_id": logical_id,
+                "event_seq": int(published["event_seq"]),
+            },
+            order=40,
+        )
+    reconnect_identity = cast(Mapping[str, object], reconnect["identity"])
+    reconnect_payload = cast(Mapping[str, object], reconnect["payload"])
+    cursor = int(reconnect_payload.get("after_event_seq", 0) or 0)
+    available, replay = journal.replay_batch(cursor)
+    execution.emit(
+        "replay_batch",
+        update_id=str(reconnect_identity["update_id"]),
+        stage="replayed",
+        game_frame=int(reconnect_identity["game_frame"]),
+        payload={
+            "action": "replay",
+            "available": available,
+            "event_seqs": [int(event["event_seq"]) for event in replay],
+        },
+        order=41,
+    )
+    replay_ids = {
+        str(cast(Mapping[str, object], event["payload"])["logical_event_id"])
+        for event in replay
+    }
+    for logical_id in sorted(replay_ids):
+        execution.emit(
+            "replay_deduplicated",
+            update_id=str(reconnect_identity["update_id"]),
+            stage="replayed",
+            game_frame=int(reconnect_identity["game_frame"]),
+            payload={"action": "dedupe", "logical_event_id": logical_id},
+            order=42,
+        )
+    execution.products["event_journal_replay"] = {
+        "available": available,
+        "source_count": len(published_events),
+        "replay_count": len(replay),
+    }
+
+
+def _consume_projection_events(
+    execution: _JourneyExecution,
+    native: Mapping[str, object],
+) -> None:
+    rows = _mapping_sequence(native.get("operation_director"))
+    final_frame = int(
+        cast(Mapping[str, object], native["telemetry"]).get("frame", 0) or 0
+    )
+    timeline = cast(
+        Sequence[Mapping[str, object]],
+        cast(Sequence[object], execution.products["timeline_results"]),
+    )[0]
+    timeline_events = _mapping_sequence(timeline.get("operation_events"))
+    for row in rows:
+        identity = _operation_row_identity(execution, row)
+        execution.emit(
+            "web_projection",
+            **identity,
+            stage=(
+                "effect_observed"
+                if row.get("completed") is True
+                else "assigned"
+            ),
+            game_frame=final_frame,
+            payload={
+                "action": "project",
+                "timeline_event_count": sum(
+                    1
+                    for event in timeline_events
+                    if event.get("operation_id") == identity["operation_id"]
+                    and int(event.get("generation", 0) or 0)
+                    == identity["generation"]
+                ),
+            },
+            order=50,
+        )
+    hud = native.get("hud")
+    if not isinstance(hud, Mapping):
+        raise ValueError("native HUD output is malformed")
+    hud_ids = {
+        str(row.get("operation_id", ""))
+        for row in _mapping_sequence(hud.get("rows"))
+        if row.get("marker_visible") is True
+    }
+    for row in rows:
+        if str(row.get("operation_id", "")) not in hud_ids:
+            continue
+        identity = _operation_row_identity(execution, row)
+        execution.emit(
+            "hud_projection",
+            **identity,
+            stage=(
+                "effect_observed"
+                if row.get("completed") is True
+                else "assigned"
+            ),
+            game_frame=final_frame,
+            payload={"action": "project", "marker_visible": True},
+            order=51,
+        )
+    if execution.spec.get("kind") != "voice_identity":
+        return
+    if not rows or not timeline_events:
+        raise ValueError("voice journey lacks runtime timeline evidence")
+    row = rows[0]
+    identity = _operation_row_identity(execution, row)
+    matching = [
+        event
+        for event in timeline_events
+        if event.get("operation_id") == identity["operation_id"]
+        and int(event.get("generation", 0) or 0) == identity["generation"]
+    ]
+    if not matching:
+        raise ValueError("voice journey lacks a matching semantic timeline event")
+    callout = matching[-1]
+    stage = (
+        "effect_observed" if row.get("completed") is True else "assigned"
+    )
+    execution.emit(
+        "voice_projection",
+        **identity,
+        stage=stage,
+        game_frame=final_frame,
+        payload={
+            "action": "project",
+            "timeline_seq": int(callout["timeline_seq"]),
+            "kind": str(callout["kind"]),
+        },
+        order=52,
+    )
+    execution.emit(
+        "voice_callout",
+        **identity,
+        stage=stage,
+        game_frame=final_frame,
+        payload={
+            "action": "speak",
+            "timeline_seq": int(callout["timeline_seq"]),
+            "text": str(callout["summary"]),
+        },
+        order=53,
+    )
+
+
+def _operation_row_identity(
+    execution: _JourneyExecution,
+    row: Mapping[str, object],
+) -> dict[str, object]:
+    operation_id = str(row.get("operation_id", ""))
+    generation = int(row.get("generation", 0) or 0)
+    family = _mapping_sequence(row.get("family_evidence"))
+    update_id = (
+        str(family[0].get("update_id", ""))
+        if family
+        else ""
+    )
+    if not update_id:
+        for update in reversed(execution.compiled_updates):
+            try:
+                operation = _operation_by_id(update, operation_id)
+            except ValueError:
+                continue
+            if int(operation.get("generation", 0) or 0) == generation:
+                update_id = str(update["update_id"])
+                break
+    if not update_id:
+        raise ValueError(f"native operation row lacks update identity: {operation_id}")
+    return {
+        "update_id": update_id,
+        "operation_id": operation_id,
+        "generation": generation,
+    }
+
+
+def _expected_tactical_effects(
+    events: Sequence[Mapping[str, object]],
+) -> list[str]:
+    effects: set[str] = set()
+    for event in events:
+        event_type = str(event.get("event_type", ""))
+        payload = event.get("payload")
+        action = (
+            str(payload.get("action", ""))
+            if isinstance(payload, Mapping)
+            else ""
+        )
+        if event_type == "ability_effect":
+            effects.add("ability_cast")
+        elif event_type == "engagement":
+            effects.add("hold")
+        elif event_type == "movement":
+            effects.add("scout" if action.endswith(":scout") else "pressure")
+    return sorted(effects)
+
+
+def _finalize_events(execution: _JourneyExecution) -> None:
+    execution.events.sort(
+        key=lambda event: (
+            int(cast(Mapping[str, object], event.get("identity", {})).get(
+                "game_frame",
+                0,
+            )),
+            int(event.get("_order", 10)),
+            str(event.get("event_type", "")),
+            str(
+                cast(Mapping[str, object], event.get("identity", {})).get(
+                    "operation_id",
+                    "",
+                )
+            ),
+        )
+    )
+    for index, event in enumerate(execution.events, start=1):
+        event.pop("_order", None)
+        event["seq"] = index
+
+
+def verify_pre_live_journey_events(
+    spec: Mapping[str, object],
+    events: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    blockers: list[str] = []
+    normalized = [dict(event) for event in events if isinstance(event, Mapping)]
+    if len(normalized) != len(events):
+        blockers.append("raw event stream contains a non-object event")
+    if [event.get("seq") for event in normalized] != list(
+        range(1, len(normalized) + 1)
+    ):
+        blockers.append("raw event sequence is not contiguous")
+    event_types = [str(event.get("event_type", "")) for event in normalized]
+    required_types = [
+        str(item)
+        for item in cast(Sequence[object], spec.get("expected_raw_event_types", ()))
+    ]
+    missing_types = sorted(set(required_types) - set(event_types))
+    if missing_types:
+        blockers.append("missing raw event types: " + ", ".join(missing_types))
+    _verify_event_identities(spec, normalized, blockers)
+    stop = cast(Mapping[str, object], spec.get("stop_condition", {}))
+    stop_type = str(stop.get("type", ""))
+    if stop_type == "forbidden_submission_and_state_preserved":
+        _verify_forbidden_submission(stop, normalized, blockers)
+    elif stop_type in {
+        "all_operations_effect_observed",
+        "effect_after_prerequisite_convergence",
+        "matching_effect_observed",
+        "updated_generation_effect_observed",
+        "offense_restored_after_defense",
+    }:
+        _verify_required_effects(stop_type, stop, normalized, blockers)
+    elif stop_type == "transfer_applied_and_siblings_preserved":
+        _verify_transfer(stop, normalized, blockers)
+    elif stop_type == "selected_operation_cancelled_sibling_active":
+        _verify_selective_cancellation(stop, normalized, blockers)
+    elif stop_type == "affected_offense_preempted":
+        _verify_emergency_preemption(stop, normalized, blockers)
+    elif stop_type == "all_terran_families_accounted":
+        blockers.extend(_verify_all_terran_events(normalized))
+    elif stop_type == "replayed_events_counted_once":
+        _verify_reconnect(normalized, blockers)
+    elif stop_type == "projection_identity_consistent":
+        _verify_projection_identity(normalized, blockers)
+    else:
+        blockers.append(f"unsupported stop condition: {stop_type}")
+    return {
+        "id": str(spec.get("id", "")),
+        "title": str(spec.get("title", "")),
+        "event_count": len(normalized),
+        "event_types": sorted(set(event_types)),
+        "ownership_snapshot_count": sum(
+            event.get("event_type") == "ownership_snapshot"
+            for event in normalized
+        ),
+        "blockers": blockers,
+        "ok": not blockers,
+        "status": "passed" if not blockers else "failed",
+    }
+
+
+def _verify_event_identities(
+    spec: Mapping[str, object],
+    events: Sequence[Mapping[str, object]],
+    blockers: list[str],
+) -> None:
+    raw_inputs = cast(Sequence[Mapping[str, object]], spec.get("ordered_inputs", ()))
+    start_frame = int(raw_inputs[0]["frame"]) if raw_inputs else 0
+    timeout = int(spec.get("timeout_frames", 0) or 0)
+    last_frame: dict[tuple[str, str, int], int] = {}
+    submissions: dict[tuple[str, str, int, str], list[int]] = {}
+    for event in events:
+        event_type = str(event.get("event_type", ""))
+        identity = event.get("identity")
+        payload = event.get("payload")
+        if not isinstance(identity, Mapping) or not isinstance(payload, Mapping):
+            blockers.append(f"{event_type or '<missing>'} has malformed evidence")
+            continue
+        update_id = str(identity.get("update_id", ""))
+        operation_id = str(identity.get("operation_id", ""))
+        generation = identity.get("generation")
+        stage = str(identity.get("stage", ""))
+        frame = identity.get("game_frame")
+        if (
+            not update_id
+            or type(generation) is not int
+            or generation < 0
+            or not stage
+            or type(frame) is not int
+            or frame < 0
+        ):
+            blockers.append(f"{event_type} has invalid canonical identity")
+            continue
+        if timeout and frame > start_frame + timeout:
+            blockers.append("journey exceeded its deterministic frame timeout")
+        if event_type in _OPERATION_IDENTITY_EVENT_TYPES and (
+            not operation_id or generation <= 0
+        ):
+            blockers.append(f"{event_type} lacks operation identity")
+        key = (update_id, operation_id, generation)
+        previous = last_frame.get(key, -1)
+        if frame < previous:
+            blockers.append(
+                f"stale/regressive frame for {update_id}/{operation_id}#{generation}"
+            )
+        last_frame[key] = max(previous, frame)
+        action = str(payload.get("action", ""))
+        lifecycle = (*key, action)
+        if event_type == "submission":
+            submissions.setdefault(lifecycle, []).append(frame)
+        if event_type in _EFFECT_EVENT_TYPES:
+            matching = submissions.get(lifecycle, [])
+            if not matching:
+                blockers.append(
+                    f"{event_type} lacks a matching prior submission for "
+                    f"{update_id}/{operation_id}#{generation}:{action}"
+                )
+            elif min(matching) > frame:
+                blockers.append(f"{event_type} predates its matching submission")
+            if event_type == "ability_effect" and action.startswith("move"):
+                blockers.append("ability movement was counted as an ability effect")
+        if event_type == "ownership_snapshot":
+            owners = payload.get("owners")
+            if not isinstance(owners, Mapping):
+                blockers.append("ownership snapshot owners must be an object")
+                continue
+            owner_by_tag: dict[int, str] = {}
+            for owner, raw_tags in owners.items():
+                if not isinstance(raw_tags, Sequence) or isinstance(
+                    raw_tags,
+                    (str, bytes, bytearray),
+                ):
+                    blockers.append("ownership snapshot tags must be arrays")
+                    continue
+                for raw_tag in raw_tags:
+                    if type(raw_tag) is not int or raw_tag <= 0:
+                        blockers.append("ownership snapshot has invalid unit tag")
+                    elif (
+                        raw_tag in owner_by_tag
+                        and owner_by_tag[raw_tag] != str(owner)
+                    ):
+                        blockers.append(f"duplicate owner for unit tag {raw_tag}")
+                    else:
+                        owner_by_tag[raw_tag] = str(owner)
+
+
+def _verify_forbidden_submission(
+    stop: Mapping[str, object],
+    events: Sequence[Mapping[str, object]],
+    blockers: list[str],
+) -> None:
+    rejections = [event for event in events if event.get("event_type") == "rejection"]
+    if not rejections:
+        blockers.append("forbidden action was not rejected")
+        return
+    rejected = {
+        (
+            str(cast(Mapping[str, object], event["identity"]).get("update_id", "")),
+            str(cast(Mapping[str, object], event["identity"]).get("operation_id", "")),
+            int(cast(Mapping[str, object], event["identity"]).get("generation", 0)),
+        )
+        for event in rejections
+    }
+    if any(
+        event.get("event_type") == "submission"
+        and (
+            str(cast(Mapping[str, object], event["identity"]).get("update_id", "")),
+            str(cast(Mapping[str, object], event["identity"]).get("operation_id", "")),
+            int(cast(Mapping[str, object], event["identity"]).get("generation", 0)),
+        )
+        in rejected
+        for event in events
+        if isinstance(event.get("identity"), Mapping)
+    ):
+        blockers.append("forbidden action reached the submission adapter")
+    states = _before_after_states(events)
+    if states is None:
+        blockers.append("forbidden action lacks native before/after state")
+        return
+    fields = stop.get(
+        "preserved_state_fields",
+        ["units", "owners", "operations", "structures", "base_threatened"],
+    )
+    if not isinstance(fields, Sequence) or isinstance(
+        fields,
+        (str, bytes, bytearray),
+    ):
+        blockers.append("preserved_state_fields is invalid")
+        return
+    before, after = states
+    if any(before.get(str(field)) != after.get(str(field)) for field in fields):
+        blockers.append("forbidden action did not preserve runtime state")
+
+
+def _verify_required_effects(
+    stop_type: str,
+    stop: Mapping[str, object],
+    events: Sequence[Mapping[str, object]],
+    blockers: list[str],
+) -> None:
+    effects = [event for event in events if event.get("event_type") in _EFFECT_EVENT_TYPES]
+    keys = {
+        (
+            str(cast(Mapping[str, object], event["identity"])["update_id"]),
+            str(cast(Mapping[str, object], event["identity"])["operation_id"]),
+            int(cast(Mapping[str, object], event["identity"])["generation"]),
+            str(cast(Mapping[str, object], event["payload"]).get("action", "")),
+        )
+        for event in effects
+    }
+    if len(keys) < int(stop.get("count", 1) or 1):
+        blockers.append("required matching effects were not observed")
+    if stop_type == "effect_after_prerequisite_convergence":
+        waits = _event_frames(events, "prerequisite_wait")
+        effect_frames = _event_frames(effects)
+        if not waits or not effect_frames or min(effect_frames) <= max(waits):
+            blockers.append("effect did not follow prerequisite convergence")
+    if stop_type == "updated_generation_effect_observed":
+        generations = {
+            (
+                str(cast(Mapping[str, object], event["identity"])["update_id"]),
+                str(cast(Mapping[str, object], event["identity"])["operation_id"]),
+                int(cast(Mapping[str, object], event["identity"])["generation"]),
+            )
+            for event in events
+            if event.get("event_type") == "generation_change"
+        }
+        if not any(key[:3] in generations for key in keys):
+            blockers.append("updated generation lacks a matching effect")
+    if stop_type == "offense_restored_after_defense":
+        restored = [
+            int(cast(Mapping[str, object], event["identity"])["game_frame"])
+            for event in events
+            if event.get("event_type") == "autonomous_defense"
+            and cast(Mapping[str, object], event["payload"]).get("action")
+            == "restore_offense"
+        ]
+        effect_frames = _event_frames(effects)
+        if not restored or not effect_frames or max(effect_frames) < max(restored):
+            blockers.append("offense effect did not follow defense restoration")
+
+
+def _verify_transfer(
+    stop: Mapping[str, object],
+    events: Sequence[Mapping[str, object]],
+    blockers: list[str],
+) -> None:
+    transfers = [
+        event
+        for event in events
+        if event.get("event_type") == "transfer"
+        and cast(Mapping[str, object], event.get("payload", {})).get("resolution")
+        == "applied"
+    ]
+    if len(transfers) != 1:
+        blockers.append("exactly one applied transfer is required")
+    states = _before_after_states(events)
+    if states is None:
+        blockers.append("transfer lacks native before/after state")
+        return
+    before, after = states
+    before_owners = cast(Mapping[str, object], before.get("owners", {}))
+    after_owners = cast(Mapping[str, object], after.get("owners", {}))
+    source = str(stop.get("source_operation_id", ""))
+    destination = str(stop.get("destination_operation_id", ""))
+    if (
+        len(cast(Sequence[object], after_owners.get(source, ())))
+        >= len(cast(Sequence[object], before_owners.get(source, ())))
+        or len(cast(Sequence[object], after_owners.get(destination, ())))
+        <= len(cast(Sequence[object], before_owners.get(destination, ())))
+    ):
+        blockers.append("transfer ownership did not move source to destination")
+    for sibling in cast(Sequence[object], stop.get("preserved_operation_ids", ())):
+        if before_owners.get(str(sibling)) != after_owners.get(str(sibling)):
+            blockers.append("transfer did not preserve sibling ownership")
+
+
+def _verify_selective_cancellation(
+    stop: Mapping[str, object],
+    events: Sequence[Mapping[str, object]],
+    blockers: list[str],
+) -> None:
+    cancellations = [
+        event for event in events if event.get("event_type") == "cancellation"
+    ]
+    if len(cancellations) != 1:
+        blockers.append("exactly one selective cancellation is required")
+    states = _before_after_states(events)
+    if states is None:
+        blockers.append("selective cancellation lacks native state evidence")
+        return
+    after = states[1]
+    operations = {
+        str(row.get("operation_id", "")): row
+        for row in _mapping_sequence(after.get("operations"))
+    }
+    selected = operations.get(str(stop.get("selected_operation_id", "")), {})
+    sibling = operations.get(str(stop.get("sibling_operation_id", "")), {})
+    if selected.get("active") is not False or sibling.get("active") is not True:
+        blockers.append("selective cancellation removed an unrelated operation")
+
+
+def _verify_emergency_preemption(
+    stop: Mapping[str, object],
+    events: Sequence[Mapping[str, object]],
+    blockers: list[str],
+) -> None:
+    preemptions = [
+        event for event in events if event.get("event_type") == "preemption"
+    ]
+    expected_count = int(stop.get("count", 1) or 1)
+    if len(preemptions) != expected_count:
+        blockers.append("emergency did not preempt the affected offense")
+        return
+    for preemption in preemptions:
+        identity = cast(Mapping[str, object], preemption.get("identity", {}))
+        payload = cast(Mapping[str, object], preemption.get("payload", {}))
+        update_id = str(identity.get("update_id", ""))
+        operation_id = str(identity.get("operation_id", ""))
+        generation = int(identity.get("generation", 0) or 0)
+        frame = int(identity.get("game_frame", 0) or 0)
+        if (
+            identity.get("stage") != "preempted"
+            or payload.get("action") != "retreat"
+            or payload.get("reason") != "emergency_policy"
+        ):
+            blockers.append("emergency preemption evidence is not canonical")
+        prior_attack = any(
+            event.get("event_type") == "submission"
+            and str(
+                cast(Mapping[str, object], event.get("identity", {})).get(
+                    "operation_id",
+                    "",
+                )
+            )
+            == operation_id
+            and int(
+                cast(Mapping[str, object], event.get("identity", {})).get(
+                    "game_frame",
+                    0,
+                )
+                or 0
+            )
+            <= frame
+            and cast(Mapping[str, object], event.get("payload", {})).get(
+                "action"
+            )
+            == "squad_order:attack"
+            for event in events
+        )
+        if not prior_attack:
+            blockers.append("emergency preemption lacks affected offense evidence")
+        retreat_lifecycle = [
+            event
+            for event in events
+            if str(
+                cast(Mapping[str, object], event.get("identity", {})).get(
+                    "update_id",
+                    "",
+                )
+            )
+            == update_id
+            and str(
+                cast(Mapping[str, object], event.get("identity", {})).get(
+                    "operation_id",
+                    "",
+                )
+            )
+            == operation_id
+            and int(
+                cast(Mapping[str, object], event.get("identity", {})).get(
+                    "generation",
+                    0,
+                )
+                or 0
+            )
+            == generation
+            and cast(Mapping[str, object], event.get("payload", {})).get(
+                "action"
+            )
+            == "retreat"
+        ]
+        if not any(
+            event.get("event_type") == "submission"
+            for event in retreat_lifecycle
+        ):
+            blockers.append("emergency retreat was not submitted")
+        if not any(
+            event.get("event_type") == "movement"
+            for event in retreat_lifecycle
+        ):
+            blockers.append("emergency retreat effect was not observed")
+
+
+def _verify_all_terran_events(
+    events: Sequence[Mapping[str, object]],
+) -> list[str]:
+    blockers: list[str] = []
+    expected = {
+        str(item["family"]): {
+            str(ability)
+            for ability in cast(Sequence[object], item["abilities"])
+        }
+        for item in all_terran_capability_matrix()
+    }
+    attempts: dict[str, set[str]] = {}
+    submissions: set[tuple[str, str]] = set()
+    effects: set[tuple[str, str]] = set()
+    blockers_by_action: set[tuple[str, str]] = set()
+    family_by_identity: dict[tuple[str, str, int], str] = {}
+    for event in events:
+        payload = event.get("payload")
+        identity = event.get("identity")
+        if not isinstance(payload, Mapping) or not isinstance(identity, Mapping):
+            continue
+        key = (
+            str(identity.get("update_id", "")),
+            str(identity.get("operation_id", "")),
+            int(identity.get("generation", 0) or 0),
+        )
+        action = str(payload.get("action", ""))
+        ability = str(payload.get("ability", "")) or (
+            action.removeprefix("ability:")
+            if action.startswith("ability:")
+            else ""
+        )
+        family = str(payload.get("family", "")) or family_by_identity.get(key, "")
+        if event.get("event_type") in {"terran_lowering", "family_action_attempt"}:
+            if family:
+                family_by_identity[key] = family
+            if family and ability:
+                attempts.setdefault(family, set()).add(ability)
+        elif event.get("event_type") == "submission" and family and ability:
+            submissions.add((family, ability))
+        elif event.get("event_type") == "ability_effect" and family and ability:
+            effects.add((family, ability))
+        elif (
+            event.get("event_type")
+            in {"production_decision", "prerequisite_wait", "rejection"}
+            and family
+            and ability
+            and str(payload.get("blocker", "") or payload.get("reason", ""))
+        ):
+            blockers_by_action.add((family, ability))
+    if set(attempts) != set(expected):
+        blockers.append("all-Terran matrix does not cover exactly 15 families")
+    for family, abilities in expected.items():
+        if attempts.get(family, set()) != abilities:
+            blockers.append(f"{family} ability attempts are incomplete")
+        for ability in abilities:
+            if (
+                (family, ability) not in submissions
+                and (family, ability) not in blockers_by_action
+            ):
+                blockers.append(f"{family}/{ability} lacks submission or blocker")
+            if (
+                (family, ability) not in effects
+                and (family, ability) not in blockers_by_action
+            ):
+                blockers.append(f"{family}/{ability} lacks effect or blocker")
+    return blockers
+
+
+def _verify_reconnect(
+    events: Sequence[Mapping[str, object]],
+    blockers: list[str],
+) -> None:
+    logical_ids = [
+        str(cast(Mapping[str, object], event["payload"]).get("logical_event_id", ""))
+        for event in events
+        if event.get("event_type") == "web_event"
+    ]
+    replayed = [
+        str(cast(Mapping[str, object], event["payload"]).get("logical_event_id", ""))
+        for event in events
+        if event.get("event_type") == "replay_deduplicated"
+    ]
+    if not logical_ids or len(set(logical_ids)) != len(logical_ids):
+        blockers.append("web event source contains duplicate logical events")
+    if sorted(set(replayed)) != sorted(set(logical_ids)):
+        blockers.append("reconnect replay was not deduplicated exactly once")
+
+
+def _verify_projection_identity(
+    events: Sequence[Mapping[str, object]],
+    blockers: list[str],
+) -> None:
+    projections = [
+        dict(cast(Mapping[str, object], event["identity"]))
+        for event in events
+        if event.get("event_type")
+        in {"web_projection", "hud_projection", "voice_projection"}
+    ]
+    if len(projections) < 3:
+        blockers.append("web/HUD/voice projections are incomplete")
+    elif any(identity != projections[0] for identity in projections[1:]):
+        blockers.append("web/HUD/voice projection identity mismatch")
+
+
+def _before_after_states(
+    events: Sequence[Mapping[str, object]],
+) -> tuple[Mapping[str, object], Mapping[str, object]] | None:
+    before: Mapping[str, object] | None = None
+    after: Mapping[str, object] | None = None
+    for event in events:
+        if event.get("event_type") != "state_snapshot":
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, Mapping) or not isinstance(
+            payload.get("state"),
+            Mapping,
+        ):
+            continue
+        if payload.get("phase") == "before":
+            before = cast(Mapping[str, object], payload["state"])
+        elif payload.get("phase") == "after":
+            after = cast(Mapping[str, object], payload["state"])
+    return (before, after) if before is not None and after is not None else None
+
+
+def _event_frames(
+    events: Sequence[Mapping[str, object]],
+    event_type: str | None = None,
+) -> list[int]:
+    return [
+        int(cast(Mapping[str, object], event["identity"])["game_frame"])
+        for event in events
+        if event_type is None or event.get("event_type") == event_type
+    ]
+
+
+def build_pre_live_journey_bundle(
+    micromachine_binary: Path | str,
+    manifest_path: Path | str = DEFAULT_JOURNEY_MANIFEST,
+    *,
+    command_runner: CommandRunner = subprocess.run,
+) -> bytes:
+    manifest = load_pre_live_journey_manifest(manifest_path)
+    suite = execute_pre_live_journeys(
+        micromachine_binary,
+        manifest_path,
+        command_runner=command_runner,
+    )
+    members: dict[str, bytes] = {
+        "input/PRE_LIVE_JOURNEYS.json": canonical_json_bytes(manifest),
+        "derived/journey-matrix.json": canonical_json_bytes(
+            {
+                key: value
+                for key, value in suite.items()
+                if key not in {"artifacts", "binary_sha256", "embedded_build_input_identity"}
+            }
+        ),
+        "report.md": _markdown_report(suite).encode("utf-8"),
+    }
+    artifacts = cast(dict[str, dict[str, object]], suite["artifacts"])
+    for journey_id, artifact in artifacts.items():
+        events = cast(list[dict[str, object]], artifact["events"])
+        members[f"raw/{journey_id}.jsonl"] = b"".join(
+            canonical_json_bytes(event) + b"\n" for event in events
+        )
+        members[f"product/{journey_id}.json"] = canonical_json_bytes(
+            artifact["products"]
+        )
+    descriptors = [
+        {
+            "name": name,
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "size_bytes": len(payload),
+        }
+        for name, payload in sorted(members.items())
+    ]
+    root_manifest = {
+        "schema_version": PRE_LIVE_JOURNEY_BUNDLE_SCHEMA_VERSION,
+        "evidence_kind": "deterministic_micromachine_pre_live_journeys",
+        "suite_id": manifest["suite_id"],
+        "journey_count": suite["journey_count"],
+        "failed_count": suite["failed_count"],
+        "report_sha256": hashlib.sha256(
+            members["derived/journey-matrix.json"]
+        ).hexdigest(),
+        "members": descriptors,
+    }
+    output = io.BytesIO()
+    with zipfile.ZipFile(
+        output,
+        mode="w",
+        compression=zipfile.ZIP_STORED,
+        allowZip64=False,
+    ) as archive:
+        _write_zip_member(archive, "manifest.json", canonical_json_bytes(root_manifest))
+        for name in sorted(members):
+            _write_zip_member(archive, name, members[name])
+    return output.getvalue()
+
+
+def write_pre_live_journey_bundle(
+    output_path: Path | str,
+    micromachine_binary: Path | str,
+    manifest_path: Path | str = DEFAULT_JOURNEY_MANIFEST,
+    *,
+    command_runner: CommandRunner = subprocess.run,
+) -> None:
+    path = Path(output_path).absolute()
+    if not path.parent.is_dir():
+        raise ValueError("journey bundle output parent is missing")
+    payload = build_pre_live_journey_bundle(
+        micromachine_binary,
+        manifest_path,
+        command_runner=command_runner,
+    )
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            temporary.write(payload)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.chmod(temporary_path, 0o600)
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def verify_pre_live_journey_bundle(bundle: bytes) -> dict[str, object]:
+    blockers: list[str] = []
+    if not isinstance(bundle, bytes):
+        return _verification_result(["journey bundle must be bytes"])
+    if len(bundle) > MAX_JOURNEY_BUNDLE_BYTES:
+        return _verification_result(["journey bundle exceeds the size limit"])
+    try:
+        with zipfile.ZipFile(io.BytesIO(bundle), mode="r") as archive:
+            infos = archive.infolist()
+            names = [info.filename for info in infos]
+            if len(infos) > MAX_JOURNEY_BUNDLE_ENTRIES:
+                blockers.append("journey bundle contains too many ZIP members")
+            if not names or names[0] != "manifest.json":
+                return _verification_result(["manifest.json must be first"])
+            if names[1:] != sorted(names[1:]) or len(names) != len(set(names)):
+                blockers.append("ZIP payload members must be unique and sorted")
+            for info in infos:
+                if (
+                    info.date_time != DETERMINISTIC_ZIP_TIMESTAMP
+                    or info.compress_type != zipfile.ZIP_STORED
+                    or info.create_system != 3
+                    or info.external_attr != _REGULAR_FILE_MODE << 16
+                    or info.extra
+                    or info.comment
+                ):
+                    blockers.append(f"non-deterministic ZIP metadata: {info.filename}")
+                if info.file_size > MAX_JOURNEY_MEMBER_BYTES:
+                    blockers.append(f"ZIP member exceeds size limit: {info.filename}")
+            root = _load_canonical_json_object(
+                archive.read("manifest.json"),
+                label="root manifest",
+                blockers=blockers,
+            )
+            if set(root) != {
+                "schema_version",
+                "evidence_kind",
+                "suite_id",
+                "journey_count",
+                "failed_count",
+                "report_sha256",
+                "members",
+            }:
+                blockers.append("root manifest has an invalid field set")
+            descriptors = root.get("members")
+            if not isinstance(descriptors, list):
+                blockers.append("root manifest members must be a list")
+                descriptors = []
+            descriptor_names = [
+                item.get("name")
+                for item in descriptors
+                if isinstance(item, Mapping)
+            ]
+            if descriptor_names != names[1:]:
+                blockers.append("root manifest member list does not match ZIP")
+            for item in descriptors:
+                if not isinstance(item, Mapping) or set(item) != {
+                    "name",
+                    "sha256",
+                    "size_bytes",
+                }:
+                    blockers.append("invalid root manifest member descriptor")
+                    continue
+                payload = archive.read(str(item["name"]))
+                if hashlib.sha256(payload).hexdigest() != item.get("sha256"):
+                    blockers.append(f"member digest mismatch: {item['name']}")
+                if len(payload) != item.get("size_bytes"):
+                    blockers.append(f"member size mismatch: {item['name']}")
+            manifest = _load_canonical_json_object(
+                archive.read("input/PRE_LIVE_JOURNEYS.json"),
+                label="journey input manifest",
+                blockers=blockers,
+            )
+            try:
+                validated = _validate_pre_live_journey_manifest_payload(manifest)
+            except ValueError as exc:
+                blockers.append(f"journey input manifest is invalid: {exc}")
+                validated = {}
+            specs = cast(list[dict[str, object]], validated.get("journeys", []))
+            expected_names = sorted(
+                {
+                    "input/PRE_LIVE_JOURNEYS.json",
+                    "derived/journey-matrix.json",
+                    "report.md",
+                    *{f"raw/{spec['id']}.jsonl" for spec in specs},
+                    *{f"product/{spec['id']}.json" for spec in specs},
+                }
+            )
+            if names[1:] != expected_names:
+                blockers.append("journey bundle member set does not match input")
+            reports: list[dict[str, object]] = []
+            for spec in specs:
+                journey_id = str(spec["id"])
+                events = _load_canonical_json_lines(
+                    archive.read(f"raw/{journey_id}.jsonl"),
+                    label=f"raw/{journey_id}.jsonl",
+                    blockers=blockers,
+                )
+                products = _load_canonical_json_object(
+                    archive.read(f"product/{journey_id}.json"),
+                    label=f"product/{journey_id}.json",
+                    blockers=blockers,
+                )
+                verdict = verify_pre_live_journey_events(spec, events)
+                derived_blockers = [
+                    *cast(list[str], verdict["blockers"]),
+                    *_product_path_blockers(products),
+                ]
+                reports.append(
+                    {
+                        **verdict,
+                        "ok": not derived_blockers,
+                        "status": "passed" if not derived_blockers else "failed",
+                        "blockers": derived_blockers,
+                        "product_paths": products,
+                    }
+                )
+            failures = [report["id"] for report in reports if not report["ok"]]
+            recomputed = {
+                "schema_version": PRE_LIVE_JOURNEY_REPORT_SCHEMA_VERSION,
+                "suite_id": validated.get("suite_id"),
+                "manifest_sha256": hashlib.sha256(
+                    canonical_json_bytes(validated)
+                ).hexdigest(),
+                "journey_count": len(reports),
+                "passed_count": len(reports) - len(failures),
+                "failed_count": len(failures),
+                "failures": failures,
+                "ok": not failures,
+                "status": "passed" if not failures else "failed",
+                "journeys": reports,
+            }
+            matrix_bytes = archive.read("derived/journey-matrix.json")
+            matrix = _load_canonical_json_object(
+                matrix_bytes,
+                label="derived journey matrix",
+                blockers=blockers,
+            )
+            if matrix != recomputed:
+                blockers.append("derived journey matrix was not derived from raw evidence")
+            if recomputed["ok"] is not True:
+                blockers.append("recomputed journey matrix is not green")
+            if archive.read("report.md") != _markdown_report(recomputed).encode(
+                "utf-8"
+            ):
+                blockers.append("Markdown report was not derived from raw evidence")
+            if root.get("suite_id") != validated.get("suite_id"):
+                blockers.append("root manifest suite_id mismatch")
+            if root.get("journey_count") != len(reports):
+                blockers.append("root manifest journey_count mismatch")
+            if root.get("failed_count") != len(failures):
+                blockers.append("root manifest failed_count mismatch")
+            if hashlib.sha256(matrix_bytes).hexdigest() != root.get("report_sha256"):
+                blockers.append("derived report digest mismatch")
+    except (KeyError, OSError, ValueError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
+        blockers.append(f"journey bundle could not be verified: {exc}")
+    return _verification_result(blockers)
+
+
+def _load_canonical_json_object(
+    payload: bytes,
+    *,
+    label: str,
+    blockers: list[str],
+) -> dict[str, object]:
+    try:
+        value = json.loads(
+            payload,
+            object_pairs_hook=_reject_duplicate_json_object_keys,
+        )
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+        blockers.append(f"{label} is invalid JSON: {exc}")
+        return {}
+    if not isinstance(value, dict):
+        blockers.append(f"{label} must be a JSON object")
+        return {}
+    if canonical_json_bytes(value) != payload:
+        blockers.append(f"{label} is not canonical JSON")
+    return value
+
+
+def _load_canonical_json_lines(
+    payload: bytes,
+    *,
+    label: str,
+    blockers: list[str],
+) -> list[dict[str, object]]:
+    if not payload or not payload.endswith(b"\n"):
+        blockers.append(f"{label} must be non-empty newline-terminated JSONL")
+        return []
+    return [
+        _load_canonical_json_object(
+            raw_line,
+            label=f"{label}:{index}",
+            blockers=blockers,
+        )
+        for index, raw_line in enumerate(payload.splitlines(), start=1)
+    ]
+
+
+def _provider_output(preset: str) -> dict[str, object]:
+    if preset == "parallel_scout_attack_defend":
+        return _operations_provider(
+            "parallel scout attack defend",
+            (
+                _operation_provider("recon-alpha", "scout_with_units", "TERRAN_MARINE", 2, "scout"),
+                _operation_provider("assault-bravo", "pressure_with_main_army", "TERRAN_MARINE", 4, "frontline"),
+                _operation_provider("defense-charlie", "defend_with_units", "TERRAN_SIEGETANK", 1, "defensive_hold"),
+            ),
+        )
+    if preset == "single_tank_attack":
+        return _operations_provider(
+            "tank attack after prerequisites",
+            (_operation_provider("assault-tank", "pressure_with_main_army", "TERRAN_SIEGETANK", 1, "siege_support"),),
+        )
+    if preset == "safe_partial_attack":
+        return _operations_provider(
+            "safe partial attack",
+            (
+                _operation_provider(
+                    "partial-assault",
+                    "pressure_with_main_army",
+                    "TERRAN_MARINE",
+                    3,
+                    "frontline",
+                    minimum=3,
+                    maximum=4,
+                    allow_partial=True,
+                ),
+            ),
+        )
+    if preset == "strict_marine_attack":
+        return _operations_provider(
+            "strict marine attack",
+            (_operation_provider("strict-assault", "pressure_with_main_army", "TERRAN_MARINE", 4, "frontline"),),
+        )
+    if preset in {"transfer_baseline", "transfer_rejection_baseline"}:
+        operations = [
+            _operation_provider("recon-alpha", "scout_with_units", "TERRAN_MARINE", 2, "scout"),
+            _operation_provider("assault-bravo", "pressure_with_main_army", "TERRAN_MARINE", 4, "frontline"),
+        ]
+        if preset == "transfer_baseline":
+            operations.append(
+                _operation_provider("defense-charlie", "defend_with_units", "TERRAN_SIEGETANK", 1, "defensive_hold")
+            )
+        return _operations_provider("transfer baseline", operations)
+    if preset in {"transfer_one_marine", "unsafe_transfer_all"}:
+        transfer_count = 1
+        source_count = 1 if preset == "transfer_one_marine" else 2
+        source_before_count = 2 if preset == "transfer_one_marine" else 3
+        destination_count = 5
+        source = _operation_provider(
+            "recon-alpha",
+            "scout_with_units",
+            "TERRAN_MARINE",
+            source_count,
+            "scout",
+        )
+        source["operation_edit"] = {
+            "action": "transfer_out",
+            "counterpart_operation_id": "assault-bravo",
+            "unit_selection": [
+                {
+                    "unit_type": "TERRAN_MARINE",
+                    "count": transfer_count,
+                    "role": "scout",
+                }
+            ],
+            "before_composition": [
+                {
+                    "unit_type": "TERRAN_MARINE",
+                    "count": source_before_count,
+                    "role": "scout",
+                }
+            ],
+            "after_composition": (
+                [
+                    {
+                        "unit_type": "TERRAN_MARINE",
+                        "count": source_count,
+                        "role": "scout",
+                    }
+                ]
+                if source_count
+                else []
+            ),
+            "explicit_override": True,
+            "confirmation_policy": "auto",
+        }
+        source["composition_requirements"] = deepcopy(
+            source["operation_edit"]["after_composition"]
+        )
+        source_task = cast(dict[str, object], source["tactical_task"])
+        source_task["min_units"] = source_count
+        source_task["max_units"] = source_count
+        source_scope = cast(dict[str, object], source["scope"])
+        source_scope["min_units"] = source_count
+        source_scope["max_units"] = source_count
+        destination = _operation_provider(
+            "assault-bravo",
+            "pressure_with_main_army",
+            "TERRAN_MARINE",
+            destination_count,
+            "frontline",
+        )
+        destination["operation_edit"] = {
+            "action": "transfer_in",
+            "counterpart_operation_id": "recon-alpha",
+            "unit_selection": [
+                {
+                    "unit_type": "TERRAN_MARINE",
+                    "count": transfer_count,
+                    "role": "scout",
+                }
+            ],
+            "before_composition": [
+                {"unit_type": "TERRAN_MARINE", "count": 4, "role": "frontline"}
+            ],
+            "after_composition": [
+                {
+                    "unit_type": "TERRAN_MARINE",
+                    "count": 4,
+                    "role": "frontline",
+                },
+                {
+                    "unit_type": "TERRAN_MARINE",
+                    "count": transfer_count,
+                    "role": "scout",
+                }
+            ],
+            "explicit_override": True,
+            "confirmation_policy": "auto",
+        }
+        destination["composition_requirements"] = deepcopy(
+            destination["operation_edit"]["after_composition"]
+        )
+        destination["unit_roles"] = [
+            {
+                "unit_type": "TERRAN_MARINE",
+                "role": "frontline",
+                "priority": 0.7,
+                "ability_policy": "if_available",
+            },
+            {
+                "unit_type": "TERRAN_MARINE",
+                "role": "scout",
+                "priority": 0.8,
+                "ability_policy": "escape",
+            },
+        ]
+        return _operations_provider(preset.replace("_", " "), (source, destination))
+    if preset in {"reinforcement_baseline", "selective_cancel_baseline"}:
+        return _operations_provider(
+            "parallel recon and assault",
+            (
+                _operation_provider(
+                    "recon-alpha",
+                    "scout_with_units",
+                    "TERRAN_MARINE",
+                    2 if preset == "reinforcement_baseline" else 1,
+                    "scout",
+                ),
+                _operation_provider(
+                    "assault-bravo",
+                    "pressure_with_main_army",
+                    "TERRAN_MARINE" if preset == "reinforcement_baseline" else "TERRAN_SIEGETANK",
+                    4 if preset == "reinforcement_baseline" else 1,
+                    "frontline" if preset == "reinforcement_baseline" else "siege_support",
+                ),
+            ),
+        )
+    if preset == "reinforce_assault":
+        return _operations_provider(
+            "reinforce assault",
+            (_operation_provider("assault-bravo", "pressure_with_main_army", "TERRAN_MARINE", 6, "frontline"),),
+        )
+    if preset in {"retarget_baseline", "retarget_enemy_main"}:
+        return _operations_provider(
+            "retarget assault",
+            (
+                _operation_provider(
+                    "assault-bravo",
+                    "pressure_with_main_army",
+                    "TERRAN_MARINE",
+                    4,
+                    "frontline",
+                    location=(
+                        "enemy_natural"
+                        if preset == "retarget_baseline"
+                        else "enemy_main"
+                    ),
+                ),
+            ),
+        )
+    if preset == "cancel_recon_only":
+        operation = _operation_provider(
+            "recon-alpha",
+            "scout_with_units",
+            "TERRAN_MARINE",
+            1,
+            "scout",
+        )
+        operation["lifetime"] = {
+            "mode": "until_cancelled",
+            "completion_conditions": ["cancelled_by_user"],
+            "completion_state": "cancelled",
+        }
+        return _operations_provider("cancel recon only", (operation,))
+    if preset in {"emergency_attack_baseline", "autonomous_defense_attack"}:
+        return _operations_provider(
+            "marine assault",
+            (_operation_provider("assault-bravo", "pressure_with_main_army", "TERRAN_MARINE", 4, "frontline"),),
+        )
+    if preset == "emergency_retreat":
+        return {
+            "source": "llm",
+            "goal": "retreat now",
+            "override_level": "emergency",
+            "ttl_seconds": 45,
+            "emergency": {"cancel_attacks": True, "force_retreat": True},
+        }
+    if preset in {"reconnect_recon", "voice_recon"}:
+        return _operations_provider(
+            "marine recon",
+            (
+                _operation_provider(
+                    "recon-alpha",
+                    "scout_with_units",
+                    "TERRAN_MARINE",
+                    1 if preset == "reconnect_recon" else 2,
+                    "scout",
+                ),
+            ),
+        )
+    if preset == "all_terran_matrix":
+        operations: list[dict[str, object]] = []
+        for row in all_terran_capability_matrix():
+            family = str(row["family"])
+            unit_type = str(cast(Sequence[object], row["unit_types"])[0])
+            role = str(row["default_role"])
+            for ability in cast(Sequence[object], row["abilities"]):
+                ability_name = str(ability)
+                operation = _operation_provider(
+                    f"matrix-{family}-{ability_name}",
+                    "execute_ability",
+                    unit_type,
+                    1,
+                    role,
+                )
+                cast(dict[str, object], operation["tactical_task"])["ability"] = (
+                    ability_name
+                )
+                operations.append(operation)
+        return _operations_provider(
+            "all Terran family abilities",
+            operations,
+            command_layer="micro",
+        )
+    raise ValueError(f"unknown pre-live journey preset: {preset}")
+
+
+def _operation_provider(
+    operation_id: str,
+    task_type: str,
+    unit_type: str,
+    count: int,
+    role: str,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+    allow_partial: bool = False,
+    location: str = "enemy_main",
+) -> dict[str, object]:
+    minimum = count if minimum is None else minimum
+    maximum = count if maximum is None else maximum
+    return {
+        "operation_id": operation_id,
+        "goal": operation_id.replace("-", " "),
+        "tactical_task": {
+            "task_type": task_type,
+            "unit_classes": [unit_type],
+            "location_intent": location,
+            "min_units": minimum,
+            "max_units": maximum,
+            "allow_partial": allow_partial,
+            "duration_seconds": 300,
+        },
+        "scope": {
+            "army_group": "scout" if task_type == "scout_with_units" else "main",
+            "unit_classes": [unit_type],
+            "location_intent": location,
+            "min_units": minimum,
+            "max_units": maximum,
+            "allow_partial_scope": allow_partial,
+        },
+        "composition_requirements": [
+            {"unit_type": unit_type, "count": count, "role": role}
+        ],
+        "unit_roles": [
+            {
+                "unit_type": unit_type,
+                "role": role,
+                "priority": 0.7,
+                "ability_policy": "if_available",
+            }
+        ],
+    }
+
+
+def _operations_provider(
+    goal: str,
+    operations: Iterable[Mapping[str, object]],
+    *,
+    command_layer: str = "operation",
+) -> dict[str, object]:
+    return {
+        "source": "llm",
+        "goal": goal,
+        "command_layer": command_layer,
+        "operations": [deepcopy(dict(operation)) for operation in operations],
+    }
+
+
+def _update_operations(
+    update: Mapping[str, object],
+) -> list[dict[str, object]]:
+    vector = update.get("vector")
+    operations = vector.get("operations") if isinstance(vector, Mapping) else None
+    return _mapping_sequence(operations)
+
+
+def _operation_by_id(
+    update: Mapping[str, object],
+    operation_id: str,
+) -> dict[str, object]:
+    for operation in _update_operations(update):
+        if operation.get("operation_id") == operation_id:
+            return operation
+    raise ValueError(f"operation is missing from update: {operation_id}")
+
+
+def _operation_requirements(
+    operation: Mapping[str, object],
+) -> list[dict[str, object]]:
+    requirements = _mapping_sequence(operation.get("composition_requirements"))
+    if requirements:
+        return requirements
+    task = cast(Mapping[str, object], operation.get("tactical_task", {}))
+    classes = cast(Sequence[object], task.get("unit_classes", ()))
+    return [
+        {
+            "unit_type": str(classes[0]) if classes else "TERRAN_MARINE",
+            "count": int(task.get("min_units", 1) or 1),
+            "role": "frontline",
+        }
+    ]
+
+
+def _product_path_blockers(products: Mapping[str, object]) -> list[str]:
+    blockers: list[str] = []
+    if products.get("execution_error"):
+        blockers.append(f"journey execution failed: {products['execution_error']}")
+    required = (
+        "native_adapter",
+        "compiler_results",
+        "bridge_validations",
+        "operation_execution_reports",
+        "tactical_evidence",
+        "family_evidence",
+        "battlefield_projections",
+        "web_status",
+        "timeline_results",
+    )
+    for name in required:
+        value = products.get(name)
+        if name == "native_adapter":
+            if not isinstance(value, Mapping):
+                blockers.append(f"product path was not exercised: {name}")
+        elif not isinstance(value, list) or not value:
+            blockers.append(f"product path was not exercised: {name}")
+    validations = products.get("bridge_validations")
+    if isinstance(validations, list) and any(
+        not isinstance(item, Mapping) or item.get("accepted") is not True
+        for item in validations
+    ):
+        blockers.append("one or more bridge validations were rejected")
+    projections = products.get("battlefield_projections")
+    if isinstance(projections, list):
+        for item in projections:
+            if (
+                not isinstance(item, Mapping)
+                or not isinstance(item.get("validated"), Mapping)
+                or cast(Mapping[str, object], item["validated"]).get("ok")
+                is not True
+                or not isinstance(item.get("selected"), Mapping)
+                or cast(Mapping[str, object], item["selected"]).get("ok")
+                is not True
+            ):
+                blockers.append("one or more battlefield projections were rejected")
+                break
+    return blockers
+
+
+def _mapping_sequence(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, Sequence) or isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        return []
+    return [dict(item) for item in value if isinstance(item, Mapping)]
+
+
+def _string_list(value: object, *, label: str) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        raise ValueError(f"{label} must be an array")
+    result = [str(item) for item in value]
+    if any(not item for item in result) or len(result) != len(set(result)):
+        raise ValueError(f"{label} contains invalid values")
+    return sorted(result)
+
+
+def _reject_duplicate_json_object_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _as_bytes(value: object) -> bytes:
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, str):
+        return value.encode("utf-8")
+    return bytes(value or b"")
+
+
+def _markdown_report(suite: Mapping[str, object]) -> str:
+    lines = [
+        "# MicroMachine deterministic pre-live journeys",
+        "",
+        f"- Suite: `{suite['suite_id']}`",
+        f"- Journeys: {suite['journey_count']}",
+        f"- Passed: {suite['passed_count']}",
+        f"- Failed: {suite['failed_count']}",
+        "",
+        "| Journey | Status | Raw events |",
+        "|---|---:|---:|",
+    ]
+    for journey in cast(Sequence[Mapping[str, object]], suite["journeys"]):
+        lines.append(
+            f"| `{journey['id']}` | {journey['status']} | {journey['event_count']} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _write_zip_member(
+    archive: zipfile.ZipFile,
+    name: str,
+    payload: bytes,
+) -> None:
+    info = zipfile.ZipInfo(name, date_time=DETERMINISTIC_ZIP_TIMESTAMP)
+    info.compress_type = zipfile.ZIP_STORED
+    info.create_system = 3
+    info.create_version = 20
+    info.extract_version = 20
+    info.external_attr = _REGULAR_FILE_MODE << 16
+    info.internal_attr = 0
+    info.extra = b""
+    info.comment = b""
+    archive.writestr(info, payload)
+
+
+def _verification_result(blockers: Sequence[str]) -> dict[str, object]:
+    return {
+        "ok": not blockers,
+        "status": "accepted" if not blockers else "blocked",
+        "blockers": list(blockers),
+    }
+
+
+def build_argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Execute deterministic MicroMachine pre-live journeys."
+    )
+    parser.add_argument("--manifest", default=str(DEFAULT_JOURNEY_MANIFEST))
+    parser.add_argument("--micromachine-binary", required=True)
+    parser.add_argument("--emit-bundle", metavar="OUTPUT")
+    parser.add_argument("--report", action="store_true")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_argument_parser().parse_args(argv)
+    try:
+        if args.emit_bundle:
+            write_pre_live_journey_bundle(
+                args.emit_bundle,
+                args.micromachine_binary,
+                args.manifest,
+            )
+            verification = verify_pre_live_journey_bundle(
+                Path(args.emit_bundle).read_bytes()
+            )
+            print(canonical_json_bytes(verification).decode("utf-8"))
+            return 0 if verification["ok"] is True else 1
+        report = execute_pre_live_journeys(
+            args.micromachine_binary,
+            args.manifest,
+        )
+        print(
+            _markdown_report(report)
+            if args.report
+            else canonical_json_bytes(
+                {
+                    key: value
+                    for key, value in report.items()
+                    if key != "artifacts"
+                }
+            ).decode("utf-8")
+        )
+        return 0 if report["ok"] is True else 1
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        print(f"pre-live journey execution failed: {exc}", file=os.sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
