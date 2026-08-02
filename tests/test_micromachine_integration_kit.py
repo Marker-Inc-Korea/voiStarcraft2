@@ -286,6 +286,11 @@ BOUNDED_TERMINAL_OPERATION_HUD_PATCH_FILE = (
     / "patches"
     / "0076-bounded-terminal-operation-hud.patch"
 )
+PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0078-production-path-journey-review-closure.patch"
+)
 S2CLIENT_PATCH_FILE = KIT_DIR / "patches" / "0001-s2client-macos-launchservices.patch"
 BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
 PROBE_SCRIPT = KIT_DIR / "scripts" / "probe_macos_local.sh"
@@ -1010,12 +1015,12 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
         self.assertEqual(
             [patch["order"] for patch in bundle],
-            list(range(1, 78)),
+            list(range(1, 79)),
         )
-        self.assertEqual(len(set(manifest_paths)), 77)
+        self.assertEqual(len(set(manifest_paths)), 78)
         self.assertEqual(
             manifest_paths[-1],
-            "patches/0077-deterministic-pre-live-journey-adapter.patch",
+            "patches/0078-production-path-journey-review-closure.patch",
         )
         self.assertTrue(
             all((KIT_DIR / path).is_file() for path in manifest_paths)
@@ -1306,6 +1311,71 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 '"${DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH_FILE}"'
             ),
         )
+
+    def test_production_path_journey_review_patch_is_registered(self) -> None:
+        manifest = json.loads((KIT_DIR / "HOOK_MANIFEST.json").read_text())
+        self.assertEqual(
+            {
+                "path": (
+                    "patches/"
+                    "0078-production-path-journey-review-closure.patch"
+                ),
+                "order": 78,
+            },
+            {
+                "path": manifest["patch_bundle"][77]["path"],
+                "order": manifest["patch_bundle"][77]["order"],
+            },
+        )
+
+        build_script = BUILD_SCRIPT.read_text()
+        patch_variable = (
+            "PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE"
+        )
+        self.assertIn(
+            f'{patch_variable}="${{REPO_ROOT}}/integrations/'
+            "micromachine/patches/"
+            '0078-production-path-journey-review-closure.patch"',
+            build_script,
+        )
+        prior_apply = build_script.index(
+            "apply --recount --ignore-space-change --whitespace=nowarn "
+            '"${DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH_FILE}"'
+        )
+        patch_check = build_script.index(
+            "apply --recount --check --ignore-space-change "
+            '--whitespace=nowarn "${PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE}"'
+        )
+        patch_apply = build_script.index(
+            "apply --recount --ignore-space-change --whitespace=nowarn "
+            '"${PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE}"'
+        )
+        blackboard_copy = build_script.index(
+            'cp "${BLACKBOARD_HEADER_FILE}" '
+            '"${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"'
+        )
+        self.assertLess(prior_apply, patch_check)
+        self.assertLess(patch_check, patch_apply)
+        self.assertLess(patch_apply, blackboard_copy)
+        self.assertEqual(
+            2,
+            build_script.count(
+                "--micromachine-production-path-journey-review-closure-patch "
+                '"${PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE}"'
+            ),
+        )
+        parse_result = subprocess.run(
+            [
+                "git",
+                "apply",
+                "--numstat",
+                str(PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, parse_result.returncode, parse_result.stderr)
 
     def test_battlefield_projection_patch_has_authoritative_runtime_contract(
         self,
@@ -5818,8 +5888,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "patches/0075-battlefield-review-closure.patch",
             "patches/0076-bounded-terminal-operation-hud.patch",
             "patches/0077-deterministic-pre-live-journey-adapter.patch",
-            "through `0077`",
-            "schema-77 report",
+            "patches/0078-production-path-journey-review-closure.patch",
+            "through `0078`",
+            "schema-78 report",
         )
         for term in required_terms:
             with self.subTest(term=term):
@@ -6666,6 +6737,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "0075-battlefield-review-closure.patch",
             "0076-bounded-terminal-operation-hud.patch",
             "0077-deterministic-pre-live-journey-adapter.patch",
+            "0078-production-path-journey-review-closure.patch",
             "0001-s2client-macos-launchservices.patch",
             "OPERATION_STATE_PATCH_FILE",
             "ADDON_RECOVERY_PATCH_FILE",
@@ -6726,6 +6798,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE",
             "BOUNDED_TERMINAL_OPERATION_HUD_PATCH_FILE",
             "DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH_FILE",
+            "PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE",
             "--micromachine-explicit-ability-production-isolation-patch",
             "--micromachine-explicit-ability-attempt-lifecycle-patch",
             "--micromachine-explicit-ability-review-closure-patch",
@@ -6745,6 +6818,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "--micromachine-battlefield-review-closure-patch",
             "--micromachine-bounded-terminal-operation-hud-patch",
             "--micromachine-deterministic-pre-live-journey-adapter-patch",
+            "--micromachine-production-path-journey-review-closure-patch",
             "--write-embedded-identity-header",
             "DSC2Api_SC2API_LIB",
             "reset --hard",

@@ -393,6 +393,11 @@
       "path": "patches/0077-deterministic-pre-live-journey-adapter.patch",
       "order": 77,
       "scope": "add a deterministic native pre-live journey adapter and CTest that derive raw ownership, submission, effect, battlefield, and HUD evidence through runtime-used MicroMachine helpers"
+    },
+    {
+      "path": "patches/0078-production-path-journey-review-closure.patch",
+      "order": 78,
+      "scope": "close deterministic journey review findings by routing production ownership, Squad orders, and SC2 action submission through shared production entrypoints; consume resource, reconnect, prerequisite, and voice initial state; preserve both active transfer endpoints on rejection; and emit schema-2 raw receipts for causal verification"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {

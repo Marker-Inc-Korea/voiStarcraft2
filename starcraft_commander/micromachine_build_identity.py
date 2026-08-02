@@ -26,7 +26,7 @@ SANITIZED_GIT_ENV: Final[dict[str, str]] = {
     "LC_ALL": "C",
     "PATH": "/usr/bin:/bin",
 }
-MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 77
+MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 78
 MICROMACHINE_SOURCE_ATTESTATION_SCHEMA_VERSION: Final[int] = 5
 MICROMACHINE_BUILD_TRANSACTION_SCHEMA_VERSION: Final[int] = 1
 MICROMACHINE_CTEST_REGISTRY_SCHEMA_VERSION: Final[int] = 1
@@ -592,6 +592,13 @@ DEFAULT_MICROMACHINE_DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH: Final[Path] =
     / "patches"
     / "0077-deterministic-pre-live-journey-adapter.patch"
 )
+DEFAULT_MICROMACHINE_PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0078-production-path-journey-review-closure.patch"
+)
 DEFAULT_S2CLIENT_PATCH: Final[Path] = (
     REPO_ROOT
     / "integrations"
@@ -842,6 +849,9 @@ class MicroMachineBuildIdentityConfig:
     )
     micromachine_deterministic_pre_live_journey_adapter_patch: Path = (
         DEFAULT_MICROMACHINE_DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH
+    )
+    micromachine_production_path_journey_review_closure_patch: Path = (
+        DEFAULT_MICROMACHINE_PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH
     )
     s2client_patch: Path = DEFAULT_S2CLIENT_PATCH
     hook_manifest: Path = DEFAULT_HOOK_MANIFEST
@@ -1280,6 +1290,11 @@ def build_micromachine_build_identity(
                 config.micromachine_deterministic_pre_live_journey_adapter_patch
             )
         ),
+        "micromachine_production_path_journey_review_closure_patch_sha256": (
+            _sha256_file(
+                config.micromachine_production_path_journey_review_closure_patch
+            )
+        ),
         "s2client_patch_sha256": _sha256_file(config.s2client_patch),
         "hook_manifest_sha256": _sha256_file(config.hook_manifest),
         "map_pool_sha256": _sha256_file(config.map_pool),
@@ -1673,6 +1688,9 @@ def build_micromachine_build_identity(
             ),
             "micromachine_deterministic_pre_live_journey_adapter_patch": str(
                 config.micromachine_deterministic_pre_live_journey_adapter_patch
+            ),
+            "micromachine_production_path_journey_review_closure_patch": str(
+                config.micromachine_production_path_journey_review_closure_patch
             ),
             "embedded_build_identity_header": str(
                 config.embedded_build_identity_header_path
@@ -2331,6 +2349,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
             DEFAULT_MICROMACHINE_DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH
         ),
     )
+    parser.add_argument(
+        "--micromachine-production-path-journey-review-closure-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH
+        ),
+    )
     parser.add_argument("--s2client-patch", default=str(DEFAULT_S2CLIENT_PATCH))
     parser.add_argument("--hook-manifest", default=str(DEFAULT_HOOK_MANIFEST))
     parser.add_argument("--map-pool", default=str(DEFAULT_MAP_POOL))
@@ -2602,6 +2626,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         micromachine_deterministic_pre_live_journey_adapter_patch=Path(
             args.micromachine_deterministic_pre_live_journey_adapter_patch
+        ),
+        micromachine_production_path_journey_review_closure_patch=Path(
+            args.micromachine_production_path_journey_review_closure_patch
         ),
         s2client_patch=Path(args.s2client_patch),
         hook_manifest=Path(args.hook_manifest),

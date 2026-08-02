@@ -20,6 +20,7 @@ from starcraft_commander.micromachine_pre_live_artifact import (
 from starcraft_commander.micromachine_pre_live_journeys import (
     DEFAULT_JOURNEY_MANIFEST,
     DETERMINISTIC_ZIP_TIMESTAMP,
+    _markdown_report,
     build_pre_live_journey_bundle,
     execute_pre_live_journeys,
     load_pre_live_journey_manifest,
@@ -80,6 +81,94 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
                 for name in required_paths:
                     self.assertTrue(products[name], name)
 
+    def test_native_initial_state_and_production_receipts_are_consumed(
+        self,
+    ) -> None:
+        shortage = self.artifacts["shortage_prerequisite_wait"]["products"][
+            "native_adapter"
+        ]
+        self.assertEqual(100, shortage["input"]["initial_state"]["minerals"])
+        self.assertEqual(0, shortage["input"]["initial_state"]["vespene"])
+        self.assertEqual(500, shortage["output"]["final_state"]["minerals"])
+        self.assertEqual(125, shortage["output"]["final_state"]["vespene"])
+
+        reconnect = self.artifacts["event_reconnect_replay"]["products"][
+            "native_adapter"
+        ]
+        self.assertEqual(1, reconnect["input"]["initial_state"]["event_cursor"])
+        self.assertEqual(1, reconnect["output"]["final_state"]["event_cursor"])
+        reconnect_event = next(
+            event
+            for event in reconnect["output"]["events"]
+            if event["event_type"] == "client_reconnect"
+        )
+        self.assertEqual(1, reconnect_event["payload"]["after_event_seq"])
+
+        voice = self.artifacts["voice_readback_callout_identity"]["products"][
+            "native_adapter"
+        ]
+        self.assertIs(True, voice["input"]["initial_state"]["voice_enabled"])
+        self.assertIs(False, voice["input"]["initial_state"]["muted"])
+        self.assertIs(True, voice["output"]["final_state"]["voice_enabled"])
+        self.assertIs(False, voice["output"]["final_state"]["muted"])
+
+        native = self.artifacts["safe_partial_launch"]["products"][
+            "native_adapter"
+        ]["output"]
+        receipts = [
+            event
+            for event in native["events"]
+            if event["event_type"] == "production_path_receipt"
+        ]
+        by_entrypoint = {
+            entrypoint: sum(
+                event["payload"]["entrypoint"] == entrypoint
+                for event in receipts
+            )
+            for entrypoint in {
+                "voiProductionAssignOperationOwner",
+                "voiProductionIssueSquadOrder",
+                "voiProductionSubmitSc2Action",
+            }
+        }
+        production_path = native["production_path"]
+        self.assertEqual(
+            by_entrypoint["voiProductionAssignOperationOwner"],
+            production_path["operation_ownership_receipt_count"],
+        )
+        self.assertEqual(
+            by_entrypoint["voiProductionIssueSquadOrder"],
+            production_path["squad_order_receipt_count"],
+        )
+        self.assertEqual(
+            by_entrypoint["voiProductionSubmitSc2Action"],
+            production_path["sc2_submission_receipt_count"],
+        )
+
+    def test_transfer_rejection_preserves_byte_identical_active_endpoints(
+        self,
+    ) -> None:
+        events = self._events("transfer_rejection_preserves_active")
+        snapshots = [
+            event["payload"]["state"]
+            for event in events
+            if event["event_type"] == "state_snapshot"
+        ]
+        self.assertEqual(2, len(snapshots))
+        for state in snapshots:
+            state.pop("frame", None)
+        self.assertEqual(
+            canonical_json_bytes(snapshots[0]),
+            canonical_json_bytes(snapshots[1]),
+        )
+        for state in snapshots:
+            active = {
+                operation["operation_id"]
+                for operation in state["operations"]
+                if operation["active"] is True
+            }
+            self.assertTrue({"recon-alpha", "assault-bravo"}.issubset(active))
+
     def test_bundle_is_byte_identical_and_recomputed_from_raw_evidence(self) -> None:
         first = build_pre_live_journey_bundle(MICROMACHINE_BINARY)
         second = build_pre_live_journey_bundle(MICROMACHINE_BINARY)
@@ -107,6 +196,36 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
         self.assertFalse(rejected["ok"], rejected)
         self.assertIn(
             "derived journey matrix was not derived from raw evidence",
+            rejected["blockers"],
+        )
+
+    def test_forged_product_matrix_and_report_fail_executable_replay(
+        self,
+    ) -> None:
+        entries = _read_zip(build_pre_live_journey_bundle(MICROMACHINE_BINARY))
+        journey_id = "safe_partial_launch"
+        product_name = f"product/{journey_id}.json"
+        products = json.loads(entries[product_name])
+        products["compiler_results"][0]["status"] = "forged-published"
+        entries[product_name] = canonical_json_bytes(products)
+
+        matrix = json.loads(entries["derived/journey-matrix.json"])
+        journey = next(
+            item for item in matrix["journeys"] if item["id"] == journey_id
+        )
+        journey["product_paths"] = products
+        entries["derived/journey-matrix.json"] = canonical_json_bytes(matrix)
+        entries["report.md"] = _markdown_report(matrix).encode("utf-8")
+
+        rejected = verify_pre_live_journey_bundle(
+            _rebuild_journey_bundle(entries)
+        )
+        self.assertFalse(rejected["ok"], rejected)
+        self.assertIn(
+            (
+                f"{journey_id}: product evidence was not rederived "
+                "by the executable product paths"
+            ),
             rejected["blockers"],
         )
 
@@ -142,9 +261,12 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
             "duplicate owner": self._duplicate_owner,
             "protected minimum submission": self._forbidden_submission,
             "published without submission": self._remove_submission,
+            "noncanonical submission stage": self._submission_stage,
             "wrong effect identity": self._wrong_effect_identity,
+            "noncanonical effect stage": self._effect_stage,
             "stale frame": self._stale_effect_frame,
             "transfer state mutation": self._mutate_transfer_rejection_state,
+            "transfer inactive endpoint": self._deactivate_transfer_endpoint,
             "selective cancellation": self._remove_sibling,
             "emergency preemption": self._remove_preemption,
             "ability movement": self._ability_movement,
@@ -214,6 +336,18 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
         movement["identity"]["update_id"] = "foreign-update"
         return journey_id, events
 
+    def _submission_stage(self) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "safe_partial_launch"
+        events = self._events(journey_id)
+        _first_event(events, "submission")["identity"]["stage"] = "published"
+        return journey_id, events
+
+    def _effect_stage(self) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "safe_partial_launch"
+        events = self._events(journey_id)
+        _first_event(events, "movement")["identity"]["stage"] = "submitted"
+        return journey_id, events
+
     def _stale_effect_frame(self) -> tuple[str, list[dict[str, object]]]:
         journey_id = "safe_partial_launch"
         events = self._events(journey_id)
@@ -235,6 +369,25 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
             if event["event_type"] == "state_snapshot"
         ]
         snapshots[-1]["payload"]["state"]["owners"]["recon-alpha"] = []
+        return journey_id, events
+
+    def _deactivate_transfer_endpoint(
+        self,
+    ) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "transfer_rejection_preserves_active"
+        events = self._events(journey_id)
+        after = next(
+            event
+            for event in events
+            if event["event_type"] == "state_snapshot"
+            and event["payload"]["phase"] == "after"
+        )
+        operation = next(
+            row
+            for row in after["payload"]["state"]["operations"]
+            if row["operation_id"] == "assault-bravo"
+        )
+        operation["active"] = False
         return journey_id, events
 
     def _remove_sibling(self) -> tuple[str, list[dict[str, object]]]:

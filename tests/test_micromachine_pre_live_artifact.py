@@ -370,7 +370,14 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
         )
         with mock.patch(
             raw_verifier,
-            return_value={"ok": True, "blockers": []},
+            return_value={
+                "ok": True,
+                "blockers": [],
+                "binary_sha256": sha256(self.binary),
+                "embedded_build_input_identity": (
+                    self.repository_input_identity
+                ),
+            },
         ):
             unbound_journeys = make_stub_deterministic_journey_bundle()
             pretty_build_report = json.dumps(
@@ -415,6 +422,41 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                 self.repository_input_identity,
                 binding["embedded_build_input_identity"],
             )
+            nested_identity_cases = {
+                "binary": (
+                    "deterministic_journey_nested_binary_digest_mismatch",
+                    {
+                        "binary_sha256": "0" * 64,
+                        "embedded_build_input_identity": (
+                            self.repository_input_identity
+                        ),
+                    },
+                ),
+                "embedded identity": (
+                    "deterministic_journey_nested_embedded_identity_mismatch",
+                    {
+                        "binary_sha256": sha256(self.binary),
+                        "embedded_build_input_identity": (
+                            "sha256:" + ("0" * 64)
+                        ),
+                    },
+                ),
+            }
+            for name, (code, identities) in nested_identity_cases.items():
+                with self.subTest(name=f"nested {name}"), mock.patch(
+                    raw_verifier,
+                    return_value={
+                        "ok": True,
+                        "blockers": [],
+                        **identities,
+                    },
+                ):
+                    rejected = verify_pre_live_artifact_bundle(
+                        bundle,
+                        admission_snapshot=self.admission_snapshot,
+                    )
+                    self.assertFalse(rejected["ok"], rejected)
+                    self.assertIn(code, blocker_codes(rejected))
 
             with self.assertRaisesRegex(
                 ValueError,

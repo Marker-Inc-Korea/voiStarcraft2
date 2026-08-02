@@ -86,6 +86,8 @@
         {
           "frame": 260,
           "kind": "resource_observation",
+          "minerals": 500,
+          "vespene": 125,
           "structures": [
             "FACTORY_TECHLAB",
             "TERRAN_FACTORY"
@@ -275,7 +277,7 @@
       "kind": "transfer_rejection",
       "initial_state": {
         "units": {
-          "TERRAN_MARINE": 6
+          "TERRAN_MARINE": 8
         },
         "structures": [
           "TERRAN_BARRACKS"
@@ -315,6 +317,11 @@
         "type": "forbidden_submission_and_state_preserved",
         "count": 0,
         "operation_id": "recon-alpha",
+        "expected_rejection_reason": "source_operation_minimum_violation",
+        "preserved_active_operation_ids": [
+          "recon-alpha",
+          "assault-bravo"
+        ],
         "preserved_state_fields": [
           "units",
           "owners",
@@ -666,7 +673,7 @@
       "title": "Event reconnect and replay",
       "kind": "event_reconnect",
       "initial_state": {
-        "event_cursor": 0,
+        "event_cursor": 1,
         "structures": [
           "TERRAN_BARRACKS"
         ],
@@ -692,8 +699,7 @@
         },
         {
           "frame": 1360,
-          "kind": "client_reconnect",
-          "after_event_seq": 0
+          "kind": "client_reconnect"
         }
       ],
       "expected_raw_event_types": [

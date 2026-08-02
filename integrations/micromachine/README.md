@@ -93,6 +93,7 @@ Verified upstream:
 | `patches/0075-battlefield-review-closure.patch` | Closes independent-review blockers by merging active exact-target explicit defense squads with legacy autonomous base defenders, failing readiness closed on missing matching squad evidence, and serializing full `uint64_t` session epochs as exact decimal strings. The patch is a required schema-75 build input bound into build identity and source attestation. |
 | `patches/0076-bounded-terminal-operation-hud.patch` | Bounds the in-game HUD to eight deterministic operation rows while prioritizing nonterminal work and higher operation priority, latches terminal completion frames on the first transition, retains omitted terminal lifecycle/history/ownership evidence across production synchronization and zero-operation policy updates, displays only canonical terminal rows aged `0..109`, renders `+N operations hidden` outside the row cap, and draws target, route, squad, and unit markers only for the selected rows. Header-only native tests execute the same selection and production-used omission contract in Debug and NDEBUG without mutating terminal lifecycle, ownership history, or operation order. |
 | `patches/0077-deterministic-pre-live-journey-adapter.patch` | Adds the deterministic native pre-live journey adapter and runtime contract test. The patch is the required schema-77 build input bound into build identity and source attestation. |
+| `patches/0078-production-path-journey-review-closure.patch` | Routes deterministic journey ownership, Squad orders, and SC2 submissions through production-used entrypoints; records raw call receipts; consumes resource, prerequisite, reconnect, and voice initial state; and preserves both active transfer endpoints on rejection. The patch is the required schema-78 build input bound into build identity and source attestation. |
 | `scripts/build_macos_local.sh` | Reproducible macOS build script for `s2client-api` plus patched MicroMachine. |
 | `scripts/probe_macos_local.sh` | Standalone `s2client-api` bootstrap probe that proves CreateGame/JoinGame produces own starting units before MicroMachine is evaluated. |
 | `scripts/smoke_macos_local.sh` | Local StarCraft II smoke script that writes modulation and requires both telemetry and real macro-opening evidence. |
@@ -192,10 +193,10 @@ how to act.
 `scripts/build_macos_local.sh` writes
 `$MICROMACHINE_BUILD_DIR/voi_build_identity.json` after a successful build. The
 clean build applies the MicroMachine patch bundle in numeric order from `0001`
-through `0077`, runs the runtime CTest contracts, then copies the blackboard
+through `0078`, runs the runtime CTest contracts, then copies the blackboard
 header and generates the embedded
 identity header before compilation. The
-schema-77 report includes pinned MicroMachine and `s2client-api` commits, every patch
+schema-78 report includes pinned MicroMachine and `s2client-api` commits, every patch
 checksum, config/header checksums, binary path, and binary checksum. A pre-build
 source attestation is finalized only after the executable exists, binding its
 hash, size, and executable-reported build-input identity to the attested source

@@ -407,6 +407,12 @@ def bind_deterministic_journey_bundle_to_build(
         build_report_bytes,
         binary_bytes,
     )
+    for key in ("binary_sha256", "embedded_build_input_identity"):
+        if verification.get(key) != binding[key]:
+            raise ValueError(
+                "deterministic_journey_nested_build_identity_mismatch: "
+                f"{key}"
+            )
     root, payloads = _read_deterministic_journey_archive(bundle)
     if set(root) != _DETERMINISTIC_JOURNEY_ROOT_KEYS:
         raise ValueError("deterministic journey root manifest is unsupported")
@@ -635,6 +641,28 @@ def _verify_bound_deterministic_journey_bundle(
             "$.producer.output_member",
             "deterministic journey producer output failed raw-evidence verification",
             inner_blockers=raw_verification.get("blockers"),
+        )
+    for key, code in (
+        (
+            "binary_sha256",
+            "deterministic_journey_nested_binary_digest_mismatch",
+        ),
+        (
+            "embedded_build_input_identity",
+            "deterministic_journey_nested_embedded_identity_mismatch",
+        ),
+    ):
+        nested = raw_verification.get(key)
+        expected = binding.get(key)
+        if nested == expected:
+            continue
+        _add_blocker(
+            blockers,
+            code,
+            f"$.producer.output.product.*.native_adapter.{key}",
+            "per-journey native adapter identity does not match root binding",
+            expected=expected,
+            actual=nested,
         )
 
     build = _mapping(manifest.get("build"))

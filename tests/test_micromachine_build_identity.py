@@ -28,7 +28,7 @@ from starcraft_commander.micromachine_build_identity import (
 
 class MicroMachineBuildIdentityTest(unittest.TestCase):
     def test_live_admission_requires_the_supported_schema(self) -> None:
-        self.assertEqual(77, MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION)
+        self.assertEqual(78, MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION)
         passing = {
             "schema_version": MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
             "identity": "sha256:fixture",
@@ -147,6 +147,14 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             )
             self.assertIn(
                 "micromachine_deterministic_pre_live_journey_adapter_patch_sha256",
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_production_path_journey_review_closure_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                "micromachine_production_path_journey_review_closure_patch_sha256",
                 report["checksums"],
             )
             self.assertIn(
@@ -2356,6 +2364,18 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             ).name,
         )
 
+    def test_production_path_journey_review_cli_defaults_to_patch_0078(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0078-production-path-journey-review-closure.patch",
+            Path(
+                args.micromachine_production_path_journey_review_closure_patch
+            ).name,
+        )
+
     def test_operation_edit_ownership_handoff_patch_changes_identity(
         self,
     ) -> None:
@@ -3165,6 +3185,52 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             self.assertFalse(report["ok"], report)
             self.assertIn(
                 "micromachine_deterministic_pre_live_journey_adapter_patch_sha256",
+                {
+                    failure.get("checksum")
+                    for failure in report["failures"]
+                    if failure["code"] == "missing_required_build_input"
+                },
+            )
+
+    def test_production_path_journey_review_patch_changes_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            checksum = (
+                "micromachine_production_path_journey_review_closure_patch_sha256"
+            )
+
+            config.micromachine_production_path_journey_review_closure_patch.write_text(
+                "changed production path journey review closure\n"
+            )
+            second = build_micromachine_build_identity(config)
+
+            self.assertTrue(first["ok"], first)
+            self.assertFalse(second["ok"], second)
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+            self.assertIn(
+                "source_attestation_input_mismatch",
+                {failure["code"] for failure in second["failures"]},
+            )
+
+    def test_missing_production_path_journey_review_patch_fails_closed(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_production_path_journey_review_closure_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"], report)
+            self.assertIn(
+                "micromachine_production_path_journey_review_closure_patch_sha256",
                 {
                     failure.get("checksum")
                     for failure in report["failures"]
@@ -4041,6 +4107,9 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         micromachine_deterministic_pre_live_journey_adapter_patch = (
             root / "micromachine-deterministic-pre-live-journey-adapter.patch"
         )
+        micromachine_production_path_journey_review_closure_patch = (
+            root / "micromachine-production-path-journey-review-closure.patch"
+        )
         s2client_patch = root / "s2client.patch"
         hook_manifest = root / "HOOK_MANIFEST.json"
         map_pool = root / "MICROMACHINE_MAP_POOL.json"
@@ -4123,6 +4192,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             micromachine_battlefield_review_closure_patch,
             micromachine_bounded_terminal_operation_hud_patch,
             micromachine_deterministic_pre_live_journey_adapter_patch,
+            micromachine_production_path_journey_review_closure_patch,
             s2client_patch,
             hook_manifest,
             map_pool,
@@ -4352,6 +4422,9 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             ),
             micromachine_deterministic_pre_live_journey_adapter_patch=(
                 micromachine_deterministic_pre_live_journey_adapter_patch
+            ),
+            micromachine_production_path_journey_review_closure_patch=(
+                micromachine_production_path_journey_review_closure_patch
             ),
             s2client_patch=s2client_patch,
             hook_manifest=hook_manifest,

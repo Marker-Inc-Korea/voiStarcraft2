@@ -53,7 +53,7 @@ from starcraft_commander.micromachine_terran_capabilities import (
 PRE_LIVE_JOURNEY_SCHEMA_VERSION: Final[int] = 1
 PRE_LIVE_JOURNEY_BUNDLE_SCHEMA_VERSION: Final[int] = 1
 PRE_LIVE_JOURNEY_REPORT_SCHEMA_VERSION: Final[int] = 1
-PRE_LIVE_NATIVE_ADAPTER_SCHEMA_VERSION: Final[int] = 1
+PRE_LIVE_NATIVE_ADAPTER_SCHEMA_VERSION: Final[int] = 2
 MAX_JOURNEY_BUNDLE_BYTES: Final[int] = 64 * 1024 * 1024
 MAX_JOURNEY_BUNDLE_ENTRIES: Final[int] = 64
 MAX_JOURNEY_MEMBER_BYTES: Final[int] = 32 * 1024 * 1024
@@ -85,6 +85,7 @@ _OPERATION_IDENTITY_EVENT_TYPES: Final[frozenset[str]] = frozenset(
         "launch_decision",
         "production_decision",
         "prerequisite_wait",
+        "production_path_receipt",
         "transfer",
         "generation_change",
         "cancellation",
@@ -106,9 +107,85 @@ _NATIVE_OUTPUT_FIELDS: Final[frozenset[str]] = frozenset(
         "operation_director",
         "battlefield_overview",
         "hud",
+        "production_path",
         "telemetry",
     }
 )
+_NATIVE_PRODUCTION_PATH_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "operation_manager_entrypoint",
+        "squad_order_entrypoint",
+        "sc2_submission_entrypoint",
+        "operation_ownership_receipt_count",
+        "squad_order_receipt_count",
+        "sc2_submission_receipt_count",
+    }
+)
+_NATIVE_PRODUCTION_ENTRYPOINTS: Final[dict[str, str]] = {
+    "operation_ownership_receipt_count": (
+        "voiProductionAssignOperationOwner"
+    ),
+    "squad_order_receipt_count": "voiProductionIssueSquadOrder",
+    "sc2_submission_receipt_count": "voiProductionSubmitSc2Action",
+}
+_NATIVE_PRODUCTION_ENTRYPOINT_FIELDS: Final[dict[str, str]] = {
+    "operation_ownership_receipt_count": "operation_manager_entrypoint",
+    "squad_order_receipt_count": "squad_order_entrypoint",
+    "sc2_submission_receipt_count": "sc2_submission_entrypoint",
+}
+_NATIVE_ADAPTER_PRODUCT_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "schema_version",
+        "binary_sha256",
+        "embedded_build_input_identity",
+        "input",
+        "output",
+    }
+)
+_INITIAL_STATE_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "units",
+        "structures",
+        "protected_minimum",
+        "minerals",
+        "vespene",
+        "prerequisites",
+        "event_cursor",
+        "voice_enabled",
+        "muted",
+    }
+)
+_CANONICAL_EVENT_STAGES: Final[dict[str, frozenset[str]]] = {
+    "ability_effect": frozenset({"effect_observed"}),
+    "autonomous_defense": frozenset({"preempted", "restored"}),
+    "blackboard_update": frozenset({"published"}),
+    "cancellation": frozenset({"cancelled"}),
+    "client_reconnect": frozenset({"observed"}),
+    "command_input": frozenset({"input"}),
+    "engagement": frozenset({"effect_observed"}),
+    "family_action_attempt": frozenset({"attempted"}),
+    "generation_change": frozenset({"published"}),
+    "hud_projection": frozenset({"assigned", "effect_observed"}),
+    "launch_decision": frozenset({"launch_admitted", "launch_rejected"}),
+    "movement": frozenset({"effect_observed"}),
+    "ownership_snapshot": frozenset({"assigned"}),
+    "preemption": frozenset({"preempted"}),
+    "prerequisite_wait": frozenset({"prerequisite_wait"}),
+    "production_path_receipt": frozenset({"accepted"}),
+    "production_decision": frozenset({"production_wait"}),
+    "rejection": frozenset({"blocked"}),
+    "replay_batch": frozenset({"replayed"}),
+    "replay_deduplicated": frozenset({"replayed"}),
+    "squad_order": frozenset({"order_issued"}),
+    "state_snapshot": frozenset({"state_before", "state_after"}),
+    "submission": frozenset({"submitted"}),
+    "terran_lowering": frozenset({"parsed"}),
+    "transfer": frozenset({"applied"}),
+    "voice_callout": frozenset({"effect_observed"}),
+    "voice_projection": frozenset({"effect_observed"}),
+    "web_event": frozenset({"web_event"}),
+    "web_projection": frozenset({"assigned", "effect_observed"}),
+}
 _SHA256_IDENTITY_PREFIX: Final[str] = "sha256:"
 CommandRunner = Callable[..., subprocess.CompletedProcess[Any]]
 
@@ -228,6 +305,11 @@ def _validate_pre_live_journey_manifest_payload(
         seen.add(journey_id)
         if not isinstance(journey.get("initial_state"), Mapping):
             raise ValueError(f"{journey_id} initial_state must be an object")
+        _validate_initial_state(
+            journey_id,
+            str(journey.get("kind", "")),
+            cast(Mapping[str, object], journey["initial_state"]),
+        )
         ordered_inputs = journey.get("ordered_inputs")
         if not isinstance(ordered_inputs, list) or not ordered_inputs:
             raise ValueError(f"{journey_id} requires ordered_inputs")
@@ -286,6 +368,76 @@ def _validate_pre_live_journey_manifest_payload(
         ):
             raise ValueError(f"{journey_id} allowed_nondeterminism is invalid")
     return payload
+
+
+def _validate_initial_state(
+    journey_id: str,
+    kind: str,
+    initial_state: Mapping[str, object],
+) -> None:
+    unexpected = set(initial_state) - _INITIAL_STATE_FIELDS
+    if unexpected:
+        raise ValueError(
+            f"{journey_id} initial_state has unexpected fields: "
+            + ", ".join(sorted(unexpected))
+        )
+    units = initial_state.get("units")
+    if not isinstance(units, Mapping) and units != "all_terran_families":
+        raise ValueError(f"{journey_id} initial_state.units is unsupported")
+    if isinstance(units, Mapping) and any(
+        not isinstance(unit_type, str)
+        or not unit_type
+        or type(count) is not int
+        or count < 0
+        for unit_type, count in units.items()
+    ):
+        raise ValueError(f"{journey_id} initial unit counts are invalid")
+    if "structures" in initial_state:
+        _string_list(
+            initial_state["structures"],
+            label=f"{journey_id} initial structures",
+        )
+    protected = initial_state.get("protected_minimum", {})
+    if not isinstance(protected, Mapping) or any(
+        not isinstance(unit_type, str)
+        or not unit_type
+        or type(count) is not int
+        or count < 0
+        for unit_type, count in protected.items()
+    ):
+        raise ValueError(f"{journey_id} protected_minimum is invalid")
+    for field_name in ("minerals", "vespene", "event_cursor"):
+        if field_name in initial_state and (
+            type(initial_state[field_name]) is not int
+            or cast(int, initial_state[field_name]) < 0
+        ):
+            raise ValueError(
+                f"{journey_id} initial_state.{field_name} must be a "
+                "non-negative int"
+            )
+    for field_name in ("voice_enabled", "muted"):
+        if field_name in initial_state and type(initial_state[field_name]) is not bool:
+            raise ValueError(
+                f"{journey_id} initial_state.{field_name} must be a bool"
+            )
+    if (
+        "prerequisites" in initial_state
+        and initial_state["prerequisites"] != "all_available"
+    ):
+        raise ValueError(
+            f"{journey_id} initial_state.prerequisites is unsupported"
+        )
+    required_by_kind = {
+        "shortage_wait": {"minerals", "vespene"},
+        "event_reconnect": {"event_cursor"},
+        "voice_identity": {"voice_enabled", "muted"},
+    }
+    missing = required_by_kind.get(kind, set()) - set(initial_state)
+    if missing:
+        raise ValueError(
+            f"{journey_id} initial_state is missing: "
+            + ", ".join(sorted(missing))
+        )
 
 
 def execute_pre_live_journeys(
@@ -443,15 +595,25 @@ def _expand_initial_state(
     protected = source.get("protected_minimum", {})
     if not isinstance(protected, Mapping):
         raise ValueError("protected_minimum must be an object")
-    return {
+    expanded: dict[str, object] = {
         "units": deepcopy(execution.initial_units),
         "structures": structures,
         "protected_minimum": {
             str(key): int(value)
             for key, value in sorted(protected.items())
-            if type(value) is int and value >= 0
         },
     }
+    for field_name in (
+        "minerals",
+        "vespene",
+        "prerequisites",
+        "event_cursor",
+        "voice_enabled",
+        "muted",
+    ):
+        if field_name in source:
+            expanded[field_name] = deepcopy(source[field_name])
+    return expanded
 
 
 def _compile_command(
@@ -634,7 +796,7 @@ def _expand_observation_step(
                 raise ValueError("resource observation counts are invalid")
             for _ in range(raw_count):
                 units.append(execution.allocate_unit(str(unit_type)))
-        return {
+        expanded: dict[str, object] = {
             "frame": frame,
             "kind": kind,
             "structures": _string_list(
@@ -643,6 +805,15 @@ def _expand_observation_step(
             ),
             "units": units,
         }
+        for field_name in ("minerals", "vespene"):
+            if field_name in item:
+                value = item[field_name]
+                if type(value) is not int or value < 0:
+                    raise ValueError(
+                        f"resource observation {field_name} is invalid"
+                    )
+                expanded[field_name] = value
+        return expanded
     if kind in {"base_threat_observation", "base_clear_observation"}:
         return {
             "frame": frame,
@@ -652,11 +823,16 @@ def _expand_observation_step(
             "threat_strength": float(item.get("threat_strength", 0.0) or 0.0),
         }
     if kind == "client_reconnect":
-        return {
+        expanded = {
             "frame": frame,
             "kind": kind,
-            "after_event_seq": int(item.get("after_event_seq", 0) or 0),
         }
+        if "after_event_seq" in item:
+            cursor = item["after_event_seq"]
+            if type(cursor) is not int or cursor < 0:
+                raise ValueError("client reconnect cursor is invalid")
+            expanded["after_event_seq"] = cursor
+        return expanded
     raise ValueError(f"unsupported journey observation kind: {kind}")
 
 
@@ -805,13 +981,81 @@ def _invoke_native_adapter(
         stdout,
         object_pairs_hook=_reject_duplicate_json_object_keys,
     )
+    output = _validate_native_output_payload(output)
+    if _sha256_file(binary) != expected_sha256:
+        raise ValueError("MicroMachine binary changed during adapter execution")
+    return output
+
+
+def _validate_native_output_payload(output: object) -> dict[str, object]:
     if not isinstance(output, dict) or set(output) != _NATIVE_OUTPUT_FIELDS:
         raise ValueError("native pre-live adapter output field set is invalid")
     if output.get("schema_version") != PRE_LIVE_NATIVE_ADAPTER_SCHEMA_VERSION:
         raise ValueError("native pre-live adapter schema is unsupported")
-    if _sha256_file(binary) != expected_sha256:
-        raise ValueError("MicroMachine binary changed during adapter execution")
+    _validate_native_production_path(output)
     return output
+
+
+def _validate_native_production_path(output: Mapping[str, object]) -> None:
+    production_path = output.get("production_path")
+    if (
+        not isinstance(production_path, Mapping)
+        or set(production_path) != _NATIVE_PRODUCTION_PATH_FIELDS
+    ):
+        raise ValueError("native production path field set is invalid")
+    observed = dict.fromkeys(_NATIVE_PRODUCTION_ENTRYPOINTS.values(), 0)
+    events = output.get("events")
+    if not isinstance(events, Sequence) or isinstance(
+        events,
+        (str, bytes, bytearray),
+    ):
+        raise ValueError("native production path lacks event evidence")
+    for event in events:
+        if not isinstance(event, Mapping):
+            raise ValueError("native production path event is malformed")
+        if event.get("event_type") != "production_path_receipt":
+            continue
+        identity = event.get("identity")
+        payload = event.get("payload")
+        if (
+            not isinstance(identity, Mapping)
+            or identity.get("stage") != "accepted"
+            or not isinstance(payload, Mapping)
+        ):
+            raise ValueError("native production path receipt is malformed")
+        entrypoint = str(payload.get("entrypoint", ""))
+        if entrypoint not in observed:
+            raise ValueError("native production path receipt is unsupported")
+        if entrypoint == "voiProductionIssueSquadOrder":
+            unit_tags = payload.get("unit_tags")
+            if (
+                set(payload) != {"entrypoint", "unit_tags"}
+                or not isinstance(unit_tags, Sequence)
+                or isinstance(unit_tags, (str, bytes, bytearray))
+                or not unit_tags
+                or any(type(tag) is not int or tag <= 0 for tag in unit_tags)
+                or len(set(unit_tags)) != len(unit_tags)
+            ):
+                raise ValueError("native squad-order receipt is malformed")
+        else:
+            if (
+                set(payload) != {"entrypoint", "unit_tag"}
+                or type(payload.get("unit_tag")) is not int
+                or cast(int, payload["unit_tag"]) <= 0
+            ):
+                raise ValueError("native unit receipt is malformed")
+        observed[entrypoint] += 1
+    for count_field, entrypoint in _NATIVE_PRODUCTION_ENTRYPOINTS.items():
+        entrypoint_field = _NATIVE_PRODUCTION_ENTRYPOINT_FIELDS[count_field]
+        if production_path.get(entrypoint_field) != entrypoint:
+            raise ValueError("native production path entrypoint is invalid")
+        declared = production_path.get(count_field)
+        if type(declared) is not int or declared < 0:
+            raise ValueError("native production path receipt count is invalid")
+        if declared != observed[entrypoint]:
+            raise ValueError(
+                "native production path receipt count does not match raw events"
+            )
 
 
 def _consume_native_output(
@@ -1195,6 +1439,14 @@ def _consume_projection_events(
         )
     if execution.spec.get("kind") != "voice_identity":
         return
+    final_state = native.get("final_state")
+    if not isinstance(final_state, Mapping):
+        raise ValueError("voice journey lacks native final state")
+    if (
+        final_state.get("voice_enabled") is not True
+        or final_state.get("muted") is not False
+    ):
+        raise ValueError("voice journey initial state disabled its callout path")
     if not rows or not timeline_events:
         raise ValueError("voice journey lacks runtime timeline evidence")
     row = rows[0]
@@ -1381,7 +1633,7 @@ def _verify_event_identities(
     start_frame = int(raw_inputs[0]["frame"]) if raw_inputs else 0
     timeout = int(spec.get("timeout_frames", 0) or 0)
     last_frame: dict[tuple[str, str, int], int] = {}
-    submissions: dict[tuple[str, str, int, str], list[int]] = {}
+    submissions: dict[tuple[str, str, int, str], list[tuple[int, str]]] = {}
     for event in events:
         event_type = str(event.get("event_type", ""))
         identity = event.get("identity")
@@ -1404,6 +1656,11 @@ def _verify_event_identities(
         ):
             blockers.append(f"{event_type} has invalid canonical identity")
             continue
+        allowed_stages = _CANONICAL_EVENT_STAGES.get(event_type)
+        if allowed_stages is None or stage not in allowed_stages:
+            blockers.append(
+                f"{event_type or '<missing>'} has non-canonical stage: {stage}"
+            )
         if timeout and frame > start_frame + timeout:
             blockers.append("journey exceeded its deterministic frame timeout")
         if event_type in _OPERATION_IDENTITY_EVENT_TYPES and (
@@ -1420,7 +1677,7 @@ def _verify_event_identities(
         action = str(payload.get("action", ""))
         lifecycle = (*key, action)
         if event_type == "submission":
-            submissions.setdefault(lifecycle, []).append(frame)
+            submissions.setdefault(lifecycle, []).append((frame, stage))
         if event_type in _EFFECT_EVENT_TYPES:
             matching = submissions.get(lifecycle, [])
             if not matching:
@@ -1428,8 +1685,16 @@ def _verify_event_identities(
                     f"{event_type} lacks a matching prior submission for "
                     f"{update_id}/{operation_id}#{generation}:{action}"
                 )
-            elif min(matching) > frame:
+            elif min(submission[0] for submission in matching) > frame:
                 blockers.append(f"{event_type} predates its matching submission")
+            elif not any(
+                submission_stage == "submitted"
+                and submission_frame <= frame
+                for submission_frame, submission_stage in matching
+            ):
+                blockers.append(
+                    f"{event_type} lacks a canonical submitted-to-effect transition"
+                )
             if event_type == "ability_effect" and action.startswith("move"):
                 blockers.append("ability movement was counted as an ability effect")
         if event_type == "ownership_snapshot":
@@ -1486,6 +1751,13 @@ def _verify_forbidden_submission(
         if isinstance(event.get("identity"), Mapping)
     ):
         blockers.append("forbidden action reached the submission adapter")
+    expected_reason = str(stop.get("expected_rejection_reason", "") or "")
+    if expected_reason and not any(
+        cast(Mapping[str, object], event.get("payload", {})).get("reason")
+        == expected_reason
+        for event in rejections
+    ):
+        blockers.append("forbidden action was rejected for the wrong reason")
     states = _before_after_states(events)
     if states is None:
         blockers.append("forbidden action lacks native before/after state")
@@ -1501,8 +1773,36 @@ def _verify_forbidden_submission(
         blockers.append("preserved_state_fields is invalid")
         return
     before, after = states
+    before_state = dict(before)
+    after_state = dict(after)
+    before_state.pop("frame", None)
+    after_state.pop("frame", None)
+    if canonical_json_bytes(before_state) != canonical_json_bytes(after_state):
+        blockers.append(
+            "forbidden action did not preserve byte-equivalent runtime state"
+        )
     if any(before.get(str(field)) != after.get(str(field)) for field in fields):
         blockers.append("forbidden action did not preserve runtime state")
+    active_ids = stop.get("preserved_active_operation_ids", ())
+    if not isinstance(active_ids, Sequence) or isinstance(
+        active_ids,
+        (str, bytes, bytearray),
+    ):
+        blockers.append("preserved_active_operation_ids is invalid")
+        return
+    for state in (before, after):
+        operations = {
+            str(row.get("operation_id", "")): row
+            for row in _mapping_sequence(state.get("operations"))
+        }
+        if any(
+            operations.get(str(operation_id), {}).get("active") is not True
+            for operation_id in active_ids
+        ):
+            blockers.append(
+                "forbidden action did not preserve both active operations"
+            )
+            break
 
 
 def _verify_required_effects(
@@ -1778,19 +2078,42 @@ def _verify_reconnect(
     events: Sequence[Mapping[str, object]],
     blockers: list[str],
 ) -> None:
-    logical_ids = [
-        str(cast(Mapping[str, object], event["payload"]).get("logical_event_id", ""))
+    source_events = [
+        cast(Mapping[str, object], event["payload"])
         for event in events
         if event.get("event_type") == "web_event"
+    ]
+    logical_ids = [
+        str(payload.get("logical_event_id", ""))
+        for payload in source_events
     ]
     replayed = [
         str(cast(Mapping[str, object], event["payload"]).get("logical_event_id", ""))
         for event in events
         if event.get("event_type") == "replay_deduplicated"
     ]
+    reconnect = next(
+        (
+            cast(Mapping[str, object], event["payload"])
+            for event in events
+            if event.get("event_type") == "client_reconnect"
+            and isinstance(event.get("payload"), Mapping)
+        ),
+        {},
+    )
+    cursor = reconnect.get("after_event_seq")
+    if type(cursor) is not int or cursor < 0:
+        blockers.append("reconnect cursor is missing or invalid")
+        cursor = 0
+    expected_replay = [
+        str(payload.get("logical_event_id", ""))
+        for payload in source_events
+        if type(payload.get("event_seq")) is int
+        and cast(int, payload["event_seq"]) > cursor
+    ]
     if not logical_ids or len(set(logical_ids)) != len(logical_ids):
         blockers.append("web event source contains duplicate logical events")
-    if sorted(set(replayed)) != sorted(set(logical_ids)):
+    if sorted(set(replayed)) != sorted(set(expected_replay)):
         blockers.append("reconnect replay was not deduplicated exactly once")
 
 
@@ -1943,6 +2266,7 @@ def write_pre_live_journey_bundle(
 
 def verify_pre_live_journey_bundle(bundle: bytes) -> dict[str, object]:
     blockers: list[str] = []
+    native_identities: set[tuple[str, str]] = set()
     if not isinstance(bundle, bytes):
         return _verification_result(["journey bundle must be bytes"])
     if len(bundle) > MAX_JOURNEY_BUNDLE_BYTES:
@@ -2046,8 +2370,11 @@ def verify_pre_live_journey_bundle(bundle: bytes) -> dict[str, object]:
                 verdict = verify_pre_live_journey_events(spec, events)
                 derived_blockers = [
                     *cast(list[str], verdict["blockers"]),
-                    *_product_path_blockers(products),
+                    *_rederive_product_path_blockers(spec, events, products),
                 ]
+                identity = _native_adapter_identity(products, derived_blockers)
+                if identity is not None:
+                    native_identities.add(identity)
                 reports.append(
                     {
                         **verdict,
@@ -2056,6 +2383,10 @@ def verify_pre_live_journey_bundle(bundle: bytes) -> dict[str, object]:
                         "blockers": derived_blockers,
                         "product_paths": products,
                     }
+                )
+                blockers.extend(
+                    f"{journey_id}: {blocker}"
+                    for blocker in derived_blockers
                 )
             failures = [report["id"] for report in reports if not report["ok"]]
             recomputed = {
@@ -2094,9 +2425,18 @@ def verify_pre_live_journey_bundle(bundle: bytes) -> dict[str, object]:
                 blockers.append("root manifest failed_count mismatch")
             if hashlib.sha256(matrix_bytes).hexdigest() != root.get("report_sha256"):
                 blockers.append("derived report digest mismatch")
+            if len(native_identities) != 1:
+                blockers.append(
+                    "journey native adapter identities are missing or inconsistent"
+                )
     except (KeyError, OSError, ValueError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
         blockers.append(f"journey bundle could not be verified: {exc}")
-    return _verification_result(blockers)
+    identity = next(iter(native_identities), ("", ""))
+    return _verification_result(
+        blockers,
+        binary_sha256=identity[0],
+        embedded_build_input_identity=identity[1],
+    )
 
 
 def _load_canonical_json_object(
@@ -2543,6 +2883,79 @@ def _product_path_blockers(products: Mapping[str, object]) -> list[str]:
     return blockers
 
 
+def _rederive_product_path_blockers(
+    spec: Mapping[str, object],
+    events: Sequence[Mapping[str, object]],
+    products: Mapping[str, object],
+) -> list[str]:
+    blockers = _product_path_blockers(products)
+    native_adapter = products.get("native_adapter")
+    if not isinstance(native_adapter, Mapping):
+        return blockers
+    if set(native_adapter) != _NATIVE_ADAPTER_PRODUCT_FIELDS:
+        blockers.append("native adapter product has an invalid field set")
+        return blockers
+    try:
+        execution = _JourneyExecution(spec)
+        expected_input = _compile_native_input(execution)
+        if native_adapter.get("input") != expected_input:
+            blockers.append(
+                "native adapter input was not derived from the journey compiler"
+            )
+        native_output = _validate_native_output_payload(
+            deepcopy(native_adapter.get("output"))
+        )
+        _consume_native_output(execution, native_output)
+        _finalize_events(execution)
+        execution.products["native_adapter"] = deepcopy(dict(native_adapter))
+        normalized_events = [deepcopy(dict(event)) for event in events]
+        if canonical_json_bytes(execution.events) != canonical_json_bytes(
+            normalized_events
+        ):
+            blockers.append(
+                "raw events were not causally derived from native and product paths"
+            )
+        if canonical_json_bytes(execution.products) != canonical_json_bytes(
+            dict(products)
+        ):
+            blockers.append(
+                "product evidence was not rederived by the executable product paths"
+            )
+    except (KeyError, TypeError, ValueError) as exc:
+        blockers.append(f"product evidence replay failed closed: {exc}")
+    return blockers
+
+
+def _native_adapter_identity(
+    products: Mapping[str, object],
+    blockers: list[str],
+) -> tuple[str, str] | None:
+    native_adapter = products.get("native_adapter")
+    if not isinstance(native_adapter, Mapping):
+        return None
+    binary_sha256 = str(native_adapter.get("binary_sha256", ""))
+    embedded_identity = str(
+        native_adapter.get("embedded_build_input_identity", "")
+    )
+    if (
+        len(binary_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in binary_sha256)
+    ):
+        blockers.append("native adapter binary_sha256 is invalid")
+        return None
+    if (
+        not embedded_identity.startswith(_SHA256_IDENTITY_PREFIX)
+        or len(embedded_identity) != len(_SHA256_IDENTITY_PREFIX) + 64
+        or any(
+            character not in "0123456789abcdef"
+            for character in embedded_identity[len(_SHA256_IDENTITY_PREFIX) :]
+        )
+    ):
+        blockers.append("native adapter embedded build identity is invalid")
+        return None
+    return binary_sha256, embedded_identity
+
+
 def _mapping_sequence(value: object) -> list[dict[str, object]]:
     if not isinstance(value, Sequence) or isinstance(
         value,
@@ -2628,11 +3041,18 @@ def _write_zip_member(
     archive.writestr(info, payload)
 
 
-def _verification_result(blockers: Sequence[str]) -> dict[str, object]:
+def _verification_result(
+    blockers: Sequence[str],
+    *,
+    binary_sha256: str = "",
+    embedded_build_input_identity: str = "",
+) -> dict[str, object]:
     return {
         "ok": not blockers,
         "status": "accepted" if not blockers else "blocked",
         "blockers": list(blockers),
+        "binary_sha256": binary_sha256,
+        "embedded_build_input_identity": embedded_build_input_identity,
     }
 
 
