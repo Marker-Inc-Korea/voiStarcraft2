@@ -115,6 +115,9 @@ _NATIVE_OUTPUT_FIELDS: Final[frozenset[str]] = frozenset(
 )
 _NATIVE_PRODUCTION_PATH_FIELDS: Final[frozenset[str]] = frozenset(
     {
+        "executor_kind",
+        "squad_order_execution_path",
+        "sc2_submission_execution_path",
         "operation_manager_entrypoint",
         "squad_order_entrypoint",
         "sc2_submission_entrypoint",
@@ -1069,6 +1072,18 @@ def _validate_native_production_path(output: Mapping[str, object]) -> None:
         or set(production_path) != _NATIVE_PRODUCTION_PATH_FIELDS
     ):
         raise ValueError("native production path field set is invalid")
+    concrete_paths = {
+        "executor_kind": "micromachine_concrete_pre_live",
+        "squad_order_execution_path": "Squad::setSquadOrder",
+        "sc2_submission_execution_path": (
+            "Micro::*->CCBot::Actions()->UnitCommand"
+        ),
+    }
+    if any(
+        production_path.get(field_name) != expected
+        for field_name, expected in concrete_paths.items()
+    ):
+        raise ValueError("native production executor is not concrete")
     observed = dict.fromkeys(_NATIVE_PRODUCTION_ENTRYPOINTS.values(), 0)
     events = output.get("events")
     if not isinstance(events, Sequence) or isinstance(
@@ -1077,6 +1092,7 @@ def _validate_native_production_path(output: Mapping[str, object]) -> None:
     ):
         raise ValueError("native production path lacks event evidence")
     receipt_events: dict[str, list[dict[str, object]]] = {
+        "voiProductionAssignOperationOwner": [],
         "voiProductionIssueSquadOrder": [],
         "voiProductionSubmitSc2Action": [],
     }
@@ -1097,12 +1113,8 @@ def _validate_native_production_path(output: Mapping[str, object]) -> None:
         if entrypoint not in observed:
             raise ValueError("native production path receipt is unsupported")
         if entrypoint == "voiProductionAssignOperationOwner":
-            if (
-                set(payload) != {"entrypoint", "unit_tag"}
-                or type(payload.get("unit_tag")) is not int
-                or cast(int, payload["unit_tag"]) <= 0
-            ):
-                raise ValueError("native unit receipt is malformed")
+            _validate_native_ownership_receipt_event(event)
+            receipt_events[entrypoint].append(dict(event))
         elif entrypoint == "voiProductionIssueSquadOrder":
             _validate_native_squad_receipt_payload(
                 payload,
@@ -1250,6 +1262,10 @@ def _validate_native_production_path(output: Mapping[str, object]) -> None:
                 "unit_tags",
             ),
         )
+    _validate_native_ownership_causality(
+        events,
+        receipt_events["voiProductionAssignOperationOwner"],
+    )
     _validate_native_submission_causality(events, squad_receipts, submission_receipts)
 
 
@@ -1454,6 +1470,22 @@ def _native_unit_tags(value: object) -> tuple[int, ...]:
     return cast(tuple[int, ...], tags)
 
 
+def _native_optional_unit_tags(value: object) -> tuple[int, ...]:
+    if not isinstance(value, Sequence) or isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        raise ValueError("native production unit tags are malformed")
+    tags = tuple(value)
+    if (
+        any(type(tag) is not int or tag <= 0 for tag in tags)
+        or tuple(sorted(tags)) != tags
+        or len(set(tags)) != len(tags)
+    ):
+        raise ValueError("native production unit tags are invalid")
+    return cast(tuple[int, ...], tags)
+
+
 def _production_receipt_id(
     prefix: str,
     binding: tuple[str, str, int, str, tuple[int, ...]],
@@ -1494,6 +1526,101 @@ def _require_native_binding_fields(
         raise ValueError("native production receipt binding is inconsistent")
 
 
+def _validate_native_ownership_receipt_event(
+    event: Mapping[str, object],
+) -> tuple[str, str, int, int, int]:
+    identity = event.get("identity")
+    payload = event.get("payload")
+    if (
+        not isinstance(identity, Mapping)
+        or not isinstance(payload, Mapping)
+        or set(payload) != {"entrypoint", "unit_tag"}
+        or payload.get("entrypoint") != "voiProductionAssignOperationOwner"
+    ):
+        raise ValueError("native ownership receipt is malformed")
+    update_id = str(identity.get("update_id", "") or "")
+    operation_id = str(identity.get("operation_id", "") or "")
+    generation = identity.get("generation")
+    game_frame = identity.get("game_frame")
+    unit_tag = payload.get("unit_tag")
+    if (
+        identity.get("stage") != "accepted"
+        or not update_id
+        or not operation_id
+        or type(generation) is not int
+        or generation <= 0
+        or type(game_frame) is not int
+        or game_frame < 0
+        or type(unit_tag) is not int
+        or unit_tag <= 0
+    ):
+        raise ValueError("native ownership receipt identity is invalid")
+    return update_id, operation_id, generation, game_frame, unit_tag
+
+
+def _validate_native_ownership_causality(
+    events: Sequence[object],
+    ownership_receipts: Sequence[Mapping[str, object]],
+) -> None:
+    canonical_events = [
+        event for event in events if isinstance(event, Mapping)
+    ]
+    receipt_bindings = [
+        _validate_native_ownership_receipt_event(receipt)
+        for receipt in ownership_receipts
+    ]
+    if len(receipt_bindings) != len(set(receipt_bindings)):
+        raise ValueError("native ownership receipt is duplicated")
+
+    snapshot_bindings: list[tuple[str, str, int, int, int]] = []
+    for event in canonical_events:
+        if event.get("event_type") != "ownership_snapshot":
+            continue
+        identity = event.get("identity")
+        payload = event.get("payload")
+        if not isinstance(identity, Mapping) or not isinstance(payload, Mapping):
+            raise ValueError("native ownership snapshot is malformed")
+        update_id = str(identity.get("update_id", "") or "")
+        operation_id = str(identity.get("operation_id", "") or "")
+        generation = identity.get("generation")
+        game_frame = identity.get("game_frame")
+        assigned_tags = _native_optional_unit_tags(
+            payload.get("assigned_unit_tags")
+        )
+        owners = payload.get("owners")
+        owner_tags = (
+            _native_optional_unit_tags(owners.get(operation_id, ()))
+            if isinstance(owners, Mapping)
+            else ()
+        )
+        if (
+            not isinstance(owners, Mapping)
+            or owner_tags != assigned_tags
+            or not update_id
+            or type(generation) is not int
+            or generation <= 0
+            or type(game_frame) is not int
+            or game_frame < 0
+        ):
+            raise ValueError("native ownership snapshot identity is invalid")
+        snapshot_bindings.extend(
+            (
+                update_id,
+                operation_id,
+                generation,
+                game_frame,
+                unit_tag,
+            )
+            for unit_tag in assigned_tags
+        )
+    if len(snapshot_bindings) != len(set(snapshot_bindings)):
+        raise ValueError("native ownership snapshot binding is duplicated")
+    if sorted(snapshot_bindings) != sorted(receipt_bindings):
+        raise ValueError(
+            "native ownership receipts do not match ownership snapshots"
+        )
+
+
 def _validate_native_submission_causality(
     events: Sequence[object],
     squad_receipts: Sequence[Mapping[str, object]],
@@ -1503,13 +1630,10 @@ def _validate_native_submission_causality(
         event for event in events if isinstance(event, Mapping)
     ]
     squad_action_tags: dict[tuple[str, str, int, str], set[int]] = {}
+    squad_receipts_by_id: dict[str, Mapping[str, object]] = {}
     for receipt in squad_receipts:
-        if not _matching_native_action_event(
-            canonical_events,
-            "squad_order",
-            receipt,
-        ):
-            raise ValueError("native squad-order receipt lacks canonical order")
+        receipt_id = str(receipt["receipt_id"])
+        squad_receipts_by_id[receipt_id] = receipt
         squad_key = (
             str(receipt["update_id"]),
             str(receipt["operation_id"]),
@@ -1519,6 +1643,26 @@ def _validate_native_submission_causality(
         squad_action_tags.setdefault(squad_key, set()).update(
             _native_unit_tags(receipt["unit_tags"])
         )
+    matched_squad_receipts: dict[str, int] = dict.fromkeys(
+        squad_receipts_by_id,
+        0,
+    )
+    for event in canonical_events:
+        if event.get("event_type") != "squad_order":
+            continue
+        payload = event.get("payload")
+        receipt_id = (
+            str(payload.get("receipt_id", "") or "")
+            if isinstance(payload, Mapping)
+            else ""
+        )
+        receipt = squad_receipts_by_id.get(receipt_id)
+        if receipt is None or not _native_action_event_matches(event, receipt):
+            raise ValueError("canonical Squad order lacks a production receipt")
+        matched_squad_receipts[receipt_id] += 1
+    if any(count != 1 for count in matched_squad_receipts.values()):
+        raise ValueError("native squad-order receipt lacks one canonical order")
+
     grouped_tags: dict[tuple[str, str, int, str, str], set[int]] = {}
     grouped_ids: dict[tuple[str, str, int, str, str], set[str]] = {}
     submission_action_tags: dict[tuple[str, str, int, str], set[int]] = {}
@@ -1547,6 +1691,7 @@ def _validate_native_submission_causality(
         raise ValueError(
             "native Squad order and SC2 submission unit tags do not match"
         )
+    submission_bindings: list[dict[str, object]] = []
     for (
         update_id,
         operation_id,
@@ -1573,23 +1718,33 @@ def _validate_native_submission_causality(
             ),
             "unit_tags": sorted(unit_tags),
         }
-        if not _matching_native_action_event(
-            canonical_events,
-            "submission",
-            binding,
-        ):
-            raise ValueError("native SC2 receipts lack canonical submission")
-        effects = [
-            event
-            for event in canonical_events
-            if event.get("event_type") in _EFFECT_EVENT_TYPES
-            and _native_action_event_identity_matches(event, binding)
+        submission_bindings.append(binding)
+
+    matched_submission_bindings = [0] * len(submission_bindings)
+    for event in canonical_events:
+        if event.get("event_type") != "submission":
+            continue
+        matching = [
+            index
+            for index, binding in enumerate(submission_bindings)
+            if _native_action_event_matches(event, binding)
         ]
-        if effects and not any(
-            _native_action_event_matches(event, binding)
-            for event in effects
-        ):
-            raise ValueError("native SC2 receipts are not bound to effect proof")
+        if len(matching) != 1:
+            raise ValueError("canonical submission lacks exact SC2 receipts")
+        matched_submission_bindings[matching[0]] += 1
+    if any(count != 1 for count in matched_submission_bindings):
+        raise ValueError("native SC2 receipts lack one canonical submission")
+
+    for event in canonical_events:
+        if event.get("event_type") not in _EFFECT_EVENT_TYPES:
+            continue
+        matching = [
+            binding
+            for binding in submission_bindings
+            if _native_action_event_matches(event, binding)
+        ]
+        if len(matching) != 1:
+            raise ValueError("native effect lacks exact SC2 receipt proof")
 
 
 def _matching_native_action_event(
@@ -1899,16 +2054,16 @@ def _consume_web_event_reconnect(
     execution: _JourneyExecution,
     native: Mapping[str, object],
 ) -> None:
-    reconnect = next(
-        (
-            event
-            for event in _mapping_sequence(native.get("events"))
-            if event.get("event_type") == "client_reconnect"
-        ),
-        None,
-    )
-    if reconnect is None:
+    reconnects = [
+        event
+        for event in _mapping_sequence(native.get("events"))
+        if event.get("event_type") == "client_reconnect"
+    ]
+    if not reconnects:
         return
+    if len(reconnects) != 1:
+        raise ValueError("native reconnect marker is not unique")
+    reconnect = reconnects[0]
     journal = cast(web_gui._WebEventJournal, execution.journal)
     lifecycle_events = [
         event
@@ -1960,11 +2115,13 @@ def _consume_web_event_reconnect(
         },
         order=41,
     )
-    replay_ids = {
+    replay_ids = [
         str(cast(Mapping[str, object], event["payload"])["logical_event_id"])
         for event in replay
-    }
-    for logical_id in sorted(replay_ids):
+    ]
+    if len(replay_ids) != len(set(replay_ids)):
+        raise ValueError("native replay journal contains duplicate logical events")
+    for logical_id in replay_ids:
         execution.emit(
             "replay_deduplicated",
             update_id=str(reconnect_identity["update_id"]),
@@ -2410,20 +2567,31 @@ var record = {
     )
   }
 };
+var productionAnnouncementCalls = 0;
+function announceThroughProduction(envelope, payload, scopeId, operationRecord) {
+  productionAnnouncementCalls += 1;
+  return announceOperationLifecycleEvent(
+    envelope,
+    payload,
+    scopeId,
+    operationRecord
+  );
+}
 var primaryPayload = clone(input.primary_event);
 var primaryEnvelope = envelopeFor(primaryPayload);
-var primaryCallout = tacticalLifecycleCallout(
+var primaryAccepted = announceThroughProduction(
   primaryEnvelope,
   primaryPayload,
   String(input.scope_id || ""),
   record
 );
-var primaryAccepted = primaryCallout
-  ? queueTacticalRadioCallout(primaryCallout)
-  : false;
-var duplicatePrimaryAccepted = primaryCallout
-  ? queueTacticalRadioCallout(clone(primaryCallout))
-  : false;
+var primaryCallout = clone(tacticalRadio.current || {});
+var duplicatePrimaryAccepted = announceThroughProduction(
+  primaryEnvelope,
+  clone(primaryPayload),
+  String(input.scope_id || ""),
+  record
+);
 var stalePayload = clone(primaryPayload);
 stalePayload.timeline_seq = Math.max(
   1,
@@ -2433,7 +2601,7 @@ stalePayload.game_frame = Math.max(
   0,
   Number(stalePayload.game_frame || 0) - 1
 );
-var staleAccepted = announceOperationLifecycleEvent(
+var staleAccepted = announceThroughProduction(
   envelopeFor(stalePayload),
   stalePayload,
   String(input.scope_id || ""),
@@ -2441,18 +2609,21 @@ var staleAccepted = announceOperationLifecycleEvent(
 );
 var secondaryPayload = clone(input.secondary_event);
 var secondaryEnvelope = envelopeFor(secondaryPayload);
-var secondaryCallout = tacticalLifecycleCallout(
+var secondaryAccepted = announceThroughProduction(
   secondaryEnvelope,
   secondaryPayload,
   String(input.scope_id || ""),
   record
 );
-var secondaryAccepted = secondaryCallout
-  ? queueTacticalRadioCallout(secondaryCallout)
-  : false;
-var duplicateSecondaryAccepted = secondaryCallout
-  ? queueTacticalRadioCallout(clone(secondaryCallout))
-  : false;
+var secondaryCallout = clone(
+  tacticalRadio.queue[tacticalRadio.queue.length - 1] || {}
+);
+var duplicateSecondaryAccepted = announceThroughProduction(
+  secondaryEnvelope,
+  clone(secondaryPayload),
+  String(input.scope_id || ""),
+  record
+);
 var queueLengthBeforeDrain = tacticalRadio.queue.length;
 if (utterances[0] && utterances[0].onend) {
   utterances[0].onend();
@@ -2487,6 +2658,7 @@ process.stdout.write(JSON.stringify({
   duplicate_primary_accepted: duplicatePrimaryAccepted,
   duplicate_secondary_accepted: duplicateSecondaryAccepted,
   stale_accepted: staleAccepted,
+  production_announcement_calls: productionAnnouncementCalls,
   muted_accepted: mutedAccepted,
   queue_length_before_drain: queueLengthBeforeDrain,
   queue_length_after_drain: queueLengthAfterDrain,
@@ -2521,6 +2693,7 @@ def _validate_tactical_radio_result(
         "duplicate_primary_accepted",
         "duplicate_secondary_accepted",
         "stale_accepted",
+        "production_announcement_calls",
         "muted_accepted",
         "queue_length_before_drain",
         "queue_length_after_drain",
@@ -2555,6 +2728,7 @@ def _validate_tactical_radio_result(
         "caption_count": 3,
         "muted_caption_delta": 1,
         "muted_speech_delta": 0,
+        "production_announcement_calls": 5,
     }
     if any(result.get(key) != value for key, value in expected_counts.items()):
         raise ValueError("production Tactical Radio queue/mute behavior is invalid")
@@ -2832,6 +3006,7 @@ def _verify_production_receipt_bindings(
     events: Sequence[Mapping[str, object]],
     blockers: list[str],
 ) -> None:
+    ownership_receipts: list[dict[str, object]] = []
     squad_receipts: list[dict[str, object]] = []
     submission_receipts: list[dict[str, object]] = []
     try:
@@ -2847,8 +3022,9 @@ def _verify_production_receipt_bindings(
                 raise ValueError("production receipt event is malformed")
             entrypoint = str(payload.get("entrypoint", "") or "")
             if entrypoint == "voiProductionAssignOperationOwner":
-                continue
-            if entrypoint == "voiProductionIssueSquadOrder":
+                _validate_native_ownership_receipt_event(event)
+                ownership_receipts.append(dict(event))
+            elif entrypoint == "voiProductionIssueSquadOrder":
                 _validate_native_squad_receipt_payload(
                     payload,
                     identity=identity,
@@ -2872,6 +3048,10 @@ def _verify_production_receipt_bindings(
             raise ValueError("squad-order receipt id is duplicated")
         if len(submission_ids) != len(set(submission_ids)):
             raise ValueError("SC2 submission id is duplicated")
+        _validate_native_ownership_causality(
+            list(events),
+            ownership_receipts,
+        )
         _validate_native_submission_causality(
             list(events),
             squad_receipts,
@@ -3246,33 +3426,124 @@ def _verify_reconnect(
         str(payload.get("logical_event_id", ""))
         for payload in source_events
     ]
-    replayed = [
-        str(cast(Mapping[str, object], event["payload"]).get("logical_event_id", ""))
+    event_seqs = [payload.get("event_seq") for payload in source_events]
+    replay_events = [
+        event
         for event in events
         if event.get("event_type") == "replay_deduplicated"
     ]
-    reconnect = next(
-        (
-            cast(Mapping[str, object], event["payload"])
-            for event in events
-            if event.get("event_type") == "client_reconnect"
-            and isinstance(event.get("payload"), Mapping)
-        ),
-        {},
+    replayed = [
+        str(cast(Mapping[str, object], event["payload"]).get("logical_event_id", ""))
+        for event in replay_events
+        if isinstance(event.get("payload"), Mapping)
+    ]
+    reconnect_events = [
+        event
+        for event in events
+        if event.get("event_type") == "client_reconnect"
+        and isinstance(event.get("payload"), Mapping)
+        and isinstance(event.get("identity"), Mapping)
+    ]
+    if len(reconnect_events) != 1:
+        blockers.append("exactly one reconnect marker is required")
+        reconnect_event: Mapping[str, object] = {}
+    else:
+        reconnect_event = reconnect_events[0]
+    reconnect = cast(
+        Mapping[str, object],
+        reconnect_event.get("payload", {}),
+    )
+    reconnect_identity = cast(
+        Mapping[str, object],
+        reconnect_event.get("identity", {}),
+    )
+    reconnect_binding = tuple(
+        reconnect_identity.get(field_name)
+        for field_name in (
+            "update_id",
+            "operation_id",
+            "generation",
+            "game_frame",
+        )
     )
     cursor = reconnect.get("after_event_seq")
     if type(cursor) is not int or cursor < 0:
         blockers.append("reconnect cursor is missing or invalid")
         cursor = 0
-    expected_replay = [
-        str(payload.get("logical_event_id", ""))
+    valid_source_sequences = (
+        bool(source_events)
+        and all(type(event_seq) is int and event_seq > 0 for event_seq in event_seqs)
+        and len(set(event_seqs)) == len(event_seqs)
+        and event_seqs == sorted(event_seqs)
+    )
+    if not valid_source_sequences:
+        blockers.append("web event source sequence is invalid")
+    expected_rows = [
+        payload
         for payload in source_events
         if type(payload.get("event_seq")) is int
         and cast(int, payload["event_seq"]) > cursor
     ]
-    if not logical_ids or len(set(logical_ids)) != len(logical_ids):
+    expected_replay = [
+        str(payload.get("logical_event_id", ""))
+        for payload in expected_rows
+    ]
+    expected_event_seqs = [
+        cast(int, payload["event_seq"])
+        for payload in expected_rows
+    ]
+    if (
+        not logical_ids
+        or any(not logical_id for logical_id in logical_ids)
+        or len(set(logical_ids)) != len(logical_ids)
+    ):
         blockers.append("web event source contains duplicate logical events")
-    if sorted(set(replayed)) != sorted(set(expected_replay)):
+    replay_batches = [
+        event
+        for event in events
+        if event.get("event_type") == "replay_batch"
+        and isinstance(event.get("payload"), Mapping)
+        and isinstance(event.get("identity"), Mapping)
+    ]
+    if len(replay_batches) != 1:
+        blockers.append("exactly one replay batch is required")
+    else:
+        replay_batch = replay_batches[0]
+        replay_payload = cast(Mapping[str, object], replay_batch["payload"])
+        replay_identity = cast(Mapping[str, object], replay_batch["identity"])
+        replay_binding = tuple(
+            replay_identity.get(field_name)
+            for field_name in (
+                "update_id",
+                "operation_id",
+                "generation",
+                "game_frame",
+            )
+        )
+        if (
+            replay_payload.get("action") != "replay"
+            or replay_payload.get("available") is not True
+            or replay_payload.get("event_seqs") != expected_event_seqs
+            or replay_binding != reconnect_binding
+        ):
+            blockers.append("replay batch is not bound to the reconnect cursor")
+    if any(
+        tuple(
+            cast(Mapping[str, object], event.get("identity", {})).get(
+                field_name
+            )
+            for field_name in (
+                "update_id",
+                "operation_id",
+                "generation",
+                "game_frame",
+            )
+        )
+        != reconnect_binding
+        for event in replay_events
+    ):
+        blockers.append("replay output identity does not match reconnect")
+    if replayed != expected_replay:
         blockers.append("reconnect replay was not deduplicated exactly once")
 
 

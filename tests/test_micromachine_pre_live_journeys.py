@@ -136,6 +136,18 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
         }
         production_path = native["production_path"]
         self.assertEqual(
+            "micromachine_concrete_pre_live",
+            production_path["executor_kind"],
+        )
+        self.assertEqual(
+            "Squad::setSquadOrder",
+            production_path["squad_order_execution_path"],
+        )
+        self.assertEqual(
+            "Micro::*->CCBot::Actions()->UnitCommand",
+            production_path["sc2_submission_execution_path"],
+        )
+        self.assertEqual(
             by_entrypoint["voiProductionAssignOperationOwner"],
             production_path["operation_ownership_receipt_count"],
         )
@@ -178,7 +190,86 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "callback was not executed"):
             _validate_native_output_payload(native)
 
-    def test_native_sink_rows_require_exact_field_sets(self) -> None:
+    def test_native_output_rejects_nonconcrete_production_executor(self) -> None:
+        native = deepcopy(
+            self.artifacts["safe_partial_launch"]["products"][
+                "native_adapter"
+            ]["output"]
+        )
+        native["production_path"]["executor_kind"] = "deterministic_test_fake"
+        with self.assertRaisesRegex(ValueError, "executor is not concrete"):
+            _validate_native_output_payload(native)
+
+    def test_rejected_native_operation_has_no_provisional_owner_receipts(
+        self,
+    ) -> None:
+        native = self.artifacts["protected_minimum_partial_rejection"][
+            "products"
+        ]["native_adapter"]["output"]
+        ownership_receipts = [
+            event
+            for event in native["events"]
+            if event["event_type"] == "production_path_receipt"
+            and event["payload"]["entrypoint"]
+            == "voiProductionAssignOperationOwner"
+        ]
+        self.assertEqual([], ownership_receipts)
+        self.assertEqual(
+            0,
+            native["production_path"]["operation_ownership_receipt_count"],
+        )
+
+    def test_native_events_fail_closed_without_any_production_receipts(
+        self,
+    ) -> None:
+        native = deepcopy(
+            self.artifacts["safe_partial_launch"]["products"][
+                "native_adapter"
+            ]["output"]
+        )
+        native["events"] = [
+            event
+            for event in native["events"]
+            if event["event_type"] != "production_path_receipt"
+        ]
+        production_path = native["production_path"]
+        production_path["operation_ownership_receipt_count"] = 0
+        production_path["squad_order_receipt_count"] = 0
+        production_path["sc2_submission_receipt_count"] = 0
+        production_path["applied_squad_orders"] = []
+        production_path["dispatched_sc2_actions"] = []
+        production_path["squad_order_receipts"] = []
+        production_path["sc2_submission_receipts"] = []
+        with self.assertRaisesRegex(
+            ValueError,
+            "ownership receipts do not match ownership snapshots",
+        ):
+            _validate_native_output_payload(native)
+
+    def test_native_ownership_receipt_is_bound_to_snapshot_identity(
+        self,
+    ) -> None:
+        native = deepcopy(
+            self.artifacts["safe_partial_launch"]["products"][
+                "native_adapter"
+            ]["output"]
+        )
+        receipt = next(
+            event
+            for event in native["events"]
+            if event["event_type"] == "production_path_receipt"
+            and event["payload"]["entrypoint"]
+            == "voiProductionAssignOperationOwner"
+        )
+        receipt["identity"]["operation_id"] = "fabricated-owner"
+        receipt["identity"]["generation"] += 1
+        with self.assertRaisesRegex(
+            ValueError,
+            "ownership receipts do not match ownership snapshots",
+        ):
+            _validate_native_output_payload(native)
+
+    def test_native_execution_rows_require_exact_field_sets(self) -> None:
         original = self.artifacts["safe_partial_launch"]["products"][
             "native_adapter"
         ]["output"]
@@ -231,7 +322,7 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
                 effect["payload"][field_name] = value
                 with self.assertRaisesRegex(
                     ValueError,
-                    "not bound to effect proof",
+                    "effect lacks exact SC2 receipt proof",
                 ):
                     _validate_native_output_payload(native)
 
@@ -245,6 +336,56 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
         with self.assertRaisesRegex(
             ValueError,
             "Squad order and SC2 submission unit tags do not match",
+        ):
+            _validate_native_output_payload(native)
+
+    def test_native_canonical_events_require_exact_receipt_multiplicity(
+        self,
+    ) -> None:
+        original = self.artifacts["safe_partial_launch"]["products"][
+            "native_adapter"
+        ]["output"]
+        cases = (
+            (
+                "squad-order receipt lacks one canonical order",
+                "squad_order",
+            ),
+            (
+                "SC2 receipts lack one canonical submission",
+                "submission",
+            ),
+        )
+        for message, event_type in cases:
+            with self.subTest(event_type=event_type):
+                native = deepcopy(original)
+                duplicate = next(
+                    event
+                    for event in native["events"]
+                    if event["event_type"] == event_type
+                )
+                native["events"].append(deepcopy(duplicate))
+                with self.assertRaisesRegex(ValueError, message):
+                    _validate_native_output_payload(native)
+
+    def test_native_surplus_effect_requires_receipt_proof(self) -> None:
+        native = deepcopy(
+            self.artifacts["safe_partial_launch"]["products"][
+                "native_adapter"
+            ]["output"]
+        )
+        effect = next(
+            event
+            for event in native["events"]
+            if event["event_type"] in {"movement", "engagement", "ability_effect"}
+        )
+        surplus = deepcopy(effect)
+        surplus["payload"]["submission_ids"] = [
+            "voi-sc2-submission-unreceipted"
+        ]
+        native["events"].append(surplus)
+        with self.assertRaisesRegex(
+            ValueError,
+            "effect lacks exact SC2 receipt proof",
         ):
             _validate_native_output_payload(native)
 
@@ -271,6 +412,7 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
         self.assertIs(False, runtime["final_muted"])
         self.assertEqual(1460, runtime["frame_high_water"])
         self.assertEqual(6, runtime["timeline_high_water"])
+        self.assertEqual(5, runtime["production_announcement_calls"])
 
     def test_production_tactical_radio_rejects_foreign_timeline_update(
         self,
@@ -429,11 +571,16 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
             "emergency preemption": self._remove_preemption,
             "ability movement": self._ability_movement,
             "reconnect duplicate": self._duplicate_reconnect_event,
+            "duplicate reconnect marker": self._duplicate_reconnect_marker,
+            "duplicate replay batch": self._duplicate_replay_batch,
             "receipt unit tag": self._receipt_unit_tag,
             "receipt action": self._receipt_action,
             "receipt identity": self._receipt_identity,
+            "ownership receipt identity": self._ownership_receipt_identity,
+            "missing production receipts": self._remove_production_receipts,
             "submission receipt link": self._submission_receipt_link,
             "squad dispatch tag divergence": self._squad_dispatch_tag_divergence,
+            "duplicate replay output": self._duplicate_replay_output,
             "projection mismatch": self._projection_identity_mismatch,
             "callout mismatch": self._callout_identity_mismatch,
             "timeout": self._exceed_timeout,
@@ -597,6 +744,24 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
         ]
         return journey_id, events
 
+    def _duplicate_reconnect_marker(
+        self,
+    ) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "event_reconnect_replay"
+        events = self._events(journey_id)
+        events.append(deepcopy(_first_event(events, "client_reconnect")))
+        _resequence(events)
+        return journey_id, events
+
+    def _duplicate_replay_batch(
+        self,
+    ) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "event_reconnect_replay"
+        events = self._events(journey_id)
+        events.append(deepcopy(_first_event(events, "replay_batch")))
+        _resequence(events)
+        return journey_id, events
+
     def _receipt_unit_tag(self) -> tuple[str, list[dict[str, object]]]:
         journey_id = "safe_partial_launch"
         events = self._events(journey_id)
@@ -636,6 +801,34 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
         receipt["payload"]["update_id"] = "foreign-receipt-update"
         return journey_id, events
 
+    def _ownership_receipt_identity(
+        self,
+    ) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "safe_partial_launch"
+        events = self._events(journey_id)
+        receipt = next(
+            event
+            for event in events
+            if event["event_type"] == "production_path_receipt"
+            and event["payload"]["entrypoint"]
+            == "voiProductionAssignOperationOwner"
+        )
+        receipt["identity"]["operation_id"] = "fabricated-owner"
+        receipt["identity"]["generation"] += 1
+        return journey_id, events
+
+    def _remove_production_receipts(
+        self,
+    ) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "safe_partial_launch"
+        events = [
+            event
+            for event in self._events(journey_id)
+            if event["event_type"] != "production_path_receipt"
+        ]
+        _resequence(events)
+        return journey_id, events
+
     def _submission_receipt_link(
         self,
     ) -> tuple[str, list[dict[str, object]]]:
@@ -653,6 +846,16 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
         journey_id = "safe_partial_launch"
         events = self._events(journey_id)
         _rebind_sc2_event_unit_tags(events, tag_offset=900_000)
+        return journey_id, events
+
+    def _duplicate_replay_output(
+        self,
+    ) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "event_reconnect_replay"
+        events = self._events(journey_id)
+        replayed = _first_event(events, "replay_deduplicated")
+        events.append(deepcopy(replayed))
+        _resequence(events)
         return journey_id, events
 
     def _projection_identity_mismatch(
