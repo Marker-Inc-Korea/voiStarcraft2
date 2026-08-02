@@ -20852,12 +20852,12 @@ function microMachineStatusIdentityIsAdmitted(data) {
 
 function microMachineStatusProjectionFrame(data) {
   if (!data || typeof data !== "object") { return -1; }
-  var candidates = [];
+  var envelopeCandidates = [];
   function appendFrame(value) {
     if (value === null || value === undefined || value === "") { return; }
     var frame = Number(value);
     if (Number.isFinite(frame) && frame >= 0) {
-      candidates.push(frame);
+      envelopeCandidates.push(frame);
     }
   }
   var projectionIdentity = data.battlefield_projection_identity || {};
@@ -20872,15 +20872,24 @@ function microMachineStatusProjectionFrame(data) {
   appendFrame(projectionIdentity.game_frame);
   appendFrame(overviewIdentity.game_frame);
   appendFrame(operationIdentity.game_frame);
+  if (envelopeCandidates.length) {
+    return Math.max.apply(Math, envelopeCandidates);
+  }
+  var operationCandidates = [];
   commandOperationPayloads(data).forEach(function(operation) {
     var operationProjection = operation && operation.battlefield_operation;
     var identity = operationProjection &&
       typeof operationProjection === "object"
       ? operationProjection.identity || {}
       : {};
-    appendFrame(identity.game_frame);
+    var frame = Number(identity.game_frame);
+    if (Number.isFinite(frame) && frame >= 0) {
+      operationCandidates.push(frame);
+    }
   });
-  return candidates.length ? Math.max.apply(Math, candidates) : -1;
+  return operationCandidates.length
+    ? Math.max.apply(Math, operationCandidates)
+    : -1;
 }
 
 function microMachineStatusCanonicalFrameIsStale(data) {

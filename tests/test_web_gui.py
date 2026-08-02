@@ -25633,6 +25633,13 @@ const assert = require("assert");
   var monotonicOperationBRecord =
     operationRecords[monotonicOperationBKey];
   assert(monotonicOperationBRecord);
+  var monotonicOperationAKey = operationRecordKey(
+    retainedOverviewScope,
+    "monotonic-operation-a"
+  );
+  var monotonicOperationARecord =
+    operationRecords[monotonicOperationAKey];
+  assert(monotonicOperationARecord);
   var monotonicOperationBNode = monotonicOperationBRecord.node;
   selectedOperationKey = monotonicOperationBKey;
   renderOperationRecords();
@@ -25657,7 +25664,7 @@ const assert = require("assert");
         monotonicOperation(
           "monotonic-operation-a",
           "monotonic-update-a",
-          3
+          5
         )
       ]
     },
@@ -25703,6 +25710,11 @@ const assert = require("assert");
     assert.strictEqual(selectedOperationKey, monotonicOperationBKey);
     assert.strictEqual(document.activeElement, monotonicOperationBView);
   });
+  assert.strictEqual(
+    operationRecords[monotonicOperationAKey],
+    monotonicOperationARecord
+  );
+  assert.strictEqual(monotonicOperationARecord.telemetryFrame, 5);
 
   // Disabled status is the canonical latest state. Locale-only rerenders
   // must not revive status, overview, or intervention data from before it.
