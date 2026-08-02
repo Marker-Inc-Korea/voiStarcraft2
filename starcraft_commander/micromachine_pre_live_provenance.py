@@ -10,11 +10,13 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import hmac
+import importlib.abc
+import importlib.machinery
+import importlib.util
 import json
 import os
 import pwd
 import re
-import shutil
 import stat
 import subprocess
 import sys
@@ -23,6 +25,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipimport
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import fields
 from datetime import datetime, timedelta, timezone
@@ -173,6 +176,23 @@ SANITIZED_TEST_ENV: Final[dict[str, str]] = {
     "LANG": "C",
     "LC_ALL": "C",
     "PATH": "/usr/bin:/bin",
+}
+_TRUSTED_STDLIB_ROOT: Final[Path] = Path(os.__file__).resolve().parent
+_TRUSTED_STDLIB_IMPORT_PATHS: Final[tuple[str, ...]] = tuple(
+    str(path)
+    for path in (
+        _TRUSTED_STDLIB_ROOT.parent
+        / f"python{sys.version_info.major}{sys.version_info.minor}.zip",
+        _TRUSTED_STDLIB_ROOT,
+        _TRUSTED_STDLIB_ROOT / "lib-dynload",
+    )
+    if path.exists()
+)
+_TRUSTED_INTRINSIC_MODULES: Final[dict[str, object]] = {
+    name: module
+    for name, module in sys.modules.items()
+    if getattr(getattr(module, "__spec__", None), "origin", None)
+    in {"built-in", "frozen"}
 }
 
 CommandRunner = Callable[..., subprocess.CompletedProcess[Any]]
@@ -1021,6 +1041,7 @@ def attest_github_source(
     expected_head_sha: str,
     expected_issue_state: str = "open",
     expected_pull_state: str = "open",
+    node_executable: Path | str | None = None,
 ) -> dict[str, object]:
     """Fetch and cross-bind immutable GitHub source records."""
 
@@ -1693,7 +1714,10 @@ def attest_github_source(
                     f"server={server_artifact_digest!r} "
                     f"downloaded={expected_server_digest}"
                 )
-            artifact_bundle = verify_downloaded_pre_live_artifact(artifact_bytes)
+            artifact_bundle = verify_downloaded_pre_live_artifact(
+                artifact_bytes,
+                node_executable=node_executable,
+            )
             if artifact_bundle.get("ok") is not True:
                 bundle_blockers = artifact_bundle.get("blockers")
                 blockers.append(
@@ -2466,17 +2490,13 @@ def resolve_local_producer_policy(
                 blockers.append(
                     "{node} must be the value of --node-executable"
                 )
-        resolved_node = (
-            str(node_executable)
-            if node_executable is not None
-            else shutil.which("node")
-        )
-        if not resolved_node:
+        if node_executable is None:
             blockers.append(
-                "deterministic journey producer requires a Node.js executable"
+                "deterministic journey producer requires an explicitly "
+                "admitted Node.js executable"
             )
         else:
-            raw_node_path = Path(resolved_node)
+            raw_node_path = Path(node_executable)
             if not raw_node_path.is_absolute():
                 blockers.append("Node.js executable path must be absolute")
             elif _path_has_symlink_component(raw_node_path):
@@ -3584,6 +3604,7 @@ def emit_github_actions_pre_live_bundle(
     expected_build_dir: Path | str,
     output_path: Path | str,
     producer_id: str = PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID,
+    node_executable: Path | str | None = None,
     git_runner: CommandRunner = subprocess.run,
     ctest_runner: CommandRunner = subprocess.run,
     producer_runner: CommandRunner = subprocess.run,
@@ -3656,6 +3677,7 @@ def emit_github_actions_pre_live_bundle(
             git_runner=git_runner,
             micromachine_binary_path=build_binding.get("binary_path"),
             micromachine_binary_sha256=build_binding.get("binary_sha256"),
+            node_executable=node_executable,
         )
         blockers.extend(_prefixed_blockers("producer_policy", producer_policy))
         if blockers:
@@ -3717,12 +3739,28 @@ def emit_github_actions_pre_live_bundle(
                 producer_policy=producer_policy,
                 local_execution=local_execution,
             )
-            verification = verify_pre_live_artifact_bundle(
-                bundle,
-                admission_snapshot=_admission_snapshot_from_mapping(
-                    admitted_build
-                ),
-            )
+            admission_snapshot = _admission_snapshot_from_mapping(admitted_build)
+            if (
+                producer_policy.get("producer_id")
+                == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+            ):
+                verification = cast(
+                    dict[str, object],
+                    _with_pinned_node_executable(
+                        producer_policy.get("node_executable_path"),
+                        producer_policy.get("node_executable_sha256"),
+                        lambda node_descriptor: verify_pre_live_artifact_bundle(
+                            bundle,
+                            admission_snapshot=admission_snapshot,
+                            node_executable=node_descriptor,
+                        ),
+                    ),
+                )
+            else:
+                verification = verify_pre_live_artifact_bundle(
+                    bundle,
+                    admission_snapshot=admission_snapshot,
+                )
             if verification.get("ok") is not True:
                 raise ValueError(
                     "assembled bundle failed verification: "
@@ -3892,6 +3930,8 @@ def _assemble_github_actions_pre_live_bundle(
         producer_output=raw_producer_output,
         build_report=report_payload,
         binary=binary_payload,
+        node_executable=producer_policy.get("node_executable_path"),
+        node_sha256=producer_policy.get("node_executable_sha256"),
     )
     producer_output_sha256 = hashlib.sha256(
         producer_output_payload
@@ -3986,10 +4026,28 @@ def _assemble_github_actions_pre_live_bundle(
         producer_output_member=producer_output_member,
         producer_provenance_member="producer/provenance.json",
     )
-    return build_pre_live_artifact_bundle(
-        metadata,
-        members,
-        admission_snapshot=_admission_snapshot_from_mapping(admitted_build),
+    admission_snapshot = _admission_snapshot_from_mapping(admitted_build)
+    if (
+        producer_policy.get("producer_id")
+        != PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+    ):
+        return build_pre_live_artifact_bundle(
+            metadata,
+            members,
+            admission_snapshot=admission_snapshot,
+        )
+    return cast(
+        bytes,
+        _with_pinned_node_executable(
+            producer_policy.get("node_executable_path"),
+            producer_policy.get("node_executable_sha256"),
+            lambda node_descriptor: build_pre_live_artifact_bundle(
+                metadata,
+                members,
+                admission_snapshot=admission_snapshot,
+                node_executable=node_descriptor,
+            ),
+        ),
     )
 
 
@@ -3999,14 +4057,64 @@ def _bind_producer_output_to_admitted_build(
     producer_output: bytes,
     build_report: bytes,
     binary: bytes,
+    node_executable: object = None,
+    node_sha256: object = None,
 ) -> bytes:
     if producer_id != PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID:
         return producer_output
-    return bind_deterministic_journey_bundle_to_build(
-        producer_output,
-        build_report_bytes=build_report,
-        binary_bytes=binary,
+    return cast(
+        bytes,
+        _with_pinned_node_executable(
+            node_executable,
+            node_sha256,
+            lambda node_descriptor: bind_deterministic_journey_bundle_to_build(
+                producer_output,
+                build_report_bytes=build_report,
+                binary_bytes=binary,
+                node_executable=node_descriptor,
+            ),
+        ),
     )
+
+
+def _with_pinned_node_executable(
+    node_executable: object,
+    node_sha256: object,
+    operation: Callable[[str], object],
+) -> object:
+    if not isinstance(node_executable, (str, Path)):
+        raise ValueError("admitted Node.js executable path is missing or invalid")
+    if not Path(node_executable).is_absolute():
+        raise ValueError("admitted Node.js executable path is missing or invalid")
+    if not isinstance(node_sha256, str) or not _SHA256_RE.fullmatch(node_sha256):
+        raise ValueError("admitted Node.js executable digest is missing or invalid")
+    node_path = Path(node_executable)
+    if _path_has_symlink_component(node_path):
+        raise ValueError("admitted Node.js executable path contains a symlink")
+    descriptor, _, snapshot_before = _open_pinned_executable(node_path)
+    try:
+        if snapshot_before[4] != node_sha256:
+            raise ValueError("admitted Node.js executable digest mismatch")
+        descriptor_path = _descriptor_execution_path(descriptor)
+        result = operation(descriptor_path)
+        _, descriptor_snapshot_after = _read_open_regular_file_snapshot(
+            descriptor,
+            maximum=MAX_PRODUCER_EXECUTABLE_BYTES,
+        )
+        _, pathname_snapshot_after = _read_regular_file_snapshot(
+            node_path,
+            maximum=MAX_PRODUCER_EXECUTABLE_BYTES,
+        )
+        if (
+            descriptor_snapshot_after != snapshot_before
+            or pathname_snapshot_after != snapshot_before
+        ):
+            raise ValueError(
+                "admitted Node.js executable changed during output binding"
+            )
+        return result
+    finally:
+        os.close(descriptor)
 
 
 def _read_published_producer_output(
@@ -4114,6 +4222,8 @@ def _bound_local_producer_output_sha256(
         producer_output=raw_output,
         build_report=build_report,
         binary=binary,
+        node_executable=producer_policy.get("node_executable_path"),
+        node_sha256=producer_policy.get("node_executable_sha256"),
     )
     return hashlib.sha256(bound_output).hexdigest()
 
@@ -4840,6 +4950,7 @@ def attest_pre_live_provenance(
     build_report_path: Path | str,
     expected_build_dir: Path | str,
     producer_id: str,
+    node_executable: Path | str | None = None,
     git_runner: CommandRunner = subprocess.run,
     ctest_runner: CommandRunner = subprocess.run,
     producer_runner: CommandRunner = subprocess.run,
@@ -4853,20 +4964,6 @@ def attest_pre_live_provenance(
         expected_repository=AUTHORITATIVE_REPOSITORY,
         expected_commit=expected_commit,
         command_runner=git_runner,
-    )
-    github_source = attest_github_source(
-        github_adapter,
-        repository=AUTHORITATIVE_REPOSITORY,
-        expected_repository_id=AUTHORITATIVE_REPOSITORY_ID,
-        issue_number=issue_number,
-        pull_number=pull_number,
-        run_id=run_id,
-        run_attempt=run_attempt,
-        job_id=job_id,
-        artifact_id=artifact_id,
-        expected_head_sha=expected_head_sha,
-        expected_issue_state="open",
-        expected_pull_state="open",
     )
     build_binding = attest_build_binding(
         build_report_path,
@@ -4882,7 +4979,6 @@ def attest_pre_live_provenance(
             f"repository={expected_commit} github={expected_head_sha}"
         )
     blockers.extend(_prefixed_blockers("repository", repository_before))
-    blockers.extend(_prefixed_blockers("github", github_source))
     blockers.extend(_prefixed_blockers("build", build_binding))
 
     if blockers:
@@ -4904,14 +5000,61 @@ def attest_pre_live_provenance(
             git_runner=git_runner,
             micromachine_binary_path=build_binding.get("binary_path"),
             micromachine_binary_sha256=build_binding.get("binary_sha256"),
+            node_executable=node_executable,
         )
         blockers.extend(_prefixed_blockers("producer_policy", producer_policy))
-        if blockers:
-            local_execution = _component_result(
-                ["producer not executed because producer policy was rejected"],
-                status="not_run",
+    if blockers:
+        github_source = _component_result(
+            [
+                "GitHub source not attested because authenticated local "
+                "prerequisites failed"
+            ],
+            status="not_evaluated",
+        )
+    else:
+        try:
+            github_kwargs = {
+                "repository": AUTHORITATIVE_REPOSITORY,
+                "expected_repository_id": AUTHORITATIVE_REPOSITORY_ID,
+                "issue_number": issue_number,
+                "pull_number": pull_number,
+                "run_id": run_id,
+                "run_attempt": run_attempt,
+                "job_id": job_id,
+                "artifact_id": artifact_id,
+                "expected_head_sha": expected_head_sha,
+                "expected_issue_state": "open",
+                "expected_pull_state": "open",
+            }
+            if producer_id == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID:
+                github_source = cast(
+                    dict[str, object],
+                    _with_pinned_node_executable(
+                        producer_policy.get("node_executable_path"),
+                        producer_policy.get("node_executable_sha256"),
+                        lambda node_descriptor: attest_github_source(
+                            github_adapter,
+                            **github_kwargs,
+                            node_executable=node_descriptor,
+                        ),
+                    ),
+                )
+            else:
+                github_source = attest_github_source(
+                    github_adapter,
+                    **github_kwargs,
+                )
+        except (OSError, TypeError, ValueError) as exc:
+            github_source = _component_result(
+                [f"GitHub source attestation setup failed: {exc}"],
             )
-            repository_after = repository_before
+        blockers.extend(_prefixed_blockers("github", github_source))
+    if blockers:
+        local_execution = _component_result(
+            ["producer not executed because authenticated prerequisites failed"],
+            status="not_run",
+        )
+        repository_after = repository_before
     if not blockers:
         runtime_sources = _mapping(producer_policy.get("runtime_sources"))
         runtime_source_files = runtime_sources.get("files")
@@ -4964,6 +5107,8 @@ def attest_pre_live_provenance(
             local_execution=local_execution,
         )
         blockers.extend(_prefixed_blockers("artifact_binding", artifact_binding))
+
+    blockers.extend(_production_candidate_producer_blockers(producer_id))
 
     replay_digest: str | None = None
     if blockers:
@@ -6189,6 +6334,16 @@ def _is_isolated_python_command(argv: Sequence[str]) -> bool:
     )
 
 
+def _production_candidate_producer_blockers(producer_id: str) -> list[str]:
+    if producer_id == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID:
+        return []
+    return [
+        "production candidate evidence requires producer_id="
+        f"{PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID!r}; "
+        f"received={producer_id!r}"
+    ]
+
+
 def _descriptor_execution_path(descriptor: int) -> str:
     path = Path("/dev/fd") / str(descriptor)
     descriptor_stat = os.fstat(descriptor)
@@ -6221,8 +6376,6 @@ def _run_authenticated_python_fork(
 ) -> subprocess.CompletedProcess[bytes]:
     """Execute an authenticated Python snapshot without a second executable exec."""
 
-    import importlib.abc
-    import importlib.util
     import selectors
     import signal
     import time
@@ -6306,18 +6459,32 @@ def _run_authenticated_python_fork(
                         module.__path__ = [str(Path(filename).parent)]
                     exec(compile(payload, filename, "exec"), module.__dict__)
 
-            for module_name in tuple(sys.modules):
-                if module_name in source_records:
-                    del sys.modules[module_name]
-            stdlib_paths = [
-                entry
-                for entry in sys.path
-                if entry
-                and "site-packages" not in entry
-                and "dist-packages" not in entry
+            authenticated_loader = AuthenticatedSourceLoader()
+            stdlib_file_finder = importlib.machinery.FileFinder.path_hook(
+                (
+                    importlib.machinery.SourceFileLoader,
+                    importlib.machinery.SOURCE_SUFFIXES,
+                ),
+                (
+                    importlib.machinery.SourcelessFileLoader,
+                    importlib.machinery.BYTECODE_SUFFIXES,
+                ),
+                (
+                    importlib.machinery.ExtensionFileLoader,
+                    importlib.machinery.EXTENSION_SUFFIXES,
+                ),
+            )
+            sys.modules.clear()
+            sys.modules.update(_TRUSTED_INTRINSIC_MODULES)
+            sys.path[:] = list(_TRUSTED_STDLIB_IMPORT_PATHS)
+            sys.path_hooks[:] = [zipimport.zipimporter, stdlib_file_finder]
+            sys.path_importer_cache.clear()
+            sys.meta_path[:] = [
+                authenticated_loader,
+                importlib.machinery.BuiltinImporter,
+                importlib.machinery.FrozenImporter,
+                importlib.machinery.PathFinder,
             ]
-            sys.path[:] = stdlib_paths
-            sys.meta_path.insert(0, AuthenticatedSourceLoader())
             sys.argv = [script, *argv[8:]]
             try:
                 globals_dict = {
@@ -6626,6 +6793,7 @@ def _main(argv: Sequence[str]) -> int:
             expected_commit = os.environ["VOI_RELEASE_COMMIT"]
             workflow_ref = os.environ["GITHUB_WORKFLOW_REF"]
             workflow_sha = os.environ["GITHUB_WORKFLOW_SHA"]
+            node_executable = os.environ["VOI_NODE_EXECUTABLE"]
             run_id = int(os.environ["GITHUB_RUN_ID"])
             run_attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
             token = os.environ["GITHUB_TOKEN"]
@@ -6660,6 +6828,7 @@ def _main(argv: Sequence[str]) -> int:
             build_report_path=argv[2],
             expected_build_dir=argv[3],
             output_path=argv[1],
+            node_executable=node_executable,
         )
         print(canonical_json_bytes(report).decode("utf-8"))
         return 0 if report["ok"] is True else 1

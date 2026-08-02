@@ -36,6 +36,7 @@ from starcraft_commander.micromachine_live_session import (
     StaticJsonPolicyModulationProvider,
 )
 from starcraft_commander.micromachine_pre_live_artifact import (
+    _archive_framing_error,
     canonical_json_bytes,
 )
 from starcraft_commander.micromachine_runtime import (
@@ -77,6 +78,24 @@ DETERMINISTIC_ZIP_TIMESTAMP: Final[tuple[int, int, int, int, int, int]] = (
     0,
 )
 _REGULAR_FILE_MODE: Final[int] = 0o100644
+_REQUIRED_JOURNEY_IDS: Final[frozenset[str]] = frozenset(
+    {
+        "all_terran_family_ability_blocker_matrix",
+        "autonomous_defense_restoration",
+        "emergency_preemption",
+        "event_reconnect_replay",
+        "parallel_scout_attack_defend",
+        "protected_minimum_partial_rejection",
+        "reinforcement_generation_update",
+        "retarget",
+        "safe_partial_launch",
+        "selective_cancellation",
+        "shortage_prerequisite_wait",
+        "transfer_rejection_preserves_active",
+        "transfer_success",
+        "voice_readback_callout_identity",
+    }
+)
 _EFFECT_EVENT_TYPES: Final[frozenset[str]] = frozenset(
     {"movement", "engagement", "ability_effect"}
 )
@@ -453,6 +472,8 @@ def _validate_pre_live_journey_manifest_payload(
             )
         ):
             raise ValueError(f"{journey_id} allowed_nondeterminism is invalid")
+    if seen != _REQUIRED_JOURNEY_IDS:
+        raise ValueError("pre-live manifest required journey ids drifted")
     return payload
 
 
@@ -1435,32 +1456,17 @@ def _invoke_native_adapter(
     expected_sha256: str,
     command_runner: CommandRunner,
 ) -> dict[str, object]:
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            prefix=".voi-pre-live-input-",
-            suffix=".json",
-            delete=False,
-        ) as temporary:
-            temporary_path = Path(temporary.name)
-            temporary.write(canonical_json_bytes(native_input))
-            temporary.flush()
-            os.fsync(temporary.fileno())
-        os.chmod(temporary_path, 0o600)
-        completed = _run_native_command(
-            binary,
-            [
-                str(binary),
-                "--voi-pre-live-journey-adapter",
-                str(temporary_path),
-            ],
-            expected_sha256=expected_sha256,
-            command_runner=command_runner,
-        )
-    finally:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
+    completed = _run_native_command(
+        binary,
+        [
+            str(binary),
+            "--voi-pre-live-journey-adapter",
+            "-",
+        ],
+        expected_sha256=expected_sha256,
+        command_runner=command_runner,
+        input=canonical_json_bytes(native_input),
+    )
     if int(completed.returncode) != 0:
         stderr = _as_bytes(completed.stderr).decode("utf-8", errors="replace")
         raise ValueError(f"native pre-live adapter failed: {stderr.strip()}")
@@ -1471,19 +1477,217 @@ def _invoke_native_adapter(
         stdout,
         object_pairs_hook=_reject_duplicate_json_object_keys,
     )
-    output = _validate_native_output_payload(output)
+    output = _validate_native_output_payload(
+        output,
+        expected_input=native_input,
+    )
     if _sha256_file(binary) != expected_sha256:
         raise ValueError("MicroMachine binary changed during adapter execution")
     return output
 
 
-def _validate_native_output_payload(output: object) -> dict[str, object]:
+def _validate_native_output_payload(
+    output: object,
+    *,
+    expected_input: Mapping[str, object] | None = None,
+) -> dict[str, object]:
     if not isinstance(output, dict) or set(output) != _NATIVE_OUTPUT_FIELDS:
         raise ValueError("native pre-live adapter output field set is invalid")
     if output.get("schema_version") != PRE_LIVE_NATIVE_ADAPTER_SCHEMA_VERSION:
         raise ValueError("native pre-live adapter schema is unsupported")
+    _validate_native_final_state(output)
+    if expected_input is not None:
+        _validate_native_compiler_identity_bindings(output, expected_input)
+    _validate_native_lifecycle_sequence(output.get("events"))
     _validate_native_production_path(output)
     return output
+
+
+def _validate_native_final_state(output: Mapping[str, object]) -> None:
+    snapshots = output.get("snapshots")
+    final_state = output.get("final_state")
+    if (
+        not isinstance(snapshots, Sequence)
+        or isinstance(snapshots, (str, bytes, bytearray))
+        or not snapshots
+        or not isinstance(snapshots[-1], Mapping)
+        or not isinstance(cast(Mapping[str, object], snapshots[-1]).get("state"), Mapping)
+        or not isinstance(final_state, Mapping)
+    ):
+        raise ValueError("native terminal snapshot is malformed")
+    terminal_state = cast(
+        Mapping[str, object],
+        cast(Mapping[str, object], snapshots[-1])["state"],
+    )
+    if canonical_json_bytes(final_state) != canonical_json_bytes(terminal_state):
+        raise ValueError("native final_state does not match the terminal snapshot")
+
+
+def _validate_native_lifecycle_sequence(events: object) -> None:
+    if not isinstance(events, Sequence) or isinstance(
+        events,
+        (str, bytes, bytearray),
+    ):
+        raise ValueError("native event stream is malformed")
+    canonical = [
+        event
+        for event in events
+        if isinstance(event, Mapping)
+    ]
+    if len(canonical) != len(events):
+        raise ValueError("native event stream contains a non-object event")
+    if [event.get("seq") for event in canonical] != list(
+        range(1, len(canonical) + 1)
+    ):
+        raise ValueError("native event sequence is not contiguous")
+    frames: list[int] = []
+    ownership: dict[tuple[str, str, int], int] = {}
+    admission: dict[tuple[str, str, int], int] = {}
+    preemption: dict[tuple[str, str, int], int] = {}
+    squad_orders: dict[tuple[str, str, int, str], int] = {}
+    submissions: dict[tuple[str, str, int, str], int] = {}
+    for index, event in enumerate(canonical):
+        identity = event.get("identity")
+        payload = event.get("payload")
+        if not isinstance(identity, Mapping) or not isinstance(payload, Mapping):
+            raise ValueError("native lifecycle event is malformed")
+        frame = identity.get("game_frame")
+        if type(frame) is not int or frame < 0:
+            raise ValueError("native lifecycle frame is invalid")
+        frames.append(frame)
+        identity_key = (
+            str(identity.get("update_id", "") or ""),
+            str(identity.get("operation_id", "") or ""),
+            int(identity.get("generation", 0) or 0),
+        )
+        action_key = (*identity_key, str(payload.get("action", "") or ""))
+        event_type = event.get("event_type")
+        if (
+            event_type == "launch_decision"
+            and identity.get("stage") == "launch_admitted"
+        ):
+            admission[identity_key] = index
+        elif event_type == "ownership_snapshot":
+            if admission.get(identity_key, index) >= index:
+                raise ValueError("native ownership predates launch admission")
+            ownership[identity_key] = index
+        elif event_type == "preemption":
+            preemption[identity_key] = index
+        elif event_type == "squad_order":
+            if max(
+                ownership.get(identity_key, -1),
+                preemption.get(identity_key, -1),
+            ) >= index:
+                raise ValueError("native Squad order predates ownership")
+            if identity_key not in ownership and identity_key not in preemption:
+                raise ValueError("native Squad order lacks prior ownership")
+            squad_orders[action_key] = index
+        elif event_type == "submission":
+            if squad_orders.get(action_key, index) >= index:
+                raise ValueError("native submission predates Squad order")
+            submissions[action_key] = index
+        elif event_type in _EFFECT_EVENT_TYPES:
+            if submissions.get(action_key, index) >= index:
+                raise ValueError("native effect predates submission")
+    if frames != sorted(frames):
+        raise ValueError("native lifecycle frames are regressive")
+
+
+def _validate_native_compiler_identity_bindings(
+    output: Mapping[str, object],
+    native_input: Mapping[str, object],
+) -> None:
+    allowed = _compiler_requested_operation_identities(native_input)
+    identities: list[tuple[str, str, int]] = []
+    for event in _mapping_sequence(output.get("events")):
+        identity = event.get("identity")
+        if not isinstance(identity, Mapping):
+            raise ValueError("native event identity is malformed")
+        if str(identity.get("operation_id", "") or ""):
+            identities.append(_native_identity_tuple(identity))
+    for row in _mapping_sequence(output.get("operation_director")):
+        identities.append(
+            (
+                str(row.get("policy_update_id", "") or ""),
+                str(row.get("operation_id", "") or ""),
+                int(row.get("generation", 0) or 0),
+            )
+        )
+        for evidence in _mapping_sequence(row.get("family_evidence")):
+            identities.append(_native_identity_tuple(evidence))
+    production_path = output.get("production_path")
+    if isinstance(production_path, Mapping):
+        for field_name in (
+            "applied_squad_orders",
+            "dispatched_sc2_actions",
+            "squad_order_receipts",
+            "sc2_submission_receipts",
+        ):
+            identities.extend(
+                _native_identity_tuple(row)
+                for row in _mapping_sequence(production_path.get(field_name))
+            )
+    if any(identity not in allowed for identity in identities):
+        raise ValueError(
+            "native evidence is not bound to a compiler-requested operation identity"
+        )
+
+
+def _native_identity_tuple(
+    identity: Mapping[str, object],
+) -> tuple[str, str, int]:
+    return (
+        str(identity.get("update_id", "") or ""),
+        str(identity.get("operation_id", "") or ""),
+        int(identity.get("generation", 0) or 0),
+    )
+
+
+def _compiler_requested_operation_identities(
+    native_input: Mapping[str, object],
+) -> set[tuple[str, str, int]]:
+    steps = native_input.get("steps")
+    if not isinstance(steps, Sequence) or isinstance(
+        steps,
+        (str, bytes, bytearray),
+    ):
+        raise ValueError("native input steps are malformed")
+    allowed: set[tuple[str, str, int]] = set()
+    active: dict[str, int] = {}
+    for step in steps:
+        if not isinstance(step, Mapping) or step.get("kind") != "policy_update":
+            continue
+        update = step.get("update")
+        if not isinstance(update, Mapping):
+            raise ValueError("native policy update is malformed")
+        update_id = str(update.get("update_id", "") or "")
+        operations = _update_operations(update)
+        if operations:
+            active = {
+                str(operation.get("operation_id", "") or ""): int(
+                    operation.get("generation", 0) or 0
+                )
+                for operation in operations
+            }
+            requested = active
+        else:
+            vector = update.get("vector")
+            emergency = (
+                vector.get("emergency")
+                if isinstance(vector, Mapping)
+                else None
+            )
+            requested = (
+                active
+                if isinstance(emergency, Mapping)
+                and any(value is True for value in emergency.values())
+                else {}
+            )
+        for operation_id, generation in requested.items():
+            if not update_id or not operation_id or generation <= 0:
+                raise ValueError("compiler-requested operation identity is malformed")
+            allowed.add((update_id, operation_id, generation))
+    return allowed
 
 
 def _validate_native_production_path(output: Mapping[str, object]) -> None:
@@ -2571,6 +2775,7 @@ def _consume_native_output(
             raise ValueError("native event must be an object")
         normalized = deepcopy(dict(event))
         normalized["_order"] = 20
+        normalized["_native_seq"] = int(normalized["seq"])
         normalized.pop("seq", None)
         execution.events.append(normalized)
     _derive_state_snapshot_events(execution, native)
@@ -3620,6 +3825,7 @@ def _finalize_events(execution: _JourneyExecution) -> None:
                 0,
             )),
             int(event.get("_order", 10)),
+            int(event.get("_native_seq", 0)),
             str(event.get("event_type", "")),
             str(
                 cast(Mapping[str, object], event.get("identity", {})).get(
@@ -3631,6 +3837,7 @@ def _finalize_events(execution: _JourneyExecution) -> None:
     )
     for index, event in enumerate(execution.events, start=1):
         event.pop("_order", None)
+        event.pop("_native_seq", None)
         event["seq"] = index
 
 
@@ -3666,7 +3873,13 @@ def verify_pre_live_journey_events(
         "updated_generation_effect_observed",
         "offense_restored_after_defense",
     }:
-        _verify_required_effects(stop_type, stop, normalized, blockers)
+        _verify_required_effects(
+            spec,
+            stop_type,
+            stop,
+            normalized,
+            blockers,
+        )
     elif stop_type == "transfer_applied_and_siblings_preserved":
         _verify_transfer(stop, normalized, blockers)
     elif stop_type == "selected_operation_cancelled_sibling_active":
@@ -3701,6 +3914,15 @@ def _verify_event_identities(
     events: Sequence[Mapping[str, object]],
     blockers: list[str],
 ) -> None:
+    try:
+        compiler_execution = _JourneyExecution(spec)
+        compiler_input = _compile_native_input(compiler_execution)
+        allowed_identities = _compiler_requested_operation_identities(
+            compiler_input
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        blockers.append(f"compiler identity derivation failed closed: {exc}")
+        allowed_identities = set()
     raw_inputs = cast(Sequence[Mapping[str, object]], spec.get("ordered_inputs", ()))
     start_frame = int(raw_inputs[0]["frame"]) if raw_inputs else 0
     timeout = int(spec.get("timeout_frames", 0) or 0)
@@ -3739,6 +3961,13 @@ def _verify_event_identities(
             not operation_id or generation <= 0
         ):
             blockers.append(f"{event_type} lacks operation identity")
+        if operation_id and (update_id, operation_id, generation) not in (
+            allowed_identities
+        ):
+            blockers.append(
+                f"{event_type} is not bound to a compiler-requested "
+                "operation identity"
+            )
         key = (update_id, operation_id, generation)
         previous = last_frame.get(key, -1)
         if frame < previous:
@@ -3938,6 +4167,7 @@ def _verify_forbidden_submission(
 
 
 def _verify_required_effects(
+    spec: Mapping[str, object],
     stop_type: str,
     stop: Mapping[str, object],
     events: Sequence[Mapping[str, object]],
@@ -3955,6 +4185,12 @@ def _verify_required_effects(
     }
     if len(keys) < int(stop.get("count", 1) or 1):
         blockers.append("required matching effects were not observed")
+    required_identities = _required_effect_identities(spec, stop_type)
+    observed_identities = {key[:3] for key in keys}
+    if not required_identities.issubset(observed_identities):
+        blockers.append(
+            "required compiler-requested operations lack exact effect coverage"
+        )
     if stop_type == "effect_after_prerequisite_convergence":
         waits = _event_frames(events, "prerequisite_wait")
         effect_frames = _event_frames(effects)
@@ -3983,6 +4219,54 @@ def _verify_required_effects(
         effect_frames = _event_frames(effects)
         if not restored or not effect_frames or max(effect_frames) < max(restored):
             blockers.append("offense effect did not follow defense restoration")
+
+
+def _required_effect_identities(
+    spec: Mapping[str, object],
+    stop_type: str,
+) -> set[tuple[str, str, int]]:
+    execution = _JourneyExecution(spec)
+    native_input = _compile_native_input(execution)
+    policy_updates = [
+        cast(Mapping[str, object], step["update"])
+        for step in cast(
+            Sequence[Mapping[str, object]],
+            native_input["steps"],
+        )
+        if step.get("kind") == "policy_update"
+    ]
+    if stop_type == "updated_generation_effect_observed":
+        previous: dict[str, int] = {}
+        changed: set[tuple[str, str, int]] = set()
+        for update in policy_updates:
+            current = {
+                str(operation["operation_id"]): int(operation["generation"])
+                for operation in _update_operations(update)
+            }
+            changed.update(
+                (
+                    str(update["update_id"]),
+                    operation_id,
+                    generation,
+                )
+                for operation_id, generation in current.items()
+                if operation_id in previous
+                and generation > previous[operation_id]
+            )
+            previous = current
+        return changed
+    for update in reversed(policy_updates):
+        operations = _update_operations(update)
+        if operations:
+            return {
+                (
+                    str(update["update_id"]),
+                    str(operation["operation_id"]),
+                    int(operation["generation"]),
+                )
+                for operation in operations
+            }
+    return set()
 
 
 def _verify_transfer(
@@ -4937,6 +5221,10 @@ def verify_pre_live_journey_bundle(
         return _verification_result(["journey bundle must be bytes"])
     if len(bundle) > MAX_JOURNEY_BUNDLE_BYTES:
         return _verification_result(["journey bundle exceeds the size limit"])
+    if _archive_framing_error(bundle) is not None:
+        return _verification_result(
+            ["journey bundle ZIP framing is invalid"]
+        )
     try:
         with zipfile.ZipFile(io.BytesIO(bundle), mode="r") as archive:
             infos = archive.infolist()
@@ -4998,8 +5286,16 @@ def verify_pre_live_journey_bundle(
                     blockers.append(f"member digest mismatch: {item['name']}")
                 if len(payload) != item.get("size_bytes"):
                     blockers.append(f"member size mismatch: {item['name']}")
+            manifest_bytes = archive.read("input/PRE_LIVE_JOURNEYS.json")
+            checked_in_manifest = canonical_json_bytes(
+                load_pre_live_journey_manifest(DEFAULT_JOURNEY_MANIFEST)
+            )
+            if manifest_bytes != checked_in_manifest:
+                blockers.append(
+                    "journey input manifest does not match the checked-in contract"
+                )
             manifest = _load_canonical_json_object(
-                archive.read("input/PRE_LIVE_JOURNEYS.json"),
+                manifest_bytes,
                 label="journey input manifest",
                 blockers=blockers,
             )
@@ -5605,7 +5901,8 @@ def _rederive_product_path_blockers(
                 "native adapter input was not derived from the journey compiler"
             )
         native_output = _validate_native_output_payload(
-            deepcopy(native_adapter.get("output"))
+            deepcopy(native_adapter.get("output")),
+            expected_input=expected_input,
         )
         _consume_native_output(
             execution,

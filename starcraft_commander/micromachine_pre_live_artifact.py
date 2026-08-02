@@ -20,7 +20,7 @@ import zipfile
 from collections.abc import Mapping
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Final, cast
 
 from starcraft_commander.micromachine_build_identity import (
@@ -384,6 +384,7 @@ def bind_deterministic_journey_bundle_to_build(
     *,
     build_report_bytes: bytes,
     binary_bytes: bytes,
+    node_executable: Path | str | None = None,
 ) -> bytes:
     """Bind verified journey evidence to one admitted MicroMachine build."""
 
@@ -397,8 +398,16 @@ def bind_deterministic_journey_bundle_to_build(
         raise TypeError("build report must be bytes")
     if not isinstance(binary_bytes, bytes):
         raise TypeError("MicroMachine binary must be bytes")
+    if node_executable is None:
+        raise ValueError(
+            "deterministic journey replay requires an admitted Node.js "
+            "executable or descriptor"
+        )
     root, payloads = _read_deterministic_journey_archive(bundle)
-    verification = verify_pre_live_journey_bundle(bundle)
+    verification = verify_pre_live_journey_bundle(
+        bundle,
+        node_executable=node_executable,
+    )
     if verification.get("ok") is not True:
         raise ValueError(
             "deterministic_journey_bundle_rejected: "
@@ -696,6 +705,7 @@ def _verify_bound_deterministic_journey_bundle(
     build_report_bytes: bytes | None,
     manifest: Mapping[str, object],
     limits: PreLiveArtifactLimits,
+    node_executable: Path | str | None,
 ) -> dict[str, object]:
     from starcraft_commander.micromachine_pre_live_journeys import (
         verify_pre_live_journey_bundle,
@@ -775,37 +785,51 @@ def _verify_bound_deterministic_journey_bundle(
         unbound_root,
         payloads,
     )
-    raw_verification = verify_pre_live_journey_bundle(unbound_bundle)
-    if raw_verification.get("ok") is not True:
+    if node_executable is None:
         _add_blocker(
             blockers,
-            "deterministic_journey_bundle_rejected",
+            "deterministic_journey_node_executable_missing",
             "$.producer.output_member",
-            "deterministic journey producer output failed raw-evidence verification",
-            inner_blockers=raw_verification.get("blockers"),
+            "deterministic journey replay requires an admitted Node.js "
+            "executable or descriptor",
         )
-    for key, code in (
-        (
-            "binary_sha256",
-            "deterministic_journey_nested_binary_digest_mismatch",
-        ),
-        (
-            "embedded_build_input_identity",
-            "deterministic_journey_nested_embedded_identity_mismatch",
-        ),
-    ):
-        nested = raw_verification.get(key)
-        expected = binding.get(key)
-        if nested == expected:
-            continue
-        _add_blocker(
-            blockers,
-            code,
-            f"$.producer.output.product.*.native_adapter.{key}",
-            "per-journey native adapter identity does not match root binding",
-            expected=expected,
-            actual=nested,
+    else:
+        raw_verification = verify_pre_live_journey_bundle(
+            unbound_bundle,
+            node_executable=node_executable,
         )
+        if raw_verification.get("ok") is not True:
+            _add_blocker(
+                blockers,
+                "deterministic_journey_bundle_rejected",
+                "$.producer.output_member",
+                "deterministic journey producer output failed "
+                "raw-evidence verification",
+                inner_blockers=raw_verification.get("blockers"),
+            )
+    if raw_verification:
+        for key, code in (
+            (
+                "binary_sha256",
+                "deterministic_journey_nested_binary_digest_mismatch",
+            ),
+            (
+                "embedded_build_input_identity",
+                "deterministic_journey_nested_embedded_identity_mismatch",
+            ),
+        ):
+            nested = raw_verification.get(key)
+            expected = binding.get(key)
+            if nested == expected:
+                continue
+            _add_blocker(
+                blockers,
+                code,
+                f"$.producer.output.product.*.native_adapter.{key}",
+                "per-journey native adapter identity does not match root binding",
+                expected=expected,
+                actual=nested,
+            )
 
     build = _mapping(manifest.get("build"))
     if build_report_bytes is None:
@@ -869,6 +893,7 @@ def build_pre_live_artifact_bundle(
     *,
     limits: PreLiveArtifactLimits | None = None,
     admission_snapshot: PreLiveBuildAdmissionSnapshot | None = None,
+    node_executable: Path | str | None = None,
 ) -> bytes:
     """Build deterministic ZIP bytes from trusted metadata and payload bytes."""
 
@@ -927,6 +952,7 @@ def build_pre_live_artifact_bundle(
         bundle,
         limits=effective_limits,
         admission_snapshot=admission_snapshot,
+        node_executable=node_executable,
     )
     if verification["ok"] is not True:
         blockers = cast(list[Mapping[str, object]], verification["blockers"])
@@ -943,6 +969,7 @@ def verify_pre_live_artifact_bundle(
     limits: PreLiveArtifactLimits | None = None,
     caller_claims: Mapping[str, object] | None = None,
     admission_snapshot: PreLiveBuildAdmissionSnapshot | None = None,
+    node_executable: Path | str | None = None,
 ) -> dict[str, object]:
     """Verify a bundle from bytes without trusting caller-supplied status."""
 
@@ -1306,6 +1333,7 @@ def verify_pre_live_artifact_bundle(
                             build_report_bytes=report_bytes,
                             manifest=manifest,
                             limits=effective_limits,
+                            node_executable=node_executable,
                         )
                     )
                     role_evidence["deterministic_journeys"] = (
@@ -1343,6 +1371,7 @@ def verify_downloaded_pre_live_artifact(
     limits: PreLiveArtifactLimits | None = None,
     bundle_member_name: str = GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME,
     admission_snapshot: PreLiveBuildAdmissionSnapshot | None = None,
+    node_executable: Path | str | None = None,
 ) -> dict[str, object]:
     """Verify direct bundle bytes or GitHub's one-file artifact ZIP wrapper."""
 
@@ -1352,6 +1381,7 @@ def verify_downloaded_pre_live_artifact(
         artifact,
         limits=effective_limits,
         admission_snapshot=admission_snapshot,
+        node_executable=node_executable,
     )
     if direct["ok"] is True:
         return {
@@ -1397,11 +1427,32 @@ def verify_downloaded_pre_live_artifact(
             "GitHub bundle member name must be one safe root ZIP filename",
         )
         return _download_verification_result(blockers, direct)
+    framing_error = _archive_framing_error(artifact_bytes)
+    if framing_error is not None:
+        _add_blocker(
+            blockers,
+            "noncanonical_github_artifact_framing",
+            "$.delivery",
+            framing_error,
+        )
+        return _download_verification_result(blockers, direct)
 
     inner_bundle: bytes | None = None
     try:
         with zipfile.ZipFile(io.BytesIO(artifact_bytes), mode="r") as archive:
             infos = archive.infolist()
+            framing_error = _archive_framing_error(
+                artifact_bytes,
+                parsed_entry_count=len(infos),
+            )
+            if framing_error is not None:
+                _add_blocker(
+                    blockers,
+                    "noncanonical_github_artifact_framing",
+                    "$.delivery",
+                    framing_error,
+                )
+                return _download_verification_result(blockers, direct)
             if len(infos) != 1:
                 _add_blocker(
                     blockers,
@@ -1503,6 +1554,7 @@ def verify_downloaded_pre_live_artifact(
         inner_bundle,
         limits=effective_limits,
         admission_snapshot=admission_snapshot,
+        node_executable=node_executable,
     )
     delivery = {
         "kind": "github_artifact_zip",
@@ -2210,11 +2262,11 @@ def _archive_framing_error(
         return "ZIP is shorter than an end-of-central-directory record"
     if not bundle.startswith(b"PK\x03\x04"):
         return "ZIP must start with a local file header and have no prefix data"
-    eocd_offset = bundle.rfind(b"PK\x05\x06")
-    if eocd_offset < 0:
+    eocd_offset = len(bundle) - _END_CENTRAL_DIRECTORY.size
+    if bundle[eocd_offset : eocd_offset + 4] != b"PK\x05\x06":
+        if b"PK\x05\x06" in bundle:
+            return "ZIP must not contain trailing bytes after the declared EOCD"
         return "ZIP end-of-central-directory record is missing"
-    if eocd_offset + _END_CENTRAL_DIRECTORY.size > len(bundle):
-        return "ZIP end-of-central-directory record is truncated"
     (
         signature,
         disk_number,
@@ -2242,9 +2294,25 @@ def _archive_framing_error(
         return "ZIP64 archives are not allowed"
     if comment_size != 0:
         return "ZIP archive comments are not allowed"
-    if eocd_offset + _END_CENTRAL_DIRECTORY.size != len(bundle):
-        return "ZIP must not contain trailing bytes"
     if central_offset + central_size != eocd_offset:
+        return "ZIP central directory has hidden or noncanonical framing data"
+    offset = central_offset
+    for _ in range(total_entries):
+        if offset + _CENTRAL_DIRECTORY_HEADER.size > eocd_offset:
+            return "ZIP central directory entry is truncated"
+        fields = _CENTRAL_DIRECTORY_HEADER.unpack_from(bundle, offset)
+        if fields[0] != b"PK\x01\x02":
+            return "ZIP central directory entry signature is invalid"
+        entry_size = (
+            _CENTRAL_DIRECTORY_HEADER.size
+            + fields[10]
+            + fields[11]
+            + fields[12]
+        )
+        offset += entry_size
+        if offset > eocd_offset:
+            return "ZIP central directory entry is truncated"
+    if offset != eocd_offset:
         return "ZIP central directory has hidden or noncanonical framing data"
     return None
 

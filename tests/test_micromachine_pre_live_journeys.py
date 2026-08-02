@@ -29,6 +29,7 @@ from starcraft_commander.micromachine_pre_live_journeys import (
     _production_receipt_id,
     _run_native_command,
     _sha256_file,
+    _validate_pre_live_journey_manifest_payload,
     _validate_native_output_payload,
     build_pre_live_journey_bundle,
     execute_pre_live_journeys,
@@ -358,6 +359,7 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
         production_path["dispatched_sc2_actions"] = []
         production_path["squad_order_receipts"] = []
         production_path["sc2_submission_receipts"] = []
+        _resequence(native["events"])
         with self.assertRaisesRegex(
             ValueError,
             "ownership receipts do not match ownership snapshots",
@@ -481,7 +483,12 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
                     for event in native["events"]
                     if event["event_type"] == event_type
                 )
-                native["events"].append(deepcopy(duplicate))
+                duplicate_index = native["events"].index(duplicate)
+                native["events"].insert(
+                    duplicate_index + 1,
+                    deepcopy(duplicate),
+                )
+                _resequence(native["events"])
                 with self.assertRaisesRegex(ValueError, message):
                     _validate_native_output_payload(native)
 
@@ -500,7 +507,9 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
         surplus["payload"]["submission_ids"] = [
             "voi-sc2-submission-unreceipted"
         ]
-        native["events"].append(surplus)
+        effect_index = native["events"].index(effect)
+        native["events"].insert(effect_index + 1, surplus)
+        _resequence(native["events"])
         with self.assertRaisesRegex(
             ValueError,
             "effect lacks exact SC2 receipt proof",
@@ -524,7 +533,11 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
                     "ability_effect",
                 }
             )
-            native["events"].append(deepcopy(effect))
+            effect_index = native["events"].index(effect)
+            native["events"].insert(
+                effect_index + 1,
+                deepcopy(effect),
+            )
 
         def remove_effect(native: dict[str, object]) -> None:
             native["events"] = [
@@ -563,7 +576,11 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
                 if event["event_type"] == "production_path_receipt"
                 and event["payload"].get("submission_id") == submission_id
             )
-            native["events"].append(deepcopy(receipt_event))
+            receipt_event_index = native["events"].index(receipt_event)
+            native["events"].insert(
+                receipt_event_index + 1,
+                deepcopy(receipt_event),
+            )
             production["sc2_submission_receipt_count"] += 1
 
         def remove_receipt(native: dict[str, object]) -> None:
@@ -601,6 +618,7 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
             with self.subTest(message=message):
                 native = deepcopy(original)
                 mutate(native)
+                _resequence(native["events"])
                 with self.assertRaisesRegex(ValueError, message):
                     _validate_native_output_payload(native)
 
@@ -634,6 +652,119 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
             "ownership receipt predates launch admission",
         ):
             _validate_native_output_payload(native)
+
+    def test_native_output_is_bound_to_compiler_requested_identities(
+        self,
+    ) -> None:
+        adapter = deepcopy(
+            self.artifacts["safe_partial_launch"]["products"][
+                "native_adapter"
+            ]
+        )
+        launch = next(
+            event
+            for event in adapter["output"]["events"]
+            if event["event_type"] == "launch_decision"
+        )
+        launch["identity"]["update_id"] = "foreign-update"
+        with self.assertRaisesRegex(
+            ValueError,
+            "compiler-requested operation identity",
+        ):
+            _validate_native_output_payload(
+                adapter["output"],
+                expected_input=adapter["input"],
+            )
+
+    def test_emergency_identity_binding_carries_active_operations(self) -> None:
+        adapter = deepcopy(
+            self.artifacts["emergency_preemption"]["products"][
+                "native_adapter"
+            ]
+        )
+        self.assertEqual(
+            adapter["output"],
+            _validate_native_output_payload(
+                adapter["output"],
+                expected_input=adapter["input"],
+            ),
+        )
+
+    def test_native_final_state_matches_terminal_snapshot(self) -> None:
+        native = deepcopy(
+            self.artifacts["shortage_prerequisite_wait"]["products"][
+                "native_adapter"
+            ]["output"]
+        )
+        native["final_state"]["minerals"] += 1
+        with self.assertRaisesRegex(
+            ValueError,
+            "terminal snapshot",
+        ):
+            _validate_native_output_payload(native)
+
+    def test_native_lifecycle_preserves_causal_sequence(self) -> None:
+        native = deepcopy(
+            self.artifacts["safe_partial_launch"]["products"][
+                "native_adapter"
+            ]["output"]
+        )
+        events = native["events"]
+        squad_index = next(
+            index
+            for index, event in enumerate(events)
+            if event["event_type"] == "squad_order"
+        )
+        submission_index = next(
+            index
+            for index, event in enumerate(events)
+            if event["event_type"] == "submission"
+        )
+        events[squad_index], events[submission_index] = (
+            events[submission_index],
+            events[squad_index],
+        )
+        _resequence(events)
+        with self.assertRaisesRegex(
+            ValueError,
+            "submission predates Squad order",
+        ):
+            _validate_native_output_payload(native)
+
+    def test_consumed_native_lifecycle_retains_native_order(self) -> None:
+        events = self._events("safe_partial_launch")
+
+        def event_index(
+            event_type: str,
+            *,
+            entrypoint: str | None = None,
+        ) -> int:
+            return next(
+                index
+                for index, event in enumerate(events)
+                if event["event_type"] == event_type
+                and (
+                    entrypoint is None
+                    or event["payload"].get("entrypoint") == entrypoint
+                )
+            )
+
+        self.assertLess(
+            event_index("launch_decision"),
+            event_index(
+                "production_path_receipt",
+                entrypoint="voiProductionAssignOperationOwner",
+            ),
+        )
+        self.assertLess(
+            event_index(
+                "production_path_receipt",
+                entrypoint="voiProductionAssignOperationOwner",
+            ),
+            event_index("ownership_snapshot"),
+        )
+        self.assertLess(event_index("squad_order"), event_index("submission"))
+        self.assertLess(event_index("submission"), event_index("movement"))
 
     def test_production_tactical_radio_executes_runtime_behavior(self) -> None:
         runtime = self.artifacts["voice_readback_callout_identity"]["products"][
@@ -749,6 +880,29 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
         self.assertFalse(rejected["ok"], rejected)
         self.assertIn(
             "derived journey matrix was not derived from raw evidence",
+            rejected["blockers"],
+        )
+
+    def test_bundle_rejects_noncanonical_journey_manifest(self) -> None:
+        entries = _read_zip(build_pre_live_journey_bundle(MICROMACHINE_BINARY))
+        manifest = json.loads(entries["input/PRE_LIVE_JOURNEYS.json"])
+        manifest["suite_id"] = "forged-suite"
+        entries["input/PRE_LIVE_JOURNEYS.json"] = canonical_json_bytes(manifest)
+        rejected = verify_pre_live_journey_bundle(
+            _rebuild_journey_bundle(entries)
+        )
+        self.assertFalse(rejected["ok"], rejected)
+        self.assertIn(
+            "journey input manifest does not match the checked-in contract",
+            rejected["blockers"],
+        )
+
+    def test_bundle_rejects_trailing_bytes(self) -> None:
+        bundle = build_pre_live_journey_bundle(MICROMACHINE_BINARY)
+        rejected = verify_pre_live_journey_bundle(bundle + b"hidden-trailer")
+        self.assertFalse(rejected["ok"], rejected)
+        self.assertIn(
+            "journey bundle ZIP framing is invalid",
             rejected["blockers"],
         )
 
@@ -1293,6 +1447,24 @@ class PreLiveJourneyManifestTest(unittest.TestCase):
             len(payload["journeys"]),
             len({item["id"] for item in payload["journeys"]}),
         )
+
+    def test_manifest_rejects_fourteen_semantic_replacements(self) -> None:
+        payload = load_pre_live_journey_manifest(DEFAULT_JOURNEY_MANIFEST)
+        replacement = deepcopy(payload)
+        template = replacement["journeys"][0]
+        replacement["journeys"] = [
+            {
+                **deepcopy(template),
+                "id": f"replacement-{index:02d}",
+                "title": f"Replacement {index:02d}",
+            }
+            for index in range(14)
+        ]
+        with self.assertRaisesRegex(
+            ValueError,
+            "required journey ids",
+        ):
+            _validate_pre_live_journey_manifest_payload(replacement)
 
 
 def _first_event(

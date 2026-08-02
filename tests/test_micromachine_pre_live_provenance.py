@@ -13,6 +13,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 import urllib.parse
 import zipfile
@@ -791,6 +792,10 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         self.assertNotIn("GITHUB_WORKFLOW_REF:", provenance_job)
         self.assertNotIn("GITHUB_WORKFLOW_SHA:", provenance_job)
         self.assertIn(
+            'VOI_NODE_EXECUTABLE="$(python3 -c ',
+            provenance_job,
+        )
+        self.assertIn(
             "  micromachine-macos-contracts:\n    if: github.event_name == 'push'\n",
             workflow,
         )
@@ -857,6 +862,37 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         self.assertEqual(
             "github_artifact_zip",
             report["artifact_bundle"]["delivery"]["kind"],
+        )
+
+    def test_threads_node_descriptor_into_downloaded_bundle_replay(
+        self,
+    ) -> None:
+        adapter = FakeGitHubAdapter()
+        descriptor = "/dev/fd/123"
+
+        with mock.patch.object(
+            provenance_module,
+            "verify_downloaded_pre_live_artifact",
+            wraps=provenance_module.verify_downloaded_pre_live_artifact,
+        ) as verifier:
+            report = attest_github_source(
+                adapter,
+                repository=REPOSITORY,
+                expected_repository_id=AUTHORITATIVE_REPOSITORY_ID,
+                issue_number=138,
+                pull_number=137,
+                run_id=RUN_ID,
+                run_attempt=RUN_ATTEMPT,
+                job_id=JOB_ID,
+                artifact_id=ARTIFACT_ID,
+                expected_head_sha=HEAD_SHA,
+                node_executable=descriptor,
+            )
+
+        self.assertTrue(report["ok"], report)
+        self.assertEqual(
+            descriptor,
+            verifier.call_args.kwargs["node_executable"],
         )
 
     def test_resolves_current_actions_job_context_without_artifact_claims(
@@ -2460,6 +2496,8 @@ class GitHubActionsBundleEmissionTest(unittest.TestCase):
         bound_output = b"bound deterministic journey output"
         build_report = b"canonical build report"
         binary = b"exact MicroMachine binary"
+        node_executable = Path(sys.executable).resolve()
+        node_sha256 = hashlib.sha256(node_executable.read_bytes()).hexdigest()
 
         with mock.patch.object(
             provenance_module,
@@ -2474,14 +2512,19 @@ class GitHubActionsBundleEmissionTest(unittest.TestCase):
                     producer_output=raw_output,
                     build_report=build_report,
                     binary=binary,
+                    node_executable=node_executable,
+                    node_sha256=node_sha256,
                 )
             )
 
         self.assertEqual(bound_output, result)
-        binder.assert_called_once_with(
-            raw_output,
-            build_report_bytes=build_report,
-            binary_bytes=binary,
+        binder.assert_called_once()
+        self.assertEqual(raw_output, binder.call_args.args[0])
+        self.assertEqual(build_report, binder.call_args.kwargs["build_report_bytes"])
+        self.assertEqual(binary, binder.call_args.kwargs["binary_bytes"])
+        self.assertRegex(
+            str(binder.call_args.kwargs["node_executable"]),
+            r"^/dev/fd/\d+$",
         )
 
         with mock.patch.object(
@@ -2729,51 +2772,38 @@ class GitHubActionsBundleEmissionTest(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as directory:
                     root = Path(directory)
                     fixture = make_build_fixture(root / "fixture")
-                    adapter = FakeGitHubAdapter(
-                        head_sha=fixture["repository_commit"],
-                    )
-                    output = root / GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME
-
-                    def racing_producer(
-                        *args: object,
-                        **kwargs: object,
-                    ) -> subprocess.CompletedProcess:
-                        if label == "report":
-                            target = fixture["report_path"]
-                            replacement = target.with_name(
-                                target.name + ".replacement"
-                            )
-                            replacement.write_bytes(b'{"replaced":true}\n')
-                        else:
-                            target = fixture["config"].binary_path
-                            replacement = target.with_name(
-                                target.name + ".replacement"
-                            )
-                            replacement.write_bytes(b"replaced binary")
-                            replacement.chmod(0o755)
-                        os.replace(replacement, target)
-                        return subprocess.run(*args, **kwargs)
-
-                    report = emit_github_actions_pre_live_bundle(
-                        adapter=adapter,
+                    build_binding = attest_build_binding(
+                        fixture["report_path"],
                         repository_dir=fixture["repository"],
-                        expected_commit=fixture["repository_commit"],
-                        run_id=RUN_ID,
-                        run_attempt=RUN_ATTEMPT,
-                        workflow_ref=WORKFLOW_REF,
-                        workflow_sha=WORKFLOW_SHA,
-                        build_report_path=fixture["report_path"],
+                        expected_repository_commit=fixture["repository_commit"],
                         expected_build_dir=(
                             fixture["config"].micromachine_build_dir
                         ),
-                        output_path=output,
-                        producer_id="fixture_producer",
-                        ctest_runner=passing_ctest,
-                        producer_runner=racing_producer,
+                        command_runner=passing_ctest,
+                    )
+                    admitted_build = (
+                        provenance_module._capture_admitted_build_snapshots(
+                            build_binding
+                        )
+                    )
+                    target = (
+                        fixture["report_path"]
+                        if label == "report"
+                        else fixture["config"].binary_path
+                    )
+                    replacement = target.with_name(target.name + ".replacement")
+                    replacement.write_bytes(b"replacement")
+                    if label == "binary":
+                        replacement.chmod(0o755)
+                    os.replace(replacement, target)
+                    report = (
+                        provenance_module._verify_admitted_build_snapshots_unchanged(
+                            build_binding,
+                            admitted_build,
+                        )
                     )
 
                     self.assertFalse(report["ok"], report)
-                    self.assertFalse(output.exists())
                     self.assertIn(
                         f"admitted {label} changed after build attestation",
                         " ".join(report["blockers"]),
@@ -2784,58 +2814,32 @@ class GitHubActionsBundleEmissionTest(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            fixture = make_build_fixture(root / "fixture")
-            adapter = FakeGitHubAdapter(
-                head_sha=fixture["repository_commit"],
+            output = (root / "producer-output.json").resolve()
+            payload = b'{"source":"captured"}\n'
+            output.write_bytes(payload)
+            _, snapshot = provenance_module._read_regular_file_snapshot(
+                output,
+                maximum=provenance_module.MAX_GITHUB_ARTIFACT_BYTES,
             )
-            output = root / GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME
-            real_assemble = (
-                provenance_module._assemble_github_actions_pre_live_bundle
-            )
+            local_execution = {
+                "output_artifact": {
+                    "path": str(output),
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                    "size_bytes": len(payload),
+                    "published_stat_identity": list(snapshot),
+                }
+            }
+            replacement = output.with_name(output.name + ".replacement")
+            replacement.write_bytes(b'{"source":"attacker"}\n')
+            os.replace(replacement, output)
 
-            def replace_output_before_assembly(
-                **kwargs: object,
-            ) -> bytes:
-                local_execution = kwargs["local_execution"]
-                assert isinstance(local_execution, dict)
-                local_artifact = local_execution["output_artifact"]
-                assert isinstance(local_artifact, dict)
-                producer_output = Path(str(local_artifact["path"]))
-                replacement = producer_output.with_name(
-                    producer_output.name + ".replacement"
-                )
-                replacement.write_bytes(b'{"source":"attacker"}\n')
-                os.replace(replacement, producer_output)
-                return real_assemble(**kwargs)
-
-            with mock.patch.object(
-                provenance_module,
-                "_assemble_github_actions_pre_live_bundle",
-                side_effect=replace_output_before_assembly,
-            ):
-                report = emit_github_actions_pre_live_bundle(
-                    adapter=adapter,
-                    repository_dir=fixture["repository"],
-                    expected_commit=fixture["repository_commit"],
-                    run_id=RUN_ID,
-                    run_attempt=RUN_ATTEMPT,
-                    workflow_ref=WORKFLOW_REF,
-                    workflow_sha=WORKFLOW_SHA,
-                    build_report_path=fixture["report_path"],
-                    expected_build_dir=(
-                        fixture["config"].micromachine_build_dir
-                    ),
-                    output_path=output,
-                    producer_id="fixture_producer",
-                    ctest_runner=passing_ctest,
-                )
-
-            self.assertFalse(report["ok"], report)
-            self.assertFalse(output.exists())
-            self.assertIn(
+            with self.assertRaisesRegex(
+                ValueError,
                 "captured producer output identity changed before consumption",
-                " ".join(report["blockers"]),
-            )
+            ):
+                provenance_module._read_published_producer_output(
+                    local_execution
+                )
 
     def test_real_binder_emission_and_local_attestation_share_bound_digest(
         self,
@@ -2875,6 +2879,11 @@ class GitHubActionsBundleEmissionTest(unittest.TestCase):
             producer_policy["producer_id"] = (
                 PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
             )
+            node_executable = Path(sys.executable).resolve()
+            producer_policy["node_executable_path"] = str(node_executable)
+            producer_policy["node_executable_sha256"] = hashlib.sha256(
+                node_executable.read_bytes()
+            ).hexdigest()
             raw_output = make_stub_deterministic_journey_bundle()
             producer_output_path = Path(
                 str(producer_policy["output_artifact"])
@@ -2933,6 +2942,7 @@ class GitHubActionsBundleEmissionTest(unittest.TestCase):
                             admitted_build
                         )
                     ),
+                    node_executable=node_executable,
                 )
                 self.assertTrue(verification["ok"], verification)
                 github_source = {
@@ -3099,6 +3109,98 @@ class LocalProducerTest(unittest.TestCase):
                 {"fixture": True},
                 json.loads(Path(str(policy["output_artifact"])).read_bytes()),
             )
+
+    def test_rejects_module_from_attacker_controlled_inherited_sys_path(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = make_build_fixture(root / "fixture")
+            attacker_dir = root / "attacker"
+            attacker_dir.mkdir()
+            sentinel = root / "inherited-path-module-executed"
+            (attacker_dir / "inherited_path_attack.py").write_text(
+                "from pathlib import Path\n"
+                f"Path({str(sentinel)!r}).write_text('executed')\n"
+            )
+            commit = replace_fixture_producer_source(
+                fixture,
+                "import inherited_path_attack\n"
+                "from pathlib import Path\n"
+                "import sys\n"
+                "Path(sys.argv[sys.argv.index('--output') + 1]).write_text("
+                "'{\"fixture\":true}\\n')\n",
+            )
+            policy = resolve_local_producer_policy(
+                repository_dir=fixture["repository"],
+                expected_commit=commit,
+                producer_id="fixture_producer",
+            )
+            self.assertTrue(policy["ok"], policy)
+            source_files = policy["runtime_sources"]["files"]
+
+            with mock.patch.object(
+                sys,
+                "path",
+                [str(attacker_dir), *sys.path],
+            ):
+                report = run_local_producer(
+                    repository_dir=fixture["repository"],
+                    cwd=policy["cwd"],
+                    argv=policy["argv"],
+                    allowed_argv=(policy["argv"],),
+                    output_artifact=policy["output_artifact"],
+                    authenticated_files=[item["path"] for item in source_files],
+                    authenticated_file_digests={
+                        item["path"]: item["sha256"] for item in source_files
+                    },
+                )
+
+            self.assertFalse(report["ok"], report)
+            self.assertFalse(sentinel.exists())
+            self.assertFalse(Path(str(policy["output_artifact"])).exists())
+
+    def test_rejects_unauthenticated_preloaded_module(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = make_build_fixture(root / "fixture")
+            commit = replace_fixture_producer_source(
+                fixture,
+                "import preloaded_attack\n"
+                "from pathlib import Path\n"
+                "import sys\n"
+                "Path(sys.argv[sys.argv.index('--output') + 1]).write_text("
+                "preloaded_attack.PAYLOAD)\n",
+            )
+            policy = resolve_local_producer_policy(
+                repository_dir=fixture["repository"],
+                expected_commit=commit,
+                producer_id="fixture_producer",
+            )
+            self.assertTrue(policy["ok"], policy)
+            source_files = policy["runtime_sources"]["files"]
+            attacker_module = types.ModuleType("preloaded_attack")
+            attacker_module.PAYLOAD = '{"attacker":true}\n'
+            attacker_module.__file__ = str(root / "preloaded_attack.py")
+
+            with mock.patch.dict(
+                sys.modules,
+                {"preloaded_attack": attacker_module},
+            ):
+                report = run_local_producer(
+                    repository_dir=fixture["repository"],
+                    cwd=policy["cwd"],
+                    argv=policy["argv"],
+                    allowed_argv=(policy["argv"],),
+                    output_artifact=policy["output_artifact"],
+                    authenticated_files=[item["path"] for item in source_files],
+                    authenticated_file_digests={
+                        item["path"]: item["sha256"] for item in source_files
+                    },
+                )
+
+            self.assertFalse(report["ok"], report)
+            self.assertFalse(Path(str(policy["output_artifact"])).exists())
 
     def test_rejects_symlinked_output_leaf_without_touching_target(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -4494,7 +4596,153 @@ class AggregateProvenanceTest(unittest.TestCase):
         kwargs["replay_store"] = GitHubRefReplayStore(adapter)
         return attest_pre_live_provenance(**kwargs)
 
-    def test_derives_top_level_status_and_ignores_caller_claims(self) -> None:
+    def test_non_deterministic_producers_cannot_qualify_or_consume_replay(
+        self,
+    ) -> None:
+        for producer_id in ("provenance_qualification", "fixture_producer"):
+            with self.subTest(producer_id=producer_id):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    build = make_build_fixture(root / "build-fixture")
+                    commit = build["repository_commit"]
+                    adapter = FakeGitHubAdapter(head_sha=commit)
+                    adapter.workflow_run["head_sha"] = commit
+                    adapter.attempt["head_sha"] = commit
+                    adapter.pull_request["head"]["sha"] = commit
+                    adapter.artifact["workflow_run"]["head_sha"] = commit
+                    adapter.workflow_run["pull_requests"][0]["head"][
+                        "sha"
+                    ] = commit
+                    adapter.attempt["pull_requests"][0]["head"]["sha"] = commit
+                    bind_adapter_to_build_fixture(
+                        adapter,
+                        build,
+                        output=b'{"trusted":"execution"}\n',
+                    )
+                    producer_calls: list[object] = []
+
+                    def producer(
+                        *args: object,
+                        **kwargs: object,
+                    ) -> subprocess.CompletedProcess:
+                        producer_calls.append((args, kwargs))
+                        output = Path(list(args[0])[-1])
+                        output.parent.mkdir(parents=True, exist_ok=True)
+                        output.write_text('{"trusted":"execution"}\n')
+                        return subprocess.CompletedProcess(
+                            args[0],
+                            0,
+                            b"out",
+                            b"",
+                        )
+
+                    report = self.attest(
+                        root / "global-replay",
+                        repository_dir=build["repository"],
+                        expected_commit=commit,
+                        github_adapter=adapter,
+                        issue_number=138,
+                        pull_number=137,
+                        run_id=RUN_ID,
+                        run_attempt=RUN_ATTEMPT,
+                        job_id=JOB_ID,
+                        artifact_id=ARTIFACT_ID,
+                        expected_head_sha=commit,
+                        build_report_path=build["report_path"],
+                        expected_build_dir=(
+                            build["config"].micromachine_build_dir
+                        ),
+                        producer_id=producer_id,
+                        ctest_runner=passing_ctest,
+                        producer_runner=producer,
+                    )
+
+                    self.assertFalse(report["ok"], report)
+                    self.assertEqual("blocked", report["status"])
+                    self.assertEqual(
+                        1 if producer_id == "fixture_producer" else 0,
+                        len(producer_calls),
+                    )
+                    self.assertEqual({}, adapter.references)
+                    self.assertIn(
+                        "production candidate evidence requires producer_id="
+                        f"{PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID!r}",
+                        " ".join(report["blockers"]),
+                    )
+
+    def test_deterministic_github_replay_uses_pinned_node_descriptor(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build = make_build_fixture(root / "build-fixture")
+            commit = build["repository_commit"]
+            adapter = FakeGitHubAdapter(head_sha=commit)
+            adapter.workflow_run["head_sha"] = commit
+            adapter.attempt["head_sha"] = commit
+            adapter.pull_request["head"]["sha"] = commit
+            adapter.artifact["workflow_run"]["head_sha"] = commit
+            adapter.workflow_run["pull_requests"][0]["head"]["sha"] = commit
+            adapter.attempt["pull_requests"][0]["head"]["sha"] = commit
+            node_executable = Path(sys.executable).resolve()
+            admitted_policy = {
+                "ok": True,
+                "status": "accepted",
+                "blockers": [],
+                "producer_id": PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID,
+                "node_executable_path": str(node_executable),
+                "node_executable_sha256": hashlib.sha256(
+                    node_executable.read_bytes()
+                ).hexdigest(),
+            }
+
+            with (
+                mock.patch.object(
+                    provenance_module,
+                    "resolve_local_producer_policy",
+                    return_value=admitted_policy,
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "attest_github_source",
+                    return_value={
+                        "ok": False,
+                        "status": "blocked",
+                        "blockers": ["stop after descriptor observation"],
+                    },
+                ) as github_attestation,
+            ):
+                report = self.attest(
+                    root / "global-replay",
+                    repository_dir=build["repository"],
+                    expected_commit=commit,
+                    github_adapter=adapter,
+                    issue_number=138,
+                    pull_number=137,
+                    run_id=RUN_ID,
+                    run_attempt=RUN_ATTEMPT,
+                    job_id=JOB_ID,
+                    artifact_id=ARTIFACT_ID,
+                    expected_head_sha=commit,
+                    build_report_path=build["report_path"],
+                    expected_build_dir=(
+                        build["config"].micromachine_build_dir
+                    ),
+                    producer_id=(
+                        PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+                    ),
+                    node_executable=node_executable,
+                    ctest_runner=passing_ctest,
+                )
+
+            self.assertFalse(report["ok"], report)
+            descriptor = github_attestation.call_args.kwargs[
+                "node_executable"
+            ]
+            self.assertRegex(str(descriptor), r"^/dev/fd/\d+$")
+            self.assertNotEqual(str(node_executable), str(descriptor))
+
+    def test_production_gate_ignores_caller_success_claims(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             build = make_build_fixture(root / "build-fixture")
@@ -4555,9 +4803,9 @@ class AggregateProvenanceTest(unittest.TestCase):
                     },
                 )
 
-            self.assertTrue(report["ok"], report)
-            self.assertEqual("candidate_qualified", report["status"])
-            self.assertEqual(candidate_authority(commit), report["authority"])
+            self.assertFalse(report["ok"], report)
+            self.assertEqual("blocked", report["status"])
+            self.assertEqual({}, report["authority"])
             self.assertFalse(report["release_authoritative"])
             self.assertEqual(
                 [
@@ -4571,14 +4819,18 @@ class AggregateProvenanceTest(unittest.TestCase):
                 ],
                 report["ignored_untrusted_fields"],
             )
-            self.assertEqual(JOB_ID, report["accepted_source_ids"]["job_id"])
-            self.assertEqual(
-                hashlib.sha256(adapter.artifact_bytes).hexdigest(),
-                report["accepted_digests"]["github_artifact_sha256"],
+            self.assertEqual({}, report["accepted_source_ids"])
+            self.assertEqual({}, report["accepted_digests"])
+            self.assertIn(
+                "production candidate evidence requires producer_id=",
+                " ".join(report["blockers"]),
             )
             release = require_release_authority(report)
             self.assertFalse(release["ok"], release)
-            self.assertIn("qualification-only", " ".join(release["blockers"]))
+            self.assertIn(
+                "authenticated post-merge release authority is not implemented",
+                " ".join(release["blockers"]),
+            )
 
     def test_forged_standalone_release_mapping_is_never_authoritative(self) -> None:
         release = require_release_authority(
@@ -4937,6 +5189,27 @@ def make_build_fixture(root: Path) -> dict[str, Any]:
         "report": report,
         "report_path": report_path,
     }
+
+
+def replace_fixture_producer_source(
+    fixture: dict[str, Any],
+    source: str,
+) -> str:
+    repository = fixture["repository"]
+    producer_path = repository / "fixture_producer.py"
+    producer_path.write_text(source)
+    git(repository, "add", producer_path.relative_to(repository).as_posix())
+    git(
+        repository,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "-m",
+        "replace fixture producer",
+    )
+    return git(repository, "rev-parse", "HEAD").stdout.strip()
 
 
 def refresh_build_fixture(

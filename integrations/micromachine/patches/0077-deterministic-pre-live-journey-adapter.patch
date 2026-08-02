@@ -1,5 +1,5 @@
 diff --git a/src/main.cpp b/src/main.cpp
-index 725f46af15259acba3a454251bddab7619621d6f..ad8a10e9a401996509ce65fee539baa8e0c8b5a3 100644
+index 725f46af15259acba3a454251bddab7619621d6f..451c6087564bf5868a9ac335aac968a24a6c9986 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
 @@ -3,6 +3,7 @@
@@ -10,7 +10,7 @@ index 725f46af15259acba3a454251bddab7619621d6f..ad8a10e9a401996509ce65fee539baa8
  #include "LadderInterface.h"
  #include <cstdio>
  #include <csignal>
-@@ -237,6 +238,16 @@ int main(int argc, char* argv[])
+@@ -237,6 +238,17 @@ int main(int argc, char* argv[])
  		std::cout << VOI_BUILD_INPUT_IDENTITY << std::endl;
  		return 0;
  	}
@@ -21,6 +21,7 @@ index 725f46af15259acba3a454251bddab7619621d6f..ad8a10e9a401996509ce65fee539baa8
 +	{
 +		return voiRunPreLiveJourneyAdapterFile(
 +			argv[2] == nullptr ? "" : argv[2],
++			std::cin,
 +			std::cout,
 +			std::cerr);
 +	}
@@ -29,10 +30,10 @@ index 725f46af15259acba3a454251bddab7619621d6f..ad8a10e9a401996509ce65fee539baa8
  #ifdef _WINDOWS
 diff --git a/src/voi_pre_live_journey_adapter.hpp b/src/voi_pre_live_journey_adapter.hpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..1a79e0284d33c7f045bf809561eabe440bc3bc44
+index 0000000000000000000000000000000000000000..f196a9284ab3168076a3f68eed9bcf5409ca64b4
 --- /dev/null
 +++ b/src/voi_pre_live_journey_adapter.hpp
-@@ -0,0 +1,2104 @@
+@@ -0,0 +1,2112 @@
 +#pragma once
 +
 +#include "json/json.hpp"
@@ -46,6 +47,7 @@ index 0000000000000000000000000000000000000000..1a79e0284d33c7f045bf809561eabe44
 +#include <cmath>
 +#include <cstdint>
 +#include <fstream>
++#include <istream>
 +#include <map>
 +#include <set>
 +#include <sstream>
@@ -2112,20 +2114,27 @@ index 0000000000000000000000000000000000000000..1a79e0284d33c7f045bf809561eabe44
 +
 +inline int voiRunPreLiveJourneyAdapterFile(
 +	const std::string & path,
++	std::istream & standardInput,
 +	std::ostream & output,
 +	std::ostream & error)
 +{
 +	try
 +	{
-+		std::ifstream input(path.c_str(), std::ios::binary);
-+		if (!input.good())
++		std::ifstream inputFile;
++		std::istream * input = &standardInput;
++		if (path != "-")
 +		{
-+			error << "cannot read pre-live journey input: "
-+				<< path << "\n";
-+			return 2;
++			inputFile.open(path.c_str(), std::ios::binary);
++			if (!inputFile.good())
++			{
++				error << "cannot read pre-live journey input: "
++					<< path << "\n";
++				return 2;
++			}
++			input = &inputFile;
 +		}
 +		VoiPreLiveJson payload;
-+		input >> payload;
++		*input >> payload;
 +		output << voiRunPreLiveJourneyAdapter(payload).dump()
 +			<< "\n";
 +		return 0;
@@ -2161,13 +2170,14 @@ index 88157366335a9ccd6d9e185e77df95f75e1ec643..3ddbf11d2e439417f4f15a8e09f2d35c
 +)
 diff --git a/tests/pre_live_journey_adapter_test.cpp b/tests/pre_live_journey_adapter_test.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..355d691a9c88e98fdc9e33dd132775f5e38a9b88
+index 0000000000000000000000000000000000000000..5aad7ef44cc680ba359b6102f836f375e7782a62
 --- /dev/null
 +++ b/tests/pre_live_journey_adapter_test.cpp
-@@ -0,0 +1,253 @@
+@@ -0,0 +1,265 @@
 +#include "voi_pre_live_journey_adapter.hpp"
 +
 +#include <iostream>
++#include <sstream>
 +#include <string>
 +
 +namespace
@@ -2285,6 +2295,20 @@ index 0000000000000000000000000000000000000000..355d691a9c88e98fdc9e33dd132775f5
 +
 +int main()
 +{
++	std::istringstream standardInput(validInput().dump());
++	std::ostringstream standardOutput;
++	std::ostringstream standardError;
++	CHECK(
++		voiRunPreLiveJourneyAdapterFile(
++			"-",
++			standardInput,
++			standardOutput,
++			standardError) == 0);
++	CHECK(standardError.str().empty());
++	const auto standardOutputPayload =
++		VoiPreLiveJson::parse(standardOutput.str());
++	CHECK(standardOutputPayload["schema_version"] == 1);
++
 +	const auto output =
 +		voiRunPreLiveJourneyAdapter(validInput());
 +	CHECK(output["schema_version"] == 1);
@@ -2415,6 +2439,3 @@ index 0000000000000000000000000000000000000000..355d691a9c88e98fdc9e33dd132775f5
 +			std::string(error.what()).find("regressed")
 +				!= std::string::npos);
 +	}
-+
-+	return failures == 0 ? 0 : 1;
-+}

@@ -1,5 +1,5 @@
 diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
-index 3733a2a..4258e05 100644
+index 3733a2a51bfdd55ff3eedd23cc645740f2ca5a8c..4258e05effb0760f71f5d99c2a0f2824916001fc 100644
 --- a/src/CombatCommander.cpp
 +++ b/src/CombatCommander.cpp
 @@ -1,4 +1,7 @@
@@ -655,7 +655,7 @@ index 3733a2a..4258e05 100644
  			default:
  				const int type = action.microActionType;
 diff --git a/src/Micro.cpp b/src/Micro.cpp
-index 344aaa6..eafd798 100644
+index 344aaa67cd0dcaf436cb70fd217d61e539c8a55f..eafd7989e1ca9e5fa108e72e2e431e3cd47d5e1d 100644
 --- a/src/Micro.cpp
 +++ b/src/Micro.cpp
 @@ -2,6 +2,34 @@
@@ -943,7 +943,7 @@ index 344aaa6..eafd798 100644
  	return MicroActionType::ToggleAbility;
  }
 diff --git a/src/Micro.h b/src/Micro.h
-index f0653da..178a502 100644
+index f0653da743f8e3979a0c68d6a71addd4c2c4a221..178a50289fed6741fb26f9c577e46b4d9e3c1a2b 100644
 --- a/src/Micro.h
 +++ b/src/Micro.h
 @@ -2,6 +2,7 @@
@@ -1047,7 +1047,7 @@ index f0653da..178a502 100644
 +		VoiProductionSubmissionReceipt * submissionReceipt = nullptr);
 +}
 diff --git a/src/Squad.cpp b/src/Squad.cpp
-index 2c0e029..0173f0d 100644
+index 2c0e02912e3030f7eddb3119cb1943fc10c23020..0173f0d6bb396c41f907455e81c2ea9b7ba0bf93 100644
 --- a/src/Squad.cpp
 +++ b/src/Squad.cpp
 @@ -428,7 +428,7 @@ bool Squad::needsToRegroup()
@@ -1117,7 +1117,7 @@ index 2c0e029..0173f0d 100644
  
  bool Squad::containsUnit(const Unit & unit) const
 diff --git a/src/Squad.h b/src/Squad.h
-index def3e92..1e0099e 100644
+index def3e92e158d3958808193fddff16155261ed66d..1e0099e2ae783dcec9256f14ca99fb48f8248e64 100644
 --- a/src/Squad.h
 +++ b/src/Squad.h
 @@ -4,6 +4,7 @@
@@ -1149,7 +1149,7 @@ index def3e92..1e0099e 100644
      void removeUnit(const Unit & unit);
      void giveBackWorkers();
 diff --git a/src/main.cpp b/src/main.cpp
-index ad8a10e..7d5e051 100644
+index 451c6087564bf5868a9ac335aac968a24a6c9986..65c3468011a41531a1ebd893e739e601f536046d 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
 @@ -1,6 +1,8 @@
@@ -1472,7 +1472,7 @@ index ad8a10e..7d5e051 100644
  };
  
  void handler(int sig) {
-@@ -243,10 +540,15 @@ int main(int argc, char* argv[])
+@@ -243,11 +540,16 @@ int main(int argc, char* argv[])
  			argv[1] == nullptr ? "" : argv[1])
  			== "--voi-pre-live-journey-adapter")
  	{
@@ -1482,6 +1482,7 @@ index ad8a10e..7d5e051 100644
 +			new VoiMicroMachinePreLiveProductionExecutor();
  		return voiRunPreLiveJourneyAdapterFile(
  			argv[2] == nullptr ? "" : argv[2],
+ 			std::cin,
  			std::cout,
 -			std::cerr);
 +			std::cerr,
@@ -1491,7 +1492,7 @@ index ad8a10e..7d5e051 100644
  	signal(SIGABRT, handler);
 diff --git a/src/voi_explicit_ability_catalog.hpp b/src/voi_explicit_ability_catalog.hpp
 new file mode 100644
-index 0000000..afff43f
+index 0000000000000000000000000000000000000000..afff43f2a16813263b623b8f27b8d5eba554e88e
 --- /dev/null
 +++ b/src/voi_explicit_ability_catalog.hpp
 @@ -0,0 +1,206 @@
@@ -1703,7 +1704,7 @@ index 0000000..afff43f
 +}
 diff --git a/src/voi_explicit_ability_spec.hpp b/src/voi_explicit_ability_spec.hpp
 new file mode 100644
-index 0000000..3eb739d
+index 0000000000000000000000000000000000000000..3eb739d26d058b17d6634cedc5186cb6e4a5bfa2
 --- /dev/null
 +++ b/src/voi_explicit_ability_spec.hpp
 @@ -0,0 +1,3 @@
@@ -1712,7 +1713,7 @@ index 0000000..3eb739d
 +#include "voi_explicit_ability_catalog.hpp"
 diff --git a/src/voi_operation_observation.hpp b/src/voi_operation_observation.hpp
 new file mode 100644
-index 0000000..4e1671b
+index 0000000000000000000000000000000000000000..4e1671b5145ce606774662150ca226f59e7f297c
 --- /dev/null
 +++ b/src/voi_operation_observation.hpp
 @@ -0,0 +1,66 @@
@@ -1783,7 +1784,7 @@ index 0000000..4e1671b
 +	return decision;
 +}
 diff --git a/src/voi_pre_live_journey_adapter.hpp b/src/voi_pre_live_journey_adapter.hpp
-index 1a79e02..1e50e90 100644
+index f196a9284ab3168076a3f68eed9bcf5409ca64b4..a66b628a6fb3ef97f51d29dc8cc4399edd02fb7e 100644
 --- a/src/voi_pre_live_journey_adapter.hpp
 +++ b/src/voi_pre_live_journey_adapter.hpp
 @@ -2,9 +2,12 @@
@@ -1799,7 +1800,7 @@ index 1a79e02..1e50e90 100644
  #include "voi_runtime_convergence.hpp"
  
  #include <algorithm>
-@@ -69,9 +72,24 @@ struct VoiPreLiveOperationState
+@@ -70,9 +73,24 @@ struct VoiPreLiveOperationState
  	std::string status = "RECEIVED";
  	std::string blocker;
  	std::string action;
@@ -1824,7 +1825,7 @@ index 1a79e02..1e50e90 100644
  	int minimumUnits = 0;
  	int maximumUnits = 0;
  	bool allowPartial = false;
-@@ -83,12 +101,34 @@ struct VoiPreLiveOperationState
+@@ -84,12 +102,34 @@ struct VoiPreLiveOperationState
  	double priority = 0.0;
  	std::vector<VoiPreLiveRequirementState> requirements;
  	std::vector<std::uint64_t> assignedTags;
@@ -1860,7 +1861,7 @@ index 1a79e02..1e50e90 100644
  	std::map<std::string, VoiPreLiveOperationState> m_operations;
  	std::map<std::string, int> m_protectedMinimum;
  	std::set<std::string> m_structures;
-@@ -101,6 +141,19 @@ class VoiPreLiveJourneyAdapter
+@@ -102,6 +142,19 @@ class VoiPreLiveJourneyAdapter
  	bool m_baseThreatened = false;
  	std::string m_baseId = "self_main";
  	std::size_t m_requiredDefenders = 0;
@@ -1880,7 +1881,7 @@ index 1a79e02..1e50e90 100644
  
  	static bool hasForbiddenAuthorityInput(
  		const VoiPreLiveJson & value,
-@@ -160,7 +213,9 @@ class VoiPreLiveJourneyAdapter
+@@ -161,7 +214,9 @@ class VoiPreLiveJourneyAdapter
  	{
  		if (!operation.ability.empty())
  		{
@@ -1891,7 +1892,7 @@ index 1a79e02..1e50e90 100644
  		}
  		if (operation.taskType == "scout_with_units")
  		{
-@@ -174,7 +229,11 @@ class VoiPreLiveJourneyAdapter
+@@ -175,7 +230,11 @@ class VoiPreLiveJourneyAdapter
  		{
  			return "squad_order:harass";
  		}
@@ -1904,7 +1905,7 @@ index 1a79e02..1e50e90 100644
  	}
  
  	static std::string canonicalTask(
-@@ -192,7 +251,145 @@ class VoiPreLiveJourneyAdapter
+@@ -193,7 +252,145 @@ class VoiPreLiveJourneyAdapter
  		{
  			return "harass";
  		}
@@ -2051,7 +2052,7 @@ index 1a79e02..1e50e90 100644
  	}
  
  	void emit(
-@@ -264,6 +461,68 @@ class VoiPreLiveJourneyAdapter
+@@ -265,6 +462,68 @@ class VoiPreLiveJourneyAdapter
  		return tags;
  	}
  
@@ -2120,7 +2121,7 @@ index 1a79e02..1e50e90 100644
  	static std::string jsonString(
  		const VoiPreLiveJson & value,
  		const char * key,
-@@ -317,6 +576,14 @@ class VoiPreLiveJourneyAdapter
+@@ -318,6 +577,14 @@ class VoiPreLiveJourneyAdapter
  
  	void loadInitialState(const VoiPreLiveJson & state)
  	{
@@ -2135,7 +2136,7 @@ index 1a79e02..1e50e90 100644
  		const auto protectedMinimum =
  			state.find("protected_minimum");
  		if (protectedMinimum != state.end()
-@@ -463,13 +730,28 @@ class VoiPreLiveJourneyAdapter
+@@ -464,13 +731,28 @@ class VoiPreLiveJourneyAdapter
  				{
  					if (selected.is_object())
  					{
@@ -2171,7 +2172,7 @@ index 1a79e02..1e50e90 100644
  					}
  				}
  			}
-@@ -525,6 +807,44 @@ class VoiPreLiveJourneyAdapter
+@@ -526,6 +808,44 @@ class VoiPreLiveJourneyAdapter
  				"operation identity or task is invalid");
  		}
  		operation.action = taskAction(operation);
@@ -2216,7 +2217,7 @@ index 1a79e02..1e50e90 100644
  		return operation;
  	}
  
-@@ -546,7 +866,7 @@ class VoiPreLiveJourneyAdapter
+@@ -547,7 +867,7 @@ class VoiPreLiveJourneyAdapter
  			}
  			const auto owner = m_owners.find(unit.tag);
  			if (owner == m_owners.end()
@@ -2225,7 +2226,7 @@ index 1a79e02..1e50e90 100644
  			{
  				tags.push_back(unit.tag);
  			}
-@@ -584,25 +904,21 @@ class VoiPreLiveJourneyAdapter
+@@ -585,25 +905,21 @@ class VoiPreLiveJourneyAdapter
  		return tags;
  	}
  
@@ -2261,7 +2262,7 @@ index 1a79e02..1e50e90 100644
  		operation.assignedTags.clear();
  		std::vector<VoiRuntimeRequirementSnapshot> convergenceRows;
  		for (auto & requirement : operation.requirements)
-@@ -632,7 +948,19 @@ class VoiPreLiveJourneyAdapter
+@@ -633,7 +949,19 @@ class VoiPreLiveJourneyAdapter
  			for (std::size_t index = 0; index < count; ++index)
  			{
  				const auto tag = candidates[index];
@@ -2282,7 +2283,7 @@ index 1a79e02..1e50e90 100644
  				requirement.assignedTags.push_back(tag);
  				operation.assignedTags.push_back(tag);
  			}
-@@ -653,7 +981,8 @@ class VoiPreLiveJourneyAdapter
+@@ -654,7 +982,8 @@ class VoiPreLiveJourneyAdapter
  			for (const auto & prerequisite :
  				snapshot.prerequisites)
  			{
@@ -2292,7 +2293,7 @@ index 1a79e02..1e50e90 100644
  					== m_structures.end())
  				{
  					snapshot.missingPrerequisites.push_back(
-@@ -666,6 +995,22 @@ class VoiPreLiveJourneyAdapter
+@@ -667,6 +996,22 @@ class VoiPreLiveJourneyAdapter
  				snapshot.productionBlocker =
  					"missing_prerequisites";
  			}
@@ -2315,7 +2316,7 @@ index 1a79e02..1e50e90 100644
  			convergenceRows.push_back(snapshot);
  		}
  		std::sort(
-@@ -700,7 +1045,7 @@ class VoiPreLiveJourneyAdapter
+@@ -701,7 +1046,7 @@ class VoiPreLiveJourneyAdapter
  						&& unit.selfOwned
  						&& unit.combat
  						&& (owner == m_owners.end()
@@ -2324,7 +2325,7 @@ index 1a79e02..1e50e90 100644
  								== operation.operationId))
  					{
  						++eligibleCount;
-@@ -720,7 +1065,9 @@ class VoiPreLiveJourneyAdapter
+@@ -721,7 +1066,9 @@ class VoiPreLiveJourneyAdapter
  									0,
  									requirement.targetCount)));
  			}
@@ -2335,7 +2336,7 @@ index 1a79e02..1e50e90 100644
  			operation.assignedTags.clear();
  			for (auto & requirement : operation.requirements)
  			{
-@@ -791,20 +1138,45 @@ class VoiPreLiveJourneyAdapter
+@@ -792,20 +1139,45 @@ class VoiPreLiveJourneyAdapter
  				{ "partial",
  					operation.assignedTags.size()
  						< static_cast<std::size_t>(
@@ -2383,7 +2384,7 @@ index 1a79e02..1e50e90 100644
  		}
  		emit(
  			"ownership_snapshot",
-@@ -813,6 +1185,7 @@ class VoiPreLiveJourneyAdapter
+@@ -814,6 +1186,7 @@ class VoiPreLiveJourneyAdapter
  			{
  				{ "action", "assign" },
  				{ "owners", owners },
@@ -2391,7 +2392,7 @@ index 1a79e02..1e50e90 100644
  				{ "assigned_unit_tags", operation.assignedTags },
  			});
  	}
-@@ -825,6 +1198,132 @@ class VoiPreLiveJourneyAdapter
+@@ -826,6 +1199,132 @@ class VoiPreLiveJourneyAdapter
  		{
  			return;
  		}
@@ -2524,7 +2525,7 @@ index 1a79e02..1e50e90 100644
  		operation.submitted = true;
  		for (auto & requirement : operation.requirements)
  		{
-@@ -864,7 +1363,14 @@ class VoiPreLiveJourneyAdapter
+@@ -865,7 +1364,14 @@ class VoiPreLiveJourneyAdapter
  			"order_issued",
  			{
  				{ "action", operation.action },
@@ -2540,7 +2541,7 @@ index 1a79e02..1e50e90 100644
  			});
  		emit(
  			"submission",
-@@ -872,7 +1378,17 @@ class VoiPreLiveJourneyAdapter
+@@ -873,7 +1379,17 @@ class VoiPreLiveJourneyAdapter
  			"submitted",
  			{
  				{ "action", operation.action },
@@ -2559,7 +2560,7 @@ index 1a79e02..1e50e90 100644
  			});
  		operation.status = "EXECUTING";
  	}
-@@ -960,6 +1476,22 @@ class VoiPreLiveJourneyAdapter
+@@ -961,6 +1477,22 @@ class VoiPreLiveJourneyAdapter
  			first.editAction == "transfer_in"
  				? &first
  				: &second;
@@ -2582,7 +2583,7 @@ index 1a79e02..1e50e90 100644
  		const auto existingSource =
  			m_operations.find(source->operationId);
  		if (existingSource == m_operations.end())
-@@ -969,33 +1501,429 @@ class VoiPreLiveJourneyAdapter
+@@ -970,33 +1502,429 @@ class VoiPreLiveJourneyAdapter
  					"transfer_pair_not_active";
  			return;
  		}
@@ -3024,7 +3025,7 @@ index 1a79e02..1e50e90 100644
  		emit(
  			"transfer",
  			*source,
-@@ -1004,6 +1932,22 @@ class VoiPreLiveJourneyAdapter
+@@ -1005,6 +1933,22 @@ class VoiPreLiveJourneyAdapter
  				{ "action", "transfer_out" },
  				{ "counterpart_operation_id",
  					destination->operationId },
@@ -3047,7 +3048,7 @@ index 1a79e02..1e50e90 100644
  				{ "unit_tags", selected },
  				{ "resolution", "applied" },
  			});
-@@ -1045,6 +1989,9 @@ class VoiPreLiveJourneyAdapter
+@@ -1046,6 +1990,9 @@ class VoiPreLiveJourneyAdapter
  					continue;
  				}
  				operation.action = "retreat";
@@ -3057,7 +3058,7 @@ index 1a79e02..1e50e90 100644
  				operation.updateId = updateId;
  				operation.submitted = false;
  				emit(
-@@ -1092,6 +2039,24 @@ class VoiPreLiveJourneyAdapter
+@@ -1093,6 +2040,24 @@ class VoiPreLiveJourneyAdapter
  				if (existing != m_operations.end())
  				{
  					auto cancelled = existing->second;
@@ -3082,7 +3083,7 @@ index 1a79e02..1e50e90 100644
  					cancelled.updateId = operation.updateId;
  					cancelled.generation =
  						operation.generation;
-@@ -1102,8 +2067,38 @@ class VoiPreLiveJourneyAdapter
+@@ -1103,8 +2068,38 @@ class VoiPreLiveJourneyAdapter
  					cancelled.completionReason =
  						"cancelled_by_user";
  					cancelled.completionFrame = m_frame;
@@ -3123,7 +3124,7 @@ index 1a79e02..1e50e90 100644
  					emit(
  						"cancellation",
  						cancelled,
-@@ -1112,9 +2107,11 @@ class VoiPreLiveJourneyAdapter
+@@ -1113,9 +2108,11 @@ class VoiPreLiveJourneyAdapter
  							{ "action", "cancel" },
  							{ "reason",
  								"cancelled_by_user" },
@@ -3137,7 +3138,7 @@ index 1a79e02..1e50e90 100644
  				}
  				continue;
  			}
-@@ -1143,6 +2140,40 @@ class VoiPreLiveJourneyAdapter
+@@ -1144,6 +2141,40 @@ class VoiPreLiveJourneyAdapter
  					existing->second.targetReached;
  			}
  			operation.submitted = false;
@@ -3178,7 +3179,7 @@ index 1a79e02..1e50e90 100644
  			m_operations[operation.operationId] = operation;
  			assignOperation(
  				m_operations[operation.operationId]);
-@@ -1269,26 +2300,84 @@ class VoiPreLiveJourneyAdapter
+@@ -1270,26 +2301,84 @@ class VoiPreLiveJourneyAdapter
  				{
  					continue;
  				}
@@ -3271,7 +3272,7 @@ index 1a79e02..1e50e90 100644
  			}
  			if (!abilityEffects.empty())
  			{
-@@ -1401,6 +2490,16 @@ class VoiPreLiveJourneyAdapter
+@@ -1402,6 +2491,16 @@ class VoiPreLiveJourneyAdapter
  			"effect_observed",
  			{
  				{ "action", operation.action },
@@ -3288,7 +3289,7 @@ index 1a79e02..1e50e90 100644
  				{ "unit_tags", tags },
  				{ "effect_kind", effectKind },
  			});
-@@ -1412,6 +2511,8 @@ class VoiPreLiveJourneyAdapter
+@@ -1413,6 +2512,8 @@ class VoiPreLiveJourneyAdapter
  
  	void applyResourceObservation(const VoiPreLiveJson & step)
  	{
@@ -3297,7 +3298,7 @@ index 1a79e02..1e50e90 100644
  		const auto structures = step.find("structures");
  		if (structures != step.end() && structures->is_array())
  		{
-@@ -1568,9 +2669,15 @@ class VoiPreLiveJourneyAdapter
+@@ -1569,9 +2670,15 @@ class VoiPreLiveJourneyAdapter
  			});
  		}
  		VoiPreLiveJson owners = VoiPreLiveJson::object();
@@ -3314,7 +3315,7 @@ index 1a79e02..1e50e90 100644
  		}
  		VoiPreLiveJson operations = VoiPreLiveJson::array();
  		for (const auto & entry : m_operations)
-@@ -1584,6 +2691,19 @@ class VoiPreLiveJourneyAdapter
+@@ -1585,6 +2692,19 @@ class VoiPreLiveJourneyAdapter
  				{ "active", operation.active },
  				{ "assigned_unit_tags",
  					operation.assignedTags },
@@ -3334,7 +3335,7 @@ index 1a79e02..1e50e90 100644
  				{ "action", operation.action },
  				{ "blocker", operation.blocker },
  			});
-@@ -1592,12 +2712,22 @@ class VoiPreLiveJourneyAdapter
+@@ -1593,12 +2713,22 @@ class VoiPreLiveJourneyAdapter
  			{ "frame", m_frame },
  			{ "units", units },
  			{ "owners", owners },
@@ -3357,7 +3358,7 @@ index 1a79e02..1e50e90 100644
  		};
  	}
  
-@@ -1637,13 +2767,13 @@ class VoiPreLiveJourneyAdapter
+@@ -1638,13 +2768,13 @@ class VoiPreLiveJourneyAdapter
  			if (owner != m_owners.end())
  			{
  				const auto operation =
@@ -3374,7 +3375,7 @@ index 1a79e02..1e50e90 100644
  						+ "#" + std::to_string(generation));
  			}
  			if (!source.autonomousOwner.empty())
-@@ -1947,11 +3077,141 @@ class VoiPreLiveJourneyAdapter
+@@ -1948,11 +3078,141 @@ class VoiPreLiveJourneyAdapter
  		};
  	}
  
@@ -3517,7 +3518,7 @@ index 1a79e02..1e50e90 100644
  		{
  			throw std::runtime_error(
  				"pre-live adapter schema_version is unsupported");
-@@ -2015,14 +3275,17 @@ public:
+@@ -2016,14 +3276,17 @@ public:
  			}
  			else if (kind == "client_reconnect")
  			{
@@ -3538,7 +3539,7 @@ index 1a79e02..1e50e90 100644
  					});
  				recordSnapshot("client_reconnect");
  			}
-@@ -2039,13 +3302,14 @@ public:
+@@ -2040,13 +3303,14 @@ public:
  				voiBattlefieldProjectionJson(projection));
  		const auto director = operationDirectorJson();
  		return {
@@ -3554,7 +3555,7 @@ index 1a79e02..1e50e90 100644
  			{ "telemetry", {
  				{ "protocol_version", "voi-mm-bridge/v1" },
  				{ "frame", m_frame },
-@@ -2069,16 +3333,18 @@ public:
+@@ -2070,9 +3334,10 @@ public:
  };
  
  inline VoiPreLiveJson voiRunPreLiveJourneyAdapter(
@@ -3567,8 +3568,9 @@ index 1a79e02..1e50e90 100644
  	return adapter.run(input);
  }
  
- inline int voiRunPreLiveJourneyAdapterFile(
+@@ -2080,7 +3345,8 @@ inline int voiRunPreLiveJourneyAdapterFile(
  	const std::string & path,
+ 	std::istream & standardInput,
  	std::ostream & output,
 -	std::ostream & error)
 +	std::ostream & error,
@@ -3576,10 +3578,10 @@ index 1a79e02..1e50e90 100644
  {
  	try
  	{
-@@ -2091,7 +3357,9 @@ inline int voiRunPreLiveJourneyAdapterFile(
+@@ -2099,7 +3365,9 @@ inline int voiRunPreLiveJourneyAdapterFile(
  		}
  		VoiPreLiveJson payload;
- 		input >> payload;
+ 		*input >> payload;
 -		output << voiRunPreLiveJourneyAdapter(payload).dump()
 +		output << voiRunPreLiveJourneyAdapter(
 +			payload,
@@ -3589,7 +3591,7 @@ index 1a79e02..1e50e90 100644
  	}
 diff --git a/src/voi_production_path.hpp b/src/voi_production_path.hpp
 new file mode 100644
-index 0000000..ae479ad
+index 0000000000000000000000000000000000000000..ae479ad1100a277317e8ed7de0a576bb2e2aa0eb
 --- /dev/null
 +++ b/src/voi_production_path.hpp
 @@ -0,0 +1,448 @@
@@ -4042,7 +4044,7 @@ index 0000000..ae479ad
 +		dispatch);
 +}
 diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
-index 3ddbf11..66bccb7 100644
+index 3ddbf11d2e439417f4f15a8e09f2d35ce921fde4..66bccb7a1e8e6fa5f4e219301f27934609516f0c 100644
 --- a/tests/CMakeLists.txt
 +++ b/tests/CMakeLists.txt
 @@ -142,3 +142,17 @@ add_test(
@@ -4064,20 +4066,20 @@ index 3ddbf11..66bccb7 100644
 +    COMMAND voi_production_path_test
 +)
 diff --git a/tests/pre_live_journey_adapter_test.cpp b/tests/pre_live_journey_adapter_test.cpp
-index 355d691..f09efb1 100644
+index 5aad7ef44cc680ba359b6102f836f375e7782a62..93a43c7c2482e2b8ea813e4ac359122fa9f3c1a5 100644
 --- a/tests/pre_live_journey_adapter_test.cpp
 +++ b/tests/pre_live_journey_adapter_test.cpp
-@@ -1,7 +1,9 @@
- #include "voi_pre_live_journey_adapter.hpp"
+@@ -2,7 +2,9 @@
  
  #include <iostream>
+ #include <sstream>
 +#include <set>
  #include <string>
 +#include <vector>
  
  namespace
  {
-@@ -18,6 +20,76 @@ int failures = 0;
+@@ -19,6 +21,76 @@ int failures = 0;
  		}                                                                    \
  	} while (false)
  
@@ -4154,7 +4156,7 @@ index 355d691..f09efb1 100644
  VoiPreLiveJson operationUpdate()
  {
  	return {
-@@ -70,8 +142,12 @@ VoiPreLiveJson operationUpdate()
+@@ -71,8 +143,12 @@ VoiPreLiveJson operationUpdate()
  VoiPreLiveJson validInput()
  {
  	return {
@@ -4168,7 +4170,7 @@ index 355d691..f09efb1 100644
  			{ "protected_minimum", {
  				{ "TERRAN_MARINE", 0 },
  			} },
-@@ -90,6 +166,8 @@ VoiPreLiveJson validInput()
+@@ -91,6 +167,8 @@ VoiPreLiveJson validInput()
  					{ "home_distance", 0.0 },
  				},
  			} },
@@ -4177,7 +4179,7 @@ index 355d691..f09efb1 100644
  		} },
  		{ "steps", {
  			{
-@@ -114,15 +192,228 @@ VoiPreLiveJson validInput()
+@@ -115,10 +193,216 @@ VoiPreLiveJson validInput()
  		} },
  	};
  }
@@ -4390,6 +4392,23 @@ index 355d691..f09efb1 100644
  
  int main()
  {
++	VoiPreLiveTestProductionExecutor standardInputExecutor;
+ 	std::istringstream standardInput(validInput().dump());
+ 	std::ostringstream standardOutput;
+ 	std::ostringstream standardError;
+@@ -127,17 +411,26 @@ int main()
+ 			"-",
+ 			standardInput,
+ 			standardOutput,
+-			standardError) == 0);
++			standardError,
++			standardInputExecutor) == 0);
+ 	CHECK(standardError.str().empty());
+ 	const auto standardOutputPayload =
+ 		VoiPreLiveJson::parse(standardOutput.str());
+-	CHECK(standardOutputPayload["schema_version"] == 1);
++	CHECK(standardOutputPayload["schema_version"] == 2);
+ 
  	const auto output =
 -		voiRunPreLiveJourneyAdapter(validInput());
 -	CHECK(output["schema_version"] == 1);
@@ -4408,7 +4427,7 @@ index 355d691..f09efb1 100644
  	CHECK(
  		output["battlefield_overview"]["authority"]
  			== "micromachine_cpp");
-@@ -137,6 +428,197 @@ int main()
+@@ -152,6 +445,197 @@ int main()
  			["family_evidence"][0]["effect_kind"]
  			== "movement");
  	CHECK(output["hud"]["rows"].is_array());
@@ -4606,7 +4625,7 @@ index 355d691..f09efb1 100644
  
  	auto multiRole = validInput();
  	multiRole["initial_state"]["units"].push_back({
-@@ -171,7 +653,7 @@ int main()
+@@ -186,7 +670,7 @@ int main()
  		},
  	};
  	const auto multiRoleOutput =
@@ -4615,7 +4634,7 @@ index 355d691..f09efb1 100644
  	CHECK(
  		multiRoleOutput["operation_director"][0]["assigned_count"]
  			== 5);
-@@ -205,11 +687,21 @@ int main()
+@@ -220,11 +704,21 @@ int main()
  	protectedMinimum["steps"].erase(
  		protectedMinimum["steps"].begin() + 1);
  	const auto protectedOutput =
@@ -4638,7 +4657,7 @@ index 355d691..f09efb1 100644
  	for (const auto & event : protectedOutput["events"])
  	{
  		protectedRejectionObserved =
-@@ -217,14 +709,299 @@ int main()
+@@ -232,14 +726,299 @@ int main()
  			|| (event["event_type"] == "rejection"
  				&& event["payload"]["reason"]
  					== "protected_minimum_violation");
@@ -4939,7 +4958,7 @@ index 355d691..f09efb1 100644
  		CHECK(false);
  	}
  	catch (const std::runtime_error & error)
-@@ -239,7 +1016,7 @@ int main()
+@@ -254,7 +1033,7 @@ int main()
  	regressive["steps"][1]["frame"] = 99;
  	try
  	{
@@ -4948,9 +4967,16 @@ index 355d691..f09efb1 100644
  		CHECK(false);
  	}
  	catch (const std::runtime_error & error)
+@@ -263,3 +1042,6 @@ int main()
+ 			std::string(error.what()).find("regressed")
+ 				!= std::string::npos);
+ 	}
++
++	return failures == 0 ? 0 : 1;
++}
 diff --git a/tests/production_path_test.cpp b/tests/production_path_test.cpp
 new file mode 100644
-index 0000000..ac60eba
+index 0000000000000000000000000000000000000000..ac60ebabcec93513b5b27fcf3d2fd3a099ddf349
 --- /dev/null
 +++ b/tests/production_path_test.cpp
 @@ -0,0 +1,398 @@

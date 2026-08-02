@@ -65,6 +65,7 @@ jobs:
           VOI_RELEASE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           mkdir -p "${RUNNER_TEMP}/pre-live"
+          VOI_NODE_EXECUTABLE="$(python3 -c 'import os, shutil; print(os.path.realpath(shutil.which("node") or ""))')" \
           python3 -B -m starcraft_commander.micromachine_pre_live_provenance \
             --emit-github-actions-bundle \
             "${RUNNER_TEMP}/pre-live/pre-live-provenance.zip" \
