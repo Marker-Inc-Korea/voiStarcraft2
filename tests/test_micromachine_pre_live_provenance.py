@@ -3306,6 +3306,80 @@ class LocalProducerTest(unittest.TestCase):
                 " ".join(report["blockers"]),
             )
 
+    def test_pins_node_and_rejects_path_replacement_during_execution(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_root = Path(directory).resolve()
+            root = temporary_root / "repo"
+            root.mkdir()
+            init_git_repo(root)
+            cwd = root / "producer"
+            cwd.mkdir()
+            executable = root / "producer.sh"
+            executable.write_text("#!/bin/sh\nexit 0\n")
+            executable.chmod(0o755)
+            output = cwd / "evidence.json"
+            admitted_node = temporary_root / "node"
+            admitted_payload = b"trusted admitted Node.js bytes"
+            admitted_node.write_bytes(admitted_payload)
+            admitted_node.chmod(0o755)
+            admitted_digest = hashlib.sha256(admitted_payload).hexdigest()
+            producer_argv = (
+                str(executable),
+                "--node-executable",
+                str(admitted_node),
+                "--output",
+                str(output),
+            )
+
+            def replacing_runner(
+                *args: object,
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess:
+                execution_argv = list(args[0])
+                execution_node = Path(execution_argv[2])
+                self.assertEqual(Path("/dev/fd"), execution_node.parent)
+                self.assertEqual(
+                    admitted_digest,
+                    hashlib.sha256(execution_node.read_bytes()).hexdigest(),
+                )
+                replacement = admitted_node.with_name("node.replacement")
+                replacement.write_bytes(b"attacker Node.js bytes")
+                replacement.chmod(0o755)
+                os.replace(replacement, admitted_node)
+                Path(execution_argv[-1]).write_text(
+                    json.dumps({"node_sha256": admitted_digest}) + "\n"
+                )
+                return subprocess.CompletedProcess(
+                    execution_argv,
+                    0,
+                    b"",
+                    b"",
+                )
+
+            report = run_local_producer(
+                repository_dir=root,
+                cwd=cwd,
+                argv=producer_argv,
+                allowed_argv=(producer_argv,),
+                output_artifact=output,
+                command_runner=replacing_runner,
+                pinned_argv_file_digests={
+                    str(admitted_node): admitted_digest
+                },
+            )
+
+            self.assertFalse(report["ok"], report)
+            self.assertEqual(
+                {"node_sha256": admitted_digest},
+                json.loads(output.read_bytes()),
+            )
+            self.assertIn(
+                "pinned argv file pathname changed",
+                " ".join(report["blockers"]),
+            )
+
     def test_private_argv_binary_snapshot_has_no_replaceable_path(
         self,
     ) -> None:

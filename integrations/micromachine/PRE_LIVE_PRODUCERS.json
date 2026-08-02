@@ -14,7 +14,9 @@
         "--emit-bundle",
         "{output}",
         "--micromachine-binary",
-        "{micromachine_binary}"
+        "{micromachine_binary}",
+        "--node-executable",
+        "{node}"
       ],
       "cwd": ".",
       "output": "producer/deterministic-journeys.zip"

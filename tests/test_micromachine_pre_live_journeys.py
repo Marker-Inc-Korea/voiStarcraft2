@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -99,6 +100,39 @@ class NativeExecutableLaunchTest(unittest.TestCase):
             finally:
                 os.close(descriptor)
         self.assertEqual(0, completed.returncode, completed.stderr)
+
+    def test_unlinked_node_descriptor_executes_with_stdin(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("requires Node.js")
+        payload = Path(node).read_bytes()
+        expected_sha256 = hashlib.sha256(payload).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            admitted_node = Path(directory) / "admitted-node"
+            admitted_node.write_bytes(payload)
+            admitted_node.chmod(0o500)
+            descriptor = os.open(admitted_node, os.O_RDONLY)
+            admitted_node.unlink()
+            try:
+                descriptor_path = Path(f"/dev/fd/{descriptor}")
+                completed = _run_native_command(
+                    descriptor_path,
+                    [
+                        str(descriptor_path),
+                        "-e",
+                        (
+                            "process.stdin.on('data',chunk=>"
+                            "process.stdout.write(chunk))"
+                        ),
+                    ],
+                    expected_sha256=expected_sha256,
+                    command_runner=subprocess.run,
+                    input=b"pinned-node-stdin",
+                )
+            finally:
+                os.close(descriptor)
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(b"pinned-node-stdin", completed.stdout)
 
     @unittest.skipUnless(
         sys.platform == "darwin",
@@ -619,6 +653,13 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
         self.assertEqual(0, runtime["queue_length_after_drain"])
         self.assertEqual(3, runtime["caption_count"])
         self.assertEqual(2, len(runtime["spoken"]))
+        node = shutil.which("node")
+        self.assertIsNotNone(node)
+        assert node is not None
+        self.assertEqual(
+            hashlib.sha256(Path(node).read_bytes()).hexdigest(),
+            runtime["node_sha256"],
+        )
         self.assertEqual(1, runtime["muted_caption_delta"])
         self.assertEqual(0, runtime["muted_speech_delta"])
         self.assertIs(False, runtime["final_muted"])
@@ -741,9 +782,40 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
             rejected["blockers"],
         )
 
+    def test_forged_node_digest_fails_executable_replay(self) -> None:
+        entries = _read_zip(build_pre_live_journey_bundle(MICROMACHINE_BINARY))
+        journey_id = "voice_readback_callout_identity"
+        product_name = f"product/{journey_id}.json"
+        products = json.loads(entries[product_name])
+        products["tactical_radio_runtime"]["node_sha256"] = "0" * 64
+        entries[product_name] = canonical_json_bytes(products)
+
+        matrix = json.loads(entries["derived/journey-matrix.json"])
+        journey = next(
+            item for item in matrix["journeys"] if item["id"] == journey_id
+        )
+        journey["product_paths"] = products
+        entries["derived/journey-matrix.json"] = canonical_json_bytes(matrix)
+        entries["report.md"] = _markdown_report(matrix).encode("utf-8")
+
+        rejected = verify_pre_live_journey_bundle(
+            _rebuild_journey_bundle(entries)
+        )
+        self.assertFalse(rejected["ok"], rejected)
+        self.assertTrue(
+            any(
+                "Node.js executable digest mismatch" in blocker
+                for blocker in rejected["blockers"]
+            ),
+            rejected,
+        )
+
     def test_checked_in_producer_runs_in_the_isolated_ci_launcher(self) -> None:
         policy = json.loads(PRODUCER_POLICY.read_bytes())
         producer = policy["producers"]["deterministic_journeys"]
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("requires Node.js")
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "journeys.zip"
             replacements = {
@@ -751,6 +823,7 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
                 "{repository}": str(REPO_ROOT),
                 "{output}": str(output),
                 "{micromachine_binary}": str(MICROMACHINE_BINARY),
+                "{node}": str(Path(node).resolve()),
             }
             argv = [
                 replacements.get(value, value)
@@ -765,7 +838,10 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
                 shell=False,
             )
             self.assertEqual(0, completed.returncode, completed.stderr)
-            verification = verify_pre_live_journey_bundle(output.read_bytes())
+            verification = verify_pre_live_journey_bundle(
+                output.read_bytes(),
+                node_executable=replacements["{node}"],
+            )
             self.assertTrue(verification["ok"], verification)
 
     def test_negative_raw_stream_matrix_fails_closed(self) -> None:

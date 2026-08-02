@@ -14,6 +14,7 @@ import json
 import os
 import pwd
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -2262,6 +2263,7 @@ def resolve_local_producer_policy(
     python_executable: Path | str = sys.executable,
     micromachine_binary_path: Path | str | None = None,
     micromachine_binary_sha256: str | None = None,
+    node_executable: Path | str | None = None,
 ) -> dict[str, object]:
     """Load one exact producer command from the policy committed at HEAD."""
 
@@ -2377,7 +2379,10 @@ def resolve_local_producer_policy(
 
     python_path = Path(python_executable).resolve()
     binary_path: Path | None = None
+    node_path: Path | None = None
+    node_sha256: str | None = None
     binary_placeholder_count = raw_argv.count("{micromachine_binary}")
+    node_placeholder_count = raw_argv.count("{node}")
     if producer_id == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID:
         if binary_placeholder_count != 1:
             blockers.append(
@@ -2446,10 +2451,59 @@ def resolve_local_producer_policy(
                         )
                     else:
                         binary_path = raw_binary_path.resolve()
+        if node_placeholder_count != 1:
+            blockers.append(
+                "deterministic journey producer argv must contain exactly one "
+                "{node} placeholder"
+            )
+        else:
+            placeholder_index = raw_argv.index("{node}")
+            if (
+                placeholder_index == 0
+                or raw_argv[placeholder_index - 1]
+                != "--node-executable"
+            ):
+                blockers.append(
+                    "{node} must be the value of --node-executable"
+                )
+        resolved_node = (
+            str(node_executable)
+            if node_executable is not None
+            else shutil.which("node")
+        )
+        if not resolved_node:
+            blockers.append(
+                "deterministic journey producer requires a Node.js executable"
+            )
+        else:
+            raw_node_path = Path(resolved_node)
+            if not raw_node_path.is_absolute():
+                blockers.append("Node.js executable path must be absolute")
+            elif _path_has_symlink_component(raw_node_path):
+                blockers.append("Node.js executable path contains a symlink")
+            else:
+                try:
+                    node_stat = raw_node_path.stat()
+                except OSError as exc:
+                    blockers.append(
+                        f"Node.js executable is unreadable: {exc}"
+                    )
+                else:
+                    if not stat.S_ISREG(node_stat.st_mode):
+                        blockers.append(
+                            "Node.js executable is not a regular file"
+                        )
+                    elif node_stat.st_mode & 0o111 == 0:
+                        blockers.append("Node.js executable is not executable")
+                    else:
+                        node_path = raw_node_path.resolve()
+                        node_sha256 = _sha256_file(node_path)
     elif binary_placeholder_count:
         blockers.append(
             "{micromachine_binary} is reserved for deterministic journeys"
         )
+    elif node_placeholder_count:
+        blockers.append("{node} is reserved for deterministic journeys")
     replacements = {
         "{python}": str(python_path),
         "{repository}": str(root),
@@ -2458,6 +2512,7 @@ def resolve_local_producer_policy(
         "{micromachine_binary}": (
             str(binary_path) if binary_path is not None else ""
         ),
+        "{node}": str(node_path) if node_path is not None else "",
     }
     argv: list[str] = []
     for value in raw_argv:
@@ -2544,6 +2599,10 @@ def resolve_local_producer_policy(
         micromachine_binary_sha256=(
             micromachine_binary_sha256 if binary_path is not None else None
         ),
+        node_executable_path=(
+            str(node_path) if node_path is not None else None
+        ),
+        node_executable_sha256=node_sha256,
         module=module_evidence,
         runtime_sources=runtime_sources,
     )
@@ -3732,9 +3791,14 @@ def _producer_pinned_argv_file_digests(
         return {}
     binary_path = producer_policy.get("micromachine_binary_path")
     binary_sha256 = producer_policy.get("micromachine_binary_sha256")
-    if not isinstance(binary_path, str) or not isinstance(binary_sha256, str):
-        return {}
-    return {binary_path: binary_sha256}
+    node_path = producer_policy.get("node_executable_path")
+    node_sha256 = producer_policy.get("node_executable_sha256")
+    pinned: dict[str, str] = {}
+    if isinstance(binary_path, str) and isinstance(binary_sha256, str):
+        pinned[binary_path] = binary_sha256
+    if isinstance(node_path, str) and isinstance(node_sha256, str):
+        pinned[node_path] = node_sha256
+    return pinned
 
 
 def _capture_admitted_build_snapshots(

@@ -531,10 +531,13 @@ def execute_pre_live_journeys(
     manifest_path: Path | str = DEFAULT_JOURNEY_MANIFEST,
     *,
     command_runner: CommandRunner = subprocess.run,
+    node_executable: Path | str | None = None,
 ) -> dict[str, object]:
     manifest = load_pre_live_journey_manifest(manifest_path)
     binary = _validate_micromachine_binary(micromachine_binary)
     binary_sha256 = _sha256_file(binary)
+    node = _validate_node_executable(node_executable)
+    node_sha256 = _sha256_file(node)
     embedded_identity = _query_embedded_build_identity(
         binary,
         expected_sha256=binary_sha256,
@@ -556,6 +559,8 @@ def execute_pre_live_journeys(
                 execution,
                 native_output,
                 command_runner=command_runner,
+                node_executable=node,
+                node_sha256=node_sha256,
             )
             _finalize_events(execution)
             execution.products["native_adapter"] = {
@@ -1011,6 +1016,36 @@ def _validate_micromachine_binary(path: Path | str) -> Path:
     return raw.resolve()
 
 
+def _validate_node_executable(path: Path | str | None) -> Path:
+    resolved = str(path) if path is not None else shutil.which("node")
+    if not resolved:
+        raise ValueError(
+            "Node.js is required for production Tactical Radio replay"
+        )
+    raw = Path(resolved)
+    if not raw.is_absolute():
+        raise ValueError("Node.js executable path must be absolute")
+    inherited_fd = _inherited_executable_fd(raw)
+    if inherited_fd is not None:
+        file_stat = os.fstat(inherited_fd)
+        if (
+            not stat.S_ISREG(file_stat.st_mode)
+            or file_stat.st_mode & 0o111 == 0
+        ):
+            raise ValueError(
+                "inherited Node.js descriptor must be executable"
+            )
+        return raw
+    if raw.is_symlink():
+        raise ValueError("Node.js executable path must not be a symlink")
+    file_stat = raw.stat()
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise ValueError("Node.js executable must be a regular file")
+    if file_stat.st_mode & 0o111 == 0:
+        raise ValueError("Node.js executable must be executable")
+    return raw.resolve()
+
+
 def _inherited_executable_fd(path: Path) -> int | None:
     if path.parent != Path("/dev/fd") or not path.name.isdecimal():
         return None
@@ -1020,7 +1055,7 @@ def _inherited_executable_fd(path: Path) -> int | None:
         path_descriptor = os.open(path, os.O_RDONLY)
     except OSError as exc:
         raise ValueError(
-            "inherited MicroMachine descriptor is unavailable"
+            "inherited executable descriptor is unavailable"
         ) from exc
     try:
         path_stat = os.fstat(path_descriptor)
@@ -1032,7 +1067,7 @@ def _inherited_executable_fd(path: Path) -> int | None:
             path_stat.st_ino,
         ):
             raise ValueError(
-                "inherited MicroMachine descriptor path changed identity"
+                "inherited executable descriptor path changed identity"
             )
     finally:
         os.close(path_descriptor)
@@ -1045,20 +1080,24 @@ def _run_native_command(
     *,
     expected_sha256: str,
     command_runner: CommandRunner,
+    input: bytes | None = None,
 ) -> subprocess.CompletedProcess[Any]:
     descriptor = _inherited_executable_fd(binary)
     if descriptor is None or command_runner is not subprocess.run:
-        return command_runner(
-            list(argv),
-            check=False,
-            capture_output=True,
-            text=False,
-            shell=False,
-        )
+        kwargs: dict[str, object] = {
+            "check": False,
+            "capture_output": True,
+            "text": False,
+            "shell": False,
+        }
+        if input is not None:
+            kwargs["input"] = input
+        return command_runner(list(argv), **kwargs)
     return _run_inherited_native_command(
         descriptor,
         argv,
         expected_sha256=expected_sha256,
+        input=input,
     )
 
 
@@ -1067,13 +1106,14 @@ def _run_inherited_native_command(
     argv: Sequence[str],
     *,
     expected_sha256: str,
+    input: bytes | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     source_before = _native_executable_snapshot(descriptor)
     if (
         source_before[3] <= 0
         or source_before[3] > MAX_NATIVE_EXECUTABLE_BYTES
     ):
-        raise OSError("inherited MicroMachine binary size is invalid")
+        raise OSError("inherited native executable size is invalid")
 
     with tempfile.TemporaryDirectory(
         prefix=".voi-native-exec-",
@@ -1081,7 +1121,7 @@ def _run_inherited_native_command(
     ) as directory:
         execution_root = Path(directory)
         os.chmod(execution_root, 0o700)
-        executable_path = execution_root / "MicroMachine"
+        executable_path = execution_root / "native-executable"
         flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
@@ -1098,12 +1138,12 @@ def _run_inherited_native_command(
             os.fchmod(executable_descriptor, 0o500)
             if source_digest != expected_sha256:
                 raise OSError(
-                    "inherited MicroMachine binary digest changed before exec"
+                    "inherited native executable digest changed before exec"
                 )
             source_after_copy = _native_executable_snapshot(descriptor)
             if source_after_copy != source_before:
                 raise OSError(
-                    "inherited MicroMachine binary changed before exec"
+                    "inherited native executable changed before exec"
                 )
             clone_snapshot = _native_executable_snapshot(
                 executable_descriptor
@@ -1117,7 +1157,7 @@ def _run_inherited_native_command(
                 != expected_sha256
             ):
                 raise OSError(
-                    "one-shot MicroMachine executable differs from admitted bytes"
+                    "one-shot native executable differs from admitted bytes"
                 )
             os.chmod(execution_root, 0o500)
             _require_descriptor_path_identity(
@@ -1132,6 +1172,7 @@ def _run_inherited_native_command(
             process = subprocess.Popen(
                 launch_argv,
                 executable=str(executable_path),
+                stdin=subprocess.PIPE if input is not None else None,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=False,
@@ -1141,10 +1182,10 @@ def _run_inherited_native_command(
                 executable_descriptor,
                 executable_path,
             )
-            stdout, stderr = process.communicate()
+            stdout, stderr = process.communicate(input)
             if _native_path_monitor_changed(path_monitor):
                 raise OSError(
-                    "one-shot MicroMachine executable changed during exec"
+                    "one-shot native executable changed during exec"
                 )
             _require_descriptor_path_identity(
                 executable_descriptor,
@@ -1155,11 +1196,11 @@ def _run_inherited_native_command(
                 != clone_snapshot
             ):
                 raise OSError(
-                    "one-shot MicroMachine executable changed during exec"
+                    "one-shot native executable changed during exec"
                 )
             if _native_executable_snapshot(descriptor) != source_before:
                 raise OSError(
-                    "inherited MicroMachine binary changed during exec"
+                    "inherited native executable changed during exec"
                 )
         except BaseException:
             if process is not None and process.poll() is None:
@@ -1193,13 +1234,13 @@ def _copy_native_executable(
             offset,
         )
         if not chunk:
-            raise OSError("inherited MicroMachine binary is truncated")
+            raise OSError("inherited native executable is truncated")
         digest.update(chunk)
         view = memoryview(chunk)
         while view:
             written = os.write(target_descriptor, view)
             if written <= 0:
-                raise OSError("one-shot MicroMachine executable write failed")
+                raise OSError("one-shot native executable write failed")
             view = view[written:]
         offset += len(chunk)
     return digest.hexdigest()
@@ -1278,7 +1319,7 @@ def _require_descriptor_path_identity(
         path_stat.st_size,
         path_stat.st_mtime_ns,
     ):
-        raise OSError("one-shot MicroMachine executable path changed identity")
+        raise OSError("one-shot native executable path changed identity")
 
 
 def _open_native_path_monitor(
@@ -2512,6 +2553,8 @@ def _consume_native_output(
     native: Mapping[str, object],
     *,
     command_runner: CommandRunner = subprocess.run,
+    node_executable: Path | str | None = None,
+    node_sha256: str | None = None,
 ) -> None:
     raw_events = native.get("events")
     if not isinstance(raw_events, Sequence) or isinstance(
@@ -2538,6 +2581,8 @@ def _consume_native_output(
         execution,
         native,
         command_runner=command_runner,
+        node_executable=node_executable,
+        node_sha256=node_sha256,
     )
 
 
@@ -2878,6 +2923,8 @@ def _consume_projection_events(
     native: Mapping[str, object],
     *,
     command_runner: CommandRunner,
+    node_executable: Path | str | None = None,
+    node_sha256: str | None = None,
 ) -> None:
     rows = _mapping_sequence(native.get("operation_director"))
     final_frame = int(
@@ -2976,6 +3023,8 @@ def _consume_projection_events(
         scope_id=execution.journey_id,
         expected_identity=identity,
         command_runner=command_runner,
+        node_executable=node_executable,
+        expected_node_sha256=node_sha256,
     )
     execution.products["tactical_radio_runtime"] = radio_result
     secondary_callout = cast(
@@ -3019,10 +3068,16 @@ def _execute_tactical_radio_runtime(
     scope_id: str,
     expected_identity: Mapping[str, object],
     command_runner: CommandRunner,
+    node_executable: Path | str | None = None,
+    expected_node_sha256: str | None = None,
 ) -> dict[str, object]:
-    node = shutil.which("node")
-    if node is None:
-        raise ValueError("Node.js is required for production Tactical Radio replay")
+    node = _validate_node_executable(node_executable)
+    node_sha256 = _sha256_file(node)
+    if (
+        expected_node_sha256 is not None
+        and node_sha256 != expected_node_sha256
+    ):
+        raise ValueError("Node.js executable digest mismatch")
     primary_identity = _timeline_event_identity(primary_event)
     secondary_identity = _timeline_event_identity(secondary_event)
     if primary_identity[:3] != secondary_identity[:3]:
@@ -3054,8 +3109,11 @@ def _execute_tactical_radio_runtime(
     ):
         raise ValueError("Tactical Radio lifecycle session epoch is invalid")
     runtime_source = _production_tactical_radio_source()
-    completed = command_runner(
-        [node, "-e", _tactical_radio_node_harness(runtime_source)],
+    completed = _run_native_command(
+        node,
+        [str(node), "-e", _tactical_radio_node_harness(runtime_source)],
+        expected_sha256=node_sha256,
+        command_runner=command_runner,
         input=canonical_json_bytes(
             {
                 "schema_version": 1,
@@ -3067,11 +3125,9 @@ def _execute_tactical_radio_runtime(
                 "secondary_event": dict(secondary_event),
             }
         ),
-        check=False,
-        capture_output=True,
-        text=False,
-        shell=False,
     )
+    if _sha256_file(node) != node_sha256:
+        raise ValueError("Node.js executable changed during Tactical Radio replay")
     if int(completed.returncode) != 0:
         stderr = _as_bytes(completed.stderr).decode(
             "utf-8",
@@ -3095,6 +3151,7 @@ def _execute_tactical_radio_runtime(
     return {
         "schema_version": 1,
         "runtime": "production_web_gui_tactical_radio_js",
+        "node_sha256": node_sha256,
         "source_sha256": hashlib.sha256(
             runtime_source.encode("utf-8")
         ).hexdigest(),
@@ -4771,12 +4828,14 @@ def build_pre_live_journey_bundle(
     manifest_path: Path | str = DEFAULT_JOURNEY_MANIFEST,
     *,
     command_runner: CommandRunner = subprocess.run,
+    node_executable: Path | str | None = None,
 ) -> bytes:
     manifest = load_pre_live_journey_manifest(manifest_path)
     suite = execute_pre_live_journeys(
         micromachine_binary,
         manifest_path,
         command_runner=command_runner,
+        node_executable=node_executable,
     )
     members: dict[str, bytes] = {
         "input/PRE_LIVE_JOURNEYS.json": canonical_json_bytes(manifest),
@@ -4836,6 +4895,7 @@ def write_pre_live_journey_bundle(
     manifest_path: Path | str = DEFAULT_JOURNEY_MANIFEST,
     *,
     command_runner: CommandRunner = subprocess.run,
+    node_executable: Path | str | None = None,
 ) -> None:
     path = Path(output_path).absolute()
     if not path.parent.is_dir():
@@ -4844,6 +4904,7 @@ def write_pre_live_journey_bundle(
         micromachine_binary,
         manifest_path,
         command_runner=command_runner,
+        node_executable=node_executable,
     )
     temporary_path: Path | None = None
     try:
@@ -4865,7 +4926,11 @@ def write_pre_live_journey_bundle(
             temporary_path.unlink(missing_ok=True)
 
 
-def verify_pre_live_journey_bundle(bundle: bytes) -> dict[str, object]:
+def verify_pre_live_journey_bundle(
+    bundle: bytes,
+    *,
+    node_executable: Path | str | None = None,
+) -> dict[str, object]:
     blockers: list[str] = []
     native_identities: set[tuple[str, str]] = set()
     if not isinstance(bundle, bytes):
@@ -4971,7 +5036,12 @@ def verify_pre_live_journey_bundle(bundle: bytes) -> dict[str, object]:
                 verdict = verify_pre_live_journey_events(spec, events)
                 derived_blockers = [
                     *cast(list[str], verdict["blockers"]),
-                    *_rederive_product_path_blockers(spec, events, products),
+                    *_rederive_product_path_blockers(
+                        spec,
+                        events,
+                        products,
+                        node_executable=node_executable,
+                    ),
                 ]
                 identity = _native_adapter_identity(products, derived_blockers)
                 if identity is not None:
@@ -5491,6 +5561,12 @@ def _product_path_blockers(
             not isinstance(tactical_radio, Mapping)
             or tactical_radio.get("runtime")
             != "production_web_gui_tactical_radio_js"
+            or not isinstance(tactical_radio.get("node_sha256"), str)
+            or len(cast(str, tactical_radio["node_sha256"])) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in cast(str, tactical_radio["node_sha256"])
+            )
             or tactical_radio.get("primary_accepted") is not True
             or tactical_radio.get("secondary_accepted") is not True
             or tactical_radio.get("duplicate_primary_accepted") is not False
@@ -5511,6 +5587,8 @@ def _rederive_product_path_blockers(
     spec: Mapping[str, object],
     events: Sequence[Mapping[str, object]],
     products: Mapping[str, object],
+    *,
+    node_executable: Path | str | None = None,
 ) -> list[str]:
     blockers = _product_path_blockers(products, spec=spec)
     native_adapter = products.get("native_adapter")
@@ -5529,7 +5607,21 @@ def _rederive_product_path_blockers(
         native_output = _validate_native_output_payload(
             deepcopy(native_adapter.get("output"))
         )
-        _consume_native_output(execution, native_output)
+        _consume_native_output(
+            execution,
+            native_output,
+            node_executable=node_executable,
+            node_sha256=(
+                str(
+                    cast(
+                        Mapping[str, object],
+                        products.get("tactical_radio_runtime", {}),
+                    ).get("node_sha256", "")
+                )
+                if spec.get("kind") == "voice_identity"
+                else None
+            ),
+        )
         _finalize_events(execution)
         execution.products["native_adapter"] = deepcopy(dict(native_adapter))
         normalized_events = [deepcopy(dict(event)) for event in events]
@@ -5693,6 +5785,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--manifest", default=str(DEFAULT_JOURNEY_MANIFEST))
     parser.add_argument("--micromachine-binary", required=True)
+    parser.add_argument("--node-executable")
     parser.add_argument("--emit-bundle", metavar="OUTPUT")
     parser.add_argument("--report", action="store_true")
     return parser
@@ -5706,15 +5799,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.emit_bundle,
                 args.micromachine_binary,
                 args.manifest,
+                node_executable=args.node_executable,
             )
             verification = verify_pre_live_journey_bundle(
-                Path(args.emit_bundle).read_bytes()
+                Path(args.emit_bundle).read_bytes(),
+                node_executable=args.node_executable,
             )
             print(canonical_json_bytes(verification).decode("utf-8"))
             return 0 if verification["ok"] is True else 1
         report = execute_pre_live_journeys(
             args.micromachine_binary,
             args.manifest,
+            node_executable=args.node_executable,
         )
         print(
             _markdown_report(report)

@@ -136,7 +136,10 @@ CI selects the `deterministic_journeys` producer from
 inside the authenticated pre-live provenance artifact, where the outer
 verifier binds the exact repository commit, build identity, producer policy,
 runtime sources, manifest, and output digest and then independently verifies
-the nested ZIP. This gate proves deterministic product-path behavior only;
+the nested ZIP. The producer resolves both the admitted MicroMachine binary and
+the Node.js executable before entering its sanitized environment, pins their
+SHA-256 digests, and executes descriptor-backed one-shot copies without
+widening `PATH`. This gate proves deterministic product-path behavior only;
 manual StarCraft II live QA remains the final user gate, and human multiplayer
 is deferred.
 

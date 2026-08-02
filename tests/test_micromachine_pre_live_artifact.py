@@ -735,7 +735,9 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
             )
         semantic_verifier.assert_not_called()
 
-    def test_deterministic_policy_requires_exact_admitted_binary(self) -> None:
+    def test_deterministic_policy_requires_exact_admitted_executables(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             policy_path = root / provenance.PRODUCER_POLICY_RELATIVE_PATH
@@ -747,10 +749,16 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
             binary_path.write_bytes(self.binary)
             binary_path.chmod(0o755)
             expected_digest = sha256(self.binary)
+            node_path = root / "tools" / "node"
+            node_path.parent.mkdir()
+            node_path.write_bytes(b"fixture Node.js executable")
+            node_path.chmod(0o755)
+            expected_node_digest = sha256(node_path.read_bytes())
 
             def policy_bytes(
                 *,
                 binary_placeholder: str = "{micromachine_binary}",
+                node_placeholder: str = "{node}",
             ) -> bytes:
                 return canonical_json_bytes(
                     {
@@ -773,6 +781,8 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                                     "{output}",
                                     "--micromachine-binary",
                                     binary_placeholder,
+                                    "--node-executable",
+                                    node_placeholder,
                                 ],
                                 "cwd": ".",
                                 "output": "producer/journeys.zip",
@@ -786,6 +796,7 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                 *,
                 candidate_path: Path | str | None = binary_path,
                 candidate_digest: str | None = expected_digest,
+                candidate_node: Path | str | None = node_path,
             ) -> dict[str, object]:
                 policy_path.write_bytes(payload)
 
@@ -833,6 +844,7 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                         git_runner=git_runner,
                         micromachine_binary_path=candidate_path,
                         micromachine_binary_sha256=candidate_digest,
+                        node_executable=candidate_node,
                     )
 
             accepted = resolve(policy_bytes())
@@ -850,10 +862,30 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                 expected_digest,
                 accepted["micromachine_binary_sha256"],
             )
+            node_index = accepted["argv"].index("--node-executable") + 1
+            self.assertEqual(str(node_path), accepted["argv"][node_index])
+            self.assertEqual(
+                str(node_path),
+                accepted["node_executable_path"],
+            )
+            self.assertEqual(
+                expected_node_digest,
+                accepted["node_executable_sha256"],
+            )
+            self.assertEqual(
+                {
+                    str(binary_path): expected_digest,
+                    str(node_path): expected_node_digest,
+                },
+                provenance._producer_pinned_argv_file_digests(accepted),
+            )
 
             rejected = {
-                "missing placeholder": resolve(
+                "missing binary placeholder": resolve(
                     policy_bytes(binary_placeholder=str(binary_path))
+                ),
+                "missing node placeholder": resolve(
+                    policy_bytes(node_placeholder=str(node_path))
                 ),
                 "relative path": resolve(
                     policy_bytes(),
@@ -862,6 +894,10 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                 "digest mismatch": resolve(
                     policy_bytes(),
                     candidate_digest="0" * 64,
+                ),
+                "relative node path": resolve(
+                    policy_bytes(),
+                    candidate_node=Path("tools/node"),
                 ),
             }
             for name, result in rejected.items():
