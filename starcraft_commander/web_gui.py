@@ -11074,8 +11074,10 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
       <div class="operation-console-header">
         <div>
           <h2 id="operation-console-title"
-              class="operation-console-title">병렬 전장 작전</h2>
-          <p class="operation-console-hint">정찰·공격·수비 작전을 서로 덮어쓰지 않고 실제 실행 증거별로 추적합니다.</p>
+              class="operation-console-title"
+              data-i18n="operationConsoleTitle">병렬 전장 작전</h2>
+          <p class="operation-console-hint"
+             data-i18n="operationConsoleHint">정찰·공격·수비 작전을 서로 덮어쓰지 않고 실제 실행 증거별로 추적합니다.</p>
         </div>
         <span id="operation-summary"
               class="operation-summary"
@@ -11086,7 +11088,8 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
       <div id="operation-list"
            class="operation-list"
            role="group"
-           aria-label="MicroMachine 병렬 작전 상태 lane">
+           aria-label="MicroMachine 병렬 작전 상태 lane"
+           data-i18n-aria-label="operationListLabel">
         <section class="operation-lane" data-operation-lane="planning"
                  aria-labelledby="operation-lane-planning-title">
           <div class="operation-lane-header">
@@ -11127,7 +11130,8 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
       <section class="operation-timeline-panel"
                aria-labelledby="operation-timeline-title">
         <div class="operation-timeline-header">
-          <h3 id="operation-timeline-title">작전 사건 기록</h3>
+          <h3 id="operation-timeline-title"
+              data-i18n="operationTimelineTitle">작전 사건 기록</h3>
           <span id="operation-timeline-selection"
                 class="operation-timeline-selection">작전을 선택하세요</span>
         </div>
@@ -11135,7 +11139,8 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
             class="operation-timeline"
             role="log"
             aria-live="off"
-            aria-label="선택된 작전의 의미 사건 기록"></ol>
+            aria-label="선택된 작전의 의미 사건 기록"
+            data-i18n-aria-label="operationTimelineLabel"></ol>
       </section>
     </section>
     <section id="active-command-console"
@@ -11275,7 +11280,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
       </div>
       <dl class="battlefield-control-grid">
         <div>
-          <dt>권위 소스</dt>
+          <dt data-i18n="battlefieldAuthoritySource">권위 소스</dt>
           <dd id="battlefield-command-state">대기</dd>
         </div>
         <div>
@@ -11283,31 +11288,31 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
           <dd id="battlefield-frame">-</dd>
         </div>
         <div>
-          <dt>전투 가능 병력</dt>
+          <dt data-i18n="battlefieldEligibleForce">전투 가능 병력</dt>
           <dd id="battlefield-force">-</dd>
         </div>
         <div>
-          <dt>소유권 분포</dt>
+          <dt data-i18n="battlefieldOwnershipDistribution">소유권 분포</dt>
           <dd id="battlefield-posture">-</dd>
         </div>
         <div>
-          <dt>미배정 병력</dt>
+          <dt data-i18n="battlefieldUnassignedForce">미배정 병력</dt>
           <dd id="battlefield-unassigned">-</dd>
         </div>
         <div>
-          <dt>기지 준비도</dt>
+          <dt data-i18n="battlefieldBaseReadiness">기지 준비도</dt>
           <dd id="battlefield-readiness">-</dd>
         </div>
         <div>
-          <dt>이관 가능성</dt>
+          <dt data-i18n="battlefieldTransferAvailability">이관 가능성</dt>
           <dd id="battlefield-transfer">-</dd>
         </div>
         <div>
-          <dt>소유권 무결성</dt>
+          <dt data-i18n="battlefieldOwnershipIntegrity">소유권 무결성</dt>
           <dd id="battlefield-integrity">-</dd>
         </div>
         <div class="wide-card">
-          <dt>생산/선행조건 대기</dt>
+          <dt data-i18n="battlefieldProductionWaits">생산/선행조건 대기</dt>
           <dd id="battlefield-production-waits">-</dd>
         </div>
       </dl>
@@ -11561,6 +11566,8 @@ var commandEventFailedSources = {};
 var fallbackPollingIntervals = [];
 var logBox = document.getElementById("log");
 var currentLang = "ko";
+var languageInitialized = false;
+var cockpitLocaleRerenderActive = false;
 var llmConfigured = false;
 var llmSetupAttemptSeq = 0;
 var activeLlmSetupAttemptSeq = 0;
@@ -11635,6 +11642,7 @@ var pendingNodes = {};
 var pendingAggregateId = "pending-aggregate";
 var pendingAggregateNode = null;
 var latestMicroMachinePlanText = "";
+var pendingCockpitLiveRegionRestore = null;
 var operationRecords = {};
 var operationRecordOrder = [];
 var contextualTransferChoiceRecords = {};
@@ -11644,6 +11652,8 @@ var operationConsoleScopeId = "";
 var operationConsoleSessionEpoch = "";
 var operationConsoleRetiredSessionEpochs = [];
 var selectedOperationKey = "";
+var latestMicroMachineStatus = null;
+var latestBattlefieldOverviewStatus = null;
 var activeCommandConsoleRecord = {
   pendingId: "",
   scopeId: "",
@@ -11786,6 +11796,11 @@ var I18N = {
     quickScv: "주력 공격",
     quickPosition: "전군 후퇴",
     send: "전송",
+    operationConsoleTitle: "병렬 전장 작전",
+    operationConsoleHint: "정찰·공격·수비 작전을 서로 덮어쓰지 않고 실제 실행 증거별로 추적합니다.",
+    operationListLabel: "MicroMachine 병렬 작전 상태 lane",
+    operationTimelineTitle: "작전 사건 기록",
+    operationTimelineLabel: "선택된 작전의 의미 사건 기록",
     dashboardTitle: "전장 통제",
     battlefieldLinkWaiting: "MicroMachine 대기",
     battlefieldLinkConnected: "전장 링크 연결",
@@ -11793,6 +11808,14 @@ var I18N = {
     battlefieldFrame: "전장 프레임",
     battlefieldForce: "통제 병력",
     battlefieldPosture: "현재 자세",
+    battlefieldAuthoritySource: "권위 소스",
+    battlefieldEligibleForce: "전투 가능 병력",
+    battlefieldOwnershipDistribution: "소유권 분포",
+    battlefieldUnassignedForce: "미배정 병력",
+    battlefieldBaseReadiness: "기지 준비도",
+    battlefieldTransferAvailability: "이관 가능성",
+    battlefieldOwnershipIntegrity: "소유권 무결성",
+    battlefieldProductionWaits: "생산/선행조건 대기",
     battlefieldControlWaiting: "명령을 입력하면 MicroMachine의 실제 배정·실행·효과 확인 상태를 추적합니다.",
     commandConsoleKicker: "Active field order",
     commandConsoleIdleTitle: "명령을 입력하면 실제 실행 단계가 여기에 표시됩니다.",
@@ -11999,6 +12022,11 @@ var I18N = {
     quickScv: "Main attack",
     quickPosition: "Full retreat",
     send: "Send",
+    operationConsoleTitle: "Parallel Battlefield Operations",
+    operationConsoleHint: "Track scouting, assault, and defense independently by canonical execution evidence.",
+    operationListLabel: "MicroMachine parallel operation status lanes",
+    operationTimelineTitle: "Operation Event Timeline",
+    operationTimelineLabel: "Semantic event timeline for the selected operation",
     dashboardTitle: "Battlefield Control",
     battlefieldLinkWaiting: "Waiting for MicroMachine",
     battlefieldLinkConnected: "Battlefield link online",
@@ -12006,6 +12034,14 @@ var I18N = {
     battlefieldFrame: "Battlefield frame",
     battlefieldForce: "Controlled force",
     battlefieldPosture: "Current posture",
+    battlefieldAuthoritySource: "Authority source",
+    battlefieldEligibleForce: "Eligible combat force",
+    battlefieldOwnershipDistribution: "Ownership distribution",
+    battlefieldUnassignedForce: "Unassigned force",
+    battlefieldBaseReadiness: "Base readiness",
+    battlefieldTransferAvailability: "Transfer availability",
+    battlefieldOwnershipIntegrity: "Ownership integrity",
+    battlefieldProductionWaits: "Production/prerequisite waits",
     battlefieldControlWaiting: "Issue an order to track actual MicroMachine assignment, SC2 action, and observed effect.",
     commandConsoleKicker: "Active field order",
     commandConsoleIdleTitle: "Issue an order to see each real execution stage here.",
@@ -12212,6 +12248,11 @@ var I18N = {
     quickScv: "主力进攻",
     quickPosition: "全军撤退",
     send: "发送",
+    operationConsoleTitle: "并行战场作战",
+    operationConsoleHint: "依据权威执行证据独立追踪侦察、进攻和防御作战。",
+    operationListLabel: "MicroMachine 并行作战状态通道",
+    operationTimelineTitle: "作战事件记录",
+    operationTimelineLabel: "所选作战的语义事件记录",
     dashboardTitle: "战场控制",
     battlefieldLinkWaiting: "等待 MicroMachine",
     battlefieldLinkConnected: "战场链路已连接",
@@ -12219,6 +12260,14 @@ var I18N = {
     battlefieldFrame: "战场帧",
     battlefieldForce: "受控部队",
     battlefieldPosture: "当前姿态",
+    battlefieldAuthoritySource: "权威来源",
+    battlefieldEligibleForce: "可战斗兵力",
+    battlefieldOwnershipDistribution: "所有权分布",
+    battlefieldUnassignedForce: "未分配兵力",
+    battlefieldBaseReadiness: "基地准备度",
+    battlefieldTransferAvailability: "兵力转移能力",
+    battlefieldOwnershipIntegrity: "所有权完整性",
+    battlefieldProductionWaits: "生产/前置条件等待",
     battlefieldControlWaiting: "输入命令后，将追踪 MicroMachine 的实际分配、SC2 动作与效果确认。",
     commandConsoleKicker: "Active field order",
     commandConsoleIdleTitle: "输入命令后，这里会显示每个实际执行阶段。",
@@ -12458,49 +12507,204 @@ function setCommandEnabled(legacyEnabled) {
   }
 }
 
-function applyLanguage(lang) {
-  currentLang = I18N[lang] ? lang : "ko";
-  document.documentElement.lang = currentLang;
-  Array.prototype.forEach.call(document.querySelectorAll("[data-i18n]"), function (node) {
-    node.textContent = t(node.getAttribute("data-i18n"));
+function captureCockpitLocaleState() {
+  flushCockpitLiveRegionRestore();
+  var scrollPositions = {};
+  [
+    "operation-list",
+    "operation-timeline",
+    "battlefield-control-overview",
+    "state-panel",
+    "log",
+    "tactical-radio-captions"
+  ].forEach(function(id) {
+    var node = document.getElementById(id);
+    if (!node) { return; }
+    scrollPositions[id] = {
+      top: Number(node.scrollTop || 0),
+      left: Number(node.scrollLeft || 0)
+    };
   });
-  Array.prototype.forEach.call(document.querySelectorAll("[data-i18n-aria-label]"), function (node) {
-    node.setAttribute(
-      "aria-label",
-      t(node.getAttribute("data-i18n-aria-label"))
+  var disclosures = [];
+  Array.prototype.forEach.call(
+    document.querySelectorAll("details"),
+    function(node) {
+      disclosures.push({ node: node, open: node.open === true });
+    }
+  );
+  var liveRegions = [];
+  Array.prototype.forEach.call(
+    document.querySelectorAll("[aria-live]"),
+    function(node) {
+      liveRegions.push({
+        node: node,
+        value: node.getAttribute("aria-live")
+      });
+      node.setAttribute("aria-live", "off");
+    }
+  );
+  return {
+    scrollPositions: scrollPositions,
+    disclosures: disclosures,
+    liveRegions: liveRegions
+  };
+}
+
+function restoreCockpitScrollPositions(scrollPositions) {
+  scrollPositions = scrollPositions || {};
+  Object.keys(scrollPositions).forEach(function(id) {
+    var node = document.getElementById(id);
+    var position = scrollPositions[id];
+    if (!node || !position) { return; }
+    node.scrollTop = position.top;
+    node.scrollLeft = position.left;
+  });
+}
+
+function flushCockpitLiveRegionRestore() {
+  var restore = pendingCockpitLiveRegionRestore;
+  if (!restore) { return false; }
+  pendingCockpitLiveRegionRestore = null;
+  restore();
+  return true;
+}
+
+function restoreCockpitLocaleState(state) {
+  state = state || {};
+  (state.disclosures || []).forEach(function(entry) {
+    if (entry.node) { entry.node.open = entry.open; }
+  });
+  restoreCockpitScrollPositions(state.scrollPositions);
+  var liveRegionsRestored = false;
+  function restoreLiveRegionsOnce() {
+    if (liveRegionsRestored) { return; }
+    liveRegionsRestored = true;
+    if (pendingCockpitLiveRegionRestore === restoreLiveRegionsOnce) {
+      pendingCockpitLiveRegionRestore = null;
+    }
+    (state.liveRegions || []).forEach(function(entry) {
+      if (!entry.node) { return; }
+      if (entry.value === null) {
+        entry.node.removeAttribute("aria-live");
+      } else {
+        entry.node.setAttribute("aria-live", entry.value);
+      }
+    });
+    Array.prototype.forEach.call(
+      document.querySelectorAll(".operation-card-state"),
+      function(node) {
+        node.setAttribute("aria-live", "polite");
+      }
     );
-  });
-  Array.prototype.forEach.call(document.querySelectorAll("[data-i18n-title]"), function (node) {
-    node.setAttribute(
-      "title",
-      t(node.getAttribute("data-i18n-title"))
-    );
-  });
-  Array.prototype.forEach.call(document.querySelectorAll("[data-lang-button]"), function (button) {
-    button.classList.toggle("active", button.getAttribute("data-lang-button") === currentLang);
-  });
-  setCommandMode(activeCommandMode);
-  renderStartupGuide();
-  refreshExpandableLabels();
-  refreshPendingLabels();
-  updateAssistantPendingState();
-  renderChatTrimNote();
-  renderTacticalRadioState();
-  renderTacticalRadioCaptions();
-  setVoiceButtonRecordingState(isRecording);
-  if (
-    activeVoiceSession &&
-    (
-      activeVoiceSession.state === "listening" ||
-      activeVoiceSession.state === "finalizing"
-    )
-  ) {
-    renderVoiceSession(activeVoiceSession);
   }
-  if (latestState) { renderStrategyBriefing(latestState); }
+  function restoreLiveRegionsIfPending() {
+    if (pendingCockpitLiveRegionRestore !== restoreLiveRegionsOnce) {
+      return;
+    }
+    flushCockpitLiveRegionRestore();
+  }
+  pendingCockpitLiveRegionRestore = restoreLiveRegionsOnce;
+  if (window.requestAnimationFrame) {
+    window.requestAnimationFrame(restoreLiveRegionsIfPending);
+  }
+  window.setTimeout(restoreLiveRegionsIfPending, 50);
+}
+
+function rerenderCockpitForLanguage() {
+  renderOperationRecords({ localeOnly: true });
   if (activeCommandConsoleRecord.data) {
+    var activeRecord = activeCommandConsoleRecord;
+    var activeRecordSnapshot = Object.assign({}, activeRecord);
     renderActiveCommandConsole(activeCommandConsoleRecord.data, true);
+    activeCommandConsoleRecord = activeRecord;
+    Object.keys(activeRecord).forEach(function(key) {
+      delete activeRecord[key];
+    });
+    Object.assign(activeRecord, activeRecordSnapshot);
   }
+  var overviewStatus =
+    latestBattlefieldOverviewStatus ||
+    latestMicroMachineStatus;
+  if (overviewStatus) {
+    renderBattlefieldControlOverview(overviewStatus);
+  } else {
+    renderBattlefieldControlOverview({});
+  }
+  if (latestMicroMachineStatus) {
+    renderMicroMachineStatusSummary(latestMicroMachineStatus);
+    renderMicroMachineIntervention(latestMicroMachineStatus);
+  } else {
+    renderMicroMachineStatusSummary({});
+    renderMicroMachineIntervention({});
+  }
+  renderContextualTransferInFlightStatus();
+}
+
+function applyLanguage(lang) {
+  var nextLang = I18N[lang] ? lang : "ko";
+  if (languageInitialized && nextLang === currentLang) {
+    return false;
+  }
+  var cockpitState = captureCockpitLocaleState();
+  currentLang = nextLang;
+  languageInitialized = true;
+  cockpitLocaleRerenderActive = true;
+  try {
+    document.documentElement.lang = currentLang;
+    Array.prototype.forEach.call(document.querySelectorAll("[data-i18n]"), function (node) {
+      node.textContent = t(node.getAttribute("data-i18n"));
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-i18n-aria-label]"), function (node) {
+      node.setAttribute(
+        "aria-label",
+        t(node.getAttribute("data-i18n-aria-label"))
+      );
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-i18n-title]"), function (node) {
+      node.setAttribute(
+        "title",
+        t(node.getAttribute("data-i18n-title"))
+      );
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-lang-button]"), function (button) {
+      button.classList.toggle("active", button.getAttribute("data-lang-button") === currentLang);
+    });
+    setCommandMode(activeCommandMode);
+    renderStartupGuide();
+    refreshExpandableLabels();
+    refreshPendingLabels();
+    updateAssistantPendingState();
+    renderChatTrimNote();
+    renderTacticalRadioState();
+    renderTacticalRadioCaptions();
+    setVoiceButtonRecordingState(isRecording);
+    renderPendingAggregate("", true);
+    Object.keys(voiceSessionsByPendingId).forEach(function(pendingId) {
+      var session = voiceSessionsByPendingId[pendingId];
+      if (session && session.state === "pending") {
+        renderVoiceSessionPending(
+          session,
+          session.finalText || session.interimText || "",
+          true
+        );
+      }
+    });
+    if (
+      activeVoiceSession &&
+      (
+        activeVoiceSession.state === "listening" ||
+        activeVoiceSession.state === "finalizing"
+      )
+    ) {
+      renderVoiceSession(activeVoiceSession);
+    }
+    if (latestState) { renderStrategyBriefing(latestState); }
+    rerenderCockpitForLanguage();
+  } finally {
+    cockpitLocaleRerenderActive = false;
+    restoreCockpitLocaleState(cockpitState);
+  }
+  return true;
 }
 
 function appendCompactText(parent, text, className) {
@@ -13027,7 +13231,7 @@ function renderVoiceSession(session) {
   entry.appendChild(userMessage);
 }
 
-function renderVoiceSessionPending(session, text) {
+function renderVoiceSessionPending(session, text, skipTrim) {
   if (!session || !session.node) { return; }
   session.state = "pending";
   var entry = session.node;
@@ -13069,7 +13273,7 @@ function renderVoiceSessionPending(session, text) {
   }
   botMessage.appendChild(typingIndicator);
   entry.appendChild(botMessage);
-  trimChatLog();
+  if (skipTrim !== true) { trimChatLog(); }
 }
 
 function clearVoiceFinalizationTimer(session) {
@@ -15925,9 +16129,13 @@ function setMicroMachineText(id, value) {
 }
 
 function commandUiText(ko, en, zh) {
-  if (currentLang === "en") { return en; }
-  if (currentLang === "zh") { return zh; }
-  return ko;
+  var selected = currentLang === "en"
+    ? en
+    : (currentLang === "zh" ? zh : ko);
+  if (selected !== undefined && selected !== null) {
+    return selected;
+  }
+  return ko !== undefined && ko !== null ? ko : "";
 }
 
 function microMachineExecutionStage(execution, name) {
@@ -18731,6 +18939,10 @@ function rememberContextualTransferChoice(payload) {
   });
   contextualTransferChoiceOrder = synchronizedOrder;
   var existing = contextualTransferChoiceRecords[choiceId];
+  if (existing) {
+    existing.payload = payload;
+    return true;
+  }
   if (!existing) {
     while (
       Object.keys(contextualTransferChoiceRecords).length >=
@@ -18764,8 +18976,8 @@ function rememberContextualTransferChoice(payload) {
   }
   contextualTransferChoiceRecords[choiceId] = {
     payload: payload,
-    inFlight: existing && existing.inFlight === true,
-    promise: existing && existing.promise || null
+    inFlight: false,
+    promise: null
   };
   return true;
 }
@@ -19061,6 +19273,39 @@ function operationResolutionCommand(action, record) {
   return definition.command(record.operationId);
 }
 
+function setContextualTransferChoiceInFlight(choiceId, inFlight) {
+  var normalizedId = String(choiceId || "");
+  if (!normalizedId) { return; }
+  Array.prototype.forEach.call(
+    document.querySelectorAll("button"),
+    function(button) {
+      if (
+        button.getAttribute("data-contextual-choice-id") === normalizedId
+      ) {
+        button.setAttribute("aria-disabled", inFlight ? "true" : "false");
+      }
+    }
+  );
+}
+
+function renderContextualTransferInFlightStatus() {
+  var hasInFlightChoice = contextualTransferChoiceOrder.some(
+    function(choiceId) {
+      var stored = contextualTransferChoiceRecords[choiceId];
+      return Boolean(stored && stored.inFlight);
+    }
+  );
+  if (!hasInFlightChoice) { return false; }
+  var statusNode = document.getElementById("micromachine-status");
+  if (!statusNode) { return false; }
+  statusNode.textContent = commandUiText(
+    "권위 transfer identity를 원자적으로 재검증하는 중입니다.",
+    "Atomically revalidating the authoritative transfer identity.",
+    "正在原子化重新验证权威转移身份。"
+  );
+  return true;
+}
+
 function submitContextualTransferChoice(choiceId) {
   var stored = contextualTransferChoiceRecords[String(choiceId || "")];
   if (!stored || !stored.payload) {
@@ -19073,14 +19318,9 @@ function submitContextualTransferChoice(choiceId) {
   }
   var payload = JSON.parse(JSON.stringify(stored.payload));
   stored.inFlight = true;
+  setContextualTransferChoiceInFlight(choiceId, true);
   var statusNode = document.getElementById("micromachine-status");
-  if (statusNode) {
-    statusNode.textContent = commandUiText(
-      "권위 transfer identity를 원자적으로 재검증하는 중입니다.",
-      "Atomically revalidating the authoritative transfer identity.",
-      "正在原子化重新验证权威转移身份。"
-    );
-  }
+  renderContextualTransferInFlightStatus();
   stored.promise = fetch(
     "/api/micromachine/contextual-transfer" + authQuery,
     {
@@ -19093,17 +19333,24 @@ function submitContextualTransferChoice(choiceId) {
     .then(function(data) {
       stored.inFlight = false;
       stored.promise = null;
+      setContextualTransferChoiceInFlight(choiceId, false);
+      renderOperationRecords();
       announceAcceptedTacticalPlan(data, "contextual_transfer");
       safeRenderMicroMachineStatus(data);
+      if (!renderContextualTransferInFlightStatus()) {
+        renderMicroMachineStatusSummary(data);
+      }
       renderOperationConsole(data);
       return data;
     })
     .catch(function(error) {
       stored.inFlight = false;
       stored.promise = null;
+      setContextualTransferChoiceInFlight(choiceId, false);
       if (statusNode) {
         statusNode.textContent = t("microMachineFailed") + ": " + error.message;
       }
+      renderOperationRecords();
       throw error;
     });
   return stored.promise;
@@ -19172,10 +19419,6 @@ function renderOperationResolutionActions(record, data) {
     var button = document.createElement("button");
     button.type = "button";
     button.textContent = choice.label;
-    button.setAttribute(
-      "aria-disabled",
-      choice.safe === true ? "false" : "true"
-    );
     var contextualChoiceId = String(
       choice.choiceId ||
       (
@@ -19208,6 +19451,16 @@ function renderOperationResolutionActions(record, data) {
       button.setAttribute("aria-describedby", reason.id);
       controls.appendChild(reason);
     }
+    var contextualChoiceRecord = contextualChoiceId
+      ? contextualTransferChoiceRecords[contextualChoiceId]
+      : null;
+    button.setAttribute(
+      "aria-disabled",
+      choice.safe === true &&
+      !(contextualChoiceRecord && contextualChoiceRecord.inFlight === true)
+        ? "false"
+        : "true"
+    );
     button.addEventListener("click", function(event) {
       if (button.getAttribute("aria-disabled") === "true") {
         if (event && typeof event.preventDefault === "function") {
@@ -19233,6 +19486,113 @@ function renderOperationResolutionActions(record, data) {
   return container;
 }
 
+function operationTimelineKindLabel(kind) {
+  var labels = {
+    received: function() {
+      return commandUiText("명령 수신", "Command received", "收到命令");
+    },
+    planned: function() {
+      return t("tacticalPlanConfirmed");
+    },
+    submitted: function() {
+      return t("tacticalSubmittedCaption");
+    },
+    assigned: function() {
+      return t("tacticalForceAssigned");
+    },
+    partially_assigned: function() {
+      return t("tacticalForcePartiallyAssigned");
+    },
+    movement_observed: function() {
+      return t("tacticalMoving");
+    },
+    moving: function() {
+      return t("tacticalMoving");
+    },
+    engagement_observed: function() {
+      return t("tacticalEngaged");
+    },
+    engaged: function() {
+      return t("tacticalEngaged");
+    },
+    target_reached: function() {
+      return t("tacticalTargetReached");
+    },
+    reached: function() {
+      return t("tacticalTargetReached");
+    },
+    completed: function() {
+      return t("tacticalCompleted");
+    },
+    blocked: function() {
+      return t("tacticalBlocked");
+    },
+    waiting: function() {
+      return commandUiText("대기", "Waiting", "等待");
+    },
+    force_loss: function() {
+      return t("tacticalForceLoss");
+    },
+    emergency_retreat: function() {
+      return t("tacticalEmergencyRetreat");
+    },
+    base_under_attack: function() {
+      return t("tacticalBaseAttack");
+    },
+    critical_ability_failure: function() {
+      return t("tacticalCriticalAbilityFailure");
+    },
+    edit_applied: function() {
+      return commandUiText("작전 변경 적용", "Operation edit applied", "作战变更已应用");
+    },
+    edit_rejected: function() {
+      return commandUiText("작전 변경 거부", "Operation edit rejected", "作战变更被拒绝");
+    },
+    ownership_transferred: function() {
+      return commandUiText("소유권 이관", "Ownership transferred", "所有权已转移");
+    },
+    ownership_released: function() {
+      return commandUiText("소유권 해제", "Ownership released", "所有权已释放");
+    },
+    cancelled: function() {
+      return commandUiText("작전 취소", "Operation cancelled", "作战已取消");
+    },
+    canceled: function() {
+      return commandUiText("작전 취소", "Operation cancelled", "作战已取消");
+    },
+    expired: function() {
+      return commandUiText("작전 만료", "Operation expired", "作战已过期");
+    },
+    superseded: function() {
+      return commandUiText("작전 대체", "Operation superseded", "作战已被替代");
+    }
+  };
+  var normalized = String(kind || "").toLowerCase();
+  if (labels[normalized]) {
+    return labels[normalized]();
+  }
+  if (/^(operation_)?edit_/.test(normalized)) {
+    return /reject|block|fail/.test(normalized)
+      ? commandUiText("작전 변경 거부", "Operation edit rejected", "作战变更被拒绝")
+      : commandUiText("작전 변경", "Operation edit", "作战变更");
+  }
+  if (/^ownership_/.test(normalized)) {
+    return /release|remove|lost/.test(normalized)
+      ? commandUiText("소유권 해제", "Ownership released", "所有权已释放")
+      : commandUiText("소유권 변경", "Ownership changed", "所有权已变更");
+  }
+  if (/cancelled|canceled|cancel/.test(normalized)) {
+    return commandUiText("작전 취소", "Operation cancelled", "作战已取消");
+  }
+  if (/expired|timeout/.test(normalized)) {
+    return commandUiText("작전 만료", "Operation expired", "作战已过期");
+  }
+  if (/superseded|replaced/.test(normalized)) {
+    return commandUiText("작전 대체", "Operation superseded", "作战已被替代");
+  }
+  return commandUiText("사건", "Event", "事件");
+}
+
 function renderOperationTimeline(record) {
   var list = document.getElementById("operation-timeline");
   var selection = document.getElementById("operation-timeline-selection");
@@ -19243,6 +19603,7 @@ function renderOperationTimeline(record) {
     : [];
   var generation = Number(record && record.operationGeneration || 0);
   var timelineFingerprint = JSON.stringify({
+    locale: currentLang,
     key: record && record.key || "",
     generation: generation,
     events: events
@@ -19302,12 +19663,14 @@ function renderOperationTimeline(record) {
     item.className = "operation-timeline-item";
     item.setAttribute("data-operation-event-kind", String(event.kind || ""));
     item.setAttribute("data-operation-event-seq", String(event.timeline_seq || 0));
+    var localizedKind = operationTimelineKindLabel(event.kind);
     var kind = document.createElement("span");
     kind.className = "operation-timeline-kind";
-    kind.textContent = String(event.kind || "event");
+    kind.textContent = localizedKind;
     var summary = document.createElement("strong");
     summary.className = "operation-timeline-summary";
-    summary.textContent = String(event.summary || event.kind || "");
+    summary.textContent = localizedKind + " · " +
+      String(record.operationId || "") + "#" + generation;
     var frame = document.createElement("span");
     frame.className = "operation-timeline-frame";
     frame.textContent = Number(event.game_frame || -1) >= 0
@@ -19327,7 +19690,20 @@ function renderOperationTimeline(record) {
       "技术证据"
     );
     var technical = document.createElement("pre");
-    technical.textContent = JSON.stringify(event.technical || {}, null, 2);
+    var technicalEvidence = {};
+    if (
+      event.technical &&
+      typeof event.technical === "object" &&
+      !Array.isArray(event.technical)
+    ) {
+      technicalEvidence = Object.assign({}, event.technical);
+    } else if (event.technical !== undefined) {
+      technicalEvidence.evidence = event.technical;
+    }
+    if (Object.prototype.hasOwnProperty.call(event, "summary")) {
+      technicalEvidence.canonical_summary = String(event.summary || "");
+    }
+    technical.textContent = JSON.stringify(technicalEvidence, null, 2);
     details.appendChild(detailsSummary);
     details.appendChild(technical);
     item.appendChild(details);
@@ -19382,6 +19758,7 @@ function renderOperationCard(record) {
   var card = record.node || document.createElement("article");
   record.node = card;
   var cardFingerprint = JSON.stringify({
+    locale: currentLang,
     key: record.key,
     generation: record.operationGeneration,
     requestedGeneration: record.requestedOperationGeneration,
@@ -19426,7 +19803,10 @@ function renderOperationCard(record) {
   state.id = record.domId + "-status";
   state.className = "operation-card-state";
   state.setAttribute("role", "status");
-  state.setAttribute("aria-live", "polite");
+  state.setAttribute(
+    "aria-live",
+    cockpitLocaleRerenderActive ? "off" : "polite"
+  );
   state.setAttribute("aria-atomic", "true");
   state.textContent = canonicalCompletionVerified
     ? commandUiText("실행 확인", "Execution verified", "执行已确认")
@@ -19648,10 +20028,42 @@ function renderOperationCard(record) {
 
 function operationLaneDefinitions() {
   return [
-    ["planning", commandUiText("해석/편성", "Planning", "解析/编组")],
-    ["executing", commandUiText("실행 중", "Executing", "执行中")],
-    ["completed", commandUiText("관측 완료", "Completed", "观测完成")],
-    ["waiting", commandUiText("대기/차단", "Waiting/blocked", "等待/阻塞")]
+    [
+      "planning",
+      commandUiText("해석/편성", "Planning", "解析/编组"),
+      commandUiText(
+        "해석 및 편성 중인 작전",
+        "Operations being interpreted and assembled",
+        "正在解析和编组的作战"
+      )
+    ],
+    [
+      "executing",
+      commandUiText("실행 중", "Executing", "执行中"),
+      commandUiText(
+        "실행 중인 작전",
+        "Operations executing in SC2",
+        "正在 SC2 中执行的作战"
+      )
+    ],
+    [
+      "completed",
+      commandUiText("관측 완료", "Completed", "观测完成"),
+      commandUiText(
+        "권위 있게 완료된 작전",
+        "Canonically completed operations",
+        "已权威确认完成的作战"
+      )
+    ],
+    [
+      "waiting",
+      commandUiText("대기/차단", "Waiting/blocked", "等待/阻塞"),
+      commandUiText(
+        "대기 또는 차단된 작전",
+        "Waiting or blocked operations",
+        "等待或受阻的作战"
+      )
+    ]
   ];
 }
 
@@ -19662,13 +20074,15 @@ function ensureOperationLaneContainers() {
   operationLaneDefinitions().forEach(function(definition) {
     var name = definition[0];
     var laneList = document.getElementById("operation-lane-" + name);
+    var lane = laneList && laneList.parentNode;
     if (!laneList) {
-      var lane = document.createElement("section");
+      lane = document.createElement("section");
       lane.className = "operation-lane";
       lane.setAttribute("data-operation-lane", name);
       var header = document.createElement("div");
       header.className = "operation-lane-header";
       var title = document.createElement("h3");
+      title.id = "operation-lane-" + name + "-title";
       title.className = "operation-lane-title";
       title.textContent = definition[1];
       var count = document.createElement("span");
@@ -19685,6 +20099,17 @@ function ensureOperationLaneContainers() {
       lane.appendChild(laneList);
       root.appendChild(lane);
     }
+    var title = document.getElementById(
+      "operation-lane-" + name + "-title"
+    );
+    if (title) { title.textContent = definition[1]; }
+    if (lane) {
+      lane.setAttribute(
+        "aria-labelledby",
+        "operation-lane-" + name + "-title"
+      );
+    }
+    laneList.setAttribute("aria-label", definition[2]);
     lanes[name] = laneList;
   });
   return lanes;
@@ -19795,10 +20220,13 @@ function reconcileAuthoritativeOperationMembership(authoritativeKeys) {
   });
 }
 
-function renderOperationRecords() {
+function renderOperationRecords(options) {
+  options = options || {};
   var list = document.getElementById("operation-list");
   if (!list) { return; }
-  pruneOperationRecords();
+  if (!options.localeOnly) {
+    pruneOperationRecords();
+  }
   var lanes = ensureOperationLaneContainers();
   var oldEmpty = document.getElementById("operation-list-empty");
   if (oldEmpty && oldEmpty.parentNode) {
@@ -19847,8 +20275,11 @@ function renderOperationRecords() {
     );
   });
   if (
-    !selectedOperationKey ||
-    !operationRecords[selectedOperationKey]
+    !options.localeOnly &&
+    (
+      !selectedOperationKey ||
+      !operationRecords[selectedOperationKey]
+    )
   ) {
     selectedOperationKey = visibleRecords.length
       ? visibleRecords[0].key
@@ -19943,6 +20374,8 @@ function renderOperationConsole(data) {
     rememberRetiredOperationSessionEpoch(
       operationConsoleSessionEpoch
     );
+    latestMicroMachineStatus = null;
+    latestBattlefieldOverviewStatus = null;
     resetActiveCommandConsoleState(sessionEpoch);
     resetOperationConsoleRegistry(true);
   }
@@ -21573,14 +22006,93 @@ function microMachineStatusIsStaleForActiveCommand(data) {
   );
 }
 
+function renderMicroMachineStatusSummary(data) {
+  var node = document.getElementById("micromachine-status");
+  if (!node || !data || typeof data !== "object") { return; }
+  if (data.enabled === false) {
+    node.textContent = data.error || commandUiText(
+      "MicroMachine 조절이 비활성화되었습니다.",
+      "MicroMachine modulation is disabled.",
+      "MicroMachine 调制已禁用。"
+    );
+    return;
+  }
+  var dashboard = data.dashboard || {};
+  var active = Array.isArray(dashboard.active_updates)
+    ? dashboard.active_updates
+    : [];
+  var latest = active.length ? active[0] : null;
+  var parts = [];
+  if (data.status) { parts.push(String(data.status)); }
+  if (data.consumption_status) {
+    parts.push(String(data.consumption_status));
+  }
+  if (latest && latest.update_id) {
+    parts.push("update " + latest.update_id);
+  }
+  if (latest && Array.isArray(latest.manager_bias_domains)) {
+    parts.push("domains " + latest.manager_bias_domains.join(", "));
+  }
+  if (data.latest_request && data.latest_request.update_id) {
+    var latestRequest = data.latest_request;
+    var requestBits = ["latest_request " + latestRequest.update_id];
+    if (latestRequest.status) {
+      requestBits.push(String(latestRequest.status));
+    }
+    if (latestRequest.consumption_status) {
+      requestBits.push(String(latestRequest.consumption_status));
+    }
+    parts.push(requestBits.join(" "));
+  }
+  if (
+    dashboard.telemetry &&
+    typeof dashboard.telemetry.frame === "number"
+  ) {
+    parts.push("frame " + dashboard.telemetry.frame);
+  }
+  if (data.compile_result && data.compile_result.refusal_reason) {
+    parts.push(
+      t("microMachineRefused") +
+      ": " +
+      data.compile_result.refusal_reason
+    );
+  }
+  if (data.compile_result && data.compile_result.clarification_prompt) {
+    parts.push(
+      t("microMachineClarification") +
+      ": " +
+      data.compile_result.clarification_prompt
+    );
+  }
+  if (dashboard.last_failure) {
+    parts.push("failure " + dashboard.last_failure);
+  }
+  var statusText = parts.length
+    ? parts.join(" | ")
+    : t("microMachinePending");
+  if (node.textContent !== statusText) {
+    node.textContent = statusText;
+  }
+}
+
 function renderMicroMachineStatus(data, options) {
   options = options || {};
   var node = document.getElementById("micromachine-status");
   if (!node) { return; }
   if (!data || data.enabled === false) {
-    node.textContent = (data && data.error) || "MicroMachine modulation disabled.";
     renderOperationConsole(data || {});
+    latestMicroMachineStatus = data && typeof data === "object"
+      ? data
+      : { enabled: false };
+    latestBattlefieldOverviewStatus = (
+      data &&
+      data.battlefield_overview &&
+      typeof data.battlefield_overview === "object"
+    )
+      ? data
+      : null;
     renderBattlefieldControlOverview(data || {});
+    renderMicroMachineStatusSummary(latestMicroMachineStatus);
     renderActiveCommandConsole(data || {});
     renderMicroMachineIntervention(data || {});
     return;
@@ -21609,43 +22121,18 @@ function renderMicroMachineStatus(data, options) {
   if (!options.suppressPlanAnnouncements) {
     announceAcceptedTacticalPlan(data, "status");
   }
-  renderBattlefieldControlOverview(data);
   if (microMachineStatusIsStaleForActiveCommand(data)) {
     return;
   }
-  var dashboard = data.dashboard || {};
-  var active = Array.isArray(dashboard.active_updates) ? dashboard.active_updates : [];
-  var latest = active.length ? active[0] : null;
-  var parts = [];
-  if (data.status) { parts.push(String(data.status)); }
-  if (data.consumption_status) { parts.push(String(data.consumption_status)); }
-  if (latest && latest.update_id) { parts.push("update " + latest.update_id); }
-  if (latest && Array.isArray(latest.manager_bias_domains)) {
-    parts.push("domains " + latest.manager_bias_domains.join(", "));
+  latestMicroMachineStatus = data;
+  if (
+    data.battlefield_overview &&
+    typeof data.battlefield_overview === "object"
+  ) {
+    latestBattlefieldOverviewStatus = data;
   }
-  if (data.latest_request && data.latest_request.update_id) {
-    var latestRequest = data.latest_request;
-    var requestBits = ["latest_request " + latestRequest.update_id];
-    if (latestRequest.status) { requestBits.push(String(latestRequest.status)); }
-    if (latestRequest.consumption_status) {
-      requestBits.push(String(latestRequest.consumption_status));
-    }
-    parts.push(requestBits.join(" "));
-  }
-  if (dashboard.telemetry && typeof dashboard.telemetry.frame === "number") {
-    parts.push("frame " + dashboard.telemetry.frame);
-  }
-  if (data.compile_result && data.compile_result.refusal_reason) {
-    parts.push(t("microMachineRefused") + ": " + data.compile_result.refusal_reason);
-  }
-  if (data.compile_result && data.compile_result.clarification_prompt) {
-    parts.push(t("microMachineClarification") + ": " + data.compile_result.clarification_prompt);
-  }
-  if (dashboard.last_failure) { parts.push("failure " + dashboard.last_failure); }
-  var statusText = parts.length ? parts.join(" | ") : t("microMachinePending");
-  if (node.textContent !== statusText) {
-    node.textContent = statusText;
-  }
+  renderBattlefieldControlOverview(data);
+  renderMicroMachineStatusSummary(data);
   if (!(data && data.command_console_skip_render)) {
     renderActiveCommandConsole(data);
   }
@@ -21698,6 +22185,8 @@ function synchronizeMicroMachineBlackboardDirectory(directory) {
   knownPendingMicroMachineUpdateKeys = {};
   consumedMicroMachineResultIdsByScope = {};
   latestMicroMachinePlanText = "";
+  latestMicroMachineStatus = null;
+  latestBattlefieldOverviewStatus = null;
   clearPendingMicroMachinePlan();
   resetActiveCommandConsole();
   resetTacticalRadio("");
@@ -23565,9 +24054,10 @@ document.getElementById("llm-form").addEventListener("submit", function (event) 
 
 Array.prototype.forEach.call(document.querySelectorAll("[data-lang-button]"), function (button) {
   button.addEventListener("click", function () {
-    applyLanguage(button.getAttribute("data-lang-button") || "ko");
-    pollState();
-    pollLlmSettings();
+    if (applyLanguage(button.getAttribute("data-lang-button") || "ko")) {
+      pollState();
+      pollLlmSettings();
+    }
   });
 });
 

@@ -16028,6 +16028,9 @@ const assert = require("assert");
     }
     return data;
   }
+  function flushCockpitLiveRegionRestoreForTest() {
+    return flushCockpitLiveRegionRestore();
+  }
   function pendingFor(scopeId, updateId) {
     return pendingMicroMachineRecord(scopeId || SERVER_SCOPE_A, updateId);
   }
@@ -16660,6 +16663,13 @@ const assert = require("assert");
     }
   }));
   assert.strictEqual(nodes["command-console-state"].textContent, "전장에서 실행 중");
+  var latestStatusBeforeStaleFrame = latestMicroMachineStatus;
+  var latestOverviewBeforeStaleFrame = latestBattlefieldOverviewStatus;
+  var statusTextBeforeStaleFrame = nodes["micromachine-status"].textContent;
+  var overviewTextBeforeStaleFrame =
+    nodes["battlefield-control-summary"].textContent;
+  var refusalTextBeforeStaleFrame =
+    nodes["micromachine-refusal"].textContent;
   var staleFramePendingId = appendPendingCommand("낮은 frame에도 완료될 다른 명령");
   rememberPendingMicroMachineAsync(
     "낮은 frame에도 완료될 다른 명령",
@@ -16672,7 +16682,8 @@ const assert = require("assert");
   );
   renderMicroMachineStatus(serverResult({
     enabled: true,
-    status: "published",
+    status: "stale-status-cache-poison",
+    consumption_status: "stale-consumption-cache-poison",
     compile_result: {
       status: "compiled",
       update_id: "high-frame-active"
@@ -16688,9 +16699,20 @@ const assert = require("assert");
         }
       }
     ],
+    battlefield_overview: {
+      authority: "micromachine_cpp",
+      eligible_combat_count: 777,
+      explicit_operation_owned_count: 777,
+      autonomous_owned_count: 0,
+      unassigned_count: 0,
+      duplicate_owner_count: 0,
+      operation_ownership: [],
+      bases: []
+    },
     intervention: {
       latest_update_id: "high-frame-active",
       telemetry_frame: 940,
+      refusal_reason: "stale-intervention-cache-poison",
       command_execution: {
         command_id: "high-frame-active",
         state: "action_issued",
@@ -16705,6 +16727,30 @@ const assert = require("assert");
   assert(logBox.textContent.includes("terminal result survives stale active frame"));
   assert.strictEqual(activeCommandConsoleRecord.updateId, "high-frame-active");
   assert.strictEqual(activeCommandConsoleRecord.telemetryFrame, 950);
+  assert.strictEqual(latestMicroMachineStatus, latestStatusBeforeStaleFrame);
+  assert.strictEqual(
+    latestBattlefieldOverviewStatus,
+    latestOverviewBeforeStaleFrame
+  );
+  assert.strictEqual(
+    nodes["micromachine-status"].textContent,
+    statusTextBeforeStaleFrame
+  );
+  assert.strictEqual(
+    nodes["battlefield-control-summary"].textContent,
+    overviewTextBeforeStaleFrame
+  );
+  assert.strictEqual(
+    nodes["micromachine-refusal"].textContent,
+    refusalTextBeforeStaleFrame
+  );
+  applyLanguage("en");
+  assert(flushCockpitLiveRegionRestoreForTest());
+  assert(!nodes["micromachine-status"].textContent.includes("cache-poison"));
+  assert(!nodes["battlefield-control-summary"].textContent.includes("777"));
+  assert(!nodes["micromachine-refusal"].textContent.includes("cache-poison"));
+  applyLanguage("ko");
+  assert(flushCockpitLiveRegionRestoreForTest());
   resetActiveCommandConsole();
 
   rememberServerPending("소비 후 효과 대기 테스트", "consumed-still-running");
@@ -19253,6 +19299,224 @@ const assert = require("assert");
       .querySelectorAll(".operation-timeline-item").length,
     3
   );
+  [
+    ["received", "명령 수신"],
+    ["planned", "계획 확인"],
+    ["reached", "목표 도달"],
+    ["base_under_attack", "본진 공격 감지"],
+    ["critical_ability_failure", "중요 능력 사용 실패"],
+    ["edit_applied", "작전 변경 적용"],
+    ["edit_rejected", "작전 변경 거부"],
+    ["ownership_transferred", "소유권 이관"],
+    ["ownership_released", "소유권 해제"],
+    ["cancel_requested", "작전 취소"],
+    ["expired_by_ttl", "작전 만료"],
+    ["operation_superseded", "작전 대체"]
+  ].forEach(function(item) {
+    assert.strictEqual(operationTimelineKindLabel(item[0]), item[1]);
+  });
+  assert.strictEqual(
+    operationTimelineKindLabel("future_private_kind"),
+    "사건"
+  );
+  var canonicalSummaryRecord = {
+    key: "timeline-summary-test",
+    operationId: "timeline-summary-operation",
+    operationGeneration: 1,
+    data: {
+      semantic_timeline: [{
+        timeline_seq: 1,
+        kind: "future_private_kind",
+        game_frame: 303,
+        summary: "canonical backend-only summary",
+        technical: { source: "canonical" }
+      }]
+    }
+  };
+  renderOperationTimeline(canonicalSummaryRecord);
+  var canonicalSummaryItem = nodes["operation-timeline"]
+    .querySelector(".operation-timeline-item");
+  assert.strictEqual(
+    canonicalSummaryItem.getAttribute("data-operation-event-kind"),
+    "future_private_kind"
+  );
+  assert.strictEqual(
+    canonicalSummaryItem.querySelector(".operation-timeline-kind")
+      .textContent,
+    "사건"
+  );
+  assert(
+    !canonicalSummaryItem.querySelector(".operation-timeline-summary")
+      .textContent.includes("future_private_kind")
+  );
+  assert(
+    !canonicalSummaryItem.querySelector(".operation-timeline-summary")
+      .textContent.includes("canonical backend-only summary")
+  );
+  var canonicalTechnicalText = canonicalSummaryItem.querySelector("pre")
+    .textContent;
+  assert(canonicalTechnicalText.includes('"source": "canonical"'));
+  assert(canonicalTechnicalText.includes(
+    '"canonical_summary": "canonical backend-only summary"'
+  ));
+  renderOperationTimeline(reconRecord);
+
+  // Locale rerenders interleaved with an SSE lane move and reconnect
+  // snapshot preserve the card identity and reject generation regression.
+  var localeLaneInitial = operationResult(
+    "locale-sse-operation",
+    "locale-sse-update",
+    "locale SSE lane operation",
+    "attack",
+    340,
+    "queued_or_assigned",
+    observedExecutionStages().slice(0, 4),
+    4
+  );
+  renderOperationConsole(serverResult({
+    status: "published",
+    operations: [localeLaneInitial]
+  }, OPERATION_SCOPE));
+  var localeLaneKey = operationRecordKey(
+    OPERATION_SCOPE,
+    "locale-sse-operation"
+  );
+  var localeLaneRecord = operationRecords[localeLaneKey];
+  var localeLaneNode = localeLaneRecord.node;
+  assert.strictEqual(
+    localeLaneNode.parentNode.id,
+    "operation-lane-planning"
+  );
+  var localeLiveRegionsBefore = document.querySelectorAll("[aria-live]")
+    .map(function(node) {
+      return {
+        node: node,
+        value: node.getAttribute("aria-live")
+      };
+    });
+  applyLanguage("en");
+  assert.strictEqual(currentLang, "en");
+  assert.strictEqual(operationRecords[localeLaneKey].node, localeLaneNode);
+  assert(
+    operationRecords[localeLaneKey].node
+      .querySelector(".operation-card-state")
+      .getAttribute("aria-live") === "off"
+  );
+  applyLanguage("zh");
+  assert.strictEqual(currentLang, "zh");
+  assert(
+    operationRecords[localeLaneKey].node
+      .querySelector(".operation-card-state")
+      .getAttribute("aria-live") === "off"
+  );
+  assert(flushCockpitLiveRegionRestoreForTest());
+  localeLiveRegionsBefore.forEach(function(entry) {
+    assert.strictEqual(
+      entry.node.getAttribute("aria-live"),
+      entry.value
+    );
+  });
+  assert(
+    operationRecords[localeLaneKey].node
+      .querySelector(".operation-card-state")
+      .getAttribute("aria-live") === "polite"
+  );
+  applyLanguage("en");
+  assert(flushCockpitLiveRegionRestoreForTest());
+
+  var localeLaneMoved = operationResult(
+    "locale-sse-operation",
+    "locale-sse-update",
+    "locale SSE lane operation",
+    "attack",
+    341,
+    "action_issued",
+    actionStages("attack").slice(0, 6),
+    4
+  );
+  var localeLaneEventSeq = lastEventSeq + 1;
+  applyServerEvent({
+    type: "micromachine_status",
+    lastEventId: String(localeLaneEventSeq),
+    data: JSON.stringify({
+      event_type: "micromachine_status",
+      event_seq: localeLaneEventSeq,
+      blackboard_scope_id: OPERATION_SCOPE,
+      operation_id: "locale-sse-operation",
+      generation: 4,
+      game_frame: 341,
+      payload: serverResult({
+        status: "published",
+        operations: [localeLaneMoved]
+      }, OPERATION_SCOPE)
+    })
+  });
+  localeLaneRecord = operationRecords[localeLaneKey];
+  assert.strictEqual(currentLang, "en");
+  assert.strictEqual(localeLaneRecord.node, localeLaneNode);
+  assert.strictEqual(
+    localeLaneNode.parentNode.id,
+    "operation-lane-executing"
+  );
+  assert.strictEqual(localeLaneRecord.operationGeneration, 4);
+  assert.strictEqual(localeLaneRecord.telemetryFrame, 341);
+
+  applyLanguage("zh");
+  assert(flushCockpitLiveRegionRestoreForTest());
+  assert.strictEqual(currentLang, "zh");
+  assert.strictEqual(operationRecords[localeLaneKey].node, localeLaneNode);
+  var staleLocaleLaneSnapshot = operationResult(
+    "locale-sse-operation",
+    "locale-sse-update",
+    "stale locale SSE lane operation",
+    "attack",
+    339,
+    "queued_or_assigned",
+    observedExecutionStages().slice(0, 4),
+    3
+  );
+  applyServerEvent({
+    type: "snapshot",
+    lastEventId: String(localeLaneEventSeq + 1),
+    data: JSON.stringify({
+      event_type: "snapshot",
+      event_seq: localeLaneEventSeq + 1,
+      payload: {
+        micromachine_status: serverResult({
+          status: "published",
+          operations: [staleLocaleLaneSnapshot]
+        }, OPERATION_SCOPE)
+      }
+    })
+  });
+  localeLaneRecord = operationRecords[localeLaneKey];
+  assert.strictEqual(currentLang, "zh");
+  assert.strictEqual(localeLaneRecord.node, localeLaneNode);
+  assert.strictEqual(localeLaneRecord.operationGeneration, 4);
+  assert.strictEqual(localeLaneRecord.telemetryFrame, 341);
+  assert.strictEqual(
+    localeLaneNode.parentNode.id,
+    "operation-lane-executing"
+  );
+
+  applyLanguage("ko");
+  assert(flushCockpitLiveRegionRestoreForTest());
+  assert.strictEqual(currentLang, "ko");
+  assert.strictEqual(operationRecords[localeLaneKey].node, localeLaneNode);
+  assert.strictEqual(
+    nodes["operation-list"].querySelectorAll(".operation-card")
+      .filter(function(card) {
+        return card.getAttribute("data-operation-id") ===
+          "locale-sse-operation";
+      }).length,
+    1
+  );
+  assert.strictEqual(
+    localeLaneNode.parentNode.id,
+    "operation-lane-executing"
+  );
+  removeOperationRecord(localeLaneKey);
+  renderOperationRecords();
 
   // All-Terran evidence extends the existing Operation card and four-stage
   // rail instead of creating a separate family dashboard.
@@ -20425,6 +20689,47 @@ const assert = require("assert");
     typedTransferBody.projection_fingerprint,
     "b".repeat(64)
   );
+  assert.strictEqual(
+    contextualTransferChoiceRecords[destinationCharlieChoiceId].inFlight,
+    true
+  );
+  var transferInFlightStatusByLang = {
+    en: "Atomically revalidating the authoritative transfer identity.",
+    zh: "正在原子化重新验证权威转移身份。",
+    ko: "권위 transfer identity를 원자적으로 재검증하는 중입니다."
+  };
+  ["en", "zh", "ko"].forEach(function(lang) {
+    applyLanguage(lang);
+    assert(flushCockpitLiveRegionRestoreForTest());
+    assert.strictEqual(currentLang, lang);
+    assert.strictEqual(
+      nodes["micromachine-status"].textContent,
+      transferInFlightStatusByLang[lang]
+    );
+    assaultRecord = operationRecords[assaultKey];
+    var localizedTransferButton = assaultRecord.node
+      .querySelectorAll("button").find(function(button) {
+        return button.getAttribute("data-contextual-choice-id") ===
+          destinationCharlieChoiceId;
+      });
+    assert(localizedTransferButton);
+    assert.strictEqual(
+      localizedTransferButton.getAttribute("aria-disabled"),
+      "true"
+    );
+    localizedTransferButton.dispatchEvent({
+      type: "click",
+      preventDefault: function() {}
+    });
+    assert.strictEqual(
+      requests.length,
+      typedTransferRequestStart + 1
+    );
+    assert.strictEqual(
+      contextualTransferChoiceRecords[destinationCharlieChoiceId].inFlight,
+      true
+    );
+  });
   var uint64SessionEpoch = "18446744073709551615";
   var uint64SourceProjection = JSON.parse(JSON.stringify(
     typedTransferSource.battlefield_operation
@@ -20609,14 +20914,37 @@ const assert = require("assert");
   }));
   await flushPromises();
   await flushPromises();
+  assert.strictEqual(
+    contextualTransferChoiceRecords[destinationCharlieChoiceId].inFlight,
+    false
+  );
+  assert.notStrictEqual(
+    nodes["micromachine-status"].textContent,
+    transferInFlightStatusByLang.ko
+  );
+  assaultRecord = operationRecords[assaultKey];
+  var resolvedTransferButton = assaultRecord.node
+    .querySelectorAll("button").find(function(button) {
+      return button.getAttribute("data-contextual-choice-id") ===
+        destinationCharlieChoiceId;
+    });
+  assert(resolvedTransferButton);
+  assert.strictEqual(
+    resolvedTransferButton.getAttribute("aria-disabled"),
+    "false"
+  );
 
-  var destinationBravoButton = typedTransferButtons.find(function(button) {
+  var destinationBravoButton = assaultRecord.node
+    .querySelectorAll("button").find(function(button) {
     var choiceId = button.getAttribute("data-contextual-choice-id");
     var stored = contextualTransferChoiceRecords[choiceId];
     return stored && stored.payload.destination_operation_id ===
       "destination-bravo";
   });
   assert(destinationBravoButton);
+  var destinationBravoChoiceId = destinationBravoButton.getAttribute(
+    "data-contextual-choice-id"
+  );
   var operationCountBeforeRejectedTransfer =
     Object.keys(operationRecords).length;
   var sourceRecordBeforeRejectedTransfer = operationRecords[assaultKey];
@@ -20630,6 +20958,23 @@ const assert = require("assert");
   assert.strictEqual(
     requests.length,
     rejectedTransferRequestStart + 1
+  );
+  applyLanguage("zh");
+  assert(flushCockpitLiveRegionRestoreForTest());
+  assert.strictEqual(
+    nodes["micromachine-status"].textContent,
+    transferInFlightStatusByLang.zh
+  );
+  assaultRecord = operationRecords[assaultKey];
+  var localizedRejectedTransferButton = assaultRecord.node
+    .querySelectorAll("button").find(function(button) {
+      return button.getAttribute("data-contextual-choice-id") ===
+        destinationBravoChoiceId;
+    });
+  assert(localizedRejectedTransferButton);
+  assert.strictEqual(
+    localizedRejectedTransferButton.getAttribute("aria-disabled"),
+    "true"
   );
   requests[rejectedTransferRequestStart].deferred.resolve(response(409, {
     accepted: false,
@@ -20659,7 +21004,11 @@ const assert = require("assert");
     "active"
   );
   assert.strictEqual(
-    destinationBravoButton.getAttribute("aria-disabled"),
+    operationRecords[assaultKey].node
+      .querySelectorAll("button").find(function(button) {
+        return button.getAttribute("data-contextual-choice-id") ===
+          destinationBravoChoiceId;
+      }).getAttribute("aria-disabled"),
     "false"
   );
   assert(
@@ -20667,6 +21016,8 @@ const assert = require("assert");
       "The battlefield projection frame changed."
     )
   );
+  applyLanguage("ko");
+  assert(flushCockpitLiveRegionRestoreForTest());
 
   // A newer generation edits the existing card instead of creating a duplicate.
   var editedAssault = operationResult(
@@ -23097,10 +23448,26 @@ const assert = require("assert");
   assert.strictEqual(nodes["voice-button"].getAttribute("aria-pressed"), "false");
   assert.strictEqual(nodes["voice-button"].getAttribute("aria-label"), "음성 입력");
   assert.strictEqual(requests.length, voiceRequestStart);
+  assert.strictEqual(currentLang, "ko");
+  ["en", "ko", "zh"].forEach(function(lang) {
+    applyLanguage(lang);
+    assert(flushCockpitLiveRegionRestoreForTest());
+    assert.strictEqual(currentLang, lang);
+    assert.strictEqual(firstVoiceSession.node, firstVoiceNode);
+    assert.strictEqual(firstVoiceNode.parentNode, logBox);
+    assert.strictEqual(
+      logBox.children.filter(function(node) {
+        return node === firstVoiceNode;
+      }).length,
+      1
+    );
+    assert.strictEqual(requests.length, voiceRequestStart);
+  });
   voiceRecognition.onresult({
     resultIndex: 0,
     results: [finalResult]
   });
+  assert.strictEqual(currentLang, "zh");
   assert.strictEqual(requests.length, voiceRequestStart + 1);
   assert.strictEqual(activeVoiceSession.node, firstVoiceNode);
   assert.strictEqual(firstVoiceSession.submitted, true);
@@ -23110,8 +23477,17 @@ const assert = require("assert");
     firstVoiceNode.querySelectorAll(".message-pending").length,
     1
   );
+  var zhVoicePending = firstVoiceNode.querySelector(".message-pending");
+  assert(zhVoicePending.textContent.includes("正在回答"));
+  assert(zhVoicePending.textContent.includes("指挥官"));
+  assert.strictEqual(
+    zhVoicePending.getAttribute("aria-label"),
+    "正在等待 LLM 响应"
+  );
   voiceRecognition.onend();
   assert.strictEqual(requests.length, voiceRequestStart + 1);
+  applyLanguage("ko");
+  assert(flushCockpitLiveRegionRestoreForTest());
 
   var voiceReconOperation = operationResult(
     "voice-recon",
@@ -24663,6 +25039,141 @@ const assert = require("assert");
   setCommandMode(COMMAND_MODE_MICROMACHINE);
   pollState = originalPollState;
 
+  // A new runtime epoch clears every retained status surface before a
+  // locale-only rerender can revive prior-runtime evidence.
+  var retainedOverviewEpoch = operationConsoleSessionEpoch ||
+    "1700000000000";
+  var retainedOverviewScope = operationConsoleScopeId || SERVER_SCOPE_A;
+  var retainedPriorRuntimeStatus = {
+    status: "retained-prior-runtime-status",
+    consumption_status: "retained-prior-runtime-consumption",
+    blackboard_scope_id: retainedOverviewScope,
+    battlefield_projection_identity: {
+      session_epoch: retainedOverviewEpoch,
+      game_frame: 900
+    },
+    battlefield_overview: {
+      authority: "micromachine_cpp",
+      identity: {
+        session_epoch: retainedOverviewEpoch,
+        game_frame: 900
+      },
+      eligible_combat_count: 99,
+      explicit_operation_owned_count: 99,
+      autonomous_owned_count: 0,
+      unassigned_count: 0,
+      duplicate_owner_count: 0,
+      operation_ownership: [],
+      bases: []
+    },
+    intervention: {
+      latest_update_id: "retained-prior-runtime-update",
+      telemetry_frame: 900,
+      refusal_reason: "retained-prior-runtime-intervention"
+    }
+  };
+  latestMicroMachineStatus = retainedPriorRuntimeStatus;
+  latestBattlefieldOverviewStatus = retainedPriorRuntimeStatus;
+  renderMicroMachineStatusSummary(retainedPriorRuntimeStatus);
+  renderMicroMachineIntervention(retainedPriorRuntimeStatus);
+  renderBattlefieldControlOverview(retainedPriorRuntimeStatus);
+  assert(
+    nodes["micromachine-status"].textContent.includes(
+      "retained-prior-runtime-status"
+    ),
+    "retained prior-runtime status should be visible before rollover"
+  );
+  assert.strictEqual(
+    nodes["micromachine-refusal"].textContent,
+    "retained-prior-runtime-intervention"
+  );
+  assert(
+    nodes["battlefield-control-summary"].textContent.includes("99"),
+    "retained prior-runtime overview should be visible before rollover"
+  );
+  var nextOverviewEpoch = String(Number(retainedOverviewEpoch) + 1);
+  var nextRuntimeStatus = {
+    status: "idle",
+    blackboard_scope_id: retainedOverviewScope,
+    operation_registry_authoritative: true,
+    battlefield_projection_identity: {
+      session_epoch: nextOverviewEpoch,
+      game_frame: 0
+    },
+    operations: []
+  };
+  renderOperationConsole(nextRuntimeStatus);
+  assert.strictEqual(operationConsoleSessionEpoch, nextOverviewEpoch);
+  assert.strictEqual(latestMicroMachineStatus, null);
+  assert.strictEqual(latestBattlefieldOverviewStatus, null);
+  renderMicroMachineStatusSummary(nextRuntimeStatus);
+  renderMicroMachineIntervention(nextRuntimeStatus);
+  renderBattlefieldControlOverview(nextRuntimeStatus);
+  assert(
+    nodes["battlefield-control-summary"].textContent.includes(
+      "권위 battlefield_overview를 기다리는 중"
+    ),
+    "new epoch without overview should render the Korean waiting state"
+  );
+  applyLanguage("en");
+  assert(flushCockpitLiveRegionRestoreForTest());
+  assert(
+    nodes["battlefield-control-summary"].textContent.includes(
+      "Waiting for the authoritative battlefield_overview."
+    ),
+    "locale rerender should retain the new epoch waiting overview"
+  );
+  assert(!nodes["battlefield-control-summary"].textContent.includes("99"));
+  assert(
+    !nodes["micromachine-status"].textContent.includes(
+      "retained-prior-runtime"
+    ),
+    "locale rerender must not revive prior-runtime status"
+  );
+  assert(
+    !nodes["micromachine-refusal"].textContent.includes(
+      "retained-prior-runtime"
+    ),
+    "locale rerender must not revive prior-runtime intervention"
+  );
+  applyLanguage("ko");
+  assert(flushCockpitLiveRegionRestoreForTest());
+
+  // Disabled status is the canonical latest state. Locale-only rerenders
+  // must not revive status, overview, or intervention data from before it.
+  latestMicroMachineStatus = retainedPriorRuntimeStatus;
+  latestBattlefieldOverviewStatus = retainedPriorRuntimeStatus;
+  renderMicroMachineStatusSummary(retainedPriorRuntimeStatus);
+  renderMicroMachineIntervention(retainedPriorRuntimeStatus);
+  renderBattlefieldControlOverview(retainedPriorRuntimeStatus);
+  renderMicroMachineStatus({ enabled: false });
+  assert.strictEqual(latestMicroMachineStatus.enabled, false);
+  assert.strictEqual(latestBattlefieldOverviewStatus, null);
+  assert.strictEqual(
+    nodes["micromachine-status"].textContent,
+    "MicroMachine 조절이 비활성화되었습니다."
+  );
+  assert(!nodes["battlefield-control-summary"].textContent.includes("99"));
+  assert(
+    !nodes["micromachine-refusal"].textContent.includes(
+      "retained-prior-runtime"
+    )
+  );
+  applyLanguage("en");
+  assert(flushCockpitLiveRegionRestoreForTest());
+  assert.strictEqual(
+    nodes["micromachine-status"].textContent,
+    "MicroMachine modulation is disabled."
+  );
+  assert(!nodes["battlefield-control-summary"].textContent.includes("99"));
+  assert(
+    !nodes["micromachine-refusal"].textContent.includes(
+      "retained-prior-runtime"
+    )
+  );
+  applyLanguage("ko");
+  assert(flushCockpitLiveRegionRestoreForTest());
+
   nodes["micromachine-blackboard-dir"].value = "/tmp/voi-mm-operation-cards-next";
   synchronizeMicroMachineBlackboardDirectory("/tmp/voi-mm-operation-cards-next");
   assert.strictEqual(Object.keys(operationRecords).length, 0);
@@ -24735,7 +25246,10 @@ const assert = require("assert");
         self.assertIn(
             'button.setAttribute(\n'
             '      "aria-disabled",\n'
-            '      choice.safe === true ? "false" : "true"\n'
+            "      choice.safe === true &&\n"
+            "      !(contextualChoiceRecord && contextualChoiceRecord.inFlight === true)\n"
+            '        ? "false"\n'
+            '        : "true"\n'
             "    );",
             page,
         )
@@ -24743,6 +25257,33 @@ const assert = require("assert");
         self.assertIn('button.setAttribute("aria-describedby", reason.id)', page)
         self.assertIn('"data-operation-card-fingerprint"', page)
         self.assertIn('"data-operation-timeline-fingerprint"', page)
+        self.assertIn("var liveRegionsRestored = false;", page)
+        self.assertIn(
+            "pendingCockpitLiveRegionRestore = restoreLiveRegionsOnce;",
+            page,
+        )
+        self.assertIn(
+            "window.requestAnimationFrame(restoreLiveRegionsIfPending);",
+            page,
+        )
+        self.assertIn(
+            "window.setTimeout(restoreLiveRegionsIfPending, 50);",
+            page,
+        )
+        self.assertIn(
+            "function flushCockpitLiveRegionRestore()",
+            page,
+        )
+        self.assertNotIn(
+            "restoreCockpitScrollPositions(state.scrollPositions);\n"
+            "    });",
+            page,
+        )
+        self.assertIn(
+            "technicalEvidence.canonical_summary = "
+            'String(event.summary || "");',
+            page,
+        )
         self.assertIn(
             ".command-stage.stage-done {\n"
             "    color: #7dd3fc;",
@@ -25128,14 +25669,25 @@ var operationConsoleSessionEpoch = "";
 var operationConsoleScopeId = "";
 var operationRenderCount = 0;
 var lifecycleAnnouncementCount = 0;
+var currentLang = "ko";
+var localeSwitches = [];
 function isMicroMachineCommandMode() { return true; }
+function applyLanguage(lang) {
+  currentLang = lang;
+  localeSwitches.push(lang);
+  return true;
+}
 function pollHistory() { pollCounts.history += 1; }
 function pollState() { pollCounts.state += 1; }
 function pollMicroMachineStatus() { pollCounts.micromachine += 1; }
 function appendLog(payload) { appendedHistory.push(payload); }
 function renderState() {}
 function safeRenderMicroMachineStatus(payload, options) {
-  renderedStatuses.push({ payload: payload, options: options || {} });
+  renderedStatuses.push({
+    payload: payload,
+    options: options || {},
+    locale: currentLang
+  });
 }
 function commandUiText(ko) { return ko; }
 function beginOperationRecord(text, pendingId) {
@@ -25199,6 +25751,7 @@ assert.strictEqual(commandEventAwaitingInitialSnapshot, true);
 sourceA.onopen();
 assert.strictEqual(fallbackPollingIntervals.length, 0);
 assert.strictEqual(commandEventAwaitingInitialSnapshot, true);
+applyLanguage("en");
 
 sourceA.emit("snapshot", {
   event_seq: 5,
@@ -25216,8 +25769,10 @@ sourceA.emit("snapshot", {
 assert.strictEqual(lastEventSeq, 5);
 assert.strictEqual(renderedStatuses.length, 1);
 assert.strictEqual(renderedStatuses[0].options.suppressPlanAnnouncements, true);
+assert.strictEqual(renderedStatuses[0].locale, "en");
 assert.strictEqual(commandEventAwaitingInitialSnapshot, false);
 
+applyLanguage("zh");
 lastEventSeq = 999;
 sourceA.emit("snapshot", {
   event_seq: 2,
@@ -25233,6 +25788,7 @@ sourceA.emit("snapshot", {
   }
 });
 assert.strictEqual(lastEventSeq, 2, "authoritative snapshot lowers a future cursor");
+assert.strictEqual(renderedStatuses[1].locale, "zh");
 
 operationConsoleSessionEpoch = "epoch-a";
 operationConsoleScopeId = "scope-a";
@@ -25477,9 +26033,29 @@ sourceA.emit("snapshot", {
   }
 });
 assert.strictEqual(lastEventSeq, 0, "closed scope cannot update the new board");
+applyLanguage("en");
 sourceB.onopen();
-sourceB.emit("command_received", {
+const renderedBeforeReconnectSnapshot = renderedStatuses.length;
+sourceB.emit("snapshot", {
   event_seq: 1,
+  event_type: "snapshot",
+  blackboard_scope_id: "scope-b",
+  payload: {
+    history: { events: [], latest: 0 },
+    micromachine_status: {
+      blackboard_dir: "/tmp/board-b",
+      blackboard_scope_id: "scope-b",
+      status: "reconnected"
+    }
+  }
+});
+assert.strictEqual(
+  renderedStatuses[renderedBeforeReconnectSnapshot].locale,
+  "en"
+);
+applyLanguage("zh");
+sourceB.emit("command_received", {
+  event_seq: 2,
   event_type: "command_received",
   update_id: "update-b",
   operation_id: "operation-b",
@@ -25492,7 +26068,8 @@ sourceB.emit("command_received", {
   }
 });
 assert(operationRecords["operation-b"]);
-assert.strictEqual(lastEventSeq, 1);
+assert.strictEqual(lastEventSeq, 2);
+assert.deepStrictEqual(localeSwitches, ["en", "zh", "en", "zh"]);
 """
         with tempfile.NamedTemporaryFile("w", suffix=".js") as script_file:
             script_file.write(harness)
