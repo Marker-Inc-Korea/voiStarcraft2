@@ -20719,7 +20719,17 @@ const assert = require("assert");
     assert.strictEqual(currentLang, lang);
     assert.strictEqual(
       nodes["micromachine-status"].textContent,
-      transferInFlightStatusByLang[lang]
+      transferInFlightStatusByLang[lang],
+      JSON.stringify({
+        lang: lang,
+        currentScope: operationConsoleScopeId,
+        currentEpoch: operationConsoleSessionEpoch,
+        contextGeneration: microMachineBlackboardContextGeneration,
+        blackboardDir: currentEventBlackboardDirectory(),
+        choice: contextualTransferChoiceRecords[
+          destinationCharlieChoiceId
+        ]
+      })
     );
     assaultRecord = operationRecords[assaultKey];
     var localizedTransferButton = assaultRecord.node
@@ -20927,10 +20937,48 @@ const assert = require("assert");
       epoch: operationConsoleSessionEpoch
     })
   );
-  typedTransferRequest.deferred.resolve(response(202, {
+  var canonicalStatusBeforeNewerTransferSnapshot =
+    latestMicroMachineStatus;
+  var canonicalOverviewBeforeNewerTransferSnapshot =
+    latestBattlefieldOverviewStatus;
+  var activeCommandRecordBeforeNewerTransferSnapshot =
+    activeCommandConsoleRecord;
+  var activeCommandSnapshotBeforeNewerTransfer =
+    Object.assign({}, activeCommandConsoleRecord);
+  var newerCanonicalTransferStatus = JSON.parse(JSON.stringify(
+    typedTransferStatus
+  ));
+  var newerCanonicalTransferFrame = Math.max(
+    330,
+    microMachineStatusProjectionFrame(latestMicroMachineStatus) + 1,
+    commandConsoleTelemetryFrame(latestMicroMachineStatus) + 1
+  );
+  newerCanonicalTransferStatus.status = "newer-canonical-transfer-status";
+  newerCanonicalTransferStatus.battlefield_projection_identity.game_frame =
+    newerCanonicalTransferFrame;
+  newerCanonicalTransferStatus.battlefield_overview.identity.game_frame =
+    newerCanonicalTransferFrame;
+  newerCanonicalTransferStatus.dashboard = {
+    telemetry: { frame: newerCanonicalTransferFrame }
+  };
+  renderMicroMachineStatus(newerCanonicalTransferStatus);
+  assert.strictEqual(
+    latestMicroMachineStatus,
+    newerCanonicalTransferStatus
+  );
+  var canonicalStatusBeforeTransferCompletion = latestMicroMachineStatus;
+  var canonicalOverviewBeforeTransferCompletion =
+    latestBattlefieldOverviewStatus;
+  assert.strictEqual(
+    nodes["micromachine-status"].textContent,
+    transferInFlightStatusByLang.ko
+  );
+  var delayedTransferResponse = Object.assign(
+    JSON.parse(JSON.stringify(typedTransferStatus)),
+    {
     ok: true,
     accepted: true,
-    status: "published",
+    status: "stale-contextual-transfer-response",
     result_id: "typed-transfer-result",
     contextual_transfer: {
       choice_id: destinationCharlieChoiceId,
@@ -20940,9 +20988,50 @@ const assert = require("assert");
       requested_count: 2,
       stage: "published"
     }
-  }));
+    }
+  );
+  typedTransferRequest.deferred.resolve(
+    response(202, delayedTransferResponse)
+  );
   await flushPromises();
   await flushPromises();
+  assert.strictEqual(
+    latestMicroMachineStatus,
+    canonicalStatusBeforeTransferCompletion
+  );
+  assert.strictEqual(
+    latestBattlefieldOverviewStatus,
+    canonicalOverviewBeforeTransferCompletion
+  );
+  assert.strictEqual(
+    nodes["micromachine-status"].textContent,
+    "newer-canonical-transfer-status | frame " +
+      newerCanonicalTransferFrame
+  );
+  assert(
+    !nodes["micromachine-status"].textContent.includes(
+      "stale-contextual-transfer-response"
+    )
+  );
+  latestMicroMachineStatus = canonicalStatusBeforeNewerTransferSnapshot;
+  latestBattlefieldOverviewStatus =
+    canonicalOverviewBeforeNewerTransferSnapshot;
+  activeCommandConsoleRecord =
+    activeCommandRecordBeforeNewerTransferSnapshot;
+  Object.keys(activeCommandConsoleRecord).forEach(function(key) {
+    delete activeCommandConsoleRecord[key];
+  });
+  Object.assign(
+    activeCommandConsoleRecord,
+    activeCommandSnapshotBeforeNewerTransfer
+  );
+  renderMicroMachineStatusSummary(latestMicroMachineStatus || {});
+  renderBattlefieldControlOverview(
+    latestBattlefieldOverviewStatus ||
+    latestMicroMachineStatus ||
+    {}
+  );
+  renderMicroMachineIntervention(latestMicroMachineStatus || {});
   assert.strictEqual(
     contextualTransferChoiceRecords[destinationCharlieChoiceId].inFlight,
     false
@@ -21065,6 +21154,18 @@ const assert = require("assert");
     nodes["micromachine-status"].textContent.includes(
       "The battlefield projection frame changed."
     )
+  );
+  applyLanguage("ko");
+  assert(flushCockpitLiveRegionRestoreForTest());
+  assert.strictEqual(
+    nodes["micromachine-status"].textContent,
+    "게시 실패: The battlefield projection frame changed."
+  );
+  applyLanguage("en");
+  assert(flushCockpitLiveRegionRestoreForTest());
+  assert.strictEqual(
+    nodes["micromachine-status"].textContent,
+    "Publish failed: The battlefield projection frame changed."
   );
   applyLanguage("ko");
   assert(flushCockpitLiveRegionRestoreForTest());
@@ -25394,7 +25495,11 @@ const assert = require("assert");
     latestBattlefieldOverviewStatus,
     sameEpochOverviewStatus
   );
-  renderMicroMachineStatus({
+  assert(
+    nodes["battlefield-control-summary"].textContent.includes("55"),
+    "overview omission must immediately retain the authoritative DOM"
+  );
+  var sameEpochOverviewExplicitNull = {
     enabled: true,
     status: "same-epoch-overview-explicit-null",
     blackboard_scope_id: retainedOverviewScope,
@@ -25405,7 +25510,8 @@ const assert = require("assert");
     },
     battlefield_overview: null,
     operations: []
-  });
+  };
+  renderMicroMachineStatus(sameEpochOverviewExplicitNull);
   assert.strictEqual(latestBattlefieldOverviewStatus, null);
   assert(
     nodes["battlefield-control-summary"].textContent.includes(
@@ -25422,6 +25528,69 @@ const assert = require("assert");
   assert(!nodes["battlefield-control-summary"].textContent.includes("55"));
   applyLanguage("ko");
   assert(flushCockpitLiveRegionRestoreForTest());
+
+  // Canonical status surfaces cannot regress on either projection or
+  // telemetry frame, including identity-bearing disabled responses.
+  var monotonicCurrentStatus = {
+    enabled: true,
+    status: "canonical-frame-current",
+    blackboard_scope_id: retainedOverviewScope,
+    operation_registry_authoritative: true,
+    battlefield_projection_identity: {
+      session_epoch: nextOverviewEpoch,
+      game_frame: 4
+    },
+    battlefield_overview: null,
+    intervention: { telemetry_frame: 4 },
+    operations: []
+  };
+  renderMicroMachineStatus(monotonicCurrentStatus);
+  var monotonicStatusText = nodes["micromachine-status"].textContent;
+  [
+    {
+      enabled: true,
+      status: "projection-frame-regression",
+      blackboard_scope_id: retainedOverviewScope,
+      operation_registry_authoritative: true,
+      battlefield_projection_identity: {
+        session_epoch: nextOverviewEpoch,
+        game_frame: 3
+      },
+      intervention: { telemetry_frame: 5 },
+      operations: []
+    },
+    {
+      enabled: true,
+      status: "telemetry-frame-regression",
+      blackboard_scope_id: retainedOverviewScope,
+      operation_registry_authoritative: true,
+      battlefield_projection_identity: {
+        session_epoch: nextOverviewEpoch,
+        game_frame: 5
+      },
+      intervention: { telemetry_frame: 3 },
+      operations: []
+    },
+    {
+      enabled: false,
+      status: "disabled-frame-regression",
+      blackboard_scope_id: retainedOverviewScope,
+      operation_registry_authoritative: true,
+      battlefield_projection_identity: {
+        session_epoch: nextOverviewEpoch,
+        game_frame: 3
+      },
+      intervention: { telemetry_frame: 3 },
+      operations: []
+    }
+  ].forEach(function(staleStatus) {
+    renderMicroMachineStatus(staleStatus);
+    assert.strictEqual(latestMicroMachineStatus, monotonicCurrentStatus);
+    assert.strictEqual(
+      nodes["micromachine-status"].textContent,
+      monotonicStatusText
+    );
+  });
 
   // Disabled status is the canonical latest state. Locale-only rerenders
   // must not revive status, overview, or intervention data from before it.
@@ -25468,12 +25637,19 @@ const assert = require("assert");
   );
   assert(longPendingDisclosure);
   longPendingDisclosure.open = true;
+  var longPendingSummary = longPendingDisclosure.querySelector("summary");
+  longPendingSummary.focus({ preventScroll: true });
+  assert.strictEqual(document.activeElement, longPendingSummary);
   applyLanguage("en");
   assert(flushCockpitLiveRegionRestoreForTest());
   assert.strictEqual(pendingAggregateNode, longPendingRoot);
   assert.strictEqual(
     longPendingRoot.querySelector(".message-expander").open,
     true
+  );
+  assert.strictEqual(
+    document.activeElement,
+    longPendingRoot.querySelector(".message-expander").querySelector("summary")
   );
   removePendingById(longPendingId);
 
@@ -25490,12 +25666,19 @@ const assert = require("assert");
   );
   assert(longVoiceDisclosure);
   longVoiceDisclosure.open = true;
+  var longVoiceSummary = longVoiceDisclosure.querySelector("summary");
+  longVoiceSummary.focus({ preventScroll: true });
+  assert.strictEqual(document.activeElement, longVoiceSummary);
   applyLanguage("zh");
   assert(flushCockpitLiveRegionRestoreForTest());
   assert.strictEqual(longVoiceSession.node, longVoiceRoot);
   assert.strictEqual(
     longVoiceRoot.querySelector(".message-expander").open,
     true
+  );
+  assert.strictEqual(
+    document.activeElement,
+    longVoiceRoot.querySelector(".message-expander").querySelector("summary")
   );
   removePendingById(longVoicePendingId, true);
   renderVoiceSessionTerminal(
@@ -25504,6 +25687,59 @@ const assert = require("assert");
     "voice disclosure locale test complete"
   );
   updateAssistantPendingState();
+  applyLanguage("ko");
+  assert(flushCockpitLiveRegionRestoreForTest());
+
+  var startupGuideRoot = document.getElementById("startup-guide-entry");
+  var startupGuideDisclosure = startupGuideRoot.querySelector(
+    ".message-expander"
+  );
+  assert(startupGuideDisclosure);
+  startupGuideDisclosure.open = true;
+  var startupGuideSummary = startupGuideDisclosure.querySelector("summary");
+  startupGuideSummary.focus({ preventScroll: true });
+  applyLanguage("en");
+  assert(flushCockpitLiveRegionRestoreForTest());
+  assert.strictEqual(
+    startupGuideRoot.querySelector(".message-expander").open,
+    true
+  );
+  assert.strictEqual(
+    document.activeElement,
+    startupGuideRoot.querySelector(".message-expander").querySelector("summary")
+  );
+
+  trimmedChatEvents = 1;
+  archivedChatEvents = [{
+    command_text: "archived user command " + "a".repeat(320),
+    narration: "archived commander response " + "b".repeat(320),
+    status: "executed"
+  }];
+  renderChatTrimNote();
+  var archivedChatRoot = document.getElementById("chat-trim-note");
+  archivedChatRoot.open = true;
+  renderArchivedChatDetails(archivedChatRoot);
+  var archivedChatDisclosure = archivedChatRoot.querySelector(
+    ".message-expander"
+  );
+  assert(archivedChatDisclosure);
+  archivedChatDisclosure.open = true;
+  var archivedChatSummary = archivedChatDisclosure.querySelector("summary");
+  archivedChatSummary.focus({ preventScroll: true });
+  applyLanguage("zh");
+  assert(flushCockpitLiveRegionRestoreForTest());
+  assert.strictEqual(archivedChatRoot.open, true);
+  assert.strictEqual(
+    archivedChatRoot.querySelector(".message-expander").open,
+    true
+  );
+  assert.strictEqual(
+    document.activeElement,
+    archivedChatRoot.querySelector(".message-expander").querySelector("summary")
+  );
+  trimmedChatEvents = 0;
+  archivedChatEvents = [];
+  renderChatTrimNote();
   applyLanguage("ko");
   assert(flushCockpitLiveRegionRestoreForTest());
 
@@ -25635,6 +25871,14 @@ const assert = require("assert");
             'id="tactical-radio-captions"',
             'aria-live="off"',
             'data-i18n-aria-label="tacticalRadioCaptionsLabel"',
+            'data-i18n-aria-label="languageSwitcherLabel"',
+            'data-i18n-aria-label="commandPanelLabel"',
+            'data-i18n-aria-label="operationLanePlanningLabel"',
+            'data-i18n-aria-label="operationLaneExecutingLabel"',
+            'data-i18n-aria-label="operationLaneCompletedLabel"',
+            'data-i18n-aria-label="operationLaneWaitingLabel"',
+            'data-i18n-aria-label="runtimeModePanelLabel"',
+            'data-i18n-aria-label="microMachineScopeControlsLabel"',
             'id="voice-button"\n'
             '              title="음성 입력"\n'
             '              aria-label="음성 입력"\n'

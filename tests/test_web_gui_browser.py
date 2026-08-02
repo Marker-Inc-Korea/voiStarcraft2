@@ -1603,6 +1603,22 @@ def _battlefield_overview_browser_fixture_page() -> str:
           JSON.stringify(expectedStages),
         fiveActions: JSON.stringify(renderedActions) ===
           JSON.stringify(expectedActions),
+        accessibleNames: Boolean(
+          document.querySelector(".language-switcher")
+            .getAttribute("aria-label") === t("languageSwitcherLabel") &&
+          document.getElementById("command-panel")
+            .getAttribute("aria-label") === t("commandPanelLabel") &&
+          operationLaneDefinitions().every(function(definition) {
+            return document.getElementById(
+              "operation-lane-" + definition[0]
+            ).getAttribute("aria-label") === definition[2];
+          }) &&
+          document.querySelector(".runtime-mode-panel")
+            .getAttribute("aria-label") === t("runtimeModePanelLabel") &&
+          document.querySelector(".micro-scope-grid")
+            .getAttribute("aria-label") ===
+              t("microMachineScopeControlsLabel")
+        ),
         overview: document.getElementById("battlefield-control-summary")
           .textContent.indexOf(overviewText) === 0,
         node: sourceRecord.node === sourceNode,
