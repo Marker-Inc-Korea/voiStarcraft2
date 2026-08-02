@@ -20,9 +20,14 @@ from starcraft_commander.micromachine_pre_live_artifact import (
 from starcraft_commander.micromachine_pre_live_journeys import (
     DEFAULT_JOURNEY_MANIFEST,
     DETERMINISTIC_ZIP_TIMESTAMP,
+    _close_native_path_monitor,
     _execute_tactical_radio_runtime,
     _markdown_report,
+    _native_path_monitor_changed,
+    _open_native_path_monitor,
     _production_receipt_id,
+    _run_native_command,
+    _sha256_file,
     _validate_native_output_payload,
     build_pre_live_journey_bundle,
     execute_pre_live_journeys,
@@ -45,6 +50,85 @@ MICROMACHINE_BINARY = Path(
         ),
     )
 ).resolve()
+
+
+class NativeExecutableLaunchTest(unittest.TestCase):
+    def test_unlinked_descriptor_executes_through_one_shot_snapshot(
+        self,
+    ) -> None:
+        native_true = Path("/usr/bin/true")
+        if not native_true.is_file():
+            self.skipTest("requires /usr/bin/true")
+        payload = native_true.read_bytes()
+        expected_sha256 = hashlib.sha256(payload).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            admitted_binary = Path(directory) / "admitted-true"
+            admitted_binary.write_bytes(payload)
+            admitted_binary.chmod(0o500)
+            descriptor = os.open(admitted_binary, os.O_RDONLY)
+            admitted_binary.unlink()
+            try:
+                descriptor_path = Path(f"/dev/fd/{descriptor}")
+                initial_offset = os.lseek(
+                    descriptor,
+                    0,
+                    os.SEEK_CUR,
+                )
+                self.assertEqual(
+                    expected_sha256,
+                    _sha256_file(descriptor_path),
+                )
+                self.assertEqual(
+                    initial_offset,
+                    os.lseek(descriptor, 0, os.SEEK_CUR),
+                )
+                completed = _run_native_command(
+                    descriptor_path,
+                    [str(descriptor_path)],
+                    expected_sha256=expected_sha256,
+                    command_runner=subprocess.run,
+                )
+                self.assertEqual(
+                    expected_sha256,
+                    _sha256_file(descriptor_path),
+                )
+                self.assertEqual(
+                    initial_offset,
+                    os.lseek(descriptor, 0, os.SEEK_CUR),
+                )
+            finally:
+                os.close(descriptor)
+        self.assertEqual(0, completed.returncode, completed.stderr)
+
+    @unittest.skipUnless(
+        sys.platform == "darwin",
+        "requires macOS kqueue vnode monitoring",
+    )
+    def test_one_shot_monitor_detects_path_swap_and_restore(self) -> None:
+        payload = Path("/usr/bin/true").read_bytes()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "MicroMachine"
+            attacker = root / "attacker"
+            backup = root / "backup"
+            executable.write_bytes(payload)
+            executable.chmod(0o500)
+            attacker.write_bytes(b"attacker")
+            attacker.chmod(0o500)
+            descriptor = os.open(executable, os.O_RDONLY)
+            root.chmod(0o500)
+            monitor = _open_native_path_monitor(descriptor, root)
+            try:
+                root.chmod(0o700)
+                os.replace(executable, backup)
+                os.replace(attacker, executable)
+                os.replace(executable, attacker)
+                os.replace(backup, executable)
+                self.assertTrue(_native_path_monitor_changed(monitor))
+            finally:
+                _close_native_path_monitor(monitor)
+                root.chmod(0o700)
+                os.close(descriptor)
 
 
 @unittest.skipUnless(
@@ -265,7 +349,7 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
         receipt["identity"]["generation"] += 1
         with self.assertRaisesRegex(
             ValueError,
-            "ownership receipts do not match ownership snapshots",
+            "ownership receipt predates launch admission",
         ):
             _validate_native_output_payload(native)
 
@@ -386,6 +470,134 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
         with self.assertRaisesRegex(
             ValueError,
             "effect lacks exact SC2 receipt proof",
+        ):
+            _validate_native_output_payload(native)
+
+    def test_native_effect_family_and_receipt_multiplicity_is_exact(
+        self,
+    ) -> None:
+        original = self.artifacts["safe_partial_launch"]["products"][
+            "native_adapter"
+        ]["output"]
+
+        def duplicate_effect(native: dict[str, object]) -> None:
+            effect = next(
+                event
+                for event in native["events"]
+                if event["event_type"] in {
+                    "movement",
+                    "engagement",
+                    "ability_effect",
+                }
+            )
+            native["events"].append(deepcopy(effect))
+
+        def remove_effect(native: dict[str, object]) -> None:
+            native["events"] = [
+                event
+                for event in native["events"]
+                if event["event_type"] not in {
+                    "movement",
+                    "engagement",
+                    "ability_effect",
+                }
+            ]
+
+        def duplicate_family(native: dict[str, object]) -> None:
+            evidence = native["operation_director"][0]["family_evidence"]
+            evidence.append(deepcopy(evidence[0]))
+
+        def remove_family(native: dict[str, object]) -> None:
+            native["operation_director"][0]["family_evidence"] = []
+
+        def duplicate_receipt(native: dict[str, object]) -> None:
+            production = native["production_path"]
+            receipt = production["sc2_submission_receipts"][0]
+            submission_id = receipt["submission_id"]
+            production["sc2_submission_receipts"].append(deepcopy(receipt))
+            dispatched = next(
+                row
+                for row in production["dispatched_sc2_actions"]
+                if row["submission_id"] == submission_id
+            )
+            production["dispatched_sc2_actions"].append(
+                deepcopy(dispatched)
+            )
+            receipt_event = next(
+                event
+                for event in native["events"]
+                if event["event_type"] == "production_path_receipt"
+                and event["payload"].get("submission_id") == submission_id
+            )
+            native["events"].append(deepcopy(receipt_event))
+            production["sc2_submission_receipt_count"] += 1
+
+        def remove_receipt(native: dict[str, object]) -> None:
+            production = native["production_path"]
+            removed = production["sc2_submission_receipts"].pop(0)
+            submission_id = removed["submission_id"]
+            production["dispatched_sc2_actions"] = [
+                row
+                for row in production["dispatched_sc2_actions"]
+                if row["submission_id"] != submission_id
+            ]
+            native["events"] = [
+                event
+                for event in native["events"]
+                if not (
+                    event["event_type"] == "production_path_receipt"
+                    and event["payload"].get("submission_id")
+                    == submission_id
+                )
+            ]
+            production["sc2_submission_receipt_count"] -= 1
+
+        cases = (
+            ("duplicate canonical effects", duplicate_effect),
+            ("family evidence lacks one canonical effect", remove_effect),
+            ("effect lacks exact family evidence", duplicate_family),
+            ("effect lacks exact family evidence", remove_family),
+            ("production binding is not unique", duplicate_receipt),
+            (
+                "Squad order and SC2 submission unit tags do not match",
+                remove_receipt,
+            ),
+        )
+        for message, mutate in cases:
+            with self.subTest(message=message):
+                native = deepcopy(original)
+                mutate(native)
+                with self.assertRaisesRegex(ValueError, message):
+                    _validate_native_output_payload(native)
+
+    def test_native_ownership_receipt_follows_launch_admission(self) -> None:
+        native = deepcopy(
+            self.artifacts["safe_partial_launch"]["products"][
+                "native_adapter"
+            ]["output"]
+        )
+        events = native["events"]
+        launch_index = next(
+            index
+            for index, event in enumerate(events)
+            if event["event_type"] == "launch_decision"
+            and event["identity"]["stage"] == "launch_admitted"
+        )
+        receipt_index = next(
+            index
+            for index, event in enumerate(events)
+            if event["event_type"] == "production_path_receipt"
+            and event["payload"]["entrypoint"]
+            == "voiProductionAssignOperationOwner"
+        )
+        events[launch_index], events[receipt_index] = (
+            events[receipt_index],
+            events[launch_index],
+        )
+        _resequence(events)
+        with self.assertRaisesRegex(
+            ValueError,
+            "ownership receipt predates launch admission",
         ):
             _validate_native_output_payload(native)
 
@@ -567,10 +779,17 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
             "stale frame": self._stale_effect_frame,
             "transfer state mutation": self._mutate_transfer_rejection_state,
             "transfer inactive endpoint": self._deactivate_transfer_endpoint,
+            "transfer exact tags": self._mutate_transfer_tags,
+            "transfer exact generations": self._mutate_transfer_generation,
             "selective cancellation": self._remove_sibling,
+            "cancellation released tags": self._mutate_cancellation_tags,
+            "cancellation ownership leak": self._leak_cancelled_owner_binding,
+            "cancellation sibling binding": self._mutate_sibling_owner_binding,
             "emergency preemption": self._remove_preemption,
             "ability movement": self._ability_movement,
             "reconnect duplicate": self._duplicate_reconnect_event,
+            "web source payload": self._mutate_web_source_payload,
+            "web source multiplicity": self._remove_web_source,
             "duplicate reconnect marker": self._duplicate_reconnect_marker,
             "duplicate replay batch": self._duplicate_replay_batch,
             "receipt unit tag": self._receipt_unit_tag,
@@ -581,6 +800,8 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
             "submission receipt link": self._submission_receipt_link,
             "squad dispatch tag divergence": self._squad_dispatch_tag_divergence,
             "duplicate replay output": self._duplicate_replay_output,
+            "replay source identity": self._mutate_replay_source_identity,
+            "replay source payload": self._mutate_replay_source_payload,
             "projection mismatch": self._projection_identity_mismatch,
             "callout mismatch": self._callout_identity_mismatch,
             "timeout": self._exceed_timeout,
@@ -701,6 +922,24 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
         operation["active"] = False
         return journey_id, events
 
+    def _mutate_transfer_tags(
+        self,
+    ) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "transfer_success"
+        events = self._events(journey_id)
+        transfer = _first_event(events, "transfer")
+        transfer["payload"]["unit_tags"] = [9999]
+        return journey_id, events
+
+    def _mutate_transfer_generation(
+        self,
+    ) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "transfer_success"
+        events = self._events(journey_id)
+        transfer = _first_event(events, "transfer")
+        transfer["payload"]["destination_generation_after"] += 1
+        return journey_id, events
+
     def _remove_sibling(self) -> tuple[str, list[dict[str, object]]]:
         journey_id = "selective_cancellation"
         events = self._events(journey_id)
@@ -715,6 +954,48 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
             if operation["operation_id"] == "assault-bravo"
         )
         sibling["active"] = False
+        return journey_id, events
+
+    def _mutate_cancellation_tags(
+        self,
+    ) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "selective_cancellation"
+        events = self._events(journey_id)
+        cancellation = _first_event(events, "cancellation")
+        cancellation["payload"]["released_unit_tags"] = [9999]
+        return journey_id, events
+
+    def _leak_cancelled_owner_binding(
+        self,
+    ) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "selective_cancellation"
+        events = self._events(journey_id)
+        after = next(
+            event
+            for event in events
+            if event["event_type"] == "state_snapshot"
+            and event["payload"]["phase"] == "after"
+        )
+        after["payload"]["state"]["owner_bindings"]["1000"] = {
+            "operation_id": "recon-alpha",
+            "generation": 1,
+        }
+        return journey_id, events
+
+    def _mutate_sibling_owner_binding(
+        self,
+    ) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "selective_cancellation"
+        events = self._events(journey_id)
+        after = next(
+            event
+            for event in events
+            if event["event_type"] == "state_snapshot"
+            and event["payload"]["phase"] == "after"
+        )
+        after["payload"]["state"]["owner_bindings"]["1002"][
+            "generation"
+        ] += 1
         return journey_id, events
 
     def _remove_preemption(self) -> tuple[str, list[dict[str, object]]]:
@@ -743,6 +1024,30 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
             "logical_event_id"
         ]
         return journey_id, events
+
+    def _mutate_web_source_payload(
+        self,
+    ) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "event_reconnect_replay"
+        events = self._events(journey_id)
+        web_event = _first_event(events, "web_event")
+        web_event["payload"]["source_payload"]["forged"] = True
+        return journey_id, events
+
+    def _remove_web_source(
+        self,
+    ) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "event_reconnect_replay"
+        events = self._events(journey_id)
+        removed = False
+        retained: list[dict[str, object]] = []
+        for event in events:
+            if event["event_type"] == "web_event" and not removed:
+                removed = True
+                continue
+            retained.append(event)
+        _resequence(retained)
+        return journey_id, retained
 
     def _duplicate_reconnect_marker(
         self,
@@ -858,6 +1163,26 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
         _resequence(events)
         return journey_id, events
 
+    def _mutate_replay_source_identity(
+        self,
+    ) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "event_reconnect_replay"
+        events = self._events(journey_id)
+        replayed = _first_event(events, "replay_deduplicated")
+        replayed["payload"]["source_identity"]["operation_id"] = (
+            "foreign-operation"
+        )
+        return journey_id, events
+
+    def _mutate_replay_source_payload(
+        self,
+    ) -> tuple[str, list[dict[str, object]]]:
+        journey_id = "event_reconnect_replay"
+        events = self._events(journey_id)
+        replayed = _first_event(events, "replay_deduplicated")
+        replayed["payload"]["source_payload"]["forged"] = True
+        return journey_id, events
+
     def _projection_identity_mismatch(
         self,
     ) -> tuple[str, list[dict[str, object]]]:
@@ -927,6 +1252,7 @@ def _rebind_sc2_evidence_unit_tags(
             "voi-sc2-submission",
             binding,
             dispatch_action=receipt["dispatch_action"],
+            action_metadata=_receipt_action_metadata(receipt),
         )
         receipt["unit_tags"] = new_tags
         receipt["submission_id"] = new_id
@@ -974,6 +1300,7 @@ def _rebind_sc2_event_unit_tags(
                 "voi-sc2-submission",
                 binding,
                 dispatch_action=payload["dispatch_action"],
+                action_metadata=_receipt_action_metadata(payload),
             )
             resolved[old_id] = (new_id, new_tags)
         payload["submission_id"] = new_id
@@ -1002,6 +1329,19 @@ def _rebind_sc2_event_unit_tags(
 def _resequence(events: list[dict[str, object]]) -> None:
     for index, event in enumerate(events, start=1):
         event["seq"] = index
+
+
+def _receipt_action_metadata(
+    payload: dict[str, object],
+) -> tuple[str, str, int, str, object, object]:
+    return (
+        str(payload["dispatch_action"]),
+        str(payload["ability_name"]),
+        int(payload["ability_id"]),
+        str(payload["target_kind"]),
+        payload["target_x"],
+        payload["target_y"],
+    )
 
 
 def _read_zip(bundle: bytes) -> dict[str, bytes]:

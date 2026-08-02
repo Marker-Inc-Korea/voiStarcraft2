@@ -16,6 +16,7 @@ from unittest import mock
 import warnings
 import zipfile
 
+from starcraft_commander import micromachine_pre_live_artifact as artifact_module
 from starcraft_commander import micromachine_pre_live_provenance as provenance
 from starcraft_commander.micromachine_build_identity import (
     MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
@@ -517,6 +518,222 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                         ),
                         admission_snapshot=self.admission_snapshot,
                     )
+
+    def test_nested_journey_limits_apply_before_allocation_and_payload_reads(
+        self,
+    ) -> None:
+        too_many_entries = raw_zip(
+            {
+                PRE_LIVE_ARTIFACT_MANIFEST_NAME: b"{}",
+                "payload/a": b"",
+                "payload/b": b"",
+            }
+        )
+        entry_limits = PreLiveArtifactLimits(
+            max_archive_bytes=len(too_many_entries) + 1,
+            max_manifest_bytes=16,
+            max_entries=2,
+            max_member_compressed_bytes=64,
+            max_member_uncompressed_bytes=64,
+            max_total_uncompressed_bytes=128,
+            max_compression_ratio=200,
+        )
+        with (
+            mock.patch.object(
+                artifact_module.zipfile,
+                "ZipFile",
+                side_effect=AssertionError(
+                    "ZipFile must not be constructed after excessive EOCD count"
+                ),
+            ),
+            self.assertRaisesRegex(ValueError, "max_entries"),
+        ):
+            artifact_module._read_deterministic_journey_archive(
+                too_many_entries,
+                limits=entry_limits,
+            )
+
+        limit_cases = {
+            "compressed member": (
+                raw_zip(
+                    {
+                        PRE_LIVE_ARTIFACT_MANIFEST_NAME: b"{}",
+                        "payload/a": b"1234",
+                    }
+                ),
+                PreLiveArtifactLimits(
+                    max_archive_bytes=1024,
+                    max_manifest_bytes=2,
+                    max_entries=2,
+                    max_member_compressed_bytes=3,
+                    max_member_uncompressed_bytes=8,
+                    max_total_uncompressed_bytes=16,
+                    max_compression_ratio=200,
+                ),
+                "compressed_size_limit_exceeded",
+            ),
+            "uncompressed member": (
+                raw_zip(
+                    {
+                        PRE_LIVE_ARTIFACT_MANIFEST_NAME: b"{}",
+                        "payload/a": b"1234",
+                    }
+                ),
+                PreLiveArtifactLimits(
+                    max_archive_bytes=1024,
+                    max_manifest_bytes=2,
+                    max_entries=2,
+                    max_member_compressed_bytes=8,
+                    max_member_uncompressed_bytes=3,
+                    max_total_uncompressed_bytes=16,
+                    max_compression_ratio=200,
+                ),
+                "uncompressed_size_limit_exceeded",
+            ),
+            "total uncompressed": (
+                raw_zip(
+                    {
+                        PRE_LIVE_ARTIFACT_MANIFEST_NAME: b"{}",
+                        "payload/a": b"12",
+                        "payload/b": b"34",
+                    }
+                ),
+                PreLiveArtifactLimits(
+                    max_archive_bytes=1024,
+                    max_manifest_bytes=2,
+                    max_entries=3,
+                    max_member_compressed_bytes=4,
+                    max_member_uncompressed_bytes=4,
+                    max_total_uncompressed_bytes=5,
+                    max_compression_ratio=200,
+                ),
+                "total_uncompressed_size_limit_exceeded",
+            ),
+        }
+        for name, (bundle, limits, error) in limit_cases.items():
+            with (
+                self.subTest(name=name),
+                mock.patch.object(
+                    artifact_module.zipfile.ZipFile,
+                    "read",
+                    side_effect=AssertionError(
+                        "nested payload must not be read before limit checks"
+                    ),
+                ),
+                self.assertRaisesRegex(ValueError, error),
+            ):
+                artifact_module._read_deterministic_journey_archive(
+                    bundle,
+                    limits=limits,
+                )
+
+        metadata = replace(
+            self.metadata,
+            producer_policy_id=PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID,
+            artifact_member=PRE_LIVE_DETERMINISTIC_JOURNEY_MEMBER_NAME,
+            producer_output_member=PRE_LIVE_DETERMINISTIC_JOURNEY_MEMBER_NAME,
+        )
+        nested_entries = {
+            PRE_LIVE_ARTIFACT_MANIFEST_NAME: read_entries(
+                make_stub_deterministic_journey_bundle()
+            )[PRE_LIVE_ARTIFACT_MANIFEST_NAME],
+            **{
+                f"payload/{index:02d}.json": b""
+                for index in range(10)
+            },
+        }
+        nested_bundle = raw_zip(nested_entries)
+        nested_identity = {
+            "ok": True,
+            "blockers": [],
+            "binary_sha256": sha256(self.binary),
+            "embedded_build_input_identity": self.repository_input_identity,
+        }
+        raw_verifier = (
+            "starcraft_commander.micromachine_pre_live_journeys."
+            "verify_pre_live_journey_bundle"
+        )
+        with mock.patch(raw_verifier, return_value=nested_identity):
+            bound_bundle = bind_deterministic_journey_bundle_to_build(
+                nested_bundle,
+                build_report_bytes=(
+                    self.members[self.metadata.build_report_member]
+                ),
+                binary_bytes=self.binary,
+            )
+        members = dict(self.members)
+        del members[self.metadata.producer_output_member]
+        members[PRE_LIVE_DETERMINISTIC_JOURNEY_MEMBER_NAME] = bound_bundle
+        provenance_payload = json.loads(
+            members[self.metadata.producer_provenance_member]
+        )
+        provenance_payload["producer_id"] = (
+            PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+        )
+        provenance_payload["output_sha256"] = sha256(bound_bundle)
+        members[self.metadata.producer_provenance_member] = canonical_json_bytes(
+            provenance_payload
+        )
+        outer_limits = replace(PreLiveArtifactLimits(), max_entries=10)
+        with (
+            mock.patch(
+                raw_verifier,
+                side_effect=AssertionError(
+                    "semantic verifier must not run before nested preflight"
+                ),
+            ) as semantic_verifier,
+            self.assertRaisesRegex(
+                ValueError,
+                "deterministic_journey_bundle_rejected",
+            ),
+        ):
+            build_pre_live_artifact_bundle(
+                metadata,
+                members,
+                limits=outer_limits,
+                admission_snapshot=self.admission_snapshot,
+            )
+        semantic_verifier.assert_not_called()
+
+        canonical_nested = make_stub_deterministic_journey_bundle()
+        eocd_offset = canonical_nested.rfind(b"PK\x05\x06")
+        eocd = list(
+            artifact_module._END_CENTRAL_DIRECTORY.unpack_from(
+                canonical_nested,
+                eocd_offset,
+            )
+        )
+        central_offset = eocd[6]
+        hidden = b"orphan-hidden-framing"
+        eocd[6] += len(hidden)
+        hidden_nested = b"".join(
+            (
+                canonical_nested[:central_offset],
+                hidden,
+                canonical_nested[central_offset:eocd_offset],
+                artifact_module._END_CENTRAL_DIRECTORY.pack(*eocd),
+            )
+        )
+        with (
+            mock.patch(
+                raw_verifier,
+                side_effect=AssertionError(
+                    "semantic verifier must not normalize hidden ZIP framing"
+                ),
+            ) as semantic_verifier,
+            self.assertRaisesRegex(
+                ValueError,
+                "contiguous with the central directory",
+            ),
+        ):
+            bind_deterministic_journey_bundle_to_build(
+                hidden_nested,
+                build_report_bytes=(
+                    self.members[self.metadata.build_report_member]
+                ),
+                binary_bytes=self.binary,
+            )
+        semantic_verifier.assert_not_called()
 
     def test_deterministic_policy_requires_exact_admitted_binary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

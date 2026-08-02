@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import hmac
 import json
 import os
 import pwd
@@ -112,7 +113,9 @@ UNTRUSTED_STATUS_FIELDS: Final[frozenset[str]] = frozenset(
 )
 
 _SHA40_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{40}$")
+_SHA256_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}$")
 _SHA256_IDENTITY_RE: Final[re.Pattern[str]] = re.compile(r"^sha256:[0-9a-f]{64}$")
+PINNED_NATIVE_EXEC_ROOT_ENV: Final[str] = "VOI_PINNED_NATIVE_EXEC_ROOT"
 _REPOSITORY_RE: Final[re.Pattern[str]] = re.compile(
     r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
 )
@@ -2560,6 +2563,7 @@ def run_local_producer(
     producer_policy_sha256: str | None = None,
     authenticated_files: Sequence[Path | str] = (),
     authenticated_file_digests: Mapping[str, str] | None = None,
+    pinned_argv_file_digests: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Run one exact allowlisted producer and derive provenance from execution."""
 
@@ -2664,6 +2668,44 @@ def run_local_producer(
             relative.as_posix(),
         )
 
+    pinned_argv_snapshots: dict[
+        str,
+        tuple[int, bytes, tuple[int, int, int, int, str]],
+    ] = {}
+    for raw_candidate, expected_digest in sorted(
+        (pinned_argv_file_digests or {}).items()
+    ):
+        candidate = Path(raw_candidate).absolute()
+        candidate_text = str(candidate)
+        if normalized_argv.count(candidate_text) != 1:
+            blockers.append(
+                "pinned argv file must occur exactly once in producer argv: "
+                f"{candidate}"
+            )
+            continue
+        if not _SHA256_RE.fullmatch(expected_digest):
+            blockers.append(
+                f"pinned argv file digest is invalid: {candidate}"
+            )
+            continue
+        if _path_has_symlink_component(candidate):
+            blockers.append(f"pinned argv file contains a symlink: {candidate}")
+            continue
+        try:
+            descriptor, payload, snapshot = _open_pinned_executable(candidate)
+        except OSError as exc:
+            blockers.append(f"pinned argv file is unreadable: {candidate}: {exc}")
+            continue
+        if snapshot[4] != expected_digest:
+            os.close(descriptor)
+            blockers.append(f"pinned argv file digest mismatch: {candidate}")
+            continue
+        pinned_argv_snapshots[candidate_text] = (
+            descriptor,
+            payload,
+            snapshot,
+        )
+
     commit_before = _git_head(root, git_runner)
     if commit_before is None:
         blockers.append("could not record producer repository commit")
@@ -2675,7 +2717,7 @@ def run_local_producer(
     captured_output: bytes | None = None
     published_output_identity: tuple[int, int, int, int, str] | None = None
     if not blockers:
-        if authenticated_snapshots:
+        if authenticated_snapshots or pinned_argv_snapshots:
             try:
                 state_dir = canonical_pre_live_state_dir(
                     root,
@@ -2701,46 +2743,130 @@ def run_local_producer(
                             exist_ok=True,
                         )
                         _write_private_snapshot_file(snapshot_file, payload)
-                    relative_cwd = working_dir.relative_to(root)
-                    execution_cwd = snapshot_root / relative_cwd
-                    execution_cwd.mkdir(mode=0o700, parents=True, exist_ok=True)
-                    staged_output = staging_root / output_path.name
-                    execution_argv = [
-                        (
-                            str(snapshot_root)
-                            if value == str(root)
-                            else str(staged_output)
-                            if value == str(output_path)
-                            else value
+                    pinned_argv_paths: dict[str, str] = {}
+                    pinned_execution_snapshots: dict[
+                        str,
+                        tuple[
+                            int,
+                            tuple[int, int, int, int, str],
+                        ],
+                    ] = {}
+                    try:
+                        if pinned_argv_snapshots:
+                            pinned_argv_root = snapshot_root / ".pinned-argv"
+                            pinned_argv_root.mkdir(mode=0o700)
+                            for index, (
+                                source,
+                                (_, payload, source_snapshot),
+                            ) in enumerate(
+                                sorted(pinned_argv_snapshots.items())
+                            ):
+                                snapshot_file = (
+                                    pinned_argv_root
+                                    / f"{index:04d}-{Path(source).name}"
+                                )
+                                _write_private_executable_file(
+                                    snapshot_file,
+                                    payload,
+                                )
+                                (
+                                    snapshot_descriptor,
+                                    snapshot_payload,
+                                    execution_snapshot,
+                                ) = _open_pinned_executable(snapshot_file)
+                                if (
+                                    snapshot_payload != payload
+                                    or execution_snapshot[4]
+                                    != source_snapshot[4]
+                                ):
+                                    os.close(snapshot_descriptor)
+                                    raise OSError(
+                                        "private pinned argv snapshot differs "
+                                        f"from admitted bytes: {source}"
+                                    )
+                                snapshot_file.unlink()
+                                execution_path = _descriptor_execution_path(
+                                    snapshot_descriptor
+                                )
+                                pinned_execution_snapshots[source] = (
+                                    snapshot_descriptor,
+                                    execution_snapshot,
+                                )
+                                pinned_argv_paths[source] = execution_path
+                        relative_cwd = working_dir.relative_to(root)
+                        execution_cwd = snapshot_root / relative_cwd
+                        execution_cwd.mkdir(
+                            mode=0o700,
+                            parents=True,
+                            exist_ok=True,
                         )
-                        for value in normalized_argv
-                    ]
-                    completed = _run_pinned_command(
-                        command_runner,
-                        execution_argv,
-                        executable_payload=executable_payload,
-                        executable_snapshot=executable_snapshot_before,
-                        authenticated_python_sources={
-                            authenticated[2]: authenticated[1]
-                            for authenticated in authenticated_snapshots.values()
-                        },
-                        state_dir=state_dir,
-                        cwd=str(execution_cwd),
-                        timeout=timeout_seconds,
-                    )
-                    returncode = int(completed.returncode)
-                    stdout = _as_bytes(completed.stdout)
-                    stderr = _as_bytes(completed.stderr)
-                    if returncode == 0:
-                        captured_output, _ = _read_regular_file_snapshot(
-                            staged_output,
-                            maximum=MAX_GITHUB_ARTIFACT_BYTES,
+                        staged_output = staging_root / output_path.name
+                        execution_replacements = {
+                            str(root): str(snapshot_root),
+                            str(output_path): str(staged_output),
+                            **pinned_argv_paths,
+                        }
+                        execution_argv = [
+                            execution_replacements.get(value, value)
+                            for value in normalized_argv
+                        ]
+                        completed = _run_pinned_command(
+                            command_runner,
+                            execution_argv,
+                            executable_payload=executable_payload,
+                            executable_snapshot=executable_snapshot_before,
+                            authenticated_python_sources={
+                                authenticated[2]: authenticated[1]
+                                for authenticated in (
+                                    authenticated_snapshots.values()
+                                )
+                            },
+                            state_dir=state_dir,
+                            cwd=str(execution_cwd),
+                            timeout=timeout_seconds,
+                            inherited_fds=tuple(
+                                descriptor
+                                for descriptor, _ in (
+                                    pinned_execution_snapshots.values()
+                                )
+                            ),
                         )
-                        published_output_identity = _write_output_atomically(
-                            output_path,
-                            captured_output,
-                            expected_parent_identity=output_parent_stat_before,
-                        )
+                        for source, (
+                            snapshot_descriptor,
+                            snapshot_before,
+                        ) in pinned_execution_snapshots.items():
+                            _, descriptor_snapshot_after = (
+                                _read_open_regular_file_snapshot(
+                                    snapshot_descriptor,
+                                    maximum=MAX_PRODUCER_EXECUTABLE_BYTES,
+                                )
+                            )
+                            if descriptor_snapshot_after != snapshot_before:
+                                raise OSError(
+                                    "private pinned argv snapshot changed "
+                                    f"during execution: {source}"
+                                )
+                        returncode = int(completed.returncode)
+                        stdout = _as_bytes(completed.stdout)
+                        stderr = _as_bytes(completed.stderr)
+                        if returncode == 0:
+                            captured_output, _ = _read_regular_file_snapshot(
+                                staged_output,
+                                maximum=MAX_GITHUB_ARTIFACT_BYTES,
+                            )
+                            published_output_identity = _write_output_atomically(
+                                output_path,
+                                captured_output,
+                                expected_parent_identity=(
+                                    output_parent_stat_before
+                                ),
+                            )
+                    finally:
+                        for (
+                            snapshot_descriptor,
+                            _,
+                        ) in pinned_execution_snapshots.values():
+                            os.close(snapshot_descriptor)
             except Exception as exc:
                 blockers.append(f"producer execution failed: {exc}")
         else:
@@ -2853,6 +2979,30 @@ def run_local_producer(
             continue
         if snapshot_after != snapshot_before:
             blockers.append(f"authenticated producer file changed: {source}")
+    for source, pinned in pinned_argv_snapshots.items():
+        descriptor, _, snapshot_before = pinned
+        try:
+            _, descriptor_snapshot_after = _read_open_regular_file_snapshot(
+                descriptor,
+                maximum=MAX_PRODUCER_EXECUTABLE_BYTES,
+            )
+        except OSError as exc:
+            blockers.append(f"pinned argv file changed: {source}: {exc}")
+        else:
+            if descriptor_snapshot_after != snapshot_before:
+                blockers.append(f"pinned argv file changed: {source}")
+        finally:
+            os.close(descriptor)
+        try:
+            _, pathname_snapshot_after = _read_regular_file_snapshot(
+                Path(source),
+                maximum=MAX_PRODUCER_EXECUTABLE_BYTES,
+            )
+        except OSError as exc:
+            blockers.append(f"pinned argv file pathname changed: {source}: {exc}")
+        else:
+            if pathname_snapshot_after != snapshot_before:
+                blockers.append(f"pinned argv file pathname changed: {source}")
     started_timestamp = _parse_utc(started_at)
     if started_timestamp is None:
         raise RuntimeError("internal producer start timestamp is invalid")
@@ -3470,6 +3620,9 @@ def emit_github_actions_pre_live_bundle(
                 producer_policy_sha256=str(producer_policy["policy_sha256"]),
                 authenticated_files=authenticated_files,
                 authenticated_file_digests=authenticated_digests,
+                pinned_argv_file_digests=(
+                    _producer_pinned_argv_file_digests(producer_policy)
+                ),
             )
             blockers.extend(_prefixed_blockers("local_execution", local_execution))
             repository_after = attest_repository(
@@ -3569,6 +3722,21 @@ def _producer_authenticated_runtime_files(
     return authenticated_files, authenticated_digests
 
 
+def _producer_pinned_argv_file_digests(
+    producer_policy: Mapping[str, object],
+) -> dict[str, str]:
+    if (
+        producer_policy.get("producer_id")
+        != PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+    ):
+        return {}
+    binary_path = producer_policy.get("micromachine_binary_path")
+    binary_sha256 = producer_policy.get("micromachine_binary_sha256")
+    if not isinstance(binary_path, str) or not isinstance(binary_sha256, str):
+        return {}
+    return {binary_path: binary_sha256}
+
+
 def _capture_admitted_build_snapshots(
     build_binding: Mapping[str, object],
 ) -> dict[str, object]:
@@ -3650,15 +3818,14 @@ def _assemble_github_actions_pre_live_bundle(
     local_execution: Mapping[str, object],
 ) -> bytes:
     ctest = _mapping(build_binding.get("ctest"))
-    local_artifact = _mapping(local_execution.get("output_artifact"))
     report_payload = admitted_build.get("report_payload")
     binary_payload = admitted_build.get("binary_payload")
     if not isinstance(report_payload, bytes) or not isinstance(binary_payload, bytes):
         raise ValueError("admitted build payloads are missing")
-    producer_output_path = Path(str(local_artifact["path"]))
+    raw_producer_output = _read_published_producer_output(local_execution)
     producer_output_payload = _bind_producer_output_to_admitted_build(
         producer_id=str(producer_policy.get("producer_id", "")),
-        producer_output=producer_output_path.read_bytes(),
+        producer_output=raw_producer_output,
         build_report=report_payload,
         binary=binary_payload,
     )
@@ -3776,6 +3943,115 @@ def _bind_producer_output_to_admitted_build(
         build_report_bytes=build_report,
         binary_bytes=binary,
     )
+
+
+def _read_published_producer_output(
+    local_execution: Mapping[str, object],
+) -> bytes:
+    local_artifact = _mapping(local_execution.get("output_artifact"))
+    raw_path = local_artifact.get("path")
+    expected_digest = local_artifact.get("sha256")
+    expected_size = local_artifact.get("size_bytes")
+    expected_identity = local_artifact.get("published_stat_identity")
+    if not isinstance(raw_path, str) or not Path(raw_path).is_absolute():
+        raise ValueError("captured producer output path is missing or non-absolute")
+    if not isinstance(expected_digest, str) or not _SHA256_RE.fullmatch(
+        expected_digest
+    ):
+        raise ValueError("captured producer output digest is missing or invalid")
+    if type(expected_size) is not int or expected_size < 0:
+        raise ValueError("captured producer output size is missing or invalid")
+    if (
+        not isinstance(expected_identity, list)
+        or len(expected_identity) != 5
+        or any(type(value) is not int for value in expected_identity[:4])
+        or not isinstance(expected_identity[4], str)
+        or not _SHA256_RE.fullmatch(expected_identity[4])
+    ):
+        raise ValueError("captured producer output identity is missing or invalid")
+    if (
+        expected_identity[2] != expected_size
+        or expected_identity[4] != expected_digest
+    ):
+        raise ValueError("captured producer output metadata is inconsistent")
+    output_path = Path(raw_path)
+    if _path_has_symlink_component(output_path):
+        raise ValueError("captured producer output path contains a symlink")
+    payload, snapshot = _read_regular_file_snapshot(
+        output_path,
+        maximum=MAX_GITHUB_ARTIFACT_BYTES,
+    )
+    if list(snapshot) != expected_identity:
+        raise ValueError("captured producer output identity changed before consumption")
+    if len(payload) != expected_size:
+        raise ValueError("captured producer output size changed before consumption")
+    if not hmac.compare_digest(
+        hashlib.sha256(payload).hexdigest(),
+        expected_digest,
+    ):
+        raise ValueError("captured producer output digest changed before consumption")
+    return payload
+
+
+def _read_attested_build_payload(
+    build_binding: Mapping[str, object],
+    *,
+    path_key: str,
+    digest_key: str,
+    maximum: int,
+    label: str,
+) -> bytes:
+    raw_path = build_binding.get(path_key)
+    expected_digest = build_binding.get(digest_key)
+    if not isinstance(raw_path, str) or not Path(raw_path).is_absolute():
+        raise ValueError(f"attested {label} path is missing or non-absolute")
+    if not isinstance(expected_digest, str) or not _SHA256_RE.fullmatch(
+        expected_digest
+    ):
+        raise ValueError(f"attested {label} digest is missing or invalid")
+    raw_build_path = Path(raw_path)
+    if os.path.lexists(raw_build_path) and raw_build_path.is_symlink():
+        raise ValueError(f"attested {label} path is a symlink")
+    path = raw_build_path.resolve()
+    payload, snapshot = _read_regular_file_snapshot(path, maximum=maximum)
+    if not hmac.compare_digest(snapshot[4], expected_digest):
+        raise ValueError(f"attested {label} digest changed before binding")
+    return payload
+
+
+def _bound_local_producer_output_sha256(
+    *,
+    build_binding: Mapping[str, object],
+    producer_policy: Mapping[str, object],
+    local_execution: Mapping[str, object],
+) -> str:
+    raw_output = _read_published_producer_output(local_execution)
+    if (
+        producer_policy.get("producer_id")
+        != PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+    ):
+        return hashlib.sha256(raw_output).hexdigest()
+    build_report = _read_attested_build_payload(
+        build_binding,
+        path_key="report_path",
+        digest_key="report_sha256",
+        maximum=MAX_BUILD_REPORT_BYTES,
+        label="build report",
+    )
+    binary = _read_attested_build_payload(
+        build_binding,
+        path_key="binary_path",
+        digest_key="binary_sha256",
+        maximum=MAX_GITHUB_ARTIFACT_BYTES,
+        label="MicroMachine binary",
+    )
+    bound_output = _bind_producer_output_to_admitted_build(
+        producer_id=PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID,
+        producer_output=raw_output,
+        build_report=build_report,
+        binary=binary,
+    )
+    return hashlib.sha256(bound_output).hexdigest()
 
 
 def _repository_input_evidence_payload(
@@ -3944,6 +4220,15 @@ def attest_artifact_local_bindings(
     except (TypeError, ValueError) as exc:
         blockers.append(f"local CTest evidence is invalid: {exc}")
         ctest_bytes = b""
+    try:
+        bound_local_output_sha256 = _bound_local_producer_output_sha256(
+            build_binding=build_binding,
+            producer_policy=producer_policy,
+            local_execution=local_execution,
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        blockers.append(f"local producer output binding failed: {exc}")
+        bound_local_output_sha256 = None
     expected = {
         "build.report_identity": build_binding.get("current_identity"),
         "build.report_sha256": build_binding.get("report_sha256"),
@@ -3961,7 +4246,7 @@ def attest_artifact_local_bindings(
         "producer.policy_sha256": producer_policy.get("policy_sha256"),
         "producer.executable_sha256": local_execution.get("executable_sha256"),
         "producer.argv_sha256": hashlib.sha256(argv_bytes).hexdigest(),
-        "producer.output_sha256": local_artifact.get("sha256"),
+        "producer.output_sha256": bound_local_output_sha256,
         "producer.provenance.exit_code": local_execution.get("exit_code"),
         "producer.provenance.stdout_sha256": local_execution.get("stdout_sha256"),
         "producer.provenance.stderr_sha256": local_execution.get("stderr_sha256"),
@@ -3985,7 +4270,7 @@ def attest_artifact_local_bindings(
         "producer.provenance.authority.closing_issue.number": source_ids.get(
             "issue_number"
         ),
-        "artifact.sha256": local_artifact.get("sha256"),
+        "artifact.sha256": bound_local_output_sha256,
     }
     actual = {
         "build.report_identity": build.get("report_identity"),
@@ -4048,6 +4333,8 @@ def attest_artifact_local_bindings(
         ),
         repository_input_payload=repository_input_payload,
         ctest_payload=(json.loads(ctest_bytes) if ctest_bytes else None),
+        raw_output_sha256=local_artifact.get("sha256"),
+        bound_output_sha256=bound_local_output_sha256,
         expected=expected,
         actual=actual,
     )
@@ -4587,6 +4874,9 @@ def attest_pre_live_provenance(
             producer_policy_sha256=str(producer_policy["policy_sha256"]),
             authenticated_files=authenticated_files,
             authenticated_file_digests=authenticated_file_digests,
+            pinned_argv_file_digests=(
+                _producer_pinned_argv_file_digests(producer_policy)
+            ),
         )
         blockers.extend(_prefixed_blockers("local_execution", local_execution))
         repository_after = attest_repository(
@@ -5767,16 +6057,22 @@ def _run_pinned_command(
     state_dir: Path,
     cwd: str,
     timeout: float,
+    inherited_fds: Sequence[int] = (),
 ) -> subprocess.CompletedProcess[Any]:
     if executable_payload is None or executable_snapshot is None:
         raise OSError("producer executable was not pinned")
     if command_runner is subprocess.run and _is_isolated_python_command(argv):
-        return _run_authenticated_python_fork(
-            argv,
-            authenticated_python_sources=authenticated_python_sources,
-            cwd=cwd,
-            timeout=timeout,
-        )
+        with tempfile.TemporaryDirectory(
+            prefix=".native-execution-",
+            dir=state_dir,
+        ) as native_execution_root:
+            return _run_authenticated_python_fork(
+                argv,
+                authenticated_python_sources=authenticated_python_sources,
+                native_execution_root=Path(native_execution_root),
+                cwd=cwd,
+                timeout=timeout,
+            )
     with tempfile.TemporaryDirectory(
         prefix=".producer-executable-",
         dir=state_dir,
@@ -5802,6 +6098,7 @@ def _run_pinned_command(
                 shell=False,
                 timeout=timeout,
                 env=dict(SANITIZED_PRODUCER_ENV),
+                pass_fds=tuple(inherited_fds),
             )
             _, snapshot_after = _read_open_regular_file_snapshot(
                 snapshot_fd,
@@ -5828,10 +6125,33 @@ def _is_isolated_python_command(argv: Sequence[str]) -> bool:
     )
 
 
+def _descriptor_execution_path(descriptor: int) -> str:
+    path = Path("/dev/fd") / str(descriptor)
+    descriptor_stat = os.fstat(descriptor)
+    try:
+        path_descriptor = os.open(path, os.O_RDONLY)
+    except OSError as exc:
+        raise OSError("descriptor execution path is unavailable") from exc
+    try:
+        path_stat = os.fstat(path_descriptor)
+        if (
+            descriptor_stat.st_dev,
+            descriptor_stat.st_ino,
+        ) != (
+            path_stat.st_dev,
+            path_stat.st_ino,
+        ):
+            raise OSError("descriptor execution path changed identity")
+    finally:
+        os.close(path_descriptor)
+    return str(path)
+
+
 def _run_authenticated_python_fork(
     argv: Sequence[str],
     *,
     authenticated_python_sources: Mapping[str, bytes],
+    native_execution_root: Path,
     cwd: str,
     timeout: float,
 ) -> subprocess.CompletedProcess[bytes]:
@@ -5850,6 +6170,11 @@ def _run_authenticated_python_fork(
     if child_pid == 0:
         exit_code = 1
         try:
+            try:
+                os.setpgid(0, 0)
+            except PermissionError:
+                if os.getpgrp() != os.getpid():
+                    raise
             os.close(stdout_read)
             os.close(stderr_read)
             os.dup2(stdout_write, 1)
@@ -5858,6 +6183,9 @@ def _run_authenticated_python_fork(
             os.close(stderr_write)
             os.environ.clear()
             os.environ.update(SANITIZED_PRODUCER_ENV)
+            os.environ[PINNED_NATIVE_EXEC_ROOT_ENV] = str(
+                native_execution_root
+            )
             os.chdir(cwd)
             snapshot_root = argv[6]
             relative_script = argv[7]
@@ -5958,6 +6286,10 @@ def _run_authenticated_python_fork(
         finally:
             os._exit(exit_code)
 
+    try:
+        os.setpgid(child_pid, child_pid)
+    except (PermissionError, ProcessLookupError):
+        pass
     os.close(stdout_write)
     os.close(stderr_write)
     stdout = bytearray()
@@ -5971,8 +6303,18 @@ def _run_authenticated_python_fork(
         while selector.get_map() or child_status is None:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                os.kill(child_pid, signal.SIGKILL)
-                os.waitpid(child_pid, 0)
+                try:
+                    os.killpg(child_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    try:
+                        os.kill(child_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                if child_status is None:
+                    try:
+                        os.waitpid(child_pid, 0)
+                    except ChildProcessError:
+                        pass
                 raise subprocess.TimeoutExpired(list(argv), timeout)
             for key, _ in selector.select(min(remaining, 0.1)):
                 chunk = os.read(key.fd, 1024 * 1024)

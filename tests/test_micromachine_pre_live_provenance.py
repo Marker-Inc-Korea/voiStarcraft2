@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.parse
 import zipfile
@@ -2778,6 +2779,189 @@ class GitHubActionsBundleEmissionTest(unittest.TestCase):
                         " ".join(report["blockers"]),
                     )
 
+    def test_emitter_rejects_producer_output_path_replacement_before_assembly(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = make_build_fixture(root / "fixture")
+            adapter = FakeGitHubAdapter(
+                head_sha=fixture["repository_commit"],
+            )
+            output = root / GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME
+            real_assemble = (
+                provenance_module._assemble_github_actions_pre_live_bundle
+            )
+
+            def replace_output_before_assembly(
+                **kwargs: object,
+            ) -> bytes:
+                local_execution = kwargs["local_execution"]
+                assert isinstance(local_execution, dict)
+                local_artifact = local_execution["output_artifact"]
+                assert isinstance(local_artifact, dict)
+                producer_output = Path(str(local_artifact["path"]))
+                replacement = producer_output.with_name(
+                    producer_output.name + ".replacement"
+                )
+                replacement.write_bytes(b'{"source":"attacker"}\n')
+                os.replace(replacement, producer_output)
+                return real_assemble(**kwargs)
+
+            with mock.patch.object(
+                provenance_module,
+                "_assemble_github_actions_pre_live_bundle",
+                side_effect=replace_output_before_assembly,
+            ):
+                report = emit_github_actions_pre_live_bundle(
+                    adapter=adapter,
+                    repository_dir=fixture["repository"],
+                    expected_commit=fixture["repository_commit"],
+                    run_id=RUN_ID,
+                    run_attempt=RUN_ATTEMPT,
+                    workflow_ref=WORKFLOW_REF,
+                    workflow_sha=WORKFLOW_SHA,
+                    build_report_path=fixture["report_path"],
+                    expected_build_dir=(
+                        fixture["config"].micromachine_build_dir
+                    ),
+                    output_path=output,
+                    producer_id="fixture_producer",
+                    ctest_runner=passing_ctest,
+                )
+
+            self.assertFalse(report["ok"], report)
+            self.assertFalse(output.exists())
+            self.assertIn(
+                "captured producer output identity changed before consumption",
+                " ".join(report["blockers"]),
+            )
+
+    def test_real_binder_emission_and_local_attestation_share_bound_digest(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = make_build_fixture(root / "fixture")
+            adapter = FakeGitHubAdapter(
+                head_sha=fixture["repository_commit"],
+            )
+            source_context = attest_github_actions_emission_context(
+                adapter,
+                repository=REPOSITORY,
+                run_id=RUN_ID,
+                run_attempt=RUN_ATTEMPT,
+                expected_head_sha=fixture["repository_commit"],
+                workflow_ref=WORKFLOW_REF,
+                workflow_sha=WORKFLOW_SHA,
+            )
+            build_binding = attest_build_binding(
+                fixture["report_path"],
+                repository_dir=fixture["repository"],
+                expected_repository_commit=fixture["repository_commit"],
+                expected_build_dir=fixture["config"].micromachine_build_dir,
+                command_runner=passing_ctest,
+            )
+            admitted_build = (
+                provenance_module._capture_admitted_build_snapshots(
+                    build_binding
+                )
+            )
+            producer_policy = resolve_local_producer_policy(
+                repository_dir=fixture["repository"],
+                expected_commit=fixture["repository_commit"],
+                producer_id="fixture_producer",
+            )
+            producer_policy["producer_id"] = (
+                PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+            )
+            raw_output = make_stub_deterministic_journey_bundle()
+            producer_output_path = Path(
+                str(producer_policy["output_artifact"])
+            )
+            producer_output_path.write_bytes(raw_output)
+            _, output_snapshot = (
+                provenance_module._read_regular_file_snapshot(
+                    producer_output_path,
+                    maximum=provenance_module.MAX_GITHUB_ARTIFACT_BYTES,
+                )
+            )
+            executable = Path(str(producer_policy["argv"][0])).read_bytes()
+            local_execution = {
+                "executable_sha256": hashlib.sha256(executable).hexdigest(),
+                "exit_code": 0,
+                "started_at": "2026-08-02T00:00:00Z",
+                "ended_at": "2026-08-02T00:00:01Z",
+                "stdout_sha256": hashlib.sha256(b"").hexdigest(),
+                "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+                "output_artifact": {
+                    "path": str(producer_output_path),
+                    "sha256": hashlib.sha256(raw_output).hexdigest(),
+                    "size_bytes": len(raw_output),
+                    "published_stat_identity": list(output_snapshot),
+                },
+            }
+            nested_identity = {
+                "ok": True,
+                "blockers": [],
+                "binary_sha256": build_binding["binary_sha256"],
+                "embedded_build_input_identity": (
+                    build_binding["embedded_build_input_identity"]
+                ),
+            }
+            verifier = (
+                "starcraft_commander.micromachine_pre_live_journeys."
+                "verify_pre_live_journey_bundle"
+            )
+
+            with mock.patch(verifier, return_value=nested_identity):
+                bundle = (
+                    provenance_module._assemble_github_actions_pre_live_bundle(
+                        repository_root=fixture["repository"].resolve(),
+                        expected_commit=fixture["repository_commit"],
+                        source_context=source_context,
+                        build_binding=build_binding,
+                        admitted_build=admitted_build,
+                        producer_policy=producer_policy,
+                        local_execution=local_execution,
+                    )
+                )
+                verification = verify_pre_live_artifact_bundle(
+                    bundle,
+                    admission_snapshot=(
+                        provenance_module._admission_snapshot_from_mapping(
+                            admitted_build
+                        )
+                    ),
+                )
+                self.assertTrue(verification["ok"], verification)
+                github_source = {
+                    "repository": source_context["repository"],
+                    "source_ids": {
+                        "repository_id": source_context["repository_id"],
+                        "issue_id": source_context["closing_issue_id"],
+                        "issue_number": (
+                            source_context["closing_issue_number"]
+                        ),
+                    },
+                    "artifact_bundle": verification,
+                }
+                binding = provenance_module.attest_artifact_local_bindings(
+                    github_source=github_source,
+                    build_binding=build_binding,
+                    producer_policy=producer_policy,
+                    local_execution=local_execution,
+                )
+
+            manifest_digest = verification["manifest"]["producer"][
+                "output_sha256"
+            ]
+            raw_digest = hashlib.sha256(raw_output).hexdigest()
+            self.assertNotEqual(raw_digest, manifest_digest)
+            self.assertTrue(binding["ok"], binding)
+            self.assertEqual(raw_digest, binding["raw_output_sha256"])
+            self.assertEqual(manifest_digest, binding["bound_output_sha256"])
+
 
 class LocalProducerTest(unittest.TestCase):
     def test_checked_in_policy_has_an_executable_production_producer(self) -> None:
@@ -3039,6 +3223,220 @@ class LocalProducerTest(unittest.TestCase):
             self.assertEqual(
                 {"source": "pinned"},
                 json.loads(output.read_bytes()),
+            )
+
+    def test_pins_argv_binary_and_rejects_path_replacement_during_execution(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_root = Path(directory).resolve()
+            root = temporary_root / "repo"
+            root.mkdir()
+            init_git_repo(root)
+            cwd = root / "producer"
+            cwd.mkdir()
+            executable = root / "producer.sh"
+            executable.write_text("#!/bin/sh\nexit 0\n")
+            executable.chmod(0o755)
+            output = cwd / "evidence.json"
+            admitted_binary = temporary_root / "MicroMachine"
+            admitted_payload = b"trusted admitted MicroMachine bytes"
+            admitted_binary.write_bytes(admitted_payload)
+            admitted_binary.chmod(0o755)
+            admitted_digest = hashlib.sha256(admitted_payload).hexdigest()
+            producer_argv = (
+                str(executable),
+                "--micromachine-binary",
+                str(admitted_binary),
+                "--output",
+                str(output),
+            )
+            observed_execution_binary: Path | None = None
+
+            def replacing_runner(
+                *args: object,
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess:
+                nonlocal observed_execution_binary
+                execution_argv = list(args[0])
+                observed_execution_binary = Path(execution_argv[2])
+                self.assertNotEqual(admitted_binary, observed_execution_binary)
+                self.assertEqual(
+                    admitted_digest,
+                    hashlib.sha256(
+                        observed_execution_binary.read_bytes()
+                    ).hexdigest(),
+                )
+                replacement = admitted_binary.with_name(
+                    admitted_binary.name + ".replacement"
+                )
+                replacement.write_bytes(b"attacker binary bytes")
+                replacement.chmod(0o755)
+                os.replace(replacement, admitted_binary)
+                Path(execution_argv[-1]).write_text(
+                    json.dumps({"binary_sha256": admitted_digest}) + "\n"
+                )
+                return subprocess.CompletedProcess(
+                    execution_argv,
+                    0,
+                    b"",
+                    b"",
+                )
+
+            report = run_local_producer(
+                repository_dir=root,
+                cwd=cwd,
+                argv=producer_argv,
+                allowed_argv=(producer_argv,),
+                output_artifact=output,
+                command_runner=replacing_runner,
+                pinned_argv_file_digests={
+                    str(admitted_binary): admitted_digest
+                },
+            )
+
+            self.assertFalse(report["ok"], report)
+            self.assertIsNotNone(observed_execution_binary)
+            self.assertEqual(
+                {"binary_sha256": admitted_digest},
+                json.loads(output.read_bytes()),
+            )
+            self.assertIn(
+                "pinned argv file pathname changed",
+                " ".join(report["blockers"]),
+            )
+
+    def test_private_argv_binary_snapshot_has_no_replaceable_path(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_root = Path(directory).resolve()
+            root = temporary_root / "repo"
+            root.mkdir()
+            init_git_repo(root)
+            cwd = root / "producer"
+            cwd.mkdir()
+            executable = root / "producer.sh"
+            executable.write_text("#!/bin/sh\nexit 0\n")
+            executable.chmod(0o755)
+            output = cwd / "evidence.json"
+            admitted_binary = temporary_root / "MicroMachine"
+            admitted_payload = b"trusted admitted MicroMachine bytes"
+            admitted_binary.write_bytes(admitted_payload)
+            admitted_binary.chmod(0o755)
+            admitted_digest = hashlib.sha256(admitted_payload).hexdigest()
+            producer_argv = (
+                str(executable),
+                "--micromachine-binary",
+                str(admitted_binary),
+                "--output",
+                str(output),
+            )
+
+            def replacing_runner(
+                *args: object,
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess:
+                execution_argv = list(args[0])
+                execution_binary = Path(execution_argv[2])
+                self.assertEqual(Path("/dev/fd"), execution_binary.parent)
+                self.assertEqual(
+                    admitted_digest,
+                    hashlib.sha256(execution_binary.read_bytes()).hexdigest(),
+                )
+                replacement = temporary_root / "attacker-binary"
+                replacement.write_bytes(b"attacker binary bytes")
+                replacement.chmod(0o500)
+                with self.assertRaises(OSError):
+                    os.replace(replacement, execution_binary)
+                Path(execution_argv[-1]).write_text(
+                    json.dumps({"binary_sha256": admitted_digest}) + "\n"
+                )
+                return subprocess.CompletedProcess(
+                    execution_argv,
+                    0,
+                    b"",
+                    b"",
+                )
+
+            report = run_local_producer(
+                repository_dir=root,
+                cwd=cwd,
+                argv=producer_argv,
+                allowed_argv=(producer_argv,),
+                output_artifact=output,
+                command_runner=replacing_runner,
+                pinned_argv_file_digests={
+                    str(admitted_binary): admitted_digest
+                },
+            )
+
+            self.assertTrue(report["ok"], report)
+            self.assertEqual(
+                {"binary_sha256": admitted_digest},
+                json.loads(output.read_bytes()),
+            )
+            self.assertEqual(admitted_payload, admitted_binary.read_bytes())
+
+    def test_authenticated_timeout_kills_native_process_group_and_cleans_root(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state_dir = root / "state"
+            state_dir.mkdir(mode=0o700)
+            child_pid_path = root / "native-child.pid"
+            script = (
+                "import os,pathlib,subprocess,sys\n"
+                "root=pathlib.Path(os.environ['VOI_PINNED_NATIVE_EXEC_ROOT'])\n"
+                "residual=root/'.voi-native-exec-timeout'\n"
+                "residual.mkdir(mode=0o700)\n"
+                "(residual/'MicroMachine').write_bytes(b'residual')\n"
+                "child=subprocess.Popen(['/bin/sh','-c',"
+                "'echo $$ > \"$1\"; exec sleep 30','timeout-child',"
+                "sys.argv[1]])\n"
+                "child.wait()\n"
+            ).encode()
+            argv = (
+                str(Path(sys.executable).resolve()),
+                "-I",
+                "-B",
+                "-S",
+                "-c",
+                ISOLATED_PYTHON_BOOTSTRAP,
+                str(root),
+                "timeout_producer.py",
+                str(child_pid_path),
+            )
+
+            with self.assertRaises(subprocess.TimeoutExpired):
+                provenance_module._run_pinned_command(
+                    subprocess.run,
+                    argv,
+                    executable_payload=b"authenticated-python",
+                    executable_snapshot=(0, 0, 0, 0, "0" * 64),
+                    authenticated_python_sources={
+                        "timeout_producer.py": script,
+                    },
+                    state_dir=state_dir,
+                    cwd=str(root),
+                    timeout=1.0,
+                )
+
+            self.assertTrue(child_pid_path.is_file())
+            child_pid = int(child_pid_path.read_text().strip())
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(child_pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.02)
+            else:
+                self.fail("native timeout child survived process-group cleanup")
+            self.assertEqual(
+                [],
+                list(state_dir.glob(".native-execution-*")),
             )
 
     def test_executes_authenticated_python_bytes_not_mutable_snapshot_path(
@@ -4710,6 +5108,40 @@ def make_source_artifact_bundle(
             "producer/provenance.json": provenance,
         },
     )
+
+
+def make_stub_deterministic_journey_bundle() -> bytes:
+    manifest = canonical_json_bytes(
+        {
+            "schema_version": 1,
+            "evidence_kind": (
+                "deterministic_micromachine_pre_live_journeys"
+            ),
+            "suite_id": "provenance-bound-digest-test",
+            "journey_count": 0,
+            "failed_count": 0,
+            "report_sha256": hashlib.sha256(b"").hexdigest(),
+            "members": [],
+        }
+    )
+    output = io.BytesIO()
+    with zipfile.ZipFile(
+        output,
+        mode="w",
+        compression=zipfile.ZIP_STORED,
+        allowZip64=False,
+    ) as archive:
+        info = zipfile.ZipInfo(
+            "manifest.json",
+            date_time=(1980, 1, 1, 0, 0, 0),
+        )
+        info.compress_type = zipfile.ZIP_STORED
+        info.create_system = 3
+        info.create_version = 20
+        info.extract_version = 20
+        info.external_attr = 0o100644 << 16
+        archive.writestr(info, manifest)
+    return output.getvalue()
 
 
 def bind_adapter_to_build_fixture(

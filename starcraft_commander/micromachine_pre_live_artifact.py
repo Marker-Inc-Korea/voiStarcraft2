@@ -397,6 +397,7 @@ def bind_deterministic_journey_bundle_to_build(
         raise TypeError("build report must be bytes")
     if not isinstance(binary_bytes, bytes):
         raise TypeError("MicroMachine binary must be bytes")
+    root, payloads = _read_deterministic_journey_archive(bundle)
     verification = verify_pre_live_journey_bundle(bundle)
     if verification.get("ok") is not True:
         raise ValueError(
@@ -413,7 +414,6 @@ def bind_deterministic_journey_bundle_to_build(
                 "deterministic_journey_nested_build_identity_mismatch: "
                 f"{key}"
             )
-    root, payloads = _read_deterministic_journey_archive(bundle)
     if set(root) != _DETERMINISTIC_JOURNEY_ROOT_KEYS:
         raise ValueError("deterministic journey root manifest is unsupported")
     root["build_binding"] = binding
@@ -480,9 +480,34 @@ def _deterministic_journey_build_binding(
 
 def _read_deterministic_journey_archive(
     bundle: bytes,
+    *,
+    limits: PreLiveArtifactLimits | None = None,
 ) -> tuple[dict[str, object], dict[str, bytes]]:
+    effective_limits = limits or PreLiveArtifactLimits()
+    _preflight_deterministic_journey_central_directory(
+        bundle,
+        effective_limits,
+    )
     with zipfile.ZipFile(io.BytesIO(bundle), mode="r") as archive:
         infos = archive.infolist()
+        blockers: list[dict[str, object]] = []
+        _preflight_archive(
+            bundle,
+            archive,
+            infos,
+            effective_limits,
+            blockers,
+        )
+        if blockers:
+            first = blockers[0]
+            raise ValueError(
+                "deterministic journey ZIP preflight rejected: "
+                f"{first.get('code')}: {first.get('message')}"
+            )
+        if len(infos) > effective_limits.max_entries:
+            raise ValueError(
+                "deterministic journey ZIP exceeds max_entries"
+            )
         names = [info.filename for info in infos]
         if (
             not names
@@ -495,7 +520,7 @@ def _read_deterministic_journey_archive(
             )
         if archive.comment:
             raise ValueError("deterministic journey ZIP comment is forbidden")
-        payloads: dict[str, bytes] = {}
+        total_uncompressed = 0
         for info in infos:
             if (
                 info.date_time != DETERMINISTIC_ZIP_TIMESTAMP
@@ -510,6 +535,49 @@ def _read_deterministic_journey_archive(
                     "deterministic journey ZIP metadata is noncanonical: "
                     f"{info.filename}"
                 )
+            if (
+                info.compress_size
+                > effective_limits.max_member_compressed_bytes
+            ):
+                raise ValueError(
+                    "deterministic journey ZIP member exceeds "
+                    f"max_member_compressed_bytes: {info.filename}"
+                )
+            if (
+                info.file_size
+                > effective_limits.max_member_uncompressed_bytes
+            ):
+                raise ValueError(
+                    "deterministic journey ZIP member exceeds "
+                    f"max_member_uncompressed_bytes: {info.filename}"
+                )
+            if (
+                info.filename == PRE_LIVE_ARTIFACT_MANIFEST_NAME
+                and info.file_size > effective_limits.max_manifest_bytes
+            ):
+                raise ValueError(
+                    "deterministic journey ZIP manifest exceeds "
+                    "max_manifest_bytes"
+                )
+            total_uncompressed += info.file_size
+            if (
+                total_uncompressed
+                > effective_limits.max_total_uncompressed_bytes
+            ):
+                raise ValueError(
+                    "deterministic journey ZIP exceeds "
+                    "max_total_uncompressed_bytes"
+                )
+            if (
+                _compression_ratio(info)
+                > effective_limits.max_compression_ratio
+            ):
+                raise ValueError(
+                    "deterministic journey ZIP member exceeds "
+                    f"max_compression_ratio: {info.filename}"
+                )
+        payloads: dict[str, bytes] = {}
+        for info in infos:
             payloads[info.filename] = archive.read(info)
     raw_root = payloads.pop(PRE_LIVE_ARTIFACT_MANIFEST_NAME)
     try:
@@ -529,6 +597,76 @@ def _read_deterministic_journey_archive(
             "deterministic journey root manifest must use canonical JSON"
         )
     return root, payloads
+
+
+def _preflight_deterministic_journey_central_directory(
+    bundle: bytes,
+    limits: PreLiveArtifactLimits,
+) -> None:
+    if len(bundle) > limits.max_archive_bytes:
+        raise ValueError(
+            "deterministic journey ZIP exceeds max_archive_bytes"
+        )
+    framing_error = _archive_framing_error(bundle)
+    if framing_error is not None:
+        raise ValueError(
+            f"deterministic journey ZIP framing is invalid: {framing_error}"
+        )
+    eocd_offset = len(bundle) - _END_CENTRAL_DIRECTORY.size
+    (
+        _,
+        _,
+        _,
+        _,
+        total_entries,
+        central_size,
+        central_offset,
+        _,
+    ) = _END_CENTRAL_DIRECTORY.unpack_from(bundle, eocd_offset)
+    if total_entries > limits.max_entries:
+        raise ValueError("deterministic journey ZIP exceeds max_entries")
+    if central_size > len(bundle):
+        raise ValueError(
+            "deterministic journey ZIP central directory is oversized"
+        )
+
+    offset = central_offset
+    parsed_entries = 0
+    while offset < eocd_offset:
+        if parsed_entries >= limits.max_entries:
+            raise ValueError("deterministic journey ZIP exceeds max_entries")
+        if offset + _CENTRAL_DIRECTORY_HEADER.size > eocd_offset:
+            raise ValueError(
+                "deterministic journey ZIP central directory is truncated"
+            )
+        fields = _CENTRAL_DIRECTORY_HEADER.unpack_from(bundle, offset)
+        if fields[0] != b"PK\x01\x02":
+            raise ValueError(
+                "deterministic journey ZIP central directory is invalid"
+            )
+        filename_size = fields[10]
+        extra_size = fields[11]
+        comment_size = fields[12]
+        entry_size = (
+            _CENTRAL_DIRECTORY_HEADER.size
+            + filename_size
+            + extra_size
+            + comment_size
+        )
+        if entry_size <= _CENTRAL_DIRECTORY_HEADER.size:
+            raise ValueError(
+                "deterministic journey ZIP central entry name is empty"
+            )
+        offset += entry_size
+        if offset > eocd_offset:
+            raise ValueError(
+                "deterministic journey ZIP central directory is truncated"
+            )
+        parsed_entries += 1
+    if offset != eocd_offset or parsed_entries != total_entries:
+        raise ValueError(
+            "deterministic journey ZIP central directory count mismatch"
+        )
 
 
 def _write_deterministic_journey_archive(
@@ -557,6 +695,7 @@ def _verify_bound_deterministic_journey_bundle(
     *,
     build_report_bytes: bytes | None,
     manifest: Mapping[str, object],
+    limits: PreLiveArtifactLimits,
 ) -> dict[str, object]:
     from starcraft_commander.micromachine_pre_live_journeys import (
         verify_pre_live_journey_bundle,
@@ -566,7 +705,10 @@ def _verify_bound_deterministic_journey_bundle(
     binding: Mapping[str, object] = {}
     raw_verification: Mapping[str, object] = {}
     try:
-        root, payloads = _read_deterministic_journey_archive(bundle)
+        root, payloads = _read_deterministic_journey_archive(
+            bundle,
+            limits=limits,
+        )
     except (OSError, RuntimeError, ValueError, zipfile.BadZipFile) as exc:
         _add_blocker(
             blockers,
@@ -1163,6 +1305,7 @@ def verify_pre_live_artifact_bundle(
                             journey_bytes,
                             build_report_bytes=report_bytes,
                             manifest=manifest,
+                            limits=effective_limits,
                         )
                     )
                     role_evidence["deterministic_journeys"] = (
@@ -2488,6 +2631,13 @@ def _preflight_archive(
             "total uncompressed ZIP size exceeds the configured limit",
             actual=total_uncompressed,
             maximum=limits.max_total_uncompressed_bytes,
+        )
+    if expected_local_offset != archive.start_dir:
+        _add_blocker(
+            blockers,
+            "noncanonical_local_layout",
+            "$",
+            "ZIP local members must be contiguous with the central directory",
         )
     if manifest_count == 0:
         _add_blocker(

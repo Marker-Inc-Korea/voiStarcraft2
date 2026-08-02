@@ -6,7 +6,9 @@ import argparse
 import hashlib
 import io
 import json
+import math
 import os
+import select
 import shutil
 import stat
 import subprocess
@@ -59,7 +61,9 @@ MAX_JOURNEY_BUNDLE_BYTES: Final[int] = 64 * 1024 * 1024
 MAX_JOURNEY_BUNDLE_ENTRIES: Final[int] = 64
 MAX_JOURNEY_MEMBER_BYTES: Final[int] = 32 * 1024 * 1024
 MAX_NATIVE_ADAPTER_OUTPUT_BYTES: Final[int] = 32 * 1024 * 1024
+MAX_NATIVE_EXECUTABLE_BYTES: Final[int] = 256 * 1024 * 1024
 MAX_TACTICAL_RADIO_OUTPUT_BYTES: Final[int] = 256 * 1024
+PINNED_NATIVE_EXEC_ROOT_ENV: Final[str] = "VOI_PINNED_NATIVE_EXEC_ROOT"
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
 DEFAULT_JOURNEY_MANIFEST: Final[Path] = (
     REPO_ROOT / "integrations" / "micromachine" / "PRE_LIVE_JOURNEYS.json"
@@ -75,6 +79,23 @@ DETERMINISTIC_ZIP_TIMESTAMP: Final[tuple[int, int, int, int, int, int]] = (
 _REGULAR_FILE_MODE: Final[int] = 0o100644
 _EFFECT_EVENT_TYPES: Final[frozenset[str]] = frozenset(
     {"movement", "engagement", "ability_effect"}
+)
+_WEB_LIFECYCLE_EVENT_TYPES: Final[frozenset[str]] = frozenset(
+    {"ownership_snapshot", "submission", "movement", "engagement"}
+)
+_NATIVE_ACTION_METADATA_FIELDS: Final[tuple[str, ...]] = (
+    "dispatch_action",
+    "ability_name",
+    "ability_id",
+    "target_kind",
+    "target_x",
+    "target_y",
+)
+_NATIVE_ACTION_PROOF_FIELDS: Final[tuple[str, ...]] = (
+    *_NATIVE_ACTION_METADATA_FIELDS,
+    "unit_tags",
+    "receipt_id",
+    "submission_ids",
 )
 _OPERATION_IDENTITY_EVENT_TYPES: Final[frozenset[str]] = frozenset(
     {
@@ -969,6 +990,17 @@ def _validate_micromachine_binary(path: Path | str) -> Path:
     raw = Path(path)
     if not raw.is_absolute():
         raise ValueError("MicroMachine binary path must be absolute")
+    inherited_fd = _inherited_executable_fd(raw)
+    if inherited_fd is not None:
+        file_stat = os.fstat(inherited_fd)
+        if (
+            not stat.S_ISREG(file_stat.st_mode)
+            or file_stat.st_mode & 0o111 == 0
+        ):
+            raise ValueError(
+                "inherited MicroMachine descriptor must be executable"
+            )
+        return raw
     if raw.is_symlink():
         raise ValueError("MicroMachine binary path must not be a symlink")
     file_stat = raw.stat()
@@ -979,18 +1011,367 @@ def _validate_micromachine_binary(path: Path | str) -> Path:
     return raw.resolve()
 
 
+def _inherited_executable_fd(path: Path) -> int | None:
+    if path.parent != Path("/dev/fd") or not path.name.isdecimal():
+        return None
+    descriptor = int(path.name)
+    try:
+        descriptor_stat = os.fstat(descriptor)
+        path_descriptor = os.open(path, os.O_RDONLY)
+    except OSError as exc:
+        raise ValueError(
+            "inherited MicroMachine descriptor is unavailable"
+        ) from exc
+    try:
+        path_stat = os.fstat(path_descriptor)
+        if (
+            descriptor_stat.st_dev,
+            descriptor_stat.st_ino,
+        ) != (
+            path_stat.st_dev,
+            path_stat.st_ino,
+        ):
+            raise ValueError(
+                "inherited MicroMachine descriptor path changed identity"
+            )
+    finally:
+        os.close(path_descriptor)
+    return descriptor
+
+
+def _run_native_command(
+    binary: Path,
+    argv: Sequence[str],
+    *,
+    expected_sha256: str,
+    command_runner: CommandRunner,
+) -> subprocess.CompletedProcess[Any]:
+    descriptor = _inherited_executable_fd(binary)
+    if descriptor is None or command_runner is not subprocess.run:
+        return command_runner(
+            list(argv),
+            check=False,
+            capture_output=True,
+            text=False,
+            shell=False,
+        )
+    return _run_inherited_native_command(
+        descriptor,
+        argv,
+        expected_sha256=expected_sha256,
+    )
+
+
+def _run_inherited_native_command(
+    descriptor: int,
+    argv: Sequence[str],
+    *,
+    expected_sha256: str,
+) -> subprocess.CompletedProcess[bytes]:
+    source_before = _native_executable_snapshot(descriptor)
+    if (
+        source_before[3] <= 0
+        or source_before[3] > MAX_NATIVE_EXECUTABLE_BYTES
+    ):
+        raise OSError("inherited MicroMachine binary size is invalid")
+
+    with tempfile.TemporaryDirectory(
+        prefix=".voi-native-exec-",
+        dir=_pinned_native_execution_root(),
+    ) as directory:
+        execution_root = Path(directory)
+        os.chmod(execution_root, 0o700)
+        executable_path = execution_root / "MicroMachine"
+        flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        executable_descriptor = os.open(executable_path, flags, 0o500)
+        process: subprocess.Popen[bytes] | None = None
+        path_monitor: tuple[Any, int] | None = None
+        try:
+            source_digest = _copy_native_executable(
+                descriptor,
+                executable_descriptor,
+                source_before[3],
+            )
+            os.fsync(executable_descriptor)
+            os.fchmod(executable_descriptor, 0o500)
+            if source_digest != expected_sha256:
+                raise OSError(
+                    "inherited MicroMachine binary digest changed before exec"
+                )
+            source_after_copy = _native_executable_snapshot(descriptor)
+            if source_after_copy != source_before:
+                raise OSError(
+                    "inherited MicroMachine binary changed before exec"
+                )
+            clone_snapshot = _native_executable_snapshot(
+                executable_descriptor
+            )
+            if (
+                clone_snapshot[3] != source_before[3]
+                or _sha256_descriptor(
+                    executable_descriptor,
+                    clone_snapshot[3],
+                )
+                != expected_sha256
+            ):
+                raise OSError(
+                    "one-shot MicroMachine executable differs from admitted bytes"
+                )
+            os.chmod(execution_root, 0o500)
+            _require_descriptor_path_identity(
+                executable_descriptor,
+                executable_path,
+            )
+            path_monitor = _open_native_path_monitor(
+                executable_descriptor,
+                execution_root,
+            )
+            launch_argv = [str(executable_path), *argv[1:]]
+            process = subprocess.Popen(
+                launch_argv,
+                executable=str(executable_path),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=False,
+                shell=False,
+            )
+            _require_descriptor_path_identity(
+                executable_descriptor,
+                executable_path,
+            )
+            stdout, stderr = process.communicate()
+            if _native_path_monitor_changed(path_monitor):
+                raise OSError(
+                    "one-shot MicroMachine executable changed during exec"
+                )
+            _require_descriptor_path_identity(
+                executable_descriptor,
+                executable_path,
+            )
+            if (
+                _native_executable_snapshot(executable_descriptor)
+                != clone_snapshot
+            ):
+                raise OSError(
+                    "one-shot MicroMachine executable changed during exec"
+                )
+            if _native_executable_snapshot(descriptor) != source_before:
+                raise OSError(
+                    "inherited MicroMachine binary changed during exec"
+                )
+        except BaseException:
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait()
+            raise
+        finally:
+            _close_native_path_monitor(path_monitor)
+            os.chmod(execution_root, 0o700)
+            executable_path.unlink(missing_ok=True)
+            os.close(executable_descriptor)
+    return subprocess.CompletedProcess(
+        list(argv),
+        int(process.returncode),
+        stdout,
+        stderr,
+    )
+
+
+def _copy_native_executable(
+    source_descriptor: int,
+    target_descriptor: int,
+    size: int,
+) -> str:
+    digest = hashlib.sha256()
+    offset = 0
+    while offset < size:
+        chunk = os.pread(
+            source_descriptor,
+            min(1024 * 1024, size - offset),
+            offset,
+        )
+        if not chunk:
+            raise OSError("inherited MicroMachine binary is truncated")
+        digest.update(chunk)
+        view = memoryview(chunk)
+        while view:
+            written = os.write(target_descriptor, view)
+            if written <= 0:
+                raise OSError("one-shot MicroMachine executable write failed")
+            view = view[written:]
+        offset += len(chunk)
+    return digest.hexdigest()
+
+
+def _pinned_native_execution_root() -> str | None:
+    raw_root = os.environ.get(PINNED_NATIVE_EXEC_ROOT_ENV)
+    if raw_root is None:
+        return None
+    path = Path(raw_root)
+    if not path.is_absolute() or path.is_symlink():
+        raise OSError("pinned native execution root is invalid")
+    resolved = path.resolve(strict=True)
+    if resolved != path:
+        raise OSError("pinned native execution root contains a symlink")
+    root_stat = resolved.stat()
+    if (
+        not stat.S_ISDIR(root_stat.st_mode)
+        or root_stat.st_uid != os.getuid()
+        or stat.S_IMODE(root_stat.st_mode) & 0o077
+    ):
+        raise OSError("pinned native execution root is not private")
+    return str(resolved)
+
+
+def _sha256_descriptor(descriptor: int, size: int) -> str:
+    digest = hashlib.sha256()
+    offset = 0
+    while offset < size:
+        chunk = os.pread(
+            descriptor,
+            min(1024 * 1024, size - offset),
+            offset,
+        )
+        if not chunk:
+            raise OSError("native executable descriptor is truncated")
+        digest.update(chunk)
+        offset += len(chunk)
+    return digest.hexdigest()
+
+
+def _native_executable_snapshot(
+    descriptor: int,
+) -> tuple[int, int, int, int, int]:
+    file_stat = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(file_stat.st_mode)
+        or file_stat.st_mode & 0o111 == 0
+    ):
+        raise OSError("native executable descriptor is not executable")
+    return (
+        file_stat.st_dev,
+        file_stat.st_ino,
+        file_stat.st_mode,
+        file_stat.st_size,
+        file_stat.st_mtime_ns,
+    )
+
+
+def _require_descriptor_path_identity(
+    descriptor: int,
+    path: Path,
+) -> None:
+    descriptor_stat = os.fstat(descriptor)
+    path_stat = path.stat(follow_symlinks=False)
+    if (
+        descriptor_stat.st_dev,
+        descriptor_stat.st_ino,
+        descriptor_stat.st_mode,
+        descriptor_stat.st_size,
+        descriptor_stat.st_mtime_ns,
+    ) != (
+        path_stat.st_dev,
+        path_stat.st_ino,
+        path_stat.st_mode,
+        path_stat.st_size,
+        path_stat.st_mtime_ns,
+    ):
+        raise OSError("one-shot MicroMachine executable path changed identity")
+
+
+def _open_native_path_monitor(
+    executable_descriptor: int,
+    execution_root: Path,
+) -> tuple[Any, int] | None:
+    required = (
+        "kqueue",
+        "kevent",
+        "KQ_FILTER_VNODE",
+        "KQ_EV_ADD",
+        "KQ_EV_CLEAR",
+        "KQ_NOTE_DELETE",
+        "KQ_NOTE_WRITE",
+        "KQ_NOTE_EXTEND",
+        "KQ_NOTE_ATTRIB",
+        "KQ_NOTE_LINK",
+        "KQ_NOTE_RENAME",
+        "KQ_NOTE_REVOKE",
+    )
+    if any(not hasattr(select, name) for name in required):
+        return None
+    directory_descriptor = os.open(execution_root, os.O_RDONLY)
+    queue = select.kqueue()
+    event_flags = select.KQ_EV_ADD | select.KQ_EV_CLEAR
+    executable_vnode_flags = (
+        select.KQ_NOTE_DELETE
+        | select.KQ_NOTE_WRITE
+        | select.KQ_NOTE_EXTEND
+        | select.KQ_NOTE_LINK
+        | select.KQ_NOTE_RENAME
+        | select.KQ_NOTE_REVOKE
+    )
+    directory_vnode_flags = (
+        executable_vnode_flags
+        | select.KQ_NOTE_ATTRIB
+    )
+    try:
+        queue.control(
+            [
+                select.kevent(
+                    executable_descriptor,
+                    filter=select.KQ_FILTER_VNODE,
+                    flags=event_flags,
+                    fflags=executable_vnode_flags,
+                ),
+                select.kevent(
+                    directory_descriptor,
+                    filter=select.KQ_FILTER_VNODE,
+                    flags=event_flags,
+                    fflags=directory_vnode_flags,
+                ),
+            ],
+            0,
+            0,
+        )
+    except BaseException:
+        queue.close()
+        os.close(directory_descriptor)
+        raise
+    return queue, directory_descriptor
+
+
+def _native_path_monitor_changed(
+    monitor: tuple[Any, int] | None,
+) -> bool:
+    if monitor is None:
+        return False
+    queue, _ = monitor
+    return bool(queue.control(None, 2, 0))
+
+
+def _close_native_path_monitor(
+    monitor: tuple[Any, int] | None,
+) -> None:
+    if monitor is None:
+        return
+    queue, directory_descriptor = monitor
+    queue.close()
+    os.close(directory_descriptor)
+
+
 def _query_embedded_build_identity(
     binary: Path,
     *,
     expected_sha256: str,
     command_runner: CommandRunner,
 ) -> str:
-    completed = command_runner(
+    completed = _run_native_command(
+        binary,
         [str(binary), "--voi-build-input-identity"],
-        check=False,
-        capture_output=True,
-        text=False,
-        shell=False,
+        expected_sha256=expected_sha256,
+        command_runner=command_runner,
     )
     if int(completed.returncode) != 0:
         raise ValueError("MicroMachine build-input identity query failed")
@@ -1026,16 +1407,15 @@ def _invoke_native_adapter(
             temporary.flush()
             os.fsync(temporary.fileno())
         os.chmod(temporary_path, 0o600)
-        completed = command_runner(
+        completed = _run_native_command(
+            binary,
             [
                 str(binary),
                 "--voi-pre-live-journey-adapter",
                 str(temporary_path),
             ],
-            check=False,
-            capture_output=True,
-            text=False,
-            shell=False,
+            expected_sha256=expected_sha256,
+            command_runner=command_runner,
         )
     finally:
         if temporary_path is not None:
@@ -1196,8 +1576,13 @@ def _validate_native_production_path(output: Mapping[str, object]) -> None:
                 "operation_id",
                 "generation",
                 "action",
+                "squad_order_type",
+                "target_x",
+                "target_y",
+                "radius",
                 "unit_tags",
                 "applied_proof",
+                "membership_proof",
             ),
         )
         _require_native_binding_fields(
@@ -1210,6 +1595,10 @@ def _validate_native_production_path(output: Mapping[str, object]) -> None:
                 "generation",
                 "squad_name",
                 "action",
+                "squad_order_type",
+                "target_x",
+                "target_y",
+                "radius",
                 "unit_tags",
             ),
         )
@@ -1245,6 +1634,11 @@ def _validate_native_production_path(output: Mapping[str, object]) -> None:
                 "generation",
                 "action",
                 "dispatch_action",
+                "ability_name",
+                "ability_id",
+                "target_kind",
+                "target_x",
+                "target_y",
                 "unit_tags",
                 "dispatch_proof",
             ),
@@ -1259,6 +1653,11 @@ def _validate_native_production_path(output: Mapping[str, object]) -> None:
                 "generation",
                 "action",
                 "dispatch_action",
+                "ability_name",
+                "ability_id",
+                "target_kind",
+                "target_x",
+                "target_y",
                 "unit_tags",
             ),
         )
@@ -1267,6 +1666,10 @@ def _validate_native_production_path(output: Mapping[str, object]) -> None:
         receipt_events["voiProductionAssignOperationOwner"],
     )
     _validate_native_submission_causality(events, squad_receipts, submission_receipts)
+    _validate_native_family_effect_causality(
+        events,
+        output.get("operation_director"),
+    )
 
 
 def _validate_native_applied_squad_order_payload(
@@ -1279,6 +1682,10 @@ def _validate_native_applied_squad_order_payload(
         "generation",
         "squad_name",
         "action",
+        "squad_order_type",
+        "target_x",
+        "target_y",
+        "radius",
         "unit_tags",
     }
     if set(payload) != expected:
@@ -1291,6 +1698,11 @@ def _validate_native_applied_squad_order_payload(
         or cast(int, payload["generation"]) <= 0
         or not str(payload.get("squad_name", "") or "")
         or not str(payload.get("action", "") or "")
+        or type(payload.get("squad_order_type")) is not int
+        or cast(int, payload["squad_order_type"]) < 0
+        or not _native_finite_number(payload.get("target_x"))
+        or not _native_finite_number(payload.get("target_y"))
+        or not _native_finite_number(payload.get("radius"), minimum=0.0)
     ):
         raise ValueError("native applied Squad order is malformed")
     _native_unit_tags(payload.get("unit_tags"))
@@ -1306,6 +1718,11 @@ def _validate_native_dispatched_sc2_action_payload(
         "generation",
         "action",
         "dispatch_action",
+        "ability_name",
+        "ability_id",
+        "target_kind",
+        "target_x",
+        "target_y",
         "unit_tags",
     }
     if set(payload) != expected:
@@ -1317,9 +1734,9 @@ def _validate_native_dispatched_sc2_action_payload(
         or type(payload.get("generation")) is not int
         or cast(int, payload["generation"]) <= 0
         or not str(payload.get("action", "") or "")
-        or not str(payload.get("dispatch_action", "") or "")
     ):
         raise ValueError("native dispatched SC2 action is malformed")
+    _native_action_metadata(payload)
     _native_unit_tags(payload.get("unit_tags"))
 
 
@@ -1351,8 +1768,13 @@ def _validate_native_squad_receipt_payload(
         "operation_id",
         "generation",
         "action",
+        "squad_order_type",
+        "target_x",
+        "target_y",
+        "radius",
         "unit_tags",
         "applied_proof",
+        "membership_proof",
     }
     if not event_payload:
         expected = {
@@ -1362,19 +1784,34 @@ def _validate_native_squad_receipt_payload(
             "generation",
             "squad_name",
             "action",
+            "squad_order_type",
+            "target_x",
+            "target_y",
+            "radius",
             "unit_tags",
             "callback_executed",
             "applied_proof",
+            "membership_proof",
         }
     if set(payload) != expected:
         raise ValueError("native squad-order receipt field set is invalid")
     binding = _native_receipt_binding(payload, identity)
     if payload.get("applied_proof") is not True:
         raise ValueError("native squad-order receipt lacks applied proof")
+    if payload.get("membership_proof") is not True:
+        raise ValueError("native squad-order receipt lacks membership proof")
     if not event_payload and payload.get("callback_executed") is not True:
         raise ValueError("native squad-order callback was not executed")
     if not event_payload and not str(payload.get("squad_name", "") or ""):
         raise ValueError("native squad-order receipt lacks squad name")
+    if (
+        type(payload.get("squad_order_type")) is not int
+        or cast(int, payload["squad_order_type"]) < 0
+        or not _native_finite_number(payload.get("target_x"))
+        or not _native_finite_number(payload.get("target_y"))
+        or not _native_finite_number(payload.get("radius"), minimum=0.0)
+    ):
+        raise ValueError("native squad-order receipt metadata is invalid")
     expected_id = _production_receipt_id(
         "voi-squad-order",
         binding,
@@ -1398,6 +1835,11 @@ def _validate_native_submission_receipt_payload(
         "generation",
         "action",
         "dispatch_action",
+        "ability_name",
+        "ability_id",
+        "target_kind",
+        "target_x",
+        "target_y",
         "unit_tags",
         "dispatch_proof",
     }
@@ -1409,6 +1851,11 @@ def _validate_native_submission_receipt_payload(
             "generation",
             "action",
             "dispatch_action",
+            "ability_name",
+            "ability_id",
+            "target_kind",
+            "target_x",
+            "target_y",
             "unit_tags",
             "callback_executed",
             "dispatch_proof",
@@ -1416,8 +1863,8 @@ def _validate_native_submission_receipt_payload(
     if set(payload) != expected:
         raise ValueError("native SC2 submission receipt field set is invalid")
     binding = _native_receipt_binding(payload, identity)
-    dispatch_action = str(payload.get("dispatch_action", "") or "")
-    if not dispatch_action or payload.get("dispatch_proof") is not True:
+    dispatch_action = _native_action_metadata(payload)[0]
+    if payload.get("dispatch_proof") is not True:
         raise ValueError("native SC2 submission receipt lacks dispatch proof")
     if not event_payload and payload.get("callback_executed") is not True:
         raise ValueError("native SC2 submission callback was not executed")
@@ -1425,6 +1872,7 @@ def _validate_native_submission_receipt_payload(
         "voi-sc2-submission",
         binding,
         dispatch_action=dispatch_action,
+        action_metadata=_native_action_metadata(payload),
     )
     if payload.get("submission_id") != expected_id:
         raise ValueError("native SC2 submission id is invalid")
@@ -1451,6 +1899,67 @@ def _native_receipt_binding(
     ):
         raise ValueError("native production receipt identity is invalid")
     return update_id, operation_id, generation, action, unit_tags
+
+
+def _native_finite_number(
+    value: object,
+    *,
+    minimum: float | None = None,
+) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    numeric = float(value)
+    return math.isfinite(numeric) and (
+        minimum is None or numeric >= minimum
+    )
+
+
+def _native_action_metadata(
+    payload: Mapping[str, object],
+) -> tuple[str, str, int, str, object, object]:
+    dispatch_action = str(payload.get("dispatch_action", "") or "")
+    ability_name = str(payload.get("ability_name", "") or "")
+    ability_id = payload.get("ability_id")
+    target_kind = str(payload.get("target_kind", "") or "")
+    target_x = payload.get("target_x")
+    target_y = payload.get("target_y")
+    supported_dispatches = {
+        "attack_move",
+        "move",
+        "ability",
+        "ability_position",
+        "ability_target",
+    }
+    ability_dispatches = {
+        "ability",
+        "ability_position",
+        "ability_target",
+    }
+    if (
+        dispatch_action not in supported_dispatches
+        or type(ability_id) is not int
+        or ability_id < 0
+        or not _native_finite_number(target_x)
+        or not _native_finite_number(target_y)
+    ):
+        raise ValueError("native SC2 action metadata is invalid")
+    if dispatch_action in ability_dispatches:
+        if not ability_name or ability_id <= 0 or not target_kind:
+            raise ValueError("native SC2 ability metadata is invalid")
+        if dispatch_action == "ability" and target_kind != "none":
+            raise ValueError("native SC2 no-target ability metadata is invalid")
+        if dispatch_action != "ability" and target_kind == "none":
+            raise ValueError("native SC2 targeted ability metadata is invalid")
+    elif ability_name or ability_id != 0 or target_kind:
+        raise ValueError("native non-ability action has ability metadata")
+    return (
+        dispatch_action,
+        ability_name,
+        ability_id,
+        target_kind,
+        target_x,
+        target_y,
+    )
 
 
 def _native_unit_tags(value: object) -> tuple[int, ...]:
@@ -1491,6 +2000,7 @@ def _production_receipt_id(
     binding: tuple[str, str, int, str, tuple[int, ...]],
     *,
     dispatch_action: str,
+    action_metadata: tuple[str, str, int, str, object, object] | None = None,
 ) -> str:
     update_id, operation_id, generation, action, unit_tags = binding
     fields = (prefix, update_id, operation_id)
@@ -1499,6 +2009,20 @@ def _production_receipt_id(
     canonical += f"{len(action)}:{action}|"
     canonical += f"{len(dispatch_action)}:{dispatch_action}|"
     canonical += "".join(f"{tag}," for tag in unit_tags)
+    canonical += "|"
+    if action_metadata is not None:
+        (
+            _metadata_dispatch,
+            ability_name,
+            ability_id,
+            target_kind,
+            target_x,
+            target_y,
+        ) = action_metadata
+        canonical += f"{len(ability_name)}:{ability_name}|"
+        canonical += f"{ability_id}|"
+        canonical += f"{len(target_kind)}:{target_kind}|"
+        canonical += f"{float(target_x):.17g}|{float(target_y):.17g}|"
     digest = 1_469_598_103_934_665_603
     for value in canonical.encode("utf-8"):
         digest ^= value
@@ -1571,6 +2095,53 @@ def _validate_native_ownership_causality(
     ]
     if len(receipt_bindings) != len(set(receipt_bindings)):
         raise ValueError("native ownership receipt is duplicated")
+    admitted_by_identity: dict[tuple[str, str, int], list[int]] = {}
+    for index, event in enumerate(canonical_events):
+        if event.get("event_type") != "launch_decision":
+            continue
+        identity = event.get("identity")
+        if (
+            not isinstance(identity, Mapping)
+            or identity.get("stage") != "launch_admitted"
+        ):
+            continue
+        key = (
+            str(identity.get("update_id", "") or ""),
+            str(identity.get("operation_id", "") or ""),
+            int(identity.get("generation", 0) or 0),
+        )
+        admitted_by_identity.setdefault(key, []).append(index)
+    for receipt in ownership_receipts:
+        identity = cast(Mapping[str, object], receipt.get("identity", {}))
+        key = (
+            str(identity.get("update_id", "") or ""),
+            str(identity.get("operation_id", "") or ""),
+            int(identity.get("generation", 0) or 0),
+        )
+        receipt_index = next(
+            (
+                index
+                for index, event in enumerate(canonical_events)
+                if event is receipt
+                or (
+                    event.get("event_type") == "production_path_receipt"
+                    and event.get("seq") == receipt.get("seq")
+                    and event.get("identity") == receipt.get("identity")
+                    and event.get("payload") == receipt.get("payload")
+                )
+            ),
+            -1,
+        )
+        if (
+            receipt_index < 0
+            or not any(
+                admitted_index < receipt_index
+                for admitted_index in admitted_by_identity.get(key, ())
+            )
+        ):
+            raise ValueError(
+                "native ownership receipt predates launch admission"
+            )
 
     snapshot_bindings: list[tuple[str, str, int, int, int]] = []
     for event in canonical_events:
@@ -1663,8 +2234,8 @@ def _validate_native_submission_causality(
     if any(count != 1 for count in matched_squad_receipts.values()):
         raise ValueError("native squad-order receipt lacks one canonical order")
 
-    grouped_tags: dict[tuple[str, str, int, str, str], set[int]] = {}
-    grouped_ids: dict[tuple[str, str, int, str, str], set[str]] = {}
+    grouped_tags: dict[tuple[object, ...], set[int]] = {}
+    grouped_ids: dict[tuple[object, ...], set[str]] = {}
     submission_action_tags: dict[tuple[str, str, int, str], set[int]] = {}
     for receipt in submission_receipts:
         key = (
@@ -1672,7 +2243,7 @@ def _validate_native_submission_causality(
             str(receipt["operation_id"]),
             int(receipt["generation"]),
             str(receipt["action"]),
-            str(receipt["dispatch_action"]),
+            *_native_action_metadata(receipt),
         )
         receipt_tags = _native_unit_tags(receipt["unit_tags"])
         grouped_tags.setdefault(key, set()).update(receipt_tags)
@@ -1692,29 +2263,32 @@ def _validate_native_submission_causality(
             "native Squad order and SC2 submission unit tags do not match"
         )
     submission_bindings: list[dict[str, object]] = []
-    for (
-        update_id,
-        operation_id,
-        generation,
-        action,
-        dispatch_action,
-    ), unit_tags in grouped_tags.items():
+    for key, unit_tags in grouped_tags.items():
+        (
+            update_id,
+            operation_id,
+            generation,
+            action,
+            dispatch_action,
+            ability_name,
+            ability_id,
+            target_kind,
+            target_x,
+            target_y,
+        ) = key
         binding = {
             "update_id": update_id,
             "operation_id": operation_id,
             "generation": generation,
             "action": action,
             "dispatch_action": dispatch_action,
+            "ability_name": ability_name,
+            "ability_id": ability_id,
+            "target_kind": target_kind,
+            "target_x": target_x,
+            "target_y": target_y,
             "submission_ids": sorted(
-                grouped_ids[
-                    (
-                        update_id,
-                        operation_id,
-                        generation,
-                        action,
-                        dispatch_action,
-                    )
-                ]
+                grouped_ids[key]
             ),
             "unit_tags": sorted(unit_tags),
         }
@@ -1735,16 +2309,158 @@ def _validate_native_submission_causality(
     if any(count != 1 for count in matched_submission_bindings):
         raise ValueError("native SC2 receipts lack one canonical submission")
 
+    matched_effect_bindings = [0] * len(submission_bindings)
     for event in canonical_events:
         if event.get("event_type") not in _EFFECT_EVENT_TYPES:
             continue
         matching = [
-            binding
-            for binding in submission_bindings
+            index
+            for index, binding in enumerate(submission_bindings)
             if _native_action_event_matches(event, binding)
         ]
         if len(matching) != 1:
             raise ValueError("native effect lacks exact SC2 receipt proof")
+        matched_effect_bindings[matching[0]] += 1
+    if any(count > 1 for count in matched_effect_bindings):
+        raise ValueError("native SC2 receipt has duplicate canonical effects")
+
+
+def _validate_native_family_effect_causality(
+    events: Sequence[object],
+    operation_director: object,
+) -> None:
+    rows = _mapping_sequence(operation_director)
+    if not isinstance(operation_director, Sequence) or isinstance(
+        operation_director,
+        (str, bytes, bytearray),
+    ):
+        raise ValueError("native operation director is malformed")
+    canonical_events = [
+        event for event in events if isinstance(event, Mapping)
+    ]
+    effect_events = [
+        event
+        for event in canonical_events
+        if event.get("event_type") in _EFFECT_EVENT_TYPES
+    ]
+    current_action_keys: set[tuple[str, str, int, str]] = set()
+    family_bindings: list[dict[str, object]] = []
+    effect_types = {
+        "movement": "movement",
+        "engagement": "engagement",
+        "ability_state": "ability_effect",
+    }
+    for row in rows:
+        update_id = str(row.get("policy_update_id", "") or "")
+        operation_id = str(row.get("operation_id", "") or "")
+        generation = row.get("generation")
+        action = str(row.get("last_action", "") or "")
+        if (
+            not update_id
+            or not operation_id
+            or type(generation) is not int
+            or generation <= 0
+        ):
+            raise ValueError("native operation director identity is invalid")
+        if action:
+            current_action_keys.add(
+                (update_id, operation_id, generation, action)
+            )
+        raw_family = row.get("family_evidence")
+        if not isinstance(raw_family, Sequence) or isinstance(
+            raw_family,
+            (str, bytes, bytearray),
+        ):
+            raise ValueError("native family evidence is malformed")
+        for raw_evidence in raw_family:
+            if not isinstance(raw_evidence, Mapping):
+                raise ValueError("native family evidence row is malformed")
+            effect_count = raw_evidence.get("effect_count")
+            if type(effect_count) is not int or effect_count < 0:
+                raise ValueError("native family effect count is invalid")
+            submitted_count = raw_evidence.get("submitted_count")
+            if (
+                effect_count == 0
+                or type(submitted_count) is not int
+                or submitted_count <= 0
+            ):
+                continue
+            effect_kind = str(raw_evidence.get("effect_kind", "") or "")
+            event_type = effect_types.get(effect_kind)
+            evidence_generation = raw_evidence.get("generation")
+            evidence_frame = raw_evidence.get("effect_frame")
+            evidence_tags = _native_unit_tags(
+                raw_evidence.get("effect_unit_tags")
+            )
+            submitted_tags = _native_unit_tags(
+                raw_evidence.get("submitted_unit_tags")
+            )
+            if (
+                event_type is None
+                or raw_evidence.get("update_id") != update_id
+                or raw_evidence.get("operation_id") != operation_id
+                or evidence_generation != generation
+                or raw_evidence.get("action") != action
+                or effect_count != len(evidence_tags)
+                or submitted_count != len(submitted_tags)
+                or evidence_tags != submitted_tags
+                or type(evidence_frame) is not int
+                or evidence_frame <= 0
+            ):
+                raise ValueError("native family effect binding is invalid")
+            family_bindings.append(
+                {
+                    "event_type": event_type,
+                    "update_id": update_id,
+                    "operation_id": operation_id,
+                    "generation": generation,
+                    "action": action,
+                    "game_frame": evidence_frame,
+                    "effect_kind": effect_kind,
+                    "unit_tags": list(evidence_tags),
+                }
+            )
+    matched_family = [0] * len(family_bindings)
+    for event in effect_events:
+        matching = [
+            index
+            for index, binding in enumerate(family_bindings)
+            if _native_family_effect_event_matches(event, binding)
+        ]
+        identity = cast(Mapping[str, object], event.get("identity", {}))
+        payload = cast(Mapping[str, object], event.get("payload", {}))
+        action_key = (
+            str(identity.get("update_id", "") or ""),
+            str(identity.get("operation_id", "") or ""),
+            int(identity.get("generation", 0) or 0),
+            str(payload.get("action", "") or ""),
+        )
+        if action_key in current_action_keys and len(matching) != 1:
+            raise ValueError("native effect lacks exact family evidence")
+        for index in matching:
+            matched_family[index] += 1
+    if any(count != 1 for count in matched_family):
+        raise ValueError("native family evidence lacks one canonical effect")
+
+
+def _native_family_effect_event_matches(
+    event: Mapping[str, object],
+    binding: Mapping[str, object],
+) -> bool:
+    identity = event.get("identity")
+    payload = event.get("payload")
+    return bool(
+        event.get("event_type") == binding.get("event_type")
+        and isinstance(identity, Mapping)
+        and isinstance(payload, Mapping)
+        and identity.get("update_id") == binding.get("update_id")
+        and identity.get("operation_id") == binding.get("operation_id")
+        and identity.get("generation") == binding.get("generation")
+        and identity.get("game_frame") == binding.get("game_frame")
+        and payload.get("action") == binding.get("action")
+        and payload.get("effect_kind") == binding.get("effect_kind")
+        and payload.get("unit_tags") == binding.get("unit_tags")
+    )
 
 
 def _matching_native_action_event(
@@ -1769,12 +2485,7 @@ def _native_action_event_matches(
         and isinstance(payload, Mapping)
         and all(
             payload.get(field_name) == binding.get(field_name)
-            for field_name in (
-                "unit_tags",
-                "receipt_id",
-                "submission_ids",
-                "dispatch_action",
-            )
+            for field_name in _NATIVE_ACTION_PROOF_FIELDS
             if field_name in binding
         )
     )
@@ -2068,16 +2779,24 @@ def _consume_web_event_reconnect(
     lifecycle_events = [
         event
         for event in _mapping_sequence(native.get("events"))
-        if event.get("event_type")
-        in {"ownership_snapshot", "submission", "movement", "engagement"}
+        if event.get("event_type") in _WEB_LIFECYCLE_EVENT_TYPES
     ]
     published_events: list[dict[str, object]] = []
     for event in lifecycle_events:
         identity = cast(Mapping[str, object], event["identity"])
         logical_id = f"native:{event['seq']}:{event['event_type']}"
+        source_payload = {
+            "logical_event_id": logical_id,
+            "source_event_seq": int(event["seq"]),
+            "source_event_type": str(event["event_type"]),
+            "source_identity": deepcopy(dict(identity)),
+            "source_payload": deepcopy(
+                dict(cast(Mapping[str, object], event["payload"]))
+            ),
+        }
         published = journal.publish(
             str(event["event_type"]),
-            {"logical_event_id": logical_id},
+            source_payload,
             update_id=str(identity["update_id"]),
             operation_id=str(identity["operation_id"]),
             generation=int(identity["generation"]),
@@ -2094,8 +2813,8 @@ def _consume_web_event_reconnect(
             game_frame=int(identity["game_frame"]),
             payload={
                 "action": str(event["event_type"]),
-                "logical_event_id": logical_id,
                 "event_seq": int(published["event_seq"]),
+                **deepcopy(source_payload),
             },
             order=40,
         )
@@ -2115,19 +2834,36 @@ def _consume_web_event_reconnect(
         },
         order=41,
     )
-    replay_ids = [
-        str(cast(Mapping[str, object], event["payload"])["logical_event_id"])
+    replay_payloads = [
+        cast(Mapping[str, object], event["payload"])
         for event in replay
+        if isinstance(event.get("payload"), Mapping)
+    ]
+    if len(replay_payloads) != len(replay):
+        raise ValueError("native replay journal payload is malformed")
+    replay_ids = [
+        str(payload["logical_event_id"])
+        for payload in replay_payloads
     ]
     if len(replay_ids) != len(set(replay_ids)):
         raise ValueError("native replay journal contains duplicate logical events")
-    for logical_id in replay_ids:
+    for replayed_event, payload in zip(replay, replay_payloads, strict=True):
+        source_identity = cast(
+            Mapping[str, object],
+            payload.get("source_identity", {}),
+        )
         execution.emit(
             "replay_deduplicated",
-            update_id=str(reconnect_identity["update_id"]),
+            update_id=str(source_identity.get("update_id", "")),
+            operation_id=str(source_identity.get("operation_id", "")),
+            generation=int(source_identity.get("generation", 0) or 0),
             stage="replayed",
-            game_frame=int(reconnect_identity["game_frame"]),
-            payload={"action": "dedupe", "logical_event_id": logical_id},
+            game_frame=int(source_identity.get("game_frame", 0) or 0),
+            payload={
+                "action": "dedupe",
+                "event_seq": int(replayed_event["event_seq"]),
+                **deepcopy(dict(payload)),
+            },
             order=42,
         )
     execution.products["event_journal_replay"] = {
@@ -3215,15 +3951,174 @@ def _verify_transfer(
     after_owners = cast(Mapping[str, object], after.get("owners", {}))
     source = str(stop.get("source_operation_id", ""))
     destination = str(stop.get("destination_operation_id", ""))
-    if (
-        len(cast(Sequence[object], after_owners.get(source, ())))
-        >= len(cast(Sequence[object], before_owners.get(source, ())))
-        or len(cast(Sequence[object], after_owners.get(destination, ())))
-        <= len(cast(Sequence[object], before_owners.get(destination, ())))
-    ):
-        blockers.append("transfer ownership did not move source to destination")
+    if len(transfers) != 1:
+        return
+    transfer = transfers[0]
+    identity = cast(Mapping[str, object], transfer.get("identity", {}))
+    payload = cast(Mapping[str, object], transfer.get("payload", {}))
+    expected_payload_fields = {
+        "action",
+        "counterpart_operation_id",
+        "destination_generation_after",
+        "destination_generation_before",
+        "destination_unit_tags_after",
+        "destination_unit_tags_before",
+        "resolution",
+        "source_generation_after",
+        "source_generation_before",
+        "source_unit_tags_after",
+        "source_unit_tags_before",
+        "unit_tags",
+    }
+    try:
+        selected_tags = _native_unit_tags(payload.get("unit_tags"))
+        before_source_tags = _native_optional_unit_tags(
+            before_owners.get(source, ())
+        )
+        before_destination_tags = _native_optional_unit_tags(
+            before_owners.get(destination, ())
+        )
+        after_source_tags = _native_optional_unit_tags(
+            after_owners.get(source, ())
+        )
+        after_destination_tags = _native_optional_unit_tags(
+            after_owners.get(destination, ())
+        )
+        before_operations = _state_operation_rows(before)
+        after_operations = _state_operation_rows(after)
+        before_source = before_operations[source]
+        before_destination = before_operations[destination]
+        after_source = after_operations[source]
+        after_destination = after_operations[destination]
+        source_before_generation = int(before_source["generation"])
+        source_after_generation = int(after_source["generation"])
+        destination_before_generation = int(
+            before_destination["generation"]
+        )
+        destination_after_generation = int(after_destination["generation"])
+        if (
+            set(payload) != expected_payload_fields
+            or payload.get("action") != "transfer_out"
+            or payload.get("counterpart_operation_id") != destination
+            or identity.get("operation_id") != source
+            or identity.get("generation") != source_after_generation
+            or payload.get("source_generation_before")
+            != source_before_generation
+            or payload.get("source_generation_after")
+            != source_after_generation
+            or payload.get("destination_generation_before")
+            != destination_before_generation
+            or payload.get("destination_generation_after")
+            != destination_after_generation
+            or payload.get("source_unit_tags_before")
+            != list(before_source_tags)
+            or payload.get("source_unit_tags_after")
+            != list(after_source_tags)
+            or payload.get("destination_unit_tags_before")
+            != list(before_destination_tags)
+            or payload.get("destination_unit_tags_after")
+            != list(after_destination_tags)
+            or source_after_generation <= source_before_generation
+            or destination_after_generation
+            <= destination_before_generation
+            or tuple(
+                tag
+                for tag in before_source_tags
+                if tag not in selected_tags
+            )
+            != after_source_tags
+            or tuple(sorted((*before_destination_tags, *selected_tags)))
+            != after_destination_tags
+            or tuple(
+                tag
+                for tag in before_source_tags
+                if tag not in after_source_tags
+            )
+            != selected_tags
+            or tuple(
+                tag
+                for tag in after_destination_tags
+                if tag not in before_destination_tags
+            )
+            != selected_tags
+            or _native_optional_unit_tags(
+                before_source.get("assigned_unit_tags")
+            )
+            != before_source_tags
+            or _native_optional_unit_tags(
+                before_destination.get("assigned_unit_tags")
+            )
+            != before_destination_tags
+            or _native_optional_unit_tags(
+                after_source.get("assigned_unit_tags")
+            )
+            != after_source_tags
+            or _native_optional_unit_tags(
+                after_destination.get("assigned_unit_tags")
+            )
+            != after_destination_tags
+            or not _state_owner_bindings_match(
+                before,
+                before_source_tags,
+                source,
+                source_before_generation,
+            )
+            or not _state_owner_bindings_match(
+                before,
+                before_destination_tags,
+                destination,
+                destination_before_generation,
+            )
+            or not _state_owner_bindings_match(
+                after,
+                after_source_tags,
+                source,
+                source_after_generation,
+            )
+            or not _state_owner_bindings_match(
+                after,
+                after_destination_tags,
+                destination,
+                destination_after_generation,
+            )
+        ):
+            blockers.append(
+                "transfer tags and generations are not exactly bound"
+            )
+    except (KeyError, TypeError, ValueError):
+        blockers.append("transfer exact ownership evidence is malformed")
     for sibling in cast(Sequence[object], stop.get("preserved_operation_ids", ())):
-        if before_owners.get(str(sibling)) != after_owners.get(str(sibling)):
+        sibling_id = str(sibling)
+        try:
+            before_sibling = _state_operation_rows(before)[sibling_id]
+            after_sibling = _state_operation_rows(after)[sibling_id]
+            sibling_tags = _native_optional_unit_tags(
+                before_owners.get(sibling_id, ())
+            )
+            sibling_generation = int(before_sibling["generation"])
+            preserved = (
+                before_owners.get(sibling_id) == after_owners.get(sibling_id)
+                and before_sibling.get("active") is True
+                and after_sibling.get("active") is True
+                and after_sibling.get("generation") == sibling_generation
+                and before_sibling.get("assigned_unit_tags")
+                == after_sibling.get("assigned_unit_tags")
+                and _state_owner_bindings_match(
+                    before,
+                    sibling_tags,
+                    sibling_id,
+                    sibling_generation,
+                )
+                and _state_owner_bindings_match(
+                    after,
+                    sibling_tags,
+                    sibling_id,
+                    sibling_generation,
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            preserved = False
+        if not preserved:
             blockers.append("transfer did not preserve sibling ownership")
 
 
@@ -3241,14 +4136,104 @@ def _verify_selective_cancellation(
     if states is None:
         blockers.append("selective cancellation lacks native state evidence")
         return
-    after = states[1]
-    operations = {
-        str(row.get("operation_id", "")): row
-        for row in _mapping_sequence(after.get("operations"))
-    }
-    selected = operations.get(str(stop.get("selected_operation_id", "")), {})
-    sibling = operations.get(str(stop.get("sibling_operation_id", "")), {})
-    if selected.get("active") is not False or sibling.get("active") is not True:
+    before, after = states
+    selected_id = str(stop.get("selected_operation_id", ""))
+    sibling_id = str(stop.get("sibling_operation_id", ""))
+    if len(cancellations) != 1:
+        return
+    cancellation = cancellations[0]
+    identity = cast(Mapping[str, object], cancellation.get("identity", {}))
+    payload = cast(Mapping[str, object], cancellation.get("payload", {}))
+    try:
+        before_operations = _state_operation_rows(before)
+        after_operations = _state_operation_rows(after)
+        selected_before = before_operations[selected_id]
+        selected_after = after_operations[selected_id]
+        sibling_before = before_operations[sibling_id]
+        sibling_after = after_operations[sibling_id]
+        selected_tags = _native_optional_unit_tags(
+            cast(Mapping[str, object], before.get("owners", {})).get(
+                selected_id,
+                (),
+            )
+        )
+        released_tags = _native_optional_unit_tags(
+            payload.get("released_unit_tags")
+        )
+        selected_generation = int(selected_before["generation"])
+        sibling_generation = int(sibling_before["generation"])
+        sibling_tags = _native_optional_unit_tags(
+            cast(Mapping[str, object], before.get("owners", {})).get(
+                sibling_id,
+                (),
+            )
+        )
+        after_owners = cast(Mapping[str, object], after.get("owners", {}))
+        after_bindings = cast(
+            Mapping[str, object],
+            after.get("owner_bindings", {}),
+        )
+        selected_released = (
+            set(payload)
+            == {
+                "action",
+                "reason",
+                "released_generation",
+                "released_unit_tags",
+            }
+            and identity.get("operation_id") == selected_id
+            and identity.get("generation") == selected_generation
+            and payload.get("action") == "cancel"
+            and payload.get("reason") == "cancelled_by_user"
+            and payload.get("released_generation") == selected_generation
+            and released_tags == selected_tags
+            and selected_after.get("active") is False
+            and _native_optional_unit_tags(
+                selected_after.get("assigned_unit_tags")
+            )
+            == ()
+            and _native_optional_unit_tags(
+                after_owners.get(selected_id, ())
+            )
+            == ()
+            and all(str(tag) not in after_bindings for tag in released_tags)
+            and not any(
+                isinstance(binding, Mapping)
+                and binding.get("operation_id") == selected_id
+                for binding in after_bindings.values()
+            )
+        )
+        sibling_preserved = (
+            sibling_before.get("active") is True
+            and sibling_after.get("active") is True
+            and sibling_after.get("generation") == sibling_generation
+            and sibling_before.get("assigned_unit_tags")
+            == sibling_after.get("assigned_unit_tags")
+            and cast(Mapping[str, object], before.get("owners", {})).get(
+                sibling_id
+            )
+            == after_owners.get(sibling_id)
+            and _state_owner_bindings_match(
+                before,
+                sibling_tags,
+                sibling_id,
+                sibling_generation,
+            )
+            and _state_owner_bindings_match(
+                after,
+                sibling_tags,
+                sibling_id,
+                sibling_generation,
+            )
+        )
+    except (KeyError, TypeError, ValueError):
+        selected_released = False
+        sibling_preserved = False
+    if not selected_released:
+        blockers.append(
+            "selective cancellation did not release exact selected ownership"
+        )
+    if not sibling_preserved:
         blockers.append("selective cancellation removed an unrelated operation")
 
 
@@ -3417,25 +4402,113 @@ def _verify_reconnect(
     events: Sequence[Mapping[str, object]],
     blockers: list[str],
 ) -> None:
-    source_events = [
-        cast(Mapping[str, object], event["payload"])
+    native_sources = [
+        event
+        for event in events
+        if event.get("event_type") in _WEB_LIFECYCLE_EVENT_TYPES
+        and isinstance(event.get("identity"), Mapping)
+        and isinstance(event.get("payload"), Mapping)
+    ]
+    web_events = [
+        event
         for event in events
         if event.get("event_type") == "web_event"
+        and isinstance(event.get("identity"), Mapping)
+        and isinstance(event.get("payload"), Mapping)
     ]
+    web_rows: list[dict[str, object]] = []
+    expected_web_fields = {
+        "action",
+        "event_seq",
+        "logical_event_id",
+        "source_event_seq",
+        "source_event_type",
+        "source_identity",
+        "source_payload",
+    }
+    for event in web_events:
+        identity = cast(Mapping[str, object], event["identity"])
+        payload = cast(Mapping[str, object], event["payload"])
+        source_identity = payload.get("source_identity")
+        source_payload = payload.get("source_payload")
+        source_type = str(payload.get("source_event_type", "") or "")
+        source_seq = payload.get("source_event_seq")
+        event_seq = payload.get("event_seq")
+        logical_id = str(payload.get("logical_event_id", "") or "")
+        expected_identity = (
+            {
+                **dict(source_identity),
+                "stage": "web_event",
+            }
+            if isinstance(source_identity, Mapping)
+            else {}
+        )
+        if (
+            set(payload) != expected_web_fields
+            or not isinstance(source_identity, Mapping)
+            or not isinstance(source_payload, Mapping)
+            or source_type not in _WEB_LIFECYCLE_EVENT_TYPES
+            or type(source_seq) is not int
+            or source_seq <= 0
+            or type(event_seq) is not int
+            or event_seq <= 0
+            or logical_id != f"native:{source_seq}:{source_type}"
+            or payload.get("action") != source_type
+            or dict(identity) != expected_identity
+        ):
+            blockers.append(
+                "web event is not exactly bound to its native source"
+            )
+            continue
+        web_rows.append(
+            {
+                "event_seq": event_seq,
+                "logical_event_id": logical_id,
+                "source_event_seq": source_seq,
+                "source_event_type": source_type,
+                "source_identity": dict(source_identity),
+                "source_payload": dict(source_payload),
+            }
+        )
+    native_rows = [
+        {
+            "source_event_type": str(event["event_type"]),
+            "source_identity": dict(
+                cast(Mapping[str, object], event["identity"])
+            ),
+            "source_payload": dict(
+                cast(Mapping[str, object], event["payload"])
+            ),
+        }
+        for event in native_sources
+    ]
+    web_source_rows = [
+        {
+            field_name: row[field_name]
+            for field_name in (
+                "source_event_type",
+                "source_identity",
+                "source_payload",
+            )
+        }
+        for row in web_rows
+    ]
+    if canonical_json_bytes(web_source_rows) != canonical_json_bytes(native_rows):
+        blockers.append(
+            "web events do not preserve native source order and multiplicity"
+        )
     logical_ids = [
-        str(payload.get("logical_event_id", ""))
-        for payload in source_events
+        str(row.get("logical_event_id", ""))
+        for row in web_rows
     ]
-    event_seqs = [payload.get("event_seq") for payload in source_events]
+    event_seqs = [row.get("event_seq") for row in web_rows]
+    source_seqs = [row.get("source_event_seq") for row in web_rows]
     replay_events = [
         event
         for event in events
         if event.get("event_type") == "replay_deduplicated"
-    ]
-    replayed = [
-        str(cast(Mapping[str, object], event["payload"]).get("logical_event_id", ""))
-        for event in replay_events
-        if isinstance(event.get("payload"), Mapping)
+        and isinstance(event.get("identity"), Mapping)
+        and isinstance(event.get("payload"), Mapping)
     ]
     reconnect_events = [
         event
@@ -3471,18 +4544,24 @@ def _verify_reconnect(
         blockers.append("reconnect cursor is missing or invalid")
         cursor = 0
     valid_source_sequences = (
-        bool(source_events)
+        bool(web_rows)
         and all(type(event_seq) is int and event_seq > 0 for event_seq in event_seqs)
         and len(set(event_seqs)) == len(event_seqs)
         and event_seqs == sorted(event_seqs)
+        and all(
+            type(source_seq) is int and source_seq > 0
+            for source_seq in source_seqs
+        )
+        and len(set(source_seqs)) == len(source_seqs)
+        and source_seqs == sorted(source_seqs)
     )
     if not valid_source_sequences:
         blockers.append("web event source sequence is invalid")
     expected_rows = [
-        payload
-        for payload in source_events
-        if type(payload.get("event_seq")) is int
-        and cast(int, payload["event_seq"]) > cursor
+        row
+        for row in web_rows
+        if type(row.get("event_seq")) is int
+        and cast(int, row["event_seq"]) > cursor
     ]
     expected_replay = [
         str(payload.get("logical_event_id", ""))
@@ -3527,22 +4606,69 @@ def _verify_reconnect(
             or replay_binding != reconnect_binding
         ):
             blockers.append("replay batch is not bound to the reconnect cursor")
-    if any(
-        tuple(
-            cast(Mapping[str, object], event.get("identity", {})).get(
-                field_name
-            )
-            for field_name in (
-                "update_id",
-                "operation_id",
-                "generation",
-                "game_frame",
-            )
+    replay_rows: list[dict[str, object]] = []
+    expected_replay_fields = expected_web_fields
+    for event in replay_events:
+        identity = cast(Mapping[str, object], event["identity"])
+        payload = cast(Mapping[str, object], event["payload"])
+        source_identity = payload.get("source_identity")
+        source_payload = payload.get("source_payload")
+        expected_identity = (
+            {
+                **dict(source_identity),
+                "stage": "replayed",
+            }
+            if isinstance(source_identity, Mapping)
+            else {}
         )
-        != reconnect_binding
-        for event in replay_events
+        if (
+            set(payload) != expected_replay_fields
+            or payload.get("action") != "dedupe"
+            or not isinstance(source_identity, Mapping)
+            or not isinstance(source_payload, Mapping)
+            or dict(identity) != expected_identity
+        ):
+            blockers.append(
+                "replay output did not preserve native source identity"
+            )
+            continue
+        replay_rows.append(
+            {
+                field_name: deepcopy(payload[field_name])
+                for field_name in (
+                    "event_seq",
+                    "logical_event_id",
+                    "source_event_seq",
+                    "source_event_type",
+                    "source_identity",
+                    "source_payload",
+                )
+            }
+        )
+    expected_replay_rows = [
+        {
+            field_name: deepcopy(row[field_name])
+            for field_name in (
+                "event_seq",
+                "logical_event_id",
+                "source_event_seq",
+                "source_event_type",
+                "source_identity",
+                "source_payload",
+            )
+        }
+        for row in expected_rows
+    ]
+    if canonical_json_bytes(replay_rows) != canonical_json_bytes(
+        expected_replay_rows
     ):
-        blockers.append("replay output identity does not match reconnect")
+        blockers.append(
+            "reconnect replay did not preserve source order and multiplicity"
+        )
+    replayed = [
+        str(row.get("logical_event_id", ""))
+        for row in replay_rows
+    ]
     if replayed != expected_replay:
         blockers.append("reconnect replay was not deduplicated exactly once")
 
@@ -3566,6 +4692,46 @@ def _verify_projection_identity(
         blockers.append("web/HUD/voice/callout projections are incomplete")
     elif any(identity != projections[0] for identity in projections[1:]):
         blockers.append("web/HUD/voice/callout projection identity mismatch")
+
+
+def _state_operation_rows(
+    state: Mapping[str, object],
+) -> dict[str, dict[str, object]]:
+    rows = _mapping_sequence(state.get("operations"))
+    operations = {
+        str(row.get("operation_id", "") or ""): row
+        for row in rows
+    }
+    if (
+        not operations
+        or "" in operations
+        or len(operations) != len(rows)
+    ):
+        raise ValueError("native state operations are malformed")
+    return operations
+
+
+def _state_owner_bindings_match(
+    state: Mapping[str, object],
+    unit_tags: Sequence[int],
+    operation_id: str,
+    generation: int,
+) -> bool:
+    bindings = state.get("owner_bindings")
+    if not isinstance(bindings, Mapping):
+        return False
+    return all(
+        isinstance(bindings.get(str(unit_tag)), Mapping)
+        and cast(Mapping[str, object], bindings[str(unit_tag)]).get(
+            "operation_id"
+        )
+        == operation_id
+        and cast(Mapping[str, object], bindings[str(unit_tag)]).get(
+            "generation"
+        )
+        == generation
+        for unit_tag in unit_tags
+    )
 
 
 def _before_after_states(
@@ -4447,6 +5613,13 @@ def _reject_duplicate_json_object_keys(
 
 
 def _sha256_file(path: Path) -> str:
+    inherited_descriptor = _inherited_executable_fd(path)
+    if inherited_descriptor is not None:
+        snapshot = _native_executable_snapshot(inherited_descriptor)
+        return _sha256_descriptor(
+            inherited_descriptor,
+            snapshot[3],
+        )
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
