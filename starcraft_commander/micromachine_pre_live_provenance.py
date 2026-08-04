@@ -2571,6 +2571,32 @@ def attest_github_source(
 
     if artifact_sha256 is not None:
         try:
+            refreshed_workflow_runs = adapter.list_workflow_runs(
+                normalized_repository,
+                workflow_id,
+                branch=pull_head_ref or "",
+                event=AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
+            )
+        except Exception as exc:
+            blockers.append(
+                f"post-download workflow freshness lookup failed: {exc}"
+            )
+        else:
+            _validate_workflow_specific_freshness(
+                adapter,
+                refreshed_workflow_runs,
+                repository=normalized_repository,
+                selected_run=workflow_run,
+                workflow_id=workflow_id,
+                workflow_path=AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH,
+                pull_id=pull_id,
+                pull_number=pull_number,
+                expected_head_sha=expected_head_sha,
+                expected_head_ref=pull_head_ref,
+                repository_id=expected_repository_id,
+                blockers=blockers,
+            )
+        try:
             refreshed_repository_workflow_runs = (
                 adapter.list_repository_workflow_runs(
                     normalized_repository,
@@ -2626,6 +2652,7 @@ def attest_github_source(
     workflow_run_identity["head_repository"] = {
         "id": run_head_repository_id,
     }
+    workflow_run_identity["pull_requests"] = workflow_run.get("pull_requests")
     return _component_result(
         blockers,
         repository=normalized_repository,
@@ -9471,6 +9498,56 @@ def _eligible_workflow_runs(
     return [record]
 
 
+def _validate_workflow_specific_freshness(
+    adapter: GitHubSourceAdapter,
+    workflow_runs: Sequence[Mapping[str, object]],
+    *,
+    repository: str,
+    selected_run: Mapping[str, object],
+    workflow_id: int,
+    workflow_path: str,
+    pull_id: int | None,
+    pull_number: int,
+    expected_head_sha: str,
+    expected_head_ref: str | None,
+    repository_id: int,
+    blockers: list[str],
+) -> None:
+    eligible_runs = _eligible_workflow_runs(
+        adapter,
+        workflow_runs,
+        repository=repository,
+        current_run=selected_run,
+        workflow_id=workflow_id,
+        workflow_path=workflow_path,
+        pull_id=pull_id,
+        pull_number=pull_number,
+        candidate_head_sha=expected_head_sha,
+        candidate_head_ref=expected_head_ref,
+        run_head_sha=expected_head_sha,
+        run_head_branch=expected_head_ref,
+        repository_id=repository_id,
+        allow_unlisted_current_run=False,
+        blockers=blockers,
+    )
+    if not eligible_runs:
+        blockers.append(
+            "candidate head has no workflow-specific run in the authoritative "
+            "provenance namespace"
+        )
+        return
+    latest_run = eligible_runs[0]
+    if _workflow_run_order_key(latest_run) != _workflow_run_order_key(
+        selected_run
+    ):
+        blockers.append(
+            "selected provenance workflow run differs from the latest "
+            "workflow-specific listing: "
+            f"selected={_workflow_run_order_key(selected_run)!r} "
+            f"latest={_workflow_run_order_key(latest_run)!r}"
+        )
+
+
 def _index_repository_workflow_runs(
     workflow_runs: Sequence[Mapping[str, object]],
     *,
@@ -9760,6 +9837,30 @@ def _attest_github_source_freshness(
             "run_attempt": selected_run_attempt,
         }
     )
+    try:
+        workflow_runs = adapter.list_workflow_runs(
+            repository,
+            workflow_id,
+            branch=expected_head_ref,
+            event=AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
+        )
+    except Exception as exc:
+        blockers.append(f"GitHub workflow freshness lookup failed: {exc}")
+    else:
+        _validate_workflow_specific_freshness(
+            adapter,
+            workflow_runs,
+            repository=repository,
+            selected_run=selected_identity,
+            workflow_id=workflow_id,
+            workflow_path=workflow_path,
+            pull_id=pull_id,
+            pull_number=pull_number,
+            expected_head_sha=expected_head_sha,
+            expected_head_ref=expected_head_ref,
+            repository_id=repository_id,
+            blockers=blockers,
+        )
     try:
         repository_workflow_runs = adapter.list_repository_workflow_runs(
             repository,

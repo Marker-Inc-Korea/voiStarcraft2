@@ -629,6 +629,25 @@ def append_newer_repository_run(
     return newer_run
 
 
+def append_newer_workflow_run(
+    adapter: FakeGitHubAdapter,
+) -> dict[str, object]:
+    newer_run = copy.deepcopy(adapter.workflow_run)
+    newer_run.update(
+        {
+            "id": RUN_ID + 1,
+            "check_suite_id": CHECK_SUITE_ID + 1,
+            "run_number": int(adapter.workflow_run["run_number"]) + 1,
+            "run_attempt": 1,
+            "status": "in_progress",
+            "conclusion": None,
+        }
+    )
+    adapter.workflow_run_details[RUN_ID + 1] = newer_run
+    adapter.workflow_runs.append(dict(newer_run))
+    return newer_run
+
+
 class VerifierDeadlineTest(unittest.TestCase):
     def test_operation_boundaries_receive_shared_remaining_timeout(self) -> None:
         clock = FakeMonotonicClock(100.0)
@@ -1685,7 +1704,13 @@ class GitHubSourceAttestationTest(unittest.TestCase):
                     WORKFLOW_ID,
                     "issue-138-authenticated-prelive-provenance",
                     AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
-                )
+                ),
+                (
+                    REPOSITORY,
+                    WORKFLOW_ID,
+                    "issue-138-authenticated-prelive-provenance",
+                    AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
+                ),
             ],
             adapter.workflow_run_queries,
         )
@@ -2393,7 +2418,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
                 artifact_id: int,
             ) -> bytes:
                 payload = super().download_artifact(repository, artifact_id)
-                append_newer_repository_run(self)
+                append_newer_workflow_run(self)
                 return payload
 
         adapter = ArtifactDownloadRaceAdapter()
@@ -2402,7 +2427,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
 
         self.assertFalse(report["ok"], report)
         self.assertIn(
-            "not the latest repository workflow run",
+            "latest workflow-specific listing",
             " ".join(report["blockers"]),
         )
         self.assertEqual(1, adapter.download_calls)
@@ -8862,7 +8887,7 @@ class AggregateProvenanceTest(unittest.TestCase):
                     ref=ref,
                     sha=sha,
                 )
-                append_newer_repository_run(self)
+                append_newer_workflow_run(self)
                 return result
 
         with tempfile.TemporaryDirectory() as directory:
