@@ -30,7 +30,6 @@ from starcraft_commander.micromachine_build_identity import (
     MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
     MICROMACHINE_REQUIRED_NATIVE_TESTS,
     REPO_ROOT as BUILD_IDENTITY_REPO_ROOT,
-    TRUSTED_GIT_EXECUTABLE as BUILD_IDENTITY_TRUSTED_GIT_EXECUTABLE,
     MicroMachineBuildIdentityConfig,
     build_micromachine_build_identity,
     canonical_micromachine_ctest_registry,
@@ -5213,21 +5212,23 @@ class LocalProducerTest(unittest.TestCase):
             fixture = make_build_fixture(root / "fixture")
             build_dir = fixture["config"].micromachine_build_dir.resolve()
             fake_ctest = root / "ctest"
-            registry = {
-                "tests": [
-                    {
-                        "name": name,
-                        "command": [str(build_dir / "bin" / executable)],
-                    }
-                    for name, executable in sorted(
-                        MICROMACHINE_REQUIRED_NATIVE_TESTS.items()
-                    )
-                ]
-            }
+            registry_commands = "".join(
+                (
+                    "  printf "
+                    f"'%s{{\"name\":\"{name}\","
+                    f"\"command\":[\"%s/bin/{executable}\"]}}' "
+                    f"'{',' if index else ''}' \"$2\"\n"
+                )
+                for index, (name, executable) in enumerate(
+                    sorted(MICROMACHINE_REQUIRED_NATIVE_TESTS.items())
+                )
+            )
             fake_ctest.write_text(
                 "#!/bin/sh\n"
                 'if [ "${3:-}" = "--show-only=json-v1" ]; then\n'
-                f"  printf '%s\\n' '{json.dumps(registry)}'\n"
+                "  printf '%s' '{\"tests\":['\n"
+                f"{registry_commands}"
+                "  printf '%s\\n' ']}'\n"
                 "else\n"
                 "  printf '%s\\n' "
                 f"'100% tests passed, 0 tests failed out of {REQUIRED_CTEST_COUNT}'\n"
@@ -5265,61 +5266,9 @@ class LocalProducerTest(unittest.TestCase):
                 check=True,
                 capture_output=True,
             )
-            native_git_diagnostics: list[dict[str, object]] = []
-            real_native_runner = (
-                provenance_module._run_dedicated_uid_native_command
-            )
-
-            def run_native_with_git_diagnostics(
-                argv: object,
-                **kwargs: object,
-            ) -> subprocess.CompletedProcess[bytes]:
-                command = [str(value) for value in argv]
-                try:
-                    completed = real_native_runner(command, **kwargs)
-                except BaseException as exc:
-                    if (
-                        command
-                        and command[0]
-                        == BUILD_IDENTITY_TRUSTED_GIT_EXECUTABLE
-                    ):
-                        native_git_diagnostics.append(
-                            {
-                                "argv": command,
-                                "error": repr(exc),
-                            }
-                        )
-                    raise
-                if (
-                    command
-                    and command[0] == BUILD_IDENTITY_TRUSTED_GIT_EXECUTABLE
-                ):
-                    native_git_diagnostics.append(
-                        {
-                            "argv": command,
-                            "returncode": completed.returncode,
-                            "stdout": completed.stdout.decode(
-                                "utf-8",
-                                errors="replace",
-                            ),
-                            "stderr": completed.stderr.decode(
-                                "utf-8",
-                                errors="replace",
-                            ),
-                        }
-                    )
-                return completed
-
-            with (
-                mock.patch.dict(
-                    os.environ,
-                    {"GITHUB_TOKEN": "root-parent-token"},
-                ),
-                mock.patch.object(
-                    provenance_module,
-                    "_run_dedicated_uid_native_command",
-                    side_effect=run_native_with_git_diagnostics,
-                ),
+            with mock.patch.dict(
+                os.environ,
+                {"GITHUB_TOKEN": "root-parent-token"},
             ):
                 result = attest_build_binding(
                     fixture["report_path"],
@@ -5333,13 +5282,7 @@ class LocalProducerTest(unittest.TestCase):
                     execution_gid=producer_gid,
                 )
 
-            self.assertTrue(
-                result["ok"],
-                {
-                    "result": result,
-                    "native_git_diagnostics": native_git_diagnostics,
-                },
-            )
+            self.assertTrue(result["ok"], result)
             self.assertFalse(observation_path.exists())
             self.assertFalse(child_pid_path.exists())
             self.assertEqual(
