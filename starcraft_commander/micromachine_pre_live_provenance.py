@@ -6782,6 +6782,8 @@ def _run_ctest(
     pinned_ctest = pinned_root / "ctest"
     pinned_bin = pinned_root / "bin"
     pinned_bin.mkdir(mode=0o700)
+    pinned_working_root = pinned_root / "work"
+    pinned_working_root.mkdir(mode=0o700)
     if not blockers:
         _write_private_snapshot_file(pinned_ctest, ctest_payload)
         os.chmod(pinned_ctest, 0o500)
@@ -6804,6 +6806,7 @@ def _run_ctest(
     registry_paths: dict[str, str] = {}
     test_executables: dict[str, dict[str, object]] = {}
     pinned_test_paths: dict[str, Path] = {}
+    pinned_test_workdirs: dict[str, Path] = {}
     original_test_snapshots: dict[str, tuple[int, int, int, int, str]] = {}
     if not blockers:
         if execution_identity is not None:
@@ -6928,7 +6931,10 @@ def _run_ctest(
         pinned_path = pinned_bin / executable_name
         _write_private_snapshot_file(pinned_path, command_payload)
         os.chmod(pinned_path, 0o500)
+        pinned_workdir = pinned_working_root / name
+        pinned_workdir.mkdir(mode=0o700)
         pinned_test_paths[name] = pinned_path
+        pinned_test_workdirs[name] = pinned_workdir
         original_test_snapshots[name] = command_snapshot
         test_executables[name] = {
             "path": str(command_path),
@@ -6949,7 +6955,8 @@ def _run_ctest(
                     f"add_test([=[{name}]=] [=[{pinned_path}]=])",
                     (
                         f"set_tests_properties([=[{name}]=] PROPERTIES "
-                        f"WORKING_DIRECTORY [=[{pinned_root}]=])"
+                        "WORKING_DIRECTORY "
+                        f"[=[{pinned_test_workdirs[name]}]=])"
                     ),
                 )
             )
@@ -6965,8 +6972,15 @@ def _run_ctest(
                 uid=execution_identity[0],
                 gid=execution_identity[1],
             )
+            for pinned_workdir in pinned_test_workdirs.values():
+                _chown_private_directory(
+                    pinned_workdir,
+                    uid=execution_identity[0],
+                    gid=execution_identity[1],
+                )
             os.chmod(pinned_root, 0o555)
             os.chmod(pinned_bin, 0o555)
+            os.chmod(pinned_working_root, 0o555)
             os.chmod(pinned_ctest, 0o555)
             os.chmod(pinned_manifest, 0o444)
             for pinned_path in pinned_test_paths.values():
@@ -7110,7 +7124,7 @@ def _run_ctest(
                 direct = _run_ctest_command(
                     subprocess.run,
                     [str(pinned_test_paths[name])],
-                    cwd=str(build_dir),
+                    cwd=str(pinned_test_workdirs[name]),
                     text=False,
                     env=dict(SANITIZED_TEST_ENV),
                     timeout=CTEST_DIRECT_TIMEOUT_SECONDS,

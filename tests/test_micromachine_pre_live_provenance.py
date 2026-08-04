@@ -2625,6 +2625,83 @@ class BuildBindingTest(unittest.TestCase):
                 report["ctest"]["registry_sha256"],
             )
 
+    def test_pinned_ctest_uses_disposable_writable_workdirs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = make_build_fixture(Path(directory))
+            build_dir = fixture["config"].micromachine_build_dir.resolve()
+            writable_test = (
+                build_dir
+                / "bin"
+                / MICROMACHINE_REQUIRED_NATIVE_TESTS[
+                    "voi_family_effect_lifecycle"
+                ]
+            )
+            writable_test.write_text(
+                "#!/bin/sh\n"
+                "set -eu\n"
+                "printf '%s\\n' writable > \"$PWD/test-output\"\n"
+            )
+            writable_test.chmod(0o755)
+
+            def run_as_current_user(
+                argv: object,
+                *,
+                cwd: str,
+                env: object,
+                timeout: float,
+                uid: int,
+                gid: int,
+                deadline: object = None,
+            ) -> subprocess.CompletedProcess:
+                del uid, gid, deadline
+                return subprocess.run(
+                    list(argv),
+                    cwd=cwd,
+                    stdin=subprocess.DEVNULL,
+                    check=False,
+                    capture_output=True,
+                    text=False,
+                    shell=False,
+                    timeout=timeout,
+                    env=dict(env),
+                )
+
+            def chown_as_current_user(
+                path: Path,
+                *,
+                uid: int,
+                gid: int,
+            ) -> None:
+                del uid, gid
+                path.chmod(0o700)
+
+            with (
+                mock.patch.object(
+                    provenance_module,
+                    "_normalize_producer_identity",
+                    return_value=(65001, 65001),
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "_run_dedicated_uid_native_command",
+                    side_effect=run_as_current_user,
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "_chown_private_directory",
+                    side_effect=chown_as_current_user,
+                ),
+            ):
+                result = provenance_module._run_ctest(
+                    build_dir,
+                    subprocess.run,
+                    execution_uid=65001,
+                    execution_gid=65001,
+                )
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(REQUIRED_CTEST_COUNT, result["passed"])
+
     def test_rejects_missing_atomic_telemetry_artifact_before_ctest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = make_build_fixture(Path(directory))
