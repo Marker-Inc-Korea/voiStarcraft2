@@ -1537,7 +1537,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             candidate_job,
         )
         self.assertEqual(
-            9,
+            10,
             len(
                 [
                     name
@@ -4850,6 +4850,186 @@ class LocalProducerTest(unittest.TestCase):
             deadline=None,
         )
 
+    def test_ctest_registry_snapshot_keeps_build_tree_read_only(self) -> None:
+        ctest_candidate = shutil.which("ctest")
+        if ctest_candidate is None:
+            self.skipTest("ctest is required")
+        with tempfile.TemporaryDirectory(
+            dir=BUILD_IDENTITY_REPO_ROOT,
+        ) as directory:
+            build_dir = Path(directory) / "build"
+            build_dir.mkdir()
+            manifest = build_dir / "CTestTestfile.cmake"
+            manifest_payload = (
+                "add_test([=[fixture]=] [=[/usr/bin/true]=])\n"
+            ).encode()
+            manifest.write_bytes(manifest_payload)
+            manifest.chmod(0o444)
+            build_dir.chmod(0o555)
+
+            def run_as_current_user(
+                command_runner: object,
+                argv: object,
+                *,
+                cwd: str,
+                text: bool,
+                env: object,
+                timeout: float,
+                execution_identity: object,
+                deadline: object,
+            ) -> subprocess.CompletedProcess:
+                del execution_identity, deadline
+                return command_runner(
+                    list(argv),
+                    cwd=cwd,
+                    stdin=subprocess.DEVNULL,
+                    check=False,
+                    capture_output=True,
+                    text=text,
+                    shell=False,
+                    timeout=timeout,
+                    env=dict(env),
+                )
+
+            try:
+                with (
+                    mock.patch.object(
+                        provenance_module,
+                        "_run_ctest_command",
+                        side_effect=run_as_current_user,
+                    ),
+                    mock.patch.object(
+                        provenance_module,
+                        "_chown_private_directory",
+                        side_effect=lambda path, **kwargs: path.chmod(0o700),
+                    ),
+                ):
+                    completed = (
+                        provenance_module._run_ctest_registry_from_snapshot(
+                            subprocess.run,
+                            (
+                                str(Path(ctest_candidate).resolve()),
+                                "--test-dir",
+                                str(build_dir),
+                                "--show-only=json-v1",
+                            ),
+                            build_dir=build_dir,
+                            env=provenance_module.SANITIZED_TEST_ENV,
+                            timeout=120.0,
+                            execution_identity=(65001, 65001),
+                        )
+                    )
+            finally:
+                build_dir.chmod(0o755)
+                manifest.chmod(0o644)
+
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            registry = json.loads(completed.stdout)
+            self.assertEqual(
+                [{"name": "fixture", "command": ["/usr/bin/true"]}],
+                [
+                    {
+                        "name": test["name"],
+                        "command": test["command"],
+                    }
+                    for test in registry["tests"]
+                ],
+            )
+            self.assertEqual(manifest_payload, manifest.read_bytes())
+            self.assertFalse((build_dir / "Testing").exists())
+
+    def test_ctest_registry_snapshot_rejects_linked_or_missing_metadata(
+        self,
+    ) -> None:
+        ctest_candidate = shutil.which("ctest")
+        if ctest_candidate is None:
+            self.skipTest("ctest is required")
+        for name, linked in (("missing", False), ("linked", True)):
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory(
+                    dir=BUILD_IDENTITY_REPO_ROOT,
+                ) as directory:
+                    build_dir = Path(directory) / "build"
+                    build_dir.mkdir()
+                    if linked:
+                        target = Path(directory) / "attacker.cmake"
+                        target.write_text("")
+                        (build_dir / "CTestTestfile.cmake").symlink_to(target)
+
+                    with self.assertRaisesRegex(
+                        OSError,
+                        (
+                            "top-level CTest registry metadata is missing"
+                            if not linked
+                            else "CTest registry metadata is linked"
+                        ),
+                    ):
+                        provenance_module._run_ctest_registry_from_snapshot(
+                            subprocess.run,
+                            (
+                                str(Path(ctest_candidate).resolve()),
+                                "--test-dir",
+                                str(build_dir),
+                                "--show-only=json-v1",
+                            ),
+                            build_dir=build_dir,
+                            env=provenance_module.SANITIZED_TEST_ENV,
+                            timeout=120.0,
+                            execution_identity=(65001, 65001),
+                        )
+
+    def test_ctest_registry_snapshot_rejects_source_mutation(self) -> None:
+        ctest_candidate = shutil.which("ctest")
+        if ctest_candidate is None:
+            self.skipTest("ctest is required")
+        with tempfile.TemporaryDirectory(
+            dir=BUILD_IDENTITY_REPO_ROOT,
+        ) as directory:
+            build_dir = Path(directory) / "build"
+            build_dir.mkdir()
+            manifest = build_dir / "CTestTestfile.cmake"
+            manifest.write_text("")
+
+            def mutate_source(*args: object, **kwargs: object) -> object:
+                del args, kwargs
+                manifest.write_text("add_test(attacker /usr/bin/true)\n")
+                return subprocess.CompletedProcess(
+                    [str(Path(ctest_candidate).resolve())],
+                    0,
+                    stdout='{"tests":[]}',
+                    stderr="",
+                )
+
+            with (
+                mock.patch.object(
+                    provenance_module,
+                    "_run_ctest_command",
+                    side_effect=mutate_source,
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "_chown_private_directory",
+                    side_effect=lambda path, **kwargs: path.chmod(0o700),
+                ),
+                self.assertRaisesRegex(
+                    OSError,
+                    "CTest registry metadata changed during discovery",
+                ),
+            ):
+                provenance_module._run_ctest_registry_from_snapshot(
+                    subprocess.run,
+                    (
+                        str(Path(ctest_candidate).resolve()),
+                        "--test-dir",
+                        str(build_dir),
+                        "--show-only=json-v1",
+                    ),
+                    build_dir=build_dir,
+                    env=provenance_module.SANITIZED_TEST_ENV,
+                    timeout=120.0,
+                    execution_identity=(65001, 65001),
+                )
+
     def test_build_identity_probe_uses_bounded_uid_runner(self) -> None:
         clock = FakeMonotonicClock()
         deadline = provenance_module._VerifierDeadline(
@@ -4861,6 +5041,7 @@ class LocalProducerTest(unittest.TestCase):
         ) as directory:
             snapshot_path = Path(directory) / "MicroMachine.snapshot"
             snapshot_path.write_bytes(b"fixture")
+            (snapshot_path.parent / "CTestTestfile.cmake").write_text("")
             ctest_environment = {
                 "LANG": "C",
                 "LC_ALL": "C",
@@ -4948,6 +5129,11 @@ class LocalProducerTest(unittest.TestCase):
                     "_run_dedicated_uid_native_command",
                     side_effect=run_native,
                 ) as native_runner,
+                mock.patch.object(
+                    provenance_module,
+                    "_chown_private_directory",
+                    side_effect=lambda path, **kwargs: path.chmod(0o700),
+                ),
             ):
                 report = provenance_module._build_micromachine_identity_with_boundary(
                     mock.sentinel.config,
@@ -4957,6 +5143,23 @@ class LocalProducerTest(unittest.TestCase):
                 )
 
         self.assertEqual({"ok": True}, report)
+        self.assertEqual(3, len(native_runner.call_args_list))
+        registry_call = native_runner.call_args_list[1]
+        registry_argv = list(registry_call.args[0])
+        registry_root = Path(
+            registry_argv[registry_argv.index("--test-dir") + 1]
+        )
+        self.assertNotEqual(snapshot_path.parent, registry_root)
+        self.assertTrue(
+            registry_root.name.startswith(".voi-ctest-registry-"),
+            registry_root,
+        )
+        self.assertEqual(str(registry_root), registry_call.kwargs["cwd"])
+        self.assertEqual(ctest_environment, registry_call.kwargs["env"])
+        self.assertEqual(20.0, registry_call.kwargs["timeout"])
+        self.assertEqual(65001, registry_call.kwargs["uid"])
+        self.assertEqual(65001, registry_call.kwargs["gid"])
+        self.assertIs(deadline, registry_call.kwargs["deadline"])
         self.assertEqual(
             [
                 mock.call(
@@ -4966,20 +5169,6 @@ class LocalProducerTest(unittest.TestCase):
                     ),
                     cwd=str(snapshot_path.parent),
                     env=provenance_module.SANITIZED_TEST_ENV,
-                    timeout=20.0,
-                    uid=65001,
-                    gid=65001,
-                    deadline=deadline,
-                ),
-                mock.call(
-                    (
-                        "/candidate/ctest",
-                        "--test-dir",
-                        str(snapshot_path.parent),
-                        "--show-only=json-v1",
-                    ),
-                    cwd=str(snapshot_path.parent),
-                    env=ctest_environment,
                     timeout=20.0,
                     uid=65001,
                     gid=65001,
@@ -5003,8 +5192,62 @@ class LocalProducerTest(unittest.TestCase):
                     deadline=deadline,
                 ),
             ],
-            native_runner.call_args_list,
+            [
+                native_runner.call_args_list[0],
+                native_runner.call_args_list[2],
+            ],
         )
+
+    def test_dedicated_producer_uid_ctest_uses_writable_registry_snapshot(
+        self,
+    ) -> None:
+        producer_uid, producer_gid = self.dedicated_producer_uid()
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+            root = Path(directory)
+            root.chmod(0o755)
+            fixture = make_build_fixture(root / "fixture")
+            build_dir = fixture["config"].micromachine_build_dir.resolve()
+            metadata_before = {
+                relative_path: (
+                    build_dir / relative_path
+                ).read_bytes()
+                for relative_path in provenance_module._CTEST_REGISTRY_METADATA_PATHS
+                if (build_dir / relative_path).is_file()
+            }
+            testing_before = {
+                path.relative_to(build_dir).as_posix(): path.read_bytes()
+                for path in (build_dir / "Testing").rglob("*")
+                if path.is_file()
+            }
+
+            result = attest_build_binding(
+                fixture["report_path"],
+                repository_dir=fixture["repository"],
+                expected_repository_commit=fixture["repository_commit"],
+                expected_build_dir=build_dir,
+                command_runner=subprocess.run,
+                execution_uid=producer_uid,
+                execution_gid=producer_gid,
+            )
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(
+                metadata_before,
+                {
+                    relative_path: (
+                        build_dir / relative_path
+                    ).read_bytes()
+                    for relative_path in metadata_before
+                },
+            )
+            self.assertEqual(
+                testing_before,
+                {
+                    path.relative_to(build_dir).as_posix(): path.read_bytes()
+                    for path in (build_dir / "Testing").rglob("*")
+                    if path.is_file()
+                },
+            )
 
     def test_dedicated_producer_uid_ctest_registry_closes_stdin_and_cleans_descendant(
         self,

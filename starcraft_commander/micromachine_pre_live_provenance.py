@@ -100,6 +100,7 @@ MAX_GITHUB_JSON_BYTES: Final[int] = 16 * 1024 * 1024
 MAX_GITHUB_ARTIFACT_BYTES: Final[int] = 512 * 1024 * 1024
 MAX_BUILD_REPORT_BYTES: Final[int] = 16 * 1024 * 1024
 MAX_CMAKE_CACHE_BYTES: Final[int] = 16 * 1024 * 1024
+MAX_CTEST_REGISTRY_METADATA_BYTES: Final[int] = 4 * 1024 * 1024
 MAX_PRODUCER_SOURCE_BYTES: Final[int] = 16 * 1024 * 1024
 MAX_PRODUCER_EXECUTABLE_BYTES: Final[int] = 512 * 1024 * 1024
 MAX_PROCESS_STDOUT_BYTES: Final[int] = 8 * 1024 * 1024
@@ -171,6 +172,11 @@ _REQUIRED_CTEST_COMMANDS: Final[dict[str, str]] = dict(
     MICROMACHINE_REQUIRED_NATIVE_TESTS
 )
 _REQUIRED_CTEST_COUNT: Final[int] = len(_REQUIRED_CTEST_COMMANDS)
+_CTEST_REGISTRY_METADATA_PATHS: Final[tuple[Path, ...]] = (
+    Path("CTestTestfile.cmake"),
+    Path("src/CTestTestfile.cmake"),
+    Path("tests/CTestTestfile.cmake"),
+)
 _EXTERNAL_BUILD_PATH_FIELDS: Final[frozenset[str]] = frozenset(
     {
         "micromachine_dir",
@@ -2516,20 +2522,14 @@ def _build_micromachine_identity_with_boundary(
                 timeout=bounded_timeout,
                 env=dict(environment),
             )
-        completed = _run_dedicated_uid_native_command(
+        return _run_ctest_registry_from_snapshot(
+            subprocess.run,
             argv,
-            cwd=str(build_dir),
+            build_dir=build_dir,
             env=environment,
             timeout=bounded_timeout,
-            uid=execution_identity[0],
-            gid=execution_identity[1],
+            execution_identity=execution_identity,
             deadline=deadline,
-        )
-        return subprocess.CompletedProcess(
-            list(argv),
-            completed.returncode,
-            completed.stdout,
-            completed.stderr,
         )
 
     def run_git_inspection(
@@ -6608,6 +6608,110 @@ def _run_ctest_command(
     )
 
 
+def _run_ctest_registry_from_snapshot(
+    command_runner: CommandRunner,
+    argv: Sequence[str],
+    *,
+    build_dir: Path,
+    env: Mapping[str, str],
+    timeout: float,
+    execution_identity: tuple[int, int],
+    deadline: _VerifierDeadline | None = None,
+) -> subprocess.CompletedProcess[Any]:
+    command = list(argv)
+    if (
+        command.count("--test-dir") != 1
+        or command.count("--show-only=json-v1") != 1
+    ):
+        raise OSError("CTest registry discovery command is not canonical")
+    test_dir_index = command.index("--test-dir") + 1
+    if (
+        test_dir_index >= len(command)
+        or Path(command[test_dir_index]).resolve() != build_dir.resolve()
+    ):
+        raise OSError("CTest registry discovery directory is not canonical")
+
+    original_snapshots: dict[
+        Path,
+        tuple[int, int, int, int, str],
+    ] = {}
+    with tempfile.TemporaryDirectory(
+        prefix=".voi-ctest-registry-",
+        dir=build_dir.parent,
+    ) as directory:
+        snapshot_root = Path(directory)
+        copied_paths: list[Path] = []
+        for relative_path in _CTEST_REGISTRY_METADATA_PATHS:
+            source_path = build_dir / relative_path
+            if not os.path.lexists(source_path):
+                if relative_path == _CTEST_REGISTRY_METADATA_PATHS[0]:
+                    raise OSError("top-level CTest registry metadata is missing")
+                continue
+            if (
+                source_path.is_symlink()
+                or _path_has_symlink_component(source_path, stop=build_dir)
+            ):
+                raise OSError(
+                    f"CTest registry metadata is linked: {relative_path}"
+                )
+            payload, source_snapshot = _read_regular_file_snapshot(
+                source_path,
+                maximum=MAX_CTEST_REGISTRY_METADATA_BYTES,
+            )
+            snapshot_path = snapshot_root / relative_path
+            snapshot_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            _write_private_snapshot_file(snapshot_path, payload)
+            os.chmod(snapshot_path, 0o444)
+            original_snapshots[source_path] = source_snapshot
+            copied_paths.append(snapshot_path)
+
+        testing_root = snapshot_root / "Testing"
+        testing_root.mkdir(mode=0o700)
+        _chown_private_directory(
+            testing_root,
+            uid=execution_identity[0],
+            gid=execution_identity[1],
+        )
+        for snapshot_path in copied_paths:
+            parent = snapshot_path.parent
+            while parent != snapshot_root:
+                os.chmod(parent, 0o555)
+                parent = parent.parent
+        os.chmod(snapshot_root, 0o555)
+
+        snapshot_command = list(command)
+        snapshot_command[test_dir_index] = str(snapshot_root)
+        try:
+            completed = _run_ctest_command(
+                command_runner,
+                snapshot_command,
+                cwd=str(snapshot_root),
+                text=True,
+                env=env,
+                timeout=timeout,
+                execution_identity=execution_identity,
+                deadline=deadline,
+            )
+        finally:
+            for source_path, source_snapshot in original_snapshots.items():
+                try:
+                    _, current_snapshot = _read_regular_file_snapshot(
+                        source_path,
+                        maximum=MAX_CTEST_REGISTRY_METADATA_BYTES,
+                    )
+                except OSError as exc:
+                    raise OSError(
+                        "CTest registry metadata changed during discovery: "
+                        f"{source_path}"
+                    ) from exc
+                if current_snapshot != source_snapshot:
+                    raise OSError(
+                        "CTest registry metadata changed during discovery: "
+                        f"{source_path}"
+                    )
+        return completed
+
+
 def _run_ctest(
     build_dir: Path,
     command_runner: CommandRunner,
@@ -6707,16 +6811,28 @@ def _run_ctest(
             os.chmod(pinned_bin, 0o555)
             os.chmod(pinned_ctest, 0o555)
         try:
-            registered = _run_ctest_command(
-                command_runner,
-                [str(pinned_ctest), *discovery_argv[1:]],
-                cwd=str(build_dir),
-                text=True,
-                env=dict(SANITIZED_TEST_ENV),
-                timeout=CTEST_DISCOVERY_TIMEOUT_SECONDS,
-                execution_identity=execution_identity,
-                deadline=deadline,
-            )
+            registry_command = [str(pinned_ctest), *discovery_argv[1:]]
+            if execution_identity is None:
+                registered = _run_ctest_command(
+                    command_runner,
+                    registry_command,
+                    cwd=str(build_dir),
+                    text=True,
+                    env=dict(SANITIZED_TEST_ENV),
+                    timeout=CTEST_DISCOVERY_TIMEOUT_SECONDS,
+                    execution_identity=None,
+                    deadline=deadline,
+                )
+            else:
+                registered = _run_ctest_registry_from_snapshot(
+                    command_runner,
+                    registry_command,
+                    build_dir=build_dir,
+                    env=dict(SANITIZED_TEST_ENV),
+                    timeout=CTEST_DISCOVERY_TIMEOUT_SECONDS,
+                    execution_identity=execution_identity,
+                    deadline=deadline,
+                )
             registry_returncode = int(registered.returncode)
             registry_stdout = _as_text(registered.stdout)
             registry_stderr = _as_text(registered.stderr)
