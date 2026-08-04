@@ -80,6 +80,7 @@ jobs:
           PYTHON_EXECUTABLE="$(python3 -c 'import os, sys; print(os.path.realpath(sys.executable))')"
           sudo env -u GITHUB_TOKEN -u GH_TOKEN \
             PYTHONDONTWRITEBYTECODE="1" \
+            PYTHONPATH="${PWD}" \
             VOI_PRODUCER_UID="${VOI_PRODUCER_UID}" \
             VOI_PRODUCER_GID="${VOI_PRODUCER_GID}" \
             "${PYTHON_EXECUTABLE}" -W error::ResourceWarning -B \

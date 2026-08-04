@@ -64,6 +64,7 @@ jobs:
           sudo env -u GITHUB_TOKEN -u GH_TOKEN \
             DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
             PYTHONDONTWRITEBYTECODE="1" \
+            PYTHONPATH="${PWD}" \
             VOI_PRODUCER_UID="65001" \
             VOI_PRODUCER_GID="65001" \
             "${PYTHON_EXECUTABLE}" -W error::ResourceWarning -B \

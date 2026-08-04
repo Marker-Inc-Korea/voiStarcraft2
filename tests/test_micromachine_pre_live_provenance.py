@@ -1231,6 +1231,10 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             "          sudo env -u GITHUB_TOKEN -u GH_TOKEN \\\n",
             isolation_job,
         )
+        self.assertIn(
+            '            PYTHONPATH="${PWD}" \\\n',
+            isolation_job,
+        )
         self.assertNotIn("-m unittest", isolation_job)
         self.assertIn(
             '            "${PYTHON_EXECUTABLE}" '
@@ -1519,6 +1523,10 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         self.assertIn(
             "            DEVELOPER_DIR="
             "/Applications/Xcode.app/Contents/Developer \\\n",
+            candidate_job,
+        )
+        self.assertIn(
+            '            PYTHONPATH="${PWD}" \\\n',
             candidate_job,
         )
         self.assertIn(
