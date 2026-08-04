@@ -5264,10 +5264,54 @@ class LocalProducerTest(unittest.TestCase):
                 check=True,
                 capture_output=True,
             )
+            native_git_diagnostics: list[dict[str, object]] = []
+            real_native_runner = (
+                provenance_module._run_dedicated_uid_native_command
+            )
 
-            with mock.patch.dict(
-                os.environ,
-                {"GITHUB_TOKEN": "root-parent-token"},
+            def run_native_with_git_diagnostics(
+                argv: object,
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess[bytes]:
+                command = [str(value) for value in argv]
+                try:
+                    completed = real_native_runner(command, **kwargs)
+                except BaseException as exc:
+                    if command and command[0] == "/usr/bin/git":
+                        native_git_diagnostics.append(
+                            {
+                                "argv": command,
+                                "error": repr(exc),
+                            }
+                        )
+                    raise
+                if command and command[0] == "/usr/bin/git":
+                    native_git_diagnostics.append(
+                        {
+                            "argv": command,
+                            "returncode": completed.returncode,
+                            "stdout": completed.stdout.decode(
+                                "utf-8",
+                                errors="replace",
+                            ),
+                            "stderr": completed.stderr.decode(
+                                "utf-8",
+                                errors="replace",
+                            ),
+                        }
+                    )
+                return completed
+
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"GITHUB_TOKEN": "root-parent-token"},
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "_run_dedicated_uid_native_command",
+                    side_effect=run_native_with_git_diagnostics,
+                ),
             ):
                 result = attest_build_binding(
                     fixture["report_path"],
@@ -5281,7 +5325,13 @@ class LocalProducerTest(unittest.TestCase):
                     execution_gid=producer_gid,
                 )
 
-            self.assertTrue(result["ok"], result)
+            self.assertTrue(
+                result["ok"],
+                {
+                    "result": result,
+                    "native_git_diagnostics": native_git_diagnostics,
+                },
+            )
             self.assertFalse(observation_path.exists())
             self.assertFalse(child_pid_path.exists())
             self.assertEqual(
