@@ -12,6 +12,7 @@ import select
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import zipfile
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -1458,6 +1459,14 @@ def _run_inherited_native_command(
         or source_before[3] > MAX_NATIVE_EXECUTABLE_BYTES
     ):
         raise OSError("inherited native executable size is invalid")
+    if sys.platform.startswith("linux"):
+        return _run_linux_sealed_native_command(
+            descriptor,
+            argv,
+            source_before=source_before,
+            expected_sha256=expected_sha256,
+            input=input,
+        )
 
     with tempfile.TemporaryDirectory(
         prefix=".voi-native-exec-",
@@ -1597,6 +1606,163 @@ def _run_inherited_native_command(
     )
 
 
+def _run_linux_sealed_native_command(
+    source_descriptor: int,
+    argv: Sequence[str],
+    *,
+    source_before: tuple[int, int, int, int, int],
+    expected_sha256: str,
+    input: bytes | None,
+) -> subprocess.CompletedProcess[bytes]:
+    import fcntl
+
+    required_os_names = (
+        "memfd_create",
+        "MFD_CLOEXEC",
+        "MFD_ALLOW_SEALING",
+    )
+    required_fcntl_names = (
+        "F_ADD_SEALS",
+        "F_GET_SEALS",
+        "F_SEAL_GROW",
+        "F_SEAL_SEAL",
+        "F_SEAL_SHRINK",
+        "F_SEAL_WRITE",
+    )
+    if (
+        any(not hasattr(os, name) for name in required_os_names)
+        or any(not hasattr(fcntl, name) for name in required_fcntl_names)
+        or not Path("/proc/self/fd").is_dir()
+    ):
+        raise OSError("sealed descriptor-native execution is unavailable")
+
+    writable_descriptor: int | None = os.memfd_create(
+        "voi-native-executable",
+        flags=os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING,
+    )
+    executable_descriptor: int | None = None
+    process: subprocess.Popen[bytes] | None = None
+    try:
+        source_digest = _copy_native_executable(
+            source_descriptor,
+            writable_descriptor,
+            source_before[3],
+        )
+        os.fsync(writable_descriptor)
+        os.fchmod(writable_descriptor, 0o500)
+        if source_digest != expected_sha256:
+            raise OSError(
+                "inherited native executable digest changed before exec"
+            )
+        if _native_executable_snapshot(source_descriptor) != source_before:
+            raise OSError(
+                "inherited native executable changed before exec"
+            )
+        clone_snapshot = _native_executable_snapshot(writable_descriptor)
+        if (
+            clone_snapshot[3] != source_before[3]
+            or _sha256_descriptor(
+                writable_descriptor,
+                clone_snapshot[3],
+            )
+            != expected_sha256
+        ):
+            raise OSError(
+                "one-shot native executable differs from admitted bytes"
+            )
+
+        required_seals = (
+            fcntl.F_SEAL_GROW
+            | fcntl.F_SEAL_SEAL
+            | fcntl.F_SEAL_SHRINK
+            | fcntl.F_SEAL_WRITE
+        )
+        fcntl.fcntl(
+            writable_descriptor,
+            fcntl.F_ADD_SEALS,
+            required_seals,
+        )
+        observed_seals = int(
+            fcntl.fcntl(writable_descriptor, fcntl.F_GET_SEALS)
+        )
+        if observed_seals & required_seals != required_seals:
+            raise OSError("one-shot native executable sealing failed")
+
+        writable_path = Path(
+            f"/proc/self/fd/{writable_descriptor}"
+        )
+        _require_descriptor_target_identity(
+            writable_descriptor,
+            writable_path,
+        )
+        executable_descriptor = os.open(writable_path, os.O_RDONLY)
+        executable_path = Path(
+            f"/proc/self/fd/{executable_descriptor}"
+        )
+        _require_descriptor_target_identity(
+            executable_descriptor,
+            executable_path,
+        )
+        if (
+            _native_executable_snapshot(executable_descriptor)
+            != clone_snapshot
+            or _sha256_descriptor(
+                executable_descriptor,
+                clone_snapshot[3],
+            )
+            != expected_sha256
+        ):
+            raise OSError(
+                "read-only native executable differs from admitted bytes"
+            )
+        os.close(writable_descriptor)
+        writable_descriptor = None
+
+        launch_argv = [str(executable_path), *argv[1:]]
+        process = subprocess.Popen(
+            launch_argv,
+            executable=str(executable_path),
+            pass_fds=(executable_descriptor,),
+            stdin=subprocess.PIPE if input is not None else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=False,
+            shell=False,
+        )
+        stdout, stderr = process.communicate(input)
+        _require_descriptor_target_identity(
+            executable_descriptor,
+            executable_path,
+        )
+        if (
+            _native_executable_snapshot(executable_descriptor)
+            != clone_snapshot
+        ):
+            raise OSError(
+                "one-shot native executable changed during exec"
+            )
+        if _native_executable_snapshot(source_descriptor) != source_before:
+            raise OSError(
+                "inherited native executable changed during exec"
+            )
+    except BaseException:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait()
+        raise
+    finally:
+        if executable_descriptor is not None:
+            os.close(executable_descriptor)
+        if writable_descriptor is not None:
+            os.close(writable_descriptor)
+    return subprocess.CompletedProcess(
+        list(argv),
+        int(process.returncode),
+        stdout,
+        stderr,
+    )
+
+
 def _copy_native_executable(
     source_descriptor: int,
     target_descriptor: int,
@@ -1697,6 +1863,30 @@ def _require_descriptor_path_identity(
         path_stat.st_mtime_ns,
     ):
         raise OSError("one-shot native executable path changed identity")
+
+
+def _require_descriptor_target_identity(
+    descriptor: int,
+    path: Path,
+) -> None:
+    descriptor_stat = os.fstat(descriptor)
+    path_stat = path.stat()
+    if (
+        descriptor_stat.st_dev,
+        descriptor_stat.st_ino,
+        descriptor_stat.st_mode,
+        descriptor_stat.st_size,
+        descriptor_stat.st_mtime_ns,
+    ) != (
+        path_stat.st_dev,
+        path_stat.st_ino,
+        path_stat.st_mode,
+        path_stat.st_size,
+        path_stat.st_mtime_ns,
+    ):
+        raise OSError(
+            "one-shot native executable descriptor alias changed identity"
+        )
 
 
 def _open_native_path_monitor(

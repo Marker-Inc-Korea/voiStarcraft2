@@ -204,6 +204,8 @@ class NativeExecutableLaunchTest(unittest.TestCase):
     def test_one_shot_snapshot_closes_writable_descriptor_before_exec(
         self,
     ) -> None:
+        import fcntl
+
         native_true = Path("/usr/bin/true")
         if not native_true.is_file():
             self.skipTest("requires /usr/bin/true")
@@ -216,6 +218,32 @@ class NativeExecutableLaunchTest(unittest.TestCase):
             **kwargs: object,
         ) -> subprocess.Popen[bytes]:
             executable_path = Path(str(kwargs["executable"]))
+            self.assertEqual(Path("/proc/self/fd"), executable_path.parent)
+            self.assertEqual(
+                [str(executable_path)],
+                list(args[0]),
+            )
+            inherited_descriptors = tuple(kwargs["pass_fds"])
+            self.assertEqual(
+                (int(executable_path.name),),
+                inherited_descriptors,
+            )
+            required_seals = (
+                fcntl.F_SEAL_GROW
+                | fcntl.F_SEAL_SEAL
+                | fcntl.F_SEAL_SHRINK
+                | fcntl.F_SEAL_WRITE
+            )
+            observed_seals = int(
+                fcntl.fcntl(
+                    inherited_descriptors[0],
+                    fcntl.F_GET_SEALS,
+                )
+            )
+            self.assertEqual(
+                required_seals,
+                observed_seals & required_seals,
+            )
             executable_stat = executable_path.stat()
             access_modes: list[int] = []
             for descriptor_path in Path("/proc/self/fd").iterdir():
@@ -265,6 +293,70 @@ class NativeExecutableLaunchTest(unittest.TestCase):
                     )
             finally:
                 os.close(descriptor)
+        self.assertEqual(0, completed.returncode, completed.stderr)
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux") and Path("/proc/self/fd").is_dir(),
+        "requires Linux procfs descriptor execution",
+    )
+    def test_one_shot_snapshot_rejects_executable_path_swap_restore(
+        self,
+    ) -> None:
+        native_true = Path("/usr/bin/true")
+        native_false = Path("/usr/bin/false")
+        if not native_true.is_file() or not native_false.is_file():
+            self.skipTest("requires /usr/bin/true and /usr/bin/false")
+        payload = native_true.read_bytes()
+        expected_sha256 = hashlib.sha256(payload).hexdigest()
+        real_popen = subprocess.Popen
+        swap_rejected = False
+
+        def swap_and_restore(
+            *args: object,
+            **kwargs: object,
+        ) -> subprocess.Popen[bytes]:
+            nonlocal swap_rejected
+            executable_path = Path(str(kwargs["executable"]))
+            with tempfile.TemporaryDirectory() as attacker_directory:
+                attacker_root = Path(attacker_directory)
+                backup = attacker_root / "admitted-backup"
+                attacker = attacker_root / "attacker"
+                attacker.write_bytes(native_false.read_bytes())
+                attacker.chmod(0o500)
+                try:
+                    os.replace(executable_path, backup)
+                except OSError:
+                    swap_rejected = True
+                    return real_popen(*args, **kwargs)
+                try:
+                    os.replace(attacker, executable_path)
+                    return real_popen(*args, **kwargs)
+                finally:
+                    executable_path.unlink(missing_ok=True)
+                    os.replace(backup, executable_path)
+
+        with tempfile.TemporaryDirectory() as directory:
+            admitted_binary = Path(directory) / "admitted-true"
+            admitted_binary.write_bytes(payload)
+            admitted_binary.chmod(0o500)
+            descriptor = os.open(admitted_binary, os.O_RDONLY)
+            admitted_binary.unlink()
+            try:
+                descriptor_path = Path(f"/dev/fd/{descriptor}")
+                with mock.patch.object(
+                    subprocess,
+                    "Popen",
+                    side_effect=swap_and_restore,
+                ):
+                    completed = _run_native_command(
+                        descriptor_path,
+                        [str(descriptor_path)],
+                        expected_sha256=expected_sha256,
+                        command_runner=subprocess.run,
+                    )
+            finally:
+                os.close(descriptor)
+        self.assertTrue(swap_rejected)
         self.assertEqual(0, completed.returncode, completed.stderr)
 
     @unittest.skipUnless(
