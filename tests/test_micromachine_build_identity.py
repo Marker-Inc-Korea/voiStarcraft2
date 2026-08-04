@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +13,7 @@ from unittest import mock
 from starcraft_commander.micromachine_build_identity import (
     MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
     MICROMACHINE_REQUIRED_NATIVE_TESTS,
+    TRUSTED_GIT_EXECUTABLE,
     MicroMachineBuildIdentityConfig,
     _ctest_registry_attestation,
     build_argument_parser,
@@ -28,6 +30,15 @@ from starcraft_commander.micromachine_build_identity import (
 
 
 class MicroMachineBuildIdentityTest(unittest.TestCase):
+    def test_git_inspection_uses_the_platform_native_executable(self) -> None:
+        if sys.platform == "darwin":
+            self.assertEqual(
+                "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
+                TRUSTED_GIT_EXECUTABLE,
+            )
+        else:
+            self.assertEqual("/usr/bin/git", TRUSTED_GIT_EXECUTABLE)
+
     def test_ctest_registry_discovery_closes_stdin_and_is_bounded(self) -> None:
         with tempfile.TemporaryDirectory(
             dir=Path(__file__).resolve().parents[1],

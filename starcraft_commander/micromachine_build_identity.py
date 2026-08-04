@@ -8,6 +8,7 @@ import json
 import os
 import stat
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields
@@ -16,7 +17,11 @@ from typing import Final
 
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
-TRUSTED_GIT_EXECUTABLE: Final[str] = "/usr/bin/git"
+TRUSTED_GIT_EXECUTABLE: Final[str] = (
+    "/Applications/Xcode.app/Contents/Developer/usr/bin/git"
+    if sys.platform == "darwin"
+    else "/usr/bin/git"
+)
 SANITIZED_GIT_ENV: Final[dict[str, str]] = {
     "GIT_CONFIG_GLOBAL": "/dev/null",
     "GIT_CONFIG_NOSYSTEM": "1",

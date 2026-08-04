@@ -30,6 +30,7 @@ from starcraft_commander.micromachine_build_identity import (
     MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
     MICROMACHINE_REQUIRED_NATIVE_TESTS,
     REPO_ROOT as BUILD_IDENTITY_REPO_ROOT,
+    TRUSTED_GIT_EXECUTABLE as BUILD_IDENTITY_TRUSTED_GIT_EXECUTABLE,
     MicroMachineBuildIdentityConfig,
     build_micromachine_build_identity,
     canonical_micromachine_ctest_registry,
@@ -5277,7 +5278,11 @@ class LocalProducerTest(unittest.TestCase):
                 try:
                     completed = real_native_runner(command, **kwargs)
                 except BaseException as exc:
-                    if command and command[0] == "/usr/bin/git":
+                    if (
+                        command
+                        and command[0]
+                        == BUILD_IDENTITY_TRUSTED_GIT_EXECUTABLE
+                    ):
                         native_git_diagnostics.append(
                             {
                                 "argv": command,
@@ -5285,7 +5290,10 @@ class LocalProducerTest(unittest.TestCase):
                             }
                         )
                     raise
-                if command and command[0] == "/usr/bin/git":
+                if (
+                    command
+                    and command[0] == BUILD_IDENTITY_TRUSTED_GIT_EXECUTABLE
+                ):
                     native_git_diagnostics.append(
                         {
                             "argv": command,
