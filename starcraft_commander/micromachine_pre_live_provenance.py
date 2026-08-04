@@ -917,6 +917,7 @@ class StdlibGitHubRESTAdapter:
             )
         query = urllib.parse.urlencode(
             {
+                "app_id": GITHUB_ACTIONS_APP_ID,
                 "check_name": check_name,
                 "filter": "latest",
             }
@@ -2111,9 +2112,18 @@ def attest_github_source(
             f"status={job_status!r} conclusion={job_conclusion!r}"
         )
     _validate_latest_provenance_check_run(
+        adapter,
         latest_check_runs,
+        repository=normalized_repository,
+        selected_run=workflow_run,
         selected_job=job,
+        workflow_id=workflow_id,
+        workflow_path=AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH,
+        pull_id=pull_id,
+        pull_number=pull_number,
         expected_head_sha=expected_head_sha,
+        expected_head_ref=pull_head_ref,
+        repository_id=expected_repository_id,
         blockers=blockers,
     )
     job_started_at = _server_utc(job, "started_at", "job", blockers)
@@ -9175,54 +9185,125 @@ def _eligible_workflow_runs(
 
 
 def _validate_latest_provenance_check_run(
+    adapter: GitHubSourceAdapter,
     check_runs: Sequence[Mapping[str, object]],
     *,
+    repository: str,
+    selected_run: Mapping[str, object],
     selected_job: Mapping[str, object],
+    workflow_id: int,
+    workflow_path: str,
+    pull_id: int | None,
+    pull_number: int,
     expected_head_sha: str,
+    expected_head_ref: str | None,
+    repository_id: int,
     blockers: list[str],
 ) -> None:
-    authenticated: list[Mapping[str, object]] = []
+    if len(check_runs) > 100:
+        blockers.append("latest provenance check-run set exceeds the safety limit")
+        return
+    authenticated: list[
+        tuple[Mapping[str, object], Mapping[str, object], Mapping[str, object]]
+    ] = []
+    seen_check_run_ids: set[int] = set()
     for record in check_runs:
+        app = _mapping(record.get("app"))
+        if (
+            app.get("id") != GITHUB_ACTIONS_APP_ID
+            or app.get("slug") != GITHUB_ACTIONS_APP_SLUG
+            or record.get("name") != AUTHORITATIVE_PROVENANCE_JOB_NAME
+            or record.get("head_sha") != expected_head_sha
+        ):
+            continue
         check_run_id = _server_positive_id(
             record.get("id"),
             "latest_check_run.id",
             blockers,
         )
-        if record.get("name") != AUTHORITATIVE_PROVENANCE_JOB_NAME:
+        if check_run_id is None:
+            continue
+        if check_run_id in seen_check_run_ids:
             blockers.append(
-                "latest check-run name mismatch: "
-                f"expected={AUTHORITATIVE_PROVENANCE_JOB_NAME!r} "
-                f"actual={record.get('name')!r}"
+                f"latest provenance check-run ID is duplicated: {check_run_id}"
             )
-        if record.get("head_sha") != expected_head_sha:
-            blockers.append(
-                "latest check-run head SHA mismatch: "
-                f"expected={expected_head_sha} "
-                f"actual={record.get('head_sha')!r}"
-            )
-        app = _mapping(record.get("app"))
-        if (
-            app.get("id") != GITHUB_ACTIONS_APP_ID
-            or app.get("slug") != GITHUB_ACTIONS_APP_SLUG
+            continue
+        seen_check_run_ids.add(check_run_id)
+        if check_run_id == selected_job.get("id"):
+            hydrated_job = selected_job
+            hydrated_run = selected_run
+        else:
+            try:
+                hydrated_job = adapter.get_job(repository, check_run_id)
+                hydrated_run_id = _positive_id(
+                    hydrated_job.get("run_id"),
+                    "latest_check_run.job.run_id",
+                )
+                hydrated_run = adapter.get_workflow_run(
+                    repository,
+                    hydrated_run_id,
+                )
+            except Exception as exc:
+                blockers.append(
+                    f"latest provenance check-run hydration failed: {exc}"
+                )
+                continue
+        if not _workflow_run_matches_candidate(
+            hydrated_run,
+            workflow_id=workflow_id,
+            workflow_path=workflow_path,
+            pull_id=pull_id,
+            pull_number=pull_number,
+            candidate_head_sha=expected_head_sha,
+            candidate_head_ref=expected_head_ref,
+            run_head_sha=expected_head_sha,
+            run_head_branch=expected_head_ref,
+            repository_id=repository_id,
         ):
+            continue
+        hydrated_run_id = hydrated_run.get("id")
+        if hydrated_job.get("id") != check_run_id:
             blockers.append(
-                "latest check-run is not owned by the GitHub Actions app"
+                "latest check-run job hydration ID mismatch: "
+                f"expected={check_run_id} actual={hydrated_job.get('id')!r}"
             )
-        if (
-            check_run_id is not None
-            and record.get("name") == AUTHORITATIVE_PROVENANCE_JOB_NAME
-            and record.get("head_sha") == expected_head_sha
-            and app.get("id") == GITHUB_ACTIONS_APP_ID
-            and app.get("slug") == GITHUB_ACTIONS_APP_SLUG
+        if hydrated_job.get("run_id") != hydrated_run_id:
+            blockers.append(
+                "latest check-run job is bound to a different workflow run"
+            )
+        if hydrated_job.get("run_attempt") != hydrated_run.get("run_attempt"):
+            blockers.append(
+                "latest check-run job attempt differs from the workflow run"
+            )
+        for key, expected in (
+            ("name", AUTHORITATIVE_PROVENANCE_JOB_NAME),
+            ("head_sha", expected_head_sha),
+            ("head_branch", expected_head_ref),
         ):
-            authenticated.append(record)
-    if len(authenticated) != 1:
+            if hydrated_job.get(key) != expected:
+                blockers.append(
+                    f"latest check-run job {key} mismatch: "
+                    f"expected={expected!r} actual={hydrated_job.get(key)!r}"
+                )
+        for key in ("name", "head_sha", "status", "conclusion"):
+            if record.get(key) != hydrated_job.get(key):
+                blockers.append(
+                    f"latest check-run {key} differs from its workflow job"
+                )
+        authenticated.append((record, hydrated_job, hydrated_run))
+    if not authenticated:
         blockers.append(
-            "candidate head must expose exactly one latest authenticated "
-            f"provenance check run: actual={len(authenticated)}"
+            "candidate head has no latest check run bound to the "
+            "authoritative provenance workflow"
         )
         return
-    latest = authenticated[0]
+    latest, _, latest_run = max(
+        authenticated,
+        key=lambda candidate: (
+            *_workflow_run_order_key(candidate[2]),
+            int(candidate[0]["id"]),
+        ),
+    )
     selected_job_id = selected_job.get("id")
     if latest.get("id") != selected_job_id:
         blockers.append(
@@ -9230,11 +9311,10 @@ def _validate_latest_provenance_check_run(
             f"candidate head: selected={selected_job_id!r} "
             f"latest={latest.get('id')!r}"
         )
-    for key in ("name", "head_sha", "status", "conclusion"):
-        if latest.get(key) != selected_job.get(key):
-            blockers.append(
-                f"latest check-run {key} differs from the selected workflow job"
-            )
+    if latest_run.get("id") != selected_run.get("id"):
+        blockers.append(
+            "selected provenance workflow run is not the latest check-run run"
+        )
 
 
 def _workflow_run_summary_matches_candidate(

@@ -372,6 +372,7 @@ class FakeGitHubAdapter:
                 "app": {"id": 15_368, "slug": "github-actions"},
             }
         ]
+        self.job_details = {JOB_ID: self.job}
         self.artifacts = [{"id": ARTIFACT_ID, "name": "pre-live"}]
         self.artifact = {
             "id": ARTIFACT_ID,
@@ -511,7 +512,10 @@ class FakeGitHubAdapter:
         repository: str,
         job_id: int,
     ) -> dict[str, object]:
-        return self._result("job", self.job)
+        record = self.job_details.get(job_id)
+        if record is None:
+            raise GitHubSourceError(f"unknown workflow job: {job_id}")
+        return self._result("job", record)
 
     def list_workflow_run_artifacts(
         self,
@@ -2160,11 +2164,36 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         self,
     ) -> None:
         adapter = FakeGitHubAdapter()
-        adapter.latest_check_runs[0].update(
+        newer_run = dict(adapter.workflow_run)
+        newer_run.update(
             {
-                "id": JOB_ID + 1,
+                "id": RUN_ID + 1,
+                "run_number": adapter.workflow_run["run_number"] + 1,
+                "run_attempt": 1,
                 "status": "in_progress",
                 "conclusion": None,
+            }
+        )
+        newer_job = dict(adapter.job)
+        newer_job.update(
+            {
+                "id": JOB_ID + 1,
+                "run_id": RUN_ID + 1,
+                "run_attempt": 1,
+                "status": "in_progress",
+                "conclusion": None,
+            }
+        )
+        adapter.workflow_run_details[RUN_ID + 1] = newer_run
+        adapter.job_details[JOB_ID + 1] = newer_job
+        adapter.latest_check_runs.append(
+            {
+                "id": JOB_ID + 1,
+                "name": AUTHORITATIVE_PROVENANCE_JOB_NAME,
+                "head_sha": HEAD_SHA,
+                "status": "in_progress",
+                "conclusion": None,
+                "app": {"id": 15_368, "slug": "github-actions"},
             }
         )
 
@@ -2176,6 +2205,68 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             " ".join(report["blockers"]),
         )
         self.assertEqual(0, adapter.download_calls)
+
+    def test_ignores_external_app_and_other_workflow_check_runs(self) -> None:
+        adapter = FakeGitHubAdapter()
+        adapter.latest_check_runs.append(
+            {
+                "id": JOB_ID + 1,
+                "name": AUTHORITATIVE_PROVENANCE_JOB_NAME,
+                "head_sha": HEAD_SHA,
+                "status": "completed",
+                "conclusion": "success",
+                "app": {"id": 999, "slug": "external-app"},
+            }
+        )
+        other_run = dict(adapter.workflow_run)
+        other_run.update(
+            {
+                "id": RUN_ID + 2,
+                "workflow_id": WORKFLOW_ID + 1,
+                "run_number": adapter.workflow_run["run_number"] + 2,
+                "path": ".github/workflows/other.yml",
+            }
+        )
+        other_job = dict(adapter.job)
+        other_job.update(
+            {
+                "id": JOB_ID + 2,
+                "run_id": RUN_ID + 2,
+            }
+        )
+        adapter.workflow_run_details[RUN_ID + 2] = other_run
+        adapter.job_details[JOB_ID + 2] = other_job
+        adapter.latest_check_runs.append(
+            {
+                "id": JOB_ID + 2,
+                "name": AUTHORITATIVE_PROVENANCE_JOB_NAME,
+                "head_sha": HEAD_SHA,
+                "status": "completed",
+                "conclusion": "success",
+                "app": {"id": 15_368, "slug": "github-actions"},
+            }
+        )
+
+        report = self.attest(adapter)
+
+        self.assertTrue(report["ok"], report)
+
+    def test_rejects_empty_or_malformed_latest_check_run_results(self) -> None:
+        mutations = {
+            "empty": lambda adapter: adapter.latest_check_runs.clear(),
+            "malformed id": lambda adapter: adapter.latest_check_runs[0].update(
+                {"id": "not-an-id"}
+            ),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                adapter = FakeGitHubAdapter()
+                mutate(adapter)
+
+                report = self.attest(adapter)
+
+                self.assertFalse(report["ok"], report)
+                self.assertEqual(0, adapter.download_calls)
 
     def test_hydrates_newer_run_when_list_record_omits_pull_requests(self) -> None:
         adapter = FakeGitHubAdapter()
@@ -2726,6 +2817,19 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
         self.assertTrue(
             all(header == "Bearer fixture-token" for _, header, _, _ in requested)
         )
+        check_run_query = urllib.parse.parse_qs(
+            next(
+                urllib.parse.urlsplit(url).query
+                for url, _, _, _ in requested
+                if urllib.parse.urlsplit(url).path.endswith("/check-runs")
+            )
+        )
+        self.assertEqual(["15368"], check_run_query["app_id"])
+        self.assertEqual(
+            [AUTHORITATIVE_PROVENANCE_JOB_NAME],
+            check_run_query["check_name"],
+        )
+        self.assertEqual(["latest"], check_run_query["filter"])
 
 
 class BuildBindingTest(unittest.TestCase):
