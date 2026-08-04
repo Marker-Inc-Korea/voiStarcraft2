@@ -8,6 +8,7 @@ claims are accepted only as explicitly ignored compatibility data.
 from __future__ import annotations
 
 import base64
+import contextlib
 import fcntl
 import grp
 import hashlib
@@ -105,6 +106,11 @@ GLOBAL_REPLAY_STATE_ROOT: Final[Path] = (
     / "state"
     / "voiStarcraft2"
     / "pre-live-replay"
+)
+DEDICATED_PRODUCER_TEMP_ROOT_NAME: Final[str] = "voi-pre-live-producer"
+DEDICATED_PRODUCER_TEMP_PARENTS: Final[tuple[Path, ...]] = (
+    Path("/private/tmp"),
+    Path("/tmp"),
 )
 GITHUB_API_VERSION: Final[str] = "2022-11-28"
 MAX_GITHUB_JSON_BYTES: Final[int] = 16 * 1024 * 1024
@@ -3840,16 +3846,29 @@ def run_local_producer(
                     git_runner=git_runner,
                     deadline=deadline,
                 )
-                with (
-                    tempfile.TemporaryDirectory(
-                        prefix=".producer-snapshot-",
-                        dir=state_dir,
-                    ) as snapshot_directory,
-                    tempfile.TemporaryDirectory(
-                        prefix=".producer-output-",
-                        dir=state_dir,
-                    ) as staging_directory,
-                ):
+                with contextlib.ExitStack() as execution_stack:
+                    execution_parent = state_dir
+                    if producer_identity is not None:
+                        execution_parent = Path(
+                            execution_stack.enter_context(
+                                _dedicated_producer_execution_directory(
+                                    uid=producer_identity[0],
+                                    gid=producer_identity[1],
+                                )
+                            )
+                        )
+                    snapshot_directory = execution_stack.enter_context(
+                        tempfile.TemporaryDirectory(
+                            prefix=".producer-snapshot-",
+                            dir=execution_parent,
+                        )
+                    )
+                    staging_directory = execution_stack.enter_context(
+                        tempfile.TemporaryDirectory(
+                            prefix=".producer-output-",
+                            dir=execution_parent,
+                        )
+                    )
                     snapshot_root = Path(snapshot_directory)
                     staging_root = Path(staging_directory)
                     for _, payload, relative in authenticated_snapshots.values():
@@ -3970,6 +3989,7 @@ def run_local_producer(
                                 )
                             },
                             state_dir=state_dir,
+                            execution_dir=execution_parent,
                             cwd=str(execution_cwd),
                             timeout=timeout_seconds,
                             inherited_fds=tuple(
@@ -7912,6 +7932,128 @@ def _open_pinned_executable(
         raise
 
 
+def _trusted_dedicated_producer_temp_root(*, gid: int) -> Path:
+    failures: list[str] = []
+    for raw_parent in DEDICATED_PRODUCER_TEMP_PARENTS:
+        try:
+            parent = raw_parent.resolve(strict=True)
+            parent_stat = os.lstat(parent)
+            parent_mode = stat.S_IMODE(parent_stat.st_mode)
+            if (
+                not stat.S_ISDIR(parent_stat.st_mode)
+                or parent_stat.st_uid != 0
+                or not parent_mode & stat.S_ISVTX
+                or not parent_mode & stat.S_IWOTH
+                or not parent_mode & stat.S_IXOTH
+            ):
+                raise OSError(
+                    "temporary parent is not a root-owned searchable sticky directory"
+                )
+            root = parent / f"{DEDICATED_PRODUCER_TEMP_ROOT_NAME}-{gid}"
+            try:
+                root.mkdir(mode=0o710)
+            except FileExistsError:
+                pass
+            root_stat = os.lstat(root)
+            if (
+                not stat.S_ISDIR(root_stat.st_mode)
+                or root_stat.st_uid != 0
+                or stat.S_IMODE(root_stat.st_mode)
+                & (stat.S_IWGRP | stat.S_IWOTH)
+            ):
+                raise OSError(
+                    "dedicated producer temporary root is not root-owned and private"
+                )
+            os.chown(root, 0, gid)
+            os.chmod(root, 0o710)
+            verified_stat = os.lstat(root)
+            if (
+                verified_stat.st_dev,
+                verified_stat.st_ino,
+                verified_stat.st_uid,
+                verified_stat.st_gid,
+                stat.S_IMODE(verified_stat.st_mode),
+            ) != (
+                root_stat.st_dev,
+                root_stat.st_ino,
+                0,
+                gid,
+                0o710,
+            ):
+                raise OSError(
+                    "dedicated producer temporary root changed during admission"
+                )
+            return root
+        except OSError as exc:
+            failures.append(f"{raw_parent}: {exc}")
+    raise OSError(
+        "no trusted dedicated producer temporary root is available: "
+        + "; ".join(failures)
+    )
+
+
+def _assert_dedicated_producer_execution_directory(
+    path: Path,
+    *,
+    uid: int,
+    gid: int,
+) -> None:
+    for candidate in (path, path.parent):
+        file_stat = os.lstat(candidate)
+        mode = stat.S_IMODE(file_stat.st_mode)
+        if not stat.S_ISDIR(file_stat.st_mode) or file_stat.st_uid != 0:
+            raise OSError(
+                "dedicated producer execution directory is not root-owned"
+            )
+        if file_stat.st_uid == uid:
+            write_mask = stat.S_IWUSR
+            search_mask = stat.S_IXUSR
+        elif file_stat.st_gid == gid:
+            write_mask = stat.S_IWGRP
+            search_mask = stat.S_IXGRP
+        else:
+            write_mask = stat.S_IWOTH
+            search_mask = stat.S_IXOTH
+        if mode & write_mask or not mode & search_mask:
+            raise OSError(
+                "dedicated producer execution directory is not searchable "
+                "without write access"
+            )
+
+
+def _dedicated_producer_execution_directory(
+    *,
+    uid: int,
+    gid: int,
+) -> tempfile.TemporaryDirectory[str]:
+    trusted_root = _trusted_dedicated_producer_temp_root(gid=gid)
+    temporary = tempfile.TemporaryDirectory(
+        prefix=".execution-",
+        dir=trusted_root,
+    )
+    try:
+        execution_root = Path(temporary.name)
+        execution_stat = os.lstat(execution_root)
+        if (
+            not stat.S_ISDIR(execution_stat.st_mode)
+            or execution_stat.st_uid != 0
+        ):
+            raise OSError(
+                "dedicated producer execution directory was not created by root"
+            )
+        os.chown(execution_root, 0, gid)
+        os.chmod(execution_root, 0o710)
+        _assert_dedicated_producer_execution_directory(
+            execution_root,
+            uid=uid,
+            gid=gid,
+        )
+        return temporary
+    except BaseException:
+        temporary.cleanup()
+        raise
+
+
 def _run_pinned_command(
     command_runner: CommandRunner,
     argv: Sequence[str],
@@ -7922,6 +8064,7 @@ def _run_pinned_command(
     state_dir: Path,
     cwd: str,
     timeout: float,
+    execution_dir: Path | None = None,
     inherited_fds: Sequence[int] = (),
     producer_uid: int | None = None,
     producer_gid: int | None = None,
@@ -7939,20 +8082,37 @@ def _run_pinned_command(
             *producer_identity,
             deadline=deadline,
         )
-    original_state_mode = stat.S_IMODE(state_dir.stat().st_mode)
-    if producer_identity is not None:
-        os.chmod(state_dir, 0o711)
-    try:
+    with contextlib.ExitStack() as execution_stack:
+        temporary_parent = execution_dir
+        if temporary_parent is None and producer_identity is not None:
+            temporary_parent = Path(
+                execution_stack.enter_context(
+                    _dedicated_producer_execution_directory(
+                        uid=producer_identity[0],
+                        gid=producer_identity[1],
+                    )
+                )
+            )
+        if temporary_parent is None:
+            temporary_parent = state_dir
+        if producer_identity is not None:
+            _assert_dedicated_producer_execution_directory(
+                temporary_parent,
+                uid=producer_identity[0],
+                gid=producer_identity[1],
+            )
         with tempfile.TemporaryDirectory(
             prefix=".producer-executable-",
-            dir=state_dir,
+            dir=temporary_parent,
         ) as executable_directory:
             executable_root = Path(executable_directory)
             executable_path = executable_root / "producer"
             _write_private_executable_file(executable_path, executable_payload)
             if producer_identity is not None:
-                os.chmod(executable_root, 0o711)
-                os.chmod(executable_path, 0o555)
+                os.chown(executable_root, 0, producer_identity[1])
+                os.chmod(executable_root, 0o710)
+                os.chown(executable_path, 0, producer_identity[1])
+                os.chmod(executable_path, 0o550)
             snapshot_fd, snapshot_payload, snapshot_before = (
                 _open_pinned_executable(executable_path)
             )
@@ -7970,7 +8130,7 @@ def _run_pinned_command(
                 ):
                     with tempfile.TemporaryDirectory(
                         prefix=".native-execution-",
-                        dir=state_dir,
+                        dir=temporary_parent,
                     ) as native_execution_root:
                         completed = _run_authenticated_python_exec(
                             argv,
@@ -8030,9 +8190,6 @@ def _run_pinned_command(
                 return completed
             finally:
                 os.close(snapshot_fd)
-    finally:
-        if producer_identity is not None:
-            os.chmod(state_dir, original_state_mode)
 
 
 def _is_isolated_python_command(argv: Sequence[str]) -> bool:

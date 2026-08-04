@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -1622,7 +1623,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             candidate_job,
         )
         self.assertEqual(
-            10,
+            11,
             len(
                 [
                     name
@@ -5684,6 +5685,66 @@ class LocalProducerTest(unittest.TestCase):
             )
             self.assertEqual(producer_uid, output["euid"])
             self.assertFalse(output["recovered"], output)
+
+    def test_dedicated_producer_uid_uses_non_writable_traversable_arena(
+        self,
+    ) -> None:
+        producer_uid, producer_gid = self.dedicated_producer_uid()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual(0, stat.S_IMODE(root.stat().st_mode) & 0o007)
+            fixture = make_build_fixture(root / "fixture")
+            commit = replace_fixture_producer_source(
+                fixture,
+                "import json\n"
+                "import os\n"
+                "from pathlib import Path\n"
+                "import sys\n"
+                "native_root=Path(\n"
+                "    os.environ['VOI_PINNED_NATIVE_EXEC_ROOT']\n"
+                ")\n"
+                "execution_arena=native_root.parent\n"
+                "try:\n"
+                "    (execution_arena/'producer-write').write_text('forbidden')\n"
+                "except OSError:\n"
+                "    arena_writable=False\n"
+                "else:\n"
+                "    arena_writable=True\n"
+                "Path(sys.argv[sys.argv.index('--output') + 1]).write_text(\n"
+                "    json.dumps({\n"
+                "        'arena_writable':arena_writable,\n"
+                "        'euid':os.geteuid(),\n"
+                "    })+'\\n'\n"
+                ")\n",
+            )
+            policy = resolve_local_producer_policy(
+                repository_dir=fixture["repository"],
+                expected_commit=commit,
+                producer_id="fixture_producer",
+            )
+            self.assertTrue(policy["ok"], policy)
+            source_files = policy["runtime_sources"]["files"]
+
+            report = run_local_producer(
+                repository_dir=fixture["repository"],
+                cwd=policy["cwd"],
+                argv=policy["argv"],
+                allowed_argv=(policy["argv"],),
+                output_artifact=policy["output_artifact"],
+                authenticated_files=[item["path"] for item in source_files],
+                authenticated_file_digests={
+                    item["path"]: item["sha256"] for item in source_files
+                },
+                producer_uid=producer_uid,
+                producer_gid=producer_gid,
+            )
+
+            self.assertTrue(report["ok"], report)
+            output = json.loads(
+                Path(str(policy["output_artifact"])).read_bytes()
+            )
+            self.assertEqual(producer_uid, output["euid"])
+            self.assertFalse(output["arena_writable"], output)
 
     def test_github_token_stdin_is_bounded_and_exact(self) -> None:
         self.assertEqual(
