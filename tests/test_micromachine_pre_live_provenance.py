@@ -5264,26 +5264,32 @@ class LocalProducerTest(unittest.TestCase):
             observation_path = producer_io / "ctest-observation.json"
             child_pid_path = producer_io / "ctest-child.pid"
             sentinel_token = "token-visible-only-in-root-parent"
+            (producer_io / "CTestTestfile.cmake").write_text("")
             script = (
                 "import json,os,subprocess,sys,time\n"
                 "from pathlib import Path\n"
                 "with open('/dev/null','wb') as sink:\n"
                 "    subprocess.Popen(\n"
                 "        ['/bin/sh','-c','echo $$ > \"$1\"; exec sleep 30',\n"
-                "         'ctest-child',sys.argv[2]],\n"
+                f"         'ctest-child',{str(child_pid_path)!r}],\n"
                 "        stdin=sink,stdout=sink,stderr=sink,\n"
                 "        start_new_session=True,\n"
                 "    )\n"
-                "child_path=Path(sys.argv[2])\n"
+                f"child_path=Path({str(child_pid_path)!r})\n"
                 "for _ in range(100):\n"
                 "    if child_path.is_file():\n"
                 "        break\n"
                 "    time.sleep(0.01)\n"
-                "Path(sys.argv[1]).write_text(json.dumps({\n"
+                f"Path({str(observation_path)!r}).write_text(json.dumps({{\n"
                 "    'stdin':sys.stdin.buffer.read().decode(),\n"
                 "    'token_env':os.environ.get('GITHUB_TOKEN'),\n"
                 "}))\n"
             )
+            fake_ctest = root / "ctest"
+            fake_ctest.write_text(
+                f"#!{Path(sys.executable).resolve()}\n{script}"
+            )
+            fake_ctest.chmod(0o755)
 
             def reconstruct(
                 config: object,
@@ -5296,14 +5302,10 @@ class LocalProducerTest(unittest.TestCase):
                 self.assertTrue(callable(ctest_registry_runner))
                 ctest_registry_runner(
                     (
-                        str(Path(sys.executable).resolve()),
-                        "-I",
-                        "-B",
-                        "-S",
-                        "-c",
-                        script,
-                        str(observation_path),
-                        str(child_pid_path),
+                        str(fake_ctest),
+                        "--test-dir",
+                        str(producer_io),
+                        "--show-only=json-v1",
                     ),
                     producer_io,
                     provenance_module.SANITIZED_TEST_ENV,
@@ -5460,7 +5462,7 @@ class LocalProducerTest(unittest.TestCase):
                     "  printf "
                     f"'%s{{\"name\":\"{name}\","
                     f"\"command\":[\"%s/bin/{executable}\"]}}' "
-                    f"'{',' if index else ''}' \"$2\"\n"
+                    f"'{',' if index else ''}' \"$registry_root\"\n"
                 )
                 for index, (name, executable) in enumerate(
                     sorted(MICROMACHINE_REQUIRED_NATIVE_TESTS.items())
@@ -5468,6 +5470,12 @@ class LocalProducerTest(unittest.TestCase):
             )
             fake_ctest.write_text(
                 "#!/bin/sh\n"
+                'test_dir="$2"\n'
+                'case "$test_dir" in\n'
+                "  */.voi-ctest-registry-*) "
+                f"registry_root={json.dumps(str(build_dir))} ;;\n"
+                '  *) registry_root="$test_dir" ;;\n'
+                "esac\n"
                 'if [ "${3:-}" = "--show-only=json-v1" ]; then\n'
                 "  printf '%s' '{\"tests\":['\n"
                 f"{registry_commands}"
