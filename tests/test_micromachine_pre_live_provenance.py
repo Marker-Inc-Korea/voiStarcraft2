@@ -5216,7 +5216,7 @@ class LocalProducerTest(unittest.TestCase):
                 "tests": [
                     {
                         "name": name,
-                        "command": [f"BUILD_DIR/bin/{executable}"],
+                        "command": [str(build_dir / "bin" / executable)],
                     }
                     for name, executable in sorted(
                         MICROMACHINE_REQUIRED_NATIVE_TESTS.items()
@@ -5226,12 +5226,12 @@ class LocalProducerTest(unittest.TestCase):
             fake_ctest.write_text(
                 "#!/bin/sh\n"
                 'if [ "${3:-}" = "--show-only=json-v1" ]; then\n'
-                f"  printf '%s\\n' '{json.dumps(registry)}' "
-                '| sed "s|BUILD_DIR|${{2}}|g"\n'
+                f"  printf '%s\\n' '{json.dumps(registry)}'\n"
                 "else\n"
                 "  printf '%s\\n' "
                 f"'100% tests passed, 0 tests failed out of {REQUIRED_CTEST_COUNT}'\n"
                 "fi\n"
+                "exit 0\n"
             )
             fake_ctest.chmod(0o755)
             (build_dir / "CMakeCache.txt").write_text(
