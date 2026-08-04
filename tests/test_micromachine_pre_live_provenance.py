@@ -301,8 +301,8 @@ class FakeGitHubAdapter:
             "workflow_id": WORKFLOW_ID,
             "run_number": 17,
             "run_attempt": RUN_ATTEMPT,
-            "head_sha": BASE_SHA,
-            "head_branch": "main",
+            "head_sha": head_sha,
+            "head_branch": "issue-138-authenticated-prelive-provenance",
             "head_repository": {
                 "id": AUTHORITATIVE_REPOSITORY_ID,
                 "full_name": REPOSITORY,
@@ -325,6 +325,7 @@ class FakeGitHubAdapter:
         }
         self.workflow_runs = [dict(self.workflow_run)]
         self.workflow_run_details = {RUN_ID: self.workflow_run}
+        self.workflow_run_queries: list[tuple[str, int, str, str]] = []
         self.workflow = {
             "id": WORKFLOW_ID,
             "path": WORKFLOW_PATH,
@@ -353,7 +354,7 @@ class FakeGitHubAdapter:
             "id": JOB_ID,
             "run_id": RUN_ID,
             "run_attempt": RUN_ATTEMPT,
-            "head_sha": BASE_SHA,
+            "head_sha": head_sha,
             "name": "pre-live-provenance",
             "status": "completed",
             "conclusion": "success",
@@ -370,7 +371,7 @@ class FakeGitHubAdapter:
             "digest": "sha256:" + hashlib.sha256(self.artifact_bytes).hexdigest(),
             "workflow_run": {
                 "id": RUN_ID,
-                "head_sha": BASE_SHA,
+                "head_sha": head_sha,
             },
         }
         self.artifact_bytes = make_source_artifact_bundle(head_sha)
@@ -456,6 +457,9 @@ class FakeGitHubAdapter:
         branch: str,
         event: str,
     ) -> list[dict[str, object]]:
+        self.workflow_run_queries.append(
+            (repository, workflow_id, branch, event)
+        )
         return self._result("workflow_runs", self.workflow_runs)
 
     def get_workflow(
@@ -1605,6 +1609,22 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         report = self.attest(adapter)
 
         self.assertTrue(report["ok"], report)
+        self.assertEqual(HEAD_SHA, adapter.workflow_run["head_sha"])
+        self.assertEqual(
+            "issue-138-authenticated-prelive-provenance",
+            adapter.workflow_run["head_branch"],
+        )
+        self.assertEqual(
+            [
+                (
+                    REPOSITORY,
+                    WORKFLOW_ID,
+                    "issue-138-authenticated-prelive-provenance",
+                    AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
+                )
+            ],
+            adapter.workflow_run_queries,
+        )
         self.assertEqual(
             {
                 "repository_id": AUTHORITATIVE_REPOSITORY_ID,
@@ -1697,6 +1717,19 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         self.assertTrue(report["ok"], report)
         self.assertEqual(JOB_ID, report["job_id"])
         self.assertEqual(WORKFLOW_ID, report["workflow_id"])
+        self.assertEqual(WORKFLOW_SHA, report["workflow_sha"])
+        self.assertNotEqual(report["head_sha"], report["workflow_sha"])
+        self.assertEqual(
+            [
+                (
+                    REPOSITORY,
+                    WORKFLOW_ID,
+                    "issue-138-authenticated-prelive-provenance",
+                    AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
+                )
+            ],
+            adapter.workflow_run_queries,
+        )
 
         adapter.jobs.append(dict(adapter.jobs[0]))
         ambiguous = attest_github_actions_emission_context(
@@ -1709,6 +1742,82 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             workflow_sha=WORKFLOW_SHA,
         )
         self.assertFalse(ambiguous["ok"], ambiguous)
+
+    def test_rejects_candidate_run_sha_or_branch_tampering(self) -> None:
+        mutations = {
+            "run sha": lambda adapter: adapter.workflow_run.update(
+                {"head_sha": "c" * 40}
+            ),
+            "run branch": lambda adapter: adapter.workflow_run.update(
+                {"head_branch": "main"}
+            ),
+            "attempt sha": lambda adapter: adapter.attempt.update(
+                {"head_sha": "c" * 40}
+            ),
+            "attempt branch": lambda adapter: adapter.attempt.update(
+                {"head_branch": "main"}
+            ),
+            "job sha": lambda adapter: adapter.job.update(
+                {"head_sha": "c" * 40}
+            ),
+            "artifact sha": lambda adapter: adapter.artifact[
+                "workflow_run"
+            ].update({"head_sha": "c" * 40}),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                adapter = FakeGitHubAdapter()
+                mutate(adapter)
+
+                report = self.attest(adapter)
+
+                self.assertFalse(report["ok"], report)
+                self.assertEqual(0, adapter.download_calls)
+
+    def test_rejects_workflow_identity_not_bound_to_main_base(self) -> None:
+        adapter = FakeGitHubAdapter()
+        changed_base = "d" * 40
+        adapter.pull_request["base"]["sha"] = changed_base
+        adapter.comparison["base_commit"]["sha"] = changed_base
+        adapter.comparison["merge_base_commit"]["sha"] = changed_base
+
+        report = attest_github_actions_emission_context(
+            adapter,
+            repository=REPOSITORY,
+            run_id=RUN_ID,
+            run_attempt=RUN_ATTEMPT,
+            expected_head_sha=HEAD_SHA,
+            workflow_ref=WORKFLOW_REF,
+            workflow_sha=WORKFLOW_SHA,
+        )
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn(
+            "workflow execution SHA differs from the authenticated "
+            "pull-request base",
+            " ".join(report["blockers"]),
+        )
+
+        adapter = FakeGitHubAdapter()
+        adapter.workflow_references["refs/heads/main"]["object"]["sha"] = (
+            "d" * 40
+        )
+
+        report = attest_github_actions_emission_context(
+            adapter,
+            repository=REPOSITORY,
+            run_id=RUN_ID,
+            run_attempt=RUN_ATTEMPT,
+            expected_head_sha=HEAD_SHA,
+            workflow_ref=WORKFLOW_REF,
+            workflow_sha=WORKFLOW_SHA,
+        )
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn(
+            "workflow SHA differs from the authenticated Git reference target",
+            " ".join(report["blockers"]),
+        )
 
     def test_accepts_current_run_during_workflow_list_eventual_consistency(
         self,

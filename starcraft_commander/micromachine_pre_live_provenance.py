@@ -1593,7 +1593,7 @@ def attest_github_source(
         workflow_runs = adapter.list_workflow_runs(
             normalized_repository,
             workflow_id,
-            branch=AUTHORITATIVE_BASE_BRANCH,
+            branch=lookup_head_ref,
             event=AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
         )
         attempt = adapter.get_workflow_run_attempt(
@@ -1807,9 +1807,9 @@ def attest_github_source(
         blockers,
     )
     run_head_sha = workflow_run.get("head_sha")
-    if run_head_sha != pull_base_sha:
+    if run_head_sha != expected_head_sha:
         blockers.append(
-            f"workflow run head SHA mismatch: expected={pull_base_sha} "
+            f"workflow run head SHA mismatch: expected={expected_head_sha} "
             f"actual={run_head_sha!r}"
         )
     run_head_repository = _mapping(workflow_run.get("head_repository"))
@@ -1878,10 +1878,10 @@ def attest_github_source(
             f"expected={AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT!r} "
             f"actual={event!r}"
         )
-    if head_branch != AUTHORITATIVE_BASE_BRANCH:
+    if head_branch != pull_head_ref:
         blockers.append(
-            "workflow run branch differs from the authoritative base branch: "
-            f"run={head_branch!r} base={AUTHORITATIVE_BASE_BRANCH!r}"
+            "workflow run branch differs from the authenticated candidate: "
+            f"run={head_branch!r} candidate={pull_head_ref!r}"
         )
     workflow_ref: str | None = None
     workflow_sha: str | None = None
@@ -1906,8 +1906,8 @@ def attest_github_source(
         pull_number=pull_number,
         candidate_head_sha=expected_head_sha,
         candidate_head_ref=pull_head_ref,
-        workflow_head_sha=pull_base_sha,
-        workflow_head_branch=AUTHORITATIVE_BASE_BRANCH,
+        run_head_sha=expected_head_sha,
+        run_head_branch=pull_head_ref,
         repository_id=expected_repository_id,
         blockers=blockers,
     )
@@ -1953,15 +1953,16 @@ def attest_github_source(
         blockers,
     )
     attempt_head_sha = attempt.get("head_sha")
-    if attempt_head_sha != pull_base_sha:
+    if attempt_head_sha != expected_head_sha:
         blockers.append(
-            f"workflow run attempt head SHA mismatch: expected={pull_base_sha} "
+            "workflow run attempt head SHA mismatch: "
+            f"expected={expected_head_sha} "
             f"actual={attempt_head_sha!r}"
         )
     _expect_server_value(
         attempt,
         "head_branch",
-        AUTHORITATIVE_BASE_BRANCH,
+        pull_head_ref,
         "run_attempt",
         blockers,
     )
@@ -2046,10 +2047,10 @@ def attest_github_source(
     _expect_server_value(job, "id", job_id, "job", blockers)
     _expect_server_value(job, "run_id", run_id, "job", blockers)
     _expect_server_value(job, "run_attempt", run_attempt, "job", blockers)
-    if job.get("head_sha") != pull_base_sha:
+    if job.get("head_sha") != expected_head_sha:
         blockers.append(
             "workflow job head SHA mismatch: "
-            f"expected={pull_base_sha} actual={job.get('head_sha')!r}"
+            f"expected={expected_head_sha} actual={job.get('head_sha')!r}"
         )
     job_name = _server_string(job, "name", "job", blockers)
     if job_name != AUTHORITATIVE_PROVENANCE_JOB_NAME:
@@ -2121,9 +2122,9 @@ def attest_github_source(
         blockers,
     )
     artifact_head_sha = artifact_run.get("head_sha")
-    if artifact_head_sha != pull_base_sha:
+    if artifact_head_sha != expected_head_sha:
         blockers.append(
-            f"artifact head SHA mismatch: expected={pull_base_sha} "
+            f"artifact head SHA mismatch: expected={expected_head_sha} "
             f"actual={artifact_head_sha!r}"
         )
     artifact_created_at = _server_utc(
@@ -4062,6 +4063,10 @@ def attest_github_actions_emission_context(
             normalized_repository,
             pull_number,
         )
+        lookup_head = _mapping(pull_request.get("head"))
+        lookup_head_ref = lookup_head.get("ref")
+        if not isinstance(lookup_head_ref, str) or not lookup_head_ref:
+            raise ValueError("pull_request.head.ref is required")
         pull_base = _mapping(pull_request.get("base"))
         pull_base_sha = pull_base.get("sha")
         if not isinstance(pull_base_sha, str) or not _SHA40_RE.fullmatch(
@@ -4080,7 +4085,7 @@ def attest_github_actions_emission_context(
         workflow_runs = adapter.list_workflow_runs(
             normalized_repository,
             workflow_id,
-            branch=AUTHORITATIVE_BASE_BRANCH,
+            branch=lookup_head_ref,
             event=AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
         )
         jobs = adapter.list_workflow_run_attempt_jobs(
@@ -4132,10 +4137,10 @@ def attest_github_actions_emission_context(
         "workflow_run",
         blockers,
     )
-    if run.get("head_sha") != pull_base_sha:
+    if run.get("head_sha") != expected_head_sha:
         blockers.append(
             "workflow run head SHA mismatch: "
-            f"expected={pull_base_sha} actual={run.get('head_sha')!r}"
+            f"expected={expected_head_sha} actual={run.get('head_sha')!r}"
         )
     event = _server_string(run, "event", "workflow_run", blockers)
     if event != AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT:
@@ -4312,10 +4317,10 @@ def attest_github_actions_emission_context(
         expected_repository_id=AUTHORITATIVE_REPOSITORY_ID,
         blockers=blockers,
     )
-    if head_branch != AUTHORITATIVE_BASE_BRANCH:
+    if head_branch != pull_head_ref:
         blockers.append(
-            "workflow run branch differs from the authoritative base branch: "
-            f"run={head_branch!r} base={AUTHORITATIVE_BASE_BRANCH!r}"
+            "workflow run branch differs from the authenticated candidate: "
+            f"run={head_branch!r} candidate={pull_head_ref!r}"
         )
     workflow_git_ref = _validate_workflow_execution_identity(
         repository=normalized_repository,
@@ -4348,8 +4353,8 @@ def attest_github_actions_emission_context(
         pull_number=pull_number,
         candidate_head_sha=expected_head_sha,
         candidate_head_ref=pull_head_ref,
-        workflow_head_sha=pull_base_sha,
-        workflow_head_branch=AUTHORITATIVE_BASE_BRANCH,
+        run_head_sha=expected_head_sha,
+        run_head_branch=pull_head_ref,
         repository_id=AUTHORITATIVE_REPOSITORY_ID,
         blockers=blockers,
     )
@@ -4406,10 +4411,11 @@ def attest_github_actions_emission_context(
         blockers,
     )
     _expect_server_value(selected_job, "name", job_name, "job", blockers)
-    if selected_job.get("head_sha") != pull_base_sha:
+    if selected_job.get("head_sha") != expected_head_sha:
         blockers.append(
             "workflow job head SHA mismatch: "
-            f"expected={pull_base_sha} actual={selected_job.get('head_sha')!r}"
+            f"expected={expected_head_sha} "
+            f"actual={selected_job.get('head_sha')!r}"
         )
     job_status = selected_job.get("status")
     job_conclusion = selected_job.get("conclusion")
@@ -8972,8 +8978,8 @@ def _workflow_run_matches_candidate(
     pull_number: int,
     candidate_head_sha: str,
     candidate_head_ref: str | None,
-    workflow_head_sha: str | None,
-    workflow_head_branch: str | None,
+    run_head_sha: str | None,
+    run_head_branch: str | None,
     repository_id: int,
 ) -> bool:
     try:
@@ -8986,8 +8992,8 @@ def _workflow_run_matches_candidate(
         record.get("workflow_id") != workflow_id
         or record.get("path") != workflow_path
         or record.get("event") != AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT
-        or record.get("head_sha") != workflow_head_sha
-        or record.get("head_branch") != workflow_head_branch
+        or record.get("head_sha") != run_head_sha
+        or record.get("head_branch") != run_head_branch
     ):
         return False
     head_repository = _mapping(record.get("head_repository"))
@@ -9022,8 +9028,8 @@ def _eligible_workflow_runs(
     pull_number: int,
     candidate_head_sha: str,
     candidate_head_ref: str | None,
-    workflow_head_sha: str | None,
-    workflow_head_branch: str | None,
+    run_head_sha: str | None,
+    run_head_branch: str | None,
     repository_id: int,
     blockers: list[str],
 ) -> list[Mapping[str, object]]:
@@ -9034,8 +9040,8 @@ def _eligible_workflow_runs(
             summary,
             workflow_id=workflow_id,
             workflow_path=workflow_path,
-            workflow_head_sha=workflow_head_sha,
-            workflow_head_branch=workflow_head_branch,
+            run_head_sha=run_head_sha,
+            run_head_branch=run_head_branch,
             repository_id=repository_id,
         ):
             continue
@@ -9071,8 +9077,8 @@ def _eligible_workflow_runs(
             pull_number=pull_number,
             candidate_head_sha=candidate_head_sha,
             candidate_head_ref=candidate_head_ref,
-            workflow_head_sha=workflow_head_sha,
-            workflow_head_branch=workflow_head_branch,
+            run_head_sha=run_head_sha,
+            run_head_branch=run_head_branch,
             repository_id=repository_id,
         ):
             blockers.append(
@@ -9088,8 +9094,8 @@ def _eligible_workflow_runs(
         pull_number=pull_number,
         candidate_head_sha=candidate_head_sha,
         candidate_head_ref=candidate_head_ref,
-        workflow_head_sha=workflow_head_sha,
-        workflow_head_branch=workflow_head_branch,
+        run_head_sha=run_head_sha,
+        run_head_branch=run_head_branch,
         repository_id=repository_id,
     ):
         current_id = current_run.get("id")
@@ -9103,8 +9109,8 @@ def _workflow_run_summary_matches_candidate(
     *,
     workflow_id: int,
     workflow_path: str,
-    workflow_head_sha: str | None,
-    workflow_head_branch: str | None,
+    run_head_sha: str | None,
+    run_head_branch: str | None,
     repository_id: int,
 ) -> bool:
     try:
@@ -9117,8 +9123,8 @@ def _workflow_run_summary_matches_candidate(
         record.get("workflow_id") != workflow_id
         or record.get("path") != workflow_path
         or record.get("event") != AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT
-        or record.get("head_sha") != workflow_head_sha
-        or record.get("head_branch") != workflow_head_branch
+        or record.get("head_sha") != run_head_sha
+        or record.get("head_branch") != run_head_branch
     ):
         return False
     return _mapping(record.get("head_repository")).get("id") == repository_id
