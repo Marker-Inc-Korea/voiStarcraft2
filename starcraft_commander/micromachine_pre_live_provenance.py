@@ -17,6 +17,7 @@ import math
 import os
 import pwd
 import re
+import select
 import signal
 import stat
 import subprocess
@@ -3356,6 +3357,7 @@ def run_local_producer(
     authenticated_files: Sequence[Path | str] = (),
     authenticated_file_digests: Mapping[str, str] | None = None,
     pinned_argv_file_digests: Mapping[str, str] | None = None,
+    path_bound_argv_files: Sequence[Path | str] = (),
     producer_uid: int | None = None,
     producer_gid: int | None = None,
     deadline: _VerifierDeadline | None = None,
@@ -3518,6 +3520,33 @@ def run_local_producer(
             payload,
             snapshot,
         )
+    path_bound_argv = {
+        str(Path(candidate).absolute())
+        for candidate in path_bound_argv_files
+    }
+    for candidate in sorted(path_bound_argv - set(pinned_argv_snapshots)):
+        blockers.append(
+            "path-bound argv file must also be pinned: "
+            f"{candidate}"
+        )
+    if producer_identity is not None:
+        for candidate in sorted(path_bound_argv):
+            try:
+                writable = _path_is_writable_by_identity(
+                    Path(candidate),
+                    uid=producer_identity[0],
+                    gid=producer_identity[1],
+                )
+            except OSError as exc:
+                blockers.append(
+                    f"path-bound argv file is unreadable: {candidate}: {exc}"
+                )
+                continue
+            if writable:
+                blockers.append(
+                    "path-bound argv file is writable by the producer identity: "
+                    f"{candidate}"
+                )
 
     commit_before = _git_head(root, git_runner, deadline=deadline)
     if commit_before is None:
@@ -3573,16 +3602,33 @@ def run_local_producer(
                             tuple[int, int, int, int, str],
                         ],
                     ] = {}
+                    pinned_path_monitors: dict[
+                        str,
+                        tuple[Any, int] | None,
+                    ] = {}
                     try:
                         if pinned_argv_snapshots:
                             pinned_argv_root = snapshot_root / ".pinned-argv"
                             pinned_argv_root.mkdir(mode=0o700)
                             for index, (
                                 source,
-                                (_, payload, source_snapshot),
+                                (
+                                    source_descriptor,
+                                    payload,
+                                    source_snapshot,
+                                ),
                             ) in enumerate(
                                 sorted(pinned_argv_snapshots.items())
                             ):
+                                if source in path_bound_argv:
+                                    pinned_argv_paths[source] = source
+                                    pinned_path_monitors[source] = (
+                                        _open_pinned_path_monitor(
+                                            source_descriptor,
+                                            Path(source),
+                                        )
+                                    )
+                                    continue
                                 snapshot_file = (
                                     pinned_argv_root
                                     / f"{index:04d}-{Path(source).name}"
@@ -3679,6 +3725,37 @@ def run_local_producer(
                             deadline=deadline,
                             cleanup_reserve_seconds=cleanup_reserve_seconds,
                         )
+                        for source in sorted(path_bound_argv):
+                            if _pinned_path_monitor_changed(
+                                pinned_path_monitors.get(source)
+                            ):
+                                raise OSError(
+                                    "path-bound argv file changed during "
+                                    f"execution: {source}"
+                                )
+                            source_descriptor, _, snapshot_before = (
+                                pinned_argv_snapshots[source]
+                            )
+                            _, descriptor_snapshot_after = (
+                                _read_open_regular_file_snapshot(
+                                    source_descriptor,
+                                    maximum=MAX_PRODUCER_EXECUTABLE_BYTES,
+                                )
+                            )
+                            _, path_snapshot_after = (
+                                _read_regular_file_snapshot(
+                                    Path(source),
+                                    maximum=MAX_PRODUCER_EXECUTABLE_BYTES,
+                                )
+                            )
+                            if (
+                                descriptor_snapshot_after != snapshot_before
+                                or path_snapshot_after != snapshot_before
+                            ):
+                                raise OSError(
+                                    "path-bound argv file changed during "
+                                    f"execution: {source}"
+                                )
                         for source, (
                             snapshot_descriptor,
                             snapshot_before,
@@ -3710,6 +3787,8 @@ def run_local_producer(
                                 ),
                             )
                     finally:
+                        for monitor in pinned_path_monitors.values():
+                            _close_pinned_path_monitor(monitor)
                         for (
                             snapshot_descriptor,
                             _,
@@ -4576,6 +4655,9 @@ def emit_github_actions_pre_live_bundle(
                 pinned_argv_file_digests=(
                     _producer_pinned_argv_file_digests(producer_policy)
                 ),
+                path_bound_argv_files=(
+                    _producer_path_bound_argv_files(producer_policy)
+                ),
                 producer_uid=producer_uid,
                 producer_gid=producer_gid,
                 timeout_seconds=cast(float, normalized_producer_timeout),
@@ -4753,6 +4835,18 @@ def _producer_pinned_argv_file_digests(
     if isinstance(node_path, str) and isinstance(node_sha256, str):
         pinned[node_path] = node_sha256
     return pinned
+
+
+def _producer_path_bound_argv_files(
+    producer_policy: Mapping[str, object],
+) -> tuple[str, ...]:
+    if (
+        producer_policy.get("producer_id")
+        != PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+    ):
+        return ()
+    node_path = producer_policy.get("node_executable_path")
+    return (node_path,) if isinstance(node_path, str) else ()
 
 
 def _capture_admitted_build_snapshots(
@@ -5008,11 +5102,16 @@ def _with_pinned_node_executable(
     if _path_has_symlink_component(node_path):
         raise ValueError("admitted Node.js executable path contains a symlink")
     descriptor, _, snapshot_before = _open_pinned_executable(node_path)
+    monitor: tuple[Any, int] | None = None
     try:
+        monitor = _open_pinned_path_monitor(descriptor, node_path)
         if snapshot_before[4] != node_sha256:
             raise ValueError("admitted Node.js executable digest mismatch")
-        descriptor_path = _descriptor_execution_path(descriptor)
-        result = operation(descriptor_path)
+        result = operation(str(node_path))
+        if _pinned_path_monitor_changed(monitor):
+            raise ValueError(
+                "admitted Node.js executable changed during output binding"
+            )
         _, descriptor_snapshot_after = _read_open_regular_file_snapshot(
             descriptor,
             maximum=MAX_PRODUCER_EXECUTABLE_BYTES,
@@ -5030,6 +5129,7 @@ def _with_pinned_node_executable(
             )
         return result
     finally:
+        _close_pinned_path_monitor(monitor)
         os.close(descriptor)
 
 
@@ -6027,6 +6127,9 @@ def attest_pre_live_provenance(
             authenticated_file_digests=authenticated_file_digests,
             pinned_argv_file_digests=(
                 _producer_pinned_argv_file_digests(producer_policy)
+            ),
+            path_bound_argv_files=(
+                _producer_path_bound_argv_files(producer_policy)
             ),
             producer_uid=producer_uid,
             producer_gid=producer_gid,
@@ -7526,6 +7629,102 @@ def _descriptor_execution_path(descriptor: int) -> str:
     finally:
         os.close(path_descriptor)
     return str(path)
+
+
+def _path_is_writable_by_identity(
+    path: Path,
+    *,
+    uid: int,
+    gid: int,
+) -> bool:
+    for candidate in (path, *path.parents):
+        file_stat = candidate.stat(follow_symlinks=False)
+        mode = stat.S_IMODE(file_stat.st_mode)
+        if file_stat.st_uid == uid:
+            writable_mask = stat.S_IWUSR
+        elif file_stat.st_gid == gid:
+            writable_mask = stat.S_IWGRP
+        else:
+            writable_mask = stat.S_IWOTH
+        if mode & writable_mask:
+            return True
+    return False
+
+
+def _open_pinned_path_monitor(
+    descriptor: int,
+    path: Path,
+) -> tuple[Any, int] | None:
+    required = (
+        "kqueue",
+        "kevent",
+        "KQ_FILTER_VNODE",
+        "KQ_EV_ADD",
+        "KQ_EV_CLEAR",
+        "KQ_NOTE_DELETE",
+        "KQ_NOTE_WRITE",
+        "KQ_NOTE_EXTEND",
+        "KQ_NOTE_ATTRIB",
+        "KQ_NOTE_LINK",
+        "KQ_NOTE_RENAME",
+        "KQ_NOTE_REVOKE",
+    )
+    if any(not hasattr(select, name) for name in required):
+        return None
+    directory_descriptor = os.open(path.parent, os.O_RDONLY)
+    queue = select.kqueue()
+    event_flags = select.KQ_EV_ADD | select.KQ_EV_CLEAR
+    executable_vnode_flags = (
+        select.KQ_NOTE_DELETE
+        | select.KQ_NOTE_WRITE
+        | select.KQ_NOTE_EXTEND
+        | select.KQ_NOTE_LINK
+        | select.KQ_NOTE_RENAME
+        | select.KQ_NOTE_REVOKE
+    )
+    try:
+        queue.control(
+            [
+                select.kevent(
+                    descriptor,
+                    filter=select.KQ_FILTER_VNODE,
+                    flags=event_flags,
+                    fflags=executable_vnode_flags,
+                ),
+                select.kevent(
+                    directory_descriptor,
+                    filter=select.KQ_FILTER_VNODE,
+                    flags=event_flags,
+                    fflags=executable_vnode_flags | select.KQ_NOTE_ATTRIB,
+                ),
+            ],
+            0,
+            0,
+        )
+    except BaseException:
+        queue.close()
+        os.close(directory_descriptor)
+        raise
+    return queue, directory_descriptor
+
+
+def _pinned_path_monitor_changed(
+    monitor: tuple[Any, int] | None,
+) -> bool:
+    if monitor is None:
+        return False
+    queue, _ = monitor
+    return bool(queue.control(None, 2, 0))
+
+
+def _close_pinned_path_monitor(
+    monitor: tuple[Any, int] | None,
+) -> None:
+    if monitor is None:
+        return
+    queue, directory_descriptor = monitor
+    queue.close()
+    os.close(directory_descriptor)
 
 
 def _communicate_process_bounded(

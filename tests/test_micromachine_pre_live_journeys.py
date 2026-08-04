@@ -34,6 +34,7 @@ from starcraft_commander.micromachine_pre_live_journeys import (
     _production_receipt_id,
     _run_native_command,
     _sha256_file,
+    _validate_node_executable,
     _verify_all_terran_events,
     _verify_required_effects,
     _validate_pre_live_journey_manifest_payload,
@@ -109,38 +110,92 @@ class NativeExecutableLaunchTest(unittest.TestCase):
                 os.close(descriptor)
         self.assertEqual(0, completed.returncode, completed.stderr)
 
-    def test_unlinked_node_descriptor_executes_with_stdin(self) -> None:
-        node = shutil.which("node")
-        if node is None:
-            self.skipTest("requires Node.js")
-        payload = Path(node).read_bytes()
-        expected_sha256 = hashlib.sha256(payload).hexdigest()
+    def test_unlinked_relocatable_descriptor_executes_with_stdin(self) -> None:
+        compiler = shutil.which("cc")
+        if compiler is None:
+            self.skipTest("requires a C compiler")
         with tempfile.TemporaryDirectory() as directory:
-            admitted_node = Path(directory) / "admitted-node"
-            admitted_node.write_bytes(payload)
-            admitted_node.chmod(0o500)
-            descriptor = os.open(admitted_node, os.O_RDONLY)
-            admitted_node.unlink()
+            source = Path(directory) / "stdin_echo.c"
+            source.write_text(
+                "#include <unistd.h>\n"
+                "int main(void) {\n"
+                "    char buffer[4096];\n"
+                "    ssize_t count;\n"
+                "    while ((count = read(0, buffer, sizeof(buffer))) > 0) {\n"
+                "        ssize_t offset = 0;\n"
+                "        while (offset < count) {\n"
+                "            ssize_t written = write(\n"
+                "                1, buffer + offset, (size_t)(count - offset)\n"
+                "            );\n"
+                "            if (written <= 0) return 1;\n"
+                "            offset += written;\n"
+                "        }\n"
+                "    }\n"
+                "    return count < 0;\n"
+                "}\n",
+                encoding="ascii",
+            )
+            native_echo = Path(directory) / "stdin-echo"
+            compiled = subprocess.run(
+                [compiler, str(source), "-o", str(native_echo)],
+                check=False,
+                capture_output=True,
+                text=False,
+                shell=False,
+            )
+            self.assertEqual(0, compiled.returncode, compiled.stderr)
+            payload = native_echo.read_bytes()
+            expected_sha256 = hashlib.sha256(payload).hexdigest()
+            admitted_echo = Path(directory) / "admitted-echo"
+            admitted_echo.write_bytes(payload)
+            admitted_echo.chmod(0o500)
+            descriptor = os.open(admitted_echo, os.O_RDONLY)
+            admitted_echo.unlink()
             try:
                 descriptor_path = Path(f"/dev/fd/{descriptor}")
                 completed = _run_native_command(
                     descriptor_path,
-                    [
-                        str(descriptor_path),
-                        "-e",
-                        (
-                            "process.stdin.on('data',chunk=>"
-                            "process.stdout.write(chunk))"
-                        ),
-                    ],
+                    [str(descriptor_path)],
                     expected_sha256=expected_sha256,
                     command_runner=subprocess.run,
-                    input=b"pinned-node-stdin",
+                    input=b"pinned-native-stdin",
                 )
             finally:
                 os.close(descriptor)
         self.assertEqual(0, completed.returncode, completed.stderr)
-        self.assertEqual(b"pinned-node-stdin", completed.stdout)
+        self.assertEqual(b"pinned-native-stdin", completed.stdout)
+
+    def test_auto_discovered_node_resolves_symlink_before_validation(
+        self,
+    ) -> None:
+        native_true = Path("/usr/bin/true")
+        if not native_true.is_file():
+            self.skipTest("requires /usr/bin/true")
+        with tempfile.TemporaryDirectory() as directory:
+            node_link = Path(directory) / "node"
+            node_link.symlink_to(native_true)
+            with mock.patch.object(
+                shutil,
+                "which",
+                return_value=str(node_link),
+            ):
+                self.assertEqual(
+                    native_true.resolve(),
+                    _validate_node_executable(None),
+                )
+
+    def test_explicit_node_symlink_remains_rejected(self) -> None:
+        native_true = Path("/usr/bin/true")
+        if not native_true.is_file():
+            self.skipTest("requires /usr/bin/true")
+        with tempfile.TemporaryDirectory() as directory:
+            node_link = Path(directory) / "node"
+            node_link.symlink_to(native_true)
+            with self.assertRaisesRegex(
+                ValueError,
+                "must not be a symlink",
+            ):
+                _validate_node_executable(node_link)
 
     @unittest.skipUnless(
         sys.platform.startswith("linux") and Path("/proc/self/fd").is_dir(),

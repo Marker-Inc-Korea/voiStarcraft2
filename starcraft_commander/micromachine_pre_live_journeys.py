@@ -1358,6 +1358,7 @@ def _validate_micromachine_binary(path: Path | str) -> Path:
 
 
 def _validate_node_executable(path: Path | str | None) -> Path:
+    auto_discovered = path is None
     resolved = str(path) if path is not None else shutil.which("node")
     if not resolved:
         raise ValueError(
@@ -1366,6 +1367,8 @@ def _validate_node_executable(path: Path | str | None) -> Path:
     raw = Path(resolved)
     if not raw.is_absolute():
         raise ValueError("Node.js executable path must be absolute")
+    if auto_discovered:
+        raw = raw.resolve(strict=True)
     inherited_fd = _inherited_executable_fd(raw)
     if inherited_fd is not None:
         file_stat = os.fstat(inherited_fd)

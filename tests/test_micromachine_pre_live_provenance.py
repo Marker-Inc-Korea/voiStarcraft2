@@ -3783,9 +3783,9 @@ class GitHubActionsBundleEmissionTest(unittest.TestCase):
         self.assertEqual(raw_output, binder.call_args.args[0])
         self.assertEqual(build_report, binder.call_args.kwargs["build_report_bytes"])
         self.assertEqual(binary, binder.call_args.kwargs["binary_bytes"])
-        self.assertRegex(
-            str(binder.call_args.kwargs["node_executable"]),
-            r"^/dev/fd/\d+$",
+        self.assertEqual(
+            str(node_executable),
+            binder.call_args.kwargs["node_executable"],
         )
 
         with mock.patch.object(
@@ -5992,7 +5992,7 @@ class LocalProducerTest(unittest.TestCase):
             ) -> subprocess.CompletedProcess:
                 execution_argv = list(args[0])
                 execution_node = Path(execution_argv[2])
-                self.assertEqual(Path("/dev/fd"), execution_node.parent)
+                self.assertEqual(admitted_node, execution_node)
                 self.assertEqual(
                     admitted_digest,
                     hashlib.sha256(execution_node.read_bytes()).hexdigest(),
@@ -6021,17 +6021,52 @@ class LocalProducerTest(unittest.TestCase):
                 pinned_argv_file_digests={
                     str(admitted_node): admitted_digest
                 },
+                path_bound_argv_files=(admitted_node,),
             )
 
             self.assertFalse(report["ok"], report)
-            self.assertEqual(
-                {"node_sha256": admitted_digest},
-                json.loads(output.read_bytes()),
-            )
+            self.assertFalse(output.exists())
             self.assertIn(
-                "pinned argv file pathname changed",
+                "path-bound argv file changed during execution",
                 " ".join(report["blockers"]),
             )
+
+    @unittest.skipUnless(
+        sys.platform == "darwin",
+        "requires macOS kqueue vnode monitoring",
+    )
+    def test_authenticated_node_monitor_detects_path_swap_and_restore(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            admitted_node = root / "node"
+            attacker = root / "attacker"
+            backup = root / "backup"
+            admitted_node.write_bytes(b"trusted Node.js bytes")
+            admitted_node.chmod(0o500)
+            attacker.write_bytes(b"attacker Node.js bytes")
+            attacker.chmod(0o500)
+            admitted_digest = hashlib.sha256(
+                admitted_node.read_bytes()
+            ).hexdigest()
+
+            def swap_and_restore(node_path: str) -> None:
+                self.assertEqual(admitted_node, Path(node_path))
+                os.replace(admitted_node, backup)
+                os.replace(attacker, admitted_node)
+                os.replace(admitted_node, attacker)
+                os.replace(backup, admitted_node)
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "changed during output binding",
+            ):
+                provenance_module._with_pinned_node_executable(
+                    admitted_node,
+                    admitted_digest,
+                    swap_and_restore,
+                )
 
     def test_private_argv_binary_snapshot_has_no_replaceable_path(
         self,
@@ -7280,7 +7315,7 @@ class AggregateProvenanceTest(unittest.TestCase):
                         " ".join(report["blockers"]),
                     )
 
-    def test_deterministic_github_replay_uses_pinned_node_descriptor(
+    def test_deterministic_github_replay_uses_authenticated_node_path(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -7372,11 +7407,10 @@ class AggregateProvenanceTest(unittest.TestCase):
                 65002,
                 build_attestation.call_args.kwargs["execution_gid"],
             )
-            descriptor = github_attestation.call_args.kwargs[
+            execution_node = github_attestation.call_args.kwargs[
                 "node_executable"
             ]
-            self.assertRegex(str(descriptor), r"^/dev/fd/\d+$")
-            self.assertNotEqual(str(node_executable), str(descriptor))
+            self.assertEqual(str(node_executable), str(execution_node))
 
     def test_production_gate_ignores_caller_success_claims(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
