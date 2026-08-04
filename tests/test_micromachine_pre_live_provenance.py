@@ -610,6 +610,25 @@ class FakeGitHubAdapter:
         )
 
 
+def append_newer_repository_run(
+    adapter: FakeGitHubAdapter,
+) -> dict[str, object]:
+    newer_run = copy.deepcopy(adapter.workflow_run)
+    newer_run.update(
+        {
+            "id": RUN_ID + 1,
+            "check_suite_id": CHECK_SUITE_ID + 1,
+            "run_number": int(adapter.workflow_run["run_number"]) + 1,
+            "run_attempt": 1,
+            "status": "in_progress",
+            "conclusion": None,
+        }
+    )
+    adapter.workflow_run_details[RUN_ID + 1] = newer_run
+    adapter.repository_workflow_runs.append(dict(newer_run))
+    return newer_run
+
+
 class VerifierDeadlineTest(unittest.TestCase):
     def test_operation_boundaries_receive_shared_remaining_timeout(self) -> None:
         clock = FakeMonotonicClock(100.0)
@@ -1692,6 +1711,15 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             report["artifact_sha256"],
         )
 
+    def test_accepts_repository_summary_without_pull_request_binding(self) -> None:
+        adapter = FakeGitHubAdapter()
+        adapter.repository_workflow_runs[0]["pull_requests"] = []
+
+        report = self.attest(adapter)
+
+        self.assertTrue(report["ok"], report)
+        self.assertEqual(1, adapter.workflow_run_get_calls)
+
     def test_accepts_github_one_file_artifact_delivery_wrapper(self) -> None:
         adapter = FakeGitHubAdapter()
         wrapper = io.BytesIO()
@@ -1964,6 +1992,27 @@ class GitHubSourceAttestationTest(unittest.TestCase):
 
         self.assertFalse(report["ok"], report)
         self.assertIn("duplicated", " ".join(report["blockers"]))
+        self.assertEqual(0, adapter.download_calls)
+
+    def test_rejects_oversized_workflow_namespace_before_hydration(self) -> None:
+        adapter = FakeGitHubAdapter()
+        for offset in range(1, 151):
+            summary = copy.deepcopy(adapter.workflow_run)
+            summary.update(
+                {
+                    "id": RUN_ID + offset,
+                    "check_suite_id": CHECK_SUITE_ID + offset,
+                    "run_number": int(adapter.workflow_run["run_number"]) + offset,
+                    "run_attempt": 1,
+                }
+            )
+            adapter.workflow_runs.append(summary)
+
+        report = self.attest(adapter)
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn("safety limit", " ".join(report["blockers"]))
+        self.assertEqual(1, adapter.workflow_run_get_calls)
         self.assertEqual(0, adapter.download_calls)
 
     def test_rejects_malformed_newer_workflow_summary(self) -> None:
@@ -2323,18 +2372,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
 
     def test_rejects_newer_repository_run_before_any_check_exists(self) -> None:
         adapter = FakeGitHubAdapter()
-        newer_run = copy.deepcopy(adapter.workflow_run)
-        newer_run.update(
-            {
-                "id": RUN_ID + 1,
-                "check_suite_id": CHECK_SUITE_ID + 1,
-                "run_number": adapter.workflow_run["run_number"] + 1,
-                "run_attempt": 1,
-                "status": "in_progress",
-                "conclusion": None,
-            }
-        )
-        adapter.repository_workflow_runs.append(newer_run)
+        append_newer_repository_run(adapter)
 
         report = self.attest(adapter)
 
@@ -2344,8 +2382,30 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             " ".join(report["blockers"]),
         )
         self.assertEqual(0, adapter.download_calls)
-        self.assertEqual(1, adapter.workflow_run_get_calls)
+        self.assertEqual(2, adapter.workflow_run_get_calls)
         self.assertEqual(1, adapter.job_get_calls)
+
+    def test_rejects_run_created_during_artifact_download(self) -> None:
+        class ArtifactDownloadRaceAdapter(FakeGitHubAdapter):
+            def download_artifact(
+                self,
+                repository: str,
+                artifact_id: int,
+            ) -> bytes:
+                payload = super().download_artifact(repository, artifact_id)
+                append_newer_repository_run(self)
+                return payload
+
+        adapter = ArtifactDownloadRaceAdapter()
+
+        report = self.attest(adapter)
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn(
+            "not the latest repository workflow run",
+            " ".join(report["blockers"]),
+        )
+        self.assertEqual(1, adapter.download_calls)
 
     def test_rejects_stale_success_when_same_run_has_newer_attempt(self) -> None:
         class AttemptRaceAdapter(FakeGitHubAdapter):
@@ -8737,6 +8797,122 @@ class AggregateProvenanceTest(unittest.TestCase):
             self.assertFalse(producer_called)
             self.assertEqual({}, adapter.references)
             self.assertFalse((root / "global-replay").exists())
+
+    def test_blocks_run_created_during_local_producer_before_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build = make_build_fixture(root)
+            commit = build["repository_commit"]
+            adapter = FakeGitHubAdapter(head_sha=commit)
+            output = b'{"trusted":"execution"}\n'
+            bind_adapter_to_build_fixture(adapter, build, output=output)
+
+            def producer(
+                *args: object,
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess:
+                output_path = Path(list(args[0])[-1])
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_bytes(output)
+                append_newer_repository_run(adapter)
+                return subprocess.CompletedProcess(args[0], 0, b"out", b"")
+
+            with mock.patch.object(
+                provenance_module,
+                "_production_candidate_producer_blockers",
+                return_value=[],
+            ):
+                report = self.attest(
+                    root / "global-replay",
+                    repository_dir=build["repository"],
+                    expected_commit=commit,
+                    github_adapter=adapter,
+                    issue_number=138,
+                    pull_number=137,
+                    run_id=RUN_ID,
+                    run_attempt=RUN_ATTEMPT,
+                    job_id=JOB_ID,
+                    artifact_id=ARTIFACT_ID,
+                    expected_head_sha=commit,
+                    build_report_path=build["report_path"],
+                    expected_build_dir=build["config"].micromachine_build_dir,
+                    producer_id="fixture_producer",
+                    ctest_runner=passing_ctest,
+                    producer_runner=producer,
+                )
+
+            self.assertFalse(report["ok"], report)
+            self.assertIn(
+                "post_binding_freshness",
+                " ".join(report["blockers"]),
+            )
+            self.assertEqual({}, adapter.references)
+
+    def test_blocks_run_created_during_replay_claim_final_freshness(self) -> None:
+        class ReplayClaimRaceAdapter(FakeGitHubAdapter):
+            def create_git_reference(
+                self,
+                repository: str,
+                *,
+                ref: str,
+                sha: str,
+            ) -> dict[str, object]:
+                result = super().create_git_reference(
+                    repository,
+                    ref=ref,
+                    sha=sha,
+                )
+                append_newer_repository_run(self)
+                return result
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build = make_build_fixture(root)
+            commit = build["repository_commit"]
+            adapter = ReplayClaimRaceAdapter(head_sha=commit)
+            output = b'{"trusted":"execution"}\n'
+            bind_adapter_to_build_fixture(adapter, build, output=output)
+
+            def producer(
+                *args: object,
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess:
+                output_path = Path(list(args[0])[-1])
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_bytes(output)
+                return subprocess.CompletedProcess(args[0], 0, b"out", b"")
+
+            with mock.patch.object(
+                provenance_module,
+                "_production_candidate_producer_blockers",
+                return_value=[],
+            ):
+                report = self.attest(
+                    root / "global-replay",
+                    repository_dir=build["repository"],
+                    expected_commit=commit,
+                    github_adapter=adapter,
+                    issue_number=138,
+                    pull_number=137,
+                    run_id=RUN_ID,
+                    run_attempt=RUN_ATTEMPT,
+                    job_id=JOB_ID,
+                    artifact_id=ARTIFACT_ID,
+                    expected_head_sha=commit,
+                    build_report_path=build["report_path"],
+                    expected_build_dir=build["config"].micromachine_build_dir,
+                    producer_id="fixture_producer",
+                    ctest_runner=passing_ctest,
+                    producer_runner=producer,
+                )
+
+            self.assertFalse(report["ok"], report)
+            self.assertTrue(report["replay"]["consumed"], report)
+            self.assertIn(
+                "post_replay_freshness",
+                " ".join(report["blockers"]),
+            )
+            self.assertEqual(1, len(adapter.references))
 
     def test_valid_github_bundle_cannot_hide_different_local_output(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

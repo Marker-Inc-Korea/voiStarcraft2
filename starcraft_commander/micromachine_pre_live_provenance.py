@@ -80,6 +80,7 @@ AUTHORITATIVE_PROVENANCE_WORKFLOW_JOB_NAMES: Final[frozenset[str]] = frozenset(
     }
 )
 MAX_AUTHORITATIVE_PROVENANCE_CHECK_RUNS: Final[int] = 100
+MAX_AUTHORITATIVE_PROVENANCE_WORKFLOW_RUNS: Final[int] = 100
 GITHUB_ACTIONS_APP_ID: Final[int] = 15_368
 GITHUB_ACTIONS_APP_SLUG: Final[str] = "github-actions"
 AUTHORITATIVE_REPLAY_REF_PREFIX: Final[str] = "refs/tags/voi-pre-live-replay/"
@@ -2568,6 +2569,34 @@ def attest_github_source(
                             f"expected={expected!r} actual={actual!r}"
                         )
 
+    if artifact_sha256 is not None:
+        try:
+            refreshed_repository_workflow_runs = (
+                adapter.list_repository_workflow_runs(
+                    normalized_repository,
+                    head_sha=expected_head_sha,
+                )
+            )
+        except Exception as exc:
+            blockers.append(
+                f"post-download GitHub source freshness lookup failed: {exc}"
+            )
+        else:
+            _validate_repository_workflow_freshness(
+                adapter,
+                refreshed_repository_workflow_runs,
+                repository=normalized_repository,
+                selected_run=workflow_run,
+                workflow_id=workflow_id,
+                workflow_path=AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH,
+                pull_id=pull_id,
+                pull_number=pull_number,
+                expected_head_sha=expected_head_sha,
+                expected_head_ref=pull_head_ref,
+                repository_id=expected_repository_id,
+                blockers=blockers,
+            )
+
     source_ids = {
         "repository_id": repository_id,
         "issue_id": issue_id,
@@ -2579,6 +2608,23 @@ def attest_github_source(
         "run_attempt": run_attempt,
         "job_id": job_id,
         "artifact_database_id": artifact_id,
+    }
+    workflow_run_identity = {
+        key: workflow_run.get(key)
+        for key in (
+            "id",
+            "workflow_id",
+            "check_suite_id",
+            "run_number",
+            "run_attempt",
+            "head_sha",
+            "head_branch",
+            "event",
+            "path",
+        )
+    }
+    workflow_run_identity["head_repository"] = {
+        "id": run_head_repository_id,
     }
     return _component_result(
         blockers,
@@ -2629,6 +2675,7 @@ def attest_github_source(
         artifact_bundle=artifact_bundle,
         authority=authority,
         source_ids=source_ids,
+        workflow_run_identity=workflow_run_identity,
     )
 
 
@@ -6361,6 +6408,23 @@ def attest_pre_live_provenance(
         )
         blockers.extend(_prefixed_blockers("artifact_binding", artifact_binding))
 
+    if blockers:
+        post_binding_freshness = _component_result(
+            ["freshness not checked because provenance is blocked"],
+            status="not_evaluated",
+        )
+    else:
+        post_binding_freshness = _attest_github_source_freshness(
+            github_adapter,
+            github_source,
+        )
+        blockers.extend(
+            _prefixed_blockers(
+                "post_binding_freshness",
+                post_binding_freshness,
+            )
+        )
+
     replay_digest: str | None = None
     if blockers:
         replay = _component_result(
@@ -6430,6 +6494,23 @@ def attest_pre_live_provenance(
                 )
         blockers.extend(_prefixed_blockers("replay", replay))
 
+    if replay_digest is None:
+        post_replay_freshness = _component_result(
+            ["freshness not checked because replay was not attempted"],
+            status="not_evaluated",
+        )
+    else:
+        post_replay_freshness = _attest_github_source_freshness(
+            github_adapter,
+            github_source,
+        )
+        blockers.extend(
+            _prefixed_blockers(
+                "post_replay_freshness",
+                post_replay_freshness,
+            )
+        )
+
     ignored_fields = sorted(
         key for key in (untrusted_payload or {}) if key in UNTRUSTED_STATUS_FIELDS
     )
@@ -6467,6 +6548,10 @@ def attest_pre_live_provenance(
         "producer_policy": producer_policy,
         "local_execution": local_execution,
         "artifact_binding": artifact_binding,
+        "source_freshness": {
+            "post_binding": post_binding_freshness,
+            "post_replay": post_replay_freshness,
+        },
         "replay": replay,
         "accepted_source_ids": accepted_source_ids,
         "accepted_digests": accepted_digests,
@@ -9285,7 +9370,7 @@ def _eligible_workflow_runs(
     allow_unlisted_current_run: bool,
     blockers: list[str],
 ) -> list[Mapping[str, object]]:
-    candidates: dict[int, Mapping[str, object]] = {}
+    candidate_summaries: dict[int, Mapping[str, object]] = {}
     current_run_id = current_run.get("id")
     seen_run_ids: set[int] = set()
     for index, summary in enumerate(workflow_runs):
@@ -9312,42 +9397,7 @@ def _eligible_workflow_runs(
             blockers=blockers,
         ):
             continue
-        if run_id == current_run_id:
-            record = current_run
-        else:
-            try:
-                record = adapter.get_workflow_run(repository, run_id)
-            except Exception as exc:
-                blockers.append(
-                    f"listed workflow run {run_id} hydration failed: {exc}"
-                )
-                continue
-        if (
-            record.get("id") != run_id
-            or record.get("run_number") != summary.get("run_number")
-            or record.get("run_attempt") != summary.get("run_attempt")
-        ):
-            blockers.append(
-                f"listed workflow run {run_id} hydration identity mismatch"
-            )
-            continue
-        if not _workflow_run_matches_candidate(
-            record,
-            workflow_id=workflow_id,
-            workflow_path=workflow_path,
-            pull_id=pull_id,
-            pull_number=pull_number,
-            candidate_head_sha=candidate_head_sha,
-            candidate_head_ref=candidate_head_ref,
-            run_head_sha=run_head_sha,
-            run_head_branch=run_head_branch,
-            repository_id=repository_id,
-        ):
-            blockers.append(
-                f"listed workflow run {run_id} failed direct candidate binding"
-            )
-            continue
-        candidates[run_id] = record
+        candidate_summaries[run_id] = summary
     if (
         allow_unlisted_current_run
         and current_run.get("status") == "in_progress"
@@ -9367,8 +9417,58 @@ def _eligible_workflow_runs(
     ):
         current_id = current_run.get("id")
         if isinstance(current_id, int) and not isinstance(current_id, bool):
-            candidates[current_id] = current_run
-    return list(candidates.values())
+            candidate_summaries.setdefault(current_id, current_run)
+    if (
+        len(candidate_summaries)
+        > MAX_AUTHORITATIVE_PROVENANCE_WORKFLOW_RUNS
+    ):
+        blockers.append(
+            "authoritative provenance workflow-run set exceeds the safety limit"
+        )
+        return []
+    if not candidate_summaries:
+        return []
+    latest_summary = max(
+        candidate_summaries.values(),
+        key=_workflow_run_order_key,
+    )
+    latest_run_id = int(latest_summary["id"])
+    if latest_run_id == current_run_id:
+        record = current_run
+    else:
+        try:
+            record = adapter.get_workflow_run(repository, latest_run_id)
+        except Exception as exc:
+            blockers.append(
+                f"listed workflow run {latest_run_id} hydration failed: {exc}"
+            )
+            return []
+    if (
+        record.get("id") != latest_run_id
+        or record.get("run_number") != latest_summary.get("run_number")
+        or record.get("run_attempt") != latest_summary.get("run_attempt")
+    ):
+        blockers.append(
+            f"listed workflow run {latest_run_id} hydration identity mismatch"
+        )
+        return []
+    if not _workflow_run_matches_candidate(
+        record,
+        workflow_id=workflow_id,
+        workflow_path=workflow_path,
+        pull_id=pull_id,
+        pull_number=pull_number,
+        candidate_head_sha=candidate_head_sha,
+        candidate_head_ref=candidate_head_ref,
+        run_head_sha=run_head_sha,
+        run_head_branch=run_head_branch,
+        repository_id=repository_id,
+    ):
+        blockers.append(
+            f"listed workflow run {latest_run_id} failed direct candidate binding"
+        )
+        return []
+    return [record]
 
 
 def _index_repository_workflow_runs(
@@ -9451,6 +9551,249 @@ def _validate_workflow_run_summary_hydration(
         )
 
 
+def _validate_repository_workflow_freshness(
+    adapter: GitHubSourceAdapter,
+    repository_workflow_runs: Sequence[Mapping[str, object]],
+    *,
+    repository: str,
+    selected_run: Mapping[str, object],
+    workflow_id: int,
+    workflow_path: str,
+    pull_id: int | None,
+    pull_number: int,
+    expected_head_sha: str,
+    expected_head_ref: str | None,
+    repository_id: int,
+    blockers: list[str],
+) -> None:
+    candidate_summaries: list[Mapping[str, object]] = []
+    seen_run_ids: set[int] = set()
+    for index, summary in enumerate(repository_workflow_runs):
+        label = f"repository_workflow_run[{index}]"
+        try:
+            run_id = _positive_id(summary.get("id"), f"{label}.id")
+            _positive_id(summary.get("run_number"), f"{label}.run_number")
+            _positive_id(summary.get("run_attempt"), f"{label}.run_attempt")
+        except ValueError as exc:
+            blockers.append(f"repository workflow run is malformed: {exc}")
+            continue
+        if run_id in seen_run_ids:
+            blockers.append(f"repository workflow run ID is duplicated: {run_id}")
+            continue
+        seen_run_ids.add(run_id)
+        if _workflow_run_targets_candidate_namespace(
+            summary,
+            workflow_id=workflow_id,
+            workflow_path=workflow_path,
+            run_head_sha=expected_head_sha,
+            run_head_branch=expected_head_ref,
+            repository_id=repository_id,
+            label=label,
+            blockers=blockers,
+        ):
+            candidate_summaries.append(summary)
+    if (
+        len(candidate_summaries)
+        > MAX_AUTHORITATIVE_PROVENANCE_WORKFLOW_RUNS
+    ):
+        blockers.append(
+            "authoritative provenance repository workflow-run set exceeds "
+            "the safety limit"
+        )
+        return
+    if not candidate_summaries:
+        blockers.append(
+            "candidate head has no repository workflow run in the "
+            "authoritative provenance namespace"
+        )
+        return
+    latest_summary = max(candidate_summaries, key=_workflow_run_order_key)
+    if _workflow_run_order_key(latest_summary) == _workflow_run_order_key(
+        selected_run
+    ):
+        _validate_workflow_run_summary_hydration(
+            latest_summary,
+            selected_run,
+            label="selected_repository_workflow_run",
+            blockers=blockers,
+        )
+        return
+    latest_run_id = int(latest_summary["id"])
+    try:
+        latest_run = adapter.get_workflow_run(repository, latest_run_id)
+    except Exception as exc:
+        blockers.append(
+            f"latest repository workflow run {latest_run_id} hydration failed: "
+            f"{exc}"
+        )
+        return
+    _validate_workflow_run_summary_hydration(
+        latest_summary,
+        latest_run,
+        label=f"repository_workflow_run[{latest_run_id}]",
+        blockers=blockers,
+    )
+    if not _workflow_run_targets_candidate_namespace(
+        latest_run,
+        workflow_id=workflow_id,
+        workflow_path=workflow_path,
+        run_head_sha=expected_head_sha,
+        run_head_branch=expected_head_ref,
+        repository_id=repository_id,
+        label=f"repository_workflow_run[{latest_run_id}].hydrated",
+        blockers=blockers,
+    ):
+        return
+    if not _workflow_run_matches_candidate(
+        latest_run,
+        workflow_id=workflow_id,
+        workflow_path=workflow_path,
+        pull_id=pull_id,
+        pull_number=pull_number,
+        candidate_head_sha=expected_head_sha,
+        candidate_head_ref=expected_head_ref,
+        run_head_sha=expected_head_sha,
+        run_head_branch=expected_head_ref,
+        repository_id=repository_id,
+    ):
+        blockers.append(
+            f"latest repository workflow run {latest_run_id} failed direct "
+            "candidate binding"
+        )
+        return
+    blockers.append(
+        "selected provenance workflow run is not the latest repository "
+        "workflow run: "
+        f"selected={_workflow_run_order_key(selected_run)!r} "
+        f"latest={_workflow_run_order_key(latest_run)!r}"
+    )
+
+
+def _attest_github_source_freshness(
+    adapter: GitHubSourceAdapter,
+    github_source: Mapping[str, object],
+) -> dict[str, object]:
+    blockers: list[str] = []
+    try:
+        repository_value = github_source.get("repository")
+        if not isinstance(repository_value, str) or not repository_value:
+            raise ValueError("GitHub source repository is required")
+        repository = normalize_github_repository(
+            repository_value,
+            allow_slug=True,
+        )
+        expected_head_sha = github_source.get("expected_head_sha")
+        if not isinstance(expected_head_sha, str):
+            raise ValueError("GitHub freshness head SHA is required")
+        if _SHA40_RE.fullmatch(expected_head_sha) is None:
+            raise ValueError(
+                "GitHub freshness head SHA must be an exact lowercase SHA"
+            )
+        selected_run = _mapping(github_source.get("workflow_run_identity"))
+        selected_run_id = _positive_id(
+            selected_run.get("id"),
+            "workflow_run_identity.id",
+        )
+        selected_run_number = _positive_id(
+            selected_run.get("run_number"),
+            "workflow_run_identity.run_number",
+        )
+        selected_run_attempt = _positive_id(
+            selected_run.get("run_attempt"),
+            "workflow_run_identity.run_attempt",
+        )
+        workflow_id = _positive_id(
+            selected_run.get("workflow_id"),
+            "workflow_run_identity.workflow_id",
+        )
+        workflow_path = selected_run.get("path")
+        if not isinstance(workflow_path, str) or not workflow_path:
+            raise ValueError("workflow_run_identity.path is required")
+        authority = _mapping(github_source.get("authority"))
+        pull_request = _mapping(authority.get("pull_request"))
+        pull_id = _positive_id(
+            pull_request.get("database_id"),
+            "authority.pull_request.database_id",
+        )
+        pull_number = _positive_id(
+            pull_request.get("number"),
+            "authority.pull_request.number",
+        )
+        expected_head_ref = pull_request.get("head_ref")
+        if not isinstance(expected_head_ref, str) or not expected_head_ref:
+            raise ValueError("authority.pull_request.head_ref is required")
+        repository_id = _positive_id(
+            pull_request.get("head_repository_id"),
+            "authority.pull_request.head_repository_id",
+        )
+        expected_selected_values = {
+            "head_sha": expected_head_sha,
+            "head_branch": expected_head_ref,
+            "event": AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
+            "path": workflow_path,
+        }
+        for key, expected_value in expected_selected_values.items():
+            if selected_run.get(key) != expected_value:
+                raise ValueError(
+                    f"workflow_run_identity.{key} mismatch: "
+                    f"expected={expected_value!r} "
+                    f"actual={selected_run.get(key)!r}"
+                )
+        selected_repository = _mapping(selected_run.get("head_repository"))
+        if selected_repository.get("id") != repository_id:
+            raise ValueError(
+                "workflow_run_identity.head_repository.id mismatch"
+            )
+        if pull_request.get("head_sha") != expected_head_sha:
+            raise ValueError("authority.pull_request.head_sha mismatch")
+    except (KeyError, TypeError, ValueError) as exc:
+        return _component_result(
+            [f"GitHub source freshness identity is invalid: {exc}"],
+            repository=github_source.get("repository"),
+            selected_run={},
+        )
+    selected_identity = dict(selected_run)
+    selected_identity.update(
+        {
+            "id": selected_run_id,
+            "run_number": selected_run_number,
+            "run_attempt": selected_run_attempt,
+        }
+    )
+    try:
+        repository_workflow_runs = adapter.list_repository_workflow_runs(
+            repository,
+            head_sha=expected_head_sha,
+        )
+    except Exception as exc:
+        blockers.append(f"GitHub source freshness lookup failed: {exc}")
+    else:
+        _validate_repository_workflow_freshness(
+            adapter,
+            repository_workflow_runs,
+            repository=repository,
+            selected_run=selected_identity,
+            workflow_id=workflow_id,
+            workflow_path=workflow_path,
+            pull_id=pull_id,
+            pull_number=pull_number,
+            expected_head_sha=expected_head_sha,
+            expected_head_ref=expected_head_ref,
+            repository_id=repository_id,
+            blockers=blockers,
+        )
+    return _component_result(
+        blockers,
+        repository=repository,
+        expected_head_sha=expected_head_sha,
+        selected_run={
+            "id": selected_run_id,
+            "run_number": selected_run_number,
+            "run_attempt": selected_run_attempt,
+        },
+    )
+
+
 def _validate_latest_provenance_check_run(
     adapter: GitHubSourceAdapter,
     check_runs: Sequence[Mapping[str, object]],
@@ -9482,51 +9825,20 @@ def _validate_latest_provenance_check_run(
         expected_head_sha=expected_head_sha,
         blockers=blockers,
     )
-    repository_candidate_runs: list[Mapping[str, object]] = []
-    for index, repository_run in enumerate(repository_workflow_runs):
-        label = f"repository_workflow_run[{index}]"
-        if not _workflow_run_targets_candidate_namespace(
-            repository_run,
-            workflow_id=workflow_id,
-            workflow_path=workflow_path,
-            run_head_sha=expected_head_sha,
-            run_head_branch=expected_head_ref,
-            repository_id=repository_id,
-            label=label,
-            blockers=blockers,
-        ):
-            continue
-        if not _workflow_run_matches_candidate(
-            repository_run,
-            workflow_id=workflow_id,
-            workflow_path=workflow_path,
-            pull_id=pull_id,
-            pull_number=pull_number,
-            candidate_head_sha=expected_head_sha,
-            candidate_head_ref=expected_head_ref,
-            run_head_sha=expected_head_sha,
-            run_head_branch=expected_head_ref,
-            repository_id=repository_id,
-        ):
-            blockers.append(
-                f"{label} failed direct candidate binding"
-            )
-            continue
-        repository_candidate_runs.append(repository_run)
-    if repository_candidate_runs:
-        latest_repository_run = max(
-            repository_candidate_runs,
-            key=_workflow_run_order_key,
-        )
-        if _workflow_run_order_key(
-            latest_repository_run
-        ) != _workflow_run_order_key(selected_run):
-            blockers.append(
-                "selected provenance workflow run is not the latest "
-                "repository workflow run: "
-                f"selected={_workflow_run_order_key(selected_run)!r} "
-                f"latest={_workflow_run_order_key(latest_repository_run)!r}"
-            )
+    _validate_repository_workflow_freshness(
+        adapter,
+        repository_workflow_runs,
+        repository=repository,
+        selected_run=selected_run,
+        workflow_id=workflow_id,
+        workflow_path=workflow_path,
+        pull_id=pull_id,
+        pull_number=pull_number,
+        expected_head_sha=expected_head_sha,
+        expected_head_ref=expected_head_ref,
+        repository_id=repository_id,
+        blockers=blockers,
+    )
     seen_check_run_ids: set[int] = set()
     for index, record in enumerate(check_runs):
         label = f"latest_check_run[{index}]"
