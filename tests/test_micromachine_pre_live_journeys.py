@@ -1670,12 +1670,48 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
             for operation in step["update"]["vector"]["operations"]
             if operation["operation_id"] == "matrix-siege_tank-unsiege"
         )
-        operation["composition_requirements"][0]["unit_type"] = (
-            "TERRAN_SIEGETANK"
-        )
+        operation["tactical_task"]["unit_classes"][0] = "TERRAN_SIEGETANK"
 
         with self.assertRaisesRegex(ValueError, "wrong ability caster form"):
             _all_terran_compiler_bindings_from_native_input(native_input)
+
+    def test_all_terran_preserves_exact_transformed_ability_caster(self) -> None:
+        spec = self.specs["all_terran_family_ability_blocker_matrix"]
+        native_input = _compile_native_input(_JourneyExecution(spec))
+        operation = next(
+            operation
+            for step in native_input["steps"]
+            if step["kind"] == "policy_update"
+            for operation in step["update"]["vector"]["operations"]
+            if operation["operation_id"] == "matrix-siege_tank-unsiege"
+        )
+
+        self.assertEqual([], operation["composition_requirements"])
+        self.assertEqual(
+            ["TERRAN_SIEGETANK"],
+            [
+                assignment["unit_type"]
+                for assignment in operation["unit_roles"]
+            ],
+        )
+        self.assertEqual(
+            ["TERRAN_SIEGETANKSIEGED"],
+            operation["tactical_task"]["unit_classes"],
+        )
+        binding = _all_terran_compiler_bindings_from_native_input(native_input)[
+            (
+                str(
+                    next(
+                        step["update"]["update_id"]
+                        for step in native_input["steps"]
+                        if step["kind"] == "policy_update"
+                    )
+                ),
+                "matrix-siege_tank-unsiege",
+                1,
+            )
+        ]
+        self.assertEqual("TERRAN_SIEGETANKSIEGED", binding["unit_type"])
 
     def test_all_terran_rejects_wrong_caster_cloak_state(self) -> None:
         spec = self.specs["all_terran_family_ability_blocker_matrix"]

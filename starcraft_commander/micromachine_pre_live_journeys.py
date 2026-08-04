@@ -53,6 +53,9 @@ from starcraft_commander.micromachine_terran_capabilities import (
     terran_ability_caster_state,
     terran_production_targets,
 )
+from starcraft_commander.policy_modulation import (
+    MICROMACHINE_CANONICAL_UNIT_FORM_TOKENS,
+)
 
 
 PRE_LIVE_JOURNEY_SCHEMA_VERSION: Final[int] = 1
@@ -6776,6 +6779,14 @@ def _provider_output(preset: str) -> dict[str, object]:
                 cast(dict[str, object], operation["tactical_task"])["ability"] = (
                     ability_name
                 )
+                if (
+                    caster_state.unit_type
+                    in MICROMACHINE_CANONICAL_UNIT_FORM_TOKENS
+                ):
+                    # Production and role matching use canonical family forms,
+                    # while abilities must preserve the exact current form.
+                    operation["composition_requirements"] = []
+                    operation["unit_roles"] = []
                 operations.append(operation)
         return _operations_provider(
             "all Terran family abilities",

@@ -1973,6 +1973,61 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
             result.vector.unit_roles[0].ability_policy,
         )
 
+    def test_transformed_unit_forms_serialize_as_base_composition_tokens(
+        self,
+    ) -> None:
+        canonical_forms = {
+            "TERRAN_HELLIONTANK": "TERRAN_HELLION",
+            "TERRAN_WIDOWMINEBURROWED": "TERRAN_WIDOWMINE",
+            "TERRAN_THORAP": "TERRAN_THOR",
+            "TERRAN_SIEGETANKSIEGED": "TERRAN_SIEGETANK",
+            "TERRAN_VIKINGASSAULT": "TERRAN_VIKINGFIGHTER",
+            "TERRAN_LIBERATORAG": "TERRAN_LIBERATOR",
+        }
+
+        for transformed, base in canonical_forms.items():
+            with self.subTest(transformed=transformed):
+                result = compile_policy_modulation_provider_output(
+                    {
+                        "source": "llm",
+                        "goal": f"use {transformed}",
+                        "tactical_task": {
+                            "task_type": "pressure_with_main_army",
+                            "unit_classes": [transformed],
+                        },
+                        "composition_requirements": [
+                            {
+                                "unit_type": transformed,
+                                "count": 1,
+                                "role": "support",
+                            }
+                        ],
+                        "unit_roles": [
+                            {
+                                "unit_type": transformed,
+                                "role": "support",
+                                "priority": 0.5,
+                            }
+                        ],
+                    }
+                )
+
+                self.assertTrue(result.ok, result.to_dict())
+                payload = result.to_dict()["vector"]
+                assert isinstance(payload, dict)
+                self.assertEqual(
+                    base,
+                    payload["composition_requirements"][0]["unit_type"],
+                )
+                self.assertEqual(
+                    base,
+                    payload["unit_roles"][0]["unit_type"],
+                )
+                self.assertEqual(
+                    [transformed],
+                    payload["tactical_task"]["unit_classes"],
+                )
+
     def test_rejects_raw_actions_without_throwing(self) -> None:
         for payload in (
             {"goal": "unsafe", "raw_action": "attack_move"},
