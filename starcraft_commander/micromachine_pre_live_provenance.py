@@ -1909,6 +1909,7 @@ def attest_github_source(
         run_head_sha=expected_head_sha,
         run_head_branch=pull_head_ref,
         repository_id=expected_repository_id,
+        allow_unlisted_current_run=False,
         blockers=blockers,
     )
     if not eligible_runs:
@@ -2052,6 +2053,11 @@ def attest_github_source(
             "workflow job head SHA mismatch: "
             f"expected={expected_head_sha} actual={job.get('head_sha')!r}"
         )
+    if job.get("head_branch") != pull_head_ref:
+        blockers.append(
+            "workflow job branch mismatch: "
+            f"expected={pull_head_ref!r} actual={job.get('head_branch')!r}"
+        )
     job_name = _server_string(job, "name", "job", blockers)
     if job_name != AUTHORITATIVE_PROVENANCE_JOB_NAME:
         blockers.append(
@@ -2126,6 +2132,12 @@ def attest_github_source(
         blockers.append(
             f"artifact head SHA mismatch: expected={expected_head_sha} "
             f"actual={artifact_head_sha!r}"
+        )
+    if artifact_run.get("head_branch") != pull_head_ref:
+        blockers.append(
+            "artifact branch mismatch: "
+            f"expected={pull_head_ref!r} "
+            f"actual={artifact_run.get('head_branch')!r}"
         )
     artifact_created_at = _server_utc(
         artifact,
@@ -4356,6 +4368,7 @@ def attest_github_actions_emission_context(
         run_head_sha=expected_head_sha,
         run_head_branch=pull_head_ref,
         repository_id=AUTHORITATIVE_REPOSITORY_ID,
+        allow_unlisted_current_run=True,
         blockers=blockers,
     )
     if not eligible_runs:
@@ -4416,6 +4429,12 @@ def attest_github_actions_emission_context(
             "workflow job head SHA mismatch: "
             f"expected={expected_head_sha} "
             f"actual={selected_job.get('head_sha')!r}"
+        )
+    if selected_job.get("head_branch") != pull_head_ref:
+        blockers.append(
+            "workflow job branch mismatch: "
+            f"expected={pull_head_ref!r} "
+            f"actual={selected_job.get('head_branch')!r}"
         )
     job_status = selected_job.get("status")
     job_conclusion = selected_job.get("conclusion")
@@ -9031,6 +9050,7 @@ def _eligible_workflow_runs(
     run_head_sha: str | None,
     run_head_branch: str | None,
     repository_id: int,
+    allow_unlisted_current_run: bool,
     blockers: list[str],
 ) -> list[Mapping[str, object]]:
     candidates: dict[int, Mapping[str, object]] = {}
@@ -9086,7 +9106,7 @@ def _eligible_workflow_runs(
             )
             continue
         candidates[run_id] = record
-    if _workflow_run_matches_candidate(
+    if allow_unlisted_current_run and _workflow_run_matches_candidate(
         current_run,
         workflow_id=workflow_id,
         workflow_path=workflow_path,

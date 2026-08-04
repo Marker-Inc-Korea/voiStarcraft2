@@ -355,6 +355,7 @@ class FakeGitHubAdapter:
             "run_id": RUN_ID,
             "run_attempt": RUN_ATTEMPT,
             "head_sha": head_sha,
+            "head_branch": "issue-138-authenticated-prelive-provenance",
             "name": "pre-live-provenance",
             "status": "completed",
             "conclusion": "success",
@@ -372,6 +373,7 @@ class FakeGitHubAdapter:
             "workflow_run": {
                 "id": RUN_ID,
                 "head_sha": head_sha,
+                "head_branch": "issue-138-authenticated-prelive-provenance",
             },
         }
         self.artifact_bytes = make_source_artifact_bundle(head_sha)
@@ -1760,9 +1762,15 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             "job sha": lambda adapter: adapter.job.update(
                 {"head_sha": "c" * 40}
             ),
+            "job branch": lambda adapter: adapter.job.update(
+                {"head_branch": "main"}
+            ),
             "artifact sha": lambda adapter: adapter.artifact[
                 "workflow_run"
             ].update({"head_sha": "c" * 40}),
+            "artifact branch": lambda adapter: adapter.artifact[
+                "workflow_run"
+            ].update({"head_branch": "main"}),
         }
         for name, mutate in mutations.items():
             with self.subTest(name=name):
@@ -1819,6 +1827,33 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             " ".join(report["blockers"]),
         )
 
+    def test_emission_rejects_candidate_branch_tampering(self) -> None:
+        mutations = {
+            "run branch": lambda adapter: adapter.workflow_run.update(
+                {"head_branch": "main"}
+            ),
+            "job branch": lambda adapter: adapter.job.update(
+                {"head_branch": "main"}
+            ),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                adapter = FakeGitHubAdapter()
+                mutate(adapter)
+
+                report = attest_github_actions_emission_context(
+                    adapter,
+                    repository=REPOSITORY,
+                    run_id=RUN_ID,
+                    run_attempt=RUN_ATTEMPT,
+                    expected_head_sha=HEAD_SHA,
+                    workflow_ref=WORKFLOW_REF,
+                    workflow_sha=WORKFLOW_SHA,
+                )
+
+                self.assertFalse(report["ok"], report)
+                self.assertIn("branch", " ".join(report["blockers"]))
+
     def test_accepts_current_run_during_workflow_list_eventual_consistency(
         self,
     ) -> None:
@@ -1845,14 +1880,18 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         self.assertEqual(RUN_ID, report["run_id"])
         self.assertEqual("in_progress", report["job_status"])
 
-    def test_accepts_completed_source_when_workflow_list_lags(self) -> None:
+    def test_rejects_completed_source_missing_from_workflow_list(self) -> None:
         adapter = FakeGitHubAdapter()
         adapter.workflow_runs.clear()
 
         report = self.attest(adapter)
 
-        self.assertTrue(report["ok"], report)
-        self.assertEqual(RUN_ID, report["source_ids"]["workflow_run_id"])
+        self.assertFalse(report["ok"], report)
+        self.assertIn(
+            "no applicable workflow run exists",
+            " ".join(report["blockers"]),
+        )
+        self.assertEqual(0, adapter.download_calls)
 
     def test_rejects_tampered_runner_workflow_identity(self) -> None:
         mutations = {
