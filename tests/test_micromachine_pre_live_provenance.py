@@ -1223,7 +1223,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             f"  {AUTHORITATIVE_PROVENANCE_JOB_NAME}:\n",
             1,
         )[1].split("\n  micromachine-macos-contracts:\n", 1)[0]
-        trusted_verifier_commit = "6178fa6f2b36518a0f064418c5be9e9fc9700168"
+        trusted_verifier_commit = "c2aa7133c92c1912f97b2f18b82cf083146ff514"
         self.assertIn(
             "    if: >-\n"
             "      github.event.pull_request.head.repo.id == "
