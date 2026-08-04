@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import io
 import json
 import os
 import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -317,23 +319,39 @@ class NativeExecutableLaunchTest(unittest.TestCase):
         ) -> subprocess.Popen[bytes]:
             nonlocal swap_rejected
             executable_path = Path(str(kwargs["executable"]))
+            executable_parent = executable_path.parent
             with tempfile.TemporaryDirectory() as attacker_directory:
                 attacker_root = Path(attacker_directory)
-                backup = attacker_root / "admitted-backup"
-                attacker = attacker_root / "attacker"
+                parent_mode: int | None = None
+                if executable_parent != Path("/proc/self/fd"):
+                    parent_mode = stat.S_IMODE(
+                        executable_parent.stat().st_mode
+                    )
+                    executable_parent.chmod(
+                        parent_mode | stat.S_IWUSR
+                    )
+                    attacker_root = executable_parent
+                backup = attacker_root / "native-executable.backup"
+                attacker = attacker_root / "native-executable.attacker"
                 attacker.write_bytes(native_false.read_bytes())
                 attacker.chmod(0o500)
+                swapped = False
                 try:
-                    os.replace(executable_path, backup)
-                except OSError:
-                    swap_rejected = True
-                    return real_popen(*args, **kwargs)
-                try:
+                    try:
+                        os.replace(executable_path, backup)
+                    except OSError:
+                        swap_rejected = True
+                        return real_popen(*args, **kwargs)
+                    swapped = True
                     os.replace(attacker, executable_path)
                     return real_popen(*args, **kwargs)
                 finally:
-                    executable_path.unlink(missing_ok=True)
-                    os.replace(backup, executable_path)
+                    if swapped:
+                        executable_path.unlink(missing_ok=True)
+                        os.replace(backup, executable_path)
+                    attacker.unlink(missing_ok=True)
+                    if parent_mode is not None:
+                        executable_parent.chmod(parent_mode)
 
         with tempfile.TemporaryDirectory() as directory:
             admitted_binary = Path(directory) / "admitted-true"
@@ -357,6 +375,54 @@ class NativeExecutableLaunchTest(unittest.TestCase):
             finally:
                 os.close(descriptor)
         self.assertTrue(swap_rejected)
+        self.assertEqual(0, completed.returncode, completed.stderr)
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux") and Path("/proc/self/fd").is_dir(),
+        "requires Linux memfd execution",
+    )
+    def test_one_shot_snapshot_retries_old_kernel_without_mfd_exec(
+        self,
+    ) -> None:
+        native_true = Path("/usr/bin/true")
+        if not native_true.is_file():
+            self.skipTest("requires /usr/bin/true")
+        payload = native_true.read_bytes()
+        expected_sha256 = hashlib.sha256(payload).hexdigest()
+        real_memfd_create = os.memfd_create
+        observed_flags: list[int] = []
+        mfd_exec = int(getattr(os, "MFD_EXEC", 0x0010))
+
+        def emulate_old_kernel(name: str, flags: int = 0) -> int:
+            observed_flags.append(flags)
+            if flags & mfd_exec:
+                raise OSError(errno.EINVAL, "unsupported MFD_EXEC")
+            return real_memfd_create(name, flags)
+
+        with tempfile.TemporaryDirectory() as directory:
+            admitted_binary = Path(directory) / "admitted-true"
+            admitted_binary.write_bytes(payload)
+            admitted_binary.chmod(0o500)
+            descriptor = os.open(admitted_binary, os.O_RDONLY)
+            admitted_binary.unlink()
+            try:
+                descriptor_path = Path(f"/dev/fd/{descriptor}")
+                with mock.patch.object(
+                    os,
+                    "memfd_create",
+                    side_effect=emulate_old_kernel,
+                ):
+                    completed = _run_native_command(
+                        descriptor_path,
+                        [str(descriptor_path)],
+                        expected_sha256=expected_sha256,
+                        command_runner=subprocess.run,
+                    )
+            finally:
+                os.close(descriptor)
+        self.assertEqual(2, len(observed_flags))
+        self.assertEqual(mfd_exec, observed_flags[0] & mfd_exec)
+        self.assertEqual(0, observed_flags[1] & mfd_exec)
         self.assertEqual(0, completed.returncode, completed.stderr)
 
     @unittest.skipUnless(

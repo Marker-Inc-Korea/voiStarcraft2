@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import io
 import json
@@ -1625,6 +1626,7 @@ def _run_linux_sealed_native_command(
     mfd_allow_sealing = int(
         getattr(os, "MFD_ALLOW_SEALING", 0x0002)
     )
+    mfd_exec = int(getattr(os, "MFD_EXEC", 0x0010))
     f_add_seals = int(getattr(fcntl, "F_ADD_SEALS", 1033))
     f_get_seals = int(getattr(fcntl, "F_GET_SEALS", 1034))
     f_seal_seal = int(getattr(fcntl, "F_SEAL_SEAL", 0x0001))
@@ -1632,10 +1634,19 @@ def _run_linux_sealed_native_command(
     f_seal_grow = int(getattr(fcntl, "F_SEAL_GROW", 0x0004))
     f_seal_write = int(getattr(fcntl, "F_SEAL_WRITE", 0x0008))
 
-    writable_descriptor: int | None = os.memfd_create(
-        "voi-native-executable",
-        flags=mfd_cloexec | mfd_allow_sealing,
-    )
+    memfd_flags = mfd_cloexec | mfd_allow_sealing
+    try:
+        writable_descriptor: int | None = os.memfd_create(
+            "voi-native-executable",
+            flags=memfd_flags | mfd_exec,
+        )
+    except OSError as exc:
+        if exc.errno != errno.EINVAL:
+            raise
+        writable_descriptor = os.memfd_create(
+            "voi-native-executable",
+            flags=memfd_flags,
+        )
     executable_descriptor: int | None = None
     process: subprocess.Popen[bytes] | None = None
     try:
