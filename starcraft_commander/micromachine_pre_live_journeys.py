@@ -1466,17 +1466,22 @@ def _run_inherited_native_command(
         flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
-        executable_descriptor = os.open(executable_path, flags, 0o500)
+        writable_descriptor: int | None = os.open(
+            executable_path,
+            flags,
+            0o500,
+        )
+        executable_descriptor: int | None = None
         process: subprocess.Popen[bytes] | None = None
         path_monitor: tuple[Any, int] | None = None
         try:
             source_digest = _copy_native_executable(
                 descriptor,
-                executable_descriptor,
+                writable_descriptor,
                 source_before[3],
             )
-            os.fsync(executable_descriptor)
-            os.fchmod(executable_descriptor, 0o500)
+            os.fsync(writable_descriptor)
+            os.fchmod(writable_descriptor, 0o500)
             if source_digest != expected_sha256:
                 raise OSError(
                     "inherited native executable digest changed before exec"
@@ -1487,12 +1492,12 @@ def _run_inherited_native_command(
                     "inherited native executable changed before exec"
                 )
             clone_snapshot = _native_executable_snapshot(
-                executable_descriptor
+                writable_descriptor
             )
             if (
                 clone_snapshot[3] != source_before[3]
                 or _sha256_descriptor(
-                    executable_descriptor,
+                    writable_descriptor,
                     clone_snapshot[3],
                 )
                 != expected_sha256
@@ -1502,9 +1507,34 @@ def _run_inherited_native_command(
                 )
             os.chmod(execution_root, 0o500)
             _require_descriptor_path_identity(
+                writable_descriptor,
+                executable_path,
+            )
+            read_flags = os.O_RDONLY
+            if hasattr(os, "O_NOFOLLOW"):
+                read_flags |= os.O_NOFOLLOW
+            executable_descriptor = os.open(
+                executable_path,
+                read_flags,
+            )
+            _require_descriptor_path_identity(
                 executable_descriptor,
                 executable_path,
             )
+            if (
+                _native_executable_snapshot(executable_descriptor)
+                != clone_snapshot
+                or _sha256_descriptor(
+                    executable_descriptor,
+                    clone_snapshot[3],
+                )
+                != expected_sha256
+            ):
+                raise OSError(
+                    "read-only native executable differs from admitted bytes"
+                )
+            os.close(writable_descriptor)
+            writable_descriptor = None
             path_monitor = _open_native_path_monitor(
                 executable_descriptor,
                 execution_root,
@@ -1552,7 +1582,10 @@ def _run_inherited_native_command(
             _close_native_path_monitor(path_monitor)
             os.chmod(execution_root, 0o700)
             executable_path.unlink(missing_ok=True)
-            os.close(executable_descriptor)
+            if executable_descriptor is not None:
+                os.close(executable_descriptor)
+            if writable_descriptor is not None:
+                os.close(writable_descriptor)
     return subprocess.CompletedProcess(
         list(argv),
         int(process.returncode),

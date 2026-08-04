@@ -143,6 +143,76 @@ class NativeExecutableLaunchTest(unittest.TestCase):
         self.assertEqual(b"pinned-node-stdin", completed.stdout)
 
     @unittest.skipUnless(
+        sys.platform.startswith("linux") and Path("/proc/self/fd").is_dir(),
+        "requires Linux procfs descriptor inspection",
+    )
+    def test_one_shot_snapshot_closes_writable_descriptor_before_exec(
+        self,
+    ) -> None:
+        native_true = Path("/usr/bin/true")
+        if not native_true.is_file():
+            self.skipTest("requires /usr/bin/true")
+        payload = native_true.read_bytes()
+        expected_sha256 = hashlib.sha256(payload).hexdigest()
+        real_popen = subprocess.Popen
+
+        def inspect_descriptors(
+            *args: object,
+            **kwargs: object,
+        ) -> subprocess.Popen[bytes]:
+            executable_path = Path(str(kwargs["executable"]))
+            executable_stat = executable_path.stat()
+            access_modes: list[int] = []
+            for descriptor_path in Path("/proc/self/fd").iterdir():
+                try:
+                    descriptor_stat = descriptor_path.stat()
+                    if (
+                        descriptor_stat.st_dev,
+                        descriptor_stat.st_ino,
+                    ) != (
+                        executable_stat.st_dev,
+                        executable_stat.st_ino,
+                    ):
+                        continue
+                    fdinfo = Path(
+                        f"/proc/self/fdinfo/{descriptor_path.name}"
+                    ).read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                flags = next(
+                    line.split()[1]
+                    for line in fdinfo.splitlines()
+                    if line.startswith("flags:")
+                )
+                access_modes.append(int(flags, 8) & os.O_ACCMODE)
+            self.assertTrue(access_modes)
+            self.assertEqual({os.O_RDONLY}, set(access_modes))
+            return real_popen(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            admitted_binary = Path(directory) / "admitted-true"
+            admitted_binary.write_bytes(payload)
+            admitted_binary.chmod(0o500)
+            descriptor = os.open(admitted_binary, os.O_RDONLY)
+            admitted_binary.unlink()
+            try:
+                descriptor_path = Path(f"/dev/fd/{descriptor}")
+                with mock.patch.object(
+                    subprocess,
+                    "Popen",
+                    side_effect=inspect_descriptors,
+                ):
+                    completed = _run_native_command(
+                        descriptor_path,
+                        [str(descriptor_path)],
+                        expected_sha256=expected_sha256,
+                        command_runner=subprocess.run,
+                    )
+            finally:
+                os.close(descriptor)
+        self.assertEqual(0, completed.returncode, completed.stderr)
+
+    @unittest.skipUnless(
         sys.platform == "darwin",
         "requires macOS kqueue vnode monitoring",
     )
