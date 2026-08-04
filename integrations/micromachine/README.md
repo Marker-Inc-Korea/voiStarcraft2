@@ -138,10 +138,14 @@ verifier binds the exact repository commit, build identity, producer policy,
 runtime sources, manifest, and output digest and then independently verifies
 the nested ZIP. The producer resolves both the admitted MicroMachine binary and
 the Node.js executable before entering its sanitized environment, pins their
-SHA-256 digests, and executes descriptor-backed one-shot copies without
-widening `PATH`. This gate proves deterministic product-path behavior only;
-manual StarCraft II live QA remains the final user gate, and human multiplayer
-is deferred.
+SHA-256 digests, and never widens `PATH`. MicroMachine executes from a
+descriptor-backed one-shot copy. Node.js retains its authenticated absolute
+path so relative dynamic-library loading remains valid; the verifier holds an
+open descriptor, rejects producer-writable path components, checks the path and
+descriptor snapshots before and after execution, and uses macOS vnode
+monitoring to detect swap-and-restore attacks. This gate proves deterministic
+product-path behavior only; manual StarCraft II live QA remains the final user
+gate, and human multiplayer is deferred.
 
 ## Wiring Steps
 
