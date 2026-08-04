@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import json
@@ -2262,6 +2263,70 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             with self.subTest(name=name):
                 adapter = FakeGitHubAdapter()
                 mutate(adapter)
+
+                report = self.attest(adapter)
+
+                self.assertFalse(report["ok"], report)
+                self.assertEqual(0, adapter.download_calls)
+
+    def test_rejects_malformed_latest_authoritative_run_hydration(self) -> None:
+        def add_newer(adapter: FakeGitHubAdapter) -> dict[str, object]:
+            newer_run = copy.deepcopy(adapter.workflow_run)
+            newer_run.update(
+                {
+                    "id": RUN_ID + 1,
+                    "run_number": adapter.workflow_run["run_number"] + 1,
+                    "run_attempt": 1,
+                    "status": "in_progress",
+                    "conclusion": None,
+                }
+            )
+            newer_job = dict(adapter.job)
+            newer_job.update(
+                {
+                    "id": JOB_ID + 1,
+                    "run_id": RUN_ID + 1,
+                    "run_attempt": 1,
+                    "status": "in_progress",
+                    "conclusion": None,
+                }
+            )
+            adapter.workflow_run_details[RUN_ID + 1] = newer_run
+            adapter.job_details[JOB_ID + 1] = newer_job
+            adapter.latest_check_runs.append(
+                {
+                    "id": JOB_ID + 1,
+                    "name": AUTHORITATIVE_PROVENANCE_JOB_NAME,
+                    "head_sha": HEAD_SHA,
+                    "status": "in_progress",
+                    "conclusion": None,
+                    "app": {"id": 15_368, "slug": "github-actions"},
+                }
+            )
+            return newer_run
+
+        mutations = {
+            "missing pull requests": lambda adapter, run: run.update(
+                {"pull_requests": []}
+            ),
+            "wrong pull request": lambda adapter, run: run["pull_requests"][
+                0
+            ].update({"number": 999}),
+            "malformed run number": lambda adapter, run: run.update(
+                {"run_number": "not-an-id"}
+            ),
+            "malformed run attempt": lambda adapter, run: run.update(
+                {"run_attempt": "not-an-id"}
+            ),
+            "job hydration failure": lambda adapter, run: adapter.job_details.pop(
+                JOB_ID + 1
+            ),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                adapter = FakeGitHubAdapter()
+                newer_run = add_newer(adapter)
+                mutate(adapter, newer_run)
 
                 report = self.attest(adapter)
 

@@ -9090,6 +9090,25 @@ def _workflow_run_matches_candidate(
     )
 
 
+def _workflow_run_targets_candidate_namespace(
+    record: Mapping[str, object],
+    *,
+    workflow_id: int,
+    workflow_path: str,
+    run_head_sha: str | None,
+    run_head_branch: str | None,
+    repository_id: int,
+) -> bool:
+    return (
+        record.get("workflow_id") == workflow_id
+        and record.get("path") == workflow_path
+        and record.get("event") == AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT
+        and record.get("head_sha") == run_head_sha
+        and record.get("head_branch") == run_head_branch
+        and _mapping(record.get("head_repository")).get("id") == repository_id
+    )
+
+
 def _eligible_workflow_runs(
     adapter: GitHubSourceAdapter,
     workflow_runs: Sequence[Mapping[str, object]],
@@ -9248,6 +9267,15 @@ def _validate_latest_provenance_check_run(
                     f"latest provenance check-run hydration failed: {exc}"
                 )
                 continue
+        if not _workflow_run_targets_candidate_namespace(
+            hydrated_run,
+            workflow_id=workflow_id,
+            workflow_path=workflow_path,
+            run_head_sha=expected_head_sha,
+            run_head_branch=expected_head_ref,
+            repository_id=repository_id,
+        ):
+            continue
         if not _workflow_run_matches_candidate(
             hydrated_run,
             workflow_id=workflow_id,
@@ -9260,6 +9288,10 @@ def _validate_latest_provenance_check_run(
             run_head_branch=expected_head_ref,
             repository_id=repository_id,
         ):
+            blockers.append(
+                "latest authoritative provenance check-run failed direct "
+                f"candidate binding: check_run={check_run_id}"
+            )
             continue
         hydrated_run_id = hydrated_run.get("id")
         if hydrated_job.get("id") != check_run_id:
