@@ -2059,7 +2059,7 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
                     payload["tech"]["unit_biases"],
                 )
 
-    def test_transformed_ability_operations_keep_exact_caster_form(
+    def test_transformed_ability_tasks_keep_exact_caster_form(
         self,
     ) -> None:
         caster_forms = {
@@ -2086,31 +2086,25 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
                     {
                         "source": "llm",
                         "goal": f"use {ability}",
-                        "operations": [
+                        "tactical_task": {
+                            "task_type": "execute_ability",
+                            "ability": ability,
+                            "unit_classes": [transformed],
+                            "min_units": 1,
+                            "max_units": 1,
+                        },
+                        "composition_requirements": [
                             {
-                                "operation_id": f"ability-{ability}",
-                                "goal": f"use {ability}",
-                                "tactical_task": {
-                                    "task_type": "execute_ability",
-                                    "ability": ability,
-                                    "unit_classes": [transformed],
-                                    "min_units": 1,
-                                    "max_units": 1,
-                                },
-                                "composition_requirements": [
-                                    {
-                                        "unit_type": transformed,
-                                        "count": 1,
-                                        "role": "support",
-                                    }
-                                ],
-                                "unit_roles": [
-                                    {
-                                        "unit_type": transformed,
-                                        "role": "support",
-                                        "priority": 0.5,
-                                    }
-                                ],
+                                "unit_type": transformed,
+                                "count": 1,
+                                "role": "support",
+                            }
+                        ],
+                        "unit_roles": [
+                            {
+                                "unit_type": transformed,
+                                "role": "support",
+                                "priority": 0.5,
                             }
                         ],
                     }
@@ -2119,19 +2113,18 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
                 self.assertTrue(result.ok, result.to_dict())
                 payload = result.to_dict()["vector"]
                 assert isinstance(payload, dict)
-                operation = payload["operations"][0]
-                self.assertEqual([], operation["composition_requirements"])
+                self.assertEqual([], payload["composition_requirements"])
                 self.assertEqual(
                     [transformed],
-                    operation["tactical_task"]["unit_classes"],
+                    payload["tactical_task"]["unit_classes"],
                 )
                 self.assertIn(
                     base,
-                    operation["tactical_task"]["production_targets"],
+                    payload["tactical_task"]["production_targets"],
                 )
                 self.assertNotIn(
                     transformed,
-                    operation["tactical_task"]["production_targets"],
+                    payload["tactical_task"]["production_targets"],
                 )
                 self.assertEqual(
                     [
@@ -2142,8 +2135,33 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
                             "ability_policy": ability,
                         }
                     ],
-                    operation["unit_roles"],
+                    payload["unit_roles"],
                 )
+
+    def test_execute_ability_is_rejected_inside_operations(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "unsiege the assigned tank",
+                "operations": [
+                    {
+                        "operation_id": "ability-unsiege",
+                        "goal": "unsiege",
+                        "tactical_task": {
+                            "task_type": "execute_ability",
+                            "ability": "unsiege",
+                            "unit_classes": ["TERRAN_SIEGETANKSIEGED"],
+                        },
+                    }
+                ],
+            }
+        )
+
+        self.assertFalse(result.ok, result.to_dict())
+        self.assertIn(
+            "not supported by the live operation director",
+            result.refusal_reason,
+        )
 
     def test_rejects_raw_actions_without_throwing(self) -> None:
         for payload in (

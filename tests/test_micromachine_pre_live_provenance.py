@@ -1548,9 +1548,11 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             ),
         )
         self.assertIn(
-            "          python3 -B "
+            '          PYTHONPATH="${PWD}" \\\n'
+            "            python3 -B "
             "tests/test_micromachine_pre_live_journeys.py\n"
-            "          python3 -B "
+            '          PYTHONPATH="${PWD}" \\\n'
+            "            python3 -B "
             "tests/test_micromachine_terran_capabilities.py\n",
             candidate_job,
         )

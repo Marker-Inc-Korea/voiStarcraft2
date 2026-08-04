@@ -53,6 +53,7 @@ from starcraft_commander.micromachine_terran_capabilities import (
     terran_ability_caster_state,
     terran_production_targets,
 )
+from starcraft_commander.policy_modulation import PolicyModulationVector
 
 
 PRE_LIVE_JOURNEY_SCHEMA_VERSION: Final[int] = 1
@@ -959,7 +960,6 @@ def _compile_command(
 ) -> dict[str, object]:
     preset = str(item.get("preset", ""))
     command_text = str(item.get("command_text", ""))
-    provider_output = _provider_output(preset)
     execution.emit(
         "command_input",
         update_id=update_id,
@@ -968,28 +968,41 @@ def _compile_command(
         payload={"command_text": command_text, "preset": preset},
         order=0,
     )
-    session = MicroMachineLiveTextSession(
-        execution.backend,
-        StaticJsonPolicyModulationProvider(provider_output),
-    )
-    result = session.submit_text(
-        command_text,
-        current_frame=frame,
-        update_id=update_id,
-    )
-    result_dict = result.to_dict()
-    execution.products.setdefault("compiler_results", [])
-    cast(list[object], execution.products["compiler_results"]).append(result_dict)
-    if not result.ok or result.update is None:
-        raise ValueError(f"{preset} did not compile: {result_dict!r}")
-    update = result.update.to_dict()
+    command_queue: Mapping[str, object] = {}
+    if preset == "all_terran_matrix":
+        update = _compile_all_terran_matrix_update(
+            execution,
+            command_text=command_text,
+            frame=frame,
+            update_id=update_id,
+        )
+    else:
+        provider_output = _provider_output(preset)
+        session = MicroMachineLiveTextSession(
+            execution.backend,
+            StaticJsonPolicyModulationProvider(provider_output),
+        )
+        result = session.submit_text(
+            command_text,
+            current_frame=frame,
+            update_id=update_id,
+        )
+        result_dict = result.to_dict()
+        execution.products.setdefault("compiler_results", [])
+        cast(list[object], execution.products["compiler_results"]).append(
+            result_dict
+        )
+        if not result.ok or result.update is None:
+            raise ValueError(f"{preset} did not compile: {result_dict!r}")
+        update = result.update.to_dict()
+        command_queue = result.command_queue or {}
     execution.compiled_updates.append(update)
     execution.emit(
         "blackboard_update",
         update_id=update_id,
         stage="published",
         game_frame=frame,
-        payload={"update": update, "command_queue": result.command_queue or {}},
+        payload={"update": update, "command_queue": dict(command_queue)},
         order=1,
     )
     validation = validate_micromachine_blackboard_update(
@@ -1008,6 +1021,101 @@ def _compile_command(
     if preset == "all_terran_matrix":
         _emit_all_terran_lowering(execution, update, frame=frame)
     return update
+
+
+def _compile_all_terran_matrix_update(
+    execution: _JourneyExecution,
+    *,
+    command_text: str,
+    frame: int,
+    update_id: str,
+) -> dict[str, object]:
+    operations: list[dict[str, object]] = []
+    ability_index = 0
+    for row in all_terran_capability_matrix():
+        family = str(row["family"])
+        role = str(row["default_role"])
+        for ability in cast(Sequence[object], row["abilities"]):
+            ability_name = str(ability)
+            caster_state = terran_ability_caster_state(ability_name)
+            if caster_state is None:
+                raise ValueError(
+                    f"ability caster state is missing: {ability_name}"
+                )
+            operation_id = f"matrix-{family}-{ability_name}"
+            provider_output = _top_level_ability_provider(
+                operation_id,
+                ability_name,
+                caster_state.unit_type,
+                role,
+            )
+            session = MicroMachineLiveTextSession(
+                MicroMachineInMemoryBlackboard(),
+                StaticJsonPolicyModulationProvider(provider_output),
+            )
+            ability_index += 1
+            result = session.submit_text(
+                command_text,
+                current_frame=frame,
+                update_id=f"{update_id}-ability-{ability_index}",
+            )
+            result_dict = result.to_dict()
+            execution.products.setdefault("compiler_results", [])
+            cast(list[object], execution.products["compiler_results"]).append(
+                result_dict
+            )
+            if not result.ok or result.update is None:
+                raise ValueError(
+                    f"all_terran_matrix/{ability_name} did not compile: "
+                    f"{result_dict!r}"
+                )
+            compiled_update = result.update.to_dict()
+            validation = validate_micromachine_blackboard_update(
+                compiled_update,
+                current_frame=frame,
+            )
+            validation_dict = validation.to_dict()
+            execution.products.setdefault("bridge_validations", [])
+            cast(list[object], execution.products["bridge_validations"]).append(
+                validation_dict
+            )
+            if not validation.accepted:
+                raise ValueError(
+                    "compiled all-Terran ability failed bridge validation: "
+                    f"{validation.reason}"
+                )
+            vector = cast(Mapping[str, object], compiled_update["vector"])
+            operation = {
+                "operation_id": operation_id,
+                "goal": operation_id.replace("-", " "),
+                "command_layer": "micro",
+            }
+            for field_name in (
+                "tactical_task",
+                "scope",
+                "lifetime",
+                "composition_requirements",
+                "unit_roles",
+                "route_intent",
+                "target_intent",
+            ):
+                operation[field_name] = deepcopy(vector[field_name])
+            operations.append(operation)
+
+    aggregate_vector = PolicyModulationVector.from_mapping(
+        {
+            "source": "llm",
+            "goal": "all Terran family abilities",
+            "command_layer": "micro",
+            "operations": operations,
+        }
+    )
+    accepted = execution.backend.publish_vector(
+        aggregate_vector,
+        current_frame=frame,
+        update_id=update_id,
+    )
+    return accepted.to_dict()
 
 
 def _emit_generation_changes(
@@ -6755,34 +6863,37 @@ def _provider_output(preset: str) -> dict[str, object]:
             ),
         )
     if preset == "all_terran_matrix":
-        operations: list[dict[str, object]] = []
-        for row in all_terran_capability_matrix():
-            family = str(row["family"])
-            role = str(row["default_role"])
-            for ability in cast(Sequence[object], row["abilities"]):
-                ability_name = str(ability)
-                caster_state = terran_ability_caster_state(ability_name)
-                if caster_state is None:
-                    raise ValueError(
-                        f"ability caster state is missing: {ability_name}"
-                    )
-                operation = _operation_provider(
-                    f"matrix-{family}-{ability_name}",
-                    "execute_ability",
-                    caster_state.unit_type,
-                    1,
-                    role,
-                )
-                cast(dict[str, object], operation["tactical_task"])["ability"] = (
-                    ability_name
-                )
-                operations.append(operation)
-        return _operations_provider(
-            "all Terran family abilities",
-            operations,
-            command_layer="micro",
+        raise ValueError(
+            "all_terran_matrix is compiled as top-level live ability tasks"
         )
     raise ValueError(f"unknown pre-live journey preset: {preset}")
+
+
+def _top_level_ability_provider(
+    task_id: str,
+    ability: str,
+    unit_type: str,
+    role: str,
+) -> dict[str, object]:
+    operation = _operation_provider(
+        task_id,
+        "execute_ability",
+        unit_type,
+        1,
+        role,
+    )
+    tactical_task = cast(dict[str, object], operation["tactical_task"])
+    tactical_task["task_id"] = task_id
+    tactical_task["ability"] = ability
+    return {
+        "source": "llm",
+        "goal": str(operation["goal"]),
+        "command_layer": "micro",
+        "tactical_task": tactical_task,
+        "scope": operation["scope"],
+        "composition_requirements": operation["composition_requirements"],
+        "unit_roles": operation["unit_roles"],
+    }
 
 
 def _operation_provider(

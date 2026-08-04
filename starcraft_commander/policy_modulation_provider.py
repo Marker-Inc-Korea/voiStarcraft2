@@ -1551,6 +1551,16 @@ def _normalize_provider_operations(
             default_goal=default_goal,
             path=f"operations[{index}]",
         )
+        tactical_task = operation.get("tactical_task")
+        if (
+            isinstance(tactical_task, Mapping)
+            and tactical_task.get("task_type") == "execute_ability"
+        ):
+            raise ValueError(
+                f"operations[{index}].tactical_task.task_type='execute_ability' "
+                "is not supported by the live operation director; use the "
+                "top-level tactical_task instead."
+            )
         normalized.append(operation)
         warnings.extend(operation_warnings)
     return normalized, tuple(warnings)

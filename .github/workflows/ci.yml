@@ -74,8 +74,10 @@ jobs:
         run: integrations/micromachine/scripts/build_macos_local.sh
       - name: Verify deterministic pre-live candidate
         run: |
-          python3 -B tests/test_micromachine_pre_live_journeys.py
-          python3 -B tests/test_micromachine_terran_capabilities.py
+          PYTHONPATH="${PWD}" \
+            python3 -B tests/test_micromachine_pre_live_journeys.py
+          PYTHONPATH="${PWD}" \
+            python3 -B tests/test_micromachine_terran_capabilities.py
 
   pre-live-workflow-registration:
     if: github.event_name == 'push'
