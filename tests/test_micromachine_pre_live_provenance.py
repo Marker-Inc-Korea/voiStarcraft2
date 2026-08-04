@@ -98,6 +98,7 @@ RUN_ATTEMPT = 2
 JOB_ID = 201
 ARTIFACT_ID = 301
 WORKFLOW_ID = 401
+CHECK_SUITE_ID = 501
 WORKFLOW_PATH = AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH
 WORKFLOW_REF = (
     f"{REPOSITORY}/{WORKFLOW_PATH}@refs/heads/main"
@@ -300,6 +301,7 @@ class FakeGitHubAdapter:
         self.workflow_run = {
             "id": RUN_ID,
             "workflow_id": WORKFLOW_ID,
+            "check_suite_id": CHECK_SUITE_ID,
             "run_number": 17,
             "run_attempt": RUN_ATTEMPT,
             "head_sha": head_sha,
@@ -325,6 +327,7 @@ class FakeGitHubAdapter:
             "conclusion": "success",
         }
         self.workflow_runs = [dict(self.workflow_run)]
+        self.repository_workflow_runs = [dict(self.workflow_run)]
         self.workflow_run_details = {RUN_ID: self.workflow_run}
         self.workflow_run_get_calls = 0
         self.workflow_run_queries: list[tuple[str, int, str, str]] = []
@@ -372,6 +375,7 @@ class FakeGitHubAdapter:
                 "status": "completed",
                 "conclusion": "success",
                 "app": {"id": 15_368, "slug": "github-actions"},
+                "check_suite": {"id": CHECK_SUITE_ID},
             }
         ]
         self.job_details = {JOB_ID: self.job}
@@ -492,6 +496,17 @@ class FakeGitHubAdapter:
         ref: str,
     ) -> list[dict[str, object]]:
         return self._result("latest_check_runs", self.latest_check_runs)
+
+    def list_repository_workflow_runs(
+        self,
+        repository: str,
+        *,
+        head_sha: str,
+    ) -> list[dict[str, object]]:
+        return self._result(
+            "repository_workflow_runs",
+            self.repository_workflow_runs,
+        )
 
     def get_workflow_run_attempt(
         self,
@@ -1941,6 +1956,51 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         )
         self.assertEqual(0, adapter.download_calls)
 
+    def test_rejects_duplicate_selected_workflow_summary(self) -> None:
+        adapter = FakeGitHubAdapter()
+        adapter.workflow_runs.append(dict(adapter.workflow_run))
+
+        report = self.attest(adapter)
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn("duplicated", " ".join(report["blockers"]))
+        self.assertEqual(0, adapter.download_calls)
+
+    def test_rejects_malformed_newer_workflow_summary(self) -> None:
+        mutations = {
+            "run number": lambda run: run.update({"run_number": "invalid"}),
+            "run attempt": lambda run: run.update({"run_attempt": "invalid"}),
+            "workflow id": lambda run: run.pop("workflow_id"),
+            "workflow path": lambda run: run.pop("path"),
+            "event": lambda run: run.pop("event"),
+            "head sha": lambda run: run.pop("head_sha"),
+            "head branch": lambda run: run.pop("head_branch"),
+            "repository id": lambda run: run["head_repository"].pop("id"),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                adapter = FakeGitHubAdapter()
+                newer = copy.deepcopy(adapter.workflow_run)
+                newer.update(
+                    {
+                        "id": RUN_ID + 1,
+                        "check_suite_id": CHECK_SUITE_ID + 1,
+                        "run_number": adapter.workflow_run["run_number"] + 1,
+                        "run_attempt": 1,
+                    }
+                )
+                mutate(newer)
+                adapter.workflow_runs.append(newer)
+
+                report = self.attest(adapter)
+
+                self.assertFalse(report["ok"], report)
+                self.assertIn(
+                    "listed_workflow_run",
+                    " ".join(report["blockers"]),
+                )
+                self.assertEqual(0, adapter.download_calls)
+
     def test_rejects_tampered_runner_workflow_identity(self) -> None:
         mutations = {
             "repository": (
@@ -2173,6 +2233,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         newer_run.update(
             {
                 "id": RUN_ID + 1,
+                "check_suite_id": CHECK_SUITE_ID + 1,
                 "run_number": adapter.workflow_run["run_number"] + 1,
                 "run_attempt": 1,
                 "status": "in_progress",
@@ -2190,6 +2251,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             }
         )
         adapter.workflow_run_details[RUN_ID + 1] = newer_run
+        adapter.repository_workflow_runs.append(dict(newer_run))
         adapter.job_details[JOB_ID + 1] = newer_job
         adapter.latest_check_runs.append(
             {
@@ -2199,6 +2261,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
                 "status": "in_progress",
                 "conclusion": None,
                 "app": {"id": 15_368, "slug": "github-actions"},
+                "check_suite": {"id": CHECK_SUITE_ID + 1},
             }
         )
 
@@ -2219,6 +2282,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         newer_run.update(
             {
                 "id": RUN_ID + 1,
+                "check_suite_id": CHECK_SUITE_ID + 1,
                 "run_number": adapter.workflow_run["run_number"] + 1,
                 "run_attempt": 1,
                 "status": "in_progress",
@@ -2237,6 +2301,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             }
         )
         adapter.workflow_run_details[RUN_ID + 1] = newer_run
+        adapter.repository_workflow_runs.append(dict(newer_run))
         adapter.job_details[JOB_ID + 1] = newer_job
         adapter.latest_check_runs.append(
             {
@@ -2246,6 +2311,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
                 "status": "in_progress",
                 "conclusion": None,
                 "app": {"id": 15_368, "slug": "github-actions"},
+                "check_suite": {"id": CHECK_SUITE_ID + 1},
             }
         )
 
@@ -2254,6 +2320,32 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         self.assertFalse(report["ok"], report)
         self.assertIn("not the latest check-run run", " ".join(report["blockers"]))
         self.assertEqual(0, adapter.download_calls)
+
+    def test_rejects_newer_repository_run_before_any_check_exists(self) -> None:
+        adapter = FakeGitHubAdapter()
+        newer_run = copy.deepcopy(adapter.workflow_run)
+        newer_run.update(
+            {
+                "id": RUN_ID + 1,
+                "check_suite_id": CHECK_SUITE_ID + 1,
+                "run_number": adapter.workflow_run["run_number"] + 1,
+                "run_attempt": 1,
+                "status": "in_progress",
+                "conclusion": None,
+            }
+        )
+        adapter.repository_workflow_runs.append(newer_run)
+
+        report = self.attest(adapter)
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn(
+            "not the latest repository workflow run",
+            " ".join(report["blockers"]),
+        )
+        self.assertEqual(0, adapter.download_calls)
+        self.assertEqual(1, adapter.workflow_run_get_calls)
+        self.assertEqual(1, adapter.job_get_calls)
 
     def test_rejects_stale_success_when_same_run_has_newer_attempt(self) -> None:
         class AttemptRaceAdapter(FakeGitHubAdapter):
@@ -2299,6 +2391,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
                 "status": "in_progress",
                 "conclusion": None,
                 "app": {"id": 15_368, "slug": "github-actions"},
+                "check_suite": {"id": CHECK_SUITE_ID},
             }
         )
 
@@ -2325,6 +2418,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             {
                 "id": RUN_ID + 2,
                 "workflow_id": WORKFLOW_ID + 1,
+                "check_suite_id": CHECK_SUITE_ID + 2,
                 "run_number": adapter.workflow_run["run_number"] + 2,
                 "path": ".github/workflows/other.yml",
             }
@@ -2337,6 +2431,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             }
         )
         adapter.workflow_run_details[RUN_ID + 2] = other_run
+        adapter.repository_workflow_runs.append(dict(other_run))
         adapter.job_details[JOB_ID + 2] = other_job
         adapter.latest_check_runs.append(
             {
@@ -2346,6 +2441,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
                 "status": "completed",
                 "conclusion": "success",
                 "app": {"id": 15_368, "slug": "github-actions"},
+                "check_suite": {"id": CHECK_SUITE_ID + 2},
             }
         )
 
@@ -2360,6 +2456,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             {
                 "id": RUN_ID + 2,
                 "workflow_id": WORKFLOW_ID + 1,
+                "check_suite_id": CHECK_SUITE_ID + 2,
                 "path": ".github/workflows/other.yml",
             }
         )
@@ -2393,6 +2490,37 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         self.assertEqual(1, adapter.workflow_run_get_calls)
         self.assertEqual(1, adapter.job_get_calls)
 
+    def test_ignores_same_named_unrelated_checks_before_hydration(self) -> None:
+        adapter = FakeGitHubAdapter()
+        other_run = copy.deepcopy(adapter.workflow_run)
+        other_run.update(
+            {
+                "id": RUN_ID + 2,
+                "workflow_id": WORKFLOW_ID + 1,
+                "check_suite_id": CHECK_SUITE_ID + 2,
+                "path": ".github/workflows/other.yml",
+            }
+        )
+        adapter.repository_workflow_runs.append(other_run)
+        for offset in range(1, 102):
+            adapter.latest_check_runs.append(
+                {
+                    "id": JOB_ID + offset,
+                    "name": "pre-live-build",
+                    "head_sha": HEAD_SHA,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "app": {"id": 15_368, "slug": "github-actions"},
+                    "check_suite": {"id": CHECK_SUITE_ID + 2},
+                }
+            )
+
+        report = self.attest(adapter)
+
+        self.assertTrue(report["ok"], report)
+        self.assertEqual(1, adapter.workflow_run_get_calls)
+        self.assertEqual(1, adapter.job_get_calls)
+
     def test_rejects_empty_or_malformed_latest_check_run_results(self) -> None:
         mutations = {
             "empty": lambda adapter: adapter.latest_check_runs.clear(),
@@ -2408,6 +2536,9 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             "missing head sha": lambda adapter: adapter.latest_check_runs[0].pop(
                 "head_sha"
             ),
+            "missing check suite": lambda adapter: adapter.latest_check_runs[
+                0
+            ].pop("check_suite"),
         }
         for name, mutate in mutations.items():
             with self.subTest(name=name):
@@ -2425,6 +2556,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             newer_run.update(
                 {
                     "id": RUN_ID + 1,
+                    "check_suite_id": CHECK_SUITE_ID + 1,
                     "run_number": adapter.workflow_run["run_number"] + 1,
                     "run_attempt": 1,
                     "status": "in_progress",
@@ -2442,6 +2574,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
                 }
             )
             adapter.workflow_run_details[RUN_ID + 1] = newer_run
+            adapter.repository_workflow_runs.append(dict(newer_run))
             adapter.job_details[JOB_ID + 1] = newer_job
             adapter.latest_check_runs.append(
                 {
@@ -2451,6 +2584,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
                     "status": "in_progress",
                     "conclusion": None,
                     "app": {"id": 15_368, "slug": "github-actions"},
+                    "check_suite": {"id": CHECK_SUITE_ID + 1},
                 }
             )
             return newer_run
@@ -2827,6 +2961,83 @@ class GitHubSourceAttestationTest(unittest.TestCase):
 
 
 class StdlibGitHubRESTAdapterTest(unittest.TestCase):
+    def test_rejects_record_replacement_between_stable_count_snapshots(
+        self,
+    ) -> None:
+        request_count = 0
+
+        def urlopen(
+            request: object,
+            *,
+            timeout: float,
+        ) -> FakeHTTPResponse:
+            nonlocal request_count
+            request_count += 1
+            page = int(
+                urllib.parse.parse_qs(
+                    urllib.parse.urlsplit(request.full_url).query
+                )["page"][0]
+            )
+            if request_count <= 2:
+                records = (
+                    [{"id": value} for value in range(1, 101)]
+                    if page == 1
+                    else [{"id": 102}]
+                )
+            else:
+                records = (
+                    [{"id": value} for value in range(2, 102)]
+                    if page == 1
+                    else [{"id": 102}]
+                )
+            return FakeHTTPResponse(
+                json.dumps(
+                    {
+                        "total_count": 101,
+                        "check_runs": records,
+                    }
+                ).encode()
+            )
+
+        adapter = StdlibGitHubRESTAdapter(
+            token="fixture-token",
+            urlopen=urlopen,
+        )
+
+        with self.assertRaisesRegex(
+            GitHubSourceError,
+            "changed between snapshots",
+        ):
+            adapter.list_latest_check_runs(REPOSITORY, HEAD_SHA)
+
+    def test_rejects_duplicate_ids_within_authority_snapshot(self) -> None:
+        def urlopen(
+            request: object,
+            *,
+            timeout: float,
+        ) -> FakeHTTPResponse:
+            return FakeHTTPResponse(
+                json.dumps(
+                    {
+                        "total_count": 2,
+                        "workflow_runs": [{"id": RUN_ID}, {"id": RUN_ID}],
+                    }
+                ).encode()
+            )
+
+        adapter = StdlibGitHubRESTAdapter(
+            token="fixture-token",
+            urlopen=urlopen,
+        )
+
+        with self.assertRaisesRegex(GitHubSourceError, "duplicate ID"):
+            adapter.list_workflow_runs(
+                REPOSITORY,
+                WORKFLOW_ID,
+                branch="main",
+                event=AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
+            )
+
     def test_rejects_incomplete_authority_pagination(self) -> None:
         cases = {
             "workflow runs missing count": (
@@ -2910,6 +3121,10 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
             f"/repos/{REPOSITORY}/actions/runs/{RUN_ID}": {"id": RUN_ID},
             f"/repos/{REPOSITORY}/actions/workflows/{WORKFLOW_ID}": {"id": WORKFLOW_ID},
             f"/repos/{REPOSITORY}/actions/workflows/{WORKFLOW_ID}/runs": {
+                "total_count": 1,
+                "workflow_runs": [{"id": RUN_ID}],
+            },
+            f"/repos/{REPOSITORY}/actions/runs": {
                 "total_count": 1,
                 "workflow_runs": [{"id": RUN_ID}],
             },
@@ -3034,6 +3249,13 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
             )[0]["id"],
         )
         self.assertEqual(
+            RUN_ID,
+            adapter.list_repository_workflow_runs(
+                REPOSITORY,
+                head_sha=HEAD_SHA,
+            )[0]["id"],
+        )
+        self.assertEqual(
             RUN_ATTEMPT,
             adapter.get_workflow_run_attempt(
                 REPOSITORY,
@@ -3096,7 +3318,7 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
             ruleset_details[502],
             adapter.get_repository_ruleset(REPOSITORY, 502),
         )
-        self.assertEqual(21, len(requested))
+        self.assertEqual(25, len(requested))
         self.assertTrue(
             all(header == "Bearer fixture-token" for _, header, _, _ in requested)
         )
@@ -3110,6 +3332,19 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
         self.assertEqual(["15368"], check_run_query["app_id"])
         self.assertNotIn("check_name", check_run_query)
         self.assertEqual(["latest"], check_run_query["filter"])
+        repository_run_query = urllib.parse.parse_qs(
+            next(
+                urllib.parse.urlsplit(url).query
+                for url, _, _, _ in requested
+                if urllib.parse.urlsplit(url).path
+                == f"/repos/{REPOSITORY}/actions/runs"
+            )
+        )
+        self.assertEqual([HEAD_SHA], repository_run_query["head_sha"])
+        self.assertEqual(
+            ["false"],
+            repository_run_query["exclude_pull_requests"],
+        )
 
 
 class BuildBindingTest(unittest.TestCase):

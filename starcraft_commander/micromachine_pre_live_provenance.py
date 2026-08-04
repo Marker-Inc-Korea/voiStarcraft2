@@ -79,6 +79,7 @@ AUTHORITATIVE_PROVENANCE_WORKFLOW_JOB_NAMES: Final[frozenset[str]] = frozenset(
         AUTHORITATIVE_PROVENANCE_JOB_NAME,
     }
 )
+MAX_AUTHORITATIVE_PROVENANCE_CHECK_RUNS: Final[int] = 100
 GITHUB_ACTIONS_APP_ID: Final[int] = 15_368
 GITHUB_ACTIONS_APP_SLUG: Final[str] = "github-actions"
 AUTHORITATIVE_REPLAY_REF_PREFIX: Final[str] = "refs/tags/voi-pre-live-replay/"
@@ -577,6 +578,13 @@ class GitHubSourceAdapter(Protocol):
         ref: str,
     ) -> Sequence[Mapping[str, object]]: ...
 
+    def list_repository_workflow_runs(
+        self,
+        repository: str,
+        *,
+        head_sha: str,
+    ) -> Sequence[Mapping[str, object]]: ...
+
     def get_workflow(
         self,
         repository: str,
@@ -906,6 +914,8 @@ class StdlibGitHubRESTAdapter:
             f"{_positive_id(workflow_id, 'workflow_id')}/runs?{query}",
             "workflow_runs",
             require_total_count=True,
+            require_stable_snapshot=True,
+            require_unique_ids=True,
         )
 
     def list_latest_check_runs(
@@ -925,6 +935,32 @@ class StdlibGitHubRESTAdapter:
             f"{self._repo_path(repository)}/commits/{ref}/check-runs?{query}",
             "check_runs",
             require_total_count=True,
+            require_stable_snapshot=True,
+            require_unique_ids=True,
+        )
+
+    def list_repository_workflow_runs(
+        self,
+        repository: str,
+        *,
+        head_sha: str,
+    ) -> Sequence[Mapping[str, object]]:
+        if not _SHA40_RE.fullmatch(head_sha):
+            raise ValueError(
+                "repository workflow-run head must be an exact lowercase SHA"
+            )
+        query = urllib.parse.urlencode(
+            {
+                "head_sha": head_sha,
+                "exclude_pull_requests": "false",
+            }
+        )
+        return self._get_paginated(
+            f"{self._repo_path(repository)}/actions/runs?{query}",
+            "workflow_runs",
+            require_total_count=True,
+            require_stable_snapshot=True,
+            require_unique_ids=True,
         )
 
     def get_workflow(
@@ -1089,9 +1125,40 @@ class StdlibGitHubRESTAdapter:
         key: str,
         *,
         require_total_count: bool = False,
+        require_stable_snapshot: bool = False,
+        require_unique_ids: bool = False,
     ) -> Sequence[Mapping[str, object]]:
+        first = self._get_paginated_snapshot(
+            path,
+            key,
+            require_total_count=require_total_count,
+            require_unique_ids=require_unique_ids,
+        )
+        if not require_stable_snapshot:
+            return first
+        second = self._get_paginated_snapshot(
+            path,
+            key,
+            require_total_count=require_total_count,
+            require_unique_ids=require_unique_ids,
+        )
+        if first != second:
+            raise GitHubSourceError(
+                f"GitHub pagination changed between snapshots for {path}"
+            )
+        return first
+
+    def _get_paginated_snapshot(
+        self,
+        path: str,
+        key: str,
+        *,
+        require_total_count: bool,
+        require_unique_ids: bool,
+    ) -> list[Mapping[str, object]]:
         records: list[Mapping[str, object]] = []
         expected_total_count: int | None = None
+        seen_ids: set[int] = set()
         for page in range(1, 101):
             separator = "&" if "?" in path else "?"
             payload = self._get_json(f"{path}{separator}per_page=100&page={page}")
@@ -1126,6 +1193,20 @@ class StdlibGitHubRESTAdapter:
                     raise GitHubSourceError(
                         f"GitHub {key!r} list contains a non-object"
                     )
+                if require_unique_ids:
+                    try:
+                        record_id = _positive_id(
+                            record.get("id"),
+                            f"GitHub {key!r} record.id",
+                        )
+                    except ValueError as exc:
+                        raise GitHubSourceError(str(exc)) from exc
+                    if record_id in seen_ids:
+                        raise GitHubSourceError(
+                            f"GitHub {key!r} list contains duplicate ID "
+                            f"{record_id} for {path}"
+                        )
+                    seen_ids.add(record_id)
                 records.append(cast(Mapping[str, object], record))
             if (
                 expected_total_count is not None
@@ -1674,6 +1755,10 @@ def attest_github_source(
             normalized_repository,
             expected_head_sha,
         )
+        repository_workflow_runs = adapter.list_repository_workflow_runs(
+            normalized_repository,
+            head_sha=expected_head_sha,
+        )
         attempt = adapter.get_workflow_run_attempt(
             normalized_repository,
             run_id,
@@ -2152,6 +2237,7 @@ def attest_github_source(
     _validate_latest_provenance_check_run(
         adapter,
         latest_check_runs,
+        repository_workflow_runs,
         repository=normalized_repository,
         selected_run=workflow_run,
         selected_job=job,
@@ -9201,20 +9287,30 @@ def _eligible_workflow_runs(
 ) -> list[Mapping[str, object]]:
     candidates: dict[int, Mapping[str, object]] = {}
     current_run_id = current_run.get("id")
-    for summary in workflow_runs:
-        if not _workflow_run_summary_matches_candidate(
+    seen_run_ids: set[int] = set()
+    for index, summary in enumerate(workflow_runs):
+        label = f"listed_workflow_run[{index}]"
+        try:
+            run_id = _positive_id(summary.get("id"), f"{label}.id")
+            _positive_id(summary.get("run_number"), f"{label}.run_number")
+            _positive_id(summary.get("run_attempt"), f"{label}.run_attempt")
+        except ValueError as exc:
+            blockers.append(f"listed workflow run is malformed: {exc}")
+            continue
+        if run_id in seen_run_ids:
+            blockers.append(f"listed workflow run ID is duplicated: {run_id}")
+            continue
+        seen_run_ids.add(run_id)
+        if not _workflow_run_targets_candidate_namespace(
             summary,
             workflow_id=workflow_id,
             workflow_path=workflow_path,
             run_head_sha=run_head_sha,
             run_head_branch=run_head_branch,
             repository_id=repository_id,
+            label=label,
+            blockers=blockers,
         ):
-            continue
-        try:
-            run_id = _positive_id(summary.get("id"), "workflow_run.id")
-        except ValueError as exc:
-            blockers.append(f"listed workflow run is malformed: {exc}")
             continue
         if run_id == current_run_id:
             record = current_run
@@ -9275,9 +9371,90 @@ def _eligible_workflow_runs(
     return list(candidates.values())
 
 
+def _index_repository_workflow_runs(
+    workflow_runs: Sequence[Mapping[str, object]],
+    *,
+    expected_head_sha: str,
+    blockers: list[str],
+) -> dict[int, Mapping[str, object]]:
+    by_check_suite: dict[int, Mapping[str, object]] = {}
+    seen_run_ids: set[int] = set()
+    for index, record in enumerate(workflow_runs):
+        label = f"repository_workflow_run[{index}]"
+        run_id = _server_positive_id(record.get("id"), f"{label}.id", blockers)
+        check_suite_id = _server_positive_id(
+            record.get("check_suite_id"),
+            f"{label}.check_suite_id",
+            blockers,
+        )
+        _server_positive_id(
+            record.get("run_number"),
+            f"{label}.run_number",
+            blockers,
+        )
+        _server_positive_id(
+            record.get("run_attempt"),
+            f"{label}.run_attempt",
+            blockers,
+        )
+        head_sha = _server_string(record, "head_sha", label, blockers)
+        if head_sha is not None and head_sha != expected_head_sha:
+            blockers.append(
+                f"{label}.head_sha mismatch: expected={expected_head_sha!r} "
+                f"actual={head_sha!r}"
+            )
+        if run_id is None or check_suite_id is None:
+            continue
+        if run_id in seen_run_ids:
+            blockers.append(f"repository workflow run ID is duplicated: {run_id}")
+            continue
+        seen_run_ids.add(run_id)
+        if check_suite_id in by_check_suite:
+            blockers.append(
+                "repository workflow check-suite ID is duplicated: "
+                f"{check_suite_id}"
+            )
+            continue
+        by_check_suite[check_suite_id] = record
+    return by_check_suite
+
+
+def _validate_workflow_run_summary_hydration(
+    summary: Mapping[str, object],
+    hydrated: Mapping[str, object],
+    *,
+    label: str,
+    blockers: list[str],
+) -> None:
+    for key in (
+        "id",
+        "workflow_id",
+        "check_suite_id",
+        "run_number",
+        "run_attempt",
+        "head_sha",
+        "head_branch",
+        "event",
+        "path",
+    ):
+        if hydrated.get(key) != summary.get(key):
+            blockers.append(
+                f"{label}.{key} changed during workflow-run hydration: "
+                f"listed={summary.get(key)!r} "
+                f"hydrated={hydrated.get(key)!r}"
+            )
+    listed_repository = _mapping(summary.get("head_repository"))
+    hydrated_repository = _mapping(hydrated.get("head_repository"))
+    if hydrated_repository.get("id") != listed_repository.get("id"):
+        blockers.append(
+            f"{label}.head_repository.id changed during workflow-run hydration"
+        )
+
+
 def _validate_latest_provenance_check_run(
     adapter: GitHubSourceAdapter,
     check_runs: Sequence[Mapping[str, object]],
+    repository_workflow_runs: Sequence[Mapping[str, object]],
     *,
     repository: str,
     selected_run: Mapping[str, object],
@@ -9297,6 +9474,59 @@ def _validate_latest_provenance_check_run(
     provenance_checks: list[
         tuple[Mapping[str, object], Mapping[str, object], Mapping[str, object]]
     ] = []
+    mapped_checks: list[
+        tuple[str, Mapping[str, object], Mapping[str, object]]
+    ] = []
+    workflow_runs_by_check_suite = _index_repository_workflow_runs(
+        repository_workflow_runs,
+        expected_head_sha=expected_head_sha,
+        blockers=blockers,
+    )
+    repository_candidate_runs: list[Mapping[str, object]] = []
+    for index, repository_run in enumerate(repository_workflow_runs):
+        label = f"repository_workflow_run[{index}]"
+        if not _workflow_run_targets_candidate_namespace(
+            repository_run,
+            workflow_id=workflow_id,
+            workflow_path=workflow_path,
+            run_head_sha=expected_head_sha,
+            run_head_branch=expected_head_ref,
+            repository_id=repository_id,
+            label=label,
+            blockers=blockers,
+        ):
+            continue
+        if not _workflow_run_matches_candidate(
+            repository_run,
+            workflow_id=workflow_id,
+            workflow_path=workflow_path,
+            pull_id=pull_id,
+            pull_number=pull_number,
+            candidate_head_sha=expected_head_sha,
+            candidate_head_ref=expected_head_ref,
+            run_head_sha=expected_head_sha,
+            run_head_branch=expected_head_ref,
+            repository_id=repository_id,
+        ):
+            blockers.append(
+                f"{label} failed direct candidate binding"
+            )
+            continue
+        repository_candidate_runs.append(repository_run)
+    if repository_candidate_runs:
+        latest_repository_run = max(
+            repository_candidate_runs,
+            key=_workflow_run_order_key,
+        )
+        if _workflow_run_order_key(
+            latest_repository_run
+        ) != _workflow_run_order_key(selected_run):
+            blockers.append(
+                "selected provenance workflow run is not the latest "
+                "repository workflow run: "
+                f"selected={_workflow_run_order_key(selected_run)!r} "
+                f"latest={_workflow_run_order_key(latest_repository_run)!r}"
+            )
     seen_check_run_ids: set[int] = set()
     for index, record in enumerate(check_runs):
         label = f"latest_check_run[{index}]"
@@ -9342,25 +9572,72 @@ def _validate_latest_provenance_check_run(
             )
             continue
         seen_check_run_ids.add(check_run_id)
+        check_suite = _mapping(record.get("check_suite"))
+        check_suite_id = _server_positive_id(
+            check_suite.get("id"),
+            f"{label}.check_suite.id",
+            blockers,
+        )
+        if check_suite_id is None:
+            continue
+        mapped_run = workflow_runs_by_check_suite.get(check_suite_id)
+        if mapped_run is None:
+            blockers.append(
+                f"{label} has no workflow run for check suite {check_suite_id}"
+            )
+            continue
+        if not _workflow_run_targets_candidate_namespace(
+            mapped_run,
+            workflow_id=workflow_id,
+            workflow_path=workflow_path,
+            run_head_sha=expected_head_sha,
+            run_head_branch=expected_head_ref,
+            repository_id=repository_id,
+            label=f"{label}.listed_workflow_run",
+            blockers=blockers,
+        ):
+            continue
+        mapped_checks.append((label, record, mapped_run))
+    if len(mapped_checks) > MAX_AUTHORITATIVE_PROVENANCE_CHECK_RUNS:
+        blockers.append(
+            "authoritative provenance check-run set exceeds the safety limit"
+        )
+        return
+    for label, record, mapped_run in mapped_checks:
+        check_run_id = int(record["id"])
+        check_name = str(record["name"])
+        mapped_run_id = int(mapped_run["id"])
         if check_run_id == selected_job.get("id"):
             hydrated_job = selected_job
             hydrated_run = selected_run
         else:
             try:
                 hydrated_job = adapter.get_job(repository, check_run_id)
-                hydrated_run_id = _positive_id(
+                hydrated_job_run_id = _positive_id(
                     hydrated_job.get("run_id"),
                     "latest_check_run.job.run_id",
                 )
+                if hydrated_job_run_id != mapped_run_id:
+                    blockers.append(
+                        "latest check-run job is bound to a different "
+                        "repository workflow run"
+                    )
+                    continue
                 hydrated_run = adapter.get_workflow_run(
                     repository,
-                    hydrated_run_id,
+                    mapped_run_id,
                 )
             except Exception as exc:
                 blockers.append(
                     f"latest provenance check-run hydration failed: {exc}"
                 )
                 continue
+        _validate_workflow_run_summary_hydration(
+            mapped_run,
+            hydrated_run,
+            label=f"{label}.workflow_run",
+            blockers=blockers,
+        )
         if not _workflow_run_targets_candidate_namespace(
             hydrated_run,
             workflow_id=workflow_id,
@@ -9422,11 +9699,6 @@ def _validate_latest_provenance_check_run(
         candidate_checks.append(candidate)
         if check_name == AUTHORITATIVE_PROVENANCE_JOB_NAME:
             provenance_checks.append(candidate)
-    if len(candidate_checks) > 100:
-        blockers.append(
-            "authoritative provenance check-run set exceeds the safety limit"
-        )
-        return
     if not candidate_checks:
         blockers.append(
             "candidate head has no latest GitHub Actions check run bound to the "
@@ -9476,32 +9748,6 @@ def _validate_latest_provenance_check_run(
             "selected provenance workflow run is not the latest provenance "
             "check-run run"
         )
-
-
-def _workflow_run_summary_matches_candidate(
-    record: Mapping[str, object],
-    *,
-    workflow_id: int,
-    workflow_path: str,
-    run_head_sha: str | None,
-    run_head_branch: str | None,
-    repository_id: int,
-) -> bool:
-    try:
-        _positive_id(record.get("id"), "workflow_run.id")
-        _positive_id(record.get("run_number"), "workflow_run.run_number")
-        _positive_id(record.get("run_attempt"), "workflow_run.run_attempt")
-    except ValueError:
-        return False
-    if (
-        record.get("workflow_id") != workflow_id
-        or record.get("path") != workflow_path
-        or record.get("event") != AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT
-        or record.get("head_sha") != run_head_sha
-        or record.get("head_branch") != run_head_branch
-    ):
-        return False
-    return _mapping(record.get("head_repository")).get("id") == repository_id
 
 
 def _workflow_run_order_key(record: Mapping[str, object]) -> tuple[int, int, int]:
