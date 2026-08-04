@@ -72,6 +72,13 @@ AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH: Final[str] = (
 )
 AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT: Final[str] = "pull_request_target"
 AUTHORITATIVE_PROVENANCE_JOB_NAME: Final[str] = "pre-live-provenance"
+AUTHORITATIVE_PROVENANCE_WORKFLOW_JOB_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "pre-live-build",
+        "pre-live-producer-isolation",
+        AUTHORITATIVE_PROVENANCE_JOB_NAME,
+    }
+)
 GITHUB_ACTIONS_APP_ID: Final[int] = 15_368
 GITHUB_ACTIONS_APP_SLUG: Final[str] = "github-actions"
 AUTHORITATIVE_REPLAY_REF_PREFIX: Final[str] = "refs/tags/voi-pre-live-replay/"
@@ -898,6 +905,7 @@ class StdlibGitHubRESTAdapter:
             f"{self._repo_path(repository)}/actions/workflows/"
             f"{_positive_id(workflow_id, 'workflow_id')}/runs?{query}",
             "workflow_runs",
+            require_total_count=True,
         )
 
     def list_latest_check_runs(
@@ -916,6 +924,7 @@ class StdlibGitHubRESTAdapter:
         return self._get_paginated(
             f"{self._repo_path(repository)}/commits/{ref}/check-runs?{query}",
             "check_runs",
+            require_total_count=True,
         )
 
     def get_workflow(
@@ -1078,11 +1087,35 @@ class StdlibGitHubRESTAdapter:
         self,
         path: str,
         key: str,
+        *,
+        require_total_count: bool = False,
     ) -> Sequence[Mapping[str, object]]:
         records: list[Mapping[str, object]] = []
+        expected_total_count: int | None = None
         for page in range(1, 101):
             separator = "&" if "?" in path else "?"
             payload = self._get_json(f"{path}{separator}per_page=100&page={page}")
+            total_count = payload.get("total_count")
+            if (
+                isinstance(total_count, bool)
+                or not isinstance(total_count, int)
+                or total_count < 0
+            ):
+                if require_total_count or total_count is not None:
+                    raise GitHubSourceError(
+                        f"GitHub paginated response has invalid total_count "
+                        f"for {path}"
+                    )
+            elif expected_total_count is None:
+                expected_total_count = total_count
+            elif total_count != expected_total_count:
+                raise GitHubSourceError(
+                    f"GitHub pagination total_count changed for {path}"
+                )
+            if require_total_count and expected_total_count is None:
+                raise GitHubSourceError(
+                    f"GitHub paginated response missing total_count for {path}"
+                )
             page_records = payload.get(key)
             if not isinstance(page_records, list):
                 raise GitHubSourceError(
@@ -1094,7 +1127,22 @@ class StdlibGitHubRESTAdapter:
                         f"GitHub {key!r} list contains a non-object"
                     )
                 records.append(cast(Mapping[str, object], record))
+            if (
+                expected_total_count is not None
+                and len(records) > expected_total_count
+            ):
+                raise GitHubSourceError(
+                    f"GitHub pagination exceeds total_count for {path}"
+                )
             if len(page_records) < 100:
+                if (
+                    expected_total_count is not None
+                    and len(records) != expected_total_count
+                ):
+                    raise GitHubSourceError(
+                        f"GitHub pagination total_count mismatch for {path}: "
+                        f"expected={expected_total_count} actual={len(records)}"
+                    )
                 return records
         raise GitHubSourceError(f"GitHub pagination limit exceeded for {path}")
 
@@ -9278,6 +9326,8 @@ def _validate_latest_provenance_check_run(
                 f"{label}.head_sha mismatch: expected={expected_head_sha!r} "
                 f"actual={check_head_sha!r}"
             )
+            continue
+        if check_name not in AUTHORITATIVE_PROVENANCE_WORKFLOW_JOB_NAMES:
             continue
         check_run_id = _server_positive_id(
             record.get("id"),

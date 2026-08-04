@@ -326,6 +326,7 @@ class FakeGitHubAdapter:
         }
         self.workflow_runs = [dict(self.workflow_run)]
         self.workflow_run_details = {RUN_ID: self.workflow_run}
+        self.workflow_run_get_calls = 0
         self.workflow_run_queries: list[tuple[str, int, str, str]] = []
         self.workflow = {
             "id": WORKFLOW_ID,
@@ -374,6 +375,7 @@ class FakeGitHubAdapter:
             }
         ]
         self.job_details = {JOB_ID: self.job}
+        self.job_get_calls = 0
         self.artifacts = [{"id": ARTIFACT_ID, "name": "pre-live"}]
         self.artifact = {
             "id": ARTIFACT_ID,
@@ -455,6 +457,7 @@ class FakeGitHubAdapter:
         repository: str,
         run_id: int,
     ) -> dict[str, object]:
+        self.workflow_run_get_calls += 1
         record = self.workflow_run_details.get(run_id)
         if record is None:
             raise GitHubSourceError(f"unknown workflow run: {run_id}")
@@ -511,6 +514,7 @@ class FakeGitHubAdapter:
         repository: str,
         job_id: int,
     ) -> dict[str, object]:
+        self.job_get_calls += 1
         record = self.job_details.get(job_id)
         if record is None:
             raise GitHubSourceError(f"unknown workflow job: {job_id}")
@@ -1633,6 +1637,8 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         report = self.attest(adapter)
 
         self.assertTrue(report["ok"], report)
+        self.assertEqual(1, adapter.workflow_run_get_calls)
+        self.assertEqual(1, adapter.job_get_calls)
         self.assertEqual(HEAD_SHA, adapter.workflow_run["head_sha"])
         self.assertEqual(
             "issue-138-authenticated-prelive-provenance",
@@ -2384,6 +2390,8 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         report = self.attest(adapter)
 
         self.assertTrue(report["ok"], report)
+        self.assertEqual(1, adapter.workflow_run_get_calls)
+        self.assertEqual(1, adapter.job_get_calls)
 
     def test_rejects_empty_or_malformed_latest_check_run_results(self) -> None:
         mutations = {
@@ -2819,6 +2827,67 @@ class GitHubSourceAttestationTest(unittest.TestCase):
 
 
 class StdlibGitHubRESTAdapterTest(unittest.TestCase):
+    def test_rejects_incomplete_authority_pagination(self) -> None:
+        cases = {
+            "workflow runs missing count": (
+                {"workflow_runs": [{"id": RUN_ID}]},
+                lambda adapter: adapter.list_workflow_runs(
+                    REPOSITORY,
+                    WORKFLOW_ID,
+                    branch="main",
+                    event=AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
+                ),
+            ),
+            "workflow runs count mismatch": (
+                {
+                    "total_count": 2,
+                    "workflow_runs": [{"id": RUN_ID}],
+                },
+                lambda adapter: adapter.list_workflow_runs(
+                    REPOSITORY,
+                    WORKFLOW_ID,
+                    branch="main",
+                    event=AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
+                ),
+            ),
+            "check runs missing count": (
+                {"check_runs": [{"id": JOB_ID}]},
+                lambda adapter: adapter.list_latest_check_runs(
+                    REPOSITORY,
+                    HEAD_SHA,
+                ),
+            ),
+            "check runs count mismatch": (
+                {
+                    "total_count": 2,
+                    "check_runs": [{"id": JOB_ID}],
+                },
+                lambda adapter: adapter.list_latest_check_runs(
+                    REPOSITORY,
+                    HEAD_SHA,
+                ),
+            ),
+        }
+        for name, (payload, call) in cases.items():
+            with self.subTest(name=name):
+                def urlopen(
+                    request: object,
+                    *,
+                    timeout: float,
+                ) -> FakeHTTPResponse:
+                    return FakeHTTPResponse(json.dumps(payload).encode())
+
+                adapter = StdlibGitHubRESTAdapter(
+                    token="fixture-token",
+                    urlopen=urlopen,
+                )
+
+                with self.assertRaisesRegex(
+                    GitHubSourceError,
+                    "total_count",
+                ):
+                    call(adapter)
+
     def test_reads_all_required_rest_resources_and_artifact_bytes(self) -> None:
         requested: list[tuple[str, str | None, str, bytes | None]] = []
         replay_ref = AUTHORITATIVE_REPLAY_REF_PREFIX + ("1" * 64)
