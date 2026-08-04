@@ -362,6 +362,16 @@ class FakeGitHubAdapter:
             "started_at": "2026-07-30T00:01:00Z",
             "completed_at": "2026-07-30T00:09:00Z",
         }
+        self.latest_check_runs = [
+            {
+                "id": JOB_ID,
+                "name": AUTHORITATIVE_PROVENANCE_JOB_NAME,
+                "head_sha": head_sha,
+                "status": "completed",
+                "conclusion": "success",
+                "app": {"id": 15_368, "slug": "github-actions"},
+            }
+        ]
         self.artifacts = [{"id": ARTIFACT_ID, "name": "pre-live"}]
         self.artifact = {
             "id": ARTIFACT_ID,
@@ -470,6 +480,15 @@ class FakeGitHubAdapter:
         workflow_id: int,
     ) -> dict[str, object]:
         return self._result("workflow", self.workflow)
+
+    def list_latest_check_runs(
+        self,
+        repository: str,
+        ref: str,
+        *,
+        check_name: str,
+    ) -> list[dict[str, object]]:
+        return self._result("latest_check_runs", self.latest_check_runs)
 
     def get_workflow_run_attempt(
         self,
@@ -1880,6 +1899,26 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         self.assertEqual(RUN_ID, report["run_id"])
         self.assertEqual("in_progress", report["job_status"])
 
+    def test_rejects_completed_emission_missing_from_workflow_list(self) -> None:
+        adapter = FakeGitHubAdapter()
+        adapter.workflow_runs.clear()
+
+        report = attest_github_actions_emission_context(
+            adapter,
+            repository=REPOSITORY,
+            run_id=RUN_ID,
+            run_attempt=RUN_ATTEMPT,
+            expected_head_sha=HEAD_SHA,
+            workflow_ref=WORKFLOW_REF,
+            workflow_sha=WORKFLOW_SHA,
+        )
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn(
+            "no applicable workflow run exists",
+            " ".join(report["blockers"]),
+        )
+
     def test_rejects_completed_source_missing_from_workflow_list(self) -> None:
         adapter = FakeGitHubAdapter()
         adapter.workflow_runs.clear()
@@ -2115,6 +2154,27 @@ class GitHubSourceAttestationTest(unittest.TestCase):
 
         self.assertFalse(report["ok"], report)
         self.assertIn("stale", " ".join(report["blockers"]))
+        self.assertEqual(0, adapter.download_calls)
+
+    def test_rejects_stale_success_when_workflow_listing_omits_newer_run(
+        self,
+    ) -> None:
+        adapter = FakeGitHubAdapter()
+        adapter.latest_check_runs[0].update(
+            {
+                "id": JOB_ID + 1,
+                "status": "in_progress",
+                "conclusion": None,
+            }
+        )
+
+        report = self.attest(adapter)
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn(
+            "not the latest check run",
+            " ".join(report["blockers"]),
+        )
         self.assertEqual(0, adapter.download_calls)
 
     def test_hydrates_newer_run_when_list_record_omits_pull_requests(self) -> None:
@@ -2478,6 +2538,10 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
                 "total_count": 1,
                 "workflow_runs": [{"id": RUN_ID}],
             },
+            f"/repos/{REPOSITORY}/commits/{HEAD_SHA}/check-runs": {
+                "total_count": 1,
+                "check_runs": [{"id": JOB_ID}],
+            },
             (f"/repos/{REPOSITORY}/actions/runs/{RUN_ID}/attempts/{RUN_ATTEMPT}"): {
                 "id": RUN_ID,
                 "run_attempt": RUN_ATTEMPT,
@@ -2588,6 +2652,14 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
             )[0]["id"],
         )
         self.assertEqual(
+            JOB_ID,
+            adapter.list_latest_check_runs(
+                REPOSITORY,
+                HEAD_SHA,
+                check_name=AUTHORITATIVE_PROVENANCE_JOB_NAME,
+            )[0]["id"],
+        )
+        self.assertEqual(
             RUN_ATTEMPT,
             adapter.get_workflow_run_attempt(
                 REPOSITORY,
@@ -2650,7 +2722,7 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
             ruleset_details[502],
             adapter.get_repository_ruleset(REPOSITORY, 502),
         )
-        self.assertEqual(20, len(requested))
+        self.assertEqual(21, len(requested))
         self.assertTrue(
             all(header == "Bearer fixture-token" for _, header, _, _ in requested)
         )

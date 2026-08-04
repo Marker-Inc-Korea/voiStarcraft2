@@ -72,6 +72,8 @@ AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH: Final[str] = (
 )
 AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT: Final[str] = "pull_request_target"
 AUTHORITATIVE_PROVENANCE_JOB_NAME: Final[str] = "pre-live-provenance"
+GITHUB_ACTIONS_APP_ID: Final[int] = 15_368
+GITHUB_ACTIONS_APP_SLUG: Final[str] = "github-actions"
 AUTHORITATIVE_REPLAY_REF_PREFIX: Final[str] = "refs/tags/voi-pre-live-replay/"
 AUTHORITATIVE_REPLAY_REF_PATTERN: Final[str] = "refs/tags/voi-pre-live-replay/**"
 AUTHORITATIVE_REPLAY_CREATE_RULESET_NAME: Final[str] = "voi-pre-live-replay-create-only"
@@ -562,6 +564,14 @@ class GitHubSourceAdapter(Protocol):
         event: str,
     ) -> Sequence[Mapping[str, object]]: ...
 
+    def list_latest_check_runs(
+        self,
+        repository: str,
+        ref: str,
+        *,
+        check_name: str,
+    ) -> Sequence[Mapping[str, object]]: ...
+
     def get_workflow(
         self,
         repository: str,
@@ -890,6 +900,30 @@ class StdlibGitHubRESTAdapter:
             f"{self._repo_path(repository)}/actions/workflows/"
             f"{_positive_id(workflow_id, 'workflow_id')}/runs?{query}",
             "workflow_runs",
+        )
+
+    def list_latest_check_runs(
+        self,
+        repository: str,
+        ref: str,
+        *,
+        check_name: str,
+    ) -> Sequence[Mapping[str, object]]:
+        if not _SHA40_RE.fullmatch(ref):
+            raise ValueError("check-run ref must be an exact lowercase SHA")
+        if check_name != AUTHORITATIVE_PROVENANCE_JOB_NAME:
+            raise ValueError(
+                "check_name must identify the authoritative provenance job"
+            )
+        query = urllib.parse.urlencode(
+            {
+                "check_name": check_name,
+                "filter": "latest",
+            }
+        )
+        return self._get_paginated(
+            f"{self._repo_path(repository)}/commits/{ref}/check-runs?{query}",
+            "check_runs",
         )
 
     def get_workflow(
@@ -1596,6 +1630,11 @@ def attest_github_source(
             branch=lookup_head_ref,
             event=AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
         )
+        latest_check_runs = adapter.list_latest_check_runs(
+            normalized_repository,
+            expected_head_sha,
+            check_name=AUTHORITATIVE_PROVENANCE_JOB_NAME,
+        )
         attempt = adapter.get_workflow_run_attempt(
             normalized_repository,
             run_id,
@@ -2071,6 +2110,12 @@ def attest_github_source(
             "workflow job did not complete successfully: "
             f"status={job_status!r} conclusion={job_conclusion!r}"
         )
+    _validate_latest_provenance_check_run(
+        latest_check_runs,
+        selected_job=job,
+        expected_head_sha=expected_head_sha,
+        blockers=blockers,
+    )
     job_started_at = _server_utc(job, "started_at", "job", blockers)
     job_completed_at = _server_utc(job, "completed_at", "job", blockers)
     if (
@@ -9106,22 +9151,90 @@ def _eligible_workflow_runs(
             )
             continue
         candidates[run_id] = record
-    if allow_unlisted_current_run and _workflow_run_matches_candidate(
-        current_run,
-        workflow_id=workflow_id,
-        workflow_path=workflow_path,
-        pull_id=pull_id,
-        pull_number=pull_number,
-        candidate_head_sha=candidate_head_sha,
-        candidate_head_ref=candidate_head_ref,
-        run_head_sha=run_head_sha,
-        run_head_branch=run_head_branch,
-        repository_id=repository_id,
+    if (
+        allow_unlisted_current_run
+        and current_run.get("status") == "in_progress"
+        and current_run.get("conclusion") is None
+        and _workflow_run_matches_candidate(
+            current_run,
+            workflow_id=workflow_id,
+            workflow_path=workflow_path,
+            pull_id=pull_id,
+            pull_number=pull_number,
+            candidate_head_sha=candidate_head_sha,
+            candidate_head_ref=candidate_head_ref,
+            run_head_sha=run_head_sha,
+            run_head_branch=run_head_branch,
+            repository_id=repository_id,
+        )
     ):
         current_id = current_run.get("id")
         if isinstance(current_id, int) and not isinstance(current_id, bool):
             candidates[current_id] = current_run
     return list(candidates.values())
+
+
+def _validate_latest_provenance_check_run(
+    check_runs: Sequence[Mapping[str, object]],
+    *,
+    selected_job: Mapping[str, object],
+    expected_head_sha: str,
+    blockers: list[str],
+) -> None:
+    authenticated: list[Mapping[str, object]] = []
+    for record in check_runs:
+        check_run_id = _server_positive_id(
+            record.get("id"),
+            "latest_check_run.id",
+            blockers,
+        )
+        if record.get("name") != AUTHORITATIVE_PROVENANCE_JOB_NAME:
+            blockers.append(
+                "latest check-run name mismatch: "
+                f"expected={AUTHORITATIVE_PROVENANCE_JOB_NAME!r} "
+                f"actual={record.get('name')!r}"
+            )
+        if record.get("head_sha") != expected_head_sha:
+            blockers.append(
+                "latest check-run head SHA mismatch: "
+                f"expected={expected_head_sha} "
+                f"actual={record.get('head_sha')!r}"
+            )
+        app = _mapping(record.get("app"))
+        if (
+            app.get("id") != GITHUB_ACTIONS_APP_ID
+            or app.get("slug") != GITHUB_ACTIONS_APP_SLUG
+        ):
+            blockers.append(
+                "latest check-run is not owned by the GitHub Actions app"
+            )
+        if (
+            check_run_id is not None
+            and record.get("name") == AUTHORITATIVE_PROVENANCE_JOB_NAME
+            and record.get("head_sha") == expected_head_sha
+            and app.get("id") == GITHUB_ACTIONS_APP_ID
+            and app.get("slug") == GITHUB_ACTIONS_APP_SLUG
+        ):
+            authenticated.append(record)
+    if len(authenticated) != 1:
+        blockers.append(
+            "candidate head must expose exactly one latest authenticated "
+            f"provenance check run: actual={len(authenticated)}"
+        )
+        return
+    latest = authenticated[0]
+    selected_job_id = selected_job.get("id")
+    if latest.get("id") != selected_job_id:
+        blockers.append(
+            "selected provenance job is not the latest check run for the "
+            f"candidate head: selected={selected_job_id!r} "
+            f"latest={latest.get('id')!r}"
+        )
+    for key in ("name", "head_sha", "status", "conclusion"):
+        if latest.get(key) != selected_job.get(key):
+            blockers.append(
+                f"latest check-run {key} differs from the selected workflow job"
+            )
 
 
 def _workflow_run_summary_matches_candidate(
