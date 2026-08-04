@@ -1,0 +1,254 @@
+name: pre-live-provenance
+
+on:
+  pull_request_target:
+    branches:
+      - main
+    types:
+      - opened
+      - reopened
+      - synchronize
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pre-live-provenance-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pre-live-build:
+    if: >-
+      github.event.pull_request.head.repo.id == github.event.repository.id
+    name: pre-live-build
+    runs-on: macos-14
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      ROOT_DIR: /private/tmp/voi-micromachine-runtime
+      BUILD_JOBS: "3"
+      VOI_RELEASE_COMMIT: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          path: candidate
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Build exact MicroMachine integration without credentials
+        working-directory: candidate
+        run: integrations/micromachine/scripts/build_macos_local.sh
+      - name: Archive exact MicroMachine runtime
+        run: |
+          tar -czf "${RUNNER_TEMP}/pre-live-build-runtime.tar.gz" \
+            -C "${ROOT_DIR}" MicroMachine s2client-api
+      - name: Upload exact MicroMachine runtime
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pre-live-build-runtime
+          path: ${{ runner.temp }}/pre-live-build-runtime.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
+  pre-live-producer-isolation:
+    if: >-
+      github.event.pull_request.head.repo.id == github.event.repository.id
+    name: pre-live-producer-isolation
+    runs-on: macos-14
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      VOI_PRODUCER_UID: "65001"
+      VOI_PRODUCER_GID: "65001"
+      VOI_TRUSTED_VERIFIER_COMMIT: fd59c8dd82fb42d92396528d8fefcee86649b5c9
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          path: trusted-verifier
+          persist-credentials: false
+          ref: fd59c8dd82fb42d92396528d8fefcee86649b5c9
+      - name: Verify immutable dedicated producer isolation
+        working-directory: trusted-verifier
+        run: |
+          PYTHON_EXECUTABLE="$(python3 -c 'import os, sys; print(os.path.realpath(sys.executable))')"
+          sudo env -u GITHUB_TOKEN -u GH_TOKEN \
+            PYTHONDONTWRITEBYTECODE="1" \
+            PYTHONPATH="${PWD}" \
+            VOI_PRODUCER_UID="${VOI_PRODUCER_UID}" \
+            VOI_PRODUCER_GID="${VOI_PRODUCER_GID}" \
+            "${PYTHON_EXECUTABLE}" -W error::ResourceWarning -B \
+              tests/test_micromachine_pre_live_provenance.py \
+              -k dedicated_producer_uid
+
+  pre-live-provenance:
+    if: >-
+      github.event.pull_request.head.repo.id == github.event.repository.id
+    needs:
+      - pre-live-build
+      - pre-live-producer-isolation
+    name: pre-live-provenance
+    runs-on: macos-14
+    timeout-minutes: 120
+    permissions:
+      actions: read
+      contents: read
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      ROOT_DIR: /private/tmp/voi-micromachine-runtime
+      BUILD_JOBS: "3"
+      VOI_PRODUCER_UID: "65001"
+      VOI_PRODUCER_GID: "65001"
+      VOI_PRODUCER_TIMEOUT_SECONDS: "1800"
+      VOI_VERIFIER_TIMEOUT_SECONDS: "4800"
+      VOI_CANDIDATE_WORKSPACE: ${{ github.workspace }}/candidate
+      VOI_TRUSTED_VERIFIER_WORKSPACE: ${{ github.workspace }}/trusted-verifier
+      VOI_TRUSTED_VERIFIER_COMMIT: fd59c8dd82fb42d92396528d8fefcee86649b5c9
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          path: trusted-verifier
+          persist-credentials: false
+          ref: fd59c8dd82fb42d92396528d8fefcee86649b5c9
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          path: candidate
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Download exact MicroMachine runtime
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: pre-live-build-runtime
+          path: ${{ runner.temp }}/pre-live-build
+      - name: Restore exact MicroMachine runtime
+        run: |
+          mkdir -p "${ROOT_DIR}"
+          tar -xzf \
+            "${RUNNER_TEMP}/pre-live-build/pre-live-build-runtime.tar.gz" \
+            -C "${ROOT_DIR}"
+      - name: Transfer inputs and emit canonical authenticated provenance bundle
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          VOI_RELEASE_COMMIT: ${{ github.event.pull_request.head.sha }}
+        run: |
+          PYTHON_EXECUTABLE="$(
+            python3 -I -B -S -c \
+              'import os, sys; print(os.path.realpath(sys.executable))'
+          )"
+          cleanup_verifier() {
+            status=$?
+            trap - EXIT INT TERM
+            set +e
+            sudo env -u GITHUB_TOKEN -u GH_TOKEN \
+              "${PYTHON_EXECUTABLE}" -I -B -S -c '
+          import os
+          import signal
+          import subprocess
+          import sys
+          import time
+
+          uid = int(sys.argv[1])
+          deadline = time.monotonic() + 600.0
+          while True:
+              remaining = deadline - time.monotonic()
+              if remaining <= 0:
+                  raise SystemExit("dedicated producer UID cleanup timed out")
+              observed = subprocess.run(
+                  ["/bin/ps", "-axo", "uid=,pid="],
+                  stdin=subprocess.DEVNULL,
+                  check=False,
+                  capture_output=True,
+                  text=True,
+                  timeout=min(5.0, remaining),
+                  env={"PATH": "/usr/bin:/bin"},
+              )
+              if observed.returncode != 0:
+                  raise SystemExit("could not enumerate dedicated producer UID")
+              process_ids = []
+              for line in observed.stdout.splitlines():
+                  fields = line.split()
+                  if len(fields) != 2:
+                      raise SystemExit(
+                          "malformed dedicated producer UID process list"
+                      )
+                  process_uid, process_id = (int(value) for value in fields)
+                  if process_uid == uid and process_id > 1:
+                      process_ids.append(process_id)
+              if not process_ids:
+                  break
+              for process_id in process_ids:
+                  try:
+                      os.kill(process_id, signal.SIGKILL)
+                  except ProcessLookupError:
+                      pass
+              time.sleep(
+                  min(0.02, max(0.0, deadline - time.monotonic()))
+              )
+          ' "${VOI_PRODUCER_UID}" </dev/null
+            cleanup_status=$?
+            if [ "${cleanup_status}" -ne 0 ]; then
+              status=1
+            else
+              sudo env -u GITHUB_TOKEN -u GH_TOKEN \
+                /usr/sbin/chown -RP "$(id -u):$(id -g)" \
+                "${GITHUB_WORKSPACE}" </dev/null || status=1
+            fi
+            exit "${status}"
+          }
+          trap cleanup_verifier EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          sudo chown -RP 0:0 \
+            "${VOI_CANDIDATE_WORKSPACE}" \
+            "${VOI_TRUSTED_VERIFIER_WORKSPACE}" \
+            "${ROOT_DIR}"
+          sudo chmod 0755 \
+            "${VOI_CANDIDATE_WORKSPACE}" \
+            "${VOI_TRUSTED_VERIFIER_WORKSPACE}" \
+            "${ROOT_DIR}"
+          mkdir -p "${RUNNER_TEMP}/pre-live"
+          VOI_NODE_EXECUTABLE="$(
+            "${PYTHON_EXECUTABLE}" -I -B -S -c \
+              'import os, shutil; print(os.path.realpath(shutil.which("node") or ""))'
+          )"
+          cd "${VOI_TRUSTED_VERIFIER_WORKSPACE}"
+          printf '%s' "${GITHUB_TOKEN}" | sudo env -u GITHUB_TOKEN \
+            GITHUB_API_URL="${GITHUB_API_URL}" \
+            GITHUB_REPOSITORY="${GITHUB_REPOSITORY}" \
+            GITHUB_RUN_ATTEMPT="${GITHUB_RUN_ATTEMPT}" \
+            GITHUB_RUN_ID="${GITHUB_RUN_ID}" \
+            GITHUB_WORKFLOW_REF="${GITHUB_WORKFLOW_REF}" \
+            GITHUB_WORKFLOW_SHA="${GITHUB_WORKFLOW_SHA}" \
+            PYTHONDONTWRITEBYTECODE="1" \
+            VOI_CANDIDATE_WORKSPACE="${VOI_CANDIDATE_WORKSPACE}" \
+            VOI_NODE_EXECUTABLE="${VOI_NODE_EXECUTABLE}" \
+            VOI_PRODUCER_GID="${VOI_PRODUCER_GID}" \
+            VOI_PRODUCER_UID="${VOI_PRODUCER_UID}" \
+            VOI_PRODUCER_TIMEOUT_SECONDS="${VOI_PRODUCER_TIMEOUT_SECONDS}" \
+            VOI_RELEASE_COMMIT="${VOI_RELEASE_COMMIT}" \
+            VOI_VERIFIER_TIMEOUT_SECONDS="${VOI_VERIFIER_TIMEOUT_SECONDS}" \
+            VOI_TRUSTED_VERIFIER_COMMIT="${VOI_TRUSTED_VERIFIER_COMMIT}" \
+            VOI_TRUSTED_VERIFIER_WORKSPACE="${VOI_TRUSTED_VERIFIER_WORKSPACE}" \
+            "${PYTHON_EXECUTABLE}" -B -m starcraft_commander.micromachine_pre_live_provenance \
+            --emit-github-actions-bundle \
+            "${RUNNER_TEMP}/pre-live/pre-live-provenance.zip" \
+            "${ROOT_DIR}/MicroMachine/build-latest-api/voi_build_identity.json" \
+            "${ROOT_DIR}/MicroMachine/build-latest-api"
+          sudo chown "$(id -u):$(id -g)" \
+            "${RUNNER_TEMP}/pre-live/pre-live-provenance.zip"
+      - name: Upload canonical authenticated provenance bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pre-live
+          path: ${{ runner.temp }}/pre-live/pre-live-provenance.zip
+          compression-level: 0
+          if-no-files-found: error
+          overwrite: true
