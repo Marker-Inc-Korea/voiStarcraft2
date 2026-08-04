@@ -1616,29 +1616,25 @@ def _run_linux_sealed_native_command(
 ) -> subprocess.CompletedProcess[bytes]:
     import fcntl
 
-    required_os_names = (
-        "memfd_create",
-        "MFD_CLOEXEC",
-        "MFD_ALLOW_SEALING",
-    )
-    required_fcntl_names = (
-        "F_ADD_SEALS",
-        "F_GET_SEALS",
-        "F_SEAL_GROW",
-        "F_SEAL_SEAL",
-        "F_SEAL_SHRINK",
-        "F_SEAL_WRITE",
-    )
     if (
-        any(not hasattr(os, name) for name in required_os_names)
-        or any(not hasattr(fcntl, name) for name in required_fcntl_names)
+        not hasattr(os, "memfd_create")
         or not Path("/proc/self/fd").is_dir()
     ):
         raise OSError("sealed descriptor-native execution is unavailable")
+    mfd_cloexec = int(getattr(os, "MFD_CLOEXEC", 0x0001))
+    mfd_allow_sealing = int(
+        getattr(os, "MFD_ALLOW_SEALING", 0x0002)
+    )
+    f_add_seals = int(getattr(fcntl, "F_ADD_SEALS", 1033))
+    f_get_seals = int(getattr(fcntl, "F_GET_SEALS", 1034))
+    f_seal_seal = int(getattr(fcntl, "F_SEAL_SEAL", 0x0001))
+    f_seal_shrink = int(getattr(fcntl, "F_SEAL_SHRINK", 0x0002))
+    f_seal_grow = int(getattr(fcntl, "F_SEAL_GROW", 0x0004))
+    f_seal_write = int(getattr(fcntl, "F_SEAL_WRITE", 0x0008))
 
     writable_descriptor: int | None = os.memfd_create(
         "voi-native-executable",
-        flags=os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING,
+        flags=mfd_cloexec | mfd_allow_sealing,
     )
     executable_descriptor: int | None = None
     process: subprocess.Popen[bytes] | None = None
@@ -1672,18 +1668,18 @@ def _run_linux_sealed_native_command(
             )
 
         required_seals = (
-            fcntl.F_SEAL_GROW
-            | fcntl.F_SEAL_SEAL
-            | fcntl.F_SEAL_SHRINK
-            | fcntl.F_SEAL_WRITE
+            f_seal_grow
+            | f_seal_seal
+            | f_seal_shrink
+            | f_seal_write
         )
         fcntl.fcntl(
             writable_descriptor,
-            fcntl.F_ADD_SEALS,
+            f_add_seals,
             required_seals,
         )
         observed_seals = int(
-            fcntl.fcntl(writable_descriptor, fcntl.F_GET_SEALS)
+            fcntl.fcntl(writable_descriptor, f_get_seals)
         )
         if observed_seals & required_seals != required_seals:
             raise OSError("one-shot native executable sealing failed")

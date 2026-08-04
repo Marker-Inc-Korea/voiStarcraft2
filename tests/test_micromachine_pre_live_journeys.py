@@ -229,15 +229,15 @@ class NativeExecutableLaunchTest(unittest.TestCase):
                 inherited_descriptors,
             )
             required_seals = (
-                fcntl.F_SEAL_GROW
-                | fcntl.F_SEAL_SEAL
-                | fcntl.F_SEAL_SHRINK
-                | fcntl.F_SEAL_WRITE
+                int(getattr(fcntl, "F_SEAL_GROW", 0x0004))
+                | int(getattr(fcntl, "F_SEAL_SEAL", 0x0001))
+                | int(getattr(fcntl, "F_SEAL_SHRINK", 0x0002))
+                | int(getattr(fcntl, "F_SEAL_WRITE", 0x0008))
             )
             observed_seals = int(
                 fcntl.fcntl(
                     inherited_descriptors[0],
-                    fcntl.F_GET_SEALS,
+                    int(getattr(fcntl, "F_GET_SEALS", 1034)),
                 )
             )
             self.assertEqual(
