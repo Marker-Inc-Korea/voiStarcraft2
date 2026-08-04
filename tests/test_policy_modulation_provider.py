@@ -3,6 +3,7 @@
 import unittest
 
 from starcraft_commander.policy_modulation import (
+    MICROMACHINE_CANONICAL_UNIT_FORM_TOKENS,
     MICROMACHINE_TACTICAL_ABILITIES,
     PolicyModulationSource,
     PolicyOverrideLevel,
@@ -1039,7 +1040,13 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
                 self.assertTrue(vector.tactical_task.production_targets)
                 self.assertTrue(vector.production_plan.allow_prerequisite_buildings)
                 self.assertEqual(
-                    set(vector.tactical_task.unit_classes),
+                    {
+                        MICROMACHINE_CANONICAL_UNIT_FORM_TOKENS.get(
+                            unit_type,
+                            unit_type,
+                        )
+                        for unit_type in vector.tactical_task.unit_classes
+                    },
                     {
                         role.unit_type
                         for role in vector.unit_roles
@@ -2026,6 +2033,116 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
                 self.assertEqual(
                     [transformed],
                     payload["tactical_task"]["unit_classes"],
+                )
+                self.assertIn(
+                    base,
+                    payload["tactical_task"]["production_targets"],
+                )
+                self.assertIn(
+                    base,
+                    payload["production"]["queue_biases"],
+                )
+                self.assertIn(
+                    base,
+                    payload["tech"]["unit_biases"],
+                )
+                self.assertNotIn(
+                    transformed,
+                    payload["tactical_task"]["production_targets"],
+                )
+                self.assertNotIn(
+                    transformed,
+                    payload["production"]["queue_biases"],
+                )
+                self.assertNotIn(
+                    transformed,
+                    payload["tech"]["unit_biases"],
+                )
+
+    def test_transformed_ability_operations_keep_exact_caster_form(
+        self,
+    ) -> None:
+        caster_forms = {
+            "hellion_mode": ("TERRAN_HELLIONTANK", "TERRAN_HELLION"),
+            "widow_mine_unburrow": (
+                "TERRAN_WIDOWMINEBURROWED",
+                "TERRAN_WIDOWMINE",
+            ),
+            "thor_explosive_mode": ("TERRAN_THORAP", "TERRAN_THOR"),
+            "unsiege": ("TERRAN_SIEGETANKSIEGED", "TERRAN_SIEGETANK"),
+            "viking_fighter_mode": (
+                "TERRAN_VIKINGASSAULT",
+                "TERRAN_VIKINGFIGHTER",
+            ),
+            "liberator_fighter_mode": (
+                "TERRAN_LIBERATORAG",
+                "TERRAN_LIBERATOR",
+            ),
+        }
+
+        for ability, (transformed, base) in caster_forms.items():
+            with self.subTest(ability=ability):
+                result = compile_policy_modulation_provider_output(
+                    {
+                        "source": "llm",
+                        "goal": f"use {ability}",
+                        "operations": [
+                            {
+                                "operation_id": f"ability-{ability}",
+                                "goal": f"use {ability}",
+                                "tactical_task": {
+                                    "task_type": "execute_ability",
+                                    "ability": ability,
+                                    "unit_classes": [transformed],
+                                    "min_units": 1,
+                                    "max_units": 1,
+                                },
+                                "composition_requirements": [
+                                    {
+                                        "unit_type": transformed,
+                                        "count": 1,
+                                        "role": "support",
+                                    }
+                                ],
+                                "unit_roles": [
+                                    {
+                                        "unit_type": transformed,
+                                        "role": "support",
+                                        "priority": 0.5,
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                )
+
+                self.assertTrue(result.ok, result.to_dict())
+                payload = result.to_dict()["vector"]
+                assert isinstance(payload, dict)
+                operation = payload["operations"][0]
+                self.assertEqual([], operation["composition_requirements"])
+                self.assertEqual(
+                    [transformed],
+                    operation["tactical_task"]["unit_classes"],
+                )
+                self.assertIn(
+                    base,
+                    operation["tactical_task"]["production_targets"],
+                )
+                self.assertNotIn(
+                    transformed,
+                    operation["tactical_task"]["production_targets"],
+                )
+                self.assertEqual(
+                    [
+                        {
+                            "unit_type": base,
+                            "role": "execute_ability",
+                            "priority": 0.9,
+                            "ability_policy": ability,
+                        }
+                    ],
+                    operation["unit_roles"],
                 )
 
     def test_rejects_raw_actions_without_throwing(self) -> None:
