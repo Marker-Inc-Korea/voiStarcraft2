@@ -568,8 +568,6 @@ class GitHubSourceAdapter(Protocol):
         self,
         repository: str,
         ref: str,
-        *,
-        check_name: str,
     ) -> Sequence[Mapping[str, object]]: ...
 
     def get_workflow(
@@ -906,19 +904,12 @@ class StdlibGitHubRESTAdapter:
         self,
         repository: str,
         ref: str,
-        *,
-        check_name: str,
     ) -> Sequence[Mapping[str, object]]:
         if not _SHA40_RE.fullmatch(ref):
             raise ValueError("check-run ref must be an exact lowercase SHA")
-        if check_name != AUTHORITATIVE_PROVENANCE_JOB_NAME:
-            raise ValueError(
-                "check_name must identify the authoritative provenance job"
-            )
         query = urllib.parse.urlencode(
             {
                 "app_id": GITHUB_ACTIONS_APP_ID,
-                "check_name": check_name,
                 "filter": "latest",
             }
         )
@@ -1634,7 +1625,6 @@ def attest_github_source(
         latest_check_runs = adapter.list_latest_check_runs(
             normalized_repository,
             expected_head_sha,
-            check_name=AUTHORITATIVE_PROVENANCE_JOB_NAME,
         )
         attempt = adapter.get_workflow_run_attempt(
             normalized_repository,
@@ -9098,14 +9088,48 @@ def _workflow_run_targets_candidate_namespace(
     run_head_sha: str | None,
     run_head_branch: str | None,
     repository_id: int,
+    label: str,
+    blockers: list[str],
 ) -> bool:
+    observed_workflow_id = _server_positive_id(
+        record.get("workflow_id"),
+        f"{label}.workflow_id",
+        blockers,
+    )
+    observed_path = _server_string(record, "path", label, blockers)
+    observed_event = _server_string(record, "event", label, blockers)
+    observed_head_sha = _server_string(record, "head_sha", label, blockers)
+    observed_head_branch = _server_string(
+        record,
+        "head_branch",
+        label,
+        blockers,
+    )
+    head_repository = _mapping(record.get("head_repository"))
+    observed_repository_id = _server_positive_id(
+        head_repository.get("id"),
+        f"{label}.head_repository.id",
+        blockers,
+    )
+    if (
+        observed_workflow_id is None
+        or observed_path is None
+        or observed_event is None
+        or observed_head_sha is None
+        or observed_head_branch is None
+        or observed_repository_id is None
+    ):
+        return False
+    if not _SHA40_RE.fullmatch(observed_head_sha):
+        blockers.append(f"{label}.head_sha is not an exact lowercase SHA")
+        return False
     return (
-        record.get("workflow_id") == workflow_id
-        and record.get("path") == workflow_path
-        and record.get("event") == AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT
-        and record.get("head_sha") == run_head_sha
-        and record.get("head_branch") == run_head_branch
-        and _mapping(record.get("head_repository")).get("id") == repository_id
+        observed_workflow_id == workflow_id
+        and observed_path == workflow_path
+        and observed_event == AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT
+        and observed_head_sha == run_head_sha
+        and observed_head_branch == run_head_branch
+        and observed_repository_id == repository_id
     )
 
 
@@ -9222,22 +9246,45 @@ def _validate_latest_provenance_check_run(
     if len(check_runs) > 100:
         blockers.append("latest provenance check-run set exceeds the safety limit")
         return
-    authenticated: list[
+    candidate_checks: list[
+        tuple[Mapping[str, object], Mapping[str, object], Mapping[str, object]]
+    ] = []
+    provenance_checks: list[
         tuple[Mapping[str, object], Mapping[str, object], Mapping[str, object]]
     ] = []
     seen_check_run_ids: set[int] = set()
-    for record in check_runs:
+    for index, record in enumerate(check_runs):
+        label = f"latest_check_run[{index}]"
         app = _mapping(record.get("app"))
+        app_id = _server_positive_id(
+            app.get("id"),
+            f"{label}.app.id",
+            blockers,
+        )
+        app_slug = _server_string(app, "slug", f"{label}.app", blockers)
+        check_name = _server_string(record, "name", label, blockers)
+        check_head_sha = _server_string(record, "head_sha", label, blockers)
         if (
-            app.get("id") != GITHUB_ACTIONS_APP_ID
-            or app.get("slug") != GITHUB_ACTIONS_APP_SLUG
-            or record.get("name") != AUTHORITATIVE_PROVENANCE_JOB_NAME
-            or record.get("head_sha") != expected_head_sha
+            app_id is None
+            or app_slug is None
+            or check_name is None
+            or check_head_sha is None
         ):
+            continue
+        if (
+            app_id != GITHUB_ACTIONS_APP_ID
+            or app_slug != GITHUB_ACTIONS_APP_SLUG
+        ):
+            continue
+        if check_head_sha != expected_head_sha:
+            blockers.append(
+                f"{label}.head_sha mismatch: expected={expected_head_sha!r} "
+                f"actual={check_head_sha!r}"
+            )
             continue
         check_run_id = _server_positive_id(
             record.get("id"),
-            "latest_check_run.id",
+            f"{label}.id",
             blockers,
         )
         if check_run_id is None:
@@ -9274,6 +9321,8 @@ def _validate_latest_provenance_check_run(
             run_head_sha=expected_head_sha,
             run_head_branch=expected_head_ref,
             repository_id=repository_id,
+            label=f"{label}.workflow_run",
+            blockers=blockers,
         ):
             continue
         if not _workflow_run_matches_candidate(
@@ -9308,7 +9357,7 @@ def _validate_latest_provenance_check_run(
                 "latest check-run job attempt differs from the workflow run"
             )
         for key, expected in (
-            ("name", AUTHORITATIVE_PROVENANCE_JOB_NAME),
+            ("name", check_name),
             ("head_sha", expected_head_sha),
             ("head_branch", expected_head_ref),
         ):
@@ -9322,15 +9371,38 @@ def _validate_latest_provenance_check_run(
                 blockers.append(
                     f"latest check-run {key} differs from its workflow job"
                 )
-        authenticated.append((record, hydrated_job, hydrated_run))
-    if not authenticated:
+        candidate = (record, hydrated_job, hydrated_run)
+        candidate_checks.append(candidate)
+        if check_name == AUTHORITATIVE_PROVENANCE_JOB_NAME:
+            provenance_checks.append(candidate)
+    if not candidate_checks:
         blockers.append(
-            "candidate head has no latest check run bound to the "
+            "candidate head has no latest GitHub Actions check run bound to the "
             "authoritative provenance workflow"
         )
         return
+    latest_candidate, _, latest_candidate_run = max(
+        candidate_checks,
+        key=lambda candidate: (
+            *_workflow_run_order_key(candidate[2]),
+            int(candidate[0]["id"]),
+        ),
+    )
+    if latest_candidate_run.get("id") != selected_run.get("id"):
+        blockers.append(
+            "selected provenance workflow run is not the latest check-run run: "
+            f"selected={selected_run.get('id')!r} "
+            f"latest={latest_candidate_run.get('id')!r} "
+            f"check_run={latest_candidate.get('id')!r}"
+        )
+    if not provenance_checks:
+        blockers.append(
+            "candidate head has no latest check run for the authoritative "
+            "provenance job"
+        )
+        return
     latest, _, latest_run = max(
-        authenticated,
+        provenance_checks,
         key=lambda candidate: (
             *_workflow_run_order_key(candidate[2]),
             int(candidate[0]["id"]),
@@ -9345,7 +9417,8 @@ def _validate_latest_provenance_check_run(
         )
     if latest_run.get("id") != selected_run.get("id"):
         blockers.append(
-            "selected provenance workflow run is not the latest check-run run"
+            "selected provenance workflow run is not the latest provenance "
+            "check-run run"
         )
 
 

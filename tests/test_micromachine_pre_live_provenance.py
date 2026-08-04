@@ -487,8 +487,6 @@ class FakeGitHubAdapter:
         self,
         repository: str,
         ref: str,
-        *,
-        check_name: str,
     ) -> list[dict[str, object]]:
         return self._result("latest_check_runs", self.latest_check_runs)
 
@@ -2207,6 +2205,50 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         )
         self.assertEqual(0, adapter.download_calls)
 
+    def test_rejects_stale_success_before_newer_provenance_job_exists(
+        self,
+    ) -> None:
+        adapter = FakeGitHubAdapter()
+        newer_run = copy.deepcopy(adapter.workflow_run)
+        newer_run.update(
+            {
+                "id": RUN_ID + 1,
+                "run_number": adapter.workflow_run["run_number"] + 1,
+                "run_attempt": 1,
+                "status": "in_progress",
+                "conclusion": None,
+            }
+        )
+        newer_job = dict(adapter.job)
+        newer_job.update(
+            {
+                "id": JOB_ID + 1,
+                "run_id": RUN_ID + 1,
+                "run_attempt": 1,
+                "name": "pre-live-build",
+                "status": "in_progress",
+                "conclusion": None,
+            }
+        )
+        adapter.workflow_run_details[RUN_ID + 1] = newer_run
+        adapter.job_details[JOB_ID + 1] = newer_job
+        adapter.latest_check_runs.append(
+            {
+                "id": JOB_ID + 1,
+                "name": "pre-live-build",
+                "head_sha": HEAD_SHA,
+                "status": "in_progress",
+                "conclusion": None,
+                "app": {"id": 15_368, "slug": "github-actions"},
+            }
+        )
+
+        report = self.attest(adapter)
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn("not the latest check-run run", " ".join(report["blockers"]))
+        self.assertEqual(0, adapter.download_calls)
+
     def test_ignores_external_app_and_other_workflow_check_runs(self) -> None:
         adapter = FakeGitHubAdapter()
         adapter.latest_check_runs.append(
@@ -2258,6 +2300,15 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             "malformed id": lambda adapter: adapter.latest_check_runs[0].update(
                 {"id": "not-an-id"}
             ),
+            "missing app slug": lambda adapter: adapter.latest_check_runs[
+                0
+            ]["app"].pop("slug"),
+            "missing name": lambda adapter: adapter.latest_check_runs[0].pop(
+                "name"
+            ),
+            "missing head sha": lambda adapter: adapter.latest_check_runs[0].pop(
+                "head_sha"
+            ),
         }
         for name, mutate in mutations.items():
             with self.subTest(name=name):
@@ -2306,6 +2357,14 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             return newer_run
 
         mutations = {
+            "missing workflow id": lambda adapter, run: run.pop("workflow_id"),
+            "missing workflow path": lambda adapter, run: run.pop("path"),
+            "missing workflow event": lambda adapter, run: run.pop("event"),
+            "missing head sha": lambda adapter, run: run.pop("head_sha"),
+            "missing head branch": lambda adapter, run: run.pop("head_branch"),
+            "missing repository id": lambda adapter, run: run[
+                "head_repository"
+            ].pop("id"),
             "missing pull requests": lambda adapter, run: run.update(
                 {"pull_requests": []}
             ),
@@ -2812,7 +2871,6 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
             adapter.list_latest_check_runs(
                 REPOSITORY,
                 HEAD_SHA,
-                check_name=AUTHORITATIVE_PROVENANCE_JOB_NAME,
             )[0]["id"],
         )
         self.assertEqual(
@@ -2890,10 +2948,7 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
             )
         )
         self.assertEqual(["15368"], check_run_query["app_id"])
-        self.assertEqual(
-            [AUTHORITATIVE_PROVENANCE_JOB_NAME],
-            check_run_query["check_name"],
-        )
+        self.assertNotIn("check_name", check_run_query)
         self.assertEqual(["latest"], check_run_query["filter"])
 
 
