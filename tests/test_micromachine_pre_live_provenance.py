@@ -2249,6 +2249,59 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         self.assertIn("not the latest check-run run", " ".join(report["blockers"]))
         self.assertEqual(0, adapter.download_calls)
 
+    def test_rejects_stale_success_when_same_run_has_newer_attempt(self) -> None:
+        class AttemptRaceAdapter(FakeGitHubAdapter):
+            def __init__(self) -> None:
+                super().__init__()
+                self.workflow_run_calls = 0
+                self.newer_attempt = copy.deepcopy(self.workflow_run)
+                self.newer_attempt.update(
+                    {
+                        "run_attempt": RUN_ATTEMPT + 1,
+                        "status": "in_progress",
+                        "conclusion": None,
+                    }
+                )
+
+            def get_workflow_run(
+                self,
+                repository: str,
+                run_id: int,
+            ) -> dict[str, object]:
+                self.workflow_run_calls += 1
+                if run_id == RUN_ID and self.workflow_run_calls > 1:
+                    return self.newer_attempt
+                return super().get_workflow_run(repository, run_id)
+
+        adapter = AttemptRaceAdapter()
+        newer_job = dict(adapter.job)
+        newer_job.update(
+            {
+                "id": JOB_ID + 1,
+                "run_attempt": RUN_ATTEMPT + 1,
+                "name": "pre-live-build",
+                "status": "in_progress",
+                "conclusion": None,
+            }
+        )
+        adapter.job_details[JOB_ID + 1] = newer_job
+        adapter.latest_check_runs.append(
+            {
+                "id": JOB_ID + 1,
+                "name": "pre-live-build",
+                "head_sha": HEAD_SHA,
+                "status": "in_progress",
+                "conclusion": None,
+                "app": {"id": 15_368, "slug": "github-actions"},
+            }
+        )
+
+        report = self.attest(adapter)
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn("not the latest check-run run", " ".join(report["blockers"]))
+        self.assertEqual(0, adapter.download_calls)
+
     def test_ignores_external_app_and_other_workflow_check_runs(self) -> None:
         adapter = FakeGitHubAdapter()
         adapter.latest_check_runs.append(
@@ -2289,6 +2342,44 @@ class GitHubSourceAttestationTest(unittest.TestCase):
                 "app": {"id": 15_368, "slug": "github-actions"},
             }
         )
+
+        report = self.attest(adapter)
+
+        self.assertTrue(report["ok"], report)
+
+    def test_ignores_more_than_one_hundred_unrelated_check_runs(self) -> None:
+        adapter = FakeGitHubAdapter()
+        other_run = copy.deepcopy(adapter.workflow_run)
+        other_run.update(
+            {
+                "id": RUN_ID + 2,
+                "workflow_id": WORKFLOW_ID + 1,
+                "path": ".github/workflows/other.yml",
+            }
+        )
+        adapter.workflow_run_details[RUN_ID + 2] = other_run
+        for offset in range(1, 102):
+            job_id = JOB_ID + offset
+            job_name = f"other-job-{offset}"
+            other_job = dict(adapter.job)
+            other_job.update(
+                {
+                    "id": job_id,
+                    "run_id": RUN_ID + 2,
+                    "name": job_name,
+                }
+            )
+            adapter.job_details[job_id] = other_job
+            adapter.latest_check_runs.append(
+                {
+                    "id": job_id,
+                    "name": job_name,
+                    "head_sha": HEAD_SHA,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "app": {"id": 15_368, "slug": "github-actions"},
+                }
+            )
 
         report = self.attest(adapter)
 

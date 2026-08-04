@@ -9243,9 +9243,6 @@ def _validate_latest_provenance_check_run(
     repository_id: int,
     blockers: list[str],
 ) -> None:
-    if len(check_runs) > 100:
-        blockers.append("latest provenance check-run set exceeds the safety limit")
-        return
     candidate_checks: list[
         tuple[Mapping[str, object], Mapping[str, object], Mapping[str, object]]
     ] = []
@@ -9375,6 +9372,11 @@ def _validate_latest_provenance_check_run(
         candidate_checks.append(candidate)
         if check_name == AUTHORITATIVE_PROVENANCE_JOB_NAME:
             provenance_checks.append(candidate)
+    if len(candidate_checks) > 100:
+        blockers.append(
+            "authoritative provenance check-run set exceeds the safety limit"
+        )
+        return
     if not candidate_checks:
         blockers.append(
             "candidate head has no latest GitHub Actions check run bound to the "
@@ -9388,11 +9390,13 @@ def _validate_latest_provenance_check_run(
             int(candidate[0]["id"]),
         ),
     )
-    if latest_candidate_run.get("id") != selected_run.get("id"):
+    if _workflow_run_order_key(latest_candidate_run) != _workflow_run_order_key(
+        selected_run
+    ):
         blockers.append(
             "selected provenance workflow run is not the latest check-run run: "
-            f"selected={selected_run.get('id')!r} "
-            f"latest={latest_candidate_run.get('id')!r} "
+            f"selected={_workflow_run_order_key(selected_run)!r} "
+            f"latest={_workflow_run_order_key(latest_candidate_run)!r} "
             f"check_run={latest_candidate.get('id')!r}"
         )
     if not provenance_checks:
@@ -9415,7 +9419,9 @@ def _validate_latest_provenance_check_run(
             f"candidate head: selected={selected_job_id!r} "
             f"latest={latest.get('id')!r}"
         )
-    if latest_run.get("id") != selected_run.get("id"):
+    if _workflow_run_order_key(latest_run) != _workflow_run_order_key(
+        selected_run
+    ):
         blockers.append(
             "selected provenance workflow run is not the latest provenance "
             "check-run run"
