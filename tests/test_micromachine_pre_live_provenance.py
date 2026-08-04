@@ -1509,12 +1509,51 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             candidate_job,
         )
         self.assertIn(
-            "          tests/test_micromachine_pre_live_journeys.py\n"
-            "          tests/test_micromachine_terran_capabilities.py\n",
+            "      - name: Verify candidate dedicated producer isolation\n",
             candidate_job,
         )
+        self.assertIn(
+            "          sudo env -u GITHUB_TOKEN -u GH_TOKEN \\\n",
+            candidate_job,
+        )
+        self.assertIn(
+            "            DEVELOPER_DIR="
+            "/Applications/Xcode.app/Contents/Developer \\\n",
+            candidate_job,
+        )
+        self.assertIn(
+            '            "${PYTHON_EXECUTABLE}" '
+            "-W error::ResourceWarning -B \\\n"
+            "              tests/test_micromachine_pre_live_provenance.py \\\n"
+            "              -k dedicated_producer_uid\n",
+            candidate_job,
+        )
+        self.assertEqual(
+            9,
+            len(
+                [
+                    name
+                    for name in dir(LocalProducerTest)
+                    if name.startswith("test_")
+                    and "dedicated_producer_uid" in name
+                ]
+            ),
+        )
+        self.assertIn(
+            "          python3 -B "
+            "tests/test_micromachine_pre_live_journeys.py\n"
+            "          python3 -B "
+            "tests/test_micromachine_terran_capabilities.py\n",
+            candidate_job,
+        )
+        self.assertNotIn("-m unittest", candidate_job)
         self.assertNotIn("github.token", candidate_job)
-        self.assertNotIn("GITHUB_TOKEN", candidate_job)
+        self.assertEqual(
+            1,
+            candidate_job.count("sudo env -u GITHUB_TOKEN -u GH_TOKEN"),
+        )
+        self.assertNotIn("GITHUB_TOKEN:", candidate_job)
+        self.assertNotIn("GH_TOKEN:", candidate_job)
         self.assertIn(
             "    if: github.event_name == 'push'\n",
             registration_job,

@@ -58,13 +58,23 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
+      - name: Verify candidate dedicated producer isolation
+        run: |
+          PYTHON_EXECUTABLE="$(python3 -c 'import os, sys; print(os.path.realpath(sys.executable))')"
+          sudo env -u GITHUB_TOKEN -u GH_TOKEN \
+            DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+            PYTHONDONTWRITEBYTECODE="1" \
+            VOI_PRODUCER_UID="65001" \
+            VOI_PRODUCER_GID="65001" \
+            "${PYTHON_EXECUTABLE}" -W error::ResourceWarning -B \
+              tests/test_micromachine_pre_live_provenance.py \
+              -k dedicated_producer_uid
       - name: Build exact MicroMachine integration without credentials
         run: integrations/micromachine/scripts/build_macos_local.sh
       - name: Verify deterministic pre-live candidate
-        run: >-
-          python3 -B -m unittest
-          tests/test_micromachine_pre_live_journeys.py
-          tests/test_micromachine_terran_capabilities.py
+        run: |
+          python3 -B tests/test_micromachine_pre_live_journeys.py
+          python3 -B tests/test_micromachine_terran_capabilities.py
 
   pre-live-workflow-registration:
     if: github.event_name == 'push'
