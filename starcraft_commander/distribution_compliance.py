@@ -776,12 +776,10 @@ def scan_payload(
         ("private_model_override", _PRIVATE_MODEL_KUBERNETES_RE),
         ("credential_path", _CREDENTIAL_PATH_RE),
     )
-    scan_texts = [text]
-    decoded_text = _decoded_configuration_escapes(normalized_path, text)
-    if decoded_text != text:
-        scan_texts.append(decoded_text)
-    raw_identities: set[tuple[str, int, str]] = set()
+    scan_texts = _configuration_scan_texts(normalized_path, text)
+    prior_match_counts: dict[tuple[str, str], int] = {}
     for scan_index, scan_text in enumerate(scan_texts):
+        local_match_counts: dict[tuple[str, str], int] = {}
         for rule_id, pattern in rules:
             for match in pattern.finditer(scan_text):
                 matched = match.group(0)
@@ -793,9 +791,14 @@ def scan_payload(
                     ),
                     "",
                 )
+                identity = (rule_id, captured)
+                occurrence = local_match_counts.get(identity, 0) + 1
+                local_match_counts[identity] = occurrence
                 line = scan_text.count("\n", 0, match.start()) + 1
-                identity = (rule_id, line, captured)
-                if scan_index and identity in raw_identities:
+                if (
+                    scan_index
+                    and occurrence <= prior_match_counts.get(identity, 0)
+                ):
                     continue
                 if (
                     rule_id == "private_model_override"
@@ -818,9 +821,41 @@ def scan_payload(
                         ),
                     }
                 )
-                if scan_index == 0:
-                    raw_identities.add(identity)
+        for identity, count in local_match_counts.items():
+            prior_match_counts[identity] = max(
+                prior_match_counts.get(identity, 0),
+                count,
+            )
     return findings
+
+
+def _configuration_scan_texts(path: str, text: str) -> tuple[str, ...]:
+    suffix = PurePosixPath(path).suffix.lower()
+    if suffix not in {".json", ".yaml", ".yml"}:
+        return (text,)
+
+    variants = [text]
+    decoded_text = _decoded_configuration_escapes(path, text)
+    if decoded_text != text:
+        variants.append(decoded_text)
+    if suffix in {".yaml", ".yml"}:
+        for candidate in tuple(variants):
+            normalized = _yaml_double_quoted_line_continuations(candidate)
+            if normalized not in variants:
+                variants.append(normalized)
+    for candidate in tuple(variants):
+        try:
+            parsed = json.loads(candidate)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        canonical = json.dumps(
+            parsed,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        if canonical not in variants:
+            variants.append(canonical)
+    return tuple(variants)
 
 
 def _decoded_configuration_escapes(path: str, text: str) -> str:
@@ -843,6 +878,52 @@ def _decoded_configuration_escapes(path: str, text: str) -> str:
         replace,
         text,
     )
+
+
+def _yaml_double_quoted_line_continuations(text: str) -> str:
+    result: list[str] = []
+    in_double = False
+    in_single = False
+    in_comment = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if in_comment:
+            result.append(char)
+            index += 1
+            if char in "\r\n":
+                in_comment = False
+            continue
+        if in_double and char == "\\":
+            newline_width = 0
+            if text.startswith("\r\n", index + 1):
+                newline_width = 2
+            elif index + 1 < len(text) and text[index + 1] in "\r\n":
+                newline_width = 1
+            if newline_width:
+                index += 1 + newline_width
+                while index < len(text) and text[index] in " \t":
+                    index += 1
+                continue
+            result.append(char)
+            index += 1
+            if index < len(text):
+                result.append(text[index])
+                index += 1
+            continue
+        if not in_single and char == '"':
+            in_double = not in_double
+        elif not in_double and char == "'":
+            if in_single and index + 1 < len(text) and text[index + 1] == "'":
+                result.extend(("'", "'"))
+                index += 2
+                continue
+            in_single = not in_single
+        elif not in_double and not in_single and char == "#":
+            in_comment = True
+        result.append(char)
+        index += 1
+    return "".join(result)
 
 
 def scan_git_and_artifacts(
@@ -1224,16 +1305,27 @@ def distribution_report_blockers(
     if set(archive_size_manifests) != {"wheel", "sdist"}:
         blockers.append({"code": "invalid_archive_size_manifest_evidence"})
     artifacts = _mapping(report.get("artifacts"))
+    trusted_artifacts = _trusted_artifact_evidence(report)
+    if trusted_artifacts is None:
+        blockers.append({"code": "unverified_artifact_provenance"})
+        trusted_artifacts = {}
     artifact_paths: dict[str, Path] = {}
     artifact_file_manifests: dict[str, Mapping[str, str]] = {}
     artifact_file_sizes: dict[str, Mapping[str, int]] = {}
     expected_archive_sizes: dict[str, Mapping[str, int]] = {}
     for kind in ("wheel", "sdist"):
         artifact = _mapping(artifacts.get(kind))
+        artifact_path = artifact.get("path")
         filename = artifact.get("filename")
         digest = artifact.get("sha256")
         entry_count = artifact.get("entry_count")
         entries = artifact.get("entries")
+        if (
+            not isinstance(artifact_path, str)
+            or not artifact_path
+            or not Path(artifact_path).is_absolute()
+        ):
+            blockers.append({"code": "invalid_artifact_path", "kind": kind})
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             blockers.append({"code": "missing_artifact_digest", "kind": kind})
         if not isinstance(entries, list) or not entries:
@@ -1241,6 +1333,42 @@ def distribution_report_blockers(
         elif type(entry_count) is not int or entry_count != len(entries):
             blockers.append(
                 {"code": "artifact_entry_count_mismatch", "kind": kind}
+            )
+        trusted_artifact = _mapping(trusted_artifacts.get(kind))
+        if trusted_artifact:
+            for field in (
+                "path",
+                "filename",
+                "sha256",
+                "entry_count",
+                "entries",
+                "file_manifest",
+                "file_sizes",
+                "directory_entries",
+            ):
+                if artifact.get(field) != trusted_artifact.get(field):
+                    blockers.append(
+                        {
+                            "code": "artifact_archive_evidence_mismatch",
+                            "kind": kind,
+                            "field": field,
+                        }
+                    )
+            for item in _sequence(
+                trusted_artifact.get("archive_blockers")
+            ):
+                if isinstance(item, Mapping):
+                    blockers.append(dict(item))
+                else:
+                    blockers.append(
+                        {
+                            "code": "invalid_trusted_archive_blocker",
+                            "kind": kind,
+                        }
+                    )
+        elif trusted_artifacts:
+            blockers.append(
+                {"code": "missing_trusted_artifact_evidence", "kind": kind}
             )
         expected_manifest = _sha256_manifest(archive_manifests.get(kind))
         if expected_manifest is None:
@@ -3438,6 +3566,52 @@ def _trusted_archive_evidence(
         return None
 
 
+def _trusted_artifact_evidence(
+    report: Mapping[str, object],
+) -> dict[str, dict[str, object]] | None:
+    artifacts = _mapping(report.get("artifacts"))
+    trusted: dict[str, dict[str, object]] = {}
+    for kind, inspector in (
+        ("wheel", inspect_wheel),
+        ("sdist", inspect_sdist),
+    ):
+        artifact = _mapping(artifacts.get(kind))
+        path_value = artifact.get("path")
+        filename = artifact.get("filename")
+        if (
+            not isinstance(path_value, str)
+            or not isinstance(filename, str)
+            or not Path(path_value).is_absolute()
+        ):
+            return None
+        candidate = Path(path_value)
+        try:
+            if candidate.is_symlink():
+                return None
+            resolved = candidate.resolve(strict=True)
+            if (
+                str(resolved) != path_value
+                or resolved.name != filename
+                or not resolved.is_file()
+            ):
+                return None
+            snapshot = inspector(resolved)
+        except (
+            OSError,
+            RuntimeError,
+            ValueError,
+            tarfile.TarError,
+            zipfile.BadZipFile,
+        ):
+            return None
+        evidence = _artifact_evidence(snapshot)
+        evidence["archive_blockers"] = [
+            dict(item) for item in snapshot.blockers
+        ]
+        trusted[kind] = evidence
+    return trusted
+
+
 def repository_state_evidence(
     repository_root: Path,
     source_root: Path,
@@ -3551,6 +3725,7 @@ def _single_file_with_suffix(
 
 def _artifact_evidence(snapshot: ArchiveSnapshot) -> dict[str, object]:
     return {
+        "path": str(snapshot.path.resolve()),
         "filename": snapshot.path.name,
         "sha256": snapshot.digest,
         "entry_count": len(snapshot.entries),

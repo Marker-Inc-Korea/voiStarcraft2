@@ -567,6 +567,35 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                     findings[0]["rule_id"],
                 )
 
+    def test_detects_structurally_reconstructed_kubernetes_env(self) -> None:
+        payloads = (
+            (
+                "deployment.json",
+                b'{"name"\n:\n"VOI_MYPROXY_HOST","value"\n:\n"10.20.30.40"}',
+            ),
+            (
+                "deployment.yaml",
+                (
+                    b'- name: "VOI_MYPROXY_\\\n'
+                    b'    HOST"\n'
+                    b'  value: "10.20.30.40"\n'
+                ),
+            ),
+        )
+        for path, payload in payloads:
+            with self.subTest(path=path):
+                findings = scan_payload(
+                    path,
+                    payload,
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertEqual(1, len(findings))
+                self.assertEqual(
+                    "private_endpoint",
+                    findings[0]["rule_id"],
+                )
+
     def test_private_config_scanner_ignores_names_and_empty_constants(self) -> None:
         endpoint_key = "MYPROXY_OPENAI_BASE_" + "URL"
         payload = (
@@ -1036,6 +1065,7 @@ dev = ["build>=1.2", "pytest>=7"]
             },
             "artifacts": {
                 "wheel": {
+                    "path": "/release/dist/voistarcraft2-0.1.0-py3-none-any.whl",
                     "filename": "voistarcraft2-0.1.0-py3-none-any.whl",
                     "sha256": digest,
                     "entry_count": len(wheel_file_manifest),
@@ -1045,6 +1075,7 @@ dev = ["build>=1.2", "pytest>=7"]
                     "directory_entries": [],
                 },
                 "sdist": {
+                    "path": "/release/dist/voistarcraft2-0.1.0.tar.gz",
                     "filename": "voistarcraft2-0.1.0.tar.gz",
                     "sha256": digest,
                     "entry_count": (
@@ -1158,6 +1189,16 @@ dev = ["build>=1.2", "pytest>=7"]
         )
         trusted_patcher.start()
         self.addCleanup(trusted_patcher.stop)
+        trusted_artifacts = copy.deepcopy(self.report["artifacts"])
+        for artifact in trusted_artifacts.values():
+            artifact["archive_blockers"] = []
+        trusted_artifact_patcher = mock.patch.object(
+            compliance_module,
+            "_trusted_artifact_evidence",
+            return_value=trusted_artifacts,
+        )
+        trusted_artifact_patcher.start()
+        self.addCleanup(trusted_artifact_patcher.stop)
 
     def test_accepts_complete_raw_evidence(self) -> None:
         self.assertEqual([], distribution_report_blockers(self.report))
@@ -1205,6 +1246,21 @@ dev = ["build>=1.2", "pytest>=7"]
 
         self.assertIn("archive_manifest_provenance_mismatch", codes)
         self.assertIn("archive_size_provenance_mismatch", codes)
+
+    def test_rejects_artifact_digest_not_matching_actual_archive(self) -> None:
+        report = copy.deepcopy(self.report)
+        report["artifacts"]["wheel"]["sha256"] = "f" * 64
+
+        blockers = distribution_report_blockers(report)
+
+        self.assertIn(
+            {
+                "code": "artifact_archive_evidence_mismatch",
+                "kind": "wheel",
+                "field": "sha256",
+            },
+            blockers,
+        )
 
     def test_rejects_unverified_exact_sha_provenance(self) -> None:
         with mock.patch.object(
