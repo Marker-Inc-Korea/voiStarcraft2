@@ -138,10 +138,17 @@ _CONFIG_ASSIGNMENT_KEY_SUFFIX: Final[str] = (
 _CONFIG_ASSIGNMENT_SEPARATOR: Final[str] = (
     r"[ \t]*(?:(?::[^=\n,}]+)?=|:(?![^\n,}]*=))[ \t]*"
 )
+_PRIVATE_MODEL_KEY_PATTERN: Final[str] = (
+    r"(?:(?:DEFAULT|VOI|CODEX)_)?MYPROXY_MODEL"
+)
+_PRIVATE_ENDPOINT_KEY_PATTERN: Final[str] = (
+    r"(?:(?:DEFAULT|VOI|CODEX)_)?MYPROXY_"
+    r"(?:OPENAI_BASE_URL|BASE_URL|HOST|PORT)"
+)
 _PRIVATE_MODEL_RE: Final[re.Pattern[str]] = re.compile(
     r"(?im)"
     + _CONFIG_ASSIGNMENT_PREFIX
-    + r"(?:DEFAULT_MYPROXY_MODEL|VOI_MYPROXY_MODEL)"
+    + _PRIVATE_MODEL_KEY_PATTERN
     + _CONFIG_ASSIGNMENT_KEY_SUFFIX
     + _CONFIG_ASSIGNMENT_SEPARATOR
     + r"[\"']?([^\"'\s,#}\n]+)[\"']?"
@@ -149,10 +156,34 @@ _PRIVATE_MODEL_RE: Final[re.Pattern[str]] = re.compile(
 _PRIVATE_ENDPOINT_RE: Final[re.Pattern[str]] = re.compile(
     r"(?im)"
     + _CONFIG_ASSIGNMENT_PREFIX
-    + r"(?:MYPROXY_OPENAI_BASE_URL|VOI_MYPROXY_OPENAI_BASE_URL)"
+    + _PRIVATE_ENDPOINT_KEY_PATTERN
     + _CONFIG_ASSIGNMENT_KEY_SUFFIX
     + _CONFIG_ASSIGNMENT_SEPARATOR
     + r"[\"']?([^\"'\s,#}\n]+)[\"']?"
+)
+_PRIVATE_MODEL_DOCKER_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?im)^[ \t]*(?:ENV|ARG)[ \t]+"
+    + _PRIVATE_MODEL_KEY_PATTERN
+    + _CONFIG_ASSIGNMENT_KEY_SUFFIX
+    + r"[ \t]+[\"']?([^\"'\s,#}\n]+)[\"']?"
+)
+_PRIVATE_ENDPOINT_DOCKER_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?im)^[ \t]*(?:ENV|ARG)[ \t]+"
+    + _PRIVATE_ENDPOINT_KEY_PATTERN
+    + _CONFIG_ASSIGNMENT_KEY_SUFFIX
+    + r"[ \t]+[\"']?([^\"'\s,#}\n]+)[\"']?"
+)
+_PRIVATE_MODEL_KUBERNETES_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?im)^[ \t]*-[ \t]*name[ \t]*:[ \t]*[\"']?"
+    + _PRIVATE_MODEL_KEY_PATTERN
+    + r"[\"']?[ \t]*(?:#[^\n]*)?\r?\n"
+    + r"[ \t]*value[ \t]*:[ \t]*[\"']?([^\"'\s,#}\n]+)[\"']?"
+)
+_PRIVATE_ENDPOINT_KUBERNETES_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?im)^[ \t]*-[ \t]*name[ \t]*:[ \t]*[\"']?"
+    + _PRIVATE_ENDPOINT_KEY_PATTERN
+    + r"[\"']?[ \t]*(?:#[^\n]*)?\r?\n"
+    + r"[ \t]*value[ \t]*:[ \t]*[\"']?([^\"'\s,#}\n]+)[\"']?"
 )
 _API_KEY_RE: Final[re.Pattern[str]] = re.compile(
     r"\b("
@@ -191,44 +222,31 @@ _CREDENTIAL_PATH_RE: Final[re.Pattern[str]] = re.compile(
     + r"id_(?:rsa|ed25519)|credentials\.json|"
     + r"[A-Za-z0-9_.-]+\.credentials\.json)[^\"'\n]*[\"'])"
 )
-_SAFE_FIXTURE_RULES: Final[Mapping[str, frozenset[str]]] = {
-    "tests/test_llm_interpreter.py": frozenset(
-        {
-            "api_key",
-            "api_key_assignment",
-            "bearer_token",
-            "credential_path",
-        }
-    ),
-    "tests/test_micromachine_pre_live_provenance.py": frozenset(
-        {
-            "api_key",
-            "api_key_assignment",
-            "bearer_token",
-            "credential_path",
-        }
-    ),
-    "tests/test_web_gui.py": frozenset(
-        {
-            "api_key",
-            "api_key_assignment",
-            "bearer_token",
-            "credential_path",
-        }
-    ),
+_SAFE_FIXTURE_FINGERPRINTS: Final[
+    Mapping[str, Mapping[str, frozenset[str]]]
+] = {
+    "tests/test_llm_interpreter.py": {
+        "api_key": frozenset(
+            {"6d7cff6a74f5a16be41aaf6ccc8d51b62357cf1115f4149e6d116b537f96b302"}
+        ),
+        "api_key_assignment": frozenset(
+            {"822682667b73f0a72661c0b19f9c79d6cdb98e57559309482bd5b15e0dc7325b"}
+        ),
+    },
+    "tests/test_micromachine_pre_live_provenance.py": {
+        "bearer_token": frozenset(
+            {"2a452e8451a18651177c8cfeff71b5c6d1e8fd1d1faab95968b77e83cd7efd09"}
+        )
+    },
+    "tests/test_web_gui.py": {
+        "api_key": frozenset(
+            {
+                "3ecb7ee0b6df1921344b76307f224695e417e4a63f638471b2428b6f7c54c355",
+                "76bb8593aa73556c30f24f5e7f47d401383e5815b4117c4b0f0430398d93f544",
+            }
+        )
+    },
 }
-_SAFE_FIXTURE_MARKERS: Final[tuple[str, ...]] = (
-    "example",
-    "fake",
-    "fixture",
-    "secret",
-    "test",
-)
-_SAFE_ASSIGNMENT_PREFIXES: Final[tuple[str, ...]] = (
-    *_SAFE_FIXTURE_MARKERS,
-    "proxy-alias",
-    "proxy-test",
-)
 _CREDENTIAL_FILENAMES: Final[frozenset[str]] = frozenset(
     {
         ".netrc",
@@ -333,8 +351,36 @@ def inspect_wheel(path: Path) -> ArchiveSnapshot:
                     }
                 )
                 continue
+            if mode not in {0, stat.S_IFREG, stat.S_IFDIR}:
+                blockers.append(
+                    {
+                        "code": "archive_non_regular_entry",
+                        "kind": "wheel",
+                        "entry": name,
+                        "mode": oct(mode),
+                    }
+                )
+                continue
             if info.is_dir():
+                if mode == stat.S_IFREG:
+                    blockers.append(
+                        {
+                            "code": "archive_entry_type_mismatch",
+                            "kind": "wheel",
+                            "entry": name,
+                        }
+                    )
+                    continue
                 directories.append(name)
+                continue
+            if mode == stat.S_IFDIR:
+                blockers.append(
+                    {
+                        "code": "archive_entry_type_mismatch",
+                        "kind": "wheel",
+                        "entry": name,
+                    }
+                )
                 continue
             if info.flag_bits & 0x1:
                 blockers.append(
@@ -678,7 +724,11 @@ def scan_payload(
         ("bearer_token", _BEARER_TOKEN_RE),
         ("api_key_assignment", _ENV_KEY_ASSIGNMENT_RE),
         ("private_endpoint", _PRIVATE_ENDPOINT_RE),
+        ("private_endpoint", _PRIVATE_ENDPOINT_DOCKER_RE),
+        ("private_endpoint", _PRIVATE_ENDPOINT_KUBERNETES_RE),
         ("private_model_override", _PRIVATE_MODEL_RE),
+        ("private_model_override", _PRIVATE_MODEL_DOCKER_RE),
+        ("private_model_override", _PRIVATE_MODEL_KUBERNETES_RE),
         ("credential_path", _CREDENTIAL_PATH_RE),
     )
     for rule_id, pattern in rules:
@@ -718,20 +768,40 @@ def scan_git_and_artifacts(
 
     findings: list[dict[str, object]] = []
     scanned_files = 0
-    repository_paths: set[str] = set()
-    for arguments in (
-        ["ls-files", "-z"],
+    tracked_paths: set[str] = set()
+    tracked = _git_output(repository_root, ["ls-files", "--stage", "-z"])
+    for raw_record in tracked.split(b"\0"):
+        if not raw_record:
+            continue
+        metadata, separator, raw_path = raw_record.partition(b"\t")
+        fields = metadata.split()
+        if not separator or len(fields) != 3 or fields[2] != b"0":
+            raise RuntimeError("Git index contains an unsupported tracked entry")
+        relative = raw_path.decode("utf-8", errors="strict")
+        if relative in tracked_paths:
+            raise RuntimeError("Git index contains a duplicate tracked path")
+        tracked_paths.add(relative)
+        payload = _git_output(
+            repository_root,
+            ["cat-file", "blob", fields[1].decode("ascii", errors="strict")],
+        )
+        scanned_files += 1
+        findings.extend(scan_payload(relative, payload))
+    untracked = _git_output(
+        repository_root,
         ["ls-files", "--others", "--exclude-standard", "-z"],
-    ):
-        output = _git_output(repository_root, arguments)
-        for raw_path in output.split(b"\0"):
-            if raw_path:
-                repository_paths.add(
-                    raw_path.decode("utf-8", errors="strict")
-                )
-    for relative in sorted(repository_paths):
+    )
+    for raw_path in untracked.split(b"\0"):
+        if not raw_path:
+            continue
+        relative = raw_path.decode("utf-8", errors="strict")
         candidate = repository_root / relative
-        if candidate.is_file():
+        if candidate.is_symlink():
+            scanned_files += 1
+            findings.extend(
+                scan_payload(relative, os.readlink(candidate).encode("utf-8"))
+            )
+        elif candidate.is_file():
             scanned_files += 1
             findings.extend(scan_payload(relative, candidate.read_bytes()))
     diff = _git_output(
@@ -840,6 +910,19 @@ def build_distribution_report(
         metadata = BytesParser().parsebytes(metadata_bytes or b"")
         license_expressions = metadata.get_all("License-Expression", [])
         requires_dist = metadata.get_all("Requires-Dist", [])
+        sdist_root = _expected_sdist_root(sdist.path)
+        sdist_metadata: list[dict[str, str]] = []
+        for entry in (
+            f"{sdist_root}/PKG-INFO",
+            f"{sdist_root}/{EXPECTED_PROJECT_NAME}.egg-info/PKG-INFO",
+        ):
+            payload = sdist.files.get(entry, b"")
+            sdist_metadata.append(
+                {
+                    "entry": entry,
+                    "raw": payload.decode("utf-8", errors="replace"),
+                }
+            )
         metadata_dependencies = sorted(
             {
                 normalized_dependency_name(requirement)
@@ -916,6 +999,7 @@ def build_distribution_report(
                     "utf-8",
                     errors="replace",
                 ),
+                "sdist": sdist_metadata,
             },
             "source_pyproject": {
                 "raw": pyproject_text,
@@ -1122,6 +1206,7 @@ def distribution_report_blockers(
             artifact_paths.get("wheel"),
             artifact_paths.get("sdist"),
             artifact_file_manifests.get("wheel"),
+            artifact_file_manifests.get("sdist"),
             _sha256_manifest(archive_manifests.get("sdist")),
             _mapping(report.get("dependencies")),
         )
@@ -2162,35 +2247,9 @@ def _archive_manifest_digest_blockers(
 
 
 def _safe_fixture_match(path: str, rule_id: str, matched: str) -> bool:
-    allowed_rules = _SAFE_FIXTURE_RULES.get(path)
-    if allowed_rules is None or rule_id not in allowed_rules:
-        return False
-    lowered = matched.lower()
-    if rule_id == "api_key":
-        match = _API_KEY_RE.search(lowered)
-        if match is None:
-            return False
-        token = match.group(1)
-        suffix = token.removeprefix("sk-").removeprefix("proj-")
-        return suffix.startswith(_SAFE_FIXTURE_MARKERS)
-    if rule_id == "bearer_token":
-        match = _BEARER_TOKEN_RE.search(lowered)
-        return bool(
-            match is not None
-            and match.group(1).startswith(_SAFE_FIXTURE_MARKERS)
-        )
-    if rule_id == "api_key_assignment":
-        match = _ENV_KEY_ASSIGNMENT_RE.search(lowered)
-        return bool(
-            match is not None
-            and match.group(1).startswith(_SAFE_ASSIGNMENT_PREFIXES)
-        )
-    if rule_id == "credential_path":
-        return any(
-            marker in PurePosixPath(lowered.replace("\\", "/")).parts
-            for marker in _SAFE_FIXTURE_MARKERS
-        )
-    return False
+    allowed = _SAFE_FIXTURE_FINGERPRINTS.get(path, {}).get(rule_id, frozenset())
+    fingerprint = sha256_bytes(f"{rule_id}\0{matched}".encode("utf-8"))
+    return fingerprint in allowed
 
 
 def _generated_archive_path(
@@ -2261,6 +2320,7 @@ def _metadata_evidence_blockers(
     wheel_path: Path | None,
     sdist_path: Path | None,
     wheel_file_manifest: Mapping[str, str] | None,
+    sdist_file_manifest: Mapping[str, str] | None,
     sdist_expected_manifest: Mapping[str, str] | None,
     dependencies: Mapping[str, object],
 ) -> list[dict[str, object]]:
@@ -2269,9 +2329,15 @@ def _metadata_evidence_blockers(
         wheel_path is None
         or sdist_path is None
         or wheel_file_manifest is None
+        or sdist_file_manifest is None
         or sdist_expected_manifest is None
     ):
-        return [{"code": "invalid_metadata_evidence", "reason": "missing_wheel"}]
+        return [
+            {
+                "code": "invalid_metadata_evidence",
+                "reason": "missing_artifact_manifest",
+            }
+        ]
     source_raw = source_pyproject.get("raw")
     source_digest = source_pyproject.get("sha256")
     source_version = ""
@@ -2422,6 +2488,105 @@ def _metadata_evidence_blockers(
                 "reason": "source_requires_dist_mismatch",
             }
         )
+    sdist_root = _expected_sdist_root(sdist_path)
+    expected_sdist_entries = (
+        f"{sdist_root}/PKG-INFO",
+        f"{sdist_root}/{EXPECTED_PROJECT_NAME}.egg-info/PKG-INFO",
+    )
+    sdist_metadata = metadata.get("sdist")
+    sdist_by_entry: dict[str, Mapping[str, object]] = {}
+    if not isinstance(sdist_metadata, list):
+        blockers.append(
+            {
+                "code": "invalid_sdist_metadata_evidence",
+                "reason": "missing_projection",
+            }
+        )
+    else:
+        for item in sdist_metadata:
+            evidence = _mapping(item)
+            entry_value = evidence.get("entry")
+            if (
+                not isinstance(entry_value, str)
+                or entry_value in sdist_by_entry
+            ):
+                blockers.append(
+                    {
+                        "code": "invalid_sdist_metadata_evidence",
+                        "reason": "invalid_or_duplicate_entry",
+                    }
+                )
+                continue
+            sdist_by_entry[entry_value] = evidence
+        if set(sdist_by_entry) != set(expected_sdist_entries):
+            blockers.append(
+                {
+                    "code": "invalid_sdist_metadata_evidence",
+                    "reason": "wrong_entry_set",
+                    "expected": list(expected_sdist_entries),
+                }
+            )
+    for sdist_entry in expected_sdist_entries:
+        evidence = sdist_by_entry.get(sdist_entry)
+        if evidence is None:
+            continue
+        sdist_raw = evidence.get("raw")
+        if not isinstance(sdist_raw, str) or not sdist_raw:
+            blockers.append(
+                {
+                    "code": "invalid_sdist_metadata_evidence",
+                    "reason": "missing_raw",
+                    "entry": sdist_entry,
+                }
+            )
+            continue
+        sdist_raw_bytes = sdist_raw.encode("utf-8")
+        if sdist_file_manifest.get(sdist_entry) != sha256_bytes(sdist_raw_bytes):
+            blockers.append(
+                {
+                    "code": "invalid_sdist_metadata_evidence",
+                    "reason": "raw_digest_mismatch",
+                    "entry": sdist_entry,
+                }
+            )
+        parsed_sdist = BytesParser().parsebytes(sdist_raw_bytes)
+        if parsed_sdist.get_all("Name", []) != [EXPECTED_PROJECT_NAME]:
+            blockers.append(
+                {
+                    "code": "invalid_sdist_metadata_evidence",
+                    "reason": "wrong_project_name",
+                    "entry": sdist_entry,
+                }
+            )
+        if (
+            not source_version
+            or parsed_sdist.get_all("Version", []) != [source_version]
+        ):
+            blockers.append(
+                {
+                    "code": "invalid_sdist_metadata_evidence",
+                    "reason": "wrong_project_version",
+                    "entry": sdist_entry,
+                }
+            )
+        if parsed_sdist.get_all("License-Expression", []) != [
+            EXPECTED_LICENSE_EXPRESSION
+        ]:
+            blockers.append(
+                {
+                    "code": "invalid_sdist_metadata_evidence",
+                    "reason": "wrong_license_expression",
+                    "entry": sdist_entry,
+                }
+            )
+        if sorted(parsed_sdist.get_all("Requires-Dist", [])) != source_requires_dist:
+            blockers.append(
+                {
+                    "code": "invalid_sdist_metadata_evidence",
+                    "reason": "source_requires_dist_mismatch",
+                    "entry": sdist_entry,
+                }
+            )
     raw_dependencies = sorted(
         {
             normalized_dependency_name(requirement)

@@ -215,6 +215,23 @@ class ArchivePolicyTest(unittest.TestCase):
         )
         self.assertEqual((), snapshot.directories)
 
+    def test_wheel_inspection_rejects_non_regular_unix_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            wheel_path = Path(temporary) / "candidate.whl"
+            fifo = zipfile.ZipInfo("starcraft_commander/runtime_data.py")
+            fifo.create_system = 3
+            fifo.external_attr = (stat.S_IFIFO | 0o644) << 16
+            with zipfile.ZipFile(wheel_path, "w") as archive:
+                archive.writestr(fifo, "attacker")
+
+            snapshot = inspect_wheel(wheel_path)
+
+        self.assertIn(
+            "archive_non_regular_entry",
+            {str(item["code"]) for item in snapshot.blockers},
+        )
+        self.assertEqual({}, snapshot.files)
+
     def test_sdist_rejects_alternate_root_payloads(self) -> None:
         expected_payload = b"expected runtime"
         snapshot = ArchiveSnapshot(
@@ -457,6 +474,28 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             {str(item["rule_id"]) for item in findings},
         )
 
+    def test_detects_myproxy_host_port_docker_and_kubernetes_assignments(
+        self,
+    ) -> None:
+        host_key = "VOI_MYPROXY_" + "HOST"
+        port_key = "VOI_MYPROXY_" + "PORT"
+        payload = (
+            f"{host_key}=10.20.30.40\n"
+            f"ENV {port_key} 8443\n"
+            f"- name: {host_key}\n"
+            "  value: proxy.corp.example\n"
+            f"- name: {port_key}\n"
+            '  value: "9443"\n'
+        ).encode()
+
+        findings = scan_payload("deployment.yaml", payload)
+
+        self.assertEqual(4, len(findings))
+        self.assertEqual(
+            {"private_endpoint"},
+            {str(item["rule_id"]) for item in findings},
+        )
+
     def test_private_config_scanner_ignores_names_and_empty_constants(self) -> None:
         endpoint_key = "MYPROXY_OPENAI_BASE_" + "URL"
         payload = (
@@ -567,54 +606,61 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
     def test_fixture_allowlist_is_bound_to_path_rule_and_safe_marker(self) -> None:
         fake_key = "sk-" + "testfixtureabcdefghijkl"
         real_key = "sk-" + "liveabcdefghijklmnop"
-        embedded_marker_key = "sk-" + "prodtestabcdefghijkl"
         fake_assignment = 'CODEX_MYPROXY_API_KEY: "proxy-alias-key"'
-        real_assignment = 'CODEX_MYPROXY_API_KEY: "live-production-key"'
+        allowed_path = "tests/test_llm_interpreter.py"
+        fake_key_fingerprint = scan_payload(
+            allowed_path,
+            f"value = '{fake_key}'".encode(),
+            allow_safe_fixtures=False,
+        )[0]["fingerprint"]
+        fake_assignment_fingerprint = scan_payload(
+            allowed_path,
+            fake_assignment.encode(),
+            allow_safe_fixtures=False,
+        )[0]["fingerprint"]
+        allowed = {
+            allowed_path: {
+                "api_key": frozenset({str(fake_key_fingerprint)}),
+                "api_key_assignment": frozenset(
+                    {str(fake_assignment_fingerprint)}
+                ),
+            }
+        }
 
-        self.assertEqual(
-            [],
-            scan_payload(
-                "tests/test_llm_interpreter.py",
-                f"value = '{fake_key}'".encode(),
-            ),
-        )
-        self.assertTrue(
-            scan_payload(
-                "tests/test_llm_interpreter.py",
-                f"value = '{real_key}'".encode(),
+        with mock.patch.object(
+            compliance_module,
+            "_SAFE_FIXTURE_FINGERPRINTS",
+            allowed,
+        ):
+            self.assertEqual(
+                [],
+                scan_payload(
+                    allowed_path,
+                    f"value = '{fake_key}'".encode(),
+                ),
             )
-        )
-        self.assertTrue(
-            scan_payload(
-                "tests/test_unlisted_fixture.py",
-                f"value = '{fake_key}'".encode(),
+            self.assertEqual(
+                [],
+                scan_payload(allowed_path, fake_assignment.encode()),
             )
-        )
-        self.assertTrue(
-            scan_payload(
-                "tests/test_llm_interpreter.py",
-                f"value = '{embedded_marker_key}'".encode(),
+            self.assertTrue(
+                scan_payload(
+                    allowed_path,
+                    f"value = '{real_key}'".encode(),
+                )
             )
-        )
-        self.assertEqual(
-            [],
-            scan_payload(
-                "tests/test_llm_interpreter.py",
-                fake_assignment.encode(),
-            ),
-        )
-        self.assertTrue(
-            scan_payload(
-                "tests/test_llm_interpreter.py",
-                real_assignment.encode(),
+            self.assertTrue(
+                scan_payload(
+                    "tests/test_unlisted_fixture.py",
+                    f"value = '{fake_key}'".encode(),
+                )
             )
-        )
-        self.assertTrue(
-            scan_payload(
-                "tests/test_unlisted_fixture.py",
-                fake_assignment.encode(),
+            self.assertTrue(
+                scan_payload(
+                    allowed_path,
+                    f"value = '{fake_key}changed'".encode(),
+                )
             )
-        )
 
     def test_credential_detector_requires_an_assignment(self) -> None:
         scanner_documentation = (
@@ -626,6 +672,7 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
 
     def test_repository_scan_includes_untracked_nonignored_files(self) -> None:
         secret = "sk-" + "liveabcdefghijklmnop"
+        tracked_blob = "a" * 40
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "tracked.py").write_text("safe = True\n", encoding="utf-8")
@@ -638,8 +685,12 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                 _repository_root: Path,
                 arguments: list[str],
             ) -> bytes:
-                if arguments == ["ls-files", "-z"]:
-                    return b"tracked.py\0"
+                if arguments == ["ls-files", "--stage", "-z"]:
+                    return (
+                        f"100644 {tracked_blob} 0\ttracked.py\0".encode()
+                    )
+                if arguments == ["cat-file", "blob", tracked_blob]:
+                    return b"safe = True\n"
                 if arguments == [
                     "ls-files",
                     "--others",
@@ -660,6 +711,48 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
 
         self.assertEqual(1, report["finding_count"])
         self.assertEqual("candidate.py", report["findings"][0]["path"])
+
+    def test_repository_scan_reads_tracked_dangling_symlink_blob(self) -> None:
+        tracked_blob = "b" * 40
+        bearer = "Bearer " + "opaqueabcdefghijklmnop"
+
+        def git_output(
+            _repository_root: Path,
+            arguments: list[str],
+        ) -> bytes:
+            if arguments == ["ls-files", "--stage", "-z"]:
+                return (
+                    f"120000 {tracked_blob} 0\tprivate-endpoint-link\0".encode()
+                )
+            if arguments == ["cat-file", "blob", tracked_blob]:
+                return bearer.encode()
+            if arguments == [
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "-z",
+            ]:
+                return b""
+            if arguments[:2] == ["diff", "--no-ext-diff"]:
+                return b""
+            raise AssertionError(arguments)
+
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            mock.patch.object(
+                compliance_module,
+                "_git_output",
+                side_effect=git_output,
+            ),
+        ):
+            report = scan_git_and_artifacts(Path(temporary), ())
+
+        self.assertEqual(1, report["finding_count"])
+        self.assertEqual("bearer_token", report["findings"][0]["rule_id"])
+        self.assertEqual(
+            "private-endpoint-link",
+            report["findings"][0]["path"],
+        )
 
 
 class DerivedVerdictTest(unittest.TestCase):
@@ -735,6 +828,14 @@ dev = ["build>=1.2", "pytest>=7"]
             sdist_pyproject: source_pyproject_digest,
             **{entry: digest for entry in sdist_generated},
         }
+        sdist_metadata_entries = (
+            f"{sdist_root}/PKG-INFO",
+            f"{sdist_egg_info}/PKG-INFO",
+        )
+        for entry in sdist_metadata_entries:
+            sdist_file_manifest[entry] = compliance_module.sha256_bytes(
+                metadata_raw.encode()
+            )
         sdist_directories = [sdist_root, sdist_egg_info]
         self.report = {
             "repository": {
@@ -787,6 +888,10 @@ dev = ["build>=1.2", "pytest>=7"]
                 "license_expressions": [EXPECTED_LICENSE_EXPRESSION],
                 "requires_dist": metadata_requires_dist,
                 "raw": metadata_raw,
+                "sdist": [
+                    {"entry": entry, "raw": metadata_raw}
+                    for entry in sdist_metadata_entries
+                ],
             },
             "source_pyproject": {
                 "raw": source_pyproject_raw,
@@ -924,6 +1029,12 @@ dev = ["build>=1.2", "pytest>=7"]
                     wrong_version_raw.encode()
                 )
             },
+            {
+                str(item["entry"]): compliance_module.sha256_bytes(
+                    str(item["raw"]).encode()
+                )
+                for item in self.report["metadata"]["sdist"]
+            },
             {"pyproject.toml": source_pyproject["sha256"]},
             self.report["dependencies"],
         )
@@ -964,6 +1075,47 @@ dev = ["build>=1.2", "pytest>=7"]
             for item in distribution_report_blockers(report)
         }
         self.assertIn("source_requires_dist_mismatch", reasons)
+
+    def test_sdist_metadata_is_bound_to_source_semantics(self) -> None:
+        for target_index in range(2):
+            with self.subTest(target_index=target_index):
+                report = dict(self.report)
+                metadata = dict(self.report["metadata"])
+                sdist_metadata = [
+                    dict(item) for item in metadata["sdist"]
+                ]
+                target = sdist_metadata[target_index]
+                mutated_raw = str(target["raw"]).replace(
+                    f"License-Expression: {EXPECTED_LICENSE_EXPRESSION}",
+                    "License-Expression: MIT",
+                ).replace(
+                    "\n\n",
+                    "\nRequires-Dist: attacker-runtime>=1\n\n",
+                    1,
+                )
+                target["raw"] = mutated_raw
+                metadata["sdist"] = sdist_metadata
+                report["metadata"] = metadata
+                artifacts = {
+                    kind: dict(value)
+                    for kind, value in self.report["artifacts"].items()
+                }
+                sdist_manifest = dict(artifacts["sdist"]["file_manifest"])
+                sdist_manifest[str(target["entry"])] = (
+                    compliance_module.sha256_bytes(mutated_raw.encode())
+                )
+                artifacts["sdist"]["file_manifest"] = sdist_manifest
+                report["artifacts"] = artifacts
+
+                blockers = distribution_report_blockers(report)
+                reasons = {
+                    str(item.get("reason"))
+                    for item in blockers
+                    if item.get("code") == "invalid_sdist_metadata_evidence"
+                }
+
+                self.assertIn("wrong_license_expression", reasons)
+                self.assertIn("source_requires_dist_mismatch", reasons)
 
     def test_rejects_wrong_license_missing_notices_and_runtime_data(self) -> None:
         report = dict(self.report)
