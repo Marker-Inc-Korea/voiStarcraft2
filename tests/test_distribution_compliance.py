@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import stat
 import tempfile
 import unittest
@@ -519,6 +520,32 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
         ).encode()
         self.assertEqual([], scan_payload("deployment.yaml", unrelated_value))
 
+    def test_detects_json_and_quoted_yaml_kubernetes_env(self) -> None:
+        host_key = "VOI_MYPROXY_" + "HOST"
+        port_key = "VOI_MYPROXY_" + "PORT"
+        model_key = "VOI_MYPROXY_" + "MODEL"
+        payload = (
+            '{"spec":{"containers":[{"env":[\n'
+            f'{{"name":"{host_key}","value":"10.20.30.40"}},\n'
+            f'{{"value":"8443","name":"{port_key}"}},\n'
+            f'{{"name":"{model_key}","value":"private-model"}}\n'
+            "] }]}}\n"
+            f'- "name": "{host_key}"\n'
+            '  "value": "proxy.corp.example"\n'
+        ).encode()
+
+        findings = scan_payload(
+            "deployment.json",
+            payload,
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual(4, len(findings))
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
+            {str(item["rule_id"]) for item in findings},
+        )
+
     def test_private_config_scanner_ignores_names_and_empty_constants(self) -> None:
         endpoint_key = "MYPROXY_OPENAI_BASE_" + "URL"
         payload = (
@@ -841,6 +868,14 @@ dev = ["build>=1.2", "pytest>=7"]
                 for entry, raw in wheel_raw_by_entry.items()
             },
         }
+        wheel_file_sizes = {
+            "starcraft_commander/runtime_data.py": 1,
+            **{entry: 1 for entry in wheel_license_entries},
+            **{
+                entry: len(raw.encode())
+                for entry, raw in wheel_raw_by_entry.items()
+            },
+        }
         wheel_record_entry = f"{wheel_root}/RECORD"
         wheel_record_raw = "".join(
             (
@@ -849,7 +884,7 @@ dev = ["build>=1.2", "pytest>=7"]
                 else (
                     f"{entry},"
                     f"{compliance_module._record_hash_from_sha256(entry_digest)},"
-                    "1"
+                    f"{wheel_file_sizes[entry]}"
                 )
             )
             + "\n"
@@ -864,6 +899,7 @@ dev = ["build>=1.2", "pytest>=7"]
         wheel_file_manifest[wheel_record_entry] = (
             compliance_module.sha256_bytes(wheel_record_raw.encode())
         )
+        wheel_file_sizes[wheel_record_entry] = len(wheel_record_raw.encode())
         sdist_root = "voistarcraft2-0.1.0"
         sdist_egg_info = f"{sdist_root}/voiStarcraft2.egg-info"
         sdist_source = (
@@ -871,8 +907,24 @@ dev = ["build>=1.2", "pytest>=7"]
         )
         sdist_pyproject = f"{sdist_root}/pyproject.toml"
         sdist_expected_manifest = {
+            "LICENSE": EXPECTED_LICENSE_FILE_SHA256["LICENSE"],
+            "LICENSES/AGPL-3.0-or-later.txt": (
+                EXPECTED_LICENSE_FILE_SHA256[
+                    "LICENSES/AGPL-3.0-or-later.txt"
+                ]
+            ),
+            "THIRD_PARTY_NOTICES.md": EXPECTED_LICENSE_FILE_SHA256[
+                "THIRD_PARTY_NOTICES.md"
+            ],
             "pyproject.toml": source_pyproject_digest,
             "starcraft_commander/runtime_data.py": digest,
+        }
+        sdist_expected_sizes = {
+            "LICENSE": 1,
+            "LICENSES/AGPL-3.0-or-later.txt": 1,
+            "THIRD_PARTY_NOTICES.md": 1,
+            "pyproject.toml": len(source_pyproject_raw.encode()),
+            "starcraft_commander/runtime_data.py": 1,
         }
         sdist_requires_raw = (
             "[dev]\n"
@@ -916,10 +968,26 @@ dev = ["build>=1.2", "pytest>=7"]
             f"{sdist_egg_info}/top_level.txt": top_level_raw,
         }
         sdist_file_manifest = {
+            **{
+                f"{sdist_root}/{entry}": entry_digest
+                for entry, entry_digest in sdist_expected_manifest.items()
+            },
             sdist_source: digest,
             sdist_pyproject: source_pyproject_digest,
             **{
                 entry: compliance_module.sha256_bytes(raw.encode())
+                for entry, raw in sdist_raw_by_entry.items()
+            },
+        }
+        sdist_file_sizes = {
+            **{
+                f"{sdist_root}/{entry}": size
+                for entry, size in sdist_expected_sizes.items()
+            },
+            sdist_source: 1,
+            sdist_pyproject: len(source_pyproject_raw.encode()),
+            **{
+                entry: len(raw.encode())
                 for entry, raw in sdist_raw_by_entry.items()
             },
         }
@@ -948,6 +1016,7 @@ dev = ["build>=1.2", "pytest>=7"]
                     "entry_count": len(wheel_file_manifest),
                     "entries": list(wheel_file_manifest),
                     "file_manifest": wheel_file_manifest,
+                    "file_sizes": wheel_file_sizes,
                     "directory_entries": [],
                 },
                 "sdist": {
@@ -961,6 +1030,7 @@ dev = ["build>=1.2", "pytest>=7"]
                         *sdist_directories,
                     ],
                     "file_manifest": sdist_file_manifest,
+                    "file_sizes": sdist_file_sizes,
                     "directory_entries": sdist_directories,
                 },
             },
@@ -971,6 +1041,14 @@ dev = ["build>=1.2", "pytest>=7"]
                 },
                 "sdist": {
                     **sdist_expected_manifest,
+                },
+            },
+            "archive_size_manifests": {
+                "wheel": {
+                    "starcraft_commander/runtime_data.py": 1,
+                },
+                "sdist": {
+                    **sdist_expected_sizes,
                 },
             },
             "metadata": {
@@ -1135,7 +1213,14 @@ dev = ["build>=1.2", "pytest>=7"]
                 )
                 for item in self.report["metadata"]["sdist"]
             },
+            {wrong_version_entry: len(wrong_version_raw.encode())},
+            {
+                str(item["entry"]): len(str(item["raw"]).encode())
+                for item in self.report["metadata"]["sdist"]
+            },
             {"pyproject.toml": source_pyproject["sha256"]},
+            {"starcraft_commander/runtime_data.py": 1},
+            {"pyproject.toml": len(str(source_pyproject["raw"]).encode())},
             self.report["dependencies"],
         )
         reasons = {str(item.get("reason")) for item in blockers}
@@ -1261,6 +1346,11 @@ dev = ["build>=1.2", "pytest>=7"]
                     )
                 )
                 artifacts["sdist"]["file_manifest"] = sdist_manifest
+                sdist_sizes = dict(artifacts["sdist"]["file_sizes"])
+                sdist_sizes[str(target["entry"])] = len(
+                    str(target["raw"]).encode()
+                )
+                artifacts["sdist"]["file_sizes"] = sdist_sizes
                 artifacts["sdist"]["sha256"] = "e" * 64
                 report["artifacts"] = artifacts
 
@@ -1273,44 +1363,70 @@ dev = ["build>=1.2", "pytest>=7"]
 
                 self.assertIn(expected_reason, reasons)
 
-    def test_generated_wheel_record_is_bound_to_file_manifest(self) -> None:
-        report = dict(self.report)
-        metadata = dict(self.report["metadata"])
-        generated = {
-            kind: [dict(item) for item in items]
-            for kind, items in metadata["generated"].items()
-        }
-        record = next(
-            item
-            for item in generated["wheel"]
-            if str(item["entry"]).endswith("/RECORD")
+    def test_generated_wheel_record_is_bound_to_file_evidence(self) -> None:
+        mutations = (
+            (
+                lambda raw: raw.replace("sha256=", "sha256=attacker", 1),
+                False,
+            ),
+            (
+                lambda raw: re.sub(
+                    r",(\d+)\n",
+                    lambda match: f",{int(match.group(1)) + 1}\n",
+                    raw,
+                    count=1,
+                ),
+                True,
+            ),
         )
-        record["raw"] = str(record["raw"]).replace(
-            "sha256=",
-            "sha256=attacker",
-            1,
-        )
-        metadata["generated"] = generated
-        report["metadata"] = metadata
-        artifacts = {
-            kind: dict(value)
-            for kind, value in self.report["artifacts"].items()
-        }
-        wheel_manifest = dict(artifacts["wheel"]["file_manifest"])
-        wheel_manifest[str(record["entry"])] = (
-            compliance_module.sha256_bytes(str(record["raw"]).encode())
-        )
-        artifacts["wheel"]["file_manifest"] = wheel_manifest
-        artifacts["wheel"]["sha256"] = "e" * 64
-        report["artifacts"] = artifacts
+        for mutate, mutate_file_size in mutations:
+            with self.subTest(mutate_file_size=mutate_file_size):
+                report = dict(self.report)
+                metadata = dict(self.report["metadata"])
+                generated = {
+                    kind: [dict(item) for item in items]
+                    for kind, items in metadata["generated"].items()
+                }
+                record = next(
+                    item
+                    for item in generated["wheel"]
+                    if str(item["entry"]).endswith("/RECORD")
+                )
+                record["raw"] = mutate(str(record["raw"]))
+                metadata["generated"] = generated
+                report["metadata"] = metadata
+                artifacts = {
+                    kind: dict(value)
+                    for kind, value in self.report["artifacts"].items()
+                }
+                wheel_manifest = dict(
+                    artifacts["wheel"]["file_manifest"]
+                )
+                wheel_manifest[str(record["entry"])] = (
+                    compliance_module.sha256_bytes(
+                        str(record["raw"]).encode()
+                    )
+                )
+                artifacts["wheel"]["file_manifest"] = wheel_manifest
+                wheel_sizes = dict(artifacts["wheel"]["file_sizes"])
+                wheel_sizes[str(record["entry"])] = len(
+                    str(record["raw"]).encode()
+                )
+                if mutate_file_size:
+                    first_path = str(record["raw"]).split(",", 1)[0]
+                    wheel_sizes[first_path] += 1
+                artifacts["wheel"]["file_sizes"] = wheel_sizes
+                artifacts["wheel"]["sha256"] = "e" * 64
+                report["artifacts"] = artifacts
 
-        reasons = {
-            str(item.get("reason"))
-            for item in distribution_report_blockers(report)
-            if item.get("code") == "invalid_generated_metadata_evidence"
-        }
+                reasons = {
+                    str(item.get("reason"))
+                    for item in distribution_report_blockers(report)
+                    if item.get("code")
+                    == "invalid_generated_metadata_evidence"
+                }
 
-        self.assertIn("invalid_wheel_record", reasons)
+                self.assertIn("invalid_wheel_record", reasons)
 
     def test_rejects_wrong_license_missing_notices_and_runtime_data(self) -> None:
         report = dict(self.report)
@@ -1419,7 +1535,11 @@ dev = ["build>=1.2", "pytest>=7"]
         self.assertIn("invalid_secret_scan_evidence", codes)
 
     def test_rejects_missing_or_malformed_archive_evidence(self) -> None:
-        for field in ("archive_blockers", "archive_manifests"):
+        for field in (
+            "archive_blockers",
+            "archive_manifests",
+            "archive_size_manifests",
+        ):
             with self.subTest(field=field):
                 report = dict(self.report)
                 report.pop(field)
@@ -1433,7 +1553,11 @@ dev = ["build>=1.2", "pytest>=7"]
                     (
                         "invalid_archive_blocker_evidence"
                         if field == "archive_blockers"
-                        else "invalid_archive_manifest_evidence"
+                        else (
+                            "invalid_archive_manifest_evidence"
+                            if field == "archive_manifests"
+                            else "invalid_archive_size_manifest_evidence"
+                        )
                     ),
                     codes,
                 )

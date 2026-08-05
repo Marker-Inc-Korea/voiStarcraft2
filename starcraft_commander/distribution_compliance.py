@@ -190,41 +190,43 @@ _PRIVATE_ENDPOINT_DOCKER_RE: Final[re.Pattern[str]] = re.compile(
 )
 _PRIVATE_MODEL_KUBERNETES_RE: Final[re.Pattern[str]] = re.compile(
     r"(?im)(?:"
-    r"^[ \t]*-[ \t]*\{"
-    r"(?=[^{}\n]*\bname[ \t]*:[ \t]*[\"']?"
+    r"\{"
+    r"(?=[^{}]*[\"']?name[\"']?[ \t]*:[ \t]*[\"']?"
     + _PRIVATE_MODEL_KEY_PATTERN
     + r"[\"']?(?![A-Za-z0-9_]))"
-    r"(?=[^{}\n]*\bvalue[ \t]*:[ \t]*[\"']?"
-    r"([^\"'\s,#}\n]+)[\"']?)[^{}\n]*\}"
-    r"|^[ \t]*-[ \t]*name[ \t]*:[ \t]*[\"']?"
+    r"(?=[^{}]*[\"']?value[\"']?[ \t]*:[ \t]*[\"']?"
+    r"([^\"'\s,#}\n]+)[\"']?)[^{}]*\}"
+    r"|^[ \t]*-[ \t]*[\"']?name[\"']?[ \t]*:[ \t]*[\"']?"
     + _PRIVATE_MODEL_KEY_PATTERN
     + r"[\"']?[ \t]*(?:#[^\n]*)?\r?\n"
     r"(?:(?![ \t]*-[ \t])[ \t]+[^\n]*\r?\n)*?"
-    r"[ \t]+value[ \t]*:[ \t]*[\"']?([^\"'\s,#}\n]+)[\"']?"
-    r"|^[ \t]*-[ \t]*value[ \t]*:[ \t]*[\"']?"
+    r"[ \t]+[\"']?value[\"']?[ \t]*:[ \t]*[\"']?"
+    r"([^\"'\s,#}\n]+)[\"']?"
+    r"|^[ \t]*-[ \t]*[\"']?value[\"']?[ \t]*:[ \t]*[\"']?"
     r"([^\"'\s,#}\n]+)[\"']?[ \t]*(?:#[^\n]*)?\r?\n"
     r"(?:(?![ \t]*-[ \t])[ \t]+[^\n]*\r?\n)*?"
-    r"[ \t]+name[ \t]*:[ \t]*[\"']?"
+    r"[ \t]+[\"']?name[\"']?[ \t]*:[ \t]*[\"']?"
     + _PRIVATE_MODEL_KEY_PATTERN
     + r"[\"']?(?![A-Za-z0-9_]))"
 )
 _PRIVATE_ENDPOINT_KUBERNETES_RE: Final[re.Pattern[str]] = re.compile(
     r"(?im)(?:"
-    r"^[ \t]*-[ \t]*\{"
-    r"(?=[^{}\n]*\bname[ \t]*:[ \t]*[\"']?"
+    r"\{"
+    r"(?=[^{}]*[\"']?name[\"']?[ \t]*:[ \t]*[\"']?"
     + _PRIVATE_ENDPOINT_KEY_PATTERN
     + r"[\"']?(?![A-Za-z0-9_]))"
-    r"(?=[^{}\n]*\bvalue[ \t]*:[ \t]*[\"']?"
-    r"([^\"'\s,#}\n]+)[\"']?)[^{}\n]*\}"
-    r"|^[ \t]*-[ \t]*name[ \t]*:[ \t]*[\"']?"
+    r"(?=[^{}]*[\"']?value[\"']?[ \t]*:[ \t]*[\"']?"
+    r"([^\"'\s,#}\n]+)[\"']?)[^{}]*\}"
+    r"|^[ \t]*-[ \t]*[\"']?name[\"']?[ \t]*:[ \t]*[\"']?"
     + _PRIVATE_ENDPOINT_KEY_PATTERN
     + r"[\"']?[ \t]*(?:#[^\n]*)?\r?\n"
     r"(?:(?![ \t]*-[ \t])[ \t]+[^\n]*\r?\n)*?"
-    r"[ \t]+value[ \t]*:[ \t]*[\"']?([^\"'\s,#}\n]+)[\"']?"
-    r"|^[ \t]*-[ \t]*value[ \t]*:[ \t]*[\"']?"
+    r"[ \t]+[\"']?value[\"']?[ \t]*:[ \t]*[\"']?"
+    r"([^\"'\s,#}\n]+)[\"']?"
+    r"|^[ \t]*-[ \t]*[\"']?value[\"']?[ \t]*:[ \t]*[\"']?"
     r"([^\"'\s,#}\n]+)[\"']?[ \t]*(?:#[^\n]*)?\r?\n"
     r"(?:(?![ \t]*-[ \t])[ \t]+[^\n]*\r?\n)*?"
-    r"[ \t]+name[ \t]*:[ \t]*[\"']?"
+    r"[ \t]+[\"']?name[\"']?[ \t]*:[ \t]*[\"']?"
     + _PRIVATE_ENDPOINT_KEY_PATTERN
     + r"[\"']?(?![A-Za-z0-9_]))"
 )
@@ -1008,9 +1010,11 @@ def build_distribution_report(
         notice_licenses = notice_dependency_licenses(notice_text)
         licenses = _license_evidence(source_root, wheel, sdist)
         runtime_data = _runtime_data_evidence(source_root, wheel, sdist)
-        expected_payloads = expected_archive_payloads(
-            repository_root,
-            str(repository_before.get("head", "")),
+        expected_payloads, expected_payload_sizes = (
+            _expected_archive_payload_evidence(
+                repository_root,
+                str(repository_before.get("head", "")),
+            )
         )
         install_smoke = (
             isolated_wheel_install_smoke(wheel.path)
@@ -1044,6 +1048,10 @@ def build_distribution_report(
             "archive_manifests": {
                 kind: dict(sorted(paths.items()))
                 for kind, paths in expected_payloads.items()
+            },
+            "archive_size_manifests": {
+                kind: dict(sorted(paths.items()))
+                for kind, paths in expected_payload_sizes.items()
             },
             "metadata": {
                 "entry": metadata_entry,
@@ -1164,9 +1172,19 @@ def distribution_report_blockers(
     )
     if set(archive_manifests) != {"wheel", "sdist"}:
         blockers.append({"code": "invalid_archive_manifest_evidence"})
+    archive_size_manifests_value = report.get("archive_size_manifests")
+    archive_size_manifests = (
+        archive_size_manifests_value
+        if isinstance(archive_size_manifests_value, Mapping)
+        else {}
+    )
+    if set(archive_size_manifests) != {"wheel", "sdist"}:
+        blockers.append({"code": "invalid_archive_size_manifest_evidence"})
     artifacts = _mapping(report.get("artifacts"))
     artifact_paths: dict[str, Path] = {}
     artifact_file_manifests: dict[str, Mapping[str, str]] = {}
+    artifact_file_sizes: dict[str, Mapping[str, int]] = {}
+    expected_archive_sizes: dict[str, Mapping[str, int]] = {}
     for kind in ("wheel", "sdist"):
         artifact = _mapping(artifacts.get(kind))
         filename = artifact.get("filename")
@@ -1186,12 +1204,30 @@ def distribution_report_blockers(
             blockers.append(
                 {"code": "invalid_archive_manifest_evidence", "kind": kind}
             )
+        expected_size_manifest = _size_manifest(
+            archive_size_manifests.get(kind)
+        )
+        if (
+            expected_size_manifest is None
+            or expected_manifest is None
+            or set(expected_size_manifest) != set(expected_manifest)
+        ):
+            blockers.append(
+                {
+                    "code": "invalid_archive_size_manifest_evidence",
+                    "kind": kind,
+                }
+            )
+        else:
+            expected_archive_sizes[kind] = expected_size_manifest
         file_manifest = _sha256_manifest(artifact.get("file_manifest"))
+        file_sizes = _size_manifest(artifact.get("file_sizes"))
         directory_entries = artifact.get("directory_entries")
         if (
             not isinstance(filename, str)
             or not filename
             or file_manifest is None
+            or file_sizes is None
             or not isinstance(directory_entries, list)
             or any(not isinstance(entry, str) for entry in directory_entries)
         ):
@@ -1199,6 +1235,10 @@ def distribution_report_blockers(
                 {"code": "invalid_artifact_file_manifest", "kind": kind}
             )
             continue
+        if set(file_sizes) != set(file_manifest):
+            blockers.append(
+                {"code": "artifact_file_size_manifest_mismatch", "kind": kind}
+            )
         entry_names = (
             [entry for entry in entries if isinstance(entry, str)]
             if isinstance(entries, list)
@@ -1234,6 +1274,7 @@ def distribution_report_blockers(
         )
         artifact_paths[kind] = Path(filename)
         artifact_file_manifests[kind] = file_manifest
+        artifact_file_sizes[kind] = file_sizes
         snapshot = ArchiveSnapshot(
             kind=kind,
             path=Path(filename),
@@ -1262,7 +1303,11 @@ def distribution_report_blockers(
             artifact_paths.get("sdist"),
             artifact_file_manifests.get("wheel"),
             artifact_file_manifests.get("sdist"),
+            artifact_file_sizes.get("wheel"),
+            artifact_file_sizes.get("sdist"),
             _sha256_manifest(archive_manifests.get("sdist")),
+            expected_archive_sizes.get("wheel"),
+            expected_archive_sizes.get("sdist"),
             _mapping(report.get("dependencies")),
         )
     )
@@ -2168,6 +2213,16 @@ def expected_archive_payloads(
 ) -> dict[str, dict[str, str]]:
     """Return exact path and content manifests from one immutable Git commit."""
 
+    manifests, _ = _expected_archive_payload_evidence(repository_root, head)
+    return manifests
+
+
+def _expected_archive_payload_evidence(
+    repository_root: Path,
+    head: str,
+) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, int]]]:
+    """Return Git-derived release payload digest and size manifests."""
+
     if re.fullmatch(r"[0-9a-f]{40,64}", head) is None:
         raise ValueError("release manifest requires an exact Git commit")
     tree = _git_output(
@@ -2176,7 +2231,9 @@ def expected_archive_payloads(
     )
     wheel: dict[str, str] = {}
     sdist: dict[str, str] = {}
-    blob_cache: dict[str, str] = {}
+    wheel_sizes: dict[str, int] = {}
+    sdist_sizes: dict[str, int] = {}
+    blob_cache: dict[str, tuple[str, int]] = {}
     for raw_record in tree.split(b"\0"):
         if not raw_record:
             continue
@@ -2193,19 +2250,25 @@ def expected_archive_payloads(
         if fields[1] != b"blob":
             raise RuntimeError("release payload is not a Git blob")
         object_id = fields[2].decode("ascii", errors="strict")
-        digest = blob_cache.get(object_id)
-        if digest is None:
+        blob_evidence = blob_cache.get(object_id)
+        if blob_evidence is None:
             payload = _git_output(
                 repository_root,
                 ["cat-file", "blob", object_id],
             )
-            digest = sha256_bytes(payload)
-            blob_cache[object_id] = digest
+            blob_evidence = (sha256_bytes(payload), len(payload))
+            blob_cache[object_id] = blob_evidence
+        digest, size = blob_evidence
         if wheel_allowed:
             wheel[path_text] = digest
+            wheel_sizes[path_text] = size
         if sdist_allowed:
             sdist[path_text] = digest
-    return {"wheel": wheel, "sdist": sdist}
+            sdist_sizes[path_text] = size
+    return (
+        {"wheel": wheel, "sdist": sdist},
+        {"wheel": wheel_sizes, "sdist": sdist_sizes},
+    )
 
 
 def archive_manifest_blockers(
@@ -2391,6 +2454,22 @@ def _sha256_manifest(value: object) -> dict[str, str] | None:
     return manifest
 
 
+def _size_manifest(value: object) -> dict[str, int] | None:
+    if not isinstance(value, Mapping) or not value:
+        return None
+    manifest: dict[str, int] = {}
+    for raw_path, raw_size in value.items():
+        if (
+            not isinstance(raw_path, str)
+            or not raw_path
+            or type(raw_size) is not int
+            or raw_size < 0
+        ):
+            return None
+        manifest[raw_path] = raw_size
+    return manifest
+
+
 def _metadata_evidence_blockers(
     metadata: Mapping[str, object],
     source_pyproject: Mapping[str, object],
@@ -2398,7 +2477,11 @@ def _metadata_evidence_blockers(
     sdist_path: Path | None,
     wheel_file_manifest: Mapping[str, str] | None,
     sdist_file_manifest: Mapping[str, str] | None,
+    wheel_file_sizes: Mapping[str, int] | None,
+    sdist_file_sizes: Mapping[str, int] | None,
     sdist_expected_manifest: Mapping[str, str] | None,
+    wheel_expected_sizes: Mapping[str, int] | None,
+    sdist_expected_sizes: Mapping[str, int] | None,
     dependencies: Mapping[str, object],
 ) -> list[dict[str, object]]:
     blockers: list[dict[str, object]] = []
@@ -2407,7 +2490,11 @@ def _metadata_evidence_blockers(
         or sdist_path is None
         or wheel_file_manifest is None
         or sdist_file_manifest is None
+        or wheel_file_sizes is None
+        or sdist_file_sizes is None
         or sdist_expected_manifest is None
+        or wheel_expected_sizes is None
+        or sdist_expected_sizes is None
     ):
         return [
             {
@@ -2458,7 +2545,11 @@ def _metadata_evidence_blockers(
             sdist_path,
             wheel_file_manifest,
             sdist_file_manifest,
+            wheel_file_sizes,
+            sdist_file_sizes,
             sdist_expected_manifest,
+            wheel_expected_sizes,
+            sdist_expected_sizes,
         )
     )
     expected_root = _expected_wheel_dist_info_root(wheel_path)
@@ -2699,7 +2790,11 @@ def _generated_metadata_evidence_blockers(
     sdist_path: Path,
     wheel_file_manifest: Mapping[str, str],
     sdist_file_manifest: Mapping[str, str],
+    wheel_file_sizes: Mapping[str, int],
+    sdist_file_sizes: Mapping[str, int],
     sdist_expected_manifest: Mapping[str, str],
+    wheel_expected_sizes: Mapping[str, int],
+    sdist_expected_sizes: Mapping[str, int],
 ) -> list[dict[str, object]]:
     blockers: list[dict[str, object]] = []
     generated = _mapping(generated_value)
@@ -2711,9 +2806,19 @@ def _generated_metadata_evidence_blockers(
             }
         )
     raw_by_kind: dict[str, dict[str, str]] = {}
-    for kind, artifact_path, file_manifest in (
-        ("wheel", wheel_path, wheel_file_manifest),
-        ("sdist", sdist_path, sdist_file_manifest),
+    for kind, artifact_path, file_manifest, file_sizes in (
+        (
+            "wheel",
+            wheel_path,
+            wheel_file_manifest,
+            wheel_file_sizes,
+        ),
+        (
+            "sdist",
+            sdist_path,
+            sdist_file_manifest,
+            sdist_file_sizes,
+        ),
     ):
         expected_entries = _required_generated_metadata_files(
             kind,
@@ -2759,7 +2864,11 @@ def _generated_metadata_evidence_blockers(
             )
         for entry in sorted(expected_entries & set(by_entry)):
             raw_digest = sha256_bytes(by_entry[entry].encode("utf-8"))
-            if file_manifest.get(entry) != raw_digest:
+            if (
+                file_manifest.get(entry) != raw_digest
+                or file_sizes.get(entry)
+                != len(by_entry[entry].encode("utf-8"))
+            ):
                 blockers.append(
                     {
                         "code": "invalid_generated_metadata_evidence",
@@ -2769,10 +2878,30 @@ def _generated_metadata_evidence_blockers(
                     }
                 )
         raw_by_kind[kind] = by_entry
+    expected_artifact_sizes = _expected_artifact_file_sizes(
+        wheel_path,
+        sdist_path,
+        wheel_expected_sizes,
+        sdist_expected_sizes,
+        raw_by_kind,
+    )
+    for kind, observed_sizes in (
+        ("wheel", wheel_file_sizes),
+        ("sdist", sdist_file_sizes),
+    ):
+        if observed_sizes != expected_artifact_sizes[kind]:
+            blockers.append(
+                {
+                    "code": "invalid_generated_metadata_evidence",
+                    "reason": "artifact_file_size_provenance_mismatch",
+                    "kind": kind,
+                }
+            )
     blockers.extend(
         _wheel_generated_metadata_blockers(
             wheel_path,
             wheel_file_manifest,
+            expected_artifact_sizes["wheel"],
             raw_by_kind.get("wheel", {}),
         )
     )
@@ -2787,9 +2916,46 @@ def _generated_metadata_evidence_blockers(
     return blockers
 
 
+def _expected_artifact_file_sizes(
+    wheel_path: Path,
+    sdist_path: Path,
+    wheel_source_sizes: Mapping[str, int],
+    sdist_source_sizes: Mapping[str, int],
+    raw_by_kind: Mapping[str, Mapping[str, str]],
+) -> dict[str, dict[str, int]]:
+    wheel_sizes = dict(wheel_source_sizes)
+    wheel_root = _expected_wheel_dist_info_root(wheel_path)
+    if wheel_root:
+        for relative in REQUIRED_LICENSE_FILES:
+            source_size = sdist_source_sizes.get(relative)
+            if source_size is not None:
+                wheel_sizes[
+                    f"{wheel_root}/licenses/{relative}"
+                ] = source_size
+    wheel_sizes.update(
+        {
+            entry: len(raw.encode("utf-8"))
+            for entry, raw in raw_by_kind.get("wheel", {}).items()
+        }
+    )
+    sdist_root = _expected_sdist_root(sdist_path)
+    sdist_sizes = {
+        f"{sdist_root}/{entry}": size
+        for entry, size in sdist_source_sizes.items()
+    }
+    sdist_sizes.update(
+        {
+            entry: len(raw.encode("utf-8"))
+            for entry, raw in raw_by_kind.get("sdist", {}).items()
+        }
+    )
+    return {"wheel": wheel_sizes, "sdist": sdist_sizes}
+
+
 def _wheel_generated_metadata_blockers(
     wheel_path: Path,
     file_manifest: Mapping[str, str],
+    file_sizes: Mapping[str, int],
     raw_by_entry: Mapping[str, str],
 ) -> list[dict[str, object]]:
     blockers: list[dict[str, object]] = []
@@ -2848,6 +3014,7 @@ def _wheel_generated_metadata_blockers(
                 record_entry,
                 record_raw,
                 file_manifest,
+                file_sizes,
             )
         )
     return blockers
@@ -2857,6 +3024,7 @@ def _wheel_record_blockers(
     record_entry: str,
     record_raw: str,
     file_manifest: Mapping[str, str],
+    file_sizes: Mapping[str, int],
 ) -> list[dict[str, object]]:
     invalid = {
         "code": "invalid_generated_metadata_evidence",
@@ -2885,7 +3053,7 @@ def _wheel_record_blockers(
             continue
         if (
             recorded_digest != _record_hash_from_sha256(expected_digest)
-            or not recorded_size.isdecimal()
+            or recorded_size != str(file_sizes.get(path, -1))
         ):
             return [invalid]
     return []
@@ -3211,6 +3379,10 @@ def _artifact_evidence(snapshot: ArchiveSnapshot) -> dict[str, object]:
         "entries": list(snapshot.entries),
         "file_manifest": {
             entry: sha256_bytes(payload)
+            for entry, payload in sorted(snapshot.files.items())
+        },
+        "file_sizes": {
+            entry: len(payload)
             for entry, payload in sorted(snapshot.files.items())
         },
         "directory_entries": list(snapshot.directories),
