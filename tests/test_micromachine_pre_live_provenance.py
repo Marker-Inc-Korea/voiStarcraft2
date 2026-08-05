@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import json
 import os
 import re
 import shutil
+import socket
+import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
+import time
+import textwrap
+import types
 import unittest
 import urllib.parse
 import zipfile
@@ -35,6 +42,7 @@ from starcraft_commander.micromachine_build_identity import (
 )
 from starcraft_commander.micromachine_pre_live_provenance import (
     AUTHORITATIVE_PROVENANCE_JOB_NAME,
+    AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
     AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH,
     AUTHORITATIVE_REPOSITORY_ID,
     AUTHORITATIVE_REPLAY_CREATE_RULESET_NAME,
@@ -42,6 +50,12 @@ from starcraft_commander.micromachine_pre_live_provenance import (
     AUTHORITATIVE_REPLAY_IMMUTABLE_RULESET_NAME,
     AUTHORITATIVE_REPLAY_REF_PREFIX,
     AUTHORITATIVE_REPLAY_REF_PATTERN,
+    GITHUB_ACTIONS_PRODUCER_TIMEOUT_SECONDS,
+    GITHUB_ACTIONS_PROVENANCE_CLEANUP_RESERVE_SECONDS,
+    GITHUB_ACTIONS_PROVENANCE_JOB_TIMEOUT_MINUTES,
+    GITHUB_ACTIONS_PROVENANCE_PUBLICATION_RESERVE_SECONDS,
+    GITHUB_ACTIONS_PROVENANCE_SETUP_RESERVE_SECONDS,
+    GITHUB_ACTIONS_VERIFIER_TIMEOUT_SECONDS,
     ISOLATED_PYTHON_BOOTSTRAP,
     PRODUCER_POLICY_RELATIVE_PATH,
     SANITIZED_PRODUCER_ENV,
@@ -69,6 +83,7 @@ from starcraft_commander.micromachine_pre_live_provenance import (
 from starcraft_commander.micromachine_pre_live_artifact import (
     GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME,
     PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION,
+    PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID,
     PreLiveArtifactMetadata,
     build_pre_live_artifact_bundle,
     canonical_ctest_evidence_bytes,
@@ -85,11 +100,12 @@ RUN_ATTEMPT = 2
 JOB_ID = 201
 ARTIFACT_ID = 301
 WORKFLOW_ID = 401
+CHECK_SUITE_ID = 501
 WORKFLOW_PATH = AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH
 WORKFLOW_REF = (
-    f"{REPOSITORY}/{WORKFLOW_PATH}@refs/pull/137/merge"
+    f"{REPOSITORY}/{WORKFLOW_PATH}@refs/heads/main"
 )
-WORKFLOW_SHA = "c" * 40
+WORKFLOW_SHA = BASE_SHA
 REQUIRED_CTEST_COUNT = len(MICROMACHINE_REQUIRED_NATIVE_TESTS)
 
 
@@ -183,15 +199,54 @@ def make_replay_ruleset_fixtures() -> tuple[
 class FakeHTTPResponse:
     def __init__(self, payload: bytes) -> None:
         self.payload = payload
+        self.offset = 0
+        self.closed = False
 
     def __enter__(self) -> "FakeHTTPResponse":
         return self
 
     def __exit__(self, *args: object) -> None:
+        self.close()
         return None
 
     def read(self, maximum: int) -> bytes:
-        return self.payload[:maximum]
+        start = self.offset
+        self.offset = min(len(self.payload), start + maximum)
+        return self.payload[start : self.offset]
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class BlockingHTTPResponse:
+    def __init__(self) -> None:
+        self.closed = threading.Event()
+
+    def __enter__(self) -> "BlockingHTTPResponse":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+        return None
+
+    def read(self, maximum: int) -> bytes:
+        del maximum
+        self.closed.wait(timeout=5.0)
+        return b""
+
+    def close(self) -> None:
+        self.closed.set()
+
+
+class FakeMonotonicClock:
+    def __init__(self, now: float = 0.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
 
 
 class FakeGitHubAdapter:
@@ -248,6 +303,7 @@ class FakeGitHubAdapter:
         self.workflow_run = {
             "id": RUN_ID,
             "workflow_id": WORKFLOW_ID,
+            "check_suite_id": CHECK_SUITE_ID,
             "run_number": 17,
             "run_attempt": RUN_ATTEMPT,
             "head_sha": head_sha,
@@ -256,13 +312,14 @@ class FakeGitHubAdapter:
                 "id": AUTHORITATIVE_REPOSITORY_ID,
                 "full_name": REPOSITORY,
             },
-            "event": "pull_request",
+            "event": AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
             "pull_requests": [
                 {
                     "id": 3,
                     "number": 137,
                     "head": {
                         "sha": head_sha,
+                        "ref": "issue-138-authenticated-prelive-provenance",
                         "repo": {"id": AUTHORITATIVE_REPOSITORY_ID},
                     },
                 }
@@ -272,7 +329,10 @@ class FakeGitHubAdapter:
             "conclusion": "success",
         }
         self.workflow_runs = [dict(self.workflow_run)]
+        self.repository_workflow_runs = [dict(self.workflow_run)]
         self.workflow_run_details = {RUN_ID: self.workflow_run}
+        self.workflow_run_get_calls = 0
+        self.workflow_run_queries: list[tuple[str, int, str, str]] = []
         self.workflow = {
             "id": WORKFLOW_ID,
             "path": WORKFLOW_PATH,
@@ -302,12 +362,26 @@ class FakeGitHubAdapter:
             "run_id": RUN_ID,
             "run_attempt": RUN_ATTEMPT,
             "head_sha": head_sha,
+            "head_branch": "issue-138-authenticated-prelive-provenance",
             "name": "pre-live-provenance",
             "status": "completed",
             "conclusion": "success",
             "started_at": "2026-07-30T00:01:00Z",
             "completed_at": "2026-07-30T00:09:00Z",
         }
+        self.latest_check_runs = [
+            {
+                "id": JOB_ID,
+                "name": AUTHORITATIVE_PROVENANCE_JOB_NAME,
+                "head_sha": head_sha,
+                "status": "completed",
+                "conclusion": "success",
+                "app": {"id": 15_368, "slug": "github-actions"},
+                "check_suite": {"id": CHECK_SUITE_ID},
+            }
+        ]
+        self.job_details = {JOB_ID: self.job}
+        self.job_get_calls = 0
         self.artifacts = [{"id": ARTIFACT_ID, "name": "pre-live"}]
         self.artifact = {
             "id": ARTIFACT_ID,
@@ -319,6 +393,7 @@ class FakeGitHubAdapter:
             "workflow_run": {
                 "id": RUN_ID,
                 "head_sha": head_sha,
+                "head_branch": "issue-138-authenticated-prelive-provenance",
             },
         }
         self.artifact_bytes = make_source_artifact_bundle(head_sha)
@@ -328,10 +403,6 @@ class FakeGitHubAdapter:
         self.fail_at: str | None = None
         self.download_calls = 0
         self.workflow_references = {
-            "refs/pull/137/merge": {
-                "ref": "refs/pull/137/merge",
-                "object": {"type": "commit", "sha": WORKFLOW_SHA},
-            },
             (
                 "refs/heads/issue-138-authenticated-prelive-provenance"
             ): {
@@ -392,6 +463,7 @@ class FakeGitHubAdapter:
         repository: str,
         run_id: int,
     ) -> dict[str, object]:
+        self.workflow_run_get_calls += 1
         record = self.workflow_run_details.get(run_id)
         if record is None:
             raise GitHubSourceError(f"unknown workflow run: {run_id}")
@@ -408,6 +480,9 @@ class FakeGitHubAdapter:
         branch: str,
         event: str,
     ) -> list[dict[str, object]]:
+        self.workflow_run_queries.append(
+            (repository, workflow_id, branch, event)
+        )
         return self._result("workflow_runs", self.workflow_runs)
 
     def get_workflow(
@@ -416,6 +491,24 @@ class FakeGitHubAdapter:
         workflow_id: int,
     ) -> dict[str, object]:
         return self._result("workflow", self.workflow)
+
+    def list_latest_check_runs(
+        self,
+        repository: str,
+        ref: str,
+    ) -> list[dict[str, object]]:
+        return self._result("latest_check_runs", self.latest_check_runs)
+
+    def list_repository_workflow_runs(
+        self,
+        repository: str,
+        *,
+        head_sha: str,
+    ) -> list[dict[str, object]]:
+        return self._result(
+            "repository_workflow_runs",
+            self.repository_workflow_runs,
+        )
 
     def get_workflow_run_attempt(
         self,
@@ -438,7 +531,11 @@ class FakeGitHubAdapter:
         repository: str,
         job_id: int,
     ) -> dict[str, object]:
-        return self._result("job", self.job)
+        self.job_get_calls += 1
+        record = self.job_details.get(job_id)
+        if record is None:
+            raise GitHubSourceError(f"unknown workflow job: {job_id}")
+        return self._result("job", record)
 
     def list_workflow_run_artifacts(
         self,
@@ -513,6 +610,374 @@ class FakeGitHubAdapter:
             f"ruleset_{ruleset_id}",
             self.ruleset_details[ruleset_id],
         )
+
+
+def append_newer_repository_run(
+    adapter: FakeGitHubAdapter,
+) -> dict[str, object]:
+    newer_run = copy.deepcopy(adapter.workflow_run)
+    newer_run.update(
+        {
+            "id": RUN_ID + 1,
+            "check_suite_id": CHECK_SUITE_ID + 1,
+            "run_number": int(adapter.workflow_run["run_number"]) + 1,
+            "run_attempt": 1,
+            "status": "in_progress",
+            "conclusion": None,
+        }
+    )
+    adapter.workflow_run_details[RUN_ID + 1] = newer_run
+    adapter.repository_workflow_runs.append(dict(newer_run))
+    return newer_run
+
+
+def append_newer_workflow_run(
+    adapter: FakeGitHubAdapter,
+) -> dict[str, object]:
+    newer_run = copy.deepcopy(adapter.workflow_run)
+    newer_run.update(
+        {
+            "id": RUN_ID + 1,
+            "check_suite_id": CHECK_SUITE_ID + 1,
+            "run_number": int(adapter.workflow_run["run_number"]) + 1,
+            "run_attempt": 1,
+            "status": "in_progress",
+            "conclusion": None,
+        }
+    )
+    adapter.workflow_run_details[RUN_ID + 1] = newer_run
+    adapter.workflow_runs.append(dict(newer_run))
+    return newer_run
+
+
+class VerifierDeadlineTest(unittest.TestCase):
+    def test_operation_boundaries_receive_shared_remaining_timeout(self) -> None:
+        clock = FakeMonotonicClock(100.0)
+        deadline = provenance_module._VerifierDeadline(
+            10.0,
+            monotonic=clock,
+        )
+        clock.advance(3.0)
+        command_runner = mock.Mock(
+            return_value=subprocess.CompletedProcess(
+                ["/usr/bin/git"],
+                0,
+                "output\n",
+                "",
+            )
+        )
+
+        provenance_module._run_text(
+            command_runner,
+            ("/usr/bin/git", "rev-parse", "HEAD"),
+            cwd=Path("/candidate"),
+            deadline=deadline,
+        )
+        self.assertEqual(7.0, command_runner.call_args.kwargs["timeout"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "producer.py"
+            path.write_bytes(b"print('ok')\n")
+            git_runner = mock.Mock(
+                return_value=subprocess.CompletedProcess(
+                    ["/usr/bin/git"],
+                    0,
+                    path.read_bytes(),
+                    b"",
+                )
+            )
+            report = provenance_module._attest_committed_file(
+                path,
+                repository_root=root,
+                expected_commit=HEAD_SHA,
+                git_runner=git_runner,
+                deadline=deadline,
+            )
+        self.assertTrue(report["ok"], report)
+        self.assertEqual(7.0, git_runner.call_args.kwargs["timeout"])
+
+        ctest_runner = mock.Mock(
+            return_value=subprocess.CompletedProcess(
+                ["/trusted/ctest"],
+                0,
+                "",
+                "",
+            )
+        )
+        provenance_module._run_ctest_command(
+            ctest_runner,
+            ["/trusted/ctest", "--show-only=json-v1"],
+            cwd="/runtime",
+            text=True,
+            env={"PATH": "/usr/bin:/bin"},
+            timeout=120.0,
+            execution_identity=None,
+            deadline=deadline,
+        )
+        self.assertEqual(7.0, ctest_runner.call_args.kwargs["timeout"])
+
+        urlopen = mock.Mock(
+            return_value=FakeHTTPResponse(
+                json.dumps(
+                    {
+                        "id": AUTHORITATIVE_REPOSITORY_ID,
+                        "full_name": REPOSITORY,
+                    }
+                ).encode()
+            )
+        )
+        adapter = StdlibGitHubRESTAdapter(
+            urlopen=urlopen,
+            deadline=deadline,
+        )
+        adapter.get_repository(REPOSITORY)
+        self.assertEqual(7.0, urlopen.call_args.kwargs["timeout"])
+
+        ps_runner = mock.Mock(
+            return_value=subprocess.CompletedProcess(
+                ["/bin/ps"],
+                0,
+                "",
+                "",
+            )
+        )
+        with mock.patch.object(
+            provenance_module.subprocess,
+            "run",
+            ps_runner,
+        ):
+            self.assertEqual(
+                (),
+                provenance_module._process_ids_for_uid(
+                    65001,
+                    deadline=deadline,
+                ),
+            )
+        self.assertEqual(5.0, ps_runner.call_args.kwargs["timeout"])
+        self.assertIs(
+            subprocess.DEVNULL,
+            ps_runner.call_args.kwargs["stdin"],
+        )
+
+    def test_exhausted_deadline_prevents_subprocess_and_api_invocation(
+        self,
+    ) -> None:
+        clock = FakeMonotonicClock()
+        deadline = provenance_module._VerifierDeadline(1.0, monotonic=clock)
+        clock.advance(2.0)
+        command_runner = mock.Mock()
+        with self.assertRaises(TimeoutError):
+            provenance_module._run_text(
+                command_runner,
+                ("/usr/bin/git", "rev-parse", "HEAD"),
+                cwd=Path("/candidate"),
+                deadline=deadline,
+            )
+        command_runner.assert_not_called()
+
+        urlopen = mock.Mock()
+        adapter = StdlibGitHubRESTAdapter(
+            urlopen=urlopen,
+            deadline=deadline,
+        )
+        with self.assertRaisesRegex(
+            TimeoutError,
+            "verifier deadline exhausted",
+        ):
+            adapter.get_repository(REPOSITORY)
+        urlopen.assert_not_called()
+
+    def test_api_slow_response_is_closed_at_absolute_deadline(self) -> None:
+        response = BlockingHTTPResponse()
+        adapter = StdlibGitHubRESTAdapter(
+            urlopen=mock.Mock(return_value=response),
+            timeout_seconds=5.0,
+            deadline=provenance_module._VerifierDeadline(0.05),
+        )
+        started = time.monotonic()
+        with self.assertRaisesRegex(
+            GitHubSourceError,
+            "verifier deadline exhausted",
+        ):
+            adapter.get_repository(REPOSITORY)
+
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertTrue(response.closed.is_set())
+
+    def test_default_api_transport_bounds_open_and_read_in_subprocess(
+        self,
+    ) -> None:
+        clock = FakeMonotonicClock()
+        deadline = provenance_module._VerifierDeadline(
+            10.0,
+            monotonic=clock,
+        )
+        completed = subprocess.CompletedProcess(
+            [sys.executable],
+            0,
+            b'S{"id":1}',
+            b"",
+        )
+        adapter = StdlibGitHubRESTAdapter(
+            token="fixture-token",
+            deadline=deadline,
+        )
+        with mock.patch.object(
+            provenance_module.subprocess,
+            "run",
+            return_value=completed,
+        ) as runner:
+            self.assertEqual(1, adapter.get_repository(REPOSITORY)["id"])
+
+        self.assertEqual(10.0, runner.call_args.kwargs["timeout"])
+        self.assertNotIn(
+            "fixture-token",
+            " ".join(runner.call_args.args[0]),
+        )
+        self.assertNotIn(
+            "fixture-token",
+            " ".join(runner.call_args.kwargs["env"].values()),
+        )
+        request_spec = json.loads(runner.call_args.kwargs["input"])
+        self.assertEqual(
+            "Bearer fixture-token",
+            request_spec["headers"]["Authorization"],
+        )
+
+    def test_default_api_transport_bootstrap_executes_in_isolated_python(
+        self,
+    ) -> None:
+        adapter = StdlibGitHubRESTAdapter()
+        payload = adapter._request_bytes_in_subprocess(
+            path="/fixture",
+            url="data:application/json,%7B%22id%22%3A1%7D",
+            method="GET",
+            headers={},
+            body=None,
+            maximum=1024,
+            request_timeout=5.0,
+        )
+        self.assertEqual(b'{"id":1}', payload)
+
+    def test_cleanup_uses_fresh_deadline_after_work_deadline_expires(
+        self,
+    ) -> None:
+        work_clock = FakeMonotonicClock()
+        expired_work_deadline = provenance_module._VerifierDeadline(
+            1.0,
+            monotonic=work_clock,
+        )
+        work_clock.advance(2.0)
+        cleanup_deadlines: list[object] = []
+
+        def process_ids(
+            uid: int,
+            *,
+            deadline: object,
+        ) -> tuple[int, ...]:
+            self.assertEqual(65001, uid)
+            cleanup_deadlines.append(deadline)
+            return (4321,) if len(cleanup_deadlines) == 1 else ()
+
+        with (
+            mock.patch.object(
+                provenance_module,
+                "_process_ids_for_uid",
+                side_effect=process_ids,
+            ),
+            mock.patch.object(provenance_module.os, "kill"),
+            mock.patch.object(provenance_module.time, "sleep"),
+        ):
+            observed = provenance_module._terminate_producer_uid_processes(
+                65001,
+            )
+
+        self.assertEqual((4321,), observed)
+        self.assertEqual(2, len(cleanup_deadlines))
+        self.assertIs(cleanup_deadlines[0], cleanup_deadlines[1])
+        self.assertIsNot(expired_work_deadline, cleanup_deadlines[0])
+
+    def test_pinned_producer_rechecks_capacity_immediately_before_launch(
+        self,
+    ) -> None:
+        clock = FakeMonotonicClock()
+        deadline = provenance_module._VerifierDeadline(
+            10.0,
+            monotonic=clock,
+        )
+        payload = b"fixture executable"
+        digest = hashlib.sha256(payload).hexdigest()
+        command_runner = mock.Mock()
+        original_open = provenance_module._open_pinned_executable
+
+        def delayed_open(path: Path) -> object:
+            observed = original_open(path)
+            clock.advance(1.0)
+            return observed
+
+        with tempfile.TemporaryDirectory() as directory:
+            state_dir = Path(directory)
+            with (
+                mock.patch.object(
+                    provenance_module,
+                    "_open_pinned_executable",
+                    side_effect=delayed_open,
+                ),
+                self.assertRaisesRegex(
+                    TimeoutError,
+                    "cannot start pinned producer command",
+                ),
+            ):
+                provenance_module._run_pinned_command(
+                    command_runner,
+                    ("/candidate/producer",),
+                    executable_payload=payload,
+                    executable_snapshot=(0, 0, len(payload), 0, digest),
+                    authenticated_python_sources={},
+                    state_dir=state_dir,
+                    cwd=str(state_dir),
+                    timeout=5.0,
+                    deadline=deadline,
+                    cleanup_reserve_seconds=5.0,
+                )
+
+        command_runner.assert_not_called()
+
+    def test_process_capture_interrupt_closes_pipes_and_sweeps_uid(self) -> None:
+        class InterruptedProcess:
+            def __init__(self) -> None:
+                self.stdout = io.BytesIO(b"stdout")
+                self.stderr = io.BytesIO(b"stderr")
+                self.returncode = 0
+                self.poll_count = 0
+
+            def poll(self) -> int:
+                self.poll_count += 1
+                if self.poll_count == 1:
+                    raise KeyboardInterrupt()
+                return 0
+
+        process = InterruptedProcess()
+        with (
+            mock.patch.object(
+                provenance_module,
+                "_terminate_producer_uid_processes",
+                return_value=(),
+            ) as cleanup,
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            provenance_module._communicate_process_bounded(
+                process,
+                argv=("producer",),
+                timeout=5.0,
+                producer_uid=65001,
+                residual_error_prefix="residual: ",
+            )
+
+        self.assertTrue(process.stdout.closed)
+        self.assertTrue(process.stderr.closed)
+        cleanup.assert_called_once_with(65001)
 
 
 class RepositoryAttestationTest(unittest.TestCase):
@@ -727,16 +1192,42 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             BUILD_IDENTITY_REPO_ROOT / AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH
         )
         workflow = workflow_path.read_text()
+        ci_workflow = (
+            BUILD_IDENTITY_REPO_ROOT / ".github/workflows/ci.yml"
+        ).read_text()
 
         self.assertIn("permissions:\n  contents: read\n", workflow)
+        self.assertIn(
+            "on:\n"
+            "  pull_request_target:\n"
+            "    branches:\n"
+            "      - main\n",
+            workflow,
+        )
+        self.assertIn("  pre-live-build:\n", workflow)
+        self.assertIn("  pre-live-producer-isolation:\n", workflow)
         self.assertIn(f"  {AUTHORITATIVE_PROVENANCE_JOB_NAME}:\n", workflow)
+        build_job = workflow.split(
+            "  pre-live-build:\n",
+            1,
+        )[1].split(
+            "\n  pre-live-producer-isolation:\n",
+            1,
+        )[0]
+        isolation_job = workflow.split(
+            "  pre-live-producer-isolation:\n",
+            1,
+        )[1].split(
+            f"\n  {AUTHORITATIVE_PROVENANCE_JOB_NAME}:\n",
+            1,
+        )[0]
         provenance_job = workflow.split(
             f"  {AUTHORITATIVE_PROVENANCE_JOB_NAME}:\n",
             1,
         )[1].split("\n  micromachine-macos-contracts:\n", 1)[0]
+        trusted_verifier_commit = "c6c46c297be133d7fbd21874504857dc558a8a5e"
         self.assertIn(
             "    if: >-\n"
-            "      github.event_name == 'pull_request' &&\n"
             "      github.event.pull_request.head.repo.id == "
             "github.event.repository.id\n",
             provenance_job,
@@ -762,13 +1253,8 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             )
             if "\n      - uses: actions/checkout@" in match.group(0)
         ]
-        pull_request_job_blocks = [
-            block
-            for block in job_blocks
-            if "if: github.event_name == 'push'" not in block
-        ]
-        self.assertGreaterEqual(len(pull_request_job_blocks), 2)
-        for job_block in pull_request_job_blocks:
+        self.assertEqual(3, len(job_blocks))
+        for job_block in job_blocks:
             with self.subTest(job=job_block.split(":\n", 1)[0].strip()):
                 checkout_block = job_block.split(
                     "      - uses: actions/checkout@",
@@ -778,19 +1264,425 @@ class GitHubSourceAttestationTest(unittest.TestCase):
                     "          persist-credentials: false",
                     checkout_block,
                 )
-        build_step = provenance_job.split(
-            "      - name: Build exact MicroMachine integration\n",
-            1,
-        )[1].split(
-            "      - name: Emit canonical authenticated provenance bundle\n",
-            1,
-        )[0]
-        self.assertNotIn("GITHUB_TOKEN", build_step)
+        self.assertIn(
+            "      - name: Build exact MicroMachine integration "
+            "without credentials\n"
+            "        working-directory: candidate\n",
+            build_job,
+        )
+        self.assertIn(
+            "          path: candidate\n"
+            "          persist-credentials: false\n"
+            "          ref: ${{ github.event.pull_request.head.sha }}\n",
+            build_job,
+        )
+        self.assertIn(
+            "      - name: Archive exact MicroMachine runtime\n",
+            build_job,
+        )
+        self.assertIn(
+            "      - name: Upload exact MicroMachine runtime\n",
+            build_job,
+        )
+        self.assertIn(
+            "          name: pre-live-build-runtime\n",
+            build_job,
+        )
+        self.assertIn(
+            "          name: pre-live-build-runtime\n"
+            "          path: ${{ runner.temp }}/"
+            "pre-live-build-runtime.tar.gz\n"
+            "          compression-level: 0\n"
+            "          if-no-files-found: error\n"
+            "          overwrite: true\n",
+            build_job,
+        )
+        self.assertNotIn("GITHUB_TOKEN", build_job)
+        self.assertNotIn("github.token", build_job)
+        self.assertIn(
+            "      - name: Verify immutable dedicated producer isolation\n"
+            "        working-directory: trusted-verifier\n",
+            isolation_job,
+        )
+        self.assertIn(
+            f"      VOI_TRUSTED_VERIFIER_COMMIT: {trusted_verifier_commit}\n",
+            isolation_job,
+        )
+        self.assertIn(
+            "          path: trusted-verifier\n"
+            "          persist-credentials: false\n"
+            f"          ref: {trusted_verifier_commit}\n",
+            isolation_job,
+        )
+        self.assertIn(
+            "          sudo env -u GITHUB_TOKEN -u GH_TOKEN \\\n",
+            isolation_job,
+        )
+        self.assertIn(
+            '            PYTHONPATH="${PWD}" \\\n',
+            isolation_job,
+        )
+        self.assertNotIn("-m unittest", isolation_job)
+        self.assertIn(
+            '            "${PYTHON_EXECUTABLE}" '
+            "-W error::ResourceWarning -B \\\n"
+            "              tests/test_micromachine_pre_live_provenance.py \\\n"
+            "              -k dedicated_producer_uid\n",
+            isolation_job,
+        )
+        self.assertIn("-k dedicated_producer_uid", isolation_job)
+        self.assertNotIn("github.token", isolation_job)
+        self.assertNotIn("actions: read", isolation_job)
+        self.assertNotIn("path: candidate", isolation_job)
+        self.assertNotIn("github.event.pull_request.head.sha", isolation_job)
+        self.assertIn(
+            "      - pre-live-producer-isolation\n",
+            provenance_job,
+        )
+        self.assertIn(
+            "          name: pre-live\n"
+            "          path: ${{ runner.temp }}/pre-live/"
+            "pre-live-provenance.zip\n"
+            "          compression-level: 0\n"
+            "          if-no-files-found: error\n"
+            "          overwrite: true\n",
+            provenance_job,
+        )
+        self.assertNotIn(
+            "Build exact MicroMachine integration",
+            provenance_job,
+        )
+        self.assertIn(
+            "      - name: Download exact MicroMachine runtime\n",
+            provenance_job,
+        )
+        self.assertIn(
+            "        uses: actions/download-artifact@"
+            "d3f86a106a0bac45b974a628896c90dbdf5c8093\n",
+            provenance_job,
+        )
+        self.assertIn(
+            "      - name: Restore exact MicroMachine runtime\n",
+            provenance_job,
+        )
         self.assertNotIn("GITHUB_WORKFLOW_REF:", provenance_job)
         self.assertNotIn("GITHUB_WORKFLOW_SHA:", provenance_job)
         self.assertIn(
+            '          PYTHON_EXECUTABLE="$(\n'
+            "            python3 -I -B -S -c \\\n"
+            "              'import os, sys; print(os.path.realpath(sys.executable))'\n"
+            '          )"\n',
+            provenance_job,
+        )
+        self.assertIn(
+            '          VOI_NODE_EXECUTABLE="$(\n'
+            '            "${PYTHON_EXECUTABLE}" -I -B -S -c \\\n'
+            '              \'import os, shutil; print(os.path.realpath('
+            'shutil.which("node") or ""))\'\n'
+            '          )"\n',
+            provenance_job,
+        )
+        self.assertIn('      VOI_PRODUCER_UID: "65001"\n', provenance_job)
+        self.assertIn('      VOI_PRODUCER_GID: "65001"\n', provenance_job)
+        self.assertIn(
+            '      VOI_PRODUCER_TIMEOUT_SECONDS: "1800"\n',
+            provenance_job,
+        )
+        self.assertIn(
+            '      VOI_VERIFIER_TIMEOUT_SECONDS: "4800"\n',
+            provenance_job,
+        )
+        self.assertIn(
+            "    timeout-minutes: "
+            f"{GITHUB_ACTIONS_PROVENANCE_JOB_TIMEOUT_MINUTES}\n",
+            provenance_job,
+        )
+        required_job_budget_seconds = (
+            GITHUB_ACTIONS_PROVENANCE_SETUP_RESERVE_SECONDS
+            + GITHUB_ACTIONS_VERIFIER_TIMEOUT_SECONDS
+            + GITHUB_ACTIONS_PROVENANCE_CLEANUP_RESERVE_SECONDS
+            + GITHUB_ACTIONS_PROVENANCE_PUBLICATION_RESERVE_SECONDS
+        )
+        self.assertGreater(
+            GITHUB_ACTIONS_PROVENANCE_JOB_TIMEOUT_MINUTES * 60,
+            required_job_budget_seconds,
+        )
+        self.assertIn(
+            "      VOI_CANDIDATE_WORKSPACE: "
+            "${{ github.workspace }}/candidate\n",
+            provenance_job,
+        )
+        self.assertIn(
+            "      VOI_TRUSTED_VERIFIER_WORKSPACE: "
+            "${{ github.workspace }}/trusted-verifier\n",
+            provenance_job,
+        )
+        self.assertIn(
+            f"      VOI_TRUSTED_VERIFIER_COMMIT: {trusted_verifier_commit}\n",
+            provenance_job,
+        )
+        self.assertEqual(
+            2,
+            provenance_job.count(
+                "      - uses: actions/checkout@"
+                "11d5960a326750d5838078e36cf38b85af677262\n"
+            ),
+        )
+        self.assertIn(
+            "          path: trusted-verifier\n"
+            "          persist-credentials: false\n"
+            f"          ref: {trusted_verifier_commit}\n",
+            provenance_job,
+        )
+        self.assertIn(
+            "          path: candidate\n"
+            "          persist-credentials: false\n"
+            "          ref: ${{ github.event.pull_request.head.sha }}\n",
+            provenance_job,
+        )
+        emission_step = provenance_job.split(
+            "      - name: Transfer inputs and emit canonical authenticated "
+            "provenance bundle\n",
+            1,
+        )[1].split(
+            "      - name: Upload canonical authenticated provenance bundle\n",
+            1,
+        )[0]
+        self.assertIn(
+            "          sudo chown -RP 0:0 \\\n"
+            '            "${VOI_CANDIDATE_WORKSPACE}" \\\n'
+            '            "${VOI_TRUSTED_VERIFIER_WORKSPACE}" \\\n'
+            '            "${ROOT_DIR}"\n',
+            emission_step,
+        )
+        self.assertIn(
+            "          sudo /bin/chmod -RN \\\n"
+            '            "${VOI_CANDIDATE_WORKSPACE}" \\\n'
+            '            "${VOI_TRUSTED_VERIFIER_WORKSPACE}" \\\n'
+            '            "${ROOT_DIR}"\n',
+            emission_step,
+        )
+        self.assertIn(
+            "          sudo /bin/chmod -R go-w \\\n"
+            '            "${VOI_CANDIDATE_WORKSPACE}" \\\n'
+            '            "${VOI_TRUSTED_VERIFIER_WORKSPACE}" \\\n'
+            '            "${ROOT_DIR}"\n',
+            emission_step,
+        )
+        self.assertIn(
+            "          sudo chmod 0755 \\\n"
+            '            "${VOI_CANDIDATE_WORKSPACE}" \\\n'
+            '            "${VOI_TRUSTED_VERIFIER_WORKSPACE}" \\\n'
+            '            "${ROOT_DIR}"\n',
+            emission_step,
+        )
+        self.assertNotIn("-m unittest", provenance_job)
+        self.assertNotIn("-k dedicated_producer_uid", provenance_job)
+        self.assertIn("          trap cleanup_verifier EXIT\n", emission_step)
+        self.assertIn("          trap 'exit 130' INT\n", emission_step)
+        self.assertIn("          trap 'exit 143' TERM\n", emission_step)
+        self.assertIn(
+            "            sudo env -u GITHUB_TOKEN -u GH_TOKEN \\\n",
+            emission_step,
+        )
+        self.assertIn(
+            "              \"${PYTHON_EXECUTABLE}\" -I -B -S -c '\n",
+            emission_step,
+        )
+        self.assertIn(
+            "deadline = time.monotonic() + 600.0\n",
+            emission_step,
+        )
+        self.assertIn(
+            '        ["/bin/ps", "-axo", "uid=,pid="],\n',
+            emission_step,
+        )
+        self.assertIn(
+            "            os.kill(process_id, signal.SIGKILL)\n",
+            emission_step,
+        )
+        self.assertIn(
+            "            if [ \"${cleanup_status}\" -ne 0 ]; then\n"
+            "              status=1\n"
+            "            else\n",
+            emission_step,
+        )
+        cleanup_source = emission_step.split(
+            "              \"${PYTHON_EXECUTABLE}\" -I -B -S -c '\n",
+            1,
+        )[1].split(
+            "\n          ' \"${VOI_PRODUCER_UID}\" </dev/null\n",
+            1,
+        )[0]
+        compile(
+            textwrap.dedent(cleanup_source),
+            "<workflow-cleanup>",
+            "exec",
+        )
+        self.assertLess(
+            emission_step.index("          trap cleanup_verifier EXIT\n"),
+            emission_step.index("          sudo chown -RP 0:0 \\\n"),
+        )
+        self.assertIn(
+            "          printf '%s' \"${GITHUB_TOKEN}\" | "
+            "sudo env -u GITHUB_TOKEN \\\n",
+            emission_step,
+        )
+        self.assertIn(
+            '          cd "${VOI_TRUSTED_VERIFIER_WORKSPACE}"\n',
+            emission_step,
+        )
+        self.assertNotIn(
+            'GITHUB_TOKEN="${GITHUB_TOKEN}"',
+            emission_step,
+        )
+        self.assertIn(
+            '            VOI_CANDIDATE_WORKSPACE="${VOI_CANDIDATE_WORKSPACE}" \\\n',
+            emission_step,
+        )
+        self.assertIn(
+            '            VOI_PRODUCER_UID="${VOI_PRODUCER_UID}" \\\n',
+            emission_step,
+        )
+        self.assertIn(
+            '            VOI_PRODUCER_GID="${VOI_PRODUCER_GID}" \\\n',
+            emission_step,
+        )
+        self.assertIn(
+            "            VOI_PRODUCER_TIMEOUT_SECONDS="
+            '"${VOI_PRODUCER_TIMEOUT_SECONDS}" \\\n',
+            emission_step,
+        )
+        self.assertIn(
+            "            VOI_VERIFIER_TIMEOUT_SECONDS="
+            '"${VOI_VERIFIER_TIMEOUT_SECONDS}" \\\n',
+            emission_step,
+        )
+        self.assertIn(
+            "            VOI_TRUSTED_VERIFIER_COMMIT="
+            '"${VOI_TRUSTED_VERIFIER_COMMIT}" \\\n',
+            emission_step,
+        )
+        self.assertIn(
+            "            VOI_TRUSTED_VERIFIER_WORKSPACE="
+            '"${VOI_TRUSTED_VERIFIER_WORKSPACE}" \\\n',
+            emission_step,
+        )
+        self.assertIn(
+            '            "${PYTHON_EXECUTABLE}" -B -m '
+            "starcraft_commander.micromachine_pre_live_provenance \\\n",
+            emission_step,
+        )
+        self.assertIn(
+            '          sudo chown "$(id -u):$(id -g)" \\\n',
+            emission_step,
+        )
+        self.assertNotIn(
+            "Restore checkout ownership to the runner",
+            provenance_job,
+        )
+        candidate_job = ci_workflow.split(
+            "  pre-live-candidate-qualification:\n",
+            1,
+        )[1].split(
+            "\n  pre-live-workflow-registration:\n",
+            1,
+        )[0]
+        registration_job = ci_workflow.split(
+            "  pre-live-workflow-registration:\n",
+            1,
+        )[1].split(
+            "\n  micromachine-macos-contracts:\n",
+            1,
+        )[0]
+        self.assertIn(
+            "      github.event_name == 'pull_request' &&\n"
+            "      github.event.pull_request.head.repo.id == "
+            "github.event.repository.id\n",
+            candidate_job,
+        )
+        self.assertIn("    runs-on: macos-14\n", candidate_job)
+        self.assertIn("    timeout-minutes: 90\n", candidate_job)
+        self.assertIn(
+            "          persist-credentials: false\n"
+            "          ref: ${{ github.event.pull_request.head.sha }}\n",
+            candidate_job,
+        )
+        self.assertIn(
+            "      - name: Build exact MicroMachine integration "
+            "without credentials\n",
+            candidate_job,
+        )
+        self.assertIn(
+            "      - name: Verify candidate dedicated producer isolation\n",
+            candidate_job,
+        )
+        self.assertIn(
+            "          sudo env -u GITHUB_TOKEN -u GH_TOKEN \\\n",
+            candidate_job,
+        )
+        self.assertIn(
+            "            DEVELOPER_DIR="
+            "/Applications/Xcode.app/Contents/Developer \\\n",
+            candidate_job,
+        )
+        self.assertIn(
+            '            PYTHONPATH="${PWD}" \\\n',
+            candidate_job,
+        )
+        self.assertIn(
+            '            "${PYTHON_EXECUTABLE}" '
+            "-W error::ResourceWarning -B \\\n"
+            "              tests/test_micromachine_pre_live_provenance.py \\\n"
+            "              -k dedicated_producer_uid\n",
+            candidate_job,
+        )
+        self.assertEqual(
+            11,
+            len(
+                [
+                    name
+                    for name in dir(LocalProducerTest)
+                    if name.startswith("test_")
+                    and "dedicated_producer_uid" in name
+                ]
+            ),
+        )
+        self.assertIn(
+            '          PYTHONPATH="${PWD}" \\\n'
+            "            python3 -B "
+            "tests/test_micromachine_pre_live_journeys.py\n"
+            '          PYTHONPATH="${PWD}" \\\n'
+            "            python3 -B "
+            "tests/test_micromachine_terran_capabilities.py\n",
+            candidate_job,
+        )
+        self.assertNotIn("-m unittest", candidate_job)
+        self.assertNotIn("github.token", candidate_job)
+        self.assertEqual(
+            1,
+            candidate_job.count("sudo env -u GITHUB_TOKEN -u GH_TOKEN"),
+        )
+        self.assertNotIn("GITHUB_TOKEN:", candidate_job)
+        self.assertNotIn("GH_TOKEN:", candidate_job)
+        self.assertIn(
+            "    if: github.event_name == 'push'\n",
+            registration_job,
+        )
+        self.assertIn("      actions: read\n", registration_job)
+        self.assertIn(
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/"
+            "pre-live-provenance.yml",
+            registration_job,
+        )
+        self.assertIn(
+            'test "$(jq -r \'.state\' <<<"${workflow}")" = "active"\n',
+            registration_job,
+        )
+        self.assertNotIn("contents: write", ci_workflow)
+        self.assertIn(
             "  micromachine-macos-contracts:\n    if: github.event_name == 'push'\n",
-            workflow,
+            ci_workflow,
         )
         self.assertNotIn("contents: write", workflow)
 
@@ -814,6 +1706,30 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         report = self.attest(adapter)
 
         self.assertTrue(report["ok"], report)
+        self.assertEqual(1, adapter.workflow_run_get_calls)
+        self.assertEqual(1, adapter.job_get_calls)
+        self.assertEqual(HEAD_SHA, adapter.workflow_run["head_sha"])
+        self.assertEqual(
+            "issue-138-authenticated-prelive-provenance",
+            adapter.workflow_run["head_branch"],
+        )
+        self.assertEqual(
+            [
+                (
+                    REPOSITORY,
+                    WORKFLOW_ID,
+                    "issue-138-authenticated-prelive-provenance",
+                    AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
+                ),
+                (
+                    REPOSITORY,
+                    WORKFLOW_ID,
+                    "issue-138-authenticated-prelive-provenance",
+                    AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
+                ),
+            ],
+            adapter.workflow_run_queries,
+        )
         self.assertEqual(
             {
                 "repository_id": AUTHORITATIVE_REPOSITORY_ID,
@@ -836,6 +1752,15 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             report["artifact_sha256"],
         )
 
+    def test_accepts_repository_summary_without_pull_request_binding(self) -> None:
+        adapter = FakeGitHubAdapter()
+        adapter.repository_workflow_runs[0]["pull_requests"] = []
+
+        report = self.attest(adapter)
+
+        self.assertTrue(report["ok"], report)
+        self.assertEqual(1, adapter.workflow_run_get_calls)
+
     def test_accepts_github_one_file_artifact_delivery_wrapper(self) -> None:
         adapter = FakeGitHubAdapter()
         wrapper = io.BytesIO()
@@ -857,6 +1782,37 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             report["artifact_bundle"]["delivery"]["kind"],
         )
 
+    def test_threads_node_descriptor_into_downloaded_bundle_replay(
+        self,
+    ) -> None:
+        adapter = FakeGitHubAdapter()
+        descriptor = "/dev/fd/123"
+
+        with mock.patch.object(
+            provenance_module,
+            "verify_downloaded_pre_live_artifact",
+            wraps=provenance_module.verify_downloaded_pre_live_artifact,
+        ) as verifier:
+            report = attest_github_source(
+                adapter,
+                repository=REPOSITORY,
+                expected_repository_id=AUTHORITATIVE_REPOSITORY_ID,
+                issue_number=138,
+                pull_number=137,
+                run_id=RUN_ID,
+                run_attempt=RUN_ATTEMPT,
+                job_id=JOB_ID,
+                artifact_id=ARTIFACT_ID,
+                expected_head_sha=HEAD_SHA,
+                node_executable=descriptor,
+            )
+
+        self.assertTrue(report["ok"], report)
+        self.assertEqual(
+            descriptor,
+            verifier.call_args.kwargs["node_executable"],
+        )
+
     def test_resolves_current_actions_job_context_without_artifact_claims(
         self,
     ) -> None:
@@ -875,6 +1831,19 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         self.assertTrue(report["ok"], report)
         self.assertEqual(JOB_ID, report["job_id"])
         self.assertEqual(WORKFLOW_ID, report["workflow_id"])
+        self.assertEqual(WORKFLOW_SHA, report["workflow_sha"])
+        self.assertNotEqual(report["head_sha"], report["workflow_sha"])
+        self.assertEqual(
+            [
+                (
+                    REPOSITORY,
+                    WORKFLOW_ID,
+                    "issue-138-authenticated-prelive-provenance",
+                    AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
+                )
+            ],
+            adapter.workflow_run_queries,
+        )
 
         adapter.jobs.append(dict(adapter.jobs[0]))
         ambiguous = attest_github_actions_emission_context(
@@ -887,6 +1856,115 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             workflow_sha=WORKFLOW_SHA,
         )
         self.assertFalse(ambiguous["ok"], ambiguous)
+
+    def test_rejects_candidate_run_sha_or_branch_tampering(self) -> None:
+        mutations = {
+            "run sha": lambda adapter: adapter.workflow_run.update(
+                {"head_sha": "c" * 40}
+            ),
+            "run branch": lambda adapter: adapter.workflow_run.update(
+                {"head_branch": "main"}
+            ),
+            "attempt sha": lambda adapter: adapter.attempt.update(
+                {"head_sha": "c" * 40}
+            ),
+            "attempt branch": lambda adapter: adapter.attempt.update(
+                {"head_branch": "main"}
+            ),
+            "job sha": lambda adapter: adapter.job.update(
+                {"head_sha": "c" * 40}
+            ),
+            "job branch": lambda adapter: adapter.job.update(
+                {"head_branch": "main"}
+            ),
+            "artifact sha": lambda adapter: adapter.artifact[
+                "workflow_run"
+            ].update({"head_sha": "c" * 40}),
+            "artifact branch": lambda adapter: adapter.artifact[
+                "workflow_run"
+            ].update({"head_branch": "main"}),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                adapter = FakeGitHubAdapter()
+                mutate(adapter)
+
+                report = self.attest(adapter)
+
+                self.assertFalse(report["ok"], report)
+                self.assertEqual(0, adapter.download_calls)
+
+    def test_rejects_workflow_identity_not_bound_to_main_base(self) -> None:
+        adapter = FakeGitHubAdapter()
+        changed_base = "d" * 40
+        adapter.pull_request["base"]["sha"] = changed_base
+        adapter.comparison["base_commit"]["sha"] = changed_base
+        adapter.comparison["merge_base_commit"]["sha"] = changed_base
+
+        report = attest_github_actions_emission_context(
+            adapter,
+            repository=REPOSITORY,
+            run_id=RUN_ID,
+            run_attempt=RUN_ATTEMPT,
+            expected_head_sha=HEAD_SHA,
+            workflow_ref=WORKFLOW_REF,
+            workflow_sha=WORKFLOW_SHA,
+        )
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn(
+            "workflow execution SHA differs from the authenticated "
+            "pull-request base",
+            " ".join(report["blockers"]),
+        )
+
+        adapter = FakeGitHubAdapter()
+        adapter.workflow_references["refs/heads/main"]["object"]["sha"] = (
+            "d" * 40
+        )
+
+        report = attest_github_actions_emission_context(
+            adapter,
+            repository=REPOSITORY,
+            run_id=RUN_ID,
+            run_attempt=RUN_ATTEMPT,
+            expected_head_sha=HEAD_SHA,
+            workflow_ref=WORKFLOW_REF,
+            workflow_sha=WORKFLOW_SHA,
+        )
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn(
+            "workflow SHA differs from the authenticated Git reference target",
+            " ".join(report["blockers"]),
+        )
+
+    def test_emission_rejects_candidate_branch_tampering(self) -> None:
+        mutations = {
+            "run branch": lambda adapter: adapter.workflow_run.update(
+                {"head_branch": "main"}
+            ),
+            "job branch": lambda adapter: adapter.job.update(
+                {"head_branch": "main"}
+            ),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                adapter = FakeGitHubAdapter()
+                mutate(adapter)
+
+                report = attest_github_actions_emission_context(
+                    adapter,
+                    repository=REPOSITORY,
+                    run_id=RUN_ID,
+                    run_attempt=RUN_ATTEMPT,
+                    expected_head_sha=HEAD_SHA,
+                    workflow_ref=WORKFLOW_REF,
+                    workflow_sha=WORKFLOW_SHA,
+                )
+
+                self.assertFalse(report["ok"], report)
+                self.assertIn("branch", " ".join(report["blockers"]))
 
     def test_accepts_current_run_during_workflow_list_eventual_consistency(
         self,
@@ -914,14 +1992,104 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         self.assertEqual(RUN_ID, report["run_id"])
         self.assertEqual("in_progress", report["job_status"])
 
-    def test_accepts_completed_source_when_workflow_list_lags(self) -> None:
+    def test_rejects_completed_emission_missing_from_workflow_list(self) -> None:
+        adapter = FakeGitHubAdapter()
+        adapter.workflow_runs.clear()
+
+        report = attest_github_actions_emission_context(
+            adapter,
+            repository=REPOSITORY,
+            run_id=RUN_ID,
+            run_attempt=RUN_ATTEMPT,
+            expected_head_sha=HEAD_SHA,
+            workflow_ref=WORKFLOW_REF,
+            workflow_sha=WORKFLOW_SHA,
+        )
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn(
+            "no applicable workflow run exists",
+            " ".join(report["blockers"]),
+        )
+
+    def test_rejects_completed_source_missing_from_workflow_list(self) -> None:
         adapter = FakeGitHubAdapter()
         adapter.workflow_runs.clear()
 
         report = self.attest(adapter)
 
-        self.assertTrue(report["ok"], report)
-        self.assertEqual(RUN_ID, report["source_ids"]["workflow_run_id"])
+        self.assertFalse(report["ok"], report)
+        self.assertIn(
+            "no applicable workflow run exists",
+            " ".join(report["blockers"]),
+        )
+        self.assertEqual(0, adapter.download_calls)
+
+    def test_rejects_duplicate_selected_workflow_summary(self) -> None:
+        adapter = FakeGitHubAdapter()
+        adapter.workflow_runs.append(dict(adapter.workflow_run))
+
+        report = self.attest(adapter)
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn("duplicated", " ".join(report["blockers"]))
+        self.assertEqual(0, adapter.download_calls)
+
+    def test_rejects_oversized_workflow_namespace_before_hydration(self) -> None:
+        adapter = FakeGitHubAdapter()
+        for offset in range(1, 151):
+            summary = copy.deepcopy(adapter.workflow_run)
+            summary.update(
+                {
+                    "id": RUN_ID + offset,
+                    "check_suite_id": CHECK_SUITE_ID + offset,
+                    "run_number": int(adapter.workflow_run["run_number"]) + offset,
+                    "run_attempt": 1,
+                }
+            )
+            adapter.workflow_runs.append(summary)
+
+        report = self.attest(adapter)
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn("safety limit", " ".join(report["blockers"]))
+        self.assertEqual(1, adapter.workflow_run_get_calls)
+        self.assertEqual(0, adapter.download_calls)
+
+    def test_rejects_malformed_newer_workflow_summary(self) -> None:
+        mutations = {
+            "run number": lambda run: run.update({"run_number": "invalid"}),
+            "run attempt": lambda run: run.update({"run_attempt": "invalid"}),
+            "workflow id": lambda run: run.pop("workflow_id"),
+            "workflow path": lambda run: run.pop("path"),
+            "event": lambda run: run.pop("event"),
+            "head sha": lambda run: run.pop("head_sha"),
+            "head branch": lambda run: run.pop("head_branch"),
+            "repository id": lambda run: run["head_repository"].pop("id"),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                adapter = FakeGitHubAdapter()
+                newer = copy.deepcopy(adapter.workflow_run)
+                newer.update(
+                    {
+                        "id": RUN_ID + 1,
+                        "check_suite_id": CHECK_SUITE_ID + 1,
+                        "run_number": adapter.workflow_run["run_number"] + 1,
+                        "run_attempt": 1,
+                    }
+                )
+                mutate(newer)
+                adapter.workflow_runs.append(newer)
+
+                report = self.attest(adapter)
+
+                self.assertFalse(report["ok"], report)
+                self.assertIn(
+                    "listed_workflow_run",
+                    " ".join(report["blockers"]),
+                )
+                self.assertEqual(0, adapter.download_calls)
 
     def test_rejects_tampered_runner_workflow_identity(self) -> None:
         mutations = {
@@ -1147,6 +2315,417 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         self.assertIn("stale", " ".join(report["blockers"]))
         self.assertEqual(0, adapter.download_calls)
 
+    def test_rejects_stale_success_when_workflow_listing_omits_newer_run(
+        self,
+    ) -> None:
+        adapter = FakeGitHubAdapter()
+        newer_run = dict(adapter.workflow_run)
+        newer_run.update(
+            {
+                "id": RUN_ID + 1,
+                "check_suite_id": CHECK_SUITE_ID + 1,
+                "run_number": adapter.workflow_run["run_number"] + 1,
+                "run_attempt": 1,
+                "status": "in_progress",
+                "conclusion": None,
+            }
+        )
+        newer_job = dict(adapter.job)
+        newer_job.update(
+            {
+                "id": JOB_ID + 1,
+                "run_id": RUN_ID + 1,
+                "run_attempt": 1,
+                "status": "in_progress",
+                "conclusion": None,
+            }
+        )
+        adapter.workflow_run_details[RUN_ID + 1] = newer_run
+        adapter.repository_workflow_runs.append(dict(newer_run))
+        adapter.job_details[JOB_ID + 1] = newer_job
+        adapter.latest_check_runs.append(
+            {
+                "id": JOB_ID + 1,
+                "name": AUTHORITATIVE_PROVENANCE_JOB_NAME,
+                "head_sha": HEAD_SHA,
+                "status": "in_progress",
+                "conclusion": None,
+                "app": {"id": 15_368, "slug": "github-actions"},
+                "check_suite": {"id": CHECK_SUITE_ID + 1},
+            }
+        )
+
+        report = self.attest(adapter)
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn(
+            "not the latest check run",
+            " ".join(report["blockers"]),
+        )
+        self.assertEqual(0, adapter.download_calls)
+
+    def test_rejects_stale_success_before_newer_provenance_job_exists(
+        self,
+    ) -> None:
+        adapter = FakeGitHubAdapter()
+        newer_run = copy.deepcopy(adapter.workflow_run)
+        newer_run.update(
+            {
+                "id": RUN_ID + 1,
+                "check_suite_id": CHECK_SUITE_ID + 1,
+                "run_number": adapter.workflow_run["run_number"] + 1,
+                "run_attempt": 1,
+                "status": "in_progress",
+                "conclusion": None,
+            }
+        )
+        newer_job = dict(adapter.job)
+        newer_job.update(
+            {
+                "id": JOB_ID + 1,
+                "run_id": RUN_ID + 1,
+                "run_attempt": 1,
+                "name": "pre-live-build",
+                "status": "in_progress",
+                "conclusion": None,
+            }
+        )
+        adapter.workflow_run_details[RUN_ID + 1] = newer_run
+        adapter.repository_workflow_runs.append(dict(newer_run))
+        adapter.job_details[JOB_ID + 1] = newer_job
+        adapter.latest_check_runs.append(
+            {
+                "id": JOB_ID + 1,
+                "name": "pre-live-build",
+                "head_sha": HEAD_SHA,
+                "status": "in_progress",
+                "conclusion": None,
+                "app": {"id": 15_368, "slug": "github-actions"},
+                "check_suite": {"id": CHECK_SUITE_ID + 1},
+            }
+        )
+
+        report = self.attest(adapter)
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn("not the latest check-run run", " ".join(report["blockers"]))
+        self.assertEqual(0, adapter.download_calls)
+
+    def test_rejects_newer_repository_run_before_any_check_exists(self) -> None:
+        adapter = FakeGitHubAdapter()
+        append_newer_repository_run(adapter)
+
+        report = self.attest(adapter)
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn(
+            "not the latest repository workflow run",
+            " ".join(report["blockers"]),
+        )
+        self.assertEqual(0, adapter.download_calls)
+        self.assertEqual(2, adapter.workflow_run_get_calls)
+        self.assertEqual(1, adapter.job_get_calls)
+
+    def test_rejects_run_created_during_artifact_download(self) -> None:
+        class ArtifactDownloadRaceAdapter(FakeGitHubAdapter):
+            def download_artifact(
+                self,
+                repository: str,
+                artifact_id: int,
+            ) -> bytes:
+                payload = super().download_artifact(repository, artifact_id)
+                append_newer_workflow_run(self)
+                return payload
+
+        adapter = ArtifactDownloadRaceAdapter()
+
+        report = self.attest(adapter)
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn(
+            "latest workflow-specific listing",
+            " ".join(report["blockers"]),
+        )
+        self.assertEqual(1, adapter.download_calls)
+
+    def test_rejects_stale_success_when_same_run_has_newer_attempt(self) -> None:
+        class AttemptRaceAdapter(FakeGitHubAdapter):
+            def __init__(self) -> None:
+                super().__init__()
+                self.workflow_run_calls = 0
+                self.newer_attempt = copy.deepcopy(self.workflow_run)
+                self.newer_attempt.update(
+                    {
+                        "run_attempt": RUN_ATTEMPT + 1,
+                        "status": "in_progress",
+                        "conclusion": None,
+                    }
+                )
+
+            def get_workflow_run(
+                self,
+                repository: str,
+                run_id: int,
+            ) -> dict[str, object]:
+                self.workflow_run_calls += 1
+                if run_id == RUN_ID and self.workflow_run_calls > 1:
+                    return self.newer_attempt
+                return super().get_workflow_run(repository, run_id)
+
+        adapter = AttemptRaceAdapter()
+        newer_job = dict(adapter.job)
+        newer_job.update(
+            {
+                "id": JOB_ID + 1,
+                "run_attempt": RUN_ATTEMPT + 1,
+                "name": "pre-live-build",
+                "status": "in_progress",
+                "conclusion": None,
+            }
+        )
+        adapter.job_details[JOB_ID + 1] = newer_job
+        adapter.latest_check_runs.append(
+            {
+                "id": JOB_ID + 1,
+                "name": "pre-live-build",
+                "head_sha": HEAD_SHA,
+                "status": "in_progress",
+                "conclusion": None,
+                "app": {"id": 15_368, "slug": "github-actions"},
+                "check_suite": {"id": CHECK_SUITE_ID},
+            }
+        )
+
+        report = self.attest(adapter)
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn("not the latest check-run run", " ".join(report["blockers"]))
+        self.assertEqual(0, adapter.download_calls)
+
+    def test_ignores_external_app_and_other_workflow_check_runs(self) -> None:
+        adapter = FakeGitHubAdapter()
+        adapter.latest_check_runs.append(
+            {
+                "id": JOB_ID + 1,
+                "name": AUTHORITATIVE_PROVENANCE_JOB_NAME,
+                "head_sha": HEAD_SHA,
+                "status": "completed",
+                "conclusion": "success",
+                "app": {"id": 999, "slug": "external-app"},
+            }
+        )
+        other_run = dict(adapter.workflow_run)
+        other_run.update(
+            {
+                "id": RUN_ID + 2,
+                "workflow_id": WORKFLOW_ID + 1,
+                "check_suite_id": CHECK_SUITE_ID + 2,
+                "run_number": adapter.workflow_run["run_number"] + 2,
+                "path": ".github/workflows/other.yml",
+            }
+        )
+        other_job = dict(adapter.job)
+        other_job.update(
+            {
+                "id": JOB_ID + 2,
+                "run_id": RUN_ID + 2,
+            }
+        )
+        adapter.workflow_run_details[RUN_ID + 2] = other_run
+        adapter.repository_workflow_runs.append(dict(other_run))
+        adapter.job_details[JOB_ID + 2] = other_job
+        adapter.latest_check_runs.append(
+            {
+                "id": JOB_ID + 2,
+                "name": AUTHORITATIVE_PROVENANCE_JOB_NAME,
+                "head_sha": HEAD_SHA,
+                "status": "completed",
+                "conclusion": "success",
+                "app": {"id": 15_368, "slug": "github-actions"},
+                "check_suite": {"id": CHECK_SUITE_ID + 2},
+            }
+        )
+
+        report = self.attest(adapter)
+
+        self.assertTrue(report["ok"], report)
+
+    def test_ignores_more_than_one_hundred_unrelated_check_runs(self) -> None:
+        adapter = FakeGitHubAdapter()
+        other_run = copy.deepcopy(adapter.workflow_run)
+        other_run.update(
+            {
+                "id": RUN_ID + 2,
+                "workflow_id": WORKFLOW_ID + 1,
+                "check_suite_id": CHECK_SUITE_ID + 2,
+                "path": ".github/workflows/other.yml",
+            }
+        )
+        adapter.workflow_run_details[RUN_ID + 2] = other_run
+        for offset in range(1, 102):
+            job_id = JOB_ID + offset
+            job_name = f"other-job-{offset}"
+            other_job = dict(adapter.job)
+            other_job.update(
+                {
+                    "id": job_id,
+                    "run_id": RUN_ID + 2,
+                    "name": job_name,
+                }
+            )
+            adapter.job_details[job_id] = other_job
+            adapter.latest_check_runs.append(
+                {
+                    "id": job_id,
+                    "name": job_name,
+                    "head_sha": HEAD_SHA,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "app": {"id": 15_368, "slug": "github-actions"},
+                }
+            )
+
+        report = self.attest(adapter)
+
+        self.assertTrue(report["ok"], report)
+        self.assertEqual(1, adapter.workflow_run_get_calls)
+        self.assertEqual(1, adapter.job_get_calls)
+
+    def test_ignores_same_named_unrelated_checks_before_hydration(self) -> None:
+        adapter = FakeGitHubAdapter()
+        other_run = copy.deepcopy(adapter.workflow_run)
+        other_run.update(
+            {
+                "id": RUN_ID + 2,
+                "workflow_id": WORKFLOW_ID + 1,
+                "check_suite_id": CHECK_SUITE_ID + 2,
+                "path": ".github/workflows/other.yml",
+            }
+        )
+        adapter.repository_workflow_runs.append(other_run)
+        for offset in range(1, 102):
+            adapter.latest_check_runs.append(
+                {
+                    "id": JOB_ID + offset,
+                    "name": "pre-live-build",
+                    "head_sha": HEAD_SHA,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "app": {"id": 15_368, "slug": "github-actions"},
+                    "check_suite": {"id": CHECK_SUITE_ID + 2},
+                }
+            )
+
+        report = self.attest(adapter)
+
+        self.assertTrue(report["ok"], report)
+        self.assertEqual(1, adapter.workflow_run_get_calls)
+        self.assertEqual(1, adapter.job_get_calls)
+
+    def test_rejects_empty_or_malformed_latest_check_run_results(self) -> None:
+        mutations = {
+            "empty": lambda adapter: adapter.latest_check_runs.clear(),
+            "malformed id": lambda adapter: adapter.latest_check_runs[0].update(
+                {"id": "not-an-id"}
+            ),
+            "missing app slug": lambda adapter: adapter.latest_check_runs[
+                0
+            ]["app"].pop("slug"),
+            "missing name": lambda adapter: adapter.latest_check_runs[0].pop(
+                "name"
+            ),
+            "missing head sha": lambda adapter: adapter.latest_check_runs[0].pop(
+                "head_sha"
+            ),
+            "missing check suite": lambda adapter: adapter.latest_check_runs[
+                0
+            ].pop("check_suite"),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                adapter = FakeGitHubAdapter()
+                mutate(adapter)
+
+                report = self.attest(adapter)
+
+                self.assertFalse(report["ok"], report)
+                self.assertEqual(0, adapter.download_calls)
+
+    def test_rejects_malformed_latest_authoritative_run_hydration(self) -> None:
+        def add_newer(adapter: FakeGitHubAdapter) -> dict[str, object]:
+            newer_run = copy.deepcopy(adapter.workflow_run)
+            newer_run.update(
+                {
+                    "id": RUN_ID + 1,
+                    "check_suite_id": CHECK_SUITE_ID + 1,
+                    "run_number": adapter.workflow_run["run_number"] + 1,
+                    "run_attempt": 1,
+                    "status": "in_progress",
+                    "conclusion": None,
+                }
+            )
+            newer_job = dict(adapter.job)
+            newer_job.update(
+                {
+                    "id": JOB_ID + 1,
+                    "run_id": RUN_ID + 1,
+                    "run_attempt": 1,
+                    "status": "in_progress",
+                    "conclusion": None,
+                }
+            )
+            adapter.workflow_run_details[RUN_ID + 1] = newer_run
+            adapter.repository_workflow_runs.append(dict(newer_run))
+            adapter.job_details[JOB_ID + 1] = newer_job
+            adapter.latest_check_runs.append(
+                {
+                    "id": JOB_ID + 1,
+                    "name": AUTHORITATIVE_PROVENANCE_JOB_NAME,
+                    "head_sha": HEAD_SHA,
+                    "status": "in_progress",
+                    "conclusion": None,
+                    "app": {"id": 15_368, "slug": "github-actions"},
+                    "check_suite": {"id": CHECK_SUITE_ID + 1},
+                }
+            )
+            return newer_run
+
+        mutations = {
+            "missing workflow id": lambda adapter, run: run.pop("workflow_id"),
+            "missing workflow path": lambda adapter, run: run.pop("path"),
+            "missing workflow event": lambda adapter, run: run.pop("event"),
+            "missing head sha": lambda adapter, run: run.pop("head_sha"),
+            "missing head branch": lambda adapter, run: run.pop("head_branch"),
+            "missing repository id": lambda adapter, run: run[
+                "head_repository"
+            ].pop("id"),
+            "missing pull requests": lambda adapter, run: run.update(
+                {"pull_requests": []}
+            ),
+            "wrong pull request": lambda adapter, run: run["pull_requests"][
+                0
+            ].update({"number": 999}),
+            "malformed run number": lambda adapter, run: run.update(
+                {"run_number": "not-an-id"}
+            ),
+            "malformed run attempt": lambda adapter, run: run.update(
+                {"run_attempt": "not-an-id"}
+            ),
+            "job hydration failure": lambda adapter, run: adapter.job_details.pop(
+                JOB_ID + 1
+            ),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                adapter = FakeGitHubAdapter()
+                newer_run = add_newer(adapter)
+                mutate(adapter, newer_run)
+
+                report = self.attest(adapter)
+
+                self.assertFalse(report["ok"], report)
+                self.assertEqual(0, adapter.download_calls)
+
     def test_hydrates_newer_run_when_list_record_omits_pull_requests(self) -> None:
         adapter = FakeGitHubAdapter()
         newer = dict(adapter.workflow_run)
@@ -1275,10 +2854,12 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             "pull": lambda adapter: adapter.pull_request["head"].update(
                 {"sha": "b" * 40}
             ),
-            "run": lambda adapter: adapter.workflow_run.update({"head_sha": "b" * 40}),
-            "attempt": lambda adapter: adapter.attempt.update({"head_sha": "b" * 40}),
+            "run": lambda adapter: adapter.workflow_run.update({"head_sha": "c" * 40}),
+            "attempt": lambda adapter: adapter.attempt.update(
+                {"head_sha": "c" * 40}
+            ),
             "artifact": lambda adapter: adapter.artifact["workflow_run"].update(
-                {"head_sha": "b" * 40}
+                {"head_sha": "c" * 40}
             ),
         }
         for name, mutate in mutations.items():
@@ -1348,7 +2929,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             "inactive workflow": lambda adapter: adapter.workflow.update(
                 {"state": "disabled_manually"}
             ),
-            "job head": lambda adapter: adapter.job.update({"head_sha": "b" * 40}),
+            "job head": lambda adapter: adapter.job.update({"head_sha": "c" * 40}),
             "job identity": lambda adapter: adapter.job.update({"name": ""}),
         }
         for name, mutate in mutations.items():
@@ -1481,6 +3062,144 @@ class GitHubSourceAttestationTest(unittest.TestCase):
 
 
 class StdlibGitHubRESTAdapterTest(unittest.TestCase):
+    def test_rejects_record_replacement_between_stable_count_snapshots(
+        self,
+    ) -> None:
+        request_count = 0
+
+        def urlopen(
+            request: object,
+            *,
+            timeout: float,
+        ) -> FakeHTTPResponse:
+            nonlocal request_count
+            request_count += 1
+            page = int(
+                urllib.parse.parse_qs(
+                    urllib.parse.urlsplit(request.full_url).query
+                )["page"][0]
+            )
+            if request_count <= 2:
+                records = (
+                    [{"id": value} for value in range(1, 101)]
+                    if page == 1
+                    else [{"id": 102}]
+                )
+            else:
+                records = (
+                    [{"id": value} for value in range(2, 102)]
+                    if page == 1
+                    else [{"id": 102}]
+                )
+            return FakeHTTPResponse(
+                json.dumps(
+                    {
+                        "total_count": 101,
+                        "check_runs": records,
+                    }
+                ).encode()
+            )
+
+        adapter = StdlibGitHubRESTAdapter(
+            token="fixture-token",
+            urlopen=urlopen,
+        )
+
+        with self.assertRaisesRegex(
+            GitHubSourceError,
+            "changed between snapshots",
+        ):
+            adapter.list_latest_check_runs(REPOSITORY, HEAD_SHA)
+
+    def test_rejects_duplicate_ids_within_authority_snapshot(self) -> None:
+        def urlopen(
+            request: object,
+            *,
+            timeout: float,
+        ) -> FakeHTTPResponse:
+            return FakeHTTPResponse(
+                json.dumps(
+                    {
+                        "total_count": 2,
+                        "workflow_runs": [{"id": RUN_ID}, {"id": RUN_ID}],
+                    }
+                ).encode()
+            )
+
+        adapter = StdlibGitHubRESTAdapter(
+            token="fixture-token",
+            urlopen=urlopen,
+        )
+
+        with self.assertRaisesRegex(GitHubSourceError, "duplicate ID"):
+            adapter.list_workflow_runs(
+                REPOSITORY,
+                WORKFLOW_ID,
+                branch="main",
+                event=AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
+            )
+
+    def test_rejects_incomplete_authority_pagination(self) -> None:
+        cases = {
+            "workflow runs missing count": (
+                {"workflow_runs": [{"id": RUN_ID}]},
+                lambda adapter: adapter.list_workflow_runs(
+                    REPOSITORY,
+                    WORKFLOW_ID,
+                    branch="main",
+                    event=AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
+                ),
+            ),
+            "workflow runs count mismatch": (
+                {
+                    "total_count": 2,
+                    "workflow_runs": [{"id": RUN_ID}],
+                },
+                lambda adapter: adapter.list_workflow_runs(
+                    REPOSITORY,
+                    WORKFLOW_ID,
+                    branch="main",
+                    event=AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
+                ),
+            ),
+            "check runs missing count": (
+                {"check_runs": [{"id": JOB_ID}]},
+                lambda adapter: adapter.list_latest_check_runs(
+                    REPOSITORY,
+                    HEAD_SHA,
+                ),
+            ),
+            "check runs count mismatch": (
+                {
+                    "total_count": 2,
+                    "check_runs": [{"id": JOB_ID}],
+                },
+                lambda adapter: adapter.list_latest_check_runs(
+                    REPOSITORY,
+                    HEAD_SHA,
+                ),
+            ),
+        }
+        for name, (payload, call) in cases.items():
+            with self.subTest(name=name):
+                def urlopen(
+                    request: object,
+                    *,
+                    timeout: float,
+                ) -> FakeHTTPResponse:
+                    return FakeHTTPResponse(json.dumps(payload).encode())
+
+                adapter = StdlibGitHubRESTAdapter(
+                    token="fixture-token",
+                    urlopen=urlopen,
+                )
+
+                with self.assertRaisesRegex(
+                    GitHubSourceError,
+                    "total_count",
+                ):
+                    call(adapter)
+
     def test_reads_all_required_rest_resources_and_artifact_bytes(self) -> None:
         requested: list[tuple[str, str | None, str, bytes | None]] = []
         replay_ref = AUTHORITATIVE_REPLAY_REF_PREFIX + ("1" * 64)
@@ -1489,7 +3208,7 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
             "object": {"type": "commit", "sha": HEAD_SHA},
         }
         workflow_reference_record = {
-            "ref": "refs/pull/137/merge",
+            "ref": "refs/heads/main",
             "object": {"type": "commit", "sha": WORKFLOW_SHA},
         }
         rulesets, ruleset_details = make_replay_ruleset_fixtures()
@@ -1505,6 +3224,14 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
             f"/repos/{REPOSITORY}/actions/workflows/{WORKFLOW_ID}/runs": {
                 "total_count": 1,
                 "workflow_runs": [{"id": RUN_ID}],
+            },
+            f"/repos/{REPOSITORY}/actions/runs": {
+                "total_count": 1,
+                "workflow_runs": [{"id": RUN_ID}],
+            },
+            f"/repos/{REPOSITORY}/commits/{HEAD_SHA}/check-runs": {
+                "total_count": 1,
+                "check_runs": [{"id": JOB_ID}],
             },
             (f"/repos/{REPOSITORY}/actions/runs/{RUN_ID}/attempts/{RUN_ATTEMPT}"): {
                 "id": RUN_ID,
@@ -1522,9 +3249,7 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
             (
                 f"/repos/{REPOSITORY}/git/ref/{replay_ref.removeprefix('refs/')}"
             ): replay_record,
-            (
-                f"/repos/{REPOSITORY}/git/ref/pull/137/merge"
-            ): workflow_reference_record,
+            f"/repos/{REPOSITORY}/git/ref/heads/main": workflow_reference_record,
             f"/repos/{REPOSITORY}/rulesets": rulesets,
             f"/repos/{REPOSITORY}/rulesets/501": ruleset_details[501],
             f"/repos/{REPOSITORY}/rulesets/502": ruleset_details[502],
@@ -1613,8 +3338,22 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
             adapter.list_workflow_runs(
                 REPOSITORY,
                 WORKFLOW_ID,
-                branch="issue-138-authenticated-prelive-provenance",
-                event="pull_request",
+                branch="main",
+                event=AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
+            )[0]["id"],
+        )
+        self.assertEqual(
+            JOB_ID,
+            adapter.list_latest_check_runs(
+                REPOSITORY,
+                HEAD_SHA,
+            )[0]["id"],
+        )
+        self.assertEqual(
+            RUN_ID,
+            adapter.list_repository_workflow_runs(
+                REPOSITORY,
+                head_sha=HEAD_SHA,
             )[0]["id"],
         )
         self.assertEqual(
@@ -1665,7 +3404,7 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
             workflow_reference_record,
             adapter.get_git_reference(
                 REPOSITORY,
-                ref="refs/pull/137/merge",
+                ref="refs/heads/main",
             ),
         )
         self.assertEqual(
@@ -1680,13 +3419,88 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
             ruleset_details[502],
             adapter.get_repository_ruleset(REPOSITORY, 502),
         )
-        self.assertEqual(20, len(requested))
+        self.assertEqual(25, len(requested))
         self.assertTrue(
             all(header == "Bearer fixture-token" for _, header, _, _ in requested)
+        )
+        check_run_query = urllib.parse.parse_qs(
+            next(
+                urllib.parse.urlsplit(url).query
+                for url, _, _, _ in requested
+                if urllib.parse.urlsplit(url).path.endswith("/check-runs")
+            )
+        )
+        self.assertEqual(["15368"], check_run_query["app_id"])
+        self.assertNotIn("check_name", check_run_query)
+        self.assertEqual(["latest"], check_run_query["filter"])
+        repository_run_query = urllib.parse.parse_qs(
+            next(
+                urllib.parse.urlsplit(url).query
+                for url, _, _, _ in requested
+                if urllib.parse.urlsplit(url).path
+                == f"/repos/{REPOSITORY}/actions/runs"
+            )
+        )
+        self.assertEqual([HEAD_SHA], repository_run_query["head_sha"])
+        self.assertEqual(
+            ["false"],
+            repository_run_query["exclude_pull_requests"],
         )
 
 
 class BuildBindingTest(unittest.TestCase):
+    def test_cross_runner_artifact_handoff_requires_identical_candidate_layout(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(
+            dir=BUILD_IDENTITY_REPO_ROOT,
+        ) as directory:
+            root = Path(directory)
+            fixture_root = root / "runner-workspace"
+            fixture = make_build_fixture(fixture_root)
+            repository = fixture["repository"]
+            commit = fixture["repository_commit"]
+            config = fixture["config"]
+            archive_path = root / "pre-live-build-runtime.tar.gz"
+            with tarfile.open(archive_path, "w:gz") as archive:
+                archive.add(
+                    config.micromachine_dir,
+                    arcname="MicroMachine",
+                )
+                archive.add(
+                    config.s2client_dir,
+                    arcname="s2client-api",
+                )
+            shutil.rmtree(config.micromachine_dir)
+            shutil.rmtree(config.s2client_dir)
+            with tarfile.open(archive_path, "r:gz") as archive:
+                archive.extractall(fixture_root)
+
+            accepted = attest_build_binding(
+                fixture["report_path"],
+                repository_dir=repository,
+                expected_repository_commit=commit,
+                expected_build_dir=config.micromachine_build_dir,
+                command_runner=passing_ctest,
+            )
+
+            relocated_repository = root / "relocated" / "candidate"
+            shutil.copytree(repository, relocated_repository)
+            rejected = attest_build_binding(
+                fixture["report_path"],
+                repository_dir=relocated_repository,
+                expected_repository_commit=commit,
+                expected_build_dir=config.micromachine_build_dir,
+                command_runner=passing_ctest,
+            )
+
+        self.assertTrue(accepted["ok"], accepted)
+        self.assertFalse(rejected["ok"], rejected)
+        self.assertIn(
+            "repository build inputs",
+            " ".join(rejected["blockers"]),
+        )
+
     def test_rejects_coherent_build_from_non_authoritative_upstream_commit(
         self,
     ) -> None:
@@ -1749,6 +3563,134 @@ class BuildBindingTest(unittest.TestCase):
             self.assertEqual(
                 fixture["report"]["checksums"]["native_test_registry_sha256"],
                 report["ctest"]["registry_sha256"],
+            )
+
+    def test_pinned_ctest_uses_disposable_writable_workdirs(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            tempfile.TemporaryDirectory() as secure_directory,
+        ):
+            fixture = make_build_fixture(Path(directory))
+            build_dir = fixture["config"].micromachine_build_dir.resolve()
+            secure_root = Path(secure_directory).resolve()
+            writable_test = (
+                build_dir
+                / "bin"
+                / MICROMACHINE_REQUIRED_NATIVE_TESTS[
+                    "voi_family_effect_lifecycle"
+                ]
+            )
+            writable_test.write_text(
+                "#!/bin/sh\n"
+                "set -eu\n"
+                "printf '%s\\n' writable > \"$PWD/test-output\"\n"
+            )
+            writable_test.chmod(0o755)
+
+            def run_as_current_user(
+                argv: object,
+                *,
+                cwd: str,
+                env: object,
+                timeout: float,
+                uid: int,
+                gid: int,
+                deadline: object = None,
+            ) -> subprocess.CompletedProcess:
+                del uid, gid, deadline
+                return subprocess.run(
+                    list(argv),
+                    cwd=cwd,
+                    stdin=subprocess.DEVNULL,
+                    check=False,
+                    capture_output=True,
+                    text=False,
+                    shell=False,
+                    timeout=timeout,
+                    env=dict(env),
+                )
+
+            def chown_as_current_user(
+                path: Path,
+                *,
+                uid: int,
+                gid: int,
+            ) -> None:
+                del uid, gid
+                path.chmod(0o700)
+
+            def current_user_execution_directory(
+                *,
+                uid: int,
+                gid: int,
+            ) -> tempfile.TemporaryDirectory[str]:
+                del uid, gid
+                return tempfile.TemporaryDirectory(
+                    prefix=".execution-",
+                    dir=secure_root,
+                )
+
+            observed_runtime_paths: list[Path] = []
+
+            def record_secure_execution(
+                argv: object,
+                *,
+                cwd: str,
+                env: object,
+                timeout: float,
+                uid: int,
+                gid: int,
+                deadline: object = None,
+            ) -> subprocess.CompletedProcess:
+                observed_runtime_paths.append(Path(cwd).resolve())
+                return run_as_current_user(
+                    argv,
+                    cwd=cwd,
+                    env=env,
+                    timeout=timeout,
+                    uid=uid,
+                    gid=gid,
+                    deadline=deadline,
+                )
+
+            with (
+                mock.patch.object(
+                    provenance_module,
+                    "_normalize_producer_identity",
+                    return_value=(65001, 65001),
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "_run_dedicated_uid_native_command",
+                    side_effect=record_secure_execution,
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "_chown_private_directory",
+                    side_effect=chown_as_current_user,
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "_dedicated_producer_execution_directory",
+                    side_effect=current_user_execution_directory,
+                ),
+            ):
+                result = provenance_module._run_ctest(
+                    build_dir,
+                    subprocess.run,
+                    execution_uid=65001,
+                    execution_gid=65001,
+                )
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(REQUIRED_CTEST_COUNT, result["passed"])
+            self.assertTrue(observed_runtime_paths)
+            self.assertTrue(
+                all(
+                    runtime_path.is_relative_to(secure_root)
+                    for runtime_path in observed_runtime_paths
+                ),
+                observed_runtime_paths,
             )
 
     def test_rejects_missing_atomic_telemetry_artifact_before_ctest(self) -> None:
@@ -1869,6 +3811,28 @@ class BuildBindingTest(unittest.TestCase):
             )
             self.assertFalse(wrong_schema["ok"], wrong_schema)
             self.assertEqual([], ctest_calls)
+
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = make_build_fixture(Path(directory))
+            report_payload = dict(fixture["report"])
+            report_payload["schema_version"] = float(
+                MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION
+            )
+            fixture["report_path"].write_text(json.dumps(report_payload))
+            ctest_calls = []
+
+            float_schema = attest_build_binding(
+                fixture["report_path"],
+                repository_dir=fixture["repository"],
+                expected_repository_commit=fixture["repository_commit"],
+                command_runner=forbidden_ctest,
+            )
+            self.assertFalse(float_schema["ok"], float_schema)
+            self.assertEqual([], ctest_calls)
+            self.assertIn(
+                "unsupported build report schema",
+                " ".join(float_schema["blockers"]),
+            )
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2184,6 +4148,197 @@ class BuildBindingTest(unittest.TestCase):
                 " ".join(result["blockers"]),
             )
 
+    def test_initial_ctest_registry_uses_authenticated_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = make_build_fixture(Path(directory))
+            build_dir = fixture["config"].micromachine_build_dir.resolve()
+            original_ctest = provenance_module._resolve_cmake_ctest_path(
+                build_dir
+            ).resolve()
+            registry_executables: list[Path] = []
+
+            def recording_runner(
+                *args: object,
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess:
+                argv = list(args[0])
+                if (
+                    "--show-only=json-v1" in argv
+                    and Path(argv[argv.index("--test-dir") + 1]).resolve()
+                    == build_dir
+                ):
+                    registry_executables.append(Path(argv[0]).resolve())
+                return passing_ctest(*args, **kwargs)
+
+            result = attest_build_binding(
+                fixture["report_path"],
+                repository_dir=fixture["repository"],
+                expected_repository_commit=fixture["repository_commit"],
+                command_runner=recording_runner,
+            )
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(1, len(registry_executables))
+            self.assertNotEqual(original_ctest, registry_executables[0])
+            self.assertEqual("ctest", registry_executables[0].name)
+
+    def test_rejects_noncanonical_ctest_discovery_json(self) -> None:
+        cases = {
+            "duplicate registry key": (
+                True,
+                '{"tests":[],"tests":[]}',
+                "CTest registry discovery returned malformed JSON",
+            ),
+            "non-finite discovery value": (
+                False,
+                '{"tests":[],"attacker":NaN}',
+                "CTest discovery returned malformed JSON",
+            ),
+        }
+        for name, (attack_registry, document, blocker) in cases.items():
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as directory:
+                    fixture = make_build_fixture(Path(directory))
+                    build_dir = (
+                        fixture["config"].micromachine_build_dir.resolve()
+                    )
+
+                    def malformed_json(
+                        *args: object,
+                        **kwargs: object,
+                    ) -> subprocess.CompletedProcess:
+                        argv = list(args[0])
+                        if "--show-only=json-v1" not in argv:
+                            return passing_ctest(*args, **kwargs)
+                        test_dir = Path(
+                            argv[argv.index("--test-dir") + 1]
+                        ).resolve()
+                        is_registry = test_dir == build_dir
+                        if is_registry == attack_registry:
+                            return subprocess.CompletedProcess(
+                                argv,
+                                0,
+                                stdout=document,
+                                stderr="",
+                            )
+                        return passing_ctest(*args, **kwargs)
+
+                    result = attest_build_binding(
+                        fixture["report_path"],
+                        repository_dir=fixture["repository"],
+                        expected_repository_commit=(
+                            fixture["repository_commit"]
+                        ),
+                        command_runner=malformed_json,
+                    )
+
+                    self.assertFalse(result["ok"], result)
+                    self.assertIn(blocker, " ".join(result["blockers"]))
+
+    def test_ctest_blockers_prevent_all_direct_native_execution(self) -> None:
+        cases = {
+            "registry exit": "registry_exit",
+            "registry stderr": "registry_stderr",
+            "discovery JSON": "discovery_json",
+            "CTest exit": "ctest_exit",
+            "missing test": "missing_test",
+        }
+        real_run = subprocess.run
+        for name, mode in cases.items():
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as directory:
+                    fixture = make_build_fixture(Path(directory))
+                    build_dir = (
+                        fixture["config"].micromachine_build_dir.resolve()
+                    )
+
+                    def blocked_ctest(
+                        *args: object,
+                        **kwargs: object,
+                    ) -> subprocess.CompletedProcess:
+                        argv = list(args[0])
+                        show_only = "--show-only=json-v1" in argv
+                        test_dir = Path(
+                            argv[argv.index("--test-dir") + 1]
+                        ).resolve()
+                        is_registry = test_dir == build_dir
+                        if mode == "registry_exit" and show_only and is_registry:
+                            return subprocess.CompletedProcess(
+                                argv,
+                                1,
+                                stdout='{"tests":[]}',
+                                stderr="",
+                            )
+                        if mode == "registry_stderr" and show_only and is_registry:
+                            passed = passing_ctest(*args, **kwargs)
+                            return subprocess.CompletedProcess(
+                                argv,
+                                0,
+                                stdout=passed.stdout,
+                                stderr="unexpected registry stderr",
+                            )
+                        if (
+                            mode == "discovery_json"
+                            and show_only
+                            and not is_registry
+                        ):
+                            return subprocess.CompletedProcess(
+                                argv,
+                                0,
+                                stdout="{",
+                                stderr="",
+                            )
+                        if mode == "ctest_exit" and not show_only:
+                            return subprocess.CompletedProcess(
+                                argv,
+                                1,
+                                stdout="",
+                                stderr="CTest failed",
+                            )
+                        if mode == "missing_test" and show_only and is_registry:
+                            passed = passing_ctest(*args, **kwargs)
+                            payload = json.loads(passed.stdout)
+                            payload["tests"].pop()
+                            return subprocess.CompletedProcess(
+                                argv,
+                                0,
+                                stdout=json.dumps(payload),
+                                stderr="",
+                            )
+                        return passing_ctest(*args, **kwargs)
+
+                    def forbid_direct_native(
+                        *args: object,
+                        **kwargs: object,
+                    ) -> subprocess.CompletedProcess:
+                        argv = list(args[0])
+                        executable = Path(argv[0])
+                        if (
+                            executable.parent.name == "bin"
+                            and ".voi-ctest-" in str(executable)
+                        ):
+                            raise AssertionError(
+                                "direct native test ran after a CTest blocker"
+                            )
+                        return real_run(*args, **kwargs)
+
+                    with mock.patch.object(
+                        provenance_module.subprocess,
+                        "run",
+                        side_effect=forbid_direct_native,
+                    ):
+                        result = attest_build_binding(
+                            fixture["report_path"],
+                            repository_dir=fixture["repository"],
+                            expected_repository_commit=(
+                                fixture["repository_commit"]
+                            ),
+                            command_runner=blocked_ctest,
+                        )
+
+                    self.assertFalse(result["ok"], result)
+                    self.assertEqual(0, result["ctest"]["passed"])
+
     def test_rejects_noncanonical_ctest_registry_command_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = make_build_fixture(Path(directory))
@@ -2453,6 +4608,270 @@ class BuildBindingTest(unittest.TestCase):
 
 
 class GitHubActionsBundleEmissionTest(unittest.TestCase):
+    def test_emitter_forwards_preflighted_identity_to_build_fallback(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = make_build_fixture(root / "fixture")
+            adapter = FakeGitHubAdapter(
+                head_sha=fixture["repository_commit"],
+            )
+            blocked_build = {
+                "ok": False,
+                "status": "blocked",
+                "blockers": ["stop after identity observation"],
+            }
+
+            with (
+                mock.patch.object(
+                    provenance_module,
+                    "_normalize_producer_identity",
+                    return_value=(65001, 65002),
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "attest_build_binding",
+                    return_value=blocked_build,
+                ) as build_attestation,
+                mock.patch.object(
+                    provenance_module,
+                    "attest_github_actions_emission_context",
+                    return_value={
+                        "ok": False,
+                        "status": "blocked",
+                        "blockers": ["stop after identity observation"],
+                    },
+                ) as github_attestation,
+            ):
+                report = emit_github_actions_pre_live_bundle(
+                    adapter=adapter,
+                    repository_dir=fixture["repository"],
+                    expected_commit=fixture["repository_commit"],
+                    run_id=RUN_ID,
+                    run_attempt=RUN_ATTEMPT,
+                    workflow_ref=WORKFLOW_REF,
+                    workflow_sha=WORKFLOW_SHA,
+                    build_report_path=fixture["report_path"],
+                    expected_build_dir=(
+                        fixture["config"].micromachine_build_dir
+                    ),
+                    output_path=root / GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME,
+                    producer_uid=65001,
+                    producer_gid=65002,
+                )
+
+            self.assertFalse(report["ok"], report)
+            self.assertEqual(
+                65001,
+                build_attestation.call_args.kwargs["execution_uid"],
+            )
+            self.assertEqual(
+                65002,
+                build_attestation.call_args.kwargs["execution_gid"],
+            )
+            github_attestation.assert_called_once()
+
+    def test_invalid_identity_preflight_never_calls_github(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = make_build_fixture(root / "fixture")
+            adapter = FakeGitHubAdapter(
+                head_sha=fixture["repository_commit"],
+            )
+
+            with (
+                mock.patch.object(
+                    provenance_module,
+                    "_normalize_producer_identity",
+                    side_effect=ValueError("invalid dedicated identity"),
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "attest_build_binding",
+                    return_value={
+                        "ok": False,
+                        "status": "blocked",
+                        "blockers": ["identity rejected"],
+                    },
+                ) as build_attestation,
+                mock.patch.object(
+                    provenance_module,
+                    "attest_github_actions_emission_context",
+                ) as github_attestation,
+                mock.patch.object(
+                    provenance_module,
+                    "run_local_producer",
+                ) as producer_execution,
+            ):
+                report = emit_github_actions_pre_live_bundle(
+                    adapter=adapter,
+                    repository_dir=fixture["repository"],
+                    expected_commit=fixture["repository_commit"],
+                    run_id=RUN_ID,
+                    run_attempt=RUN_ATTEMPT,
+                    workflow_ref=WORKFLOW_REF,
+                    workflow_sha=WORKFLOW_SHA,
+                    build_report_path=fixture["report_path"],
+                    expected_build_dir=(
+                        fixture["config"].micromachine_build_dir
+                    ),
+                    output_path=root / GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME,
+                    producer_uid=65001,
+                    producer_gid=65002,
+                )
+
+            self.assertFalse(report["ok"], report)
+            self.assertEqual(
+                "not_evaluated",
+                report["build_binding"]["status"],
+            )
+            build_attestation.assert_not_called()
+            github_attestation.assert_not_called()
+            producer_execution.assert_not_called()
+
+    def test_producer_is_not_launched_without_runtime_and_cleanup_capacity(
+        self,
+    ) -> None:
+        clock = FakeMonotonicClock()
+        deadline = provenance_module._VerifierDeadline(
+            GITHUB_ACTIONS_PRODUCER_TIMEOUT_SECONDS
+            + GITHUB_ACTIONS_PROVENANCE_CLEANUP_RESERVE_SECONDS
+            - 1.0,
+            monotonic=clock,
+        )
+        accepted = {
+            "ok": True,
+            "status": "accepted",
+            "blockers": [],
+        }
+        build = {
+            **accepted,
+            "report_path": "/runtime/voi_build_identity.json",
+            "build_dir": "/runtime",
+        }
+        policy = {
+            **accepted,
+            "cwd": "/candidate",
+            "argv": ["/candidate/producer"],
+            "output_artifact": "/output/producer.json",
+            "policy_sha256": "a" * 64,
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with (
+                mock.patch.object(
+                    provenance_module,
+                    "_normalize_producer_identity",
+                    return_value=(65001, 65001),
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "attest_repository",
+                    return_value=accepted,
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "attest_github_actions_emission_context",
+                    return_value=accepted,
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "_admit_prevalidated_build_binding",
+                    return_value=build,
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "_capture_admitted_build_snapshots",
+                    return_value=accepted,
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "resolve_local_producer_policy",
+                    return_value=policy,
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "run_local_producer",
+                ) as producer,
+            ):
+                report = emit_github_actions_pre_live_bundle(
+                    adapter=FakeGitHubAdapter(),
+                    repository_dir=root,
+                    expected_commit=HEAD_SHA,
+                    run_id=RUN_ID,
+                    run_attempt=RUN_ATTEMPT,
+                    workflow_ref=WORKFLOW_REF,
+                    workflow_sha=WORKFLOW_SHA,
+                    build_report_path="/runtime/voi_build_identity.json",
+                    expected_build_dir="/runtime",
+                    output_path=root.parent / "pre-live.zip",
+                    producer_uid=65001,
+                    producer_gid=65001,
+                    verifier_deadline=deadline,
+                    _prevalidated_build_binding=build,
+                )
+
+        self.assertFalse(report["ok"], report)
+        self.assertIn(
+            "verifier deadline cannot start deterministic journey producer",
+            " ".join(report["blockers"]),
+        )
+        producer.assert_not_called()
+
+    def test_deterministic_output_is_bound_to_the_admitted_build(self) -> None:
+        raw_output = b"raw deterministic journey output"
+        bound_output = b"bound deterministic journey output"
+        build_report = b"canonical build report"
+        binary = b"exact MicroMachine binary"
+        node_executable = Path(sys.executable).resolve()
+        node_sha256 = hashlib.sha256(node_executable.read_bytes()).hexdigest()
+
+        with mock.patch.object(
+            provenance_module,
+            "bind_deterministic_journey_bundle_to_build",
+            return_value=bound_output,
+        ) as binder:
+            result = (
+                provenance_module._bind_producer_output_to_admitted_build(
+                    producer_id=(
+                        PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+                    ),
+                    producer_output=raw_output,
+                    build_report=build_report,
+                    binary=binary,
+                    node_executable=node_executable,
+                    node_sha256=node_sha256,
+                )
+            )
+
+        self.assertEqual(bound_output, result)
+        binder.assert_called_once()
+        self.assertEqual(raw_output, binder.call_args.args[0])
+        self.assertEqual(build_report, binder.call_args.kwargs["build_report_bytes"])
+        self.assertEqual(binary, binder.call_args.kwargs["binary_bytes"])
+        self.assertEqual(
+            str(node_executable),
+            binder.call_args.kwargs["node_executable"],
+        )
+
+        with mock.patch.object(
+            provenance_module,
+            "bind_deterministic_journey_bundle_to_build",
+        ) as unused_binder:
+            passthrough = (
+                provenance_module._bind_producer_output_to_admitted_build(
+                    producer_id="fixture_producer",
+                    producer_output=raw_output,
+                    build_report=build_report,
+                    binary=binary,
+                )
+            )
+
+        self.assertEqual(raw_output, passthrough)
+        unused_binder.assert_not_called()
+
     def test_emitter_accepts_dynamic_single_closing_issue(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2682,58 +5101,270 @@ class GitHubActionsBundleEmissionTest(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as directory:
                     root = Path(directory)
                     fixture = make_build_fixture(root / "fixture")
-                    adapter = FakeGitHubAdapter(
-                        head_sha=fixture["repository_commit"],
-                    )
-                    output = root / GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME
-
-                    def racing_producer(
-                        *args: object,
-                        **kwargs: object,
-                    ) -> subprocess.CompletedProcess:
-                        if label == "report":
-                            target = fixture["report_path"]
-                            replacement = target.with_name(
-                                target.name + ".replacement"
-                            )
-                            replacement.write_bytes(b'{"replaced":true}\n')
-                        else:
-                            target = fixture["config"].binary_path
-                            replacement = target.with_name(
-                                target.name + ".replacement"
-                            )
-                            replacement.write_bytes(b"replaced binary")
-                            replacement.chmod(0o755)
-                        os.replace(replacement, target)
-                        return subprocess.run(*args, **kwargs)
-
-                    report = emit_github_actions_pre_live_bundle(
-                        adapter=adapter,
+                    build_binding = attest_build_binding(
+                        fixture["report_path"],
                         repository_dir=fixture["repository"],
-                        expected_commit=fixture["repository_commit"],
-                        run_id=RUN_ID,
-                        run_attempt=RUN_ATTEMPT,
-                        workflow_ref=WORKFLOW_REF,
-                        workflow_sha=WORKFLOW_SHA,
-                        build_report_path=fixture["report_path"],
+                        expected_repository_commit=fixture["repository_commit"],
                         expected_build_dir=(
                             fixture["config"].micromachine_build_dir
                         ),
-                        output_path=output,
-                        producer_id="fixture_producer",
-                        ctest_runner=passing_ctest,
-                        producer_runner=racing_producer,
+                        command_runner=passing_ctest,
+                    )
+                    admitted_build = (
+                        provenance_module._capture_admitted_build_snapshots(
+                            build_binding
+                        )
+                    )
+                    target = (
+                        fixture["report_path"]
+                        if label == "report"
+                        else fixture["config"].binary_path
+                    )
+                    replacement = target.with_name(target.name + ".replacement")
+                    replacement.write_bytes(b"replacement")
+                    if label == "binary":
+                        replacement.chmod(0o755)
+                    os.replace(replacement, target)
+                    report = (
+                        provenance_module._verify_admitted_build_snapshots_unchanged(
+                            build_binding,
+                            admitted_build,
+                        )
                     )
 
                     self.assertFalse(report["ok"], report)
-                    self.assertFalse(output.exists())
                     self.assertIn(
                         f"admitted {label} changed after build attestation",
                         " ".join(report["blockers"]),
                     )
 
+    def test_emitter_rejects_producer_output_path_replacement_before_assembly(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = (root / "producer-output.json").resolve()
+            payload = b'{"source":"captured"}\n'
+            output.write_bytes(payload)
+            _, snapshot = provenance_module._read_regular_file_snapshot(
+                output,
+                maximum=provenance_module.MAX_GITHUB_ARTIFACT_BYTES,
+            )
+            local_execution = {
+                "output_artifact": {
+                    "path": str(output),
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                    "size_bytes": len(payload),
+                    "published_stat_identity": list(snapshot),
+                }
+            }
+            replacement = output.with_name(output.name + ".replacement")
+            replacement.write_bytes(b'{"source":"attacker"}\n')
+            os.replace(replacement, output)
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "captured producer output identity changed before consumption",
+            ):
+                provenance_module._read_published_producer_output(
+                    local_execution
+                )
+
+    def test_regular_snapshot_rejects_fifo_and_socket_without_blocking(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fifo_path = root / "producer-output.fifo"
+            os.mkfifo(fifo_path)
+            unix_socket_path = root / "producer-output.socket"
+            unix_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            unix_socket.bind(str(unix_socket_path))
+            real_open = os.open
+            observed_flags: list[int] = []
+
+            def require_nonblocking_open(
+                path: object,
+                flags: int,
+                *args: object,
+                **kwargs: object,
+            ) -> int:
+                observed_flags.append(flags)
+                if not flags & os.O_NONBLOCK:
+                    raise AssertionError(
+                        "special producer outputs must never be opened "
+                        "with blocking semantics"
+                    )
+                return real_open(path, flags, *args, **kwargs)
+
+            try:
+                with mock.patch.object(
+                    provenance_module.os,
+                    "open",
+                    side_effect=require_nonblocking_open,
+                ):
+                    with self.assertRaisesRegex(
+                        OSError,
+                        "file is not regular",
+                    ):
+                        provenance_module._read_regular_file_snapshot(
+                            fifo_path,
+                            maximum=1024,
+                        )
+                    with self.assertRaises(OSError):
+                        provenance_module._read_regular_file_snapshot(
+                            unix_socket_path,
+                            maximum=1024,
+                        )
+            finally:
+                unix_socket.close()
+
+            self.assertEqual(2, len(observed_flags))
+            self.assertTrue(
+                all(flags & os.O_NONBLOCK for flags in observed_flags)
+            )
+
+    def test_real_binder_emission_and_local_attestation_share_bound_digest(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = make_build_fixture(root / "fixture")
+            adapter = FakeGitHubAdapter(
+                head_sha=fixture["repository_commit"],
+            )
+            source_context = attest_github_actions_emission_context(
+                adapter,
+                repository=REPOSITORY,
+                run_id=RUN_ID,
+                run_attempt=RUN_ATTEMPT,
+                expected_head_sha=fixture["repository_commit"],
+                workflow_ref=WORKFLOW_REF,
+                workflow_sha=WORKFLOW_SHA,
+            )
+            build_binding = attest_build_binding(
+                fixture["report_path"],
+                repository_dir=fixture["repository"],
+                expected_repository_commit=fixture["repository_commit"],
+                expected_build_dir=fixture["config"].micromachine_build_dir,
+                command_runner=passing_ctest,
+            )
+            admitted_build = (
+                provenance_module._capture_admitted_build_snapshots(
+                    build_binding
+                )
+            )
+            producer_policy = resolve_local_producer_policy(
+                repository_dir=fixture["repository"],
+                expected_commit=fixture["repository_commit"],
+                producer_id="fixture_producer",
+            )
+            producer_policy["producer_id"] = (
+                PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+            )
+            node_executable = Path(sys.executable).resolve()
+            producer_policy["node_executable_path"] = str(node_executable)
+            producer_policy["node_executable_sha256"] = hashlib.sha256(
+                node_executable.read_bytes()
+            ).hexdigest()
+            raw_output = make_stub_deterministic_journey_bundle()
+            producer_output_path = Path(
+                str(producer_policy["output_artifact"])
+            )
+            producer_output_path.write_bytes(raw_output)
+            _, output_snapshot = (
+                provenance_module._read_regular_file_snapshot(
+                    producer_output_path,
+                    maximum=provenance_module.MAX_GITHUB_ARTIFACT_BYTES,
+                )
+            )
+            executable = Path(str(producer_policy["argv"][0])).read_bytes()
+            local_execution = {
+                "executable_sha256": hashlib.sha256(executable).hexdigest(),
+                "exit_code": 0,
+                "started_at": "2026-08-02T00:00:00Z",
+                "ended_at": "2026-08-02T00:00:01Z",
+                "stdout_sha256": hashlib.sha256(b"").hexdigest(),
+                "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+                "output_artifact": {
+                    "path": str(producer_output_path),
+                    "sha256": hashlib.sha256(raw_output).hexdigest(),
+                    "size_bytes": len(raw_output),
+                    "published_stat_identity": list(output_snapshot),
+                },
+            }
+            nested_identity = {
+                "ok": True,
+                "blockers": [],
+                "binary_sha256": build_binding["binary_sha256"],
+                "embedded_build_input_identity": (
+                    build_binding["embedded_build_input_identity"]
+                ),
+            }
+            verifier = (
+                "starcraft_commander.micromachine_pre_live_journeys."
+                "_verify_pre_live_journey_payload_cache"
+            )
+
+            with mock.patch(verifier, return_value=nested_identity):
+                bundle = (
+                    provenance_module._assemble_github_actions_pre_live_bundle(
+                        repository_root=fixture["repository"].resolve(),
+                        expected_commit=fixture["repository_commit"],
+                        source_context=source_context,
+                        build_binding=build_binding,
+                        admitted_build=admitted_build,
+                        producer_policy=producer_policy,
+                        local_execution=local_execution,
+                    )
+                )
+                verification = verify_pre_live_artifact_bundle(
+                    bundle,
+                    admission_snapshot=(
+                        provenance_module._admission_snapshot_from_mapping(
+                            admitted_build
+                        )
+                    ),
+                    node_executable=node_executable,
+                )
+                self.assertTrue(verification["ok"], verification)
+                github_source = {
+                    "repository": source_context["repository"],
+                    "source_ids": {
+                        "repository_id": source_context["repository_id"],
+                        "issue_id": source_context["closing_issue_id"],
+                        "issue_number": (
+                            source_context["closing_issue_number"]
+                        ),
+                    },
+                    "artifact_bundle": verification,
+                }
+                binding = provenance_module.attest_artifact_local_bindings(
+                    github_source=github_source,
+                    build_binding=build_binding,
+                    producer_policy=producer_policy,
+                    local_execution=local_execution,
+                )
+
+            manifest_digest = verification["manifest"]["producer"][
+                "output_sha256"
+            ]
+            raw_digest = hashlib.sha256(raw_output).hexdigest()
+            self.assertNotEqual(raw_digest, manifest_digest)
+            self.assertTrue(binding["ok"], binding)
+            self.assertEqual(raw_digest, binding["raw_output_sha256"])
+            self.assertEqual(manifest_digest, binding["bound_output_sha256"])
+
 
 class LocalProducerTest(unittest.TestCase):
+    def dedicated_producer_uid(self) -> tuple[int, int]:
+        if os.geteuid() != 0:
+            self.skipTest("dedicated producer UID tests require a root verifier")
+        uid = int(os.environ.get("VOI_PRODUCER_UID", "65001"))
+        gid = int(os.environ.get("VOI_PRODUCER_GID", "65001"))
+        provenance_module._assert_dedicated_producer_identity_available(uid, gid)
+        return uid, gid
+
     def test_checked_in_policy_has_an_executable_production_producer(self) -> None:
         repository = BUILD_IDENTITY_REPO_ROOT.resolve()
         policy_path = repository / PRODUCER_POLICY_RELATIVE_PATH
@@ -2814,6 +5445,61 @@ class LocalProducerTest(unittest.TestCase):
                 " ".join(tampered["blockers"]),
             )
 
+    def test_rejects_noncanonical_committed_producer_policy_json(self) -> None:
+        cases = {
+            "float schema": (
+                '{"schema_version":1.0,"producers":{}}\n',
+                "producer policy schema mismatch",
+            ),
+            "non-finite schema": (
+                '{"schema_version":NaN,"producers":{}}\n',
+                "non-finite JSON number",
+            ),
+            "duplicate schema": (
+                (
+                    '{"schema_version":1,"schema_version":1,'
+                    '"producers":{}}\n'
+                ),
+                "duplicate JSON object key",
+            ),
+        }
+        for name, (document, blocker) in cases.items():
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as directory:
+                    fixture = make_build_fixture(Path(directory))
+                    repository = fixture["repository"]
+                    policy_path = repository / PRODUCER_POLICY_RELATIVE_PATH
+                    policy_path.write_text(document)
+                    git(
+                        repository,
+                        "add",
+                        PRODUCER_POLICY_RELATIVE_PATH.as_posix(),
+                    )
+                    git(
+                        repository,
+                        "-c",
+                        "user.name=Test",
+                        "-c",
+                        "user.email=test@example.com",
+                        "commit",
+                        "-m",
+                        "malformed producer policy",
+                    )
+                    commit = git(
+                        repository,
+                        "rev-parse",
+                        "HEAD",
+                    ).stdout.strip()
+
+                    policy = resolve_local_producer_policy(
+                        repository_dir=repository,
+                        expected_commit=commit,
+                        producer_id="fixture_producer",
+                    )
+
+                    self.assertFalse(policy["ok"], policy)
+                    self.assertIn(blocker, " ".join(policy["blockers"]))
+
     def test_executes_from_committed_snapshot_not_ignored_python_module(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = make_build_fixture(Path(directory))
@@ -2868,6 +5554,1690 @@ class LocalProducerTest(unittest.TestCase):
             self.assertEqual(
                 {"fixture": True},
                 json.loads(Path(str(policy["output_artifact"])).read_bytes()),
+            )
+
+    def test_rejects_module_from_attacker_controlled_inherited_sys_path(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = make_build_fixture(root / "fixture")
+            attacker_dir = root / "attacker"
+            attacker_dir.mkdir()
+            sentinel = root / "inherited-path-module-executed"
+            (attacker_dir / "inherited_path_attack.py").write_text(
+                "from pathlib import Path\n"
+                f"Path({str(sentinel)!r}).write_text('executed')\n"
+            )
+            commit = replace_fixture_producer_source(
+                fixture,
+                "import inherited_path_attack\n"
+                "from pathlib import Path\n"
+                "import sys\n"
+                "Path(sys.argv[sys.argv.index('--output') + 1]).write_text("
+                "'{\"fixture\":true}\\n')\n",
+            )
+            policy = resolve_local_producer_policy(
+                repository_dir=fixture["repository"],
+                expected_commit=commit,
+                producer_id="fixture_producer",
+            )
+            self.assertTrue(policy["ok"], policy)
+            source_files = policy["runtime_sources"]["files"]
+
+            with mock.patch.object(
+                sys,
+                "path",
+                [str(attacker_dir), *sys.path],
+            ):
+                report = run_local_producer(
+                    repository_dir=fixture["repository"],
+                    cwd=policy["cwd"],
+                    argv=policy["argv"],
+                    allowed_argv=(policy["argv"],),
+                    output_artifact=policy["output_artifact"],
+                    authenticated_files=[item["path"] for item in source_files],
+                    authenticated_file_digests={
+                        item["path"]: item["sha256"] for item in source_files
+                    },
+                )
+
+            self.assertFalse(report["ok"], report)
+            self.assertFalse(sentinel.exists())
+            self.assertFalse(Path(str(policy["output_artifact"])).exists())
+
+    def test_rejects_unauthenticated_preloaded_module(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = make_build_fixture(root / "fixture")
+            commit = replace_fixture_producer_source(
+                fixture,
+                "import preloaded_attack\n"
+                "from pathlib import Path\n"
+                "import sys\n"
+                "Path(sys.argv[sys.argv.index('--output') + 1]).write_text("
+                "preloaded_attack.PAYLOAD)\n",
+            )
+            policy = resolve_local_producer_policy(
+                repository_dir=fixture["repository"],
+                expected_commit=commit,
+                producer_id="fixture_producer",
+            )
+            self.assertTrue(policy["ok"], policy)
+            source_files = policy["runtime_sources"]["files"]
+            attacker_module = types.ModuleType("preloaded_attack")
+            attacker_module.PAYLOAD = '{"attacker":true}\n'
+            attacker_module.__file__ = str(root / "preloaded_attack.py")
+
+            with mock.patch.dict(
+                sys.modules,
+                {"preloaded_attack": attacker_module},
+            ):
+                report = run_local_producer(
+                    repository_dir=fixture["repository"],
+                    cwd=policy["cwd"],
+                    argv=policy["argv"],
+                    allowed_argv=(policy["argv"],),
+                    output_artifact=policy["output_artifact"],
+                    authenticated_files=[item["path"] for item in source_files],
+                    authenticated_file_digests={
+                        item["path"]: item["sha256"] for item in source_files
+                    },
+                )
+
+            self.assertFalse(report["ok"], report)
+            self.assertFalse(Path(str(policy["output_artifact"])).exists())
+
+    def test_authenticated_python_exec_cannot_recover_parent_github_token(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = make_build_fixture(root / "fixture")
+            sentinel_token = "github-token-visible-only-in-parent-heap"
+            adapter = StdlibGitHubRESTAdapter(token=sentinel_token)
+            commit = replace_fixture_producer_source(
+                fixture,
+                "import gc\n"
+                "import json\n"
+                "from pathlib import Path\n"
+                "import sys\n"
+                "recovered=[]\n"
+                "for candidate in gc.get_objects():\n"
+                "    try:\n"
+                "        if candidate.__class__.__name__ == "
+                "'StdlibGitHubRESTAdapter':\n"
+                "            recovered.append(candidate._token)\n"
+                "    except BaseException:\n"
+                "        pass\n"
+                "Path(sys.argv[sys.argv.index('--output') + 1]).write_text(\n"
+                "    json.dumps({'recovered': recovered}) + '\\n'\n"
+                ")\n",
+            )
+            policy = resolve_local_producer_policy(
+                repository_dir=fixture["repository"],
+                expected_commit=commit,
+                producer_id="fixture_producer",
+            )
+            self.assertTrue(policy["ok"], policy)
+            source_files = policy["runtime_sources"]["files"]
+
+            report = run_local_producer(
+                repository_dir=fixture["repository"],
+                cwd=policy["cwd"],
+                argv=policy["argv"],
+                allowed_argv=(policy["argv"],),
+                output_artifact=policy["output_artifact"],
+                authenticated_files=[item["path"] for item in source_files],
+                authenticated_file_digests={
+                    item["path"]: item["sha256"] for item in source_files
+                },
+            )
+
+            self.assertIsNotNone(adapter)
+            self.assertTrue(report["ok"], report)
+            output = json.loads(
+                Path(str(policy["output_artifact"])).read_bytes()
+            )
+            self.assertNotIn(sentinel_token, output["recovered"])
+            self.assertEqual([], output["recovered"])
+
+    def test_dedicated_producer_uid_cannot_read_parent_environment_token(
+        self,
+    ) -> None:
+        producer_uid, producer_gid = self.dedicated_producer_uid()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o711)
+            fixture = make_build_fixture(root / "fixture")
+            sentinel_token = "github-token-visible-only-in-root-parent-environment"
+            commit = replace_fixture_producer_source(
+                fixture,
+                "import json\n"
+                "import os\n"
+                "from pathlib import Path\n"
+                "import subprocess\n"
+                "import sys\n"
+                f"sentinel={sentinel_token!r}\n"
+                "parent_pid=os.getppid()\n"
+                "observed=[]\n"
+                "ps_path=next(\n"
+                "    (value for value in ('/bin/ps','/usr/bin/ps')\n"
+                "     if Path(value).is_file()),\n"
+                "    None,\n"
+                ")\n"
+                "if ps_path is not None:\n"
+                "    visible=subprocess.run(\n"
+                "        [ps_path,'-axo','pid=,ppid=,command='],\n"
+                "        check=False,capture_output=True,text=False,\n"
+                "    )\n"
+                "    observed.extend((visible.stdout,visible.stderr))\n"
+                "ancestor_pid=parent_pid\n"
+                "visited=set()\n"
+                "while ps_path is not None and ancestor_pid not in visited:\n"
+                "    visited.add(ancestor_pid)\n"
+                "    result=subprocess.run(\n"
+                "        [ps_path,'eww','-p',str(ancestor_pid)],\n"
+                "        check=False,capture_output=True,text=False,\n"
+                "    )\n"
+                "    observed.extend((result.stdout,result.stderr))\n"
+                "    proc_environ=(\n"
+                "        Path('/proc')/str(ancestor_pid)/'environ'\n"
+                "    )\n"
+                "    try:\n"
+                "        observed.append(proc_environ.read_bytes())\n"
+                "    except OSError as exc:\n"
+                "        observed.append(str(exc).encode())\n"
+                "    parent=subprocess.run(\n"
+                "        [ps_path,'-o','ppid=,command=',\n"
+                "         '-p',str(ancestor_pid)],\n"
+                "        check=False,capture_output=True,text=False,\n"
+                "    )\n"
+                "    observed.extend((parent.stdout,parent.stderr))\n"
+                "    fields=parent.stdout.strip().split(None,1)\n"
+                "    if not fields:\n"
+                "        break\n"
+                "    try:\n"
+                "        next_pid=int(fields[0])\n"
+                "    except ValueError:\n"
+                "        break\n"
+                "    if next_pid <= 0 or next_pid == ancestor_pid:\n"
+                "        break\n"
+                "    ancestor_pid=next_pid\n"
+                "combined=b'\\n'.join(observed)\n"
+                "Path(sys.argv[sys.argv.index('--output') + 1]).write_text(\n"
+                "    json.dumps({\n"
+                "        'euid':os.geteuid(),\n"
+                "        'parent_pid':parent_pid,\n"
+                "        'recovered':sentinel.encode() in combined,\n"
+                "    })+'\\n'\n"
+                ")\n",
+            )
+            policy = resolve_local_producer_policy(
+                repository_dir=fixture["repository"],
+                expected_commit=commit,
+                producer_id="fixture_producer",
+            )
+            self.assertTrue(policy["ok"], policy)
+            source_files = policy["runtime_sources"]["files"]
+
+            with mock.patch.dict(
+                os.environ,
+                {"GITHUB_TOKEN": sentinel_token},
+            ):
+                report = run_local_producer(
+                    repository_dir=fixture["repository"],
+                    cwd=policy["cwd"],
+                    argv=policy["argv"],
+                    allowed_argv=(policy["argv"],),
+                    output_artifact=policy["output_artifact"],
+                    authenticated_files=[item["path"] for item in source_files],
+                    authenticated_file_digests={
+                        item["path"]: item["sha256"] for item in source_files
+                    },
+                    producer_uid=producer_uid,
+                    producer_gid=producer_gid,
+                )
+
+            self.assertTrue(report["ok"], report)
+            output = json.loads(
+                Path(str(policy["output_artifact"])).read_bytes()
+            )
+            self.assertEqual(producer_uid, output["euid"])
+            self.assertFalse(output["recovered"], output)
+
+    def test_dedicated_producer_uid_uses_non_writable_traversable_arena(
+        self,
+    ) -> None:
+        producer_uid, producer_gid = self.dedicated_producer_uid()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual(0, stat.S_IMODE(root.stat().st_mode) & 0o007)
+            fixture = make_build_fixture(root / "fixture")
+            commit = replace_fixture_producer_source(
+                fixture,
+                "import json\n"
+                "import os\n"
+                "from pathlib import Path\n"
+                "import sys\n"
+                "native_root=Path(\n"
+                "    os.environ['VOI_PINNED_NATIVE_EXEC_ROOT']\n"
+                ")\n"
+                "execution_arena=native_root.parent\n"
+                "try:\n"
+                "    (execution_arena/'producer-write').write_text('forbidden')\n"
+                "except OSError:\n"
+                "    arena_writable=False\n"
+                "else:\n"
+                "    arena_writable=True\n"
+                "Path(sys.argv[sys.argv.index('--output') + 1]).write_text(\n"
+                "    json.dumps({\n"
+                "        'arena_writable':arena_writable,\n"
+                "        'euid':os.geteuid(),\n"
+                "    })+'\\n'\n"
+                ")\n",
+            )
+            policy = resolve_local_producer_policy(
+                repository_dir=fixture["repository"],
+                expected_commit=commit,
+                producer_id="fixture_producer",
+            )
+            self.assertTrue(policy["ok"], policy)
+            source_files = policy["runtime_sources"]["files"]
+
+            report = run_local_producer(
+                repository_dir=fixture["repository"],
+                cwd=policy["cwd"],
+                argv=policy["argv"],
+                allowed_argv=(policy["argv"],),
+                output_artifact=policy["output_artifact"],
+                authenticated_files=[item["path"] for item in source_files],
+                authenticated_file_digests={
+                    item["path"]: item["sha256"] for item in source_files
+                },
+                producer_uid=producer_uid,
+                producer_gid=producer_gid,
+            )
+
+            self.assertTrue(report["ok"], report)
+            output = json.loads(
+                Path(str(policy["output_artifact"])).read_bytes()
+            )
+            self.assertEqual(producer_uid, output["euid"])
+            self.assertFalse(output["arena_writable"], output)
+
+    def test_github_token_stdin_is_bounded_and_exact(self) -> None:
+        self.assertEqual(
+            "ghs_exact-token",
+            provenance_module._read_github_token_from_stdin(
+                io.BytesIO(b"ghs_exact-token")
+            ),
+        )
+        for name, payload in {
+            "empty": b"",
+            "newline": b"ghs_token\n",
+            "non-ASCII": b"ghs_\xff",
+            "oversized": b"x" * 4097,
+        }.items():
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    provenance_module._read_github_token_from_stdin(
+                        io.BytesIO(payload)
+                    )
+
+    def test_github_actions_main_prevalidates_before_reading_token(self) -> None:
+        events: list[str] = []
+        trusted = {"ok": True, "status": "accepted", "blockers": []}
+        build = {
+            "ok": True,
+            "status": "accepted",
+            "blockers": [],
+            "report_path": "/runtime/voi_build_identity.json",
+            "repository_commit": HEAD_SHA,
+            "binary_path": "/runtime/bin/MicroMachine",
+            "ctest": {"ok": True},
+        }
+        environment = {
+            "GITHUB_API_URL": "https://api.github.test",
+            "GITHUB_REPOSITORY": REPOSITORY,
+            "GITHUB_RUN_ATTEMPT": str(RUN_ATTEMPT),
+            "GITHUB_RUN_ID": str(RUN_ID),
+            "GITHUB_WORKFLOW_REF": WORKFLOW_REF,
+            "GITHUB_WORKFLOW_SHA": WORKFLOW_SHA,
+            "VOI_CANDIDATE_WORKSPACE": "/candidate",
+            "VOI_NODE_EXECUTABLE": "/usr/local/bin/node",
+            "VOI_PRODUCER_GID": "65001",
+            "VOI_PRODUCER_UID": "65001",
+            "VOI_PRODUCER_TIMEOUT_SECONDS": "1800",
+            "VOI_RELEASE_COMMIT": HEAD_SHA,
+            "VOI_VERIFIER_TIMEOUT_SECONDS": "4800",
+            "VOI_TRUSTED_VERIFIER_COMMIT": BASE_SHA,
+            "VOI_TRUSTED_VERIFIER_WORKSPACE": "/trusted",
+        }
+
+        with (
+            mock.patch.dict(os.environ, environment, clear=True),
+            mock.patch.object(
+                provenance_module,
+                "_attest_trusted_verifier_runtime",
+                side_effect=lambda *args, **kwargs: events.append("trusted")
+                or trusted,
+            ) as trusted_attestation,
+            mock.patch.object(
+                provenance_module,
+                "attest_build_binding",
+                side_effect=lambda *args, **kwargs: events.append("build")
+                or build,
+            ) as build_attestation,
+            mock.patch.object(
+                provenance_module,
+                "_read_github_token_from_stdin",
+                side_effect=lambda stream: events.append("token") or "ghs_token",
+            ),
+            mock.patch.object(
+                provenance_module,
+                "emit_github_actions_pre_live_bundle",
+                side_effect=lambda **kwargs: events.append("emit")
+                or {"ok": True},
+            ) as emitter,
+            mock.patch.object(
+                provenance_module,
+                "_terminate_producer_uid_processes",
+                return_value=(),
+            ) as uid_cleanup,
+            mock.patch("sys.stdout", new_callable=io.StringIO),
+        ):
+            returncode = provenance_module._main(
+                (
+                    "--emit-github-actions-bundle",
+                    "/output/pre-live.zip",
+                    "/runtime/voi_build_identity.json",
+                    "/runtime",
+                )
+            )
+
+        self.assertEqual(0, returncode)
+        self.assertEqual(["trusted", "build", "token", "emit"], events)
+        verifier_deadline = trusted_attestation.call_args.kwargs["deadline"]
+        self.assertIsInstance(
+            verifier_deadline,
+            provenance_module._VerifierDeadline,
+        )
+        self.assertEqual(
+            ("/trusted",),
+            trusted_attestation.call_args.args,
+        )
+        self.assertEqual(
+            BASE_SHA,
+            trusted_attestation.call_args.kwargs["expected_commit"],
+        )
+        self.assertEqual(65001, build_attestation.call_args.kwargs["execution_uid"])
+        self.assertEqual(65001, build_attestation.call_args.kwargs["execution_gid"])
+        self.assertIs(
+            verifier_deadline,
+            build_attestation.call_args.kwargs["deadline"],
+        )
+        self.assertIs(
+            build,
+            emitter.call_args.kwargs["_prevalidated_build_binding"],
+        )
+        self.assertEqual(
+            "/candidate",
+            emitter.call_args.kwargs["repository_dir"],
+        )
+        self.assertEqual(
+            GITHUB_ACTIONS_PRODUCER_TIMEOUT_SECONDS,
+            emitter.call_args.kwargs["producer_timeout_seconds"],
+        )
+        self.assertIs(
+            verifier_deadline,
+            emitter.call_args.kwargs["verifier_deadline"],
+        )
+        self.assertIs(
+            verifier_deadline,
+            emitter.call_args.kwargs["adapter"]._deadline,
+        )
+        uid_cleanup.assert_called_once_with(65001)
+
+    def test_dedicated_ctest_command_uses_bounded_uid_runner(self) -> None:
+        completed = subprocess.CompletedProcess(
+            ["/trusted/ctest"],
+            0,
+            b"stdout",
+            b"",
+        )
+        with mock.patch.object(
+            provenance_module,
+            "_run_dedicated_uid_native_command",
+            return_value=completed,
+        ) as runner:
+            observed = provenance_module._run_ctest_command(
+                subprocess.run,
+                ["/trusted/ctest", "--show-only=json-v1"],
+                cwd="/runtime",
+                text=True,
+                env={"PATH": "/usr/bin:/bin"},
+                timeout=120.0,
+                execution_identity=(65001, 65001),
+            )
+
+        self.assertIs(completed, observed)
+        runner.assert_called_once_with(
+            ["/trusted/ctest", "--show-only=json-v1"],
+            cwd="/runtime",
+            env={"PATH": "/usr/bin:/bin"},
+            timeout=120.0,
+            uid=65001,
+            gid=65001,
+            deadline=None,
+        )
+
+    def test_ctest_registry_snapshot_keeps_build_tree_read_only(self) -> None:
+        ctest_candidate = shutil.which("ctest")
+        if ctest_candidate is None:
+            self.skipTest("ctest is required")
+        with (
+            tempfile.TemporaryDirectory(
+                dir=BUILD_IDENTITY_REPO_ROOT,
+            ) as directory,
+            tempfile.TemporaryDirectory() as secure_directory,
+        ):
+            build_dir = Path(directory) / "build"
+            build_dir.mkdir()
+            manifest = build_dir / "CTestTestfile.cmake"
+            manifest_payload = (
+                "add_test([=[fixture]=] [=[/usr/bin/true]=])\n"
+            ).encode()
+            manifest.write_bytes(manifest_payload)
+            manifest.chmod(0o444)
+            build_dir.chmod(0o555)
+
+            def run_as_current_user(
+                command_runner: object,
+                argv: object,
+                *,
+                cwd: str,
+                text: bool,
+                env: object,
+                timeout: float,
+                execution_identity: object,
+                deadline: object,
+            ) -> subprocess.CompletedProcess:
+                del execution_identity, deadline
+                return command_runner(
+                    list(argv),
+                    cwd=cwd,
+                    stdin=subprocess.DEVNULL,
+                    check=False,
+                    capture_output=True,
+                    text=text,
+                    shell=False,
+                    timeout=timeout,
+                    env=dict(env),
+                )
+
+            try:
+                with (
+                    mock.patch.object(
+                        provenance_module,
+                        "_run_ctest_command",
+                        side_effect=run_as_current_user,
+                    ),
+                    mock.patch.object(
+                        provenance_module,
+                        "_chown_private_directory",
+                        side_effect=lambda path, **kwargs: path.chmod(0o700),
+                    ),
+                    mock.patch.object(
+                        provenance_module,
+                        "_dedicated_producer_execution_directory",
+                        side_effect=lambda **kwargs: (
+                            current_user_execution_directory(
+                                Path(secure_directory),
+                                **kwargs,
+                            )
+                        ),
+                    ),
+                ):
+                    completed = (
+                        provenance_module._run_ctest_registry_from_snapshot(
+                            subprocess.run,
+                            (
+                                str(Path(ctest_candidate).resolve()),
+                                "--test-dir",
+                                str(build_dir),
+                                "--show-only=json-v1",
+                            ),
+                            build_dir=build_dir,
+                            env=provenance_module.SANITIZED_TEST_ENV,
+                            timeout=120.0,
+                            execution_identity=(65001, 65001),
+                        )
+                    )
+            finally:
+                build_dir.chmod(0o755)
+                manifest.chmod(0o644)
+
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            registry = json.loads(completed.stdout)
+            self.assertEqual(
+                [{"name": "fixture", "command": ["/usr/bin/true"]}],
+                [
+                    {
+                        "name": test["name"],
+                        "command": test["command"],
+                    }
+                    for test in registry["tests"]
+                ],
+            )
+            self.assertEqual(manifest_payload, manifest.read_bytes())
+            self.assertFalse((build_dir / "Testing").exists())
+
+    def test_ctest_registry_snapshot_rejects_linked_or_missing_metadata(
+        self,
+    ) -> None:
+        ctest_candidate = shutil.which("ctest")
+        if ctest_candidate is None:
+            self.skipTest("ctest is required")
+        for name, linked in (("missing", False), ("linked", True)):
+            with self.subTest(name=name):
+                with (
+                    tempfile.TemporaryDirectory(
+                        dir=BUILD_IDENTITY_REPO_ROOT,
+                    ) as directory,
+                    tempfile.TemporaryDirectory() as secure_directory,
+                ):
+                    build_dir = Path(directory) / "build"
+                    build_dir.mkdir()
+                    if linked:
+                        target = Path(directory) / "attacker.cmake"
+                        target.write_text("")
+                        (build_dir / "CTestTestfile.cmake").symlink_to(target)
+
+                    with (
+                        mock.patch.object(
+                            provenance_module,
+                            "_dedicated_producer_execution_directory",
+                            side_effect=lambda **kwargs: (
+                                current_user_execution_directory(
+                                    Path(secure_directory),
+                                    **kwargs,
+                                )
+                            ),
+                        ),
+                        self.assertRaisesRegex(
+                            OSError,
+                            (
+                                "top-level CTest registry metadata is missing"
+                                if not linked
+                                else "CTest registry metadata is linked"
+                            ),
+                        ),
+                    ):
+                        provenance_module._run_ctest_registry_from_snapshot(
+                            subprocess.run,
+                            (
+                                str(Path(ctest_candidate).resolve()),
+                                "--test-dir",
+                                str(build_dir),
+                                "--show-only=json-v1",
+                            ),
+                            build_dir=build_dir,
+                            env=provenance_module.SANITIZED_TEST_ENV,
+                            timeout=120.0,
+                            execution_identity=(65001, 65001),
+                        )
+
+    def test_ctest_registry_snapshot_rejects_source_mutation(self) -> None:
+        ctest_candidate = shutil.which("ctest")
+        if ctest_candidate is None:
+            self.skipTest("ctest is required")
+        with (
+            tempfile.TemporaryDirectory(
+                dir=BUILD_IDENTITY_REPO_ROOT,
+            ) as directory,
+            tempfile.TemporaryDirectory() as secure_directory,
+        ):
+            build_dir = Path(directory) / "build"
+            build_dir.mkdir()
+            manifest = build_dir / "CTestTestfile.cmake"
+            manifest.write_text("")
+
+            def mutate_source(*args: object, **kwargs: object) -> object:
+                del args, kwargs
+                manifest.write_text("add_test(attacker /usr/bin/true)\n")
+                return subprocess.CompletedProcess(
+                    [str(Path(ctest_candidate).resolve())],
+                    0,
+                    stdout='{"tests":[]}',
+                    stderr="",
+                )
+
+            with (
+                mock.patch.object(
+                    provenance_module,
+                    "_run_ctest_command",
+                    side_effect=mutate_source,
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "_chown_private_directory",
+                    side_effect=lambda path, **kwargs: path.chmod(0o700),
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "_dedicated_producer_execution_directory",
+                    side_effect=lambda **kwargs: (
+                        current_user_execution_directory(
+                            Path(secure_directory),
+                            **kwargs,
+                        )
+                    ),
+                ),
+                self.assertRaisesRegex(
+                    OSError,
+                    "CTest registry metadata changed during discovery",
+                ),
+            ):
+                provenance_module._run_ctest_registry_from_snapshot(
+                    subprocess.run,
+                    (
+                        str(Path(ctest_candidate).resolve()),
+                        "--test-dir",
+                        str(build_dir),
+                        "--show-only=json-v1",
+                    ),
+                    build_dir=build_dir,
+                    env=provenance_module.SANITIZED_TEST_ENV,
+                    timeout=120.0,
+                    execution_identity=(65001, 65001),
+                )
+
+    def test_build_identity_probe_uses_bounded_uid_runner(self) -> None:
+        clock = FakeMonotonicClock()
+        deadline = provenance_module._VerifierDeadline(
+            20.0,
+            monotonic=clock,
+        )
+        with (
+            tempfile.TemporaryDirectory(
+                dir=BUILD_IDENTITY_REPO_ROOT,
+            ) as directory,
+            tempfile.TemporaryDirectory() as secure_directory,
+        ):
+            snapshot_path = Path(directory) / "MicroMachine.snapshot"
+            snapshot_path.write_bytes(b"fixture")
+            (snapshot_path.parent / "CTestTestfile.cmake").write_text("")
+            ctest_environment = {
+                "LANG": "C",
+                "LC_ALL": "C",
+                "PATH": "/usr/bin:/bin",
+            }
+
+            def run_native(
+                argv: object,
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess[bytes]:
+                del kwargs
+                command = list(argv)
+                if "--voi-build-input-identity" in command:
+                    stdout = b"sha256:" + (b"a" * 64) + b"\n"
+                elif command[0] == "/usr/bin/git":
+                    stdout = b"git-output\n"
+                else:
+                    stdout = b'{"tests":[]}\n'
+                return subprocess.CompletedProcess(command, 0, stdout, b"")
+
+            def reconstruct(
+                config: object,
+                *,
+                binary_identity_runner: object,
+                ctest_registry_runner: object,
+                git_command_runner: object,
+            ) -> dict[str, object]:
+                self.assertIs(mock.sentinel.config, config)
+                self.assertTrue(callable(binary_identity_runner))
+                observed = binary_identity_runner(
+                    (
+                        "/candidate/MicroMachine",
+                        "--voi-build-input-identity",
+                    ),
+                    snapshot_path,
+                )
+                self.assertEqual(
+                    b"sha256:" + (b"a" * 64) + b"\n",
+                    observed.stdout,
+                )
+                self.assertTrue(callable(ctest_registry_runner))
+                registry = ctest_registry_runner(
+                    (
+                        "/candidate/ctest",
+                        "--test-dir",
+                        str(snapshot_path.parent),
+                        "--show-only=json-v1",
+                    ),
+                    snapshot_path.parent,
+                    ctest_environment,
+                    120.0,
+                )
+                self.assertEqual(b'{"tests":[]}\n', registry.stdout)
+                self.assertTrue(callable(git_command_runner))
+                git_result = git_command_runner(
+                    (
+                        "/usr/bin/git",
+                        "-c",
+                        "core.fsmonitor=false",
+                        "-C",
+                        str(snapshot_path.parent),
+                        "rev-parse",
+                        "HEAD",
+                    ),
+                    snapshot_path.parent,
+                    {"PATH": "/usr/bin:/bin"},
+                    30.0,
+                )
+                self.assertEqual(b"git-output\n", git_result.stdout)
+                return {"ok": True}
+
+            with (
+                mock.patch.object(
+                    provenance_module,
+                    "_normalize_producer_identity",
+                    return_value=(65001, 65001),
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "build_micromachine_build_identity",
+                    side_effect=reconstruct,
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "_run_dedicated_uid_native_command",
+                    side_effect=run_native,
+                ) as native_runner,
+                mock.patch.object(
+                    provenance_module,
+                    "_chown_private_directory",
+                    side_effect=lambda path, **kwargs: path.chmod(0o700),
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "_dedicated_producer_execution_directory",
+                    side_effect=lambda **kwargs: (
+                        current_user_execution_directory(
+                            Path(secure_directory),
+                            **kwargs,
+                        )
+                    ),
+                ),
+            ):
+                report = provenance_module._build_micromachine_identity_with_boundary(
+                    mock.sentinel.config,
+                    execution_uid=65001,
+                    execution_gid=65001,
+                    deadline=deadline,
+                )
+
+        self.assertEqual({"ok": True}, report)
+        self.assertEqual(3, len(native_runner.call_args_list))
+        registry_call = native_runner.call_args_list[1]
+        registry_argv = list(registry_call.args[0])
+        registry_root = Path(
+            registry_argv[registry_argv.index("--test-dir") + 1]
+        )
+        self.assertNotEqual(snapshot_path.parent, registry_root)
+        self.assertTrue(
+            registry_root.name.startswith(".voi-ctest-registry-"),
+            registry_root,
+        )
+        self.assertEqual(str(registry_root), registry_call.kwargs["cwd"])
+        self.assertEqual(ctest_environment, registry_call.kwargs["env"])
+        self.assertEqual(20.0, registry_call.kwargs["timeout"])
+        self.assertEqual(65001, registry_call.kwargs["uid"])
+        self.assertEqual(65001, registry_call.kwargs["gid"])
+        self.assertIs(deadline, registry_call.kwargs["deadline"])
+        self.assertEqual(
+            [
+                mock.call(
+                    (
+                        str(snapshot_path),
+                        "--voi-build-input-identity",
+                    ),
+                    cwd=str(snapshot_path.parent),
+                    env=provenance_module.SANITIZED_TEST_ENV,
+                    timeout=20.0,
+                    uid=65001,
+                    gid=65001,
+                    deadline=deadline,
+                ),
+                mock.call(
+                    (
+                        "/usr/bin/git",
+                        "-c",
+                        "core.fsmonitor=false",
+                        "-C",
+                        str(snapshot_path.parent),
+                        "rev-parse",
+                        "HEAD",
+                    ),
+                    cwd=str(snapshot_path.parent),
+                    env={"PATH": "/usr/bin:/bin"},
+                    timeout=20.0,
+                    uid=65001,
+                    gid=65001,
+                    deadline=deadline,
+                ),
+            ],
+            [
+                native_runner.call_args_list[0],
+                native_runner.call_args_list[2],
+            ],
+        )
+
+    def test_dedicated_producer_uid_ctest_uses_writable_registry_snapshot(
+        self,
+    ) -> None:
+        producer_uid, producer_gid = self.dedicated_producer_uid()
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+            root = Path(directory)
+            root.chmod(0o755)
+            fixture = make_build_fixture(root / "fixture")
+            build_dir = fixture["config"].micromachine_build_dir.resolve()
+            metadata_before = {
+                relative_path: (
+                    build_dir / relative_path
+                ).read_bytes()
+                for relative_path in provenance_module._CTEST_REGISTRY_METADATA_PATHS
+                if (build_dir / relative_path).is_file()
+            }
+            testing_before = {
+                path.relative_to(build_dir).as_posix(): path.read_bytes()
+                for path in (build_dir / "Testing").rglob("*")
+                if path.is_file()
+            }
+
+            result = attest_build_binding(
+                fixture["report_path"],
+                repository_dir=fixture["repository"],
+                expected_repository_commit=fixture["repository_commit"],
+                expected_build_dir=build_dir,
+                command_runner=subprocess.run,
+                execution_uid=producer_uid,
+                execution_gid=producer_gid,
+            )
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(
+                metadata_before,
+                {
+                    relative_path: (
+                        build_dir / relative_path
+                    ).read_bytes()
+                    for relative_path in metadata_before
+                },
+            )
+            self.assertEqual(
+                testing_before,
+                {
+                    path.relative_to(build_dir).as_posix(): path.read_bytes()
+                    for path in (build_dir / "Testing").rglob("*")
+                    if path.is_file()
+                },
+            )
+
+    def test_dedicated_producer_uid_ctest_registry_closes_stdin_and_cleans_descendant(
+        self,
+    ) -> None:
+        producer_uid, producer_gid = self.dedicated_producer_uid()
+        with tempfile.TemporaryDirectory(
+            dir="/private/tmp",
+        ) as directory:
+            root = Path(directory)
+            root.chmod(0o711)
+            producer_io = root / "producer-io"
+            producer_io.mkdir(mode=0o700)
+            os.chown(producer_io, producer_uid, producer_gid)
+            observation_path = producer_io / "ctest-observation.json"
+            child_pid_path = producer_io / "ctest-child.pid"
+            sentinel_token = "token-visible-only-in-root-parent"
+            (producer_io / "CTestTestfile.cmake").write_text("")
+            script = (
+                "import json,os,subprocess,sys,time\n"
+                "from pathlib import Path\n"
+                "with open('/dev/null','wb') as sink:\n"
+                "    subprocess.Popen(\n"
+                "        ['/bin/sh','-c','echo $$ > \"$1\"; exec sleep 30',\n"
+                f"         'ctest-child',{str(child_pid_path)!r}],\n"
+                "        stdin=sink,stdout=sink,stderr=sink,\n"
+                "        start_new_session=True,\n"
+                "    )\n"
+                f"child_path=Path({str(child_pid_path)!r})\n"
+                "for _ in range(100):\n"
+                "    if child_path.is_file():\n"
+                "        break\n"
+                "    time.sleep(0.01)\n"
+                f"Path({str(observation_path)!r}).write_text(json.dumps({{\n"
+                "    'stdin':sys.stdin.buffer.read().decode(),\n"
+                "    'token_env':os.environ.get('GITHUB_TOKEN'),\n"
+                "}))\n"
+            )
+            fake_ctest = root / "ctest"
+            fake_ctest.write_text(
+                f"#!{Path(sys.executable).resolve()}\n{script}"
+            )
+            fake_ctest.chmod(0o755)
+
+            def reconstruct(
+                config: object,
+                *,
+                binary_identity_runner: object,
+                ctest_registry_runner: object,
+                git_command_runner: object,
+            ) -> dict[str, object]:
+                del config, binary_identity_runner, git_command_runner
+                self.assertTrue(callable(ctest_registry_runner))
+                ctest_registry_runner(
+                    (
+                        str(fake_ctest),
+                        "--test-dir",
+                        str(producer_io),
+                        "--show-only=json-v1",
+                    ),
+                    producer_io,
+                    provenance_module.SANITIZED_TEST_ENV,
+                    5.0,
+                )
+                return {"ok": True}
+
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"GITHUB_TOKEN": sentinel_token},
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "build_micromachine_build_identity",
+                    side_effect=reconstruct,
+                ),
+                self.assertRaisesRegex(
+                    OSError,
+                    "native verifier command left detached descendants",
+                ),
+            ):
+                provenance_module._build_micromachine_identity_with_boundary(
+                    mock.sentinel.config,
+                    execution_uid=producer_uid,
+                    execution_gid=producer_gid,
+                )
+
+            self.assertEqual(
+                {"stdin": "", "token_env": None},
+                json.loads(observation_path.read_text()),
+            )
+            child_pid = int(child_pid_path.read_text().strip())
+            self.assertNotIn(
+                child_pid,
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
+            self.assertEqual(
+                (),
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
+
+    def test_dedicated_producer_uid_git_runner_closes_stdin_and_cleans_descendant(
+        self,
+    ) -> None:
+        producer_uid, producer_gid = self.dedicated_producer_uid()
+        with tempfile.TemporaryDirectory(
+            dir="/private/tmp",
+        ) as directory:
+            root = Path(directory)
+            root.chmod(0o711)
+            producer_io = root / "producer-io"
+            producer_io.mkdir(mode=0o700)
+            os.chown(producer_io, producer_uid, producer_gid)
+            observation_path = producer_io / "git-observation.json"
+            child_pid_path = producer_io / "git-child.pid"
+            sentinel_token = "token-visible-only-in-root-parent"
+            script = (
+                "import json,os,subprocess,sys,time\n"
+                "from pathlib import Path\n"
+                "with open('/dev/null','wb') as sink:\n"
+                "    subprocess.Popen(\n"
+                "        ['/bin/sh','-c','echo $$ > \"$1\"; exec sleep 30',\n"
+                "         'git-child',sys.argv[2]],\n"
+                "        stdin=sink,stdout=sink,stderr=sink,\n"
+                "        start_new_session=True,\n"
+                "    )\n"
+                "child_path=Path(sys.argv[2])\n"
+                "for _ in range(100):\n"
+                "    if child_path.is_file():\n"
+                "        break\n"
+                "    time.sleep(0.01)\n"
+                "Path(sys.argv[1]).write_text(json.dumps({\n"
+                "    'stdin':sys.stdin.buffer.read().decode(),\n"
+                "    'token_env':os.environ.get('GITHUB_TOKEN'),\n"
+                "}))\n"
+            )
+
+            def reconstruct(
+                config: object,
+                *,
+                binary_identity_runner: object,
+                ctest_registry_runner: object,
+                git_command_runner: object,
+            ) -> dict[str, object]:
+                del config, binary_identity_runner, ctest_registry_runner
+                self.assertTrue(callable(git_command_runner))
+                git_command_runner(
+                    (
+                        str(Path(sys.executable).resolve()),
+                        "-I",
+                        "-B",
+                        "-S",
+                        "-c",
+                        script,
+                        str(observation_path),
+                        str(child_pid_path),
+                    ),
+                    producer_io,
+                    provenance_module.SANITIZED_TEST_ENV,
+                    5.0,
+                )
+                return {"ok": True}
+
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"GITHUB_TOKEN": sentinel_token},
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "build_micromachine_build_identity",
+                    side_effect=reconstruct,
+                ),
+                self.assertRaisesRegex(
+                    OSError,
+                    "native verifier command left detached descendants",
+                ),
+            ):
+                provenance_module._build_micromachine_identity_with_boundary(
+                    mock.sentinel.config,
+                    execution_uid=producer_uid,
+                    execution_gid=producer_gid,
+                )
+
+            self.assertEqual(
+                {"stdin": "", "token_env": None},
+                json.loads(observation_path.read_text()),
+            )
+            child_pid = int(child_pid_path.read_text().strip())
+            self.assertNotIn(
+                child_pid,
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
+            self.assertEqual(
+                (),
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
+
+    def test_dedicated_producer_uid_disables_artifact_fsmonitor_helper(
+        self,
+    ) -> None:
+        producer_uid, producer_gid = self.dedicated_producer_uid()
+        with tempfile.TemporaryDirectory(
+            dir="/private/tmp",
+        ) as directory:
+            root = Path(directory)
+            root.chmod(0o755)
+            fixture = make_build_fixture(root / "fixture")
+            build_dir = fixture["config"].micromachine_build_dir.resolve()
+            fake_ctest = root / "ctest"
+            registry_commands = "".join(
+                (
+                    "  printf "
+                    f"'%s{{\"name\":\"{name}\","
+                    f"\"command\":[\"%s/bin/{executable}\"]}}' "
+                    f"'{',' if index else ''}' \"$registry_root\"\n"
+                )
+                for index, (name, executable) in enumerate(
+                    sorted(MICROMACHINE_REQUIRED_NATIVE_TESTS.items())
+                )
+            )
+            fake_ctest.write_text(
+                "#!/bin/sh\n"
+                'test_dir="$2"\n'
+                'case "$test_dir" in\n'
+                "  */.voi-ctest-registry-*) "
+                f"registry_root={json.dumps(str(build_dir))} ;;\n"
+                '  *) registry_root="$test_dir" ;;\n'
+                "esac\n"
+                'if [ "${3:-}" = "--show-only=json-v1" ]; then\n'
+                "  printf '%s' '{\"tests\":['\n"
+                f"{registry_commands}"
+                "  printf '%s\\n' ']}'\n"
+                "else\n"
+                "  printf '%s\\n' "
+                f"'100% tests passed, 0 tests failed out of {REQUIRED_CTEST_COUNT}'\n"
+                "fi\n"
+                "exit 0\n"
+            )
+            fake_ctest.chmod(0o755)
+            (build_dir / "CMakeCache.txt").write_text(
+                f"CMAKE_CTEST_COMMAND:INTERNAL={fake_ctest.resolve()}\n"
+            )
+            refresh_build_fixture(fixture, fixture["config"])
+            producer_io = root / "producer-io"
+            producer_io.mkdir(mode=0o700)
+            os.chown(producer_io, producer_uid, producer_gid)
+            observation_path = producer_io / "fsmonitor-observation"
+            child_pid_path = producer_io / "fsmonitor-child.pid"
+            helper = root / "malicious-fsmonitor"
+            helper.write_text(
+                "#!/bin/sh\n"
+                f"cat > {observation_path}\n"
+                f"/bin/sh -c 'echo $$ > {child_pid_path}; exec sleep 30' "
+                "</dev/null >/dev/null 2>&1 &\n"
+                "exit 1\n"
+            )
+            helper.chmod(0o755)
+            subprocess.run(
+                [
+                    "/usr/bin/git",
+                    "-C",
+                    str(fixture["config"].micromachine_dir),
+                    "config",
+                    "core.fsmonitor",
+                    str(helper),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            with mock.patch.dict(
+                os.environ,
+                {"GITHUB_TOKEN": "root-parent-token"},
+            ):
+                result = attest_build_binding(
+                    fixture["report_path"],
+                    repository_dir=fixture["repository"],
+                    expected_repository_commit=fixture["repository_commit"],
+                    expected_build_dir=(
+                        fixture["config"].micromachine_build_dir
+                    ),
+                    command_runner=subprocess.run,
+                    execution_uid=producer_uid,
+                    execution_gid=producer_gid,
+                )
+
+            self.assertTrue(result["ok"], result)
+            self.assertFalse(observation_path.exists())
+            self.assertFalse(child_pid_path.exists())
+            self.assertEqual(
+                (),
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
+
+    def test_dedicated_producer_uid_native_output_limit_cleans_descendant(
+        self,
+    ) -> None:
+        producer_uid, producer_gid = self.dedicated_producer_uid()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o711)
+            producer_io = root / "producer-io"
+            producer_io.mkdir(mode=0o700)
+            os.chown(producer_io, producer_uid, producer_gid)
+            child_pid_path = producer_io / "native-output-child.pid"
+            script = (
+                "from pathlib import Path\n"
+                "import os,subprocess,sys,time\n"
+                "with open('/dev/null','wb') as sink:\n"
+                "    subprocess.Popen(\n"
+                "        ['/bin/sh','-c','echo $$ > \"$1\"; exec sleep 30',\n"
+                "         'native-output-child',sys.argv[1]],\n"
+                "        stdin=sink,stdout=sink,stderr=sink,\n"
+                "        start_new_session=True,\n"
+                "    )\n"
+                "pid_path=Path(sys.argv[1])\n"
+                "for _ in range(100):\n"
+                "    if pid_path.is_file():\n"
+                "        break\n"
+                "    time.sleep(0.01)\n"
+                "os.write(1,b'x'*4096)\n"
+            )
+
+            with (
+                mock.patch.object(
+                    provenance_module,
+                    "MAX_PROCESS_STDOUT_BYTES",
+                    128,
+                ),
+                self.assertRaisesRegex(
+                    OSError,
+                    "stdout exceeded the bounded capture limit",
+                ),
+            ):
+                provenance_module._run_dedicated_uid_native_command(
+                    (
+                        str(Path(sys.executable).resolve()),
+                        "-I",
+                        "-B",
+                        "-S",
+                        "-c",
+                        script,
+                        str(child_pid_path),
+                    ),
+                    cwd=str(producer_io),
+                    env=SANITIZED_PRODUCER_ENV,
+                    timeout=5.0,
+                    uid=producer_uid,
+                    gid=producer_gid,
+                )
+
+            child_pid = int(child_pid_path.read_text().strip())
+            self.assertNotIn(
+                child_pid,
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
+            self.assertEqual(
+                (),
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
+
+    def test_github_actions_main_does_not_read_token_after_failed_preflight(
+        self,
+    ) -> None:
+        environment = {
+            "GITHUB_REPOSITORY": REPOSITORY,
+            "GITHUB_RUN_ATTEMPT": str(RUN_ATTEMPT),
+            "GITHUB_RUN_ID": str(RUN_ID),
+            "GITHUB_WORKFLOW_REF": WORKFLOW_REF,
+            "GITHUB_WORKFLOW_SHA": WORKFLOW_SHA,
+            "VOI_CANDIDATE_WORKSPACE": "/candidate",
+            "VOI_NODE_EXECUTABLE": "/usr/local/bin/node",
+            "VOI_PRODUCER_GID": "65001",
+            "VOI_PRODUCER_UID": "65001",
+            "VOI_PRODUCER_TIMEOUT_SECONDS": "1800",
+            "VOI_RELEASE_COMMIT": HEAD_SHA,
+            "VOI_VERIFIER_TIMEOUT_SECONDS": "4800",
+            "VOI_TRUSTED_VERIFIER_COMMIT": BASE_SHA,
+            "VOI_TRUSTED_VERIFIER_WORKSPACE": "/trusted",
+        }
+        rejected_build = {
+            "ok": False,
+            "status": "blocked",
+            "blockers": ["ctest failed"],
+        }
+
+        with (
+            mock.patch.dict(os.environ, environment, clear=True),
+            mock.patch.object(
+                provenance_module,
+                "_attest_trusted_verifier_runtime",
+                return_value={"ok": True},
+            ),
+            mock.patch.object(
+                provenance_module,
+                "attest_build_binding",
+                return_value=rejected_build,
+            ),
+            mock.patch.object(
+                provenance_module,
+                "_read_github_token_from_stdin",
+            ) as token_reader,
+            mock.patch.object(
+                provenance_module,
+                "_terminate_producer_uid_processes",
+                return_value=(),
+            ),
+            mock.patch("sys.stdout", new_callable=io.StringIO),
+        ):
+            returncode = provenance_module._main(
+                (
+                    "--emit-github-actions-bundle",
+                    "/output/pre-live.zip",
+                    "/runtime/voi_build_identity.json",
+                    "/runtime",
+                )
+            )
+
+        self.assertEqual(1, returncode)
+        token_reader.assert_not_called()
+
+    def test_dedicated_producer_uid_kills_setsided_descendant_on_timeout(
+        self,
+    ) -> None:
+        producer_uid, producer_gid = self.dedicated_producer_uid()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o711)
+            state_dir = root / "state"
+            state_dir.mkdir(mode=0o700)
+            producer_io = root / "producer-io"
+            producer_io.mkdir(mode=0o700)
+            os.chown(producer_io, producer_uid, producer_gid)
+            child_pid_path = producer_io / "detached-child.pid"
+            script = (
+                "import pathlib,subprocess,sys\n"
+                "child=subprocess.Popen(\n"
+                "    ['/bin/sh','-c','echo $$ > \"$1\"; exec sleep 30',\n"
+                "     'detached-child',sys.argv[1]],\n"
+                "    start_new_session=True,\n"
+                ")\n"
+                "child.wait()\n"
+            ).encode()
+            argv = (
+                str(Path(sys.executable).resolve()),
+                "-I",
+                "-B",
+                "-S",
+                "-c",
+                ISOLATED_PYTHON_BOOTSTRAP,
+                str(root),
+                "timeout_producer.py",
+                str(child_pid_path),
+            )
+            executable_payload = Path(argv[0]).read_bytes()
+
+            with self.assertRaises(subprocess.TimeoutExpired):
+                provenance_module._run_pinned_command(
+                    subprocess.run,
+                    argv,
+                    executable_payload=executable_payload,
+                    executable_snapshot=(
+                        0,
+                        0,
+                        len(executable_payload),
+                        0,
+                        hashlib.sha256(executable_payload).hexdigest(),
+                    ),
+                    authenticated_python_sources={
+                        "timeout_producer.py": script,
+                    },
+                    state_dir=state_dir,
+                    cwd=str(producer_io),
+                    timeout=1.0,
+                    producer_uid=producer_uid,
+                    producer_gid=producer_gid,
+                )
+
+            self.assertTrue(child_pid_path.is_file())
+            child_pid = int(child_pid_path.read_text().strip())
+            self.assertNotIn(
+                child_pid,
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
+            self.assertEqual(
+                (),
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
+
+    def test_dedicated_producer_uid_output_limit_cleans_descendant(
+        self,
+    ) -> None:
+        producer_uid, producer_gid = self.dedicated_producer_uid()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o711)
+            state_dir = root / "state"
+            state_dir.mkdir(mode=0o700)
+            producer_io = root / "producer-io"
+            producer_io.mkdir(mode=0o700)
+            os.chown(producer_io, producer_uid, producer_gid)
+            child_pid_path = producer_io / "producer-output-child.pid"
+            script = (
+                "from pathlib import Path\n"
+                "import os,subprocess,sys,time\n"
+                "with open('/dev/null','wb') as sink:\n"
+                "    subprocess.Popen(\n"
+                "        ['/bin/sh','-c','echo $$ > \"$1\"; exec sleep 30',\n"
+                "         'producer-output-child',sys.argv[1]],\n"
+                "        stdin=sink,stdout=sink,stderr=sink,\n"
+                "        start_new_session=True,\n"
+                "    )\n"
+                "pid_path=Path(sys.argv[1])\n"
+                "for _ in range(100):\n"
+                "    if pid_path.is_file():\n"
+                "        break\n"
+                "    time.sleep(0.01)\n"
+                "os.write(1,b'x'*4096)\n"
+            ).encode()
+            argv = (
+                str(Path(sys.executable).resolve()),
+                "-I",
+                "-B",
+                "-S",
+                "-c",
+                ISOLATED_PYTHON_BOOTSTRAP,
+                str(root),
+                "output_limit_producer.py",
+                str(child_pid_path),
+            )
+            executable_payload = Path(argv[0]).read_bytes()
+
+            with (
+                mock.patch.object(
+                    provenance_module,
+                    "MAX_PROCESS_STDOUT_BYTES",
+                    128,
+                ),
+                self.assertRaisesRegex(
+                    OSError,
+                    "stdout exceeded the bounded capture limit",
+                ),
+            ):
+                provenance_module._run_pinned_command(
+                    subprocess.run,
+                    argv,
+                    executable_payload=executable_payload,
+                    executable_snapshot=(
+                        0,
+                        0,
+                        len(executable_payload),
+                        0,
+                        hashlib.sha256(executable_payload).hexdigest(),
+                    ),
+                    authenticated_python_sources={
+                        "output_limit_producer.py": script,
+                    },
+                    state_dir=state_dir,
+                    cwd=str(producer_io),
+                    timeout=5.0,
+                    producer_uid=producer_uid,
+                    producer_gid=producer_gid,
+                )
+
+            child_pid = int(child_pid_path.read_text().strip())
+            self.assertNotIn(
+                child_pid,
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
+            self.assertEqual(
+                (),
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
+
+    def test_timeout_reaps_main_before_dedicated_uid_cleanup(self) -> None:
+        events: list[str] = []
+
+        class TimedOutProcess:
+            pid = 4321
+            returncode: int | None = None
+
+            def kill(self) -> None:
+                events.append("kill")
+
+            def wait(self, *, timeout: float) -> int:
+                self.assert_timeout(timeout)
+                events.append("wait")
+                self.returncode = -9
+                return self.returncode
+
+            def communicate(self) -> tuple[bytes, bytes]:
+                events.append("communicate")
+                return b"stdout", b"stderr"
+
+            @staticmethod
+            def assert_timeout(timeout: float) -> None:
+                if timeout != 1.0:
+                    raise AssertionError(f"unexpected timeout: {timeout}")
+
+        process = TimedOutProcess()
+        with (
+            mock.patch.object(
+                provenance_module.os,
+                "killpg",
+                side_effect=lambda pid, sig: events.append("killpg"),
+            ),
+            mock.patch.object(
+                provenance_module,
+                "_terminate_producer_uid_processes",
+                side_effect=lambda uid: events.append("uid_cleanup") or (),
+            ),
+        ):
+            stdout, stderr = provenance_module._finish_timed_out_process(
+                process,
+                producer_uid=65001,
+            )
+
+        self.assertEqual(b"stdout", stdout)
+        self.assertEqual(b"stderr", stderr)
+        self.assertEqual(
+            ["killpg", "wait", "uid_cleanup", "communicate"],
+            events,
+        )
+
+    def test_dedicated_producer_uid_native_command_rejects_descendant(
+        self,
+    ) -> None:
+        producer_uid, producer_gid = self.dedicated_producer_uid()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o711)
+            producer_io = root / "producer-io"
+            producer_io.mkdir(mode=0o700)
+            os.chown(producer_io, producer_uid, producer_gid)
+            child_pid_path = producer_io / "detached-native-child.pid"
+            script = (
+                "from pathlib import Path\n"
+                "import subprocess,sys,time\n"
+                "with open('/dev/null','wb') as sink:\n"
+                "    subprocess.Popen(\n"
+                "        ['/bin/sh','-c','echo $$ > \"$1\"; exec sleep 30',\n"
+                "         'detached-native-child',sys.argv[1]],\n"
+                "        stdin=sink,stdout=sink,stderr=sink,\n"
+                "        start_new_session=True,\n"
+                "    )\n"
+                "pid_path=Path(sys.argv[1])\n"
+                "for _ in range(100):\n"
+                "    if pid_path.is_file():\n"
+                "        break\n"
+                "    time.sleep(0.01)\n"
+            )
+
+            with self.assertRaisesRegex(
+                OSError,
+                "native verifier command left detached descendants",
+            ):
+                provenance_module._run_dedicated_uid_native_command(
+                    (
+                        str(Path(sys.executable).resolve()),
+                        "-I",
+                        "-B",
+                        "-S",
+                        "-c",
+                        script,
+                        str(child_pid_path),
+                    ),
+                    cwd=str(producer_io),
+                    env=SANITIZED_PRODUCER_ENV,
+                    timeout=5.0,
+                    uid=producer_uid,
+                    gid=producer_gid,
+                )
+
+            self.assertTrue(child_pid_path.is_file())
+            child_pid = int(child_pid_path.read_text().strip())
+            self.assertNotIn(
+                child_pid,
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
+            self.assertEqual(
+                (),
+                provenance_module._process_ids_for_uid(producer_uid),
+            )
+
+    def test_dedicated_producer_uid_rejects_and_kills_normal_exit_descendant(
+        self,
+    ) -> None:
+        producer_uid, producer_gid = self.dedicated_producer_uid()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o711)
+            state_dir = root / "state"
+            state_dir.mkdir(mode=0o700)
+            producer_io = root / "producer-io"
+            producer_io.mkdir(mode=0o700)
+            os.chown(producer_io, producer_uid, producer_gid)
+            child_pid_path = producer_io / "detached-child.pid"
+            script = (
+                "from pathlib import Path\n"
+                "import subprocess,sys,time\n"
+                "with open('/dev/null','wb') as sink:\n"
+                "    subprocess.Popen(\n"
+                "        ['/bin/sh','-c','echo $$ > \"$1\"; exec sleep 30',\n"
+                "         'detached-child',sys.argv[1]],\n"
+                "        stdin=sink,stdout=sink,stderr=sink,\n"
+                "        start_new_session=True,\n"
+                "    )\n"
+                "pid_path=Path(sys.argv[1])\n"
+                "for _ in range(100):\n"
+                "    if pid_path.is_file():\n"
+                "        break\n"
+                "    time.sleep(0.01)\n"
+            ).encode()
+            argv = (
+                str(Path(sys.executable).resolve()),
+                "-I",
+                "-B",
+                "-S",
+                "-c",
+                ISOLATED_PYTHON_BOOTSTRAP,
+                str(root),
+                "detached_producer.py",
+                str(child_pid_path),
+            )
+            executable_payload = Path(argv[0]).read_bytes()
+
+            with self.assertRaisesRegex(
+                OSError,
+                "detached descendants",
+            ):
+                provenance_module._run_pinned_command(
+                    subprocess.run,
+                    argv,
+                    executable_payload=executable_payload,
+                    executable_snapshot=(
+                        0,
+                        0,
+                        len(executable_payload),
+                        0,
+                        hashlib.sha256(executable_payload).hexdigest(),
+                    ),
+                    authenticated_python_sources={
+                        "detached_producer.py": script,
+                    },
+                    state_dir=state_dir,
+                    cwd=str(producer_io),
+                    timeout=5.0,
+                    producer_uid=producer_uid,
+                    producer_gid=producer_gid,
+                )
+
+            self.assertTrue(child_pid_path.is_file())
+            self.assertEqual(
+                (),
+                provenance_module._process_ids_for_uid(producer_uid),
             )
 
     def test_rejects_symlinked_output_leaf_without_touching_target(self) -> None:
@@ -2993,6 +7363,336 @@ class LocalProducerTest(unittest.TestCase):
             self.assertEqual(
                 {"source": "pinned"},
                 json.loads(output.read_bytes()),
+            )
+
+    def test_pins_argv_binary_and_rejects_path_replacement_during_execution(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_root = Path(directory).resolve()
+            root = temporary_root / "repo"
+            root.mkdir()
+            init_git_repo(root)
+            cwd = root / "producer"
+            cwd.mkdir()
+            executable = root / "producer.sh"
+            executable.write_text("#!/bin/sh\nexit 0\n")
+            executable.chmod(0o755)
+            output = cwd / "evidence.json"
+            admitted_binary = temporary_root / "MicroMachine"
+            admitted_payload = b"trusted admitted MicroMachine bytes"
+            admitted_binary.write_bytes(admitted_payload)
+            admitted_binary.chmod(0o755)
+            admitted_digest = hashlib.sha256(admitted_payload).hexdigest()
+            producer_argv = (
+                str(executable),
+                "--micromachine-binary",
+                str(admitted_binary),
+                "--output",
+                str(output),
+            )
+            observed_execution_binary: Path | None = None
+
+            def replacing_runner(
+                *args: object,
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess:
+                nonlocal observed_execution_binary
+                execution_argv = list(args[0])
+                observed_execution_binary = Path(execution_argv[2])
+                self.assertNotEqual(admitted_binary, observed_execution_binary)
+                self.assertEqual(
+                    admitted_digest,
+                    hashlib.sha256(
+                        observed_execution_binary.read_bytes()
+                    ).hexdigest(),
+                )
+                replacement = admitted_binary.with_name(
+                    admitted_binary.name + ".replacement"
+                )
+                replacement.write_bytes(b"attacker binary bytes")
+                replacement.chmod(0o755)
+                os.replace(replacement, admitted_binary)
+                Path(execution_argv[-1]).write_text(
+                    json.dumps({"binary_sha256": admitted_digest}) + "\n"
+                )
+                return subprocess.CompletedProcess(
+                    execution_argv,
+                    0,
+                    b"",
+                    b"",
+                )
+
+            report = run_local_producer(
+                repository_dir=root,
+                cwd=cwd,
+                argv=producer_argv,
+                allowed_argv=(producer_argv,),
+                output_artifact=output,
+                command_runner=replacing_runner,
+                pinned_argv_file_digests={
+                    str(admitted_binary): admitted_digest
+                },
+            )
+
+            self.assertFalse(report["ok"], report)
+            self.assertIsNotNone(observed_execution_binary)
+            self.assertEqual(
+                {"binary_sha256": admitted_digest},
+                json.loads(output.read_bytes()),
+            )
+            self.assertIn(
+                "pinned argv file pathname changed",
+                " ".join(report["blockers"]),
+            )
+
+    def test_pins_node_and_rejects_path_replacement_during_execution(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_root = Path(directory).resolve()
+            root = temporary_root / "repo"
+            root.mkdir()
+            init_git_repo(root)
+            cwd = root / "producer"
+            cwd.mkdir()
+            executable = root / "producer.sh"
+            executable.write_text("#!/bin/sh\nexit 0\n")
+            executable.chmod(0o755)
+            output = cwd / "evidence.json"
+            admitted_node = temporary_root / "node"
+            admitted_payload = b"trusted admitted Node.js bytes"
+            admitted_node.write_bytes(admitted_payload)
+            admitted_node.chmod(0o755)
+            admitted_digest = hashlib.sha256(admitted_payload).hexdigest()
+            producer_argv = (
+                str(executable),
+                "--node-executable",
+                str(admitted_node),
+                "--output",
+                str(output),
+            )
+
+            def replacing_runner(
+                *args: object,
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess:
+                execution_argv = list(args[0])
+                execution_node = Path(execution_argv[2])
+                self.assertEqual(admitted_node, execution_node)
+                self.assertEqual(
+                    admitted_digest,
+                    hashlib.sha256(execution_node.read_bytes()).hexdigest(),
+                )
+                replacement = admitted_node.with_name("node.replacement")
+                replacement.write_bytes(b"attacker Node.js bytes")
+                replacement.chmod(0o755)
+                os.replace(replacement, admitted_node)
+                Path(execution_argv[-1]).write_text(
+                    json.dumps({"node_sha256": admitted_digest}) + "\n"
+                )
+                return subprocess.CompletedProcess(
+                    execution_argv,
+                    0,
+                    b"",
+                    b"",
+                )
+
+            report = run_local_producer(
+                repository_dir=root,
+                cwd=cwd,
+                argv=producer_argv,
+                allowed_argv=(producer_argv,),
+                output_artifact=output,
+                command_runner=replacing_runner,
+                pinned_argv_file_digests={
+                    str(admitted_node): admitted_digest
+                },
+                path_bound_argv_files=(admitted_node,),
+            )
+
+            self.assertFalse(report["ok"], report)
+            self.assertFalse(output.exists())
+            self.assertIn(
+                "path-bound argv file changed during execution",
+                " ".join(report["blockers"]),
+            )
+
+    @unittest.skipUnless(
+        sys.platform == "darwin",
+        "requires macOS kqueue vnode monitoring",
+    )
+    def test_authenticated_node_monitor_detects_path_swap_and_restore(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            admitted_node = root / "node"
+            attacker = root / "attacker"
+            backup = root / "backup"
+            admitted_node.write_bytes(b"trusted Node.js bytes")
+            admitted_node.chmod(0o500)
+            attacker.write_bytes(b"attacker Node.js bytes")
+            attacker.chmod(0o500)
+            admitted_digest = hashlib.sha256(
+                admitted_node.read_bytes()
+            ).hexdigest()
+
+            def swap_and_restore(node_path: str) -> None:
+                self.assertEqual(admitted_node, Path(node_path))
+                os.replace(admitted_node, backup)
+                os.replace(attacker, admitted_node)
+                os.replace(admitted_node, attacker)
+                os.replace(backup, admitted_node)
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "changed during output binding",
+            ):
+                provenance_module._with_pinned_node_executable(
+                    admitted_node,
+                    admitted_digest,
+                    swap_and_restore,
+                )
+
+    def test_private_argv_binary_snapshot_has_no_replaceable_path(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_root = Path(directory).resolve()
+            root = temporary_root / "repo"
+            root.mkdir()
+            init_git_repo(root)
+            cwd = root / "producer"
+            cwd.mkdir()
+            executable = root / "producer.sh"
+            executable.write_text("#!/bin/sh\nexit 0\n")
+            executable.chmod(0o755)
+            output = cwd / "evidence.json"
+            admitted_binary = temporary_root / "MicroMachine"
+            admitted_payload = b"trusted admitted MicroMachine bytes"
+            admitted_binary.write_bytes(admitted_payload)
+            admitted_binary.chmod(0o755)
+            admitted_digest = hashlib.sha256(admitted_payload).hexdigest()
+            producer_argv = (
+                str(executable),
+                "--micromachine-binary",
+                str(admitted_binary),
+                "--output",
+                str(output),
+            )
+
+            def replacing_runner(
+                *args: object,
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess:
+                execution_argv = list(args[0])
+                execution_binary = Path(execution_argv[2])
+                self.assertEqual(Path("/dev/fd"), execution_binary.parent)
+                self.assertEqual(
+                    admitted_digest,
+                    hashlib.sha256(execution_binary.read_bytes()).hexdigest(),
+                )
+                replacement = temporary_root / "attacker-binary"
+                replacement.write_bytes(b"attacker binary bytes")
+                replacement.chmod(0o500)
+                with self.assertRaises(OSError):
+                    os.replace(replacement, execution_binary)
+                Path(execution_argv[-1]).write_text(
+                    json.dumps({"binary_sha256": admitted_digest}) + "\n"
+                )
+                return subprocess.CompletedProcess(
+                    execution_argv,
+                    0,
+                    b"",
+                    b"",
+                )
+
+            report = run_local_producer(
+                repository_dir=root,
+                cwd=cwd,
+                argv=producer_argv,
+                allowed_argv=(producer_argv,),
+                output_artifact=output,
+                command_runner=replacing_runner,
+                pinned_argv_file_digests={
+                    str(admitted_binary): admitted_digest
+                },
+            )
+
+            self.assertTrue(report["ok"], report)
+            self.assertEqual(
+                {"binary_sha256": admitted_digest},
+                json.loads(output.read_bytes()),
+            )
+            self.assertEqual(admitted_payload, admitted_binary.read_bytes())
+
+    def test_authenticated_timeout_kills_native_process_group_and_cleans_root(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state_dir = root / "state"
+            state_dir.mkdir(mode=0o700)
+            child_pid_path = root / "native-child.pid"
+            script = (
+                "import os,pathlib,subprocess,sys\n"
+                "root=pathlib.Path(os.environ['VOI_PINNED_NATIVE_EXEC_ROOT'])\n"
+                "residual=root/'.voi-native-exec-timeout'\n"
+                "residual.mkdir(mode=0o700)\n"
+                "(residual/'MicroMachine').write_bytes(b'residual')\n"
+                "child=subprocess.Popen(['/bin/sh','-c',"
+                "'echo $$ > \"$1\"; exec sleep 30','timeout-child',"
+                "sys.argv[1]])\n"
+                "child.wait()\n"
+            ).encode()
+            argv = (
+                str(Path(sys.executable).resolve()),
+                "-I",
+                "-B",
+                "-S",
+                "-c",
+                ISOLATED_PYTHON_BOOTSTRAP,
+                str(root),
+                "timeout_producer.py",
+                str(child_pid_path),
+            )
+            executable_payload = Path(argv[0]).read_bytes()
+
+            with self.assertRaises(subprocess.TimeoutExpired):
+                provenance_module._run_pinned_command(
+                    subprocess.run,
+                    argv,
+                    executable_payload=executable_payload,
+                    executable_snapshot=(
+                        0,
+                        0,
+                        len(executable_payload),
+                        0,
+                        hashlib.sha256(executable_payload).hexdigest(),
+                    ),
+                    authenticated_python_sources={
+                        "timeout_producer.py": script,
+                    },
+                    state_dir=state_dir,
+                    cwd=str(root),
+                    timeout=1.0,
+                )
+
+            self.assertTrue(child_pid_path.is_file())
+            child_pid = int(child_pid_path.read_text().strip())
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(child_pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.02)
+            else:
+                self.fail("native timeout child survived process-group cleanup")
+            self.assertEqual(
+                [],
+                list(state_dir.glob(".native-execution-*")),
             )
 
     def test_executes_authenticated_python_bytes_not_mutable_snapshot_path(
@@ -3550,7 +8250,7 @@ class ReplayLedgerTest(unittest.TestCase):
         for field, replacement in (
             (
                 "workflow_ref",
-                f"{REPOSITORY}/{WORKFLOW_PATH}@refs/heads/main",
+                f"{REPOSITORY}/{WORKFLOW_PATH}@refs/heads/other",
             ),
             ("workflow_sha", "d" * 40),
         ):
@@ -3976,17 +8676,237 @@ class AggregateProvenanceTest(unittest.TestCase):
         kwargs["replay_store"] = GitHubRefReplayStore(adapter)
         return attest_pre_live_provenance(**kwargs)
 
-    def test_derives_top_level_status_and_ignores_caller_claims(self) -> None:
+    def test_invalid_identity_preflight_never_attests_or_executes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build = make_build_fixture(root / "build-fixture")
+            commit = build["repository_commit"]
+            adapter = FakeGitHubAdapter(head_sha=commit)
+
+            with (
+                mock.patch.object(
+                    provenance_module,
+                    "_normalize_producer_identity",
+                    side_effect=ValueError("invalid dedicated identity"),
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "attest_build_binding",
+                ) as build_attestation,
+                mock.patch.object(
+                    provenance_module,
+                    "attest_github_source",
+                ) as github_attestation,
+                mock.patch.object(
+                    provenance_module,
+                    "run_local_producer",
+                ) as producer_execution,
+            ):
+                report = self.attest(
+                    root / "global-replay",
+                    repository_dir=build["repository"],
+                    expected_commit=commit,
+                    github_adapter=adapter,
+                    issue_number=139,
+                    pull_number=138,
+                    run_id=RUN_ID,
+                    run_attempt=RUN_ATTEMPT,
+                    job_id=JOB_ID,
+                    artifact_id=ARTIFACT_ID,
+                    expected_head_sha=commit,
+                    build_report_path=build["report_path"],
+                    expected_build_dir=(
+                        build["config"].micromachine_build_dir
+                    ),
+                    producer_id=(
+                        PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+                    ),
+                    producer_uid=65001,
+                    producer_gid=65002,
+                )
+
+            self.assertFalse(report["ok"], report)
+            self.assertEqual(
+                "not_evaluated",
+                report["build_binding"]["status"],
+            )
+            build_attestation.assert_not_called()
+            github_attestation.assert_not_called()
+            producer_execution.assert_not_called()
+
+    def test_non_deterministic_producers_cannot_qualify_or_consume_replay(
+        self,
+    ) -> None:
+        for producer_id in ("provenance_qualification", "fixture_producer"):
+            with self.subTest(producer_id=producer_id):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    build = make_build_fixture(root / "build-fixture")
+                    commit = build["repository_commit"]
+                    adapter = FakeGitHubAdapter(head_sha=commit)
+                    adapter.pull_request["head"]["sha"] = commit
+                    adapter.workflow_run["pull_requests"][0]["head"][
+                        "sha"
+                    ] = commit
+                    adapter.attempt["pull_requests"][0]["head"]["sha"] = commit
+                    bind_adapter_to_build_fixture(
+                        adapter,
+                        build,
+                        output=b'{"trusted":"execution"}\n',
+                    )
+                    producer_calls: list[object] = []
+
+                    def producer(
+                        *args: object,
+                        **kwargs: object,
+                    ) -> subprocess.CompletedProcess:
+                        producer_calls.append((args, kwargs))
+                        output = Path(list(args[0])[-1])
+                        output.parent.mkdir(parents=True, exist_ok=True)
+                        output.write_text('{"trusted":"execution"}\n')
+                        return subprocess.CompletedProcess(
+                            args[0],
+                            0,
+                            b"out",
+                            b"",
+                        )
+
+                    report = self.attest(
+                        root / "global-replay",
+                        repository_dir=build["repository"],
+                        expected_commit=commit,
+                        github_adapter=adapter,
+                        issue_number=138,
+                        pull_number=137,
+                        run_id=RUN_ID,
+                        run_attempt=RUN_ATTEMPT,
+                        job_id=JOB_ID,
+                        artifact_id=ARTIFACT_ID,
+                        expected_head_sha=commit,
+                        build_report_path=build["report_path"],
+                        expected_build_dir=(
+                            build["config"].micromachine_build_dir
+                        ),
+                        producer_id=producer_id,
+                        ctest_runner=passing_ctest,
+                        producer_runner=producer,
+                    )
+
+                    self.assertFalse(report["ok"], report)
+                    self.assertEqual("blocked", report["status"])
+                    self.assertEqual(0, len(producer_calls))
+                    self.assertEqual({}, adapter.references)
+                    self.assertIn(
+                        "production candidate evidence requires producer_id="
+                        f"{PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID!r}",
+                        " ".join(report["blockers"]),
+                    )
+
+    def test_deterministic_github_replay_uses_authenticated_node_path(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build = make_build_fixture(root / "build-fixture")
+            commit = build["repository_commit"]
+            adapter = FakeGitHubAdapter(head_sha=commit)
+            adapter.pull_request["head"]["sha"] = commit
+            adapter.workflow_run["pull_requests"][0]["head"]["sha"] = commit
+            adapter.attempt["pull_requests"][0]["head"]["sha"] = commit
+            node_executable = Path(sys.executable).resolve()
+            admitted_policy = {
+                "ok": True,
+                "status": "accepted",
+                "blockers": [],
+                "producer_id": PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID,
+                "node_executable_path": str(node_executable),
+                "node_executable_sha256": hashlib.sha256(
+                    node_executable.read_bytes()
+                ).hexdigest(),
+            }
+            admitted_build = attest_build_binding(
+                build["report_path"],
+                repository_dir=build["repository"],
+                expected_repository_commit=commit,
+                expected_build_dir=(
+                    build["config"].micromachine_build_dir
+                ),
+                command_runner=passing_ctest,
+            )
+
+            with (
+                mock.patch.object(
+                    provenance_module,
+                    "_normalize_producer_identity",
+                    return_value=(65001, 65002),
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "attest_build_binding",
+                    return_value=admitted_build,
+                ) as build_attestation,
+                mock.patch.object(
+                    provenance_module,
+                    "resolve_local_producer_policy",
+                    return_value=admitted_policy,
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "attest_github_source",
+                    return_value={
+                        "ok": False,
+                        "status": "blocked",
+                        "blockers": ["stop after descriptor observation"],
+                    },
+                ) as github_attestation,
+            ):
+                report = self.attest(
+                    root / "global-replay",
+                    repository_dir=build["repository"],
+                    expected_commit=commit,
+                    github_adapter=adapter,
+                    issue_number=138,
+                    pull_number=137,
+                    run_id=RUN_ID,
+                    run_attempt=RUN_ATTEMPT,
+                    job_id=JOB_ID,
+                    artifact_id=ARTIFACT_ID,
+                    expected_head_sha=commit,
+                    build_report_path=build["report_path"],
+                    expected_build_dir=(
+                        build["config"].micromachine_build_dir
+                    ),
+                    producer_id=(
+                        PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+                    ),
+                    node_executable=node_executable,
+                    ctest_runner=passing_ctest,
+                    producer_uid=65001,
+                    producer_gid=65002,
+                )
+
+            self.assertFalse(report["ok"], report)
+            self.assertEqual(
+                65001,
+                build_attestation.call_args.kwargs["execution_uid"],
+            )
+            self.assertEqual(
+                65002,
+                build_attestation.call_args.kwargs["execution_gid"],
+            )
+            execution_node = github_attestation.call_args.kwargs[
+                "node_executable"
+            ]
+            self.assertEqual(str(node_executable), str(execution_node))
+
+    def test_production_gate_ignores_caller_success_claims(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             build = make_build_fixture(root / "build-fixture")
             repository = build["repository"]
             commit = build["repository_commit"]
             adapter = FakeGitHubAdapter(head_sha=commit)
-            adapter.workflow_run["head_sha"] = commit
-            adapter.attempt["head_sha"] = commit
             adapter.pull_request["head"]["sha"] = commit
-            adapter.artifact["workflow_run"]["head_sha"] = commit
             adapter.workflow_run["pull_requests"][0]["head"]["sha"] = commit
             adapter.attempt["pull_requests"][0]["head"]["sha"] = commit
             bind_adapter_to_build_fixture(
@@ -4037,9 +8957,9 @@ class AggregateProvenanceTest(unittest.TestCase):
                     },
                 )
 
-            self.assertTrue(report["ok"], report)
-            self.assertEqual("candidate_qualified", report["status"])
-            self.assertEqual(candidate_authority(commit), report["authority"])
+            self.assertFalse(report["ok"], report)
+            self.assertEqual("blocked", report["status"])
+            self.assertEqual({}, report["authority"])
             self.assertFalse(report["release_authoritative"])
             self.assertEqual(
                 [
@@ -4053,14 +8973,18 @@ class AggregateProvenanceTest(unittest.TestCase):
                 ],
                 report["ignored_untrusted_fields"],
             )
-            self.assertEqual(JOB_ID, report["accepted_source_ids"]["job_id"])
-            self.assertEqual(
-                hashlib.sha256(adapter.artifact_bytes).hexdigest(),
-                report["accepted_digests"]["github_artifact_sha256"],
+            self.assertEqual({}, report["accepted_source_ids"])
+            self.assertEqual({}, report["accepted_digests"])
+            self.assertIn(
+                "production candidate evidence requires producer_id=",
+                " ".join(report["blockers"]),
             )
             release = require_release_authority(report)
             self.assertFalse(release["ok"], release)
-            self.assertIn("qualification-only", " ".join(release["blockers"]))
+            self.assertIn(
+                "authenticated post-merge release authority is not implemented",
+                " ".join(release["blockers"]),
+            )
 
     def test_forged_standalone_release_mapping_is_never_authoritative(self) -> None:
         release = require_release_authority(
@@ -4089,10 +9013,8 @@ class AggregateProvenanceTest(unittest.TestCase):
             repository = build["repository"]
             commit = build["repository_commit"]
             adapter = FakeGitHubAdapter(head_sha=commit)
-            adapter.workflow_run.update({"head_sha": commit, "conclusion": "failure"})
-            adapter.attempt["head_sha"] = commit
+            adapter.workflow_run.update({"conclusion": "failure"})
             adapter.pull_request["head"]["sha"] = commit
-            adapter.artifact["workflow_run"]["head_sha"] = commit
             adapter.workflow_run["pull_requests"][0]["head"]["sha"] = commit
             adapter.attempt["pull_requests"][0]["head"]["sha"] = commit
             producer_called = False
@@ -4136,6 +9058,122 @@ class AggregateProvenanceTest(unittest.TestCase):
             self.assertEqual({}, adapter.references)
             self.assertFalse((root / "global-replay").exists())
 
+    def test_blocks_run_created_during_local_producer_before_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build = make_build_fixture(root)
+            commit = build["repository_commit"]
+            adapter = FakeGitHubAdapter(head_sha=commit)
+            output = b'{"trusted":"execution"}\n'
+            bind_adapter_to_build_fixture(adapter, build, output=output)
+
+            def producer(
+                *args: object,
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess:
+                output_path = Path(list(args[0])[-1])
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_bytes(output)
+                append_newer_repository_run(adapter)
+                return subprocess.CompletedProcess(args[0], 0, b"out", b"")
+
+            with mock.patch.object(
+                provenance_module,
+                "_production_candidate_producer_blockers",
+                return_value=[],
+            ):
+                report = self.attest(
+                    root / "global-replay",
+                    repository_dir=build["repository"],
+                    expected_commit=commit,
+                    github_adapter=adapter,
+                    issue_number=138,
+                    pull_number=137,
+                    run_id=RUN_ID,
+                    run_attempt=RUN_ATTEMPT,
+                    job_id=JOB_ID,
+                    artifact_id=ARTIFACT_ID,
+                    expected_head_sha=commit,
+                    build_report_path=build["report_path"],
+                    expected_build_dir=build["config"].micromachine_build_dir,
+                    producer_id="fixture_producer",
+                    ctest_runner=passing_ctest,
+                    producer_runner=producer,
+                )
+
+            self.assertFalse(report["ok"], report)
+            self.assertIn(
+                "post_binding_freshness",
+                " ".join(report["blockers"]),
+            )
+            self.assertEqual({}, adapter.references)
+
+    def test_blocks_run_created_during_replay_claim_final_freshness(self) -> None:
+        class ReplayClaimRaceAdapter(FakeGitHubAdapter):
+            def create_git_reference(
+                self,
+                repository: str,
+                *,
+                ref: str,
+                sha: str,
+            ) -> dict[str, object]:
+                result = super().create_git_reference(
+                    repository,
+                    ref=ref,
+                    sha=sha,
+                )
+                append_newer_workflow_run(self)
+                return result
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build = make_build_fixture(root)
+            commit = build["repository_commit"]
+            adapter = ReplayClaimRaceAdapter(head_sha=commit)
+            output = b'{"trusted":"execution"}\n'
+            bind_adapter_to_build_fixture(adapter, build, output=output)
+
+            def producer(
+                *args: object,
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess:
+                output_path = Path(list(args[0])[-1])
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_bytes(output)
+                return subprocess.CompletedProcess(args[0], 0, b"out", b"")
+
+            with mock.patch.object(
+                provenance_module,
+                "_production_candidate_producer_blockers",
+                return_value=[],
+            ):
+                report = self.attest(
+                    root / "global-replay",
+                    repository_dir=build["repository"],
+                    expected_commit=commit,
+                    github_adapter=adapter,
+                    issue_number=138,
+                    pull_number=137,
+                    run_id=RUN_ID,
+                    run_attempt=RUN_ATTEMPT,
+                    job_id=JOB_ID,
+                    artifact_id=ARTIFACT_ID,
+                    expected_head_sha=commit,
+                    build_report_path=build["report_path"],
+                    expected_build_dir=build["config"].micromachine_build_dir,
+                    producer_id="fixture_producer",
+                    ctest_runner=passing_ctest,
+                    producer_runner=producer,
+                )
+
+            self.assertFalse(report["ok"], report)
+            self.assertTrue(report["replay"]["consumed"], report)
+            self.assertIn(
+                "post_replay_freshness",
+                " ".join(report["blockers"]),
+            )
+            self.assertEqual(1, len(adapter.references))
+
     def test_valid_github_bundle_cannot_hide_different_local_output(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -4143,10 +9181,7 @@ class AggregateProvenanceTest(unittest.TestCase):
             repository = build["repository"]
             commit = build["repository_commit"]
             adapter = FakeGitHubAdapter(head_sha=commit)
-            adapter.workflow_run["head_sha"] = commit
-            adapter.attempt["head_sha"] = commit
             adapter.pull_request["head"]["sha"] = commit
-            adapter.artifact["workflow_run"]["head_sha"] = commit
             adapter.workflow_run["pull_requests"][0]["head"]["sha"] = commit
             adapter.attempt["pull_requests"][0]["head"]["sha"] = commit
             bind_adapter_to_build_fixture(
@@ -4164,24 +9199,29 @@ class AggregateProvenanceTest(unittest.TestCase):
                 output.write_text('{"trusted":"execution"}\n')
                 return subprocess.CompletedProcess(args[0], 0, b"out", b"")
 
-            report = self.attest(
-                root / "global-replay",
-                repository_dir=repository,
-                expected_commit=commit,
-                github_adapter=adapter,
-                issue_number=138,
-                pull_number=137,
-                run_id=RUN_ID,
-                run_attempt=RUN_ATTEMPT,
-                job_id=JOB_ID,
-                artifact_id=ARTIFACT_ID,
-                expected_head_sha=commit,
-                build_report_path=build["report_path"],
-                expected_build_dir=build["config"].micromachine_build_dir,
-                producer_id="fixture_producer",
-                ctest_runner=passing_ctest,
-                producer_runner=producer,
-            )
+            with mock.patch.object(
+                provenance_module,
+                "_production_candidate_producer_blockers",
+                return_value=[],
+            ):
+                report = self.attest(
+                    root / "global-replay",
+                    repository_dir=repository,
+                    expected_commit=commit,
+                    github_adapter=adapter,
+                    issue_number=138,
+                    pull_number=137,
+                    run_id=RUN_ID,
+                    run_attempt=RUN_ATTEMPT,
+                    job_id=JOB_ID,
+                    artifact_id=ARTIFACT_ID,
+                    expected_head_sha=commit,
+                    build_report_path=build["report_path"],
+                    expected_build_dir=build["config"].micromachine_build_dir,
+                    producer_id="fixture_producer",
+                    ctest_runner=passing_ctest,
+                    producer_runner=producer,
+                )
 
             self.assertFalse(report["ok"], report)
             self.assertIn(
@@ -4196,10 +9236,7 @@ class AggregateProvenanceTest(unittest.TestCase):
             repository = build["repository"]
             commit = build["repository_commit"]
             adapter = FakeGitHubAdapter(head_sha=commit)
-            adapter.workflow_run["head_sha"] = commit
-            adapter.attempt["head_sha"] = commit
             adapter.pull_request["head"]["sha"] = commit
-            adapter.artifact["workflow_run"]["head_sha"] = commit
             adapter.workflow_run["pull_requests"][0]["head"]["sha"] = commit
             adapter.attempt["pull_requests"][0]["head"]["sha"] = commit
             bind_adapter_to_build_fixture(
@@ -4218,24 +9255,29 @@ class AggregateProvenanceTest(unittest.TestCase):
                 output.write_text('{"trusted":"execution"}\n')
                 return subprocess.CompletedProcess(args[0], 0, b"out", b"")
 
-            report = self.attest(
-                root / "global-replay",
-                repository_dir=repository,
-                expected_commit=commit,
-                github_adapter=adapter,
-                issue_number=138,
-                pull_number=137,
-                run_id=RUN_ID,
-                run_attempt=RUN_ATTEMPT,
-                job_id=JOB_ID,
-                artifact_id=ARTIFACT_ID,
-                expected_head_sha=commit,
-                build_report_path=build["report_path"],
-                expected_build_dir=build["config"].micromachine_build_dir,
-                producer_id="fixture_producer",
-                ctest_runner=passing_ctest,
-                producer_runner=producer,
-            )
+            with mock.patch.object(
+                provenance_module,
+                "_production_candidate_producer_blockers",
+                return_value=[],
+            ):
+                report = self.attest(
+                    root / "global-replay",
+                    repository_dir=repository,
+                    expected_commit=commit,
+                    github_adapter=adapter,
+                    issue_number=138,
+                    pull_number=137,
+                    run_id=RUN_ID,
+                    run_attempt=RUN_ATTEMPT,
+                    job_id=JOB_ID,
+                    artifact_id=ARTIFACT_ID,
+                    expected_head_sha=commit,
+                    build_report_path=build["report_path"],
+                    expected_build_dir=build["config"].micromachine_build_dir,
+                    producer_id="fixture_producer",
+                    ctest_runner=passing_ctest,
+                    producer_runner=producer,
+                )
 
             self.assertFalse(report["ok"], report)
             self.assertIn("stdout_sha256", " ".join(report["blockers"]))
@@ -4421,6 +9463,27 @@ def make_build_fixture(root: Path) -> dict[str, Any]:
     }
 
 
+def replace_fixture_producer_source(
+    fixture: dict[str, Any],
+    source: str,
+) -> str:
+    repository = fixture["repository"]
+    producer_path = repository / "fixture_producer.py"
+    producer_path.write_text(source)
+    git(repository, "add", producer_path.relative_to(repository).as_posix())
+    git(
+        repository,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "-m",
+        "replace fixture producer",
+    )
+    return git(repository, "rev-parse", "HEAD").stdout.strip()
+
+
 def refresh_build_fixture(
     fixture: dict[str, Any],
     config: MicroMachineBuildIdentityConfig,
@@ -4475,6 +9538,19 @@ def passing_ctest(*args: object, **kwargs: object) -> subprocess.CompletedProces
             f"{REQUIRED_CTEST_COUNT}\n"
         ),
         stderr="",
+    )
+
+
+def current_user_execution_directory(
+    root: Path,
+    *,
+    uid: int,
+    gid: int,
+) -> tempfile.TemporaryDirectory[str]:
+    del uid, gid
+    return tempfile.TemporaryDirectory(
+        prefix=".execution-",
+        dir=root,
     )
 
 
@@ -4664,6 +9740,40 @@ def make_source_artifact_bundle(
             "producer/provenance.json": provenance,
         },
     )
+
+
+def make_stub_deterministic_journey_bundle() -> bytes:
+    manifest = canonical_json_bytes(
+        {
+            "schema_version": 1,
+            "evidence_kind": (
+                "deterministic_micromachine_pre_live_journeys"
+            ),
+            "suite_id": "provenance-bound-digest-test",
+            "journey_count": 0,
+            "failed_count": 0,
+            "report_sha256": hashlib.sha256(b"").hexdigest(),
+            "members": [],
+        }
+    )
+    output = io.BytesIO()
+    with zipfile.ZipFile(
+        output,
+        mode="w",
+        compression=zipfile.ZIP_STORED,
+        allowZip64=False,
+    ) as archive:
+        info = zipfile.ZipInfo(
+            "manifest.json",
+            date_time=(1980, 1, 1, 0, 0, 0),
+        )
+        info.compress_type = zipfile.ZIP_STORED
+        info.create_system = 3
+        info.create_version = 20
+        info.extract_version = 20
+        info.external_attr = 0o100644 << 16
+        archive.writestr(info, manifest)
+    return output.getvalue()
 
 
 def bind_adapter_to_build_fixture(

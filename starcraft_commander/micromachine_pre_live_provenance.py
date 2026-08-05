@@ -7,16 +7,24 @@ claims are accepted only as explicitly ignored compatibility data.
 
 from __future__ import annotations
 
+import base64
+import contextlib
 import fcntl
+import grp
 import hashlib
+import hmac
 import json
+import math
 import os
 import pwd
 import re
+import select
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -41,8 +49,11 @@ from starcraft_commander.micromachine_pre_live_artifact import (
     GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME,
     PRE_LIVE_CANDIDATE_AUTHORITY_SCOPE,
     PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION,
+    PRE_LIVE_DETERMINISTIC_JOURNEY_MEMBER_NAME,
+    PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID,
     PreLiveArtifactMetadata,
     PreLiveBuildAdmissionSnapshot,
+    bind_deterministic_journey_bundle_to_build,
     build_pre_live_artifact_bundle,
     canonical_ctest_evidence_bytes,
     canonical_json_bytes,
@@ -57,8 +68,22 @@ PRODUCER_POLICY_SCHEMA_VERSION: Final[int] = 1
 AUTHORITATIVE_REPOSITORY: Final[str] = "Marker-Inc-Korea/voiStarcraft2"
 AUTHORITATIVE_REPOSITORY_ID: Final[int] = 1_266_216_251
 AUTHORITATIVE_BASE_BRANCH: Final[str] = "main"
-AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH: Final[str] = ".github/workflows/ci.yml"
+AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH: Final[str] = (
+    ".github/workflows/pre-live-provenance.yml"
+)
+AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT: Final[str] = "pull_request_target"
 AUTHORITATIVE_PROVENANCE_JOB_NAME: Final[str] = "pre-live-provenance"
+AUTHORITATIVE_PROVENANCE_WORKFLOW_JOB_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "pre-live-build",
+        "pre-live-producer-isolation",
+        AUTHORITATIVE_PROVENANCE_JOB_NAME,
+    }
+)
+MAX_AUTHORITATIVE_PROVENANCE_CHECK_RUNS: Final[int] = 100
+MAX_AUTHORITATIVE_PROVENANCE_WORKFLOW_RUNS: Final[int] = 100
+GITHUB_ACTIONS_APP_ID: Final[int] = 15_368
+GITHUB_ACTIONS_APP_SLUG: Final[str] = "github-actions"
 AUTHORITATIVE_REPLAY_REF_PREFIX: Final[str] = "refs/tags/voi-pre-live-replay/"
 AUTHORITATIVE_REPLAY_REF_PATTERN: Final[str] = "refs/tags/voi-pre-live-replay/**"
 AUTHORITATIVE_REPLAY_CREATE_RULESET_NAME: Final[str] = "voi-pre-live-replay-create-only"
@@ -69,6 +94,12 @@ AUTHORITATIVE_REPLAY_CLAIMER_USER_ID: Final[int] = 60_510_718
 PRODUCER_POLICY_RELATIVE_PATH: Final[Path] = Path(
     "integrations/micromachine/PRE_LIVE_PRODUCERS.json"
 )
+DETERMINISTIC_JOURNEY_MANIFEST_RELATIVE_PATH: Final[Path] = Path(
+    "integrations/micromachine/PRE_LIVE_JOURNEYS.json"
+)
+DETERMINISTIC_JOURNEY_MODULE_RELATIVE_PATH: Final[Path] = Path(
+    "starcraft_commander/micromachine_pre_live_journeys.py"
+)
 GLOBAL_REPLAY_STATE_ROOT: Final[Path] = (
     Path(pwd.getpwuid(os.getuid()).pw_dir)
     / ".local"
@@ -76,15 +107,24 @@ GLOBAL_REPLAY_STATE_ROOT: Final[Path] = (
     / "voiStarcraft2"
     / "pre-live-replay"
 )
+DEDICATED_PRODUCER_TEMP_ROOT_NAME: Final[str] = "voi-pre-live-producer"
+DEDICATED_PRODUCER_TEMP_PARENTS: Final[tuple[Path, ...]] = (
+    Path("/private/tmp"),
+    Path("/tmp"),
+)
 GITHUB_API_VERSION: Final[str] = "2022-11-28"
 MAX_GITHUB_JSON_BYTES: Final[int] = 16 * 1024 * 1024
 MAX_GITHUB_ARTIFACT_BYTES: Final[int] = 512 * 1024 * 1024
 MAX_BUILD_REPORT_BYTES: Final[int] = 16 * 1024 * 1024
 MAX_CMAKE_CACHE_BYTES: Final[int] = 16 * 1024 * 1024
+MAX_CTEST_REGISTRY_METADATA_BYTES: Final[int] = 4 * 1024 * 1024
 MAX_PRODUCER_SOURCE_BYTES: Final[int] = 16 * 1024 * 1024
 MAX_PRODUCER_EXECUTABLE_BYTES: Final[int] = 512 * 1024 * 1024
+MAX_PROCESS_STDOUT_BYTES: Final[int] = 8 * 1024 * 1024
+MAX_PROCESS_STDERR_BYTES: Final[int] = 8 * 1024 * 1024
 MAX_REPLAY_LEDGER_BYTES: Final[int] = 16 * 1024 * 1024
 MAX_REPLAY_ENTRIES: Final[int] = 100_000
+MAX_GITHUB_TOKEN_BYTES: Final[int] = 4096
 UNTRUSTED_STATUS_FIELDS: Final[frozenset[str]] = frozenset(
     {
         "artifact_sha256",
@@ -103,7 +143,32 @@ UNTRUSTED_STATUS_FIELDS: Final[frozenset[str]] = frozenset(
 )
 
 _SHA40_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{40}$")
+_SHA256_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}$")
 _SHA256_IDENTITY_RE: Final[re.Pattern[str]] = re.compile(r"^sha256:[0-9a-f]{64}$")
+PINNED_NATIVE_EXEC_ROOT_ENV: Final[str] = "VOI_PINNED_NATIVE_EXEC_ROOT"
+PRODUCER_UID_ENV: Final[str] = "VOI_PRODUCER_UID"
+PRODUCER_GID_ENV: Final[str] = "VOI_PRODUCER_GID"
+CANDIDATE_WORKSPACE_ENV: Final[str] = "VOI_CANDIDATE_WORKSPACE"
+TRUSTED_VERIFIER_WORKSPACE_ENV: Final[str] = "VOI_TRUSTED_VERIFIER_WORKSPACE"
+TRUSTED_VERIFIER_COMMIT_ENV: Final[str] = "VOI_TRUSTED_VERIFIER_COMMIT"
+VERIFIER_TIMEOUT_ENV: Final[str] = "VOI_VERIFIER_TIMEOUT_SECONDS"
+TRUSTED_PS_EXECUTABLE: Final[str] = "/bin/ps"
+TRUSTED_XCODE_DEVELOPER_DIR: Final[str] = (
+    "/Applications/Xcode.app/Contents/Developer"
+)
+PRODUCER_PROCESS_CLEANUP_SECONDS: Final[float] = 5.0
+PROCESS_ENUMERATION_TIMEOUT_SECONDS: Final[float] = 5.0
+GIT_OPERATION_TIMEOUT_SECONDS: Final[float] = 30.0
+CTEST_DISCOVERY_TIMEOUT_SECONDS: Final[float] = 120.0
+CTEST_EXECUTION_TIMEOUT_SECONDS: Final[float] = 600.0
+CTEST_DIRECT_TIMEOUT_SECONDS: Final[float] = 120.0
+BUILD_IDENTITY_PROBE_TIMEOUT_SECONDS: Final[float] = 30.0
+GITHUB_ACTIONS_PRODUCER_TIMEOUT_SECONDS: Final[float] = 1800.0
+GITHUB_ACTIONS_VERIFIER_TIMEOUT_SECONDS: Final[float] = 4800.0
+GITHUB_ACTIONS_PROVENANCE_JOB_TIMEOUT_MINUTES: Final[int] = 120
+GITHUB_ACTIONS_PROVENANCE_CLEANUP_RESERVE_SECONDS: Final[float] = 600.0
+GITHUB_ACTIONS_PROVENANCE_SETUP_RESERVE_SECONDS: Final[float] = 900.0
+GITHUB_ACTIONS_PROVENANCE_PUBLICATION_RESERVE_SECONDS: Final[float] = 300.0
 _REPOSITORY_RE: Final[re.Pattern[str]] = re.compile(
     r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
 )
@@ -124,6 +189,11 @@ _REQUIRED_CTEST_COMMANDS: Final[dict[str, str]] = dict(
     MICROMACHINE_REQUIRED_NATIVE_TESTS
 )
 _REQUIRED_CTEST_COUNT: Final[int] = len(_REQUIRED_CTEST_COMMANDS)
+_CTEST_REGISTRY_METADATA_PATHS: Final[tuple[Path, ...]] = (
+    Path("CTestTestfile.cmake"),
+    Path("src/CTestTestfile.cmake"),
+    Path("tests/CTestTestfile.cmake"),
+)
 _EXTERNAL_BUILD_PATH_FIELDS: Final[frozenset[str]] = frozenset(
     {
         "micromachine_dir",
@@ -140,6 +210,151 @@ ISOLATED_PYTHON_BOOTSTRAP: Final[str] = (
     "sys.path.insert(0,root);"
     "sys.argv=[script,*args];"
     "runpy.run_path(script,run_name='__main__')"
+)
+AUTHENTICATED_PYTHON_EXEC_BOOTSTRAP: Final[str] = r"""
+import base64
+import importlib.abc
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import sys
+import traceback
+import zipimport
+
+source_fd_text, snapshot_root, relative_script, *candidate_args = sys.argv[1:]
+source_fd = int(source_fd_text)
+with os.fdopen(source_fd, "rb", closefd=False) as source_file:
+    source_bundle = json.load(source_file)
+source_records = {}
+for record in source_bundle["sources"]:
+    relative_path = Path(record["path"])
+    payload = base64.b64decode(record["payload"], validate=True)
+    if relative_path.suffix != ".py":
+        continue
+    if relative_path.name == "__init__.py":
+        module_name = ".".join(relative_path.parts[:-1])
+        is_package = True
+    else:
+        module_name = ".".join(relative_path.with_suffix("").parts)
+        is_package = False
+    if module_name:
+        source_records[module_name] = (
+            payload,
+            str(Path(snapshot_root) / relative_path),
+            is_package,
+        )
+main_source = base64.b64decode(
+    source_bundle["main_source"],
+    validate=True,
+)
+
+
+class AuthenticatedSourceLoader(
+    importlib.abc.MetaPathFinder,
+    importlib.abc.Loader,
+):
+    def find_spec(self, fullname, path=None, target=None):
+        record = source_records.get(fullname)
+        if record is None:
+            return None
+        return importlib.util.spec_from_loader(
+            fullname,
+            self,
+            is_package=record[2],
+        )
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        name = str(module.__name__)
+        payload, filename, is_package = source_records[name]
+        module.__file__ = filename
+        module.__package__ = name if is_package else name.rpartition(".")[0]
+        if is_package:
+            module.__path__ = [str(Path(filename).parent)]
+        exec(compile(payload, filename, "exec"), module.__dict__)
+
+
+stdlib_root = Path(os.__file__).resolve().parent
+trusted_stdlib_paths = [
+    str(path)
+    for path in (
+        stdlib_root.parent
+        / f"python{sys.version_info.major}{sys.version_info.minor}.zip",
+        stdlib_root,
+        stdlib_root / "lib-dynload",
+    )
+    if path.exists()
+]
+stdlib_file_finder = importlib.machinery.FileFinder.path_hook(
+    (
+        importlib.machinery.SourceFileLoader,
+        importlib.machinery.SOURCE_SUFFIXES,
+    ),
+    (
+        importlib.machinery.SourcelessFileLoader,
+        importlib.machinery.BYTECODE_SUFFIXES,
+    ),
+    (
+        importlib.machinery.ExtensionFileLoader,
+        importlib.machinery.EXTENSION_SUFFIXES,
+    ),
+)
+sys.path[:] = trusted_stdlib_paths
+sys.path_hooks[:] = [zipimport.zipimporter, stdlib_file_finder]
+sys.path_importer_cache.clear()
+sys.meta_path[:] = [
+    AuthenticatedSourceLoader(),
+    importlib.machinery.BuiltinImporter,
+    importlib.machinery.FrozenImporter,
+    importlib.machinery.PathFinder,
+]
+script = str(Path(snapshot_root) / relative_script)
+sys.argv = [script, *candidate_args]
+try:
+    globals_dict = {
+        "__builtins__": __builtins__,
+        "__cached__": None,
+        "__file__": script,
+        "__loader__": None,
+        "__name__": "__main__",
+        "__package__": None,
+        "__spec__": None,
+    }
+    exec(compile(main_source, script, "exec"), globals_dict)
+except SystemExit as exc:
+    if exc.code is None:
+        raise SystemExit(0)
+    if isinstance(exc.code, int):
+        raise
+    print(exc.code, file=sys.stderr)
+    raise SystemExit(1)
+except BaseException:
+    traceback.print_exc()
+    raise SystemExit(1)
+"""
+DETERMINISTIC_JOURNEY_PRODUCER_RAW_ARGV: Final[tuple[str, ...]] = (
+    "{python}",
+    "-I",
+    "-B",
+    "-S",
+    "-c",
+    ISOLATED_PYTHON_BOOTSTRAP,
+    "{repository}",
+    DETERMINISTIC_JOURNEY_MODULE_RELATIVE_PATH.as_posix(),
+    "--emit-bundle",
+    "{output}",
+    "--micromachine-binary",
+    "{micromachine_binary}",
+    "--node-executable",
+    "{node}",
+)
+DETERMINISTIC_JOURNEY_PRODUCER_CWD: Final[str] = "."
+DETERMINISTIC_JOURNEY_PRODUCER_OUTPUT: Final[str] = (
+    "producer/deterministic-journeys.zip"
 )
 SANITIZED_PRODUCER_ENV: Final[dict[str, str]] = {
     "LANG": "C",
@@ -161,8 +376,161 @@ SANITIZED_TEST_ENV: Final[dict[str, str]] = {
     "LC_ALL": "C",
     "PATH": "/usr/bin:/bin",
 }
+GITHUB_HTTP_SUBPROCESS_BOOTSTRAP: Final[str] = r"""
+import json
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 
+
+class CrossHostAuthStrippingRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        redirected = super().redirect_request(
+            request, fp, code, msg, headers, newurl
+        )
+        if redirected is None:
+            return None
+        old_host = urllib.parse.urlparse(request.full_url).netloc.casefold()
+        new_host = urllib.parse.urlparse(newurl).netloc.casefold()
+        if old_host != new_host:
+            redirected.remove_header("Authorization")
+        return redirected
+
+
+def emit(kind, payload=b""):
+    sys.stdout.buffer.write(kind + payload)
+    sys.stdout.buffer.flush()
+
+
+try:
+    raw = sys.stdin.buffer.read(65537)
+    if len(raw) > 65536:
+        raise ValueError("GitHub transport request exceeded the input limit")
+    spec = json.loads(raw)
+    maximum = int(spec["maximum"])
+    error_maximum = int(spec["error_maximum"])
+    request = urllib.request.Request(
+        spec["url"],
+        data=(
+            bytes.fromhex(spec["body_hex"])
+            if spec.get("body_hex") is not None
+            else None
+        ),
+        headers=spec["headers"],
+        method=spec["method"],
+    )
+    opener = urllib.request.build_opener(
+        CrossHostAuthStrippingRedirectHandler()
+    )
+    try:
+        with opener.open(request, timeout=float(spec["timeout"])) as response:
+            payload = response.read(maximum + 1)
+    except urllib.error.HTTPError as exc:
+        body = exc.read(error_maximum + 1)[:error_maximum]
+        emit(b"H", int(exc.code).to_bytes(4, "big") + body)
+    else:
+        if len(payload) > maximum:
+            emit(b"L")
+        else:
+            emit(b"S", payload)
+except BaseException as exc:
+    message = f"{type(exc).__name__}: {exc}".encode(
+        "utf-8", errors="replace"
+    )[:4096]
+    emit(b"E", message)
+"""
 CommandRunner = Callable[..., subprocess.CompletedProcess[Any]]
+
+
+class _VerifierDeadline:
+    """Shared monotonic deadline for one authenticated verifier invocation."""
+
+    def __init__(
+        self,
+        timeout_seconds: float,
+        *,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(timeout_seconds)
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("verifier timeout must be finite and positive")
+        self.timeout_seconds = float(timeout_seconds)
+        self._monotonic = monotonic
+        self._expires_at = monotonic() + self.timeout_seconds
+
+    def remaining_seconds(self) -> float:
+        return max(0.0, self._expires_at - self._monotonic())
+
+    def bounded_timeout(
+        self,
+        maximum_seconds: float,
+        *,
+        operation: str,
+        reserve_seconds: float = 0.0,
+    ) -> float:
+        if (
+            isinstance(maximum_seconds, bool)
+            or not isinstance(maximum_seconds, (int, float))
+            or not math.isfinite(maximum_seconds)
+            or maximum_seconds <= 0
+        ):
+            raise ValueError(f"{operation} timeout must be finite and positive")
+        if (
+            isinstance(reserve_seconds, bool)
+            or not isinstance(reserve_seconds, (int, float))
+            or not math.isfinite(reserve_seconds)
+            or reserve_seconds < 0
+        ):
+            raise ValueError(f"{operation} reserve must be finite and non-negative")
+        available = self.remaining_seconds() - float(reserve_seconds)
+        if available <= 0:
+            raise TimeoutError(
+                f"verifier deadline exhausted before {operation}; "
+                f"cleanup_reserve={float(reserve_seconds):g}s"
+            )
+        return min(float(maximum_seconds), available)
+
+    def require_capacity(
+        self,
+        required_seconds: float,
+        *,
+        operation: str,
+    ) -> None:
+        if (
+            isinstance(required_seconds, bool)
+            or not isinstance(required_seconds, (int, float))
+            or not math.isfinite(required_seconds)
+            or required_seconds <= 0
+        ):
+            raise ValueError(f"{operation} capacity must be finite and positive")
+        remaining = self.remaining_seconds()
+        if remaining < float(required_seconds):
+            raise TimeoutError(
+                f"verifier deadline cannot start {operation}: "
+                f"required={float(required_seconds):g}s "
+                f"remaining={remaining:g}s"
+            )
+
+
+def _bounded_operation_timeout(
+    deadline: _VerifierDeadline | None,
+    maximum_seconds: float,
+    *,
+    operation: str,
+    reserve_seconds: float = 0.0,
+) -> float:
+    if deadline is None:
+        return float(maximum_seconds)
+    return deadline.bounded_timeout(
+        maximum_seconds,
+        operation=operation,
+        reserve_seconds=reserve_seconds,
+    )
 
 
 class GitHubSourceAdapter(Protocol):
@@ -209,6 +577,19 @@ class GitHubSourceAdapter(Protocol):
         *,
         branch: str,
         event: str,
+    ) -> Sequence[Mapping[str, object]]: ...
+
+    def list_latest_check_runs(
+        self,
+        repository: str,
+        ref: str,
+    ) -> Sequence[Mapping[str, object]]: ...
+
+    def list_repository_workflow_runs(
+        self,
+        repository: str,
+        *,
+        head_sha: str,
     ) -> Sequence[Mapping[str, object]]: ...
 
     def get_workflow(
@@ -397,6 +778,7 @@ class StdlibGitHubRESTAdapter:
         timeout_seconds: float = 30.0,
         max_artifact_bytes: int = MAX_GITHUB_ARTIFACT_BYTES,
         urlopen: Callable[..., Any] | None = None,
+        deadline: _VerifierDeadline | None = None,
     ) -> None:
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
@@ -406,6 +788,8 @@ class StdlibGitHubRESTAdapter:
         self._api_base_url = api_base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
         self._max_artifact_bytes = max_artifact_bytes
+        self._deadline = deadline
+        self._uses_subprocess_transport = urlopen is None
         self._urlopen = (
             urlopen
             or urllib.request.build_opener(
@@ -521,8 +905,10 @@ class StdlibGitHubRESTAdapter:
     ) -> Sequence[Mapping[str, object]]:
         if not branch or len(branch) > 255:
             raise ValueError("workflow branch is required")
-        if event != "pull_request":
-            raise ValueError("only pull_request workflow runs are authoritative")
+        if event != AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT:
+            raise ValueError(
+                "only pull_request_target workflow runs are authoritative"
+            )
         query = urllib.parse.urlencode(
             {
                 "branch": branch,
@@ -534,6 +920,54 @@ class StdlibGitHubRESTAdapter:
             f"{self._repo_path(repository)}/actions/workflows/"
             f"{_positive_id(workflow_id, 'workflow_id')}/runs?{query}",
             "workflow_runs",
+            require_total_count=True,
+            require_stable_snapshot=True,
+            require_unique_ids=True,
+        )
+
+    def list_latest_check_runs(
+        self,
+        repository: str,
+        ref: str,
+    ) -> Sequence[Mapping[str, object]]:
+        if not _SHA40_RE.fullmatch(ref):
+            raise ValueError("check-run ref must be an exact lowercase SHA")
+        query = urllib.parse.urlencode(
+            {
+                "app_id": GITHUB_ACTIONS_APP_ID,
+                "filter": "latest",
+            }
+        )
+        return self._get_paginated(
+            f"{self._repo_path(repository)}/commits/{ref}/check-runs?{query}",
+            "check_runs",
+            require_total_count=True,
+            require_stable_snapshot=True,
+            require_unique_ids=True,
+        )
+
+    def list_repository_workflow_runs(
+        self,
+        repository: str,
+        *,
+        head_sha: str,
+    ) -> Sequence[Mapping[str, object]]:
+        if not _SHA40_RE.fullmatch(head_sha):
+            raise ValueError(
+                "repository workflow-run head must be an exact lowercase SHA"
+            )
+        query = urllib.parse.urlencode(
+            {
+                "head_sha": head_sha,
+                "exclude_pull_requests": "false",
+            }
+        )
+        return self._get_paginated(
+            f"{self._repo_path(repository)}/actions/runs?{query}",
+            "workflow_runs",
+            require_total_count=True,
+            require_stable_snapshot=True,
+            require_unique_ids=True,
         )
 
     def get_workflow(
@@ -696,11 +1130,66 @@ class StdlibGitHubRESTAdapter:
         self,
         path: str,
         key: str,
+        *,
+        require_total_count: bool = False,
+        require_stable_snapshot: bool = False,
+        require_unique_ids: bool = False,
     ) -> Sequence[Mapping[str, object]]:
+        first = self._get_paginated_snapshot(
+            path,
+            key,
+            require_total_count=require_total_count,
+            require_unique_ids=require_unique_ids,
+        )
+        if not require_stable_snapshot:
+            return first
+        second = self._get_paginated_snapshot(
+            path,
+            key,
+            require_total_count=require_total_count,
+            require_unique_ids=require_unique_ids,
+        )
+        if first != second:
+            raise GitHubSourceError(
+                f"GitHub pagination changed between snapshots for {path}"
+            )
+        return first
+
+    def _get_paginated_snapshot(
+        self,
+        path: str,
+        key: str,
+        *,
+        require_total_count: bool,
+        require_unique_ids: bool,
+    ) -> list[Mapping[str, object]]:
         records: list[Mapping[str, object]] = []
+        expected_total_count: int | None = None
+        seen_ids: set[int] = set()
         for page in range(1, 101):
             separator = "&" if "?" in path else "?"
             payload = self._get_json(f"{path}{separator}per_page=100&page={page}")
+            total_count = payload.get("total_count")
+            if (
+                isinstance(total_count, bool)
+                or not isinstance(total_count, int)
+                or total_count < 0
+            ):
+                if require_total_count or total_count is not None:
+                    raise GitHubSourceError(
+                        f"GitHub paginated response has invalid total_count "
+                        f"for {path}"
+                    )
+            elif expected_total_count is None:
+                expected_total_count = total_count
+            elif total_count != expected_total_count:
+                raise GitHubSourceError(
+                    f"GitHub pagination total_count changed for {path}"
+                )
+            if require_total_count and expected_total_count is None:
+                raise GitHubSourceError(
+                    f"GitHub paginated response missing total_count for {path}"
+                )
             page_records = payload.get(key)
             if not isinstance(page_records, list):
                 raise GitHubSourceError(
@@ -711,8 +1200,37 @@ class StdlibGitHubRESTAdapter:
                     raise GitHubSourceError(
                         f"GitHub {key!r} list contains a non-object"
                     )
+                if require_unique_ids:
+                    try:
+                        record_id = _positive_id(
+                            record.get("id"),
+                            f"GitHub {key!r} record.id",
+                        )
+                    except ValueError as exc:
+                        raise GitHubSourceError(str(exc)) from exc
+                    if record_id in seen_ids:
+                        raise GitHubSourceError(
+                            f"GitHub {key!r} list contains duplicate ID "
+                            f"{record_id} for {path}"
+                        )
+                    seen_ids.add(record_id)
                 records.append(cast(Mapping[str, object], record))
+            if (
+                expected_total_count is not None
+                and len(records) > expected_total_count
+            ):
+                raise GitHubSourceError(
+                    f"GitHub pagination exceeds total_count for {path}"
+                )
             if len(page_records) < 100:
+                if (
+                    expected_total_count is not None
+                    and len(records) != expected_total_count
+                ):
+                    raise GitHubSourceError(
+                        f"GitHub pagination total_count mismatch for {path}: "
+                        f"expected={expected_total_count} actual={len(records)}"
+                    )
                 return records
         raise GitHubSourceError(f"GitHub pagination limit exceeded for {path}")
 
@@ -767,6 +1285,21 @@ class StdlibGitHubRESTAdapter:
             headers["Authorization"] = f"Bearer {self._token}"
         if body is not None:
             headers["Content-Type"] = "application/json"
+        request_timeout = _bounded_operation_timeout(
+            self._deadline,
+            self._timeout_seconds,
+            operation=f"GitHub API request {path}",
+        )
+        if self._uses_subprocess_transport:
+            return self._request_bytes_in_subprocess(
+                path=path,
+                url=url,
+                method=method,
+                headers=headers,
+                body=body,
+                maximum=maximum,
+                request_timeout=request_timeout,
+            )
         request = urllib.request.Request(
             url,
             data=body,
@@ -774,25 +1307,174 @@ class StdlibGitHubRESTAdapter:
             method=method,
         )
         try:
-            with self._urlopen(request, timeout=self._timeout_seconds) as response:
-                payload = response.read(maximum + 1)
+            with self._urlopen(request, timeout=request_timeout) as response:
+                payload = self._read_response_bytes(
+                    response,
+                    maximum=maximum,
+                    operation=f"GitHub API response {path}",
+                )
         except urllib.error.HTTPError as exc:
             try:
-                error_body = exc.read(MAX_GITHUB_JSON_BYTES + 1)
-            except OSError:
-                error_body = b""
+                error_body = self._read_response_bytes(
+                    exc,
+                    maximum=MAX_GITHUB_JSON_BYTES,
+                    operation=f"GitHub API error response {path}",
+                )
+            except (OSError, TimeoutError) as read_exc:
+                raise GitHubSourceError(
+                    f"GitHub error response failed for {path}: {read_exc}"
+                ) from read_exc
             raise GitHubHTTPError(
                 path=path,
                 status=int(exc.code),
                 body=error_body[:MAX_GITHUB_JSON_BYTES],
             ) from exc
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except (OSError, urllib.error.URLError, TimeoutError) as exc:
             raise GitHubSourceError(f"GitHub request failed for {path}: {exc}") from exc
         if len(payload) > maximum:
             raise GitHubSourceError(
                 f"GitHub response exceeded {maximum} bytes for {path}"
             )
         return payload
+
+    def _request_bytes_in_subprocess(
+        self,
+        *,
+        path: str,
+        url: str,
+        method: str,
+        headers: Mapping[str, str],
+        body: bytes | None,
+        maximum: int,
+        request_timeout: float,
+    ) -> bytes:
+        request_spec = canonical_json_bytes(
+            {
+                "body_hex": body.hex() if body is not None else None,
+                "error_maximum": MAX_GITHUB_JSON_BYTES,
+                "headers": dict(headers),
+                "maximum": maximum,
+                "method": method,
+                "timeout": request_timeout,
+                "url": url,
+            }
+        )
+        try:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    "-B",
+                    "-S",
+                    "-c",
+                    GITHUB_HTTP_SUBPROCESS_BOOTSTRAP,
+                ],
+                input=request_spec,
+                check=False,
+                capture_output=True,
+                text=False,
+                shell=False,
+                timeout=request_timeout,
+                env=dict(SANITIZED_PRODUCER_ENV),
+                start_new_session=True,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError(
+                f"verifier deadline exhausted during GitHub API request {path}"
+            ) from exc
+        if self._deadline is not None:
+            self._deadline.bounded_timeout(
+                self._timeout_seconds,
+                operation=f"GitHub API request {path}",
+            )
+        if completed.returncode != 0:
+            stderr = _as_text(completed.stderr)[:4096]
+            raise GitHubSourceError(
+                f"GitHub transport failed for {path}: {stderr}"
+            )
+        envelope = _as_bytes(completed.stdout)
+        if not envelope:
+            raise GitHubSourceError(
+                f"GitHub transport returned no result for {path}"
+            )
+        kind = envelope[:1]
+        payload = envelope[1:]
+        if kind == b"S":
+            if len(payload) > maximum:
+                raise GitHubSourceError(
+                    f"GitHub response exceeded {maximum} bytes for {path}"
+                )
+            return payload
+        if kind == b"H" and len(payload) >= 4:
+            raise GitHubHTTPError(
+                path=path,
+                status=int.from_bytes(payload[:4], "big"),
+                body=payload[4:MAX_GITHUB_JSON_BYTES + 4],
+            )
+        if kind == b"L":
+            raise GitHubSourceError(
+                f"GitHub response exceeded {maximum} bytes for {path}"
+            )
+        if kind == b"E":
+            raise GitHubSourceError(
+                f"GitHub request failed for {path}: "
+                + payload.decode("utf-8", errors="replace")
+            )
+        raise GitHubSourceError(
+            f"GitHub transport returned a malformed result for {path}"
+        )
+
+    def _read_response_bytes(
+        self,
+        response: Any,
+        *,
+        maximum: int,
+        operation: str,
+    ) -> bytes:
+        timed_out = threading.Event()
+        watchdog: threading.Timer | None = None
+        if self._deadline is not None:
+            remaining = self._deadline.bounded_timeout(
+                self._timeout_seconds,
+                operation=operation,
+            )
+
+            def expire_response() -> None:
+                timed_out.set()
+                try:
+                    response.close()
+                except Exception:
+                    pass
+
+            watchdog = threading.Timer(remaining, expire_response)
+            watchdog.daemon = True
+            watchdog.start()
+        try:
+            reader = getattr(response, "read1", None)
+            if not callable(reader):
+                reader = response.read
+            payload = bytearray()
+            while len(payload) <= maximum:
+                if self._deadline is not None:
+                    self._deadline.bounded_timeout(
+                        self._timeout_seconds,
+                        operation=operation,
+                    )
+                chunk = reader(min(64 * 1024, maximum + 1 - len(payload)))
+                if timed_out.is_set():
+                    raise TimeoutError(
+                        f"verifier deadline exhausted during {operation}"
+                    )
+                if not chunk:
+                    break
+                if not isinstance(chunk, bytes):
+                    raise TypeError("GitHub response returned non-bytes data")
+                payload.extend(chunk)
+            return bytes(payload)
+        finally:
+            if watchdog is not None:
+                watchdog.cancel()
+                watchdog.join(timeout=1.0)
 
 
 def normalize_github_repository(
@@ -859,6 +1541,7 @@ def attest_repository(
     expected_repository: str,
     expected_commit: str,
     command_runner: CommandRunner = subprocess.run,
+    deadline: _VerifierDeadline | None = None,
 ) -> dict[str, object]:
     """Attest exact HEAD, origin, and a clean tracked/untracked worktree."""
 
@@ -896,6 +1579,7 @@ def attest_repository(
             (TRUSTED_GIT_EXECUTABLE, "rev-parse", "HEAD"),
             cwd=root,
             env=SANITIZED_GIT_ENV,
+            deadline=deadline,
         )
         status_result = _run_text(
             command_runner,
@@ -909,12 +1593,14 @@ def attest_repository(
             cwd=root,
             preserve_whitespace=True,
             env=SANITIZED_GIT_ENV,
+            deadline=deadline,
         )
         origin = _run_text(
             command_runner,
             (TRUSTED_GIT_EXECUTABLE, "remote", "get-url", "origin"),
             cwd=root,
             env=SANITIZED_GIT_ENV,
+            deadline=deadline,
         )
         if head["returncode"] != 0:
             blockers.append("git rev-parse HEAD failed")
@@ -936,7 +1622,13 @@ def attest_repository(
             dirty_entries = status_output.splitlines() if status_output else []
             if dirty_entries:
                 blockers.append("repository has tracked or untracked changes")
-        worktree_state = inspect_git_worktree_state(root)
+        worktree_state = inspect_git_worktree_state(
+            root,
+            command_runner=_git_inspection_command_runner(
+                command_runner,
+                deadline=deadline,
+            ),
+        )
         if worktree_state is None:
             blockers.append("direct HEAD/worktree comparison failed")
         else:
@@ -1008,6 +1700,7 @@ def attest_github_source(
     expected_head_sha: str,
     expected_issue_state: str = "open",
     expected_pull_state: str = "open",
+    node_executable: Path | str | None = None,
 ) -> dict[str, object]:
     """Fetch and cross-bind immutable GitHub source records."""
 
@@ -1063,7 +1756,15 @@ def attest_github_source(
             normalized_repository,
             workflow_id,
             branch=lookup_head_ref,
-            event="pull_request",
+            event=AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
+        )
+        latest_check_runs = adapter.list_latest_check_runs(
+            normalized_repository,
+            expected_head_sha,
+        )
+        repository_workflow_runs = adapter.list_repository_workflow_runs(
+            normalized_repository,
+            head_sha=expected_head_sha,
         )
         attempt = adapter.get_workflow_run_attempt(
             normalized_repository,
@@ -1341,14 +2042,16 @@ def attest_github_source(
         blockers,
     )
     event = _server_string(workflow_run, "event", "workflow_run", blockers)
-    if event != "pull_request":
+    if event != AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT:
         blockers.append(
-            f"workflow run event mismatch: expected='pull_request' actual={event!r}"
+            "workflow run event mismatch: "
+            f"expected={AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT!r} "
+            f"actual={event!r}"
         )
     if head_branch != pull_head_ref:
         blockers.append(
-            "workflow run branch differs from pull request head ref: "
-            f"run={head_branch!r} pull={pull_head_ref!r}"
+            "workflow run branch differs from the authenticated candidate: "
+            f"run={head_branch!r} candidate={pull_head_ref!r}"
         )
     workflow_ref: str | None = None
     workflow_sha: str | None = None
@@ -1358,6 +2061,7 @@ def attest_github_source(
         pull_id=pull_id,
         pull_number=pull_number,
         expected_head_sha=expected_head_sha,
+        expected_head_ref=pull_head_ref,
         expected_repository_id=expected_repository_id,
         blockers=blockers,
     )
@@ -1370,9 +2074,12 @@ def attest_github_source(
         workflow_path=AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH,
         pull_id=pull_id,
         pull_number=pull_number,
-        head_sha=expected_head_sha,
-        head_branch=pull_head_ref,
+        candidate_head_sha=expected_head_sha,
+        candidate_head_ref=pull_head_ref,
+        run_head_sha=expected_head_sha,
+        run_head_branch=pull_head_ref,
         repository_id=expected_repository_id,
+        allow_unlisted_current_run=False,
         blockers=blockers,
     )
     if not eligible_runs:
@@ -1419,7 +2126,8 @@ def attest_github_source(
     attempt_head_sha = attempt.get("head_sha")
     if attempt_head_sha != expected_head_sha:
         blockers.append(
-            f"workflow run attempt head SHA mismatch: expected={expected_head_sha} "
+            "workflow run attempt head SHA mismatch: "
+            f"expected={expected_head_sha} "
             f"actual={attempt_head_sha!r}"
         )
     _expect_server_value(
@@ -1432,7 +2140,7 @@ def attest_github_source(
     _expect_server_value(
         attempt,
         "event",
-        "pull_request",
+        AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
         "run_attempt",
         blockers,
     )
@@ -1442,6 +2150,7 @@ def attest_github_source(
         pull_id=pull_id,
         pull_number=pull_number,
         expected_head_sha=expected_head_sha,
+        expected_head_ref=pull_head_ref,
         expected_repository_id=expected_repository_id,
         blockers=blockers,
     )
@@ -1514,6 +2223,11 @@ def attest_github_source(
             "workflow job head SHA mismatch: "
             f"expected={expected_head_sha} actual={job.get('head_sha')!r}"
         )
+    if job.get("head_branch") != pull_head_ref:
+        blockers.append(
+            "workflow job branch mismatch: "
+            f"expected={pull_head_ref!r} actual={job.get('head_branch')!r}"
+        )
     job_name = _server_string(job, "name", "job", blockers)
     if job_name != AUTHORITATIVE_PROVENANCE_JOB_NAME:
         blockers.append(
@@ -1527,6 +2241,22 @@ def attest_github_source(
             "workflow job did not complete successfully: "
             f"status={job_status!r} conclusion={job_conclusion!r}"
         )
+    _validate_latest_provenance_check_run(
+        adapter,
+        latest_check_runs,
+        repository_workflow_runs,
+        repository=normalized_repository,
+        selected_run=workflow_run,
+        selected_job=job,
+        workflow_id=workflow_id,
+        workflow_path=AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH,
+        pull_id=pull_id,
+        pull_number=pull_number,
+        expected_head_sha=expected_head_sha,
+        expected_head_ref=pull_head_ref,
+        repository_id=expected_repository_id,
+        blockers=blockers,
+    )
     job_started_at = _server_utc(job, "started_at", "job", blockers)
     job_completed_at = _server_utc(job, "completed_at", "job", blockers)
     if (
@@ -1588,6 +2318,12 @@ def attest_github_source(
         blockers.append(
             f"artifact head SHA mismatch: expected={expected_head_sha} "
             f"actual={artifact_head_sha!r}"
+        )
+    if artifact_run.get("head_branch") != pull_head_ref:
+        blockers.append(
+            "artifact branch mismatch: "
+            f"expected={pull_head_ref!r} "
+            f"actual={artifact_run.get('head_branch')!r}"
         )
     artifact_created_at = _server_utc(
         artifact,
@@ -1680,7 +2416,10 @@ def attest_github_source(
                     f"server={server_artifact_digest!r} "
                     f"downloaded={expected_server_digest}"
                 )
-            artifact_bundle = verify_downloaded_pre_live_artifact(artifact_bytes)
+            artifact_bundle = verify_downloaded_pre_live_artifact(
+                artifact_bytes,
+                node_executable=node_executable,
+            )
             if artifact_bundle.get("ok") is not True:
                 bundle_blockers = artifact_bundle.get("blockers")
                 blockers.append(
@@ -1731,12 +2470,16 @@ def attest_github_source(
                 workflow_git_ref = _validate_workflow_execution_identity(
                     repository=normalized_repository,
                     workflow_path=workflow_path,
-                    pull_number=pull_number,
-                    pull_head_ref=pull_head_ref,
                     workflow_ref=workflow_ref,
                     workflow_sha=workflow_sha,
                     blockers=blockers,
                 )
+                if workflow_sha != pull_base_sha:
+                    blockers.append(
+                        "artifact manifest workflow SHA differs from the "
+                        "authenticated pull-request base: "
+                        f"workflow={workflow_sha!r} base={pull_base_sha!r}"
+                    )
                 _validate_workflow_reference_target(
                     adapter,
                     repository=normalized_repository,
@@ -1832,6 +2575,60 @@ def attest_github_source(
                             f"expected={expected!r} actual={actual!r}"
                         )
 
+    if artifact_sha256 is not None:
+        try:
+            refreshed_workflow_runs = adapter.list_workflow_runs(
+                normalized_repository,
+                workflow_id,
+                branch=pull_head_ref or "",
+                event=AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
+            )
+        except Exception as exc:
+            blockers.append(
+                f"post-download workflow freshness lookup failed: {exc}"
+            )
+        else:
+            _validate_workflow_specific_freshness(
+                adapter,
+                refreshed_workflow_runs,
+                repository=normalized_repository,
+                selected_run=workflow_run,
+                workflow_id=workflow_id,
+                workflow_path=AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH,
+                pull_id=pull_id,
+                pull_number=pull_number,
+                expected_head_sha=expected_head_sha,
+                expected_head_ref=pull_head_ref,
+                repository_id=expected_repository_id,
+                blockers=blockers,
+            )
+        try:
+            refreshed_repository_workflow_runs = (
+                adapter.list_repository_workflow_runs(
+                    normalized_repository,
+                    head_sha=expected_head_sha,
+                )
+            )
+        except Exception as exc:
+            blockers.append(
+                f"post-download GitHub source freshness lookup failed: {exc}"
+            )
+        else:
+            _validate_repository_workflow_freshness(
+                adapter,
+                refreshed_repository_workflow_runs,
+                repository=normalized_repository,
+                selected_run=workflow_run,
+                workflow_id=workflow_id,
+                workflow_path=AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH,
+                pull_id=pull_id,
+                pull_number=pull_number,
+                expected_head_sha=expected_head_sha,
+                expected_head_ref=pull_head_ref,
+                repository_id=expected_repository_id,
+                blockers=blockers,
+            )
+
     source_ids = {
         "repository_id": repository_id,
         "issue_id": issue_id,
@@ -1844,6 +2641,24 @@ def attest_github_source(
         "job_id": job_id,
         "artifact_database_id": artifact_id,
     }
+    workflow_run_identity = {
+        key: workflow_run.get(key)
+        for key in (
+            "id",
+            "workflow_id",
+            "check_suite_id",
+            "run_number",
+            "run_attempt",
+            "head_sha",
+            "head_branch",
+            "event",
+            "path",
+        )
+    }
+    workflow_run_identity["head_repository"] = {
+        "id": run_head_repository_id,
+    }
+    workflow_run_identity["pull_requests"] = workflow_run.get("pull_requests")
     return _component_result(
         blockers,
         repository=normalized_repository,
@@ -1893,6 +2708,146 @@ def attest_github_source(
         artifact_bundle=artifact_bundle,
         authority=authority,
         source_ids=source_ids,
+        workflow_run_identity=workflow_run_identity,
+    )
+
+
+def _build_micromachine_identity_with_boundary(
+    config: MicroMachineBuildIdentityConfig,
+    *,
+    execution_uid: int | None,
+    execution_gid: int | None,
+    deadline: _VerifierDeadline | None = None,
+) -> dict[str, object]:
+    execution_identity = _normalize_producer_identity(
+        execution_uid,
+        execution_gid,
+    )
+    if execution_identity is None and deadline is None:
+        return build_micromachine_build_identity(config)
+
+    def run_binary_identity_probe(
+        argv: Sequence[str],
+        executable_path: Path,
+    ) -> subprocess.CompletedProcess[object]:
+        if (
+            executable_path.is_symlink()
+            or not executable_path.is_file()
+            or _path_has_symlink_component(executable_path)
+        ):
+            raise OSError("build identity executable snapshot is invalid")
+        os.chmod(executable_path, 0o555)
+        timeout = _bounded_operation_timeout(
+            deadline,
+            BUILD_IDENTITY_PROBE_TIMEOUT_SECONDS,
+            operation="MicroMachine build identity probe",
+        )
+        if execution_identity is None:
+            return subprocess.run(
+                list(argv),
+                executable=str(executable_path),
+                cwd=str(executable_path.parent),
+                stdin=subprocess.DEVNULL,
+                check=False,
+                capture_output=True,
+                text=True,
+                shell=False,
+                timeout=timeout,
+                env=dict(SANITIZED_TEST_ENV),
+            )
+        completed = _run_dedicated_uid_native_command(
+            (str(executable_path), *argv[1:]),
+            cwd=str(executable_path.parent),
+            env=SANITIZED_TEST_ENV,
+            timeout=timeout,
+            uid=execution_identity[0],
+            gid=execution_identity[1],
+            deadline=deadline,
+        )
+        return subprocess.CompletedProcess(
+            list(argv),
+            completed.returncode,
+            completed.stdout,
+            completed.stderr,
+        )
+
+    def run_ctest_registry_discovery(
+        argv: Sequence[str],
+        build_dir: Path,
+        environment: Mapping[str, str],
+        timeout: float,
+    ) -> subprocess.CompletedProcess[object]:
+        bounded_timeout = _bounded_operation_timeout(
+            deadline,
+            timeout,
+            operation="MicroMachine CTest registry discovery",
+        )
+        if execution_identity is None:
+            return subprocess.run(
+                list(argv),
+                cwd=str(build_dir),
+                stdin=subprocess.DEVNULL,
+                check=False,
+                capture_output=True,
+                text=True,
+                shell=False,
+                timeout=bounded_timeout,
+                env=dict(environment),
+            )
+        return _run_ctest_registry_from_snapshot(
+            subprocess.run,
+            argv,
+            build_dir=build_dir,
+            env=environment,
+            timeout=bounded_timeout,
+            execution_identity=execution_identity,
+            deadline=deadline,
+        )
+
+    def run_git_inspection(
+        argv: Sequence[str],
+        repository_dir: Path,
+        environment: Mapping[str, str],
+        timeout: float,
+    ) -> subprocess.CompletedProcess[object]:
+        bounded_timeout = _bounded_operation_timeout(
+            deadline,
+            timeout,
+            operation="MicroMachine Git inspection",
+        )
+        if execution_identity is None:
+            return subprocess.run(
+                list(argv),
+                cwd=str(repository_dir),
+                stdin=subprocess.DEVNULL,
+                check=False,
+                capture_output=True,
+                text=False,
+                shell=False,
+                timeout=bounded_timeout,
+                env=dict(environment),
+            )
+        completed = _run_dedicated_uid_native_command(
+            argv,
+            cwd=str(repository_dir),
+            env=environment,
+            timeout=bounded_timeout,
+            uid=execution_identity[0],
+            gid=execution_identity[1],
+            deadline=deadline,
+        )
+        return subprocess.CompletedProcess(
+            list(argv),
+            completed.returncode,
+            completed.stdout,
+            completed.stderr,
+        )
+
+    return build_micromachine_build_identity(
+        config,
+        binary_identity_runner=run_binary_identity_probe,
+        ctest_registry_runner=run_ctest_registry_discovery,
+        git_command_runner=run_git_inspection,
     )
 
 
@@ -1904,6 +2859,9 @@ def attest_build_binding(
     expected_build_dir: Path | str | None = None,
     command_runner: CommandRunner = subprocess.run,
     git_runner: CommandRunner = subprocess.run,
+    execution_uid: int | None = None,
+    execution_gid: int | None = None,
+    deadline: _VerifierDeadline | None = None,
 ) -> dict[str, object]:
     """Bind supported build identity inputs to one commit and run required CTests."""
 
@@ -1920,11 +2878,16 @@ def attest_build_binding(
         repository_root,
         expected_commit=expected_repository_commit,
         git_runner=git_runner,
+        deadline=deadline,
     )
     blockers.extend(
         _prefixed_blockers("repository upstream commit policy", upstream_commit_policy)
     )
-    repository_head = _git_head(repository_root, git_runner)
+    repository_head = _git_head(
+        repository_root,
+        git_runner,
+        deadline=deadline,
+    )
     if repository_head != expected_repository_commit:
         blockers.append(
             "repository build-input HEAD mismatch: "
@@ -1947,22 +2910,28 @@ def attest_build_binding(
             blockers.append(f"build report is missing or unreadable: {exc}")
         else:
             try:
-                payload = json.loads(raw)
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                payload = json.loads(
+                    raw,
+                    object_pairs_hook=_reject_duplicate_json_object_keys,
+                    parse_constant=_reject_nonfinite_json,
+                )
+            except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
                 blockers.append(f"build report is malformed: {exc}")
             else:
                 if not isinstance(payload, Mapping):
                     blockers.append("build report must contain a JSON object")
                 else:
                     recorded = cast(Mapping[str, object], payload)
+                    schema_version = recorded.get("schema_version")
                     if (
-                        recorded.get("schema_version")
+                        type(schema_version) is not int
+                        or schema_version
                         != MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION
                     ):
                         blockers.append(
                             "unsupported build report schema: "
                             f"expected={MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION} "
-                            f"actual={recorded.get('schema_version')!r}"
+                            f"actual={schema_version!r}"
                         )
                     elif recorded.get("ok") is not True:
                         blockers.append(
@@ -2018,6 +2987,7 @@ def attest_build_binding(
             repository_root=repository_root,
             expected_commit=expected_repository_commit,
             git_runner=git_runner,
+            deadline=deadline,
         )
         blockers.extend(
             _prefixed_blockers("repository build inputs", repository_inputs)
@@ -2069,7 +3039,12 @@ def attest_build_binding(
             build_dir_bound = False
         if build_dir_bound:
             try:
-                current = build_micromachine_build_identity(config)
+                current = _build_micromachine_identity_with_boundary(
+                    config,
+                    execution_uid=execution_uid,
+                    execution_gid=execution_gid,
+                    deadline=deadline,
+                )
             except Exception as exc:
                 blockers.append(f"current build identity reconstruction failed: {exc}")
             if recorded is not None and current is not None:
@@ -2083,6 +3058,9 @@ def attest_build_binding(
                 ctest_result = _run_ctest(
                     config.micromachine_build_dir,
                     command_runner,
+                    execution_uid=execution_uid,
+                    execution_gid=execution_gid,
+                    deadline=deadline,
                 )
                 if ctest_result["ok"] is not True:
                     blockers.extend(cast(list[str], ctest_result["blockers"]))
@@ -2113,7 +3091,14 @@ def attest_build_binding(
                         f"actual={ctest_result.get('registry_sha256')!r}"
                     )
                 try:
-                    current_after_ctest = build_micromachine_build_identity(config)
+                    current_after_ctest = (
+                        _build_micromachine_identity_with_boundary(
+                            config,
+                            execution_uid=execution_uid,
+                            execution_gid=execution_gid,
+                            deadline=deadline,
+                        )
+                    )
                 except Exception as exc:
                     blockers.append(
                         f"post-CTest build identity reconstruction failed: {exc}"
@@ -2190,6 +3175,7 @@ def canonical_pre_live_state_dir(
     repository_dir: Path | str,
     *,
     git_runner: CommandRunner = subprocess.run,
+    deadline: _VerifierDeadline | None = None,
 ) -> Path:
     """Return the repository-owned state directory used for replay and outputs."""
 
@@ -2199,6 +3185,7 @@ def canonical_pre_live_state_dir(
         (TRUSTED_GIT_EXECUTABLE, "rev-parse", "--git-common-dir"),
         cwd=root,
         env=SANITIZED_GIT_ENV,
+        deadline=deadline,
     )
     if result["returncode"] != 0:
         raise ValueError("could not resolve the repository git common directory")
@@ -2248,6 +3235,10 @@ def resolve_local_producer_policy(
     producer_id: str,
     git_runner: CommandRunner = subprocess.run,
     python_executable: Path | str = sys.executable,
+    micromachine_binary_path: Path | str | None = None,
+    micromachine_binary_sha256: str | None = None,
+    node_executable: Path | str | None = None,
+    deadline: _VerifierDeadline | None = None,
 ) -> dict[str, object]:
     """Load one exact producer command from the policy committed at HEAD."""
 
@@ -2274,6 +3265,11 @@ def resolve_local_producer_policy(
                 capture_output=True,
                 text=False,
                 shell=False,
+                timeout=_bounded_operation_timeout(
+                    deadline,
+                    GIT_OPERATION_TIMEOUT_SECONDS,
+                    operation="producer policy Git lookup",
+                ),
                 env=dict(SANITIZED_GIT_ENV),
             )
             if int(completed.returncode) != 0:
@@ -2281,7 +3277,11 @@ def resolve_local_producer_policy(
             committed_bytes = _as_bytes(completed.stdout)
             if policy_path.read_bytes() != committed_bytes:
                 raise ValueError("producer policy differs from the exact commit")
-            payload = json.loads(committed_bytes)
+            payload = json.loads(
+                committed_bytes,
+                object_pairs_hook=_reject_duplicate_json_object_keys,
+                parse_constant=_reject_nonfinite_json,
+            )
         except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             blockers.append(f"producer policy could not be authenticated: {exc}")
             payload = {}
@@ -2290,11 +3290,15 @@ def resolve_local_producer_policy(
     if not isinstance(payload, Mapping):
         blockers.append("producer policy must contain a JSON object")
         payload = {}
-    if payload.get("schema_version") != PRODUCER_POLICY_SCHEMA_VERSION:
+    schema_version = payload.get("schema_version")
+    if (
+        type(schema_version) is not int
+        or schema_version != PRODUCER_POLICY_SCHEMA_VERSION
+    ):
         blockers.append(
             "producer policy schema mismatch: "
             f"expected={PRODUCER_POLICY_SCHEMA_VERSION} "
-            f"actual={payload.get('schema_version')!r}"
+            f"actual={schema_version!r}"
         )
     producers = payload.get("producers")
     if not isinstance(producers, Mapping):
@@ -2318,10 +3322,30 @@ def resolve_local_producer_policy(
     if not isinstance(output_value, str):
         blockers.append("producer policy output must be a string")
         output_value = ""
+    if producer_id == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID:
+        if raw_argv != list(DETERMINISTIC_JOURNEY_PRODUCER_RAW_ARGV):
+            blockers.append(
+                "deterministic journey producer argv does not match the "
+                "required raw policy"
+            )
+        if cwd_value != DETERMINISTIC_JOURNEY_PRODUCER_CWD:
+            blockers.append(
+                "deterministic journey producer cwd does not match the "
+                "required raw policy"
+            )
+        if output_value != DETERMINISTIC_JOURNEY_PRODUCER_OUTPUT:
+            blockers.append(
+                "deterministic journey producer output does not match the "
+                "required raw policy"
+            )
 
     state_dir: Path | None = None
     try:
-        state_dir = canonical_pre_live_state_dir(root, git_runner=git_runner)
+        state_dir = canonical_pre_live_state_dir(
+            root,
+            git_runner=git_runner,
+            deadline=deadline,
+        )
     except ValueError as exc:
         blockers.append(str(exc))
     cwd_relative = Path(cwd_value)
@@ -2362,11 +3386,137 @@ def resolve_local_producer_policy(
             blockers.append("producer output artifact must not be a symlink")
 
     python_path = Path(python_executable).resolve()
+    binary_path: Path | None = None
+    node_path: Path | None = None
+    node_sha256: str | None = None
+    binary_placeholder_count = raw_argv.count("{micromachine_binary}")
+    node_placeholder_count = raw_argv.count("{node}")
+    if producer_id == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID:
+        if binary_placeholder_count != 1:
+            blockers.append(
+                "deterministic journey producer argv must contain exactly one "
+                "{micromachine_binary} placeholder"
+            )
+        else:
+            placeholder_index = raw_argv.index("{micromachine_binary}")
+            if (
+                placeholder_index == 0
+                or raw_argv[placeholder_index - 1]
+                != "--micromachine-binary"
+            ):
+                blockers.append(
+                    "{micromachine_binary} must be the value of "
+                    "--micromachine-binary"
+                )
+        if (
+            not isinstance(micromachine_binary_sha256, str)
+            or not re.fullmatch(
+                r"[0-9a-f]{64}",
+                micromachine_binary_sha256,
+            )
+        ):
+            blockers.append(
+                "deterministic journey producer requires the admitted "
+                "MicroMachine binary SHA-256"
+            )
+        if micromachine_binary_path is None:
+            blockers.append(
+                "deterministic journey producer requires the admitted "
+                "MicroMachine binary path"
+            )
+        else:
+            raw_binary_path = Path(micromachine_binary_path)
+            if not raw_binary_path.is_absolute():
+                blockers.append(
+                    "admitted MicroMachine binary path must be absolute"
+                )
+            elif _path_has_symlink_component(raw_binary_path):
+                blockers.append(
+                    "admitted MicroMachine binary path contains a symlink"
+                )
+            else:
+                try:
+                    binary_stat = raw_binary_path.stat()
+                except OSError as exc:
+                    blockers.append(
+                        f"admitted MicroMachine binary is unreadable: {exc}"
+                    )
+                else:
+                    if not stat.S_ISREG(binary_stat.st_mode):
+                        blockers.append(
+                            "admitted MicroMachine binary is not a regular file"
+                        )
+                    elif binary_stat.st_mode & 0o111 == 0:
+                        blockers.append(
+                            "admitted MicroMachine binary is not executable"
+                        )
+                    elif (
+                        _sha256_file(raw_binary_path)
+                        != micromachine_binary_sha256
+                    ):
+                        blockers.append(
+                            "admitted MicroMachine binary digest mismatch"
+                        )
+                    else:
+                        binary_path = raw_binary_path.resolve()
+        if node_placeholder_count != 1:
+            blockers.append(
+                "deterministic journey producer argv must contain exactly one "
+                "{node} placeholder"
+            )
+        else:
+            placeholder_index = raw_argv.index("{node}")
+            if (
+                placeholder_index == 0
+                or raw_argv[placeholder_index - 1]
+                != "--node-executable"
+            ):
+                blockers.append(
+                    "{node} must be the value of --node-executable"
+                )
+        if node_executable is None:
+            blockers.append(
+                "deterministic journey producer requires an explicitly "
+                "admitted Node.js executable"
+            )
+        else:
+            raw_node_path = Path(node_executable)
+            if not raw_node_path.is_absolute():
+                blockers.append("Node.js executable path must be absolute")
+            elif _path_has_symlink_component(raw_node_path):
+                blockers.append("Node.js executable path contains a symlink")
+            else:
+                try:
+                    node_stat = raw_node_path.stat()
+                except OSError as exc:
+                    blockers.append(
+                        f"Node.js executable is unreadable: {exc}"
+                    )
+                else:
+                    if not stat.S_ISREG(node_stat.st_mode):
+                        blockers.append(
+                            "Node.js executable is not a regular file"
+                        )
+                    elif node_stat.st_mode & 0o111 == 0:
+                        blockers.append("Node.js executable is not executable")
+                    else:
+                        node_path = raw_node_path.resolve()
+                        node_sha256 = _sha256_file(node_path)
+    elif binary_placeholder_count:
+        blockers.append(
+            "{micromachine_binary} is reserved for deterministic journeys"
+        )
+    elif node_placeholder_count:
+        blockers.append("{node} is reserved for deterministic journeys")
     replacements = {
         "{python}": str(python_path),
         "{repository}": str(root),
         "{state_dir}": str(state_dir) if state_dir is not None else "",
         "{output}": str(output),
+        "{micromachine_binary}": (
+            str(binary_path) if binary_path is not None else ""
+        ),
+        "{node}": str(node_path) if node_path is not None else "",
     }
     argv: list[str] = []
     for value in raw_argv:
@@ -2423,6 +3573,7 @@ def resolve_local_producer_policy(
                 repository_root=root,
                 expected_commit=expected_commit,
                 git_runner=git_runner,
+                deadline=deadline,
             )
             blockers.extend(_prefixed_blockers("producer module", module_evidence))
             runtime_sources = _attest_committed_python_sources(
@@ -2430,6 +3581,7 @@ def resolve_local_producer_policy(
                 repository_root=root,
                 expected_commit=expected_commit,
                 git_runner=git_runner,
+                deadline=deadline,
             )
             blockers.extend(
                 _prefixed_blockers("producer runtime sources", runtime_sources)
@@ -2447,6 +3599,16 @@ def resolve_local_producer_policy(
         argv_sha256=argv_digest,
         cwd=str(cwd),
         output_artifact=str(output),
+        micromachine_binary_path=(
+            str(binary_path) if binary_path is not None else None
+        ),
+        micromachine_binary_sha256=(
+            micromachine_binary_sha256 if binary_path is not None else None
+        ),
+        node_executable_path=(
+            str(node_path) if node_path is not None else None
+        ),
+        node_executable_sha256=node_sha256,
         module=module_evidence,
         runtime_sources=runtime_sources,
     )
@@ -2466,6 +3628,12 @@ def run_local_producer(
     producer_policy_sha256: str | None = None,
     authenticated_files: Sequence[Path | str] = (),
     authenticated_file_digests: Mapping[str, str] | None = None,
+    pinned_argv_file_digests: Mapping[str, str] | None = None,
+    path_bound_argv_files: Sequence[Path | str] = (),
+    producer_uid: int | None = None,
+    producer_gid: int | None = None,
+    deadline: _VerifierDeadline | None = None,
+    cleanup_reserve_seconds: float = 0.0,
 ) -> dict[str, object]:
     """Run one exact allowlisted producer and derive provenance from execution."""
 
@@ -2528,6 +3696,23 @@ def run_local_producer(
         blockers.append("producer output artifact must not be a symlink")
     if timeout_seconds <= 0:
         blockers.append("producer timeout_seconds must be positive")
+    if (
+        isinstance(cleanup_reserve_seconds, bool)
+        or not isinstance(cleanup_reserve_seconds, (int, float))
+        or not math.isfinite(cleanup_reserve_seconds)
+        or cleanup_reserve_seconds < 0
+    ):
+        blockers.append(
+            "producer cleanup_reserve_seconds must be finite and non-negative"
+        )
+    try:
+        producer_identity = _normalize_producer_identity(
+            producer_uid,
+            producer_gid,
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        producer_identity = None
+        blockers.append(f"producer execution identity is invalid: {exc}")
 
     expected_file_digests = dict(authenticated_file_digests or {})
     authenticated_snapshots: dict[
@@ -2570,7 +3755,72 @@ def run_local_producer(
             relative.as_posix(),
         )
 
-    commit_before = _git_head(root, git_runner)
+    pinned_argv_snapshots: dict[
+        str,
+        tuple[int, bytes, tuple[int, int, int, int, str]],
+    ] = {}
+    for raw_candidate, expected_digest in sorted(
+        (pinned_argv_file_digests or {}).items()
+    ):
+        candidate = Path(raw_candidate).absolute()
+        candidate_text = str(candidate)
+        if normalized_argv.count(candidate_text) != 1:
+            blockers.append(
+                "pinned argv file must occur exactly once in producer argv: "
+                f"{candidate}"
+            )
+            continue
+        if not _SHA256_RE.fullmatch(expected_digest):
+            blockers.append(
+                f"pinned argv file digest is invalid: {candidate}"
+            )
+            continue
+        if _path_has_symlink_component(candidate):
+            blockers.append(f"pinned argv file contains a symlink: {candidate}")
+            continue
+        try:
+            descriptor, payload, snapshot = _open_pinned_executable(candidate)
+        except OSError as exc:
+            blockers.append(f"pinned argv file is unreadable: {candidate}: {exc}")
+            continue
+        if snapshot[4] != expected_digest:
+            os.close(descriptor)
+            blockers.append(f"pinned argv file digest mismatch: {candidate}")
+            continue
+        pinned_argv_snapshots[candidate_text] = (
+            descriptor,
+            payload,
+            snapshot,
+        )
+    path_bound_argv = {
+        str(Path(candidate).absolute())
+        for candidate in path_bound_argv_files
+    }
+    for candidate in sorted(path_bound_argv - set(pinned_argv_snapshots)):
+        blockers.append(
+            "path-bound argv file must also be pinned: "
+            f"{candidate}"
+        )
+    if producer_identity is not None:
+        for candidate in sorted(path_bound_argv):
+            try:
+                writable = _path_is_writable_by_identity(
+                    Path(candidate),
+                    uid=producer_identity[0],
+                    gid=producer_identity[1],
+                )
+            except OSError as exc:
+                blockers.append(
+                    f"path-bound argv file is unreadable: {candidate}: {exc}"
+                )
+                continue
+            if writable:
+                blockers.append(
+                    "path-bound argv file is writable by the producer identity: "
+                    f"{candidate}"
+                )
+
+    commit_before = _git_head(root, git_runner, deadline=deadline)
     if commit_before is None:
         blockers.append("could not record producer repository commit")
     before_state = _artifact_state(output_path)
@@ -2580,23 +3830,45 @@ def run_local_producer(
     stderr = b""
     captured_output: bytes | None = None
     published_output_identity: tuple[int, int, int, int, str] | None = None
+    if (
+        producer_identity is not None
+        and not authenticated_snapshots
+        and not pinned_argv_snapshots
+    ):
+        blockers.append(
+            "dedicated producer identity requires authenticated staged execution"
+        )
     if not blockers:
-        if authenticated_snapshots:
+        if authenticated_snapshots or pinned_argv_snapshots:
             try:
                 state_dir = canonical_pre_live_state_dir(
                     root,
                     git_runner=git_runner,
+                    deadline=deadline,
                 )
-                with (
-                    tempfile.TemporaryDirectory(
-                        prefix=".producer-snapshot-",
-                        dir=state_dir,
-                    ) as snapshot_directory,
-                    tempfile.TemporaryDirectory(
-                        prefix=".producer-output-",
-                        dir=state_dir,
-                    ) as staging_directory,
-                ):
+                with contextlib.ExitStack() as execution_stack:
+                    execution_parent = state_dir
+                    if producer_identity is not None:
+                        execution_parent = Path(
+                            execution_stack.enter_context(
+                                _dedicated_producer_execution_directory(
+                                    uid=producer_identity[0],
+                                    gid=producer_identity[1],
+                                )
+                            )
+                        )
+                    snapshot_directory = execution_stack.enter_context(
+                        tempfile.TemporaryDirectory(
+                            prefix=".producer-snapshot-",
+                            dir=execution_parent,
+                        )
+                    )
+                    staging_directory = execution_stack.enter_context(
+                        tempfile.TemporaryDirectory(
+                            prefix=".producer-output-",
+                            dir=execution_parent,
+                        )
+                    )
                     snapshot_root = Path(snapshot_directory)
                     staging_root = Path(staging_directory)
                     for _, payload, relative in authenticated_snapshots.values():
@@ -2607,46 +3879,207 @@ def run_local_producer(
                             exist_ok=True,
                         )
                         _write_private_snapshot_file(snapshot_file, payload)
-                    relative_cwd = working_dir.relative_to(root)
-                    execution_cwd = snapshot_root / relative_cwd
-                    execution_cwd.mkdir(mode=0o700, parents=True, exist_ok=True)
-                    staged_output = staging_root / output_path.name
-                    execution_argv = [
-                        (
-                            str(snapshot_root)
-                            if value == str(root)
-                            else str(staged_output)
-                            if value == str(output_path)
-                            else value
+                    pinned_argv_paths: dict[str, str] = {}
+                    pinned_execution_snapshots: dict[
+                        str,
+                        tuple[
+                            int,
+                            tuple[int, int, int, int, str],
+                        ],
+                    ] = {}
+                    pinned_path_monitors: dict[
+                        str,
+                        tuple[Any, int] | None,
+                    ] = {}
+                    try:
+                        if pinned_argv_snapshots:
+                            pinned_argv_root = snapshot_root / ".pinned-argv"
+                            pinned_argv_root.mkdir(mode=0o700)
+                            for index, (
+                                source,
+                                (
+                                    source_descriptor,
+                                    payload,
+                                    source_snapshot,
+                                ),
+                            ) in enumerate(
+                                sorted(pinned_argv_snapshots.items())
+                            ):
+                                if source in path_bound_argv:
+                                    pinned_argv_paths[source] = source
+                                    pinned_path_monitors[source] = (
+                                        _open_pinned_path_monitor(
+                                            source_descriptor,
+                                            Path(source),
+                                        )
+                                    )
+                                    continue
+                                snapshot_file = (
+                                    pinned_argv_root
+                                    / f"{index:04d}-{Path(source).name}"
+                                )
+                                _write_private_executable_file(
+                                    snapshot_file,
+                                    payload,
+                                )
+                                (
+                                    snapshot_descriptor,
+                                    snapshot_payload,
+                                    execution_snapshot,
+                                ) = _open_pinned_executable(snapshot_file)
+                                if producer_identity is not None:
+                                    os.fchmod(snapshot_descriptor, 0o555)
+                                if (
+                                    snapshot_payload != payload
+                                    or execution_snapshot[4]
+                                    != source_snapshot[4]
+                                ):
+                                    os.close(snapshot_descriptor)
+                                    raise OSError(
+                                        "private pinned argv snapshot differs "
+                                        f"from admitted bytes: {source}"
+                                    )
+                                snapshot_file.unlink()
+                                execution_path = _descriptor_execution_path(
+                                    snapshot_descriptor
+                                )
+                                pinned_execution_snapshots[source] = (
+                                    snapshot_descriptor,
+                                    execution_snapshot,
+                                )
+                                pinned_argv_paths[source] = execution_path
+                        relative_cwd = working_dir.relative_to(root)
+                        execution_cwd = snapshot_root / relative_cwd
+                        execution_cwd.mkdir(
+                            mode=0o700,
+                            parents=True,
+                            exist_ok=True,
                         )
-                        for value in normalized_argv
-                    ]
-                    completed = _run_pinned_command(
-                        command_runner,
-                        execution_argv,
-                        executable_payload=executable_payload,
-                        executable_snapshot=executable_snapshot_before,
-                        authenticated_python_sources={
-                            authenticated[2]: authenticated[1]
-                            for authenticated in authenticated_snapshots.values()
-                        },
-                        state_dir=state_dir,
-                        cwd=str(execution_cwd),
-                        timeout=timeout_seconds,
-                    )
-                    returncode = int(completed.returncode)
-                    stdout = _as_bytes(completed.stdout)
-                    stderr = _as_bytes(completed.stderr)
-                    if returncode == 0:
-                        captured_output, _ = _read_regular_file_snapshot(
-                            staged_output,
-                            maximum=MAX_GITHUB_ARTIFACT_BYTES,
+                        staged_output = staging_root / output_path.name
+                        if producer_identity is not None:
+                            _make_snapshot_tree_read_only(snapshot_root)
+                            _chown_private_directory(
+                                staging_root,
+                                uid=producer_identity[0],
+                                gid=producer_identity[1],
+                            )
+                        execution_replacements = {
+                            str(root): str(snapshot_root),
+                            str(output_path): str(staged_output),
+                            **pinned_argv_paths,
+                        }
+                        execution_argv = [
+                            execution_replacements.get(value, value)
+                            for value in normalized_argv
+                        ]
+                        if deadline is not None:
+                            deadline.require_capacity(
+                                timeout_seconds + cleanup_reserve_seconds,
+                                operation="deterministic journey producer",
+                            )
+                        completed = _run_pinned_command(
+                            command_runner,
+                            execution_argv,
+                            executable_payload=executable_payload,
+                            executable_snapshot=executable_snapshot_before,
+                            authenticated_python_sources={
+                                authenticated[2]: authenticated[1]
+                                for authenticated in (
+                                    authenticated_snapshots.values()
+                                )
+                            },
+                            state_dir=state_dir,
+                            execution_dir=execution_parent,
+                            cwd=str(execution_cwd),
+                            timeout=timeout_seconds,
+                            inherited_fds=tuple(
+                                descriptor
+                                for descriptor, _ in (
+                                    pinned_execution_snapshots.values()
+                                )
+                            ),
+                            producer_uid=(
+                                producer_identity[0]
+                                if producer_identity is not None
+                                else None
+                            ),
+                            producer_gid=(
+                                producer_identity[1]
+                                if producer_identity is not None
+                                else None
+                            ),
+                            deadline=deadline,
+                            cleanup_reserve_seconds=cleanup_reserve_seconds,
                         )
-                        published_output_identity = _write_output_atomically(
-                            output_path,
-                            captured_output,
-                            expected_parent_identity=output_parent_stat_before,
-                        )
+                        for source in sorted(path_bound_argv):
+                            if _pinned_path_monitor_changed(
+                                pinned_path_monitors.get(source)
+                            ):
+                                raise OSError(
+                                    "path-bound argv file changed during "
+                                    f"execution: {source}"
+                                )
+                            source_descriptor, _, snapshot_before = (
+                                pinned_argv_snapshots[source]
+                            )
+                            _, descriptor_snapshot_after = (
+                                _read_open_regular_file_snapshot(
+                                    source_descriptor,
+                                    maximum=MAX_PRODUCER_EXECUTABLE_BYTES,
+                                )
+                            )
+                            _, path_snapshot_after = (
+                                _read_regular_file_snapshot(
+                                    Path(source),
+                                    maximum=MAX_PRODUCER_EXECUTABLE_BYTES,
+                                )
+                            )
+                            if (
+                                descriptor_snapshot_after != snapshot_before
+                                or path_snapshot_after != snapshot_before
+                            ):
+                                raise OSError(
+                                    "path-bound argv file changed during "
+                                    f"execution: {source}"
+                                )
+                        for source, (
+                            snapshot_descriptor,
+                            snapshot_before,
+                        ) in pinned_execution_snapshots.items():
+                            _, descriptor_snapshot_after = (
+                                _read_open_regular_file_snapshot(
+                                    snapshot_descriptor,
+                                    maximum=MAX_PRODUCER_EXECUTABLE_BYTES,
+                                )
+                            )
+                            if descriptor_snapshot_after != snapshot_before:
+                                raise OSError(
+                                    "private pinned argv snapshot changed "
+                                    f"during execution: {source}"
+                                )
+                        returncode = int(completed.returncode)
+                        stdout = _as_bytes(completed.stdout)
+                        stderr = _as_bytes(completed.stderr)
+                        if returncode == 0:
+                            captured_output, _ = _read_regular_file_snapshot(
+                                staged_output,
+                                maximum=MAX_GITHUB_ARTIFACT_BYTES,
+                            )
+                            published_output_identity = _write_output_atomically(
+                                output_path,
+                                captured_output,
+                                expected_parent_identity=(
+                                    output_parent_stat_before
+                                ),
+                            )
+                    finally:
+                        for monitor in pinned_path_monitors.values():
+                            _close_pinned_path_monitor(monitor)
+                        for (
+                            snapshot_descriptor,
+                            _,
+                        ) in pinned_execution_snapshots.values():
+                            os.close(snapshot_descriptor)
             except Exception as exc:
                 blockers.append(f"producer execution failed: {exc}")
         else:
@@ -2654,7 +4087,13 @@ def run_local_producer(
                 state_dir = canonical_pre_live_state_dir(
                     root,
                     git_runner=git_runner,
+                    deadline=deadline,
                 )
+                if deadline is not None:
+                    deadline.require_capacity(
+                        timeout_seconds + cleanup_reserve_seconds,
+                        operation="local producer",
+                    )
                 completed = _run_pinned_command(
                     command_runner,
                     list(normalized_argv),
@@ -2664,6 +4103,8 @@ def run_local_producer(
                     state_dir=state_dir,
                     cwd=str(working_dir),
                     timeout=timeout_seconds,
+                    deadline=deadline,
+                    cleanup_reserve_seconds=cleanup_reserve_seconds,
                 )
                 returncode = int(completed.returncode)
                 stdout = _as_bytes(completed.stdout)
@@ -2714,7 +4155,7 @@ def run_local_producer(
     else:
         captured_output_sha256 = None
 
-    commit_after = _git_head(root, git_runner)
+    commit_after = _git_head(root, git_runner, deadline=deadline)
     if commit_after is None:
         blockers.append("could not re-read producer repository commit")
     elif commit_before is not None and commit_after != commit_before:
@@ -2759,6 +4200,30 @@ def run_local_producer(
             continue
         if snapshot_after != snapshot_before:
             blockers.append(f"authenticated producer file changed: {source}")
+    for source, pinned in pinned_argv_snapshots.items():
+        descriptor, _, snapshot_before = pinned
+        try:
+            _, descriptor_snapshot_after = _read_open_regular_file_snapshot(
+                descriptor,
+                maximum=MAX_PRODUCER_EXECUTABLE_BYTES,
+            )
+        except OSError as exc:
+            blockers.append(f"pinned argv file changed: {source}: {exc}")
+        else:
+            if descriptor_snapshot_after != snapshot_before:
+                blockers.append(f"pinned argv file changed: {source}")
+        finally:
+            os.close(descriptor)
+        try:
+            _, pathname_snapshot_after = _read_regular_file_snapshot(
+                Path(source),
+                maximum=MAX_PRODUCER_EXECUTABLE_BYTES,
+            )
+        except OSError as exc:
+            blockers.append(f"pinned argv file pathname changed: {source}: {exc}")
+        else:
+            if pathname_snapshot_after != snapshot_before:
+                blockers.append(f"pinned argv file pathname changed: {source}")
     started_timestamp = _parse_utc(started_at)
     if started_timestamp is None:
         raise RuntimeError("internal producer start timestamp is invalid")
@@ -2817,6 +4282,15 @@ def run_local_producer(
                 "published_stat_identity": None,
             }
         ),
+        execution_identity=(
+            {
+                "boundary": "dedicated_uid",
+                "uid": producer_identity[0],
+                "gid": producer_identity[1],
+            }
+            if producer_identity is not None
+            else None
+        ),
     )
 
 
@@ -2874,6 +4348,10 @@ def attest_github_actions_emission_context(
             normalized_repository,
             pull_number,
         )
+        lookup_head = _mapping(pull_request.get("head"))
+        lookup_head_ref = lookup_head.get("ref")
+        if not isinstance(lookup_head_ref, str) or not lookup_head_ref:
+            raise ValueError("pull_request.head.ref is required")
         pull_base = _mapping(pull_request.get("base"))
         pull_base_sha = pull_base.get("sha")
         if not isinstance(pull_base_sha, str) or not _SHA40_RE.fullmatch(
@@ -2892,8 +4370,8 @@ def attest_github_actions_emission_context(
         workflow_runs = adapter.list_workflow_runs(
             normalized_repository,
             workflow_id,
-            branch=str(run.get("head_branch")),
-            event="pull_request",
+            branch=lookup_head_ref,
+            event=AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
         )
         jobs = adapter.list_workflow_run_attempt_jobs(
             normalized_repository,
@@ -2950,9 +4428,10 @@ def attest_github_actions_emission_context(
             f"expected={expected_head_sha} actual={run.get('head_sha')!r}"
         )
     event = _server_string(run, "event", "workflow_run", blockers)
-    if event != "pull_request":
+    if event != AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT:
         blockers.append(
-            "candidate evidence requires a pull_request workflow event: "
+            "candidate evidence requires an immutable "
+            "pull_request_target workflow event: "
             f"actual={event!r}"
         )
     run_repository = _mapping(run.get("head_repository"))
@@ -3119,23 +4598,28 @@ def attest_github_actions_emission_context(
         pull_id=pull_id,
         pull_number=pull_number,
         expected_head_sha=expected_head_sha,
+        expected_head_ref=pull_head_ref,
         expected_repository_id=AUTHORITATIVE_REPOSITORY_ID,
         blockers=blockers,
     )
     if head_branch != pull_head_ref:
         blockers.append(
-            "workflow run branch differs from pull-request head ref: "
-            f"run={head_branch!r} pull={pull_head_ref!r}"
+            "workflow run branch differs from the authenticated candidate: "
+            f"run={head_branch!r} candidate={pull_head_ref!r}"
         )
     workflow_git_ref = _validate_workflow_execution_identity(
         repository=normalized_repository,
         workflow_path=workflow_path,
-        pull_number=pull_number,
-        pull_head_ref=pull_head_ref,
         workflow_ref=workflow_ref,
         workflow_sha=workflow_sha,
         blockers=blockers,
     )
+    if workflow_sha != pull_base_sha:
+        blockers.append(
+            "workflow execution SHA differs from the authenticated "
+            "pull-request base: "
+            f"workflow={workflow_sha!r} base={pull_base_sha!r}"
+        )
     _validate_workflow_reference_target(
         adapter,
         repository=normalized_repository,
@@ -3152,9 +4636,12 @@ def attest_github_actions_emission_context(
         workflow_path=AUTHORITATIVE_PROVENANCE_WORKFLOW_PATH,
         pull_id=pull_id,
         pull_number=pull_number,
-        head_sha=expected_head_sha,
-        head_branch=pull_head_ref,
+        candidate_head_sha=expected_head_sha,
+        candidate_head_ref=pull_head_ref,
+        run_head_sha=expected_head_sha,
+        run_head_branch=pull_head_ref,
         repository_id=AUTHORITATIVE_REPOSITORY_ID,
+        allow_unlisted_current_run=True,
         blockers=blockers,
     )
     if not eligible_runs:
@@ -3213,7 +4700,14 @@ def attest_github_actions_emission_context(
     if selected_job.get("head_sha") != expected_head_sha:
         blockers.append(
             "workflow job head SHA mismatch: "
-            f"expected={expected_head_sha} actual={selected_job.get('head_sha')!r}"
+            f"expected={expected_head_sha} "
+            f"actual={selected_job.get('head_sha')!r}"
+        )
+    if selected_job.get("head_branch") != pull_head_ref:
+        blockers.append(
+            "workflow job branch mismatch: "
+            f"expected={pull_head_ref!r} "
+            f"actual={selected_job.get('head_branch')!r}"
         )
     job_status = selected_job.get("status")
     job_conclusion = selected_job.get("conclusion")
@@ -3280,14 +4774,50 @@ def emit_github_actions_pre_live_bundle(
     build_report_path: Path | str,
     expected_build_dir: Path | str,
     output_path: Path | str,
-    producer_id: str = "provenance_qualification",
+    producer_id: str = PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID,
+    node_executable: Path | str | None = None,
     git_runner: CommandRunner = subprocess.run,
     ctest_runner: CommandRunner = subprocess.run,
     producer_runner: CommandRunner = subprocess.run,
+    producer_uid: int | None = None,
+    producer_gid: int | None = None,
+    producer_timeout_seconds: float = GITHUB_ACTIONS_PRODUCER_TIMEOUT_SECONDS,
+    verifier_deadline: _VerifierDeadline | None = None,
+    _prevalidated_build_binding: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Create the exact canonical bundle uploaded by the provenance CI job."""
 
     blockers: list[str] = []
+    normalized_producer_timeout: float | None = None
+    if (
+        isinstance(producer_timeout_seconds, bool)
+        or not isinstance(producer_timeout_seconds, (int, float))
+        or not math.isfinite(producer_timeout_seconds)
+        or producer_timeout_seconds <= 0
+        or producer_timeout_seconds > GITHUB_ACTIONS_PRODUCER_TIMEOUT_SECONDS
+    ):
+        blockers.append(
+            "producer timeout must be finite, positive, and no greater than "
+            f"{GITHUB_ACTIONS_PRODUCER_TIMEOUT_SECONDS:g} seconds"
+        )
+    else:
+        normalized_producer_timeout = float(producer_timeout_seconds)
+    producer_identity: tuple[int, int] | None = None
+    producer_identity_blocked = False
+    if producer_id == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID:
+        try:
+            producer_identity = _normalize_producer_identity(
+                producer_uid,
+                producer_gid,
+            )
+            if producer_identity is None:
+                raise ValueError(
+                    "deterministic journey emission requires a dedicated "
+                    "producer UID/GID"
+                )
+        except (OSError, TypeError, ValueError) as exc:
+            producer_identity_blocked = True
+            blockers.append(f"producer execution identity is invalid: {exc}")
     repository_root = Path(repository_dir).resolve()
     raw_output = Path(output_path).absolute()
     output = raw_output.parent.resolve() / raw_output.name
@@ -3303,34 +4833,67 @@ def emit_github_actions_pre_live_bundle(
         blockers.append("pre-live bundle output parent contains a symlink")
     if os.path.lexists(raw_output) and raw_output.is_symlink():
         blockers.append("pre-live bundle output must not be a symlink")
-
     repository_before = attest_repository(
         repository_root,
         expected_repository=AUTHORITATIVE_REPOSITORY,
         expected_commit=expected_commit,
         command_runner=git_runner,
+        deadline=verifier_deadline,
     )
-    source_context = attest_github_actions_emission_context(
-        adapter,
-        repository=AUTHORITATIVE_REPOSITORY,
-        run_id=run_id,
-        run_attempt=run_attempt,
-        expected_head_sha=expected_commit,
-        workflow_ref=workflow_ref,
-        workflow_sha=workflow_sha,
+    source_context = (
+        _component_result(
+            [
+                "GitHub Actions emission context was not evaluated because "
+                "the producer execution identity failed preflight"
+            ],
+            status="not_evaluated",
+        )
+        if producer_identity_blocked
+        else attest_github_actions_emission_context(
+            adapter,
+            repository=AUTHORITATIVE_REPOSITORY,
+            run_id=run_id,
+            run_attempt=run_attempt,
+            expected_head_sha=expected_commit,
+            workflow_ref=workflow_ref,
+            workflow_sha=workflow_sha,
+        )
     )
-    build_binding = attest_build_binding(
-        build_report_path,
-        repository_dir=repository_root,
-        expected_repository_commit=expected_commit,
-        expected_build_dir=expected_build_dir,
-        command_runner=ctest_runner,
-        git_runner=git_runner,
-    )
+    if producer_identity_blocked:
+        build_binding = _not_evaluated_component(
+            "build binding was not evaluated because the producer execution "
+            "identity failed preflight"
+        )
+    elif _prevalidated_build_binding is None:
+        build_binding = attest_build_binding(
+            build_report_path,
+            repository_dir=repository_root,
+            expected_repository_commit=expected_commit,
+            expected_build_dir=expected_build_dir,
+            command_runner=ctest_runner,
+            git_runner=git_runner,
+            execution_uid=producer_identity[0] if producer_identity else None,
+            execution_gid=producer_identity[1] if producer_identity else None,
+            deadline=verifier_deadline,
+        )
+    else:
+        build_binding = _admit_prevalidated_build_binding(
+            _prevalidated_build_binding,
+            expected_repository_commit=expected_commit,
+            expected_report_path=build_report_path,
+            expected_build_dir=expected_build_dir,
+        )
     blockers.extend(_prefixed_blockers("repository", repository_before))
     blockers.extend(_prefixed_blockers("github_context", source_context))
     blockers.extend(_prefixed_blockers("build", build_binding))
-    admitted_build = _capture_admitted_build_snapshots(build_binding)
+    admitted_build = (
+        _not_evaluated_component(
+            "build snapshots were not captured because the producer execution "
+            "identity failed preflight"
+        )
+        if producer_identity_blocked
+        else _capture_admitted_build_snapshots(build_binding)
+    )
     blockers.extend(_prefixed_blockers("admitted_build", admitted_build))
 
     producer_policy: dict[str, object]
@@ -3351,8 +4914,21 @@ def emit_github_actions_pre_live_bundle(
             expected_commit=expected_commit,
             producer_id=producer_id,
             git_runner=git_runner,
+            micromachine_binary_path=build_binding.get("binary_path"),
+            micromachine_binary_sha256=build_binding.get("binary_sha256"),
+            node_executable=node_executable,
+            deadline=verifier_deadline,
         )
         blockers.extend(_prefixed_blockers("producer_policy", producer_policy))
+        if not blockers and verifier_deadline is not None:
+            try:
+                verifier_deadline.require_capacity(
+                    cast(float, normalized_producer_timeout)
+                    + GITHUB_ACTIONS_PROVENANCE_CLEANUP_RESERVE_SECONDS,
+                    operation="deterministic journey producer",
+                )
+            except (TimeoutError, ValueError) as exc:
+                blockers.append(str(exc))
         if blockers:
             local_execution = _component_result(
                 ["producer was not executed because its policy was rejected"],
@@ -3374,6 +4950,19 @@ def emit_github_actions_pre_live_bundle(
                 producer_policy_sha256=str(producer_policy["policy_sha256"]),
                 authenticated_files=authenticated_files,
                 authenticated_file_digests=authenticated_digests,
+                pinned_argv_file_digests=(
+                    _producer_pinned_argv_file_digests(producer_policy)
+                ),
+                path_bound_argv_files=(
+                    _producer_path_bound_argv_files(producer_policy)
+                ),
+                producer_uid=producer_uid,
+                producer_gid=producer_gid,
+                timeout_seconds=cast(float, normalized_producer_timeout),
+                deadline=verifier_deadline,
+                cleanup_reserve_seconds=(
+                    GITHUB_ACTIONS_PROVENANCE_CLEANUP_RESERVE_SECONDS
+                ),
             )
             blockers.extend(_prefixed_blockers("local_execution", local_execution))
             repository_after = attest_repository(
@@ -3381,6 +4970,7 @@ def emit_github_actions_pre_live_bundle(
                 expected_repository=AUTHORITATIVE_REPOSITORY,
                 expected_commit=expected_commit,
                 command_runner=git_runner,
+                deadline=verifier_deadline,
             )
             blockers.extend(_prefixed_blockers("repository_after", repository_after))
             unchanged_build = _verify_admitted_build_snapshots_unchanged(
@@ -3409,12 +4999,28 @@ def emit_github_actions_pre_live_bundle(
                 producer_policy=producer_policy,
                 local_execution=local_execution,
             )
-            verification = verify_pre_live_artifact_bundle(
-                bundle,
-                admission_snapshot=_admission_snapshot_from_mapping(
-                    admitted_build
-                ),
-            )
+            admission_snapshot = _admission_snapshot_from_mapping(admitted_build)
+            if (
+                producer_policy.get("producer_id")
+                == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+            ):
+                verification = cast(
+                    dict[str, object],
+                    _with_pinned_node_executable(
+                        producer_policy.get("node_executable_path"),
+                        producer_policy.get("node_executable_sha256"),
+                        lambda node_descriptor: verify_pre_live_artifact_bundle(
+                            bundle,
+                            admission_snapshot=admission_snapshot,
+                            node_executable=node_descriptor,
+                        ),
+                    ),
+                )
+            else:
+                verification = verify_pre_live_artifact_bundle(
+                    bundle,
+                    admission_snapshot=admission_snapshot,
+                )
             if verification.get("ok") is not True:
                 raise ValueError(
                     "assembled bundle failed verification: "
@@ -3454,6 +5060,42 @@ def emit_github_actions_pre_live_bundle(
     )
 
 
+def _admit_prevalidated_build_binding(
+    candidate: Mapping[str, object],
+    *,
+    expected_repository_commit: str,
+    expected_report_path: Path | str,
+    expected_build_dir: Path | str,
+) -> dict[str, object]:
+    blockers: list[str] = []
+    result = dict(candidate)
+    if result.get("ok") is not True:
+        blockers.append("prevalidated build binding is not accepted")
+    if result.get("repository_commit") != expected_repository_commit:
+        blockers.append("prevalidated build binding commit mismatch")
+    report_path = result.get("report_path")
+    if (
+        not isinstance(report_path, str)
+        or Path(report_path).resolve() != Path(expected_report_path).resolve()
+    ):
+        blockers.append("prevalidated build report path mismatch")
+    binary_path = result.get("binary_path")
+    if not isinstance(binary_path, str):
+        blockers.append("prevalidated build binary path is missing")
+    else:
+        try:
+            Path(binary_path).resolve().relative_to(Path(expected_build_dir).resolve())
+        except ValueError:
+            blockers.append("prevalidated build binary escapes the build directory")
+    if _mapping(result.get("ctest")).get("ok") is not True:
+        blockers.append("prevalidated CTest evidence is not accepted")
+    if blockers:
+        result["ok"] = False
+        result["status"] = "blocked"
+        result["blockers"] = blockers
+    return result
+
+
 def _producer_authenticated_runtime_files(
     producer_policy: Mapping[str, object],
 ) -> tuple[list[str], dict[str, str]]:
@@ -3471,6 +5113,38 @@ def _producer_authenticated_runtime_files(
                 authenticated_files.append(source_path)
                 authenticated_digests[source_path] = source_digest
     return authenticated_files, authenticated_digests
+
+
+def _producer_pinned_argv_file_digests(
+    producer_policy: Mapping[str, object],
+) -> dict[str, str]:
+    if (
+        producer_policy.get("producer_id")
+        != PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+    ):
+        return {}
+    binary_path = producer_policy.get("micromachine_binary_path")
+    binary_sha256 = producer_policy.get("micromachine_binary_sha256")
+    node_path = producer_policy.get("node_executable_path")
+    node_sha256 = producer_policy.get("node_executable_sha256")
+    pinned: dict[str, str] = {}
+    if isinstance(binary_path, str) and isinstance(binary_sha256, str):
+        pinned[binary_path] = binary_sha256
+    if isinstance(node_path, str) and isinstance(node_sha256, str):
+        pinned[node_path] = node_sha256
+    return pinned
+
+
+def _producer_path_bound_argv_files(
+    producer_policy: Mapping[str, object],
+) -> tuple[str, ...]:
+    if (
+        producer_policy.get("producer_id")
+        != PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+    ):
+        return ()
+    node_path = producer_policy.get("node_executable_path")
+    return (node_path,) if isinstance(node_path, str) else ()
 
 
 def _capture_admitted_build_snapshots(
@@ -3554,7 +5228,22 @@ def _assemble_github_actions_pre_live_bundle(
     local_execution: Mapping[str, object],
 ) -> bytes:
     ctest = _mapping(build_binding.get("ctest"))
-    local_artifact = _mapping(local_execution.get("output_artifact"))
+    report_payload = admitted_build.get("report_payload")
+    binary_payload = admitted_build.get("binary_payload")
+    if not isinstance(report_payload, bytes) or not isinstance(binary_payload, bytes):
+        raise ValueError("admitted build payloads are missing")
+    raw_producer_output = _read_published_producer_output(local_execution)
+    producer_output_payload = _bind_producer_output_to_admitted_build(
+        producer_id=str(producer_policy.get("producer_id", "")),
+        producer_output=raw_producer_output,
+        build_report=report_payload,
+        binary=binary_payload,
+        node_executable=producer_policy.get("node_executable_path"),
+        node_sha256=producer_policy.get("node_executable_sha256"),
+    )
+    producer_output_sha256 = hashlib.sha256(
+        producer_output_payload
+    ).hexdigest()
     repository_input = canonical_json_bytes(
         _repository_input_evidence_payload(
             build_binding,
@@ -3572,7 +5261,7 @@ def _assemble_github_actions_pre_live_bundle(
             "repository_commit": expected_commit,
             "argv_sha256": hashlib.sha256(argv_bytes).hexdigest(),
             "executable_sha256": local_execution.get("executable_sha256"),
-            "output_sha256": local_artifact.get("sha256"),
+            "output_sha256": producer_output_sha256,
             "exit_code": local_execution.get("exit_code"),
             "started_at": local_execution.get("started_at"),
             "ended_at": local_execution.get("ended_at"),
@@ -3582,11 +5271,12 @@ def _assemble_github_actions_pre_live_bundle(
     )
     policy_path = repository_root / PRODUCER_POLICY_RELATIVE_PATH
     executable_path = Path(cast(list[str], producer_policy["argv"])[0])
-    producer_output_path = Path(str(local_artifact["path"]))
-    report_payload = admitted_build.get("report_payload")
-    binary_payload = admitted_build.get("binary_payload")
-    if not isinstance(report_payload, bytes) or not isinstance(binary_payload, bytes):
-        raise ValueError("admitted build payloads are missing")
+    producer_output_member = (
+        PRE_LIVE_DETERMINISTIC_JOURNEY_MEMBER_NAME
+        if producer_policy.get("producer_id")
+        == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+        else "payload/provenance-foundation.json"
+    )
     members = {
         "build/voi_build_identity.json": report_payload,
         "build/MicroMachine": binary_payload,
@@ -3595,7 +5285,7 @@ def _assemble_github_actions_pre_live_bundle(
         "producer/policy.json": policy_path.read_bytes(),
         "producer/executable": executable_path.read_bytes(),
         "producer/argv.json": argv_bytes,
-        "payload/provenance-foundation.json": producer_output_path.read_bytes(),
+        producer_output_member: producer_output_payload,
         "producer/provenance.json": provenance_bytes,
     }
     authority = _mapping(source_context.get("authority"))
@@ -3630,7 +5320,7 @@ def _assemble_github_actions_pre_live_bundle(
         job_id=int(source_context["job_id"]),
         job_name=str(source_context["job_name"]),
         artifact_logical_name="pre-live",
-        artifact_member="payload/provenance-foundation.json",
+        artifact_member=producer_output_member,
         build_report_identity=str(build_binding["current_identity"]),
         build_report_member="build/voi_build_identity.json",
         binary_member="build/MicroMachine",
@@ -3641,14 +5331,215 @@ def _assemble_github_actions_pre_live_bundle(
         producer_policy_member="producer/policy.json",
         producer_executable_member="producer/executable",
         producer_argv_member="producer/argv.json",
-        producer_output_member="payload/provenance-foundation.json",
+        producer_output_member=producer_output_member,
         producer_provenance_member="producer/provenance.json",
     )
-    return build_pre_live_artifact_bundle(
-        metadata,
-        members,
-        admission_snapshot=_admission_snapshot_from_mapping(admitted_build),
+    admission_snapshot = _admission_snapshot_from_mapping(admitted_build)
+    if (
+        producer_policy.get("producer_id")
+        != PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+    ):
+        return build_pre_live_artifact_bundle(
+            metadata,
+            members,
+            admission_snapshot=admission_snapshot,
+        )
+    return cast(
+        bytes,
+        _with_pinned_node_executable(
+            producer_policy.get("node_executable_path"),
+            producer_policy.get("node_executable_sha256"),
+            lambda node_descriptor: build_pre_live_artifact_bundle(
+                metadata,
+                members,
+                admission_snapshot=admission_snapshot,
+                node_executable=node_descriptor,
+            ),
+        ),
     )
+
+
+def _bind_producer_output_to_admitted_build(
+    *,
+    producer_id: str,
+    producer_output: bytes,
+    build_report: bytes,
+    binary: bytes,
+    node_executable: object = None,
+    node_sha256: object = None,
+) -> bytes:
+    if producer_id != PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID:
+        return producer_output
+    return cast(
+        bytes,
+        _with_pinned_node_executable(
+            node_executable,
+            node_sha256,
+            lambda node_descriptor: bind_deterministic_journey_bundle_to_build(
+                producer_output,
+                build_report_bytes=build_report,
+                binary_bytes=binary,
+                node_executable=node_descriptor,
+            ),
+        ),
+    )
+
+
+def _with_pinned_node_executable(
+    node_executable: object,
+    node_sha256: object,
+    operation: Callable[[str], object],
+) -> object:
+    if not isinstance(node_executable, (str, Path)):
+        raise ValueError("admitted Node.js executable path is missing or invalid")
+    if not Path(node_executable).is_absolute():
+        raise ValueError("admitted Node.js executable path is missing or invalid")
+    if not isinstance(node_sha256, str) or not _SHA256_RE.fullmatch(node_sha256):
+        raise ValueError("admitted Node.js executable digest is missing or invalid")
+    node_path = Path(node_executable)
+    if _path_has_symlink_component(node_path):
+        raise ValueError("admitted Node.js executable path contains a symlink")
+    descriptor, _, snapshot_before = _open_pinned_executable(node_path)
+    monitor: tuple[Any, int] | None = None
+    try:
+        monitor = _open_pinned_path_monitor(descriptor, node_path)
+        if snapshot_before[4] != node_sha256:
+            raise ValueError("admitted Node.js executable digest mismatch")
+        result = operation(str(node_path))
+        if _pinned_path_monitor_changed(monitor):
+            raise ValueError(
+                "admitted Node.js executable changed during output binding"
+            )
+        _, descriptor_snapshot_after = _read_open_regular_file_snapshot(
+            descriptor,
+            maximum=MAX_PRODUCER_EXECUTABLE_BYTES,
+        )
+        _, pathname_snapshot_after = _read_regular_file_snapshot(
+            node_path,
+            maximum=MAX_PRODUCER_EXECUTABLE_BYTES,
+        )
+        if (
+            descriptor_snapshot_after != snapshot_before
+            or pathname_snapshot_after != snapshot_before
+        ):
+            raise ValueError(
+                "admitted Node.js executable changed during output binding"
+            )
+        return result
+    finally:
+        _close_pinned_path_monitor(monitor)
+        os.close(descriptor)
+
+
+def _read_published_producer_output(
+    local_execution: Mapping[str, object],
+) -> bytes:
+    local_artifact = _mapping(local_execution.get("output_artifact"))
+    raw_path = local_artifact.get("path")
+    expected_digest = local_artifact.get("sha256")
+    expected_size = local_artifact.get("size_bytes")
+    expected_identity = local_artifact.get("published_stat_identity")
+    if not isinstance(raw_path, str) or not Path(raw_path).is_absolute():
+        raise ValueError("captured producer output path is missing or non-absolute")
+    if not isinstance(expected_digest, str) or not _SHA256_RE.fullmatch(
+        expected_digest
+    ):
+        raise ValueError("captured producer output digest is missing or invalid")
+    if type(expected_size) is not int or expected_size < 0:
+        raise ValueError("captured producer output size is missing or invalid")
+    if (
+        not isinstance(expected_identity, list)
+        or len(expected_identity) != 5
+        or any(type(value) is not int for value in expected_identity[:4])
+        or not isinstance(expected_identity[4], str)
+        or not _SHA256_RE.fullmatch(expected_identity[4])
+    ):
+        raise ValueError("captured producer output identity is missing or invalid")
+    if (
+        expected_identity[2] != expected_size
+        or expected_identity[4] != expected_digest
+    ):
+        raise ValueError("captured producer output metadata is inconsistent")
+    output_path = Path(raw_path)
+    if _path_has_symlink_component(output_path):
+        raise ValueError("captured producer output path contains a symlink")
+    payload, snapshot = _read_regular_file_snapshot(
+        output_path,
+        maximum=MAX_GITHUB_ARTIFACT_BYTES,
+    )
+    if list(snapshot) != expected_identity:
+        raise ValueError("captured producer output identity changed before consumption")
+    if len(payload) != expected_size:
+        raise ValueError("captured producer output size changed before consumption")
+    if not hmac.compare_digest(
+        hashlib.sha256(payload).hexdigest(),
+        expected_digest,
+    ):
+        raise ValueError("captured producer output digest changed before consumption")
+    return payload
+
+
+def _read_attested_build_payload(
+    build_binding: Mapping[str, object],
+    *,
+    path_key: str,
+    digest_key: str,
+    maximum: int,
+    label: str,
+) -> bytes:
+    raw_path = build_binding.get(path_key)
+    expected_digest = build_binding.get(digest_key)
+    if not isinstance(raw_path, str) or not Path(raw_path).is_absolute():
+        raise ValueError(f"attested {label} path is missing or non-absolute")
+    if not isinstance(expected_digest, str) or not _SHA256_RE.fullmatch(
+        expected_digest
+    ):
+        raise ValueError(f"attested {label} digest is missing or invalid")
+    raw_build_path = Path(raw_path)
+    if os.path.lexists(raw_build_path) and raw_build_path.is_symlink():
+        raise ValueError(f"attested {label} path is a symlink")
+    path = raw_build_path.resolve()
+    payload, snapshot = _read_regular_file_snapshot(path, maximum=maximum)
+    if not hmac.compare_digest(snapshot[4], expected_digest):
+        raise ValueError(f"attested {label} digest changed before binding")
+    return payload
+
+
+def _bound_local_producer_output_sha256(
+    *,
+    build_binding: Mapping[str, object],
+    producer_policy: Mapping[str, object],
+    local_execution: Mapping[str, object],
+) -> str:
+    raw_output = _read_published_producer_output(local_execution)
+    if (
+        producer_policy.get("producer_id")
+        != PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+    ):
+        return hashlib.sha256(raw_output).hexdigest()
+    build_report = _read_attested_build_payload(
+        build_binding,
+        path_key="report_path",
+        digest_key="report_sha256",
+        maximum=MAX_BUILD_REPORT_BYTES,
+        label="build report",
+    )
+    binary = _read_attested_build_payload(
+        build_binding,
+        path_key="binary_path",
+        digest_key="binary_sha256",
+        maximum=MAX_GITHUB_ARTIFACT_BYTES,
+        label="MicroMachine binary",
+    )
+    bound_output = _bind_producer_output_to_admitted_build(
+        producer_id=PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID,
+        producer_output=raw_output,
+        build_report=build_report,
+        binary=binary,
+        node_executable=producer_policy.get("node_executable_path"),
+        node_sha256=producer_policy.get("node_executable_sha256"),
+    )
+    return hashlib.sha256(bound_output).hexdigest()
 
 
 def _repository_input_evidence_payload(
@@ -3817,6 +5708,15 @@ def attest_artifact_local_bindings(
     except (TypeError, ValueError) as exc:
         blockers.append(f"local CTest evidence is invalid: {exc}")
         ctest_bytes = b""
+    try:
+        bound_local_output_sha256 = _bound_local_producer_output_sha256(
+            build_binding=build_binding,
+            producer_policy=producer_policy,
+            local_execution=local_execution,
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        blockers.append(f"local producer output binding failed: {exc}")
+        bound_local_output_sha256 = None
     expected = {
         "build.report_identity": build_binding.get("current_identity"),
         "build.report_sha256": build_binding.get("report_sha256"),
@@ -3834,7 +5734,7 @@ def attest_artifact_local_bindings(
         "producer.policy_sha256": producer_policy.get("policy_sha256"),
         "producer.executable_sha256": local_execution.get("executable_sha256"),
         "producer.argv_sha256": hashlib.sha256(argv_bytes).hexdigest(),
-        "producer.output_sha256": local_artifact.get("sha256"),
+        "producer.output_sha256": bound_local_output_sha256,
         "producer.provenance.exit_code": local_execution.get("exit_code"),
         "producer.provenance.stdout_sha256": local_execution.get("stdout_sha256"),
         "producer.provenance.stderr_sha256": local_execution.get("stderr_sha256"),
@@ -3858,7 +5758,7 @@ def attest_artifact_local_bindings(
         "producer.provenance.authority.closing_issue.number": source_ids.get(
             "issue_number"
         ),
-        "artifact.sha256": local_artifact.get("sha256"),
+        "artifact.sha256": bound_local_output_sha256,
     }
     actual = {
         "build.report_identity": build.get("report_identity"),
@@ -3921,6 +5821,8 @@ def attest_artifact_local_bindings(
         ),
         repository_input_payload=repository_input_payload,
         ctest_payload=(json.loads(ctest_bytes) if ctest_bytes else None),
+        raw_output_sha256=local_artifact.get("sha256"),
+        bound_output_sha256=bound_local_output_sha256,
         expected=expected,
         actual=actual,
     )
@@ -4362,41 +6264,55 @@ def attest_pre_live_provenance(
     build_report_path: Path | str,
     expected_build_dir: Path | str,
     producer_id: str,
+    node_executable: Path | str | None = None,
     git_runner: CommandRunner = subprocess.run,
     ctest_runner: CommandRunner = subprocess.run,
     producer_runner: CommandRunner = subprocess.run,
     untrusted_payload: Mapping[str, object] | None = None,
+    producer_uid: int | None = None,
+    producer_gid: int | None = None,
 ) -> dict[str, object]:
     """Aggregate authenticated source, build, execution, and replay evidence."""
 
     blockers: list[str] = []
+    producer_identity: tuple[int, int] | None = None
+    producer_identity_blocked = False
+    if producer_id == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID:
+        try:
+            producer_identity = _normalize_producer_identity(
+                producer_uid,
+                producer_gid,
+            )
+            if producer_identity is None:
+                raise ValueError(
+                    "production candidate execution requires a dedicated "
+                    "producer UID/GID"
+                )
+        except (OSError, TypeError, ValueError) as exc:
+            producer_identity_blocked = True
+            blockers.append(f"producer execution identity is invalid: {exc}")
     repository_before = attest_repository(
         repository_dir,
         expected_repository=AUTHORITATIVE_REPOSITORY,
         expected_commit=expected_commit,
         command_runner=git_runner,
     )
-    github_source = attest_github_source(
-        github_adapter,
-        repository=AUTHORITATIVE_REPOSITORY,
-        expected_repository_id=AUTHORITATIVE_REPOSITORY_ID,
-        issue_number=issue_number,
-        pull_number=pull_number,
-        run_id=run_id,
-        run_attempt=run_attempt,
-        job_id=job_id,
-        artifact_id=artifact_id,
-        expected_head_sha=expected_head_sha,
-        expected_issue_state="open",
-        expected_pull_state="open",
-    )
-    build_binding = attest_build_binding(
-        build_report_path,
-        repository_dir=repository_dir,
-        expected_repository_commit=expected_commit,
-        expected_build_dir=expected_build_dir,
-        command_runner=ctest_runner,
-        git_runner=git_runner,
+    build_binding = (
+        _not_evaluated_component(
+            "build binding was not evaluated because the producer execution "
+            "identity failed preflight"
+        )
+        if producer_identity_blocked
+        else attest_build_binding(
+            build_report_path,
+            repository_dir=repository_dir,
+            expected_repository_commit=expected_commit,
+            expected_build_dir=expected_build_dir,
+            command_runner=ctest_runner,
+            git_runner=git_runner,
+            execution_uid=producer_identity[0] if producer_identity else None,
+            execution_gid=producer_identity[1] if producer_identity else None,
+        )
     )
     if expected_head_sha != expected_commit:
         blockers.append(
@@ -4404,7 +6320,6 @@ def attest_pre_live_provenance(
             f"repository={expected_commit} github={expected_head_sha}"
         )
     blockers.extend(_prefixed_blockers("repository", repository_before))
-    blockers.extend(_prefixed_blockers("github", github_source))
     blockers.extend(_prefixed_blockers("build", build_binding))
 
     if blockers:
@@ -4424,14 +6339,64 @@ def attest_pre_live_provenance(
             expected_commit=expected_commit,
             producer_id=producer_id,
             git_runner=git_runner,
+            micromachine_binary_path=build_binding.get("binary_path"),
+            micromachine_binary_sha256=build_binding.get("binary_sha256"),
+            node_executable=node_executable,
         )
         blockers.extend(_prefixed_blockers("producer_policy", producer_policy))
-        if blockers:
-            local_execution = _component_result(
-                ["producer not executed because producer policy was rejected"],
-                status="not_run",
+    if blockers:
+        github_source = _component_result(
+            [
+                "GitHub source not attested because authenticated local "
+                "prerequisites failed"
+            ],
+            status="not_evaluated",
+        )
+    else:
+        try:
+            github_kwargs = {
+                "repository": AUTHORITATIVE_REPOSITORY,
+                "expected_repository_id": AUTHORITATIVE_REPOSITORY_ID,
+                "issue_number": issue_number,
+                "pull_number": pull_number,
+                "run_id": run_id,
+                "run_attempt": run_attempt,
+                "job_id": job_id,
+                "artifact_id": artifact_id,
+                "expected_head_sha": expected_head_sha,
+                "expected_issue_state": "open",
+                "expected_pull_state": "open",
+            }
+            if producer_id == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID:
+                github_source = cast(
+                    dict[str, object],
+                    _with_pinned_node_executable(
+                        producer_policy.get("node_executable_path"),
+                        producer_policy.get("node_executable_sha256"),
+                        lambda node_descriptor: attest_github_source(
+                            github_adapter,
+                            **github_kwargs,
+                            node_executable=node_descriptor,
+                        ),
+                    ),
+                )
+            else:
+                github_source = attest_github_source(
+                    github_adapter,
+                    **github_kwargs,
+                )
+        except (OSError, TypeError, ValueError) as exc:
+            github_source = _component_result(
+                [f"GitHub source attestation setup failed: {exc}"],
             )
-            repository_after = repository_before
+        blockers.extend(_prefixed_blockers("github", github_source))
+    blockers.extend(_production_candidate_producer_blockers(producer_id))
+    if blockers:
+        local_execution = _component_result(
+            ["producer not executed because authenticated prerequisites failed"],
+            status="not_run",
+        )
+        repository_after = repository_before
     if not blockers:
         runtime_sources = _mapping(producer_policy.get("runtime_sources"))
         runtime_source_files = runtime_sources.get("files")
@@ -4458,6 +6423,14 @@ def attest_pre_live_provenance(
             producer_policy_sha256=str(producer_policy["policy_sha256"]),
             authenticated_files=authenticated_files,
             authenticated_file_digests=authenticated_file_digests,
+            pinned_argv_file_digests=(
+                _producer_pinned_argv_file_digests(producer_policy)
+            ),
+            path_bound_argv_files=(
+                _producer_path_bound_argv_files(producer_policy)
+            ),
+            producer_uid=producer_uid,
+            producer_gid=producer_gid,
         )
         blockers.extend(_prefixed_blockers("local_execution", local_execution))
         repository_after = attest_repository(
@@ -4481,6 +6454,23 @@ def attest_pre_live_provenance(
             local_execution=local_execution,
         )
         blockers.extend(_prefixed_blockers("artifact_binding", artifact_binding))
+
+    if blockers:
+        post_binding_freshness = _component_result(
+            ["freshness not checked because provenance is blocked"],
+            status="not_evaluated",
+        )
+    else:
+        post_binding_freshness = _attest_github_source_freshness(
+            github_adapter,
+            github_source,
+        )
+        blockers.extend(
+            _prefixed_blockers(
+                "post_binding_freshness",
+                post_binding_freshness,
+            )
+        )
 
     replay_digest: str | None = None
     if blockers:
@@ -4551,6 +6541,23 @@ def attest_pre_live_provenance(
                 )
         blockers.extend(_prefixed_blockers("replay", replay))
 
+    if replay_digest is None:
+        post_replay_freshness = _component_result(
+            ["freshness not checked because replay was not attempted"],
+            status="not_evaluated",
+        )
+    else:
+        post_replay_freshness = _attest_github_source_freshness(
+            github_adapter,
+            github_source,
+        )
+        blockers.extend(
+            _prefixed_blockers(
+                "post_replay_freshness",
+                post_replay_freshness,
+            )
+        )
+
     ignored_fields = sorted(
         key for key in (untrusted_payload or {}) if key in UNTRUSTED_STATUS_FIELDS
     )
@@ -4588,6 +6595,10 @@ def attest_pre_live_provenance(
         "producer_policy": producer_policy,
         "local_execution": local_execution,
         "artifact_binding": artifact_binding,
+        "source_freshness": {
+            "post_binding": post_binding_freshness,
+            "post_replay": post_replay_freshness,
+        },
         "replay": replay,
         "accepted_source_ids": accepted_source_ids,
         "accepted_digests": accepted_digests,
@@ -4624,6 +6635,7 @@ def _repository_authoritative_upstream_commits(
     *,
     expected_commit: str,
     git_runner: CommandRunner,
+    deadline: _VerifierDeadline | None = None,
 ) -> dict[str, object]:
     relative_path = Path(
         "integrations/micromachine/scripts/build_macos_local.sh"
@@ -4642,6 +6654,11 @@ def _repository_authoritative_upstream_commits(
             capture_output=True,
             text=False,
             shell=False,
+            timeout=_bounded_operation_timeout(
+                deadline,
+                GIT_OPERATION_TIMEOUT_SECONDS,
+                operation="authoritative upstream commit Git lookup",
+            ),
             env=dict(SANITIZED_GIT_ENV),
         )
     except Exception as exc:
@@ -4745,6 +6762,7 @@ def _attest_repository_build_inputs(
     repository_root: Path,
     expected_commit: str,
     git_runner: CommandRunner,
+    deadline: _VerifierDeadline | None = None,
 ) -> dict[str, object]:
     blockers: list[str] = []
     observed_paths: dict[str, object] = {}
@@ -4760,7 +6778,7 @@ def _attest_repository_build_inputs(
             paths=observed_paths,
         )
 
-    head = _git_head(repository_root, git_runner)
+    head = _git_head(repository_root, git_runner, deadline=deadline)
     if head != expected_commit:
         blockers.append(
             "repository build-input HEAD mismatch: "
@@ -4818,6 +6836,11 @@ def _attest_repository_build_inputs(
                 capture_output=True,
                 text=False,
                 shell=False,
+                timeout=_bounded_operation_timeout(
+                    deadline,
+                    GIT_OPERATION_TIMEOUT_SECONDS,
+                    operation=f"committed build input Git lookup {relative_path}",
+                ),
                 env=dict(SANITIZED_GIT_ENV),
             )
         except Exception as exc:
@@ -4883,12 +6906,180 @@ def _resolve_cmake_ctest_path(build_dir: Path) -> Path:
     return candidate
 
 
+def _run_ctest_command(
+    command_runner: CommandRunner,
+    argv: Sequence[str],
+    *,
+    cwd: str,
+    text: bool,
+    env: Mapping[str, str],
+    timeout: float,
+    execution_identity: tuple[int, int] | None,
+    deadline: _VerifierDeadline | None = None,
+) -> subprocess.CompletedProcess[Any]:
+    bounded_timeout = _bounded_operation_timeout(
+        deadline,
+        timeout,
+        operation="CTest command",
+    )
+    if execution_identity is None:
+        return command_runner(
+            list(argv),
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+            text=text,
+            shell=False,
+            timeout=bounded_timeout,
+            env=dict(env),
+        )
+    return _run_dedicated_uid_native_command(
+        argv,
+        cwd=cwd,
+        env=env,
+        timeout=bounded_timeout,
+        uid=execution_identity[0],
+        gid=execution_identity[1],
+        deadline=deadline,
+    )
+
+
+def _run_ctest_registry_from_snapshot(
+    command_runner: CommandRunner,
+    argv: Sequence[str],
+    *,
+    build_dir: Path,
+    env: Mapping[str, str],
+    timeout: float,
+    execution_identity: tuple[int, int],
+    deadline: _VerifierDeadline | None = None,
+) -> subprocess.CompletedProcess[Any]:
+    command = list(argv)
+    if (
+        command.count("--test-dir") != 1
+        or command.count("--show-only=json-v1") != 1
+    ):
+        raise OSError("CTest registry discovery command is not canonical")
+    test_dir_index = command.index("--test-dir") + 1
+    if (
+        test_dir_index >= len(command)
+        or Path(command[test_dir_index]).resolve() != build_dir.resolve()
+    ):
+        raise OSError("CTest registry discovery directory is not canonical")
+
+    original_snapshots: dict[
+        Path,
+        tuple[int, int, int, int, str],
+    ] = {}
+    with _dedicated_producer_execution_directory(
+        uid=execution_identity[0],
+        gid=execution_identity[1],
+    ) as execution_directory:
+        with tempfile.TemporaryDirectory(
+            prefix=".voi-ctest-registry-",
+            dir=execution_directory,
+        ) as directory:
+            snapshot_root = Path(directory)
+            copied_paths: list[Path] = []
+            for relative_path in _CTEST_REGISTRY_METADATA_PATHS:
+                source_path = build_dir / relative_path
+                if not os.path.lexists(source_path):
+                    if relative_path == _CTEST_REGISTRY_METADATA_PATHS[0]:
+                        raise OSError(
+                            "top-level CTest registry metadata is missing"
+                        )
+                    continue
+                if (
+                    source_path.is_symlink()
+                    or _path_has_symlink_component(source_path, stop=build_dir)
+                ):
+                    raise OSError(
+                        f"CTest registry metadata is linked: {relative_path}"
+                    )
+                payload, source_snapshot = _read_regular_file_snapshot(
+                    source_path,
+                    maximum=MAX_CTEST_REGISTRY_METADATA_BYTES,
+                )
+                snapshot_path = snapshot_root / relative_path
+                snapshot_path.parent.mkdir(
+                    mode=0o700,
+                    parents=True,
+                    exist_ok=True,
+                )
+                _write_private_snapshot_file(snapshot_path, payload)
+                os.chmod(snapshot_path, 0o444)
+                original_snapshots[source_path] = source_snapshot
+                copied_paths.append(snapshot_path)
+
+            testing_root = snapshot_root / "Testing"
+            testing_root.mkdir(mode=0o700)
+            _chown_private_directory(
+                testing_root,
+                uid=execution_identity[0],
+                gid=execution_identity[1],
+            )
+            for snapshot_path in copied_paths:
+                parent = snapshot_path.parent
+                while parent != snapshot_root:
+                    os.chmod(parent, 0o555)
+                    parent = parent.parent
+            os.chmod(snapshot_root, 0o555)
+
+            snapshot_command = list(command)
+            snapshot_command[test_dir_index] = str(snapshot_root)
+            try:
+                completed = _run_ctest_command(
+                    command_runner,
+                    snapshot_command,
+                    cwd=str(snapshot_root),
+                    text=True,
+                    env=env,
+                    timeout=timeout,
+                    execution_identity=execution_identity,
+                    deadline=deadline,
+                )
+            finally:
+                for source_path, source_snapshot in original_snapshots.items():
+                    try:
+                        _, current_snapshot = _read_regular_file_snapshot(
+                            source_path,
+                            maximum=MAX_CTEST_REGISTRY_METADATA_BYTES,
+                        )
+                    except OSError as exc:
+                        raise OSError(
+                            "CTest registry metadata changed during discovery: "
+                            f"{source_path}"
+                        ) from exc
+                    if current_snapshot != source_snapshot:
+                        raise OSError(
+                            "CTest registry metadata changed during discovery: "
+                            f"{source_path}"
+                        )
+            return completed
+
+
 def _run_ctest(
     build_dir: Path,
     command_runner: CommandRunner,
+    *,
+    execution_uid: int | None = None,
+    execution_gid: int | None = None,
+    deadline: _VerifierDeadline | None = None,
 ) -> dict[str, object]:
     build_dir = build_dir.resolve()
     blockers: list[str] = []
+    try:
+        execution_identity = _normalize_producer_identity(
+            execution_uid,
+            execution_gid,
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        execution_identity = None
+        blockers.append(f"CTest execution identity is invalid: {exc}")
+    if execution_identity is not None and command_runner is not subprocess.run:
+        blockers.append(
+            "dedicated CTest identity requires the authenticated subprocess runner"
+        )
     try:
         ctest_path = _resolve_cmake_ctest_path(build_dir)
     except (OSError, ValueError) as exc:
@@ -4929,14 +7120,24 @@ def _run_ctest(
         blockers.append(f"could not snapshot the ctest executable: {exc}")
     ctest_sha256_before = ctest_snapshot[4] if ctest_snapshot is not None else None
 
+    pinned_parent_directory: tempfile.TemporaryDirectory[str] | None = None
+    pinned_parent = build_dir.parent
+    if execution_identity is not None:
+        pinned_parent_directory = _dedicated_producer_execution_directory(
+            uid=execution_identity[0],
+            gid=execution_identity[1],
+        )
+        pinned_parent = Path(pinned_parent_directory.name)
     pinned_directory = tempfile.TemporaryDirectory(
         prefix=".voi-ctest-",
-        dir=build_dir.parent,
+        dir=pinned_parent,
     )
     pinned_root = Path(pinned_directory.name)
     pinned_ctest = pinned_root / "ctest"
     pinned_bin = pinned_root / "bin"
     pinned_bin.mkdir(mode=0o700)
+    pinned_working_root = pinned_root / "work"
+    pinned_working_root.mkdir(mode=0o700)
     if not blockers:
         _write_private_snapshot_file(pinned_ctest, ctest_payload)
         os.chmod(pinned_ctest, 0o500)
@@ -4959,31 +7160,61 @@ def _run_ctest(
     registry_paths: dict[str, str] = {}
     test_executables: dict[str, dict[str, object]] = {}
     pinned_test_paths: dict[str, Path] = {}
+    pinned_test_workdirs: dict[str, Path] = {}
     original_test_snapshots: dict[str, tuple[int, int, int, int, str]] = {}
     if not blockers:
+        if execution_identity is not None:
+            os.chmod(pinned_root, 0o555)
+            os.chmod(pinned_bin, 0o555)
+            os.chmod(pinned_ctest, 0o555)
         try:
-            registered = command_runner(
-                list(discovery_argv),
-                cwd=str(build_dir),
-                check=False,
-                capture_output=True,
-                text=True,
-                shell=False,
-                env=dict(SANITIZED_TEST_ENV),
-            )
+            registry_command = [str(pinned_ctest), *discovery_argv[1:]]
+            if execution_identity is None:
+                registered = _run_ctest_command(
+                    command_runner,
+                    registry_command,
+                    cwd=str(build_dir),
+                    text=True,
+                    env=dict(SANITIZED_TEST_ENV),
+                    timeout=CTEST_DISCOVERY_TIMEOUT_SECONDS,
+                    execution_identity=None,
+                    deadline=deadline,
+                )
+            else:
+                registered = _run_ctest_registry_from_snapshot(
+                    command_runner,
+                    registry_command,
+                    build_dir=build_dir,
+                    env=dict(SANITIZED_TEST_ENV),
+                    timeout=CTEST_DISCOVERY_TIMEOUT_SECONDS,
+                    execution_identity=execution_identity,
+                    deadline=deadline,
+                )
             registry_returncode = int(registered.returncode)
             registry_stdout = _as_text(registered.stdout)
             registry_stderr = _as_text(registered.stderr)
         except Exception as exc:
             blockers.append(f"CTest registry discovery failed: {exc}")
+            if execution_identity is not None:
+                os.chmod(pinned_root, 0o700)
+                os.chmod(pinned_bin, 0o700)
+                os.chmod(pinned_ctest, 0o500)
         else:
+            if execution_identity is not None:
+                os.chmod(pinned_root, 0o700)
+                os.chmod(pinned_bin, 0o700)
+                os.chmod(pinned_ctest, 0o500)
             if registry_returncode != 0:
                 blockers.append(
                     f"CTest registry discovery exited with code {registry_returncode}"
                 )
             try:
-                registry_payload = json.loads(registry_stdout)
-            except json.JSONDecodeError as exc:
+                registry_payload = json.loads(
+                    registry_stdout,
+                    object_pairs_hook=_reject_duplicate_json_object_keys,
+                    parse_constant=_reject_nonfinite_json,
+                )
+            except (ValueError, json.JSONDecodeError) as exc:
                 blockers.append(
                     f"CTest registry discovery returned malformed JSON: {exc}"
                 )
@@ -5054,7 +7285,10 @@ def _run_ctest(
         pinned_path = pinned_bin / executable_name
         _write_private_snapshot_file(pinned_path, command_payload)
         os.chmod(pinned_path, 0o500)
+        pinned_workdir = pinned_working_root / name
+        pinned_workdir.mkdir(mode=0o700)
         pinned_test_paths[name] = pinned_path
+        pinned_test_workdirs[name] = pinned_workdir
         original_test_snapshots[name] = command_snapshot
         test_executables[name] = {
             "path": str(command_path),
@@ -5075,7 +7309,8 @@ def _run_ctest(
                     f"add_test([=[{name}]=] [=[{pinned_path}]=])",
                     (
                         f"set_tests_properties([=[{name}]=] PROPERTIES "
-                        f"WORKING_DIRECTORY [=[{pinned_root}]=])"
+                        "WORKING_DIRECTORY "
+                        f"[=[{pinned_test_workdirs[name]}]=])"
                     ),
                 )
             )
@@ -5083,9 +7318,31 @@ def _run_ctest(
             pinned_manifest,
             ("\n".join(manifest_lines) + "\n").encode(),
         )
+        if execution_identity is not None:
+            pinned_testing = pinned_root / "Testing"
+            pinned_testing.mkdir(mode=0o700)
+            _chown_private_directory(
+                pinned_testing,
+                uid=execution_identity[0],
+                gid=execution_identity[1],
+            )
+            for pinned_workdir in pinned_test_workdirs.values():
+                _chown_private_directory(
+                    pinned_workdir,
+                    uid=execution_identity[0],
+                    gid=execution_identity[1],
+                )
+            os.chmod(pinned_root, 0o555)
+            os.chmod(pinned_bin, 0o555)
+            os.chmod(pinned_working_root, 0o555)
+            os.chmod(pinned_ctest, 0o555)
+            os.chmod(pinned_manifest, 0o444)
+            for pinned_path in pinned_test_paths.values():
+                os.chmod(pinned_path, 0o555)
     if not blockers:
         try:
-            discovered = command_runner(
+            discovered = _run_ctest_command(
+                command_runner,
                 [
                     str(pinned_ctest),
                     "--test-dir",
@@ -5093,11 +7350,11 @@ def _run_ctest(
                     "--show-only=json-v1",
                 ],
                 cwd=str(pinned_root),
-                check=False,
-                capture_output=True,
                 text=True,
-                shell=False,
                 env=dict(SANITIZED_TEST_ENV),
+                timeout=CTEST_DISCOVERY_TIMEOUT_SECONDS,
+                execution_identity=execution_identity,
+                deadline=deadline,
             )
             discovery_returncode = int(discovered.returncode)
             discovery_stdout = _as_text(discovered.stdout)
@@ -5110,8 +7367,12 @@ def _run_ctest(
                     f"CTest discovery exited with code {discovery_returncode}"
                 )
             try:
-                discovery = json.loads(discovery_stdout)
-            except json.JSONDecodeError as exc:
+                discovery = json.loads(
+                    discovery_stdout,
+                    object_pairs_hook=_reject_duplicate_json_object_keys,
+                    parse_constant=_reject_nonfinite_json,
+                )
+            except (ValueError, json.JSONDecodeError) as exc:
                 blockers.append(f"CTest discovery returned malformed JSON: {exc}")
             else:
                 tests = (
@@ -5164,7 +7425,8 @@ def _run_ctest(
                 blockers.append("CTest discovery wrote to stderr")
     if not blockers:
         try:
-            completed = command_runner(
+            completed = _run_ctest_command(
+                command_runner,
                 [
                     str(pinned_ctest),
                     "--test-dir",
@@ -5172,11 +7434,11 @@ def _run_ctest(
                     "--output-on-failure",
                 ],
                 cwd=str(pinned_root),
-                check=False,
-                capture_output=True,
                 text=True,
-                shell=False,
                 env=dict(SANITIZED_TEST_ENV),
+                timeout=CTEST_EXECUTION_TIMEOUT_SECONDS,
+                execution_identity=execution_identity,
+                deadline=deadline,
             )
             returncode = int(completed.returncode)
             stdout = _as_text(completed.stdout)
@@ -5208,19 +7470,20 @@ def _run_ctest(
         blockers.append("ctest executable changed during execution")
 
     direct_passed = 0
-    if test_executables:
+    if test_executables and not blockers:
         for name in sorted(test_executables):
             executable = test_executables[name]
             executable_path = Path(str(executable["path"]))
             try:
-                direct = subprocess.run(
+                direct = _run_ctest_command(
+                    subprocess.run,
                     [str(pinned_test_paths[name])],
-                    cwd=str(build_dir),
-                    check=False,
-                    capture_output=True,
+                    cwd=str(pinned_test_workdirs[name]),
                     text=False,
-                    shell=False,
                     env=dict(SANITIZED_TEST_ENV),
+                    timeout=CTEST_DIRECT_TIMEOUT_SECONDS,
+                    execution_identity=execution_identity,
+                    deadline=deadline,
                 )
             except Exception as exc:
                 blockers.append(
@@ -5290,6 +7553,8 @@ def _run_ctest(
         stderr_sha256=hashlib.sha256(stderr.encode()).hexdigest(),
     )
     pinned_directory.cleanup()
+    if pinned_parent_directory is not None:
+        pinned_parent_directory.cleanup()
     return result
 
 
@@ -5344,6 +7609,39 @@ def _read_replay_ledger(path: Path) -> dict[str, object]:
     }
 
 
+def _git_inspection_command_runner(
+    runner: CommandRunner,
+    *,
+    deadline: _VerifierDeadline | None,
+) -> Callable[
+    [Sequence[str], Path, Mapping[str, str], float],
+    subprocess.CompletedProcess[object],
+]:
+    def run(
+        argv: Sequence[str],
+        repository_dir: Path,
+        environment: Mapping[str, str],
+        timeout: float,
+    ) -> subprocess.CompletedProcess[object]:
+        return runner(
+            list(argv),
+            cwd=str(repository_dir),
+            stdin=subprocess.DEVNULL,
+            check=False,
+            capture_output=True,
+            text=False,
+            shell=False,
+            timeout=_bounded_operation_timeout(
+                deadline,
+                timeout,
+                operation="repository Git inspection",
+            ),
+            env=dict(environment),
+        )
+
+    return run
+
+
 def _run_text(
     runner: CommandRunner,
     argv: Sequence[str],
@@ -5351,6 +7649,8 @@ def _run_text(
     cwd: Path,
     preserve_whitespace: bool = False,
     env: Mapping[str, str] | None = None,
+    timeout: float = GIT_OPERATION_TIMEOUT_SECONDS,
+    deadline: _VerifierDeadline | None = None,
 ) -> dict[str, object]:
     completed = runner(
         list(argv),
@@ -5359,6 +7659,11 @@ def _run_text(
         capture_output=True,
         text=True,
         shell=False,
+        timeout=_bounded_operation_timeout(
+            deadline,
+            timeout,
+            operation=f"command {' '.join(argv[:2])}",
+        ),
         env=(dict(env) if env is not None else None),
     )
     stdout = _as_text(completed.stdout)
@@ -5371,13 +7676,19 @@ def _run_text(
     }
 
 
-def _git_head(root: Path, runner: CommandRunner) -> str | None:
+def _git_head(
+    root: Path,
+    runner: CommandRunner,
+    *,
+    deadline: _VerifierDeadline | None = None,
+) -> str | None:
     try:
         result = _run_text(
             runner,
             (TRUSTED_GIT_EXECUTABLE, "rev-parse", "HEAD"),
             cwd=root,
             env=SANITIZED_GIT_ENV,
+            deadline=deadline,
         )
     except Exception:
         return None
@@ -5393,6 +7704,7 @@ def _attest_committed_file(
     repository_root: Path,
     expected_commit: str,
     git_runner: CommandRunner,
+    deadline: _VerifierDeadline | None = None,
 ) -> dict[str, object]:
     blockers: list[str] = []
     try:
@@ -5426,12 +7738,17 @@ def _attest_committed_file(
             capture_output=True,
             text=False,
             shell=False,
+            timeout=_bounded_operation_timeout(
+                deadline,
+                GIT_OPERATION_TIMEOUT_SECONDS,
+                operation=f"committed file Git lookup {relative}",
+            ),
             env=dict(SANITIZED_GIT_ENV),
         )
         if int(completed.returncode) != 0:
             raise ValueError("file is not tracked at the exact commit")
         committed_bytes = _as_bytes(completed.stdout)
-    except (TypeError, ValueError) as exc:
+    except (OSError, TimeoutError, TypeError, ValueError) as exc:
         blockers.append(str(exc))
         committed_bytes = b""
     if working_bytes != committed_bytes:
@@ -5451,11 +7768,16 @@ def _attest_committed_python_sources(
     repository_root: Path,
     expected_commit: str,
     git_runner: CommandRunner,
+    deadline: _VerifierDeadline | None = None,
 ) -> dict[str, object]:
-    """Bind the producer to an exact committed Python runtime snapshot."""
+    """Bind the producer to its exact committed runtime inputs."""
 
     blockers: list[str] = []
     relative_paths = {module_relative.as_posix()}
+    if module_relative == DETERMINISTIC_JOURNEY_MODULE_RELATIVE_PATH:
+        relative_paths.add(
+            DETERMINISTIC_JOURNEY_MANIFEST_RELATIVE_PATH.as_posix()
+        )
     if module_relative.parts and module_relative.parts[0] == "starcraft_commander":
         try:
             completed = git_runner(
@@ -5474,6 +7796,11 @@ def _attest_committed_python_sources(
                 capture_output=True,
                 text=False,
                 shell=False,
+                timeout=_bounded_operation_timeout(
+                    deadline,
+                    GIT_OPERATION_TIMEOUT_SECONDS,
+                    operation="producer source Git enumeration",
+                ),
                 env=dict(SANITIZED_GIT_ENV),
             )
             if int(completed.returncode) != 0:
@@ -5493,7 +7820,11 @@ def _attest_committed_python_sources(
         if (
             relative_path.is_absolute()
             or ".." in relative_path.parts
-            or relative_path.suffix != ".py"
+            or (
+                relative_path.suffix != ".py"
+                and relative_path
+                != DETERMINISTIC_JOURNEY_MANIFEST_RELATIVE_PATH
+            )
         ):
             blockers.append(f"invalid producer source path: {relative}")
             continue
@@ -5502,6 +7833,7 @@ def _attest_committed_python_sources(
             repository_root=repository_root,
             expected_commit=expected_commit,
             git_runner=git_runner,
+            deadline=deadline,
         )
         blockers.extend(_prefixed_blockers(f"source {relative}", evidence))
         files.append(
@@ -5620,6 +7952,128 @@ def _open_pinned_executable(
         raise
 
 
+def _trusted_dedicated_producer_temp_root(*, gid: int) -> Path:
+    failures: list[str] = []
+    for raw_parent in DEDICATED_PRODUCER_TEMP_PARENTS:
+        try:
+            parent = raw_parent.resolve(strict=True)
+            parent_stat = os.lstat(parent)
+            parent_mode = stat.S_IMODE(parent_stat.st_mode)
+            if (
+                not stat.S_ISDIR(parent_stat.st_mode)
+                or parent_stat.st_uid != 0
+                or not parent_mode & stat.S_ISVTX
+                or not parent_mode & stat.S_IWOTH
+                or not parent_mode & stat.S_IXOTH
+            ):
+                raise OSError(
+                    "temporary parent is not a root-owned searchable sticky directory"
+                )
+            root = parent / f"{DEDICATED_PRODUCER_TEMP_ROOT_NAME}-{gid}"
+            try:
+                root.mkdir(mode=0o710)
+            except FileExistsError:
+                pass
+            root_stat = os.lstat(root)
+            if (
+                not stat.S_ISDIR(root_stat.st_mode)
+                or root_stat.st_uid != 0
+                or stat.S_IMODE(root_stat.st_mode)
+                & (stat.S_IWGRP | stat.S_IWOTH)
+            ):
+                raise OSError(
+                    "dedicated producer temporary root is not root-owned and private"
+                )
+            os.chown(root, 0, gid)
+            os.chmod(root, 0o710)
+            verified_stat = os.lstat(root)
+            if (
+                verified_stat.st_dev,
+                verified_stat.st_ino,
+                verified_stat.st_uid,
+                verified_stat.st_gid,
+                stat.S_IMODE(verified_stat.st_mode),
+            ) != (
+                root_stat.st_dev,
+                root_stat.st_ino,
+                0,
+                gid,
+                0o710,
+            ):
+                raise OSError(
+                    "dedicated producer temporary root changed during admission"
+                )
+            return root
+        except OSError as exc:
+            failures.append(f"{raw_parent}: {exc}")
+    raise OSError(
+        "no trusted dedicated producer temporary root is available: "
+        + "; ".join(failures)
+    )
+
+
+def _assert_dedicated_producer_execution_directory(
+    path: Path,
+    *,
+    uid: int,
+    gid: int,
+) -> None:
+    for candidate in (path, path.parent):
+        file_stat = os.lstat(candidate)
+        mode = stat.S_IMODE(file_stat.st_mode)
+        if not stat.S_ISDIR(file_stat.st_mode) or file_stat.st_uid != 0:
+            raise OSError(
+                "dedicated producer execution directory is not root-owned"
+            )
+        if file_stat.st_uid == uid:
+            write_mask = stat.S_IWUSR
+            search_mask = stat.S_IXUSR
+        elif file_stat.st_gid == gid:
+            write_mask = stat.S_IWGRP
+            search_mask = stat.S_IXGRP
+        else:
+            write_mask = stat.S_IWOTH
+            search_mask = stat.S_IXOTH
+        if mode & write_mask or not mode & search_mask:
+            raise OSError(
+                "dedicated producer execution directory is not searchable "
+                "without write access"
+            )
+
+
+def _dedicated_producer_execution_directory(
+    *,
+    uid: int,
+    gid: int,
+) -> tempfile.TemporaryDirectory[str]:
+    trusted_root = _trusted_dedicated_producer_temp_root(gid=gid)
+    temporary = tempfile.TemporaryDirectory(
+        prefix=".execution-",
+        dir=trusted_root,
+    )
+    try:
+        execution_root = Path(temporary.name)
+        execution_stat = os.lstat(execution_root)
+        if (
+            not stat.S_ISDIR(execution_stat.st_mode)
+            or execution_stat.st_uid != 0
+        ):
+            raise OSError(
+                "dedicated producer execution directory was not created by root"
+            )
+        os.chown(execution_root, 0, gid)
+        os.chmod(execution_root, 0o710)
+        _assert_dedicated_producer_execution_directory(
+            execution_root,
+            uid=uid,
+            gid=gid,
+        )
+        return temporary
+    except BaseException:
+        temporary.cleanup()
+        raise
+
+
 def _run_pinned_command(
     command_runner: CommandRunner,
     argv: Sequence[str],
@@ -5630,55 +8084,132 @@ def _run_pinned_command(
     state_dir: Path,
     cwd: str,
     timeout: float,
+    execution_dir: Path | None = None,
+    inherited_fds: Sequence[int] = (),
+    producer_uid: int | None = None,
+    producer_gid: int | None = None,
+    deadline: _VerifierDeadline | None = None,
+    cleanup_reserve_seconds: float = 0.0,
 ) -> subprocess.CompletedProcess[Any]:
     if executable_payload is None or executable_snapshot is None:
         raise OSError("producer executable was not pinned")
-    if command_runner is subprocess.run and _is_isolated_python_command(argv):
-        return _run_authenticated_python_fork(
-            argv,
-            authenticated_python_sources=authenticated_python_sources,
-            cwd=cwd,
-            timeout=timeout,
+    producer_identity = _normalize_producer_identity(
+        producer_uid,
+        producer_gid,
+    )
+    if producer_identity is not None:
+        _assert_dedicated_producer_identity_available(
+            *producer_identity,
+            deadline=deadline,
         )
-    with tempfile.TemporaryDirectory(
-        prefix=".producer-executable-",
-        dir=state_dir,
-    ) as executable_directory:
-        executable_path = Path(executable_directory) / "producer"
-        _write_private_executable_file(executable_path, executable_payload)
-        snapshot_fd, snapshot_payload, snapshot_before = _open_pinned_executable(
-            executable_path
-        )
-        try:
-            if (
-                snapshot_payload != executable_payload
-                or snapshot_before[4] != executable_snapshot[4]
-            ):
-                raise OSError("private executable snapshot differs from pinned bytes")
-            completed = command_runner(
-                list(argv),
-                executable=str(executable_path),
-                cwd=cwd,
-                check=False,
-                capture_output=True,
-                text=False,
-                shell=False,
-                timeout=timeout,
-                env=dict(SANITIZED_PRODUCER_ENV),
+    with contextlib.ExitStack() as execution_stack:
+        temporary_parent = execution_dir
+        if temporary_parent is None and producer_identity is not None:
+            temporary_parent = Path(
+                execution_stack.enter_context(
+                    _dedicated_producer_execution_directory(
+                        uid=producer_identity[0],
+                        gid=producer_identity[1],
+                    )
+                )
             )
-            _, snapshot_after = _read_open_regular_file_snapshot(
-                snapshot_fd,
-                maximum=MAX_PRODUCER_EXECUTABLE_BYTES,
+        if temporary_parent is None:
+            temporary_parent = state_dir
+        if producer_identity is not None:
+            _assert_dedicated_producer_execution_directory(
+                temporary_parent,
+                uid=producer_identity[0],
+                gid=producer_identity[1],
             )
-            _, path_after = _read_regular_file_snapshot(
-                executable_path,
-                maximum=MAX_PRODUCER_EXECUTABLE_BYTES,
+        with tempfile.TemporaryDirectory(
+            prefix=".producer-executable-",
+            dir=temporary_parent,
+        ) as executable_directory:
+            executable_root = Path(executable_directory)
+            executable_path = executable_root / "producer"
+            _write_private_executable_file(executable_path, executable_payload)
+            if producer_identity is not None:
+                os.chown(executable_root, 0, producer_identity[1])
+                os.chmod(executable_root, 0o710)
+                os.chown(executable_path, 0, producer_identity[1])
+                os.chmod(executable_path, 0o550)
+            snapshot_fd, snapshot_payload, snapshot_before = (
+                _open_pinned_executable(executable_path)
             )
-            if snapshot_after != snapshot_before or path_after != snapshot_before:
-                raise OSError("private executable snapshot changed during execution")
-            return completed
-        finally:
-            os.close(snapshot_fd)
+            try:
+                if (
+                    snapshot_payload != executable_payload
+                    or snapshot_before[4] != executable_snapshot[4]
+                ):
+                    raise OSError(
+                        "private executable snapshot differs from pinned bytes"
+                    )
+                if (
+                    command_runner is subprocess.run
+                    and _is_isolated_python_command(argv)
+                ):
+                    with tempfile.TemporaryDirectory(
+                        prefix=".native-execution-",
+                        dir=temporary_parent,
+                    ) as native_execution_root:
+                        completed = _run_authenticated_python_exec(
+                            argv,
+                            executable_path=executable_path,
+                            authenticated_python_sources=(
+                                authenticated_python_sources
+                            ),
+                            native_execution_root=Path(native_execution_root),
+                            cwd=cwd,
+                            timeout=timeout,
+                            inherited_fds=inherited_fds,
+                            producer_uid=producer_uid,
+                            producer_gid=producer_gid,
+                            deadline=deadline,
+                            cleanup_reserve_seconds=cleanup_reserve_seconds,
+                        )
+                else:
+                    if producer_identity is not None:
+                        raise OSError(
+                            "dedicated producer identity requires the "
+                            "authenticated Python launcher"
+                        )
+                    if deadline is not None:
+                        deadline.require_capacity(
+                            timeout + cleanup_reserve_seconds,
+                            operation="pinned producer command",
+                        )
+                    completed = command_runner(
+                        list(argv),
+                        executable=str(executable_path),
+                        cwd=cwd,
+                        check=False,
+                        capture_output=True,
+                        text=False,
+                        shell=False,
+                        timeout=_bounded_operation_timeout(
+                            deadline,
+                            timeout,
+                            operation="pinned producer command",
+                            reserve_seconds=cleanup_reserve_seconds,
+                        ),
+                        env=dict(SANITIZED_PRODUCER_ENV),
+                        pass_fds=tuple(inherited_fds),
+                    )
+                _, snapshot_after = _read_open_regular_file_snapshot(
+                    snapshot_fd,
+                    maximum=MAX_PRODUCER_EXECUTABLE_BYTES,
+                )
+                _, path_after = _read_regular_file_snapshot(
+                    executable_path,
+                    maximum=MAX_PRODUCER_EXECUTABLE_BYTES,
+                )
+                if snapshot_after != snapshot_before or path_after != snapshot_before:
+                    raise OSError(
+                        "private executable snapshot changed during execution"
+                    )
+                return completed
+            finally:
+                os.close(snapshot_fd)
 
 
 def _is_isolated_python_command(argv: Sequence[str]) -> bool:
@@ -5691,175 +8222,414 @@ def _is_isolated_python_command(argv: Sequence[str]) -> bool:
     )
 
 
-def _run_authenticated_python_fork(
-    argv: Sequence[str],
-    *,
-    authenticated_python_sources: Mapping[str, bytes],
-    cwd: str,
-    timeout: float,
-) -> subprocess.CompletedProcess[bytes]:
-    """Execute an authenticated Python snapshot without a second executable exec."""
+def _production_candidate_producer_blockers(producer_id: str) -> list[str]:
+    if producer_id == PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID:
+        return []
+    return [
+        "production candidate evidence requires producer_id="
+        f"{PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID!r}; "
+        f"received={producer_id!r}"
+    ]
 
-    import importlib.abc
-    import importlib.util
-    import selectors
-    import signal
-    import time
-    import traceback
 
-    stdout_read, stdout_write = os.pipe()
-    stderr_read, stderr_write = os.pipe()
-    child_pid = os.fork()
-    if child_pid == 0:
-        exit_code = 1
-        try:
-            os.close(stdout_read)
-            os.close(stderr_read)
-            os.dup2(stdout_write, 1)
-            os.dup2(stderr_write, 2)
-            os.close(stdout_write)
-            os.close(stderr_write)
-            os.environ.clear()
-            os.environ.update(SANITIZED_PRODUCER_ENV)
-            os.chdir(cwd)
-            snapshot_root = argv[6]
-            relative_script = argv[7]
-            script = str(Path(snapshot_root) / relative_script)
-            source_records: dict[str, tuple[bytes, str, bool]] = {}
-            for relative, payload in authenticated_python_sources.items():
-                relative_path = Path(relative)
-                if relative_path.suffix != ".py":
-                    continue
-                if relative_path.name == "__init__.py":
-                    module_name = ".".join(relative_path.parts[:-1])
-                    is_package = True
-                else:
-                    module_name = ".".join(relative_path.with_suffix("").parts)
-                    is_package = False
-                if module_name:
-                    source_records[module_name] = (
-                        payload,
-                        str(Path(snapshot_root) / relative_path),
-                        is_package,
-                    )
-            main_source = authenticated_python_sources.get(relative_script)
-            if main_source is None:
-                raise RuntimeError("authenticated main Python source is missing")
-
-            class AuthenticatedSourceLoader(
-                importlib.abc.MetaPathFinder,
-                importlib.abc.Loader,
-            ):
-                def find_spec(
-                    self,
-                    fullname: str,
-                    path: object = None,
-                    target: object = None,
-                ) -> object:
-                    record = source_records.get(fullname)
-                    if record is None:
-                        return None
-                    return importlib.util.spec_from_loader(
-                        fullname,
-                        self,
-                        is_package=record[2],
-                    )
-
-                def create_module(self, spec: object) -> None:
-                    return None
-
-                def exec_module(self, module: object) -> None:
-                    name = str(module.__name__)
-                    payload, filename, is_package = source_records[name]
-                    module.__file__ = filename
-                    module.__package__ = name if is_package else name.rpartition(".")[0]
-                    if is_package:
-                        module.__path__ = [str(Path(filename).parent)]
-                    exec(compile(payload, filename, "exec"), module.__dict__)
-
-            for module_name in tuple(sys.modules):
-                if module_name in source_records:
-                    del sys.modules[module_name]
-            stdlib_paths = [
-                entry
-                for entry in sys.path
-                if entry
-                and "site-packages" not in entry
-                and "dist-packages" not in entry
-            ]
-            sys.path[:] = stdlib_paths
-            sys.meta_path.insert(0, AuthenticatedSourceLoader())
-            sys.argv = [script, *argv[8:]]
-            try:
-                globals_dict = {
-                    "__builtins__": __builtins__,
-                    "__cached__": None,
-                    "__file__": script,
-                    "__loader__": None,
-                    "__name__": "__main__",
-                    "__package__": None,
-                    "__spec__": None,
-                }
-                exec(compile(main_source, script, "exec"), globals_dict)
-                exit_code = 0
-            except SystemExit as exc:
-                if exc.code is None:
-                    exit_code = 0
-                elif isinstance(exc.code, int):
-                    exit_code = exc.code
-                else:
-                    print(exc.code, file=sys.stderr)
-                    exit_code = 1
-            except BaseException:
-                traceback.print_exc()
-                exit_code = 1
-            try:
-                sys.stdout.flush()
-                sys.stderr.flush()
-            except Exception:
-                pass
-        finally:
-            os._exit(exit_code)
-
-    os.close(stdout_write)
-    os.close(stderr_write)
-    stdout = bytearray()
-    stderr = bytearray()
-    selector = selectors.DefaultSelector()
-    selector.register(stdout_read, selectors.EVENT_READ, stdout)
-    selector.register(stderr_read, selectors.EVENT_READ, stderr)
-    deadline = time.monotonic() + timeout
-    child_status: int | None = None
+def _descriptor_execution_path(descriptor: int) -> str:
+    path = Path("/dev/fd") / str(descriptor)
+    descriptor_stat = os.fstat(descriptor)
     try:
-        while selector.get_map() or child_status is None:
+        path_descriptor = os.open(path, os.O_RDONLY)
+    except OSError as exc:
+        raise OSError("descriptor execution path is unavailable") from exc
+    try:
+        path_stat = os.fstat(path_descriptor)
+        if (
+            descriptor_stat.st_dev,
+            descriptor_stat.st_ino,
+        ) != (
+            path_stat.st_dev,
+            path_stat.st_ino,
+        ):
+            raise OSError("descriptor execution path changed identity")
+    finally:
+        os.close(path_descriptor)
+    return str(path)
+
+
+def _path_is_writable_by_identity(
+    path: Path,
+    *,
+    uid: int,
+    gid: int,
+) -> bool:
+    for candidate in (path, *path.parents):
+        file_stat = candidate.stat(follow_symlinks=False)
+        mode = stat.S_IMODE(file_stat.st_mode)
+        if file_stat.st_uid == uid:
+            writable_mask = stat.S_IWUSR
+        elif file_stat.st_gid == gid:
+            writable_mask = stat.S_IWGRP
+        else:
+            writable_mask = stat.S_IWOTH
+        if mode & writable_mask:
+            return True
+    return False
+
+
+def _open_pinned_path_monitor(
+    descriptor: int,
+    path: Path,
+) -> tuple[Any, int] | None:
+    required = (
+        "kqueue",
+        "kevent",
+        "KQ_FILTER_VNODE",
+        "KQ_EV_ADD",
+        "KQ_EV_CLEAR",
+        "KQ_NOTE_DELETE",
+        "KQ_NOTE_WRITE",
+        "KQ_NOTE_EXTEND",
+        "KQ_NOTE_ATTRIB",
+        "KQ_NOTE_LINK",
+        "KQ_NOTE_RENAME",
+        "KQ_NOTE_REVOKE",
+    )
+    if any(not hasattr(select, name) for name in required):
+        return None
+    directory_descriptor = os.open(path.parent, os.O_RDONLY)
+    queue = select.kqueue()
+    event_flags = select.KQ_EV_ADD | select.KQ_EV_CLEAR
+    executable_vnode_flags = (
+        select.KQ_NOTE_DELETE
+        | select.KQ_NOTE_WRITE
+        | select.KQ_NOTE_EXTEND
+        | select.KQ_NOTE_LINK
+        | select.KQ_NOTE_RENAME
+        | select.KQ_NOTE_REVOKE
+    )
+    try:
+        queue.control(
+            [
+                select.kevent(
+                    descriptor,
+                    filter=select.KQ_FILTER_VNODE,
+                    flags=event_flags,
+                    fflags=executable_vnode_flags,
+                ),
+                select.kevent(
+                    directory_descriptor,
+                    filter=select.KQ_FILTER_VNODE,
+                    flags=event_flags,
+                    fflags=executable_vnode_flags | select.KQ_NOTE_ATTRIB,
+                ),
+            ],
+            0,
+            0,
+        )
+    except BaseException:
+        queue.close()
+        os.close(directory_descriptor)
+        raise
+    return queue, directory_descriptor
+
+
+def _pinned_path_monitor_changed(
+    monitor: tuple[Any, int] | None,
+) -> bool:
+    if monitor is None:
+        return False
+    queue, _ = monitor
+    return bool(queue.control(None, 2, 0))
+
+
+def _close_pinned_path_monitor(
+    monitor: tuple[Any, int] | None,
+) -> None:
+    if monitor is None:
+        return
+    queue, directory_descriptor = monitor
+    queue.close()
+    os.close(directory_descriptor)
+
+
+def _communicate_process_bounded(
+    process: subprocess.Popen[bytes],
+    *,
+    argv: Sequence[str],
+    timeout: float,
+    producer_uid: int | None,
+    residual_error_prefix: str,
+) -> tuple[bytes, bytes]:
+    if process.stdout is None or process.stderr is None:
+        raise OSError("bounded process capture requires stdout and stderr pipes")
+
+    buffers = {
+        "stdout": bytearray(),
+        "stderr": bytearray(),
+    }
+    limits = {
+        "stdout": MAX_PROCESS_STDOUT_BYTES,
+        "stderr": MAX_PROCESS_STDERR_BYTES,
+    }
+    overflowed: list[str] = []
+    reader_errors: list[BaseException] = []
+    state_changed = threading.Event()
+
+    def read_pipe(name: str, pipe: Any) -> None:
+        try:
+            while True:
+                remaining = limits[name] + 1 - len(buffers[name])
+                chunk = pipe.read(min(64 * 1024, max(1, remaining)))
+                if not chunk:
+                    return
+                if not isinstance(chunk, bytes):
+                    raise TypeError(f"{name} pipe returned non-bytes output")
+                buffers[name].extend(chunk)
+                if len(buffers[name]) > limits[name]:
+                    overflowed.append(name)
+                    return
+        except BaseException as exc:
+            reader_errors.append(exc)
+        finally:
+            state_changed.set()
+
+    threads = [
+        threading.Thread(
+            target=read_pipe,
+            args=("stdout", process.stdout),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=read_pipe,
+            args=("stderr", process.stderr),
+            daemon=True,
+        ),
+    ]
+    for thread in threads:
+        thread.start()
+
+    try:
+        deadline = time.monotonic() + timeout
+        failure: str | None = None
+        while process.poll() is None:
+            if overflowed:
+                failure = "output_limit"
+                break
+            if reader_errors:
+                failure = "reader_error"
+                break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                os.kill(child_pid, signal.SIGKILL)
-                os.waitpid(child_pid, 0)
-                raise subprocess.TimeoutExpired(list(argv), timeout)
-            for key, _ in selector.select(min(remaining, 0.1)):
-                chunk = os.read(key.fd, 1024 * 1024)
-                if chunk:
-                    key.data.extend(chunk)
-                else:
-                    selector.unregister(key.fd)
-                    os.close(key.fd)
-            if child_status is None:
-                waited_pid, status = os.waitpid(child_pid, os.WNOHANG)
-                if waited_pid == child_pid:
-                    child_status = status
-        returncode = os.waitstatus_to_exitcode(child_status)
+                failure = "timeout"
+                break
+            state_changed.wait(min(0.02, remaining))
+            state_changed.clear()
+
+        residual_pids: tuple[int, ...] = ()
+        if failure is not None:
+            _kill_and_reap_process(process, producer_uid=producer_uid)
+        elif producer_uid is not None:
+            residual_pids = _terminate_producer_uid_processes(producer_uid)
+
+        for thread in threads:
+            thread.join(timeout=1.0)
+        if any(thread.is_alive() for thread in threads):
+            for pipe in (process.stdout, process.stderr):
+                try:
+                    pipe.close()
+                except (OSError, ValueError):
+                    pass
+            for thread in threads:
+                thread.join(timeout=1.0)
+            if failure is None:
+                failure = "reader_stalled"
+
+        stdout = bytes(buffers["stdout"][: MAX_PROCESS_STDOUT_BYTES])
+        stderr = bytes(buffers["stderr"][: MAX_PROCESS_STDERR_BYTES])
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(
+                list(argv),
+                timeout,
+                output=stdout,
+                stderr=stderr,
+            )
+        if failure == "output_limit" or overflowed:
+            streams = ", ".join(sorted(set(overflowed))) or "process output"
+            raise OSError(
+                f"{streams} exceeded the bounded capture limit"
+            )
+        if failure == "reader_error" or reader_errors:
+            raise OSError(
+                f"bounded process output capture failed: {reader_errors[0]}"
+            )
+        if failure == "reader_stalled":
+            raise OSError("bounded process output readers did not terminate")
+        if residual_pids:
+            raise OSError(
+                residual_error_prefix
+                + ", ".join(str(pid) for pid in residual_pids)
+            )
+        return stdout, stderr
+    except BaseException:
+        if process.poll() is None:
+            _kill_and_reap_process(process, producer_uid=None)
+        if producer_uid is not None:
+            _terminate_producer_uid_processes(producer_uid)
+        raise
     finally:
-        for key in list(selector.get_map().values()):
-            selector.unregister(key.fd)
-            os.close(key.fd)
-        selector.close()
-    return subprocess.CompletedProcess(
-        list(argv),
-        returncode,
-        bytes(stdout),
-        bytes(stderr),
+        for pipe in (process.stdout, process.stderr):
+            try:
+                pipe.close()
+            except (OSError, ValueError):
+                pass
+        for thread in threads:
+            thread.join(timeout=1.0)
+
+
+def _run_authenticated_python_exec(
+    argv: Sequence[str],
+    *,
+    executable_path: Path,
+    authenticated_python_sources: Mapping[str, bytes],
+    native_execution_root: Path,
+    cwd: str,
+    timeout: float,
+    inherited_fds: Sequence[int],
+    producer_uid: int | None,
+    producer_gid: int | None,
+    deadline: _VerifierDeadline | None,
+    cleanup_reserve_seconds: float,
+) -> subprocess.CompletedProcess[bytes]:
+    """Execute authenticated Python bytes after discarding the parent heap."""
+
+    relative_script = argv[7]
+    main_source = authenticated_python_sources.get(relative_script)
+    if main_source is None:
+        raise RuntimeError("authenticated main Python source is missing")
+    source_bundle = json.dumps(
+        {
+            "main_source": base64.b64encode(main_source).decode("ascii"),
+            "schema_version": 1,
+            "sources": [
+                {
+                    "path": relative,
+                    "payload": base64.b64encode(payload).decode("ascii"),
+                }
+                for relative, payload in sorted(
+                    authenticated_python_sources.items()
+                )
+            ],
+        },
+        allow_nan=False,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+    producer_identity = _normalize_producer_identity(
+        producer_uid,
+        producer_gid,
     )
+    if producer_identity is not None:
+        _chown_private_directory(
+            native_execution_root,
+            uid=producer_identity[0],
+            gid=producer_identity[1],
+        )
+    bundle_path = (
+        native_execution_root
+        / f".authenticated-sources-{os.urandom(16).hex()}"
+    )
+    _write_private_snapshot_file(bundle_path, source_bundle)
+    bundle_flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        bundle_flags |= os.O_NOFOLLOW
+    source_fd = os.open(bundle_path, bundle_flags)
+    process: subprocess.Popen[bytes] | None = None
+    try:
+        bundle_path.unlink()
+        _, source_snapshot = _read_open_regular_file_snapshot(
+            source_fd,
+            maximum=len(source_bundle),
+        )
+        if (
+            source_snapshot[2] != len(source_bundle)
+            or source_snapshot[4] != hashlib.sha256(source_bundle).hexdigest()
+        ):
+            raise OSError("authenticated source bundle changed before exec")
+        environment = dict(SANITIZED_PRODUCER_ENV)
+        environment[PINNED_NATIVE_EXEC_ROOT_ENV] = str(
+            native_execution_root
+        )
+        exec_argv = [
+            argv[0],
+            "-I",
+            "-B",
+            "-S",
+            "-c",
+            AUTHENTICATED_PYTHON_EXEC_BOOTSTRAP,
+            str(source_fd),
+            argv[6],
+            relative_script,
+            *argv[8:],
+        ]
+        credential_options: dict[str, object] = {}
+        if producer_identity is not None:
+            credential_options = {
+                "user": producer_identity[0],
+                "group": producer_identity[1],
+                "extra_groups": (),
+                "umask": 0o077,
+            }
+        if deadline is not None:
+            deadline.require_capacity(
+                timeout + cleanup_reserve_seconds,
+                operation="authenticated producer exec",
+            )
+        process = subprocess.Popen(
+            exec_argv,
+            executable=str(executable_path),
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=False,
+            shell=False,
+            env=environment,
+            pass_fds=tuple(
+                dict.fromkeys((*inherited_fds, source_fd))
+            ),
+            start_new_session=True,
+            **credential_options,
+        )
+        supervision_timeout = _bounded_operation_timeout(
+            deadline,
+            timeout,
+            operation="authenticated producer supervision",
+            reserve_seconds=cleanup_reserve_seconds,
+        )
+        stdout, stderr = _communicate_process_bounded(
+            process,
+            argv=argv,
+            timeout=supervision_timeout,
+            producer_uid=(
+                producer_identity[0]
+                if producer_identity is not None
+                else None
+            ),
+            residual_error_prefix=(
+                "producer left detached descendants under dedicated UID: "
+            ),
+        )
+        return subprocess.CompletedProcess(
+            list(argv),
+            process.returncode,
+            stdout,
+            stderr,
+        )
+    finally:
+        if process is not None and process.poll() is None:
+            _kill_and_reap_process(process, producer_uid=None)
+        if producer_identity is not None:
+            _terminate_producer_uid_processes(producer_identity[0])
+        os.close(source_fd)
 
 
 def _write_private_executable_file(path: Path, payload: bytes) -> None:
@@ -5875,6 +8645,244 @@ def _write_private_executable_file(path: Path, payload: bytes) -> None:
         os.fchmod(descriptor, 0o500)
     finally:
         os.close(descriptor)
+
+
+def _normalize_producer_identity(
+    uid: int | None,
+    gid: int | None,
+) -> tuple[int, int] | None:
+    if uid is None and gid is None:
+        return None
+    if type(uid) is not int or type(gid) is not int:
+        raise TypeError("producer UID and GID must both be integers")
+    if uid <= 0 or gid <= 0:
+        raise ValueError("producer UID and GID must be non-root positive integers")
+    if os.geteuid() != 0:
+        raise PermissionError("dedicated producer identity requires a root verifier")
+    if uid == os.getuid() or gid == os.getgid():
+        raise ValueError("producer identity must differ from the verifier identity")
+    try:
+        assigned_user = pwd.getpwuid(uid)
+    except KeyError:
+        assigned_user = None
+    if assigned_user is not None:
+        raise ValueError(
+            f"producer UID is assigned to account {assigned_user.pw_name!r}"
+        )
+    try:
+        assigned_group = grp.getgrgid(gid)
+    except KeyError:
+        assigned_group = None
+    if assigned_group is not None:
+        raise ValueError(
+            f"producer GID is assigned to group {assigned_group.gr_name!r}"
+        )
+    return uid, gid
+
+
+def _process_ids_for_uid(
+    uid: int,
+    *,
+    timeout: float = PROCESS_ENUMERATION_TIMEOUT_SECONDS,
+    deadline: _VerifierDeadline | None = None,
+) -> tuple[int, ...]:
+    completed = subprocess.run(
+        [TRUSTED_PS_EXECUTABLE, "-axo", "uid=,pid="],
+        stdin=subprocess.DEVNULL,
+        check=False,
+        capture_output=True,
+        text=True,
+        shell=False,
+        timeout=_bounded_operation_timeout(
+            deadline,
+            timeout,
+            operation="dedicated producer UID process enumeration",
+        ),
+        env={"PATH": "/usr/bin:/bin"},
+    )
+    if completed.returncode != 0:
+        raise OSError(
+            "could not enumerate producer UID processes: "
+            + completed.stderr.strip()
+        )
+    process_ids: list[int] = []
+    for raw_line in completed.stdout.splitlines():
+        if not raw_line.strip():
+            continue
+        fields = raw_line.split()
+        if len(fields) != 2:
+            raise OSError("producer UID process enumeration was malformed")
+        try:
+            process_uid, process_id = (int(value) for value in fields)
+        except ValueError as exc:
+            raise OSError(
+                "producer UID process enumeration was non-numeric"
+            ) from exc
+        if process_uid == uid and process_id > 1:
+            process_ids.append(process_id)
+    return tuple(sorted(set(process_ids)))
+
+
+def _assert_dedicated_producer_identity_available(
+    uid: int,
+    gid: int,
+    *,
+    deadline: _VerifierDeadline | None = None,
+) -> None:
+    _normalize_producer_identity(uid, gid)
+    process_ids = _process_ids_for_uid(uid, deadline=deadline)
+    if process_ids:
+        raise OSError(
+            "dedicated producer UID already owns processes: "
+            + ", ".join(str(pid) for pid in process_ids)
+        )
+
+
+def _terminate_producer_uid_processes(
+    uid: int,
+    *,
+    timeout_seconds: float = PRODUCER_PROCESS_CLEANUP_SECONDS,
+) -> tuple[int, ...]:
+    observed: set[int] = set()
+    cleanup_deadline = _VerifierDeadline(timeout_seconds)
+    while True:
+        process_ids = _process_ids_for_uid(
+            uid,
+            deadline=cleanup_deadline,
+        )
+        if not process_ids:
+            return tuple(sorted(observed))
+        observed.update(process_ids)
+        for process_id in process_ids:
+            try:
+                os.kill(process_id, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        remaining_seconds = cleanup_deadline.remaining_seconds()
+        if remaining_seconds <= 0:
+            raise OSError(
+                "dedicated producer UID processes survived cleanup: "
+                + ", ".join(str(pid) for pid in process_ids)
+            )
+        time.sleep(min(0.02, remaining_seconds))
+
+
+def _run_dedicated_uid_native_command(
+    argv: Sequence[str],
+    *,
+    cwd: str,
+    env: Mapping[str, str],
+    timeout: float,
+    uid: int,
+    gid: int,
+    deadline: _VerifierDeadline | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    process: subprocess.Popen[bytes] | None = None
+    native_environment = dict(env)
+    if sys.platform == "darwin":
+        native_environment["DEVELOPER_DIR"] = TRUSTED_XCODE_DEVELOPER_DIR
+    try:
+        _assert_dedicated_producer_identity_available(
+            uid,
+            gid,
+            deadline=deadline,
+        )
+        if deadline is not None:
+            deadline.require_capacity(
+                timeout,
+                operation="dedicated UID native command",
+            )
+        process = subprocess.Popen(
+            list(argv),
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=False,
+            shell=False,
+            env=native_environment,
+            start_new_session=True,
+            user=uid,
+            group=gid,
+            extra_groups=(),
+            umask=0o077,
+        )
+        supervision_timeout = _bounded_operation_timeout(
+            deadline,
+            timeout,
+            operation="dedicated UID native command supervision",
+        )
+        stdout, stderr = _communicate_process_bounded(
+            process,
+            argv=argv,
+            timeout=supervision_timeout,
+            producer_uid=uid,
+            residual_error_prefix=(
+                "native verifier command left detached descendants under "
+                "dedicated UID: "
+            ),
+        )
+        return subprocess.CompletedProcess(
+            list(argv),
+            process.returncode,
+            stdout,
+            stderr,
+        )
+    finally:
+        if process is not None and process.poll() is None:
+            _kill_and_reap_process(process, producer_uid=None)
+        _terminate_producer_uid_processes(uid)
+
+
+def _kill_and_reap_process(
+    process: subprocess.Popen[bytes],
+    *,
+    producer_uid: int | None,
+) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        if process.poll() is None:
+            process.kill()
+    try:
+        process.wait(timeout=1.0)
+    except subprocess.TimeoutExpired as exc:
+        process.kill()
+        try:
+            process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired as final_exc:
+            raise OSError("producer main process could not be reaped") from final_exc
+        else:
+            if process.returncode is None:
+                raise OSError(
+                    "producer main process has no reaped status"
+                ) from exc
+    if producer_uid is not None:
+        _terminate_producer_uid_processes(producer_uid)
+
+
+def _finish_timed_out_process(
+    process: subprocess.Popen[bytes],
+    *,
+    producer_uid: int | None,
+) -> tuple[bytes, bytes]:
+    _kill_and_reap_process(process, producer_uid=producer_uid)
+    return process.communicate()
+
+
+def _make_snapshot_tree_read_only(root: Path) -> None:
+    for directory, directory_names, file_names in os.walk(root):
+        directory_path = Path(directory)
+        os.chmod(directory_path, 0o555)
+        for name in directory_names:
+            os.chmod(directory_path / name, 0o555)
+        for name in file_names:
+            os.chmod(directory_path / name, 0o444)
+
+
+def _chown_private_directory(path: Path, *, uid: int, gid: int) -> None:
+    os.chown(path, uid, gid)
+    os.chmod(path, 0o700)
 
 
 def _write_output_atomically(
@@ -6016,7 +9024,7 @@ def _read_regular_file_snapshot(
     *,
     maximum: int,
 ) -> tuple[bytes, tuple[int, int, int, int, str]]:
-    flags = os.O_RDONLY
+    flags = os.O_RDONLY | os.O_NONBLOCK
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     descriptor = os.open(path, flags)
@@ -6068,6 +9076,172 @@ def _write_foundation_evidence(output_path: Path | str) -> None:
                 pass
 
 
+def _attest_trusted_verifier_runtime(
+    repository_dir: Path | str,
+    *,
+    expected_commit: str,
+    deadline: _VerifierDeadline | None = None,
+) -> dict[str, object]:
+    blockers: list[str] = []
+    repository_root = Path(repository_dir).resolve()
+    module_root = Path(__file__).resolve().parents[1]
+    if module_root != repository_root:
+        blockers.append(
+            "trusted verifier module was not loaded from its pinned checkout"
+        )
+    repository = attest_repository(
+        repository_root,
+        expected_repository=AUTHORITATIVE_REPOSITORY,
+        expected_commit=expected_commit,
+        deadline=deadline,
+    )
+    blockers.extend(_prefixed_blockers("repository", repository))
+    return _component_result(
+        blockers,
+        repository_dir=str(repository_root),
+        expected_commit=expected_commit,
+        module_path=str(Path(__file__).resolve()),
+        repository=repository,
+    )
+
+
+def _github_actions_bundle_main(argv: Sequence[str]) -> int:
+    result_code = 1
+    producer_uid: int | None = None
+    raw_producer_uid = os.environ.get(PRODUCER_UID_ENV)
+    if raw_producer_uid is not None:
+        try:
+            producer_uid = int(raw_producer_uid)
+        except ValueError:
+            producer_uid = None
+    try:
+        result_code = _github_actions_bundle_main_inner(argv)
+    finally:
+        if producer_uid is not None and producer_uid > 0:
+            try:
+                _terminate_producer_uid_processes(producer_uid)
+            except Exception as exc:
+                print(
+                    f"GitHub Actions dedicated UID cleanup failed: {exc}",
+                    file=sys.stderr,
+                )
+                result_code = 1
+    return result_code
+
+
+def _github_actions_bundle_main_inner(argv: Sequence[str]) -> int:
+    try:
+        repository = os.environ["GITHUB_REPOSITORY"]
+        repository_dir = os.environ[CANDIDATE_WORKSPACE_ENV]
+        expected_commit = os.environ["VOI_RELEASE_COMMIT"]
+        workflow_ref = os.environ["GITHUB_WORKFLOW_REF"]
+        workflow_sha = os.environ["GITHUB_WORKFLOW_SHA"]
+        node_executable = os.environ["VOI_NODE_EXECUTABLE"]
+        trusted_verifier_dir = os.environ[TRUSTED_VERIFIER_WORKSPACE_ENV]
+        trusted_verifier_commit = os.environ[TRUSTED_VERIFIER_COMMIT_ENV]
+        run_id = int(os.environ["GITHUB_RUN_ID"])
+        run_attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
+        producer_uid = int(os.environ[PRODUCER_UID_ENV])
+        producer_gid = int(os.environ[PRODUCER_GID_ENV])
+        producer_timeout_seconds = float(
+            os.environ["VOI_PRODUCER_TIMEOUT_SECONDS"]
+        )
+        verifier_timeout_seconds = float(os.environ[VERIFIER_TIMEOUT_ENV])
+        api_base_url = os.environ.get(
+            "GITHUB_API_URL",
+            "https://api.github.com",
+        )
+    except (KeyError, ValueError) as exc:
+        print(
+            f"GitHub Actions bundle environment is invalid: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    if repository != AUTHORITATIVE_REPOSITORY:
+        print(
+            "GitHub Actions bundle repository is not authoritative: "
+            f"{repository!r}",
+            file=sys.stderr,
+        )
+        return 1
+    if producer_timeout_seconds != GITHUB_ACTIONS_PRODUCER_TIMEOUT_SECONDS:
+        print(
+            "GitHub Actions bundle producer timeout must preserve the "
+            "trusted cleanup margin: "
+            f"expected={GITHUB_ACTIONS_PRODUCER_TIMEOUT_SECONDS:g} "
+            f"actual={producer_timeout_seconds!r}",
+            file=sys.stderr,
+        )
+        return 1
+    if verifier_timeout_seconds != GITHUB_ACTIONS_VERIFIER_TIMEOUT_SECONDS:
+        print(
+            "GitHub Actions bundle verifier timeout must preserve the "
+            "workflow cleanup reserve: "
+            f"expected={GITHUB_ACTIONS_VERIFIER_TIMEOUT_SECONDS:g} "
+            f"actual={verifier_timeout_seconds!r}",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        verifier_deadline = _VerifierDeadline(verifier_timeout_seconds)
+    except ValueError as exc:
+        print(f"GitHub Actions verifier timeout is invalid: {exc}", file=sys.stderr)
+        return 2
+    trusted_verifier = _attest_trusted_verifier_runtime(
+        trusted_verifier_dir,
+        expected_commit=trusted_verifier_commit,
+        deadline=verifier_deadline,
+    )
+    if trusted_verifier["ok"] is not True:
+        print(canonical_json_bytes(trusted_verifier).decode("utf-8"))
+        return 1
+    prevalidated_build_binding = attest_build_binding(
+        argv[2],
+        repository_dir=repository_dir,
+        expected_repository_commit=expected_commit,
+        expected_build_dir=argv[3],
+        execution_uid=producer_uid,
+        execution_gid=producer_gid,
+        deadline=verifier_deadline,
+    )
+    if prevalidated_build_binding["ok"] is not True:
+        print(canonical_json_bytes(prevalidated_build_binding).decode("utf-8"))
+        return 1
+    try:
+        token = _read_github_token_from_stdin(sys.stdin.buffer)
+    except ValueError as exc:
+        print(
+            f"GitHub Actions bundle token is invalid: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    report = emit_github_actions_pre_live_bundle(
+        adapter=StdlibGitHubRESTAdapter(
+            token=token,
+            api_base_url=api_base_url,
+            deadline=verifier_deadline,
+        ),
+        repository_dir=repository_dir,
+        expected_commit=expected_commit,
+        run_id=run_id,
+        run_attempt=run_attempt,
+        workflow_ref=workflow_ref,
+        workflow_sha=workflow_sha,
+        build_report_path=argv[2],
+        expected_build_dir=argv[3],
+        output_path=argv[1],
+        node_executable=node_executable,
+        producer_uid=producer_uid,
+        producer_gid=producer_gid,
+        producer_timeout_seconds=producer_timeout_seconds,
+        verifier_deadline=verifier_deadline,
+        _prevalidated_build_binding=prevalidated_build_binding,
+    )
+    report["trusted_verifier"] = trusted_verifier
+    print(canonical_json_bytes(report).decode("utf-8"))
+    return 0 if report["ok"] is True else 1
+
+
 def _main(argv: Sequence[str]) -> int:
     if len(argv) == 2 and argv[0] == "--emit-foundation-evidence":
         try:
@@ -6077,49 +9251,7 @@ def _main(argv: Sequence[str]) -> int:
             return 1
         return 0
     if len(argv) == 4 and argv[0] == "--emit-github-actions-bundle":
-        try:
-            repository = os.environ["GITHUB_REPOSITORY"]
-            repository_dir = os.environ["GITHUB_WORKSPACE"]
-            expected_commit = os.environ["VOI_RELEASE_COMMIT"]
-            workflow_ref = os.environ["GITHUB_WORKFLOW_REF"]
-            workflow_sha = os.environ["GITHUB_WORKFLOW_SHA"]
-            run_id = int(os.environ["GITHUB_RUN_ID"])
-            run_attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
-            token = os.environ["GITHUB_TOKEN"]
-            api_base_url = os.environ.get(
-                "GITHUB_API_URL",
-                "https://api.github.com",
-            )
-        except (KeyError, ValueError) as exc:
-            print(
-                f"GitHub Actions bundle environment is invalid: {exc}",
-                file=sys.stderr,
-            )
-            return 2
-        if repository != AUTHORITATIVE_REPOSITORY:
-            print(
-                "GitHub Actions bundle repository is not authoritative: "
-                f"{repository!r}",
-                file=sys.stderr,
-            )
-            return 1
-        report = emit_github_actions_pre_live_bundle(
-            adapter=StdlibGitHubRESTAdapter(
-                token=token,
-                api_base_url=api_base_url,
-            ),
-            repository_dir=repository_dir,
-            expected_commit=expected_commit,
-            run_id=run_id,
-            run_attempt=run_attempt,
-            workflow_ref=workflow_ref,
-            workflow_sha=workflow_sha,
-            build_report_path=argv[2],
-            expected_build_dir=argv[3],
-            output_path=argv[1],
-        )
-        print(canonical_json_bytes(report).decode("utf-8"))
-        return 0 if report["ok"] is True else 1
+        return _github_actions_bundle_main(argv)
 
     print(
         "usage: micromachine_pre_live_provenance.py "
@@ -6131,6 +9263,25 @@ def _main(argv: Sequence[str]) -> int:
     return 2
 
 
+def _read_github_token_from_stdin(stream: Any) -> str:
+    payload = stream.read(MAX_GITHUB_TOKEN_BYTES + 1)
+    if not isinstance(payload, bytes):
+        raise ValueError("GitHub token stdin must be a binary stream")
+    if not payload:
+        raise ValueError("GitHub token stdin is empty")
+    if len(payload) > MAX_GITHUB_TOKEN_BYTES:
+        raise ValueError("GitHub token stdin exceeds the size limit")
+    try:
+        token = payload.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise ValueError("GitHub token stdin is not ASCII") from exc
+    if any(ord(character) < 0x21 or ord(character) > 0x7E for character in token):
+        raise ValueError(
+            "GitHub token stdin contains whitespace or control characters"
+        )
+    return token
+
+
 def _component_result(
     blockers: Sequence[str],
     **values: object,
@@ -6139,6 +9290,15 @@ def _component_result(
     result["ok"] = not blockers
     result["status"] = "accepted" if not blockers else "blocked"
     result["blockers"] = list(blockers)
+    return result
+
+
+def _not_evaluated_component(
+    blocker: str,
+    **values: object,
+) -> dict[str, object]:
+    result = _component_result([blocker], **values)
+    result["status"] = "not_evaluated"
     return result
 
 
@@ -6264,6 +9424,7 @@ def _validate_workflow_pull_request_binding(
     pull_id: int | None,
     pull_number: int,
     expected_head_sha: str,
+    expected_head_ref: str | None,
     expected_repository_id: int,
     blockers: list[str],
 ) -> None:
@@ -6278,6 +9439,13 @@ def _validate_workflow_pull_request_binding(
     _expect_server_value(record, "number", pull_number, label, blockers)
     head = _mapping(record.get("head"))
     _expect_server_value(head, "sha", expected_head_sha, f"{label}.head", blockers)
+    _expect_server_value(
+        head,
+        "ref",
+        expected_head_ref,
+        f"{label}.head",
+        blockers,
+    )
     head_repository = _mapping(head.get("repo"))
     _expect_server_value(
         head_repository,
@@ -6295,8 +9463,10 @@ def _workflow_run_matches_candidate(
     workflow_path: str,
     pull_id: int | None,
     pull_number: int,
-    head_sha: str,
-    head_branch: str | None,
+    candidate_head_sha: str,
+    candidate_head_ref: str | None,
+    run_head_sha: str | None,
+    run_head_branch: str | None,
     repository_id: int,
 ) -> bool:
     try:
@@ -6308,9 +9478,9 @@ def _workflow_run_matches_candidate(
     if (
         record.get("workflow_id") != workflow_id
         or record.get("path") != workflow_path
-        or record.get("event") != "pull_request"
-        or record.get("head_sha") != head_sha
-        or record.get("head_branch") != head_branch
+        or record.get("event") != AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT
+        or record.get("head_sha") != run_head_sha
+        or record.get("head_branch") != run_head_branch
     ):
         return False
     head_repository = _mapping(record.get("head_repository"))
@@ -6327,8 +9497,62 @@ def _workflow_run_matches_candidate(
     return (
         pull.get("id") == pull_id
         and pull.get("number") == pull_number
-        and pull_head.get("sha") == head_sha
+        and pull_head.get("sha") == candidate_head_sha
+        and pull_head.get("ref") == candidate_head_ref
         and pull_repository.get("id") == repository_id
+    )
+
+
+def _workflow_run_targets_candidate_namespace(
+    record: Mapping[str, object],
+    *,
+    workflow_id: int,
+    workflow_path: str,
+    run_head_sha: str | None,
+    run_head_branch: str | None,
+    repository_id: int,
+    label: str,
+    blockers: list[str],
+) -> bool:
+    observed_workflow_id = _server_positive_id(
+        record.get("workflow_id"),
+        f"{label}.workflow_id",
+        blockers,
+    )
+    observed_path = _server_string(record, "path", label, blockers)
+    observed_event = _server_string(record, "event", label, blockers)
+    observed_head_sha = _server_string(record, "head_sha", label, blockers)
+    observed_head_branch = _server_string(
+        record,
+        "head_branch",
+        label,
+        blockers,
+    )
+    head_repository = _mapping(record.get("head_repository"))
+    observed_repository_id = _server_positive_id(
+        head_repository.get("id"),
+        f"{label}.head_repository.id",
+        blockers,
+    )
+    if (
+        observed_workflow_id is None
+        or observed_path is None
+        or observed_event is None
+        or observed_head_sha is None
+        or observed_head_branch is None
+        or observed_repository_id is None
+    ):
+        return False
+    if not _SHA40_RE.fullmatch(observed_head_sha):
+        blockers.append(f"{label}.head_sha is not an exact lowercase SHA")
+        return False
+    return (
+        observed_workflow_id == workflow_id
+        and observed_path == workflow_path
+        and observed_event == AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT
+        and observed_head_sha == run_head_sha
+        and observed_head_branch == run_head_branch
+        and observed_repository_id == repository_id
     )
 
 
@@ -6342,102 +9566,778 @@ def _eligible_workflow_runs(
     workflow_path: str,
     pull_id: int | None,
     pull_number: int,
-    head_sha: str,
-    head_branch: str | None,
+    candidate_head_sha: str,
+    candidate_head_ref: str | None,
+    run_head_sha: str | None,
+    run_head_branch: str | None,
     repository_id: int,
+    allow_unlisted_current_run: bool,
     blockers: list[str],
 ) -> list[Mapping[str, object]]:
-    candidates: dict[int, Mapping[str, object]] = {}
+    candidate_summaries: dict[int, Mapping[str, object]] = {}
     current_run_id = current_run.get("id")
-    for summary in workflow_runs:
-        if not _workflow_run_summary_matches_candidate(
-            summary,
-            workflow_id=workflow_id,
-            workflow_path=workflow_path,
-            head_sha=head_sha,
-            head_branch=head_branch,
-            repository_id=repository_id,
-        ):
-            continue
+    seen_run_ids: set[int] = set()
+    for index, summary in enumerate(workflow_runs):
+        label = f"listed_workflow_run[{index}]"
         try:
-            run_id = _positive_id(summary.get("id"), "workflow_run.id")
+            run_id = _positive_id(summary.get("id"), f"{label}.id")
+            _positive_id(summary.get("run_number"), f"{label}.run_number")
+            _positive_id(summary.get("run_attempt"), f"{label}.run_attempt")
         except ValueError as exc:
             blockers.append(f"listed workflow run is malformed: {exc}")
             continue
-        if run_id == current_run_id:
-            record = current_run
-        else:
-            try:
-                record = adapter.get_workflow_run(repository, run_id)
-            except Exception as exc:
-                blockers.append(
-                    f"listed workflow run {run_id} hydration failed: {exc}"
-                )
-                continue
-        if (
-            record.get("id") != run_id
-            or record.get("run_number") != summary.get("run_number")
-            or record.get("run_attempt") != summary.get("run_attempt")
-        ):
-            blockers.append(
-                f"listed workflow run {run_id} hydration identity mismatch"
-            )
+        if run_id in seen_run_ids:
+            blockers.append(f"listed workflow run ID is duplicated: {run_id}")
             continue
-        if not _workflow_run_matches_candidate(
-            record,
+        seen_run_ids.add(run_id)
+        if not _workflow_run_targets_candidate_namespace(
+            summary,
+            workflow_id=workflow_id,
+            workflow_path=workflow_path,
+            run_head_sha=run_head_sha,
+            run_head_branch=run_head_branch,
+            repository_id=repository_id,
+            label=label,
+            blockers=blockers,
+        ):
+            continue
+        candidate_summaries[run_id] = summary
+    if (
+        allow_unlisted_current_run
+        and current_run.get("status") == "in_progress"
+        and current_run.get("conclusion") is None
+        and _workflow_run_matches_candidate(
+            current_run,
             workflow_id=workflow_id,
             workflow_path=workflow_path,
             pull_id=pull_id,
             pull_number=pull_number,
-            head_sha=head_sha,
-            head_branch=head_branch,
+            candidate_head_sha=candidate_head_sha,
+            candidate_head_ref=candidate_head_ref,
+            run_head_sha=run_head_sha,
+            run_head_branch=run_head_branch,
             repository_id=repository_id,
-        ):
+        )
+    ):
+        current_id = current_run.get("id")
+        if isinstance(current_id, int) and not isinstance(current_id, bool):
+            candidate_summaries.setdefault(current_id, current_run)
+    if (
+        len(candidate_summaries)
+        > MAX_AUTHORITATIVE_PROVENANCE_WORKFLOW_RUNS
+    ):
+        blockers.append(
+            "authoritative provenance workflow-run set exceeds the safety limit"
+        )
+        return []
+    if not candidate_summaries:
+        return []
+    latest_summary = max(
+        candidate_summaries.values(),
+        key=_workflow_run_order_key,
+    )
+    latest_run_id = int(latest_summary["id"])
+    if latest_run_id == current_run_id:
+        record = current_run
+    else:
+        try:
+            record = adapter.get_workflow_run(repository, latest_run_id)
+        except Exception as exc:
             blockers.append(
-                f"listed workflow run {run_id} failed direct candidate binding"
+                f"listed workflow run {latest_run_id} hydration failed: {exc}"
             )
-            continue
-        candidates[run_id] = record
-    if _workflow_run_matches_candidate(
-        current_run,
+            return []
+    if (
+        record.get("id") != latest_run_id
+        or record.get("run_number") != latest_summary.get("run_number")
+        or record.get("run_attempt") != latest_summary.get("run_attempt")
+    ):
+        blockers.append(
+            f"listed workflow run {latest_run_id} hydration identity mismatch"
+        )
+        return []
+    if not _workflow_run_matches_candidate(
+        record,
         workflow_id=workflow_id,
         workflow_path=workflow_path,
         pull_id=pull_id,
         pull_number=pull_number,
-        head_sha=head_sha,
-        head_branch=head_branch,
+        candidate_head_sha=candidate_head_sha,
+        candidate_head_ref=candidate_head_ref,
+        run_head_sha=run_head_sha,
+        run_head_branch=run_head_branch,
         repository_id=repository_id,
     ):
-        current_id = current_run.get("id")
-        if isinstance(current_id, int) and not isinstance(current_id, bool):
-            candidates[current_id] = current_run
-    return list(candidates.values())
+        blockers.append(
+            f"listed workflow run {latest_run_id} failed direct candidate binding"
+        )
+        return []
+    return [record]
 
 
-def _workflow_run_summary_matches_candidate(
-    record: Mapping[str, object],
+def _validate_workflow_specific_freshness(
+    adapter: GitHubSourceAdapter,
+    workflow_runs: Sequence[Mapping[str, object]],
     *,
+    repository: str,
+    selected_run: Mapping[str, object],
     workflow_id: int,
     workflow_path: str,
-    head_sha: str,
-    head_branch: str | None,
+    pull_id: int | None,
+    pull_number: int,
+    expected_head_sha: str,
+    expected_head_ref: str | None,
     repository_id: int,
-) -> bool:
-    try:
-        _positive_id(record.get("id"), "workflow_run.id")
-        _positive_id(record.get("run_number"), "workflow_run.run_number")
-        _positive_id(record.get("run_attempt"), "workflow_run.run_attempt")
-    except ValueError:
-        return False
-    if (
-        record.get("workflow_id") != workflow_id
-        or record.get("path") != workflow_path
-        or record.get("event") != "pull_request"
-        or record.get("head_sha") != head_sha
-        or record.get("head_branch") != head_branch
+    blockers: list[str],
+) -> None:
+    eligible_runs = _eligible_workflow_runs(
+        adapter,
+        workflow_runs,
+        repository=repository,
+        current_run=selected_run,
+        workflow_id=workflow_id,
+        workflow_path=workflow_path,
+        pull_id=pull_id,
+        pull_number=pull_number,
+        candidate_head_sha=expected_head_sha,
+        candidate_head_ref=expected_head_ref,
+        run_head_sha=expected_head_sha,
+        run_head_branch=expected_head_ref,
+        repository_id=repository_id,
+        allow_unlisted_current_run=False,
+        blockers=blockers,
+    )
+    if not eligible_runs:
+        blockers.append(
+            "candidate head has no workflow-specific run in the authoritative "
+            "provenance namespace"
+        )
+        return
+    latest_run = eligible_runs[0]
+    if _workflow_run_order_key(latest_run) != _workflow_run_order_key(
+        selected_run
     ):
-        return False
-    return _mapping(record.get("head_repository")).get("id") == repository_id
+        blockers.append(
+            "selected provenance workflow run differs from the latest "
+            "workflow-specific listing: "
+            f"selected={_workflow_run_order_key(selected_run)!r} "
+            f"latest={_workflow_run_order_key(latest_run)!r}"
+        )
+
+
+def _index_repository_workflow_runs(
+    workflow_runs: Sequence[Mapping[str, object]],
+    *,
+    expected_head_sha: str,
+    blockers: list[str],
+) -> dict[int, Mapping[str, object]]:
+    by_check_suite: dict[int, Mapping[str, object]] = {}
+    seen_run_ids: set[int] = set()
+    for index, record in enumerate(workflow_runs):
+        label = f"repository_workflow_run[{index}]"
+        run_id = _server_positive_id(record.get("id"), f"{label}.id", blockers)
+        check_suite_id = _server_positive_id(
+            record.get("check_suite_id"),
+            f"{label}.check_suite_id",
+            blockers,
+        )
+        _server_positive_id(
+            record.get("run_number"),
+            f"{label}.run_number",
+            blockers,
+        )
+        _server_positive_id(
+            record.get("run_attempt"),
+            f"{label}.run_attempt",
+            blockers,
+        )
+        head_sha = _server_string(record, "head_sha", label, blockers)
+        if head_sha is not None and head_sha != expected_head_sha:
+            blockers.append(
+                f"{label}.head_sha mismatch: expected={expected_head_sha!r} "
+                f"actual={head_sha!r}"
+            )
+        if run_id is None or check_suite_id is None:
+            continue
+        if run_id in seen_run_ids:
+            blockers.append(f"repository workflow run ID is duplicated: {run_id}")
+            continue
+        seen_run_ids.add(run_id)
+        if check_suite_id in by_check_suite:
+            blockers.append(
+                "repository workflow check-suite ID is duplicated: "
+                f"{check_suite_id}"
+            )
+            continue
+        by_check_suite[check_suite_id] = record
+    return by_check_suite
+
+
+def _validate_workflow_run_summary_hydration(
+    summary: Mapping[str, object],
+    hydrated: Mapping[str, object],
+    *,
+    label: str,
+    blockers: list[str],
+) -> None:
+    for key in (
+        "id",
+        "workflow_id",
+        "check_suite_id",
+        "run_number",
+        "run_attempt",
+        "head_sha",
+        "head_branch",
+        "event",
+        "path",
+    ):
+        if hydrated.get(key) != summary.get(key):
+            blockers.append(
+                f"{label}.{key} changed during workflow-run hydration: "
+                f"listed={summary.get(key)!r} "
+                f"hydrated={hydrated.get(key)!r}"
+            )
+    listed_repository = _mapping(summary.get("head_repository"))
+    hydrated_repository = _mapping(hydrated.get("head_repository"))
+    if hydrated_repository.get("id") != listed_repository.get("id"):
+        blockers.append(
+            f"{label}.head_repository.id changed during workflow-run hydration"
+        )
+
+
+def _validate_repository_workflow_freshness(
+    adapter: GitHubSourceAdapter,
+    repository_workflow_runs: Sequence[Mapping[str, object]],
+    *,
+    repository: str,
+    selected_run: Mapping[str, object],
+    workflow_id: int,
+    workflow_path: str,
+    pull_id: int | None,
+    pull_number: int,
+    expected_head_sha: str,
+    expected_head_ref: str | None,
+    repository_id: int,
+    blockers: list[str],
+) -> None:
+    candidate_summaries: list[Mapping[str, object]] = []
+    seen_run_ids: set[int] = set()
+    for index, summary in enumerate(repository_workflow_runs):
+        label = f"repository_workflow_run[{index}]"
+        try:
+            run_id = _positive_id(summary.get("id"), f"{label}.id")
+            _positive_id(summary.get("run_number"), f"{label}.run_number")
+            _positive_id(summary.get("run_attempt"), f"{label}.run_attempt")
+        except ValueError as exc:
+            blockers.append(f"repository workflow run is malformed: {exc}")
+            continue
+        if run_id in seen_run_ids:
+            blockers.append(f"repository workflow run ID is duplicated: {run_id}")
+            continue
+        seen_run_ids.add(run_id)
+        if _workflow_run_targets_candidate_namespace(
+            summary,
+            workflow_id=workflow_id,
+            workflow_path=workflow_path,
+            run_head_sha=expected_head_sha,
+            run_head_branch=expected_head_ref,
+            repository_id=repository_id,
+            label=label,
+            blockers=blockers,
+        ):
+            candidate_summaries.append(summary)
+    if (
+        len(candidate_summaries)
+        > MAX_AUTHORITATIVE_PROVENANCE_WORKFLOW_RUNS
+    ):
+        blockers.append(
+            "authoritative provenance repository workflow-run set exceeds "
+            "the safety limit"
+        )
+        return
+    if not candidate_summaries:
+        blockers.append(
+            "candidate head has no repository workflow run in the "
+            "authoritative provenance namespace"
+        )
+        return
+    latest_summary = max(candidate_summaries, key=_workflow_run_order_key)
+    if _workflow_run_order_key(latest_summary) == _workflow_run_order_key(
+        selected_run
+    ):
+        _validate_workflow_run_summary_hydration(
+            latest_summary,
+            selected_run,
+            label="selected_repository_workflow_run",
+            blockers=blockers,
+        )
+        return
+    latest_run_id = int(latest_summary["id"])
+    try:
+        latest_run = adapter.get_workflow_run(repository, latest_run_id)
+    except Exception as exc:
+        blockers.append(
+            f"latest repository workflow run {latest_run_id} hydration failed: "
+            f"{exc}"
+        )
+        return
+    _validate_workflow_run_summary_hydration(
+        latest_summary,
+        latest_run,
+        label=f"repository_workflow_run[{latest_run_id}]",
+        blockers=blockers,
+    )
+    if not _workflow_run_targets_candidate_namespace(
+        latest_run,
+        workflow_id=workflow_id,
+        workflow_path=workflow_path,
+        run_head_sha=expected_head_sha,
+        run_head_branch=expected_head_ref,
+        repository_id=repository_id,
+        label=f"repository_workflow_run[{latest_run_id}].hydrated",
+        blockers=blockers,
+    ):
+        return
+    if not _workflow_run_matches_candidate(
+        latest_run,
+        workflow_id=workflow_id,
+        workflow_path=workflow_path,
+        pull_id=pull_id,
+        pull_number=pull_number,
+        candidate_head_sha=expected_head_sha,
+        candidate_head_ref=expected_head_ref,
+        run_head_sha=expected_head_sha,
+        run_head_branch=expected_head_ref,
+        repository_id=repository_id,
+    ):
+        blockers.append(
+            f"latest repository workflow run {latest_run_id} failed direct "
+            "candidate binding"
+        )
+        return
+    blockers.append(
+        "selected provenance workflow run is not the latest repository "
+        "workflow run: "
+        f"selected={_workflow_run_order_key(selected_run)!r} "
+        f"latest={_workflow_run_order_key(latest_run)!r}"
+    )
+
+
+def _attest_github_source_freshness(
+    adapter: GitHubSourceAdapter,
+    github_source: Mapping[str, object],
+) -> dict[str, object]:
+    blockers: list[str] = []
+    try:
+        repository_value = github_source.get("repository")
+        if not isinstance(repository_value, str) or not repository_value:
+            raise ValueError("GitHub source repository is required")
+        repository = normalize_github_repository(
+            repository_value,
+            allow_slug=True,
+        )
+        expected_head_sha = github_source.get("expected_head_sha")
+        if not isinstance(expected_head_sha, str):
+            raise ValueError("GitHub freshness head SHA is required")
+        if _SHA40_RE.fullmatch(expected_head_sha) is None:
+            raise ValueError(
+                "GitHub freshness head SHA must be an exact lowercase SHA"
+            )
+        selected_run = _mapping(github_source.get("workflow_run_identity"))
+        selected_run_id = _positive_id(
+            selected_run.get("id"),
+            "workflow_run_identity.id",
+        )
+        selected_run_number = _positive_id(
+            selected_run.get("run_number"),
+            "workflow_run_identity.run_number",
+        )
+        selected_run_attempt = _positive_id(
+            selected_run.get("run_attempt"),
+            "workflow_run_identity.run_attempt",
+        )
+        workflow_id = _positive_id(
+            selected_run.get("workflow_id"),
+            "workflow_run_identity.workflow_id",
+        )
+        workflow_path = selected_run.get("path")
+        if not isinstance(workflow_path, str) or not workflow_path:
+            raise ValueError("workflow_run_identity.path is required")
+        authority = _mapping(github_source.get("authority"))
+        pull_request = _mapping(authority.get("pull_request"))
+        pull_id = _positive_id(
+            pull_request.get("database_id"),
+            "authority.pull_request.database_id",
+        )
+        pull_number = _positive_id(
+            pull_request.get("number"),
+            "authority.pull_request.number",
+        )
+        expected_head_ref = pull_request.get("head_ref")
+        if not isinstance(expected_head_ref, str) or not expected_head_ref:
+            raise ValueError("authority.pull_request.head_ref is required")
+        repository_id = _positive_id(
+            pull_request.get("head_repository_id"),
+            "authority.pull_request.head_repository_id",
+        )
+        expected_selected_values = {
+            "head_sha": expected_head_sha,
+            "head_branch": expected_head_ref,
+            "event": AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
+            "path": workflow_path,
+        }
+        for key, expected_value in expected_selected_values.items():
+            if selected_run.get(key) != expected_value:
+                raise ValueError(
+                    f"workflow_run_identity.{key} mismatch: "
+                    f"expected={expected_value!r} "
+                    f"actual={selected_run.get(key)!r}"
+                )
+        selected_repository = _mapping(selected_run.get("head_repository"))
+        if selected_repository.get("id") != repository_id:
+            raise ValueError(
+                "workflow_run_identity.head_repository.id mismatch"
+            )
+        if pull_request.get("head_sha") != expected_head_sha:
+            raise ValueError("authority.pull_request.head_sha mismatch")
+    except (KeyError, TypeError, ValueError) as exc:
+        return _component_result(
+            [f"GitHub source freshness identity is invalid: {exc}"],
+            repository=github_source.get("repository"),
+            selected_run={},
+        )
+    selected_identity = dict(selected_run)
+    selected_identity.update(
+        {
+            "id": selected_run_id,
+            "run_number": selected_run_number,
+            "run_attempt": selected_run_attempt,
+        }
+    )
+    try:
+        workflow_runs = adapter.list_workflow_runs(
+            repository,
+            workflow_id,
+            branch=expected_head_ref,
+            event=AUTHORITATIVE_PROVENANCE_WORKFLOW_EVENT,
+        )
+    except Exception as exc:
+        blockers.append(f"GitHub workflow freshness lookup failed: {exc}")
+    else:
+        _validate_workflow_specific_freshness(
+            adapter,
+            workflow_runs,
+            repository=repository,
+            selected_run=selected_identity,
+            workflow_id=workflow_id,
+            workflow_path=workflow_path,
+            pull_id=pull_id,
+            pull_number=pull_number,
+            expected_head_sha=expected_head_sha,
+            expected_head_ref=expected_head_ref,
+            repository_id=repository_id,
+            blockers=blockers,
+        )
+    try:
+        repository_workflow_runs = adapter.list_repository_workflow_runs(
+            repository,
+            head_sha=expected_head_sha,
+        )
+    except Exception as exc:
+        blockers.append(f"GitHub source freshness lookup failed: {exc}")
+    else:
+        _validate_repository_workflow_freshness(
+            adapter,
+            repository_workflow_runs,
+            repository=repository,
+            selected_run=selected_identity,
+            workflow_id=workflow_id,
+            workflow_path=workflow_path,
+            pull_id=pull_id,
+            pull_number=pull_number,
+            expected_head_sha=expected_head_sha,
+            expected_head_ref=expected_head_ref,
+            repository_id=repository_id,
+            blockers=blockers,
+        )
+    return _component_result(
+        blockers,
+        repository=repository,
+        expected_head_sha=expected_head_sha,
+        selected_run={
+            "id": selected_run_id,
+            "run_number": selected_run_number,
+            "run_attempt": selected_run_attempt,
+        },
+    )
+
+
+def _validate_latest_provenance_check_run(
+    adapter: GitHubSourceAdapter,
+    check_runs: Sequence[Mapping[str, object]],
+    repository_workflow_runs: Sequence[Mapping[str, object]],
+    *,
+    repository: str,
+    selected_run: Mapping[str, object],
+    selected_job: Mapping[str, object],
+    workflow_id: int,
+    workflow_path: str,
+    pull_id: int | None,
+    pull_number: int,
+    expected_head_sha: str,
+    expected_head_ref: str | None,
+    repository_id: int,
+    blockers: list[str],
+) -> None:
+    candidate_checks: list[
+        tuple[Mapping[str, object], Mapping[str, object], Mapping[str, object]]
+    ] = []
+    provenance_checks: list[
+        tuple[Mapping[str, object], Mapping[str, object], Mapping[str, object]]
+    ] = []
+    mapped_checks: list[
+        tuple[str, Mapping[str, object], Mapping[str, object]]
+    ] = []
+    workflow_runs_by_check_suite = _index_repository_workflow_runs(
+        repository_workflow_runs,
+        expected_head_sha=expected_head_sha,
+        blockers=blockers,
+    )
+    _validate_repository_workflow_freshness(
+        adapter,
+        repository_workflow_runs,
+        repository=repository,
+        selected_run=selected_run,
+        workflow_id=workflow_id,
+        workflow_path=workflow_path,
+        pull_id=pull_id,
+        pull_number=pull_number,
+        expected_head_sha=expected_head_sha,
+        expected_head_ref=expected_head_ref,
+        repository_id=repository_id,
+        blockers=blockers,
+    )
+    seen_check_run_ids: set[int] = set()
+    for index, record in enumerate(check_runs):
+        label = f"latest_check_run[{index}]"
+        app = _mapping(record.get("app"))
+        app_id = _server_positive_id(
+            app.get("id"),
+            f"{label}.app.id",
+            blockers,
+        )
+        app_slug = _server_string(app, "slug", f"{label}.app", blockers)
+        check_name = _server_string(record, "name", label, blockers)
+        check_head_sha = _server_string(record, "head_sha", label, blockers)
+        if (
+            app_id is None
+            or app_slug is None
+            or check_name is None
+            or check_head_sha is None
+        ):
+            continue
+        if (
+            app_id != GITHUB_ACTIONS_APP_ID
+            or app_slug != GITHUB_ACTIONS_APP_SLUG
+        ):
+            continue
+        if check_head_sha != expected_head_sha:
+            blockers.append(
+                f"{label}.head_sha mismatch: expected={expected_head_sha!r} "
+                f"actual={check_head_sha!r}"
+            )
+            continue
+        if check_name not in AUTHORITATIVE_PROVENANCE_WORKFLOW_JOB_NAMES:
+            continue
+        check_run_id = _server_positive_id(
+            record.get("id"),
+            f"{label}.id",
+            blockers,
+        )
+        if check_run_id is None:
+            continue
+        if check_run_id in seen_check_run_ids:
+            blockers.append(
+                f"latest provenance check-run ID is duplicated: {check_run_id}"
+            )
+            continue
+        seen_check_run_ids.add(check_run_id)
+        check_suite = _mapping(record.get("check_suite"))
+        check_suite_id = _server_positive_id(
+            check_suite.get("id"),
+            f"{label}.check_suite.id",
+            blockers,
+        )
+        if check_suite_id is None:
+            continue
+        mapped_run = workflow_runs_by_check_suite.get(check_suite_id)
+        if mapped_run is None:
+            blockers.append(
+                f"{label} has no workflow run for check suite {check_suite_id}"
+            )
+            continue
+        if not _workflow_run_targets_candidate_namespace(
+            mapped_run,
+            workflow_id=workflow_id,
+            workflow_path=workflow_path,
+            run_head_sha=expected_head_sha,
+            run_head_branch=expected_head_ref,
+            repository_id=repository_id,
+            label=f"{label}.listed_workflow_run",
+            blockers=blockers,
+        ):
+            continue
+        mapped_checks.append((label, record, mapped_run))
+    if len(mapped_checks) > MAX_AUTHORITATIVE_PROVENANCE_CHECK_RUNS:
+        blockers.append(
+            "authoritative provenance check-run set exceeds the safety limit"
+        )
+        return
+    for label, record, mapped_run in mapped_checks:
+        check_run_id = int(record["id"])
+        check_name = str(record["name"])
+        mapped_run_id = int(mapped_run["id"])
+        if check_run_id == selected_job.get("id"):
+            hydrated_job = selected_job
+            hydrated_run = selected_run
+        else:
+            try:
+                hydrated_job = adapter.get_job(repository, check_run_id)
+                hydrated_job_run_id = _positive_id(
+                    hydrated_job.get("run_id"),
+                    "latest_check_run.job.run_id",
+                )
+                if hydrated_job_run_id != mapped_run_id:
+                    blockers.append(
+                        "latest check-run job is bound to a different "
+                        "repository workflow run"
+                    )
+                    continue
+                hydrated_run = adapter.get_workflow_run(
+                    repository,
+                    mapped_run_id,
+                )
+            except Exception as exc:
+                blockers.append(
+                    f"latest provenance check-run hydration failed: {exc}"
+                )
+                continue
+        _validate_workflow_run_summary_hydration(
+            mapped_run,
+            hydrated_run,
+            label=f"{label}.workflow_run",
+            blockers=blockers,
+        )
+        if not _workflow_run_targets_candidate_namespace(
+            hydrated_run,
+            workflow_id=workflow_id,
+            workflow_path=workflow_path,
+            run_head_sha=expected_head_sha,
+            run_head_branch=expected_head_ref,
+            repository_id=repository_id,
+            label=f"{label}.workflow_run",
+            blockers=blockers,
+        ):
+            continue
+        if not _workflow_run_matches_candidate(
+            hydrated_run,
+            workflow_id=workflow_id,
+            workflow_path=workflow_path,
+            pull_id=pull_id,
+            pull_number=pull_number,
+            candidate_head_sha=expected_head_sha,
+            candidate_head_ref=expected_head_ref,
+            run_head_sha=expected_head_sha,
+            run_head_branch=expected_head_ref,
+            repository_id=repository_id,
+        ):
+            blockers.append(
+                "latest authoritative provenance check-run failed direct "
+                f"candidate binding: check_run={check_run_id}"
+            )
+            continue
+        hydrated_run_id = hydrated_run.get("id")
+        if hydrated_job.get("id") != check_run_id:
+            blockers.append(
+                "latest check-run job hydration ID mismatch: "
+                f"expected={check_run_id} actual={hydrated_job.get('id')!r}"
+            )
+        if hydrated_job.get("run_id") != hydrated_run_id:
+            blockers.append(
+                "latest check-run job is bound to a different workflow run"
+            )
+        if hydrated_job.get("run_attempt") != hydrated_run.get("run_attempt"):
+            blockers.append(
+                "latest check-run job attempt differs from the workflow run"
+            )
+        for key, expected in (
+            ("name", check_name),
+            ("head_sha", expected_head_sha),
+            ("head_branch", expected_head_ref),
+        ):
+            if hydrated_job.get(key) != expected:
+                blockers.append(
+                    f"latest check-run job {key} mismatch: "
+                    f"expected={expected!r} actual={hydrated_job.get(key)!r}"
+                )
+        for key in ("name", "head_sha", "status", "conclusion"):
+            if record.get(key) != hydrated_job.get(key):
+                blockers.append(
+                    f"latest check-run {key} differs from its workflow job"
+                )
+        candidate = (record, hydrated_job, hydrated_run)
+        candidate_checks.append(candidate)
+        if check_name == AUTHORITATIVE_PROVENANCE_JOB_NAME:
+            provenance_checks.append(candidate)
+    if not candidate_checks:
+        blockers.append(
+            "candidate head has no latest GitHub Actions check run bound to the "
+            "authoritative provenance workflow"
+        )
+        return
+    latest_candidate, _, latest_candidate_run = max(
+        candidate_checks,
+        key=lambda candidate: (
+            *_workflow_run_order_key(candidate[2]),
+            int(candidate[0]["id"]),
+        ),
+    )
+    if _workflow_run_order_key(latest_candidate_run) != _workflow_run_order_key(
+        selected_run
+    ):
+        blockers.append(
+            "selected provenance workflow run is not the latest check-run run: "
+            f"selected={_workflow_run_order_key(selected_run)!r} "
+            f"latest={_workflow_run_order_key(latest_candidate_run)!r} "
+            f"check_run={latest_candidate.get('id')!r}"
+        )
+    if not provenance_checks:
+        blockers.append(
+            "candidate head has no latest check run for the authoritative "
+            "provenance job"
+        )
+        return
+    latest, _, latest_run = max(
+        provenance_checks,
+        key=lambda candidate: (
+            *_workflow_run_order_key(candidate[2]),
+            int(candidate[0]["id"]),
+        ),
+    )
+    selected_job_id = selected_job.get("id")
+    if latest.get("id") != selected_job_id:
+        blockers.append(
+            "selected provenance job is not the latest check run for the "
+            f"candidate head: selected={selected_job_id!r} "
+            f"latest={latest.get('id')!r}"
+        )
+    if _workflow_run_order_key(latest_run) != _workflow_run_order_key(
+        selected_run
+    ):
+        blockers.append(
+            "selected provenance workflow run is not the latest provenance "
+            "check-run run"
+        )
 
 
 def _workflow_run_order_key(record: Mapping[str, object]) -> tuple[int, int, int]:
@@ -6516,30 +10416,25 @@ def _validate_workflow_execution_identity(
     *,
     repository: str,
     workflow_path: str | None,
-    pull_number: int,
-    pull_head_ref: str | None,
     workflow_ref: str | None,
     workflow_sha: str | None,
     blockers: list[str],
 ) -> str | None:
-    if workflow_path is None or pull_head_ref is None:
+    if workflow_path is None:
         blockers.append(
-            "workflow execution identity cannot be checked without path and head ref"
+            "workflow execution identity cannot be checked without its path"
         )
         return None
     expected_prefix = f"{repository}/{workflow_path}@"
-    allowed_refs = {
-        f"refs/pull/{pull_number}/merge",
-        f"refs/heads/{pull_head_ref}",
-        f"refs/heads/{AUTHORITATIVE_BASE_BRANCH}",
-    }
+    expected_ref = f"refs/heads/{AUTHORITATIVE_BASE_BRANCH}"
     if (
         not isinstance(workflow_ref, str)
         or not workflow_ref.startswith(expected_prefix)
-        or workflow_ref.removeprefix(expected_prefix) not in allowed_refs
+        or workflow_ref.removeprefix(expected_prefix) != expected_ref
     ):
         blockers.append(
-            "workflow execution ref is not a runner-authenticated candidate ref: "
+            "workflow execution ref is not the runner-authenticated "
+            "default-branch workflow: "
             f"actual={workflow_ref!r}"
         )
         workflow_git_ref = None
@@ -6629,6 +10524,21 @@ def _json_safe_mapping(value: Mapping[str, object]) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise ValueError("mapping did not serialize to a JSON object")
     return cast(dict[str, object], payload)
+
+
+def _reject_duplicate_json_object_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key: {key}")
+        result[key] = value
+    return result
+
+
+def _reject_nonfinite_json(value: str) -> object:
+    raise ValueError(f"non-finite JSON number is not supported: {value}")
 
 
 def _canonical_json(value: object) -> bytes:

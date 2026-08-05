@@ -286,6 +286,11 @@ BOUNDED_TERMINAL_OPERATION_HUD_PATCH_FILE = (
     / "patches"
     / "0076-bounded-terminal-operation-hud.patch"
 )
+PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0078-production-path-journey-review-closure.patch"
+)
 S2CLIENT_PATCH_FILE = KIT_DIR / "patches" / "0001-s2client-macos-launchservices.patch"
 BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
 PROBE_SCRIPT = KIT_DIR / "scripts" / "probe_macos_local.sh"
@@ -1010,12 +1015,12 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
         self.assertEqual(
             [patch["order"] for patch in bundle],
-            list(range(1, 77)),
+            list(range(1, 79)),
         )
-        self.assertEqual(len(set(manifest_paths)), 76)
+        self.assertEqual(len(set(manifest_paths)), 78)
         self.assertEqual(
             manifest_paths[-1],
-            "patches/0076-bounded-terminal-operation-hud.patch",
+            "patches/0078-production-path-journey-review-closure.patch",
         )
         self.assertTrue(
             all((KIT_DIR / path).is_file() for path in manifest_paths)
@@ -1256,6 +1261,207 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             text=True,
         )
         self.assertEqual(0, parse_result.returncode, parse_result.stderr)
+
+    def test_deterministic_pre_live_journey_adapter_patch_is_registered(
+        self,
+    ) -> None:
+        manifest = json.loads((KIT_DIR / "HOOK_MANIFEST.json").read_text())
+        self.assertEqual(
+            {
+                "path": "patches/0077-deterministic-pre-live-journey-adapter.patch",
+                "order": 77,
+            },
+            {
+                "path": manifest["patch_bundle"][76]["path"],
+                "order": manifest["patch_bundle"][76]["order"],
+            },
+        )
+
+        build_script = BUILD_SCRIPT.read_text()
+        patch_variable = "DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH_FILE"
+        self.assertIn(
+            f'{patch_variable}="${{REPO_ROOT}}/integrations/'
+            "micromachine/patches/"
+            '0077-deterministic-pre-live-journey-adapter.patch"',
+            build_script,
+        )
+        prior_apply = build_script.index(
+            "apply --recount --ignore-space-change --whitespace=nowarn "
+            '"${BOUNDED_TERMINAL_OPERATION_HUD_PATCH_FILE}"'
+        )
+        patch_check = build_script.index(
+            "apply --recount --check --ignore-space-change "
+            '--whitespace=nowarn "${DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH_FILE}"'
+        )
+        patch_apply = build_script.index(
+            "apply --recount --ignore-space-change --whitespace=nowarn "
+            '"${DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH_FILE}"'
+        )
+        blackboard_copy = build_script.index(
+            'cp "${BLACKBOARD_HEADER_FILE}" '
+            '"${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"'
+        )
+        self.assertLess(prior_apply, patch_check)
+        self.assertLess(patch_check, patch_apply)
+        self.assertLess(patch_apply, blackboard_copy)
+        self.assertEqual(
+            2,
+            build_script.count(
+                "--micromachine-deterministic-pre-live-journey-adapter-patch "
+                '"${DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH_FILE}"'
+            ),
+        )
+
+    def test_production_path_journey_review_patch_is_registered(self) -> None:
+        manifest = json.loads((KIT_DIR / "HOOK_MANIFEST.json").read_text())
+        self.assertEqual(
+            {
+                "path": (
+                    "patches/"
+                    "0078-production-path-journey-review-closure.patch"
+                ),
+                "order": 78,
+            },
+            {
+                "path": manifest["patch_bundle"][77]["path"],
+                "order": manifest["patch_bundle"][77]["order"],
+            },
+        )
+
+        build_script = BUILD_SCRIPT.read_text()
+        patch_variable = (
+            "PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE"
+        )
+        self.assertIn(
+            f'{patch_variable}="${{REPO_ROOT}}/integrations/'
+            "micromachine/patches/"
+            '0078-production-path-journey-review-closure.patch"',
+            build_script,
+        )
+        prior_apply = build_script.index(
+            "apply --recount --ignore-space-change --whitespace=nowarn "
+            '"${DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH_FILE}"'
+        )
+        patch_check = build_script.index(
+            "apply --recount --check --ignore-space-change "
+            '--whitespace=nowarn "${PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE}"'
+        )
+        patch_apply = build_script.index(
+            "apply --recount --ignore-space-change --whitespace=nowarn "
+            '"${PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE}"'
+        )
+        blackboard_copy = build_script.index(
+            'cp "${BLACKBOARD_HEADER_FILE}" '
+            '"${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"'
+        )
+        self.assertLess(prior_apply, patch_check)
+        self.assertLess(patch_check, patch_apply)
+        self.assertLess(patch_apply, blackboard_copy)
+        self.assertEqual(
+            2,
+            build_script.count(
+                "--micromachine-production-path-journey-review-closure-patch "
+                '"${PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE}"'
+            ),
+        )
+        parse_result = subprocess.run(
+            [
+                "git",
+                "apply",
+                "--numstat",
+                str(PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, parse_result.returncode, parse_result.stderr)
+        patch = PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE.read_text()
+        self.assertIn(
+            "productionBinding = voiProductionLiveActionBinding(",
+            patch,
+        )
+        self.assertIn(
+            "inline VoiProductionActionBinding "
+            "voiProductionLiveActionBinding(",
+            patch,
+        )
+        for transformed_type in (
+            "TERRAN_HELLIONTANK",
+            "TERRAN_WIDOWMINEBURROWED",
+            "TERRAN_SIEGETANKSIEGED",
+            "TERRAN_THORAP",
+            "TERRAN_VIKINGASSAULT",
+            "TERRAN_LIBERATORAG",
+        ):
+            with self.subTest(transformed_type=transformed_type):
+                self.assertIn(
+                    f"case sc2::UNIT_TYPEID::{transformed_type}:",
+                    patch,
+                )
+                self.assertIn(f'return "{transformed_type}";', patch)
+        self.assertIn(
+            "const auto liveBinding = voiProductionLiveActionBinding(",
+            patch,
+        )
+        self.assertIn(
+            "CHECK(liveBinding.unitType == liveUnitTypeCase.second);",
+            patch,
+        )
+        for contract in (
+            "VoiExplicitAbilityCasterState",
+            "voiResolveExplicitAbilityCasterState(",
+            "voiExplicitAbilityCasterStateMatches(",
+            'state = {"TERRAN_HELLIONTANK", ""};',
+            'state = {"TERRAN_WIDOWMINEBURROWED", ""};',
+            'state = {"TERRAN_SIEGETANKSIEGED", ""};',
+            'state = {"TERRAN_THORAP", ""};',
+            'state = {"TERRAN_VIKINGASSAULT", ""};',
+            'state = {"TERRAN_LIBERATORAG", ""};',
+            'state = {"TERRAN_GHOST", "not_cloaked"};',
+            'state = {"TERRAN_GHOST", "cloaked"};',
+            'state = {"TERRAN_BANSHEE", "not_cloaked"};',
+            'state = {"TERRAN_BANSHEE", "cloaked"};',
+            'jsonString(item, "cloak_state")',
+            '"operation ability caster unit type is invalid"',
+            '"assigned ability caster cloak state is invalid"',
+            "unitFor(unitTag, binding, blocker)",
+            "unitFor(unitTag, binding, unitBlocker)",
+            "binding.abilityName = abilityName;",
+            "binding.abilityId = abilityId;",
+            "binding.cloakState = cloakState;",
+            "binding->cloakState",
+            "receipt.cloakState = binding->cloakState;",
+            "action.explicitAbilityName",
+            "action.explicitAbilityAttemptGeneration",
+            "voiProductionObservedCloakState(",
+            "rangedUnit->cloak",
+            "sc2::Unit::Cloaked",
+            "sc2::Unit::NotCloaked",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, patch)
+        for transformed_type in (
+            "TERRAN_HELLIONTANK",
+            "TERRAN_WIDOWMINEBURROWED",
+            "TERRAN_SIEGETANKSIEGED",
+            "TERRAN_THORAP",
+            "TERRAN_VIKINGASSAULT",
+            "TERRAN_LIBERATORAG",
+        ):
+            with self.subTest(concrete_type=transformed_type):
+                self.assertIn(
+                    f"sc2::UNIT_TYPEID::{transformed_type};",
+                    patch,
+                )
+        self.assertIn(
+            '"operation ability caster unit type is invalid");',
+            patch,
+        )
+        self.assertIn(
+            '"assigned ability caster cloak state is invalid");',
+            patch,
+        )
 
     def test_battlefield_projection_patch_has_authoritative_runtime_contract(
         self,
@@ -5767,8 +5973,10 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "patches/0074-autonomous-owner-composition-evidence.patch",
             "patches/0075-battlefield-review-closure.patch",
             "patches/0076-bounded-terminal-operation-hud.patch",
-            "through `0076`",
-            "schema-76 report",
+            "patches/0077-deterministic-pre-live-journey-adapter.patch",
+            "patches/0078-production-path-journey-review-closure.patch",
+            "through `0078`",
+            "schema-80 report",
         )
         for term in required_terms:
             with self.subTest(term=term):
@@ -6614,6 +6822,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "0074-autonomous-owner-composition-evidence.patch",
             "0075-battlefield-review-closure.patch",
             "0076-bounded-terminal-operation-hud.patch",
+            "0077-deterministic-pre-live-journey-adapter.patch",
+            "0078-production-path-journey-review-closure.patch",
             "0001-s2client-macos-launchservices.patch",
             "OPERATION_STATE_PATCH_FILE",
             "ADDON_RECOVERY_PATCH_FILE",
@@ -6673,6 +6883,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "AUTONOMOUS_OWNER_COMPOSITION_EVIDENCE_PATCH_FILE",
             "BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE",
             "BOUNDED_TERMINAL_OPERATION_HUD_PATCH_FILE",
+            "DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH_FILE",
+            "PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE",
             "--micromachine-explicit-ability-production-isolation-patch",
             "--micromachine-explicit-ability-attempt-lifecycle-patch",
             "--micromachine-explicit-ability-review-closure-patch",
@@ -6691,6 +6903,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "--micromachine-autonomous-owner-composition-evidence-patch",
             "--micromachine-battlefield-review-closure-patch",
             "--micromachine-bounded-terminal-operation-hud-patch",
+            "--micromachine-deterministic-pre-live-journey-adapter-patch",
+            "--micromachine-production-path-journey-review-closure-patch",
             "--write-embedded-identity-header",
             "DSC2Api_SC2API_LIB",
             "reset --hard",

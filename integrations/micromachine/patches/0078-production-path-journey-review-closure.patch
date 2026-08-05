@@ -1,0 +1,6776 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index 3733a2a51bfdd55ff3eedd23cc645740f2ca5a8c..28aacd73d62c6cb1262a2a9c0fe2e6ead49e07f1 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -1,4 +1,7 @@
+ #include "CombatCommander.h"
++#include "voi_explicit_ability_spec.hpp"
++#include "voi_live_production_binding.hpp"
++#include "voi_operation_observation.hpp"
+ #include "Util.h"
+ #include "CCBot.h"
+ #include "voi_operation_hud_selection.hpp"
+@@ -58,6 +61,22 @@ constexpr float ExplicitAbilityRejectedStagingRadiusSq = 4.0f * 4.0f;
+ constexpr uint32_t ExplicitAbilityConfirmationTimeoutFrames = 224u;
+ constexpr float ExplicitAbilityOrderPositionToleranceSq = 1.0f;
+ 
++std::string voiProductionObservedCloakState(
++	sc2::Unit::CloakState cloakState)
++{
++	switch (cloakState)
++	{
++	case sc2::Unit::NotCloaked:
++		return "not_cloaked";
++	case sc2::Unit::Cloaked:
++	case sc2::Unit::CloakedDetected:
++	case sc2::Unit::CloakedAllied:
++		return "cloaked";
++	default:
++		return "unknown";
++	}
++}
++
+ struct VoiTacticalNukeTarget
+ {
+ 	CCPosition position = CCPosition();
+@@ -69,171 +88,6 @@ struct VoiTacticalNukeTarget
+ 	bool locationMatch = false;
+ };
+ 
+-enum class VoiExplicitAbilityTargetKind
+-{
+-	None,
+-	EnemyPosition,
+-	EnemyUnit,
+-	FriendlyUnit,
+-	FriendlyPassenger,
+-	StrategicPosition,
+-	CasterPosition,
+-	GhostEmp,
+-	GhostSnipe,
+-	YamatoTarget,
+-	AutoTurretPosition,
+-	LiberatorDefenderPosition,
+-};
+-
+-struct VoiExplicitAbilitySpec
+-{
+-	sc2::AbilityID abilityId = sc2::AbilityID(0);
+-	VoiExplicitAbilityTargetKind targetKind =
+-		VoiExplicitAbilityTargetKind::None;
+-};
+-
+-const sc2::AbilityID VoiRavenInterferenceMatrixAbility(3747);
+-const sc2::AbilityID VoiRavenAntiArmorMissileAbility(3753);
+-
+-bool voiResolveExplicitAbilitySpec(
+-	const std::string & abilityName,
+-	VoiExplicitAbilitySpec & spec)
+-{
+-	if (abilityName == "stimpack")
+-	{
+-		spec = { sc2::ABILITY_ID::EFFECT_STIM, VoiExplicitAbilityTargetKind::None };
+-	}
+-	else if (abilityName == "marine_stimpack")
+-	{
+-		spec = { sc2::ABILITY_ID::EFFECT_STIM, VoiExplicitAbilityTargetKind::None };
+-	}
+-	else if (abilityName == "marauder_stimpack")
+-	{
+-		spec = { sc2::ABILITY_ID::EFFECT_STIM, VoiExplicitAbilityTargetKind::None };
+-	}
+-	else if (abilityName == "kd8_charge")
+-	{
+-		spec = { sc2::ABILITY_ID::EFFECT_KD8CHARGE, VoiExplicitAbilityTargetKind::EnemyPosition };
+-	}
+-	else if (abilityName == "emp")
+-	{
+-		spec = { sc2::ABILITY_ID::EFFECT_EMP, VoiExplicitAbilityTargetKind::GhostEmp };
+-	}
+-	else if (abilityName == "snipe")
+-	{
+-		spec = { sc2::ABILITY_ID::EFFECT_GHOSTSNIPE, VoiExplicitAbilityTargetKind::GhostSnipe };
+-	}
+-	else if (abilityName == "ghost_cloak")
+-	{
+-		spec = { sc2::ABILITY_ID::BEHAVIOR_CLOAKON_GHOST, VoiExplicitAbilityTargetKind::None };
+-	}
+-	else if (abilityName == "ghost_decloak")
+-	{
+-		spec = { sc2::ABILITY_ID::BEHAVIOR_CLOAKOFF_GHOST, VoiExplicitAbilityTargetKind::None };
+-	}
+-	else if (abilityName == "widow_mine_burrow")
+-	{
+-		spec = { sc2::ABILITY_ID::BURROWDOWN_WIDOWMINE, VoiExplicitAbilityTargetKind::None };
+-	}
+-	else if (abilityName == "widow_mine_unburrow")
+-	{
+-		spec = { sc2::ABILITY_ID::BURROWUP_WIDOWMINE, VoiExplicitAbilityTargetKind::None };
+-	}
+-	else if (abilityName == "lock_on")
+-	{
+-		spec = { sc2::ABILITY_ID::EFFECT_LOCKON, VoiExplicitAbilityTargetKind::EnemyUnit };
+-	}
+-	else if (abilityName == "siege_mode")
+-	{
+-		spec = { sc2::ABILITY_ID::MORPH_SIEGEMODE, VoiExplicitAbilityTargetKind::None };
+-	}
+-	else if (abilityName == "unsiege")
+-	{
+-		spec = { sc2::ABILITY_ID::MORPH_UNSIEGE, VoiExplicitAbilityTargetKind::None };
+-	}
+-	else if (abilityName == "hellbat_mode")
+-	{
+-		spec = { sc2::ABILITY_ID::MORPH_HELLBAT, VoiExplicitAbilityTargetKind::None };
+-	}
+-	else if (abilityName == "hellion_mode")
+-	{
+-		spec = { sc2::ABILITY_ID::MORPH_HELLION, VoiExplicitAbilityTargetKind::None };
+-	}
+-	else if (abilityName == "thor_high_impact_mode")
+-	{
+-		spec = { sc2::ABILITY_ID::MORPH_THORHIGHIMPACTMODE, VoiExplicitAbilityTargetKind::None };
+-	}
+-	else if (abilityName == "thor_explosive_mode")
+-	{
+-		spec = { sc2::ABILITY_ID::MORPH_THOREXPLOSIVEMODE, VoiExplicitAbilityTargetKind::None };
+-	}
+-	else if (abilityName == "medivac_afterburners")
+-	{
+-		spec = { sc2::ABILITY_ID::EFFECT_MEDIVACIGNITEAFTERBURNERS, VoiExplicitAbilityTargetKind::None };
+-	}
+-	else if (abilityName == "medivac_heal")
+-	{
+-		spec = { sc2::ABILITY_ID::EFFECT_HEAL, VoiExplicitAbilityTargetKind::FriendlyUnit };
+-	}
+-	else if (abilityName == "medivac_load")
+-	{
+-		spec = { sc2::ABILITY_ID::LOAD_MEDIVAC, VoiExplicitAbilityTargetKind::FriendlyPassenger };
+-	}
+-	else if (abilityName == "medivac_unload_all")
+-	{
+-		spec = { sc2::ABILITY_ID::UNLOADALLAT_MEDIVAC, VoiExplicitAbilityTargetKind::CasterPosition };
+-	}
+-	else if (abilityName == "viking_fighter_mode")
+-	{
+-		spec = { sc2::ABILITY_ID::MORPH_VIKINGFIGHTERMODE, VoiExplicitAbilityTargetKind::None };
+-	}
+-	else if (abilityName == "viking_assault_mode")
+-	{
+-		spec = { sc2::ABILITY_ID::MORPH_VIKINGASSAULTMODE, VoiExplicitAbilityTargetKind::None };
+-	}
+-	else if (abilityName == "liberator_defender_mode")
+-	{
+-		spec = { sc2::ABILITY_ID::MORPH_LIBERATORAGMODE, VoiExplicitAbilityTargetKind::LiberatorDefenderPosition };
+-	}
+-	else if (abilityName == "liberator_fighter_mode")
+-	{
+-		spec = { sc2::ABILITY_ID::MORPH_LIBERATORAAMODE, VoiExplicitAbilityTargetKind::None };
+-	}
+-	else if (abilityName == "banshee_cloak")
+-	{
+-		spec = { sc2::ABILITY_ID::BEHAVIOR_CLOAKON_BANSHEE, VoiExplicitAbilityTargetKind::None };
+-	}
+-	else if (abilityName == "banshee_decloak")
+-	{
+-		spec = { sc2::ABILITY_ID::BEHAVIOR_CLOAKOFF_BANSHEE, VoiExplicitAbilityTargetKind::None };
+-	}
+-	else if (abilityName == "auto_turret")
+-	{
+-		spec = { sc2::ABILITY_ID::EFFECT_AUTOTURRET, VoiExplicitAbilityTargetKind::AutoTurretPosition };
+-	}
+-	else if (abilityName == "interference_matrix")
+-	{
+-		spec = { VoiRavenInterferenceMatrixAbility, VoiExplicitAbilityTargetKind::EnemyUnit };
+-	}
+-	else if (abilityName == "anti_armor_missile")
+-	{
+-		spec = { VoiRavenAntiArmorMissileAbility, VoiExplicitAbilityTargetKind::EnemyUnit };
+-	}
+-	else if (abilityName == "yamato")
+-	{
+-		spec = { sc2::ABILITY_ID::EFFECT_YAMATOGUN, VoiExplicitAbilityTargetKind::YamatoTarget };
+-	}
+-	else if (abilityName == "tactical_jump")
+-	{
+-		spec = { sc2::ABILITY_ID::EFFECT_TACTICALJUMP, VoiExplicitAbilityTargetKind::StrategicPosition };
+-	}
+-	else
+-	{
+-		return false;
+-	}
+-	return true;
+-}
+-
+ bool voiIsAbilityAvailableForCommand(
+ 	sc2::AbilityID abilityId,
+ 	const sc2::Unit * unit,
+@@ -2236,7 +2090,9 @@ float voiOperationSquadOrderRadius(const std::string & taskType)
+ 	return DefaultOrderRadius;
+ }
+ 
+-void voiSetOperationSquadOrder(
++std::string voiSquadOrderName(size_t orderType);
++
++bool voiSetOperationSquadOrder(
+ 	VoiOperationState & operation,
+ 	Squad & squad,
+ 	size_t orderType,
+@@ -2244,10 +2100,38 @@ void voiSetOperationSquadOrder(
+ 	float radius,
+ 	const std::string & status)
+ {
++	const SquadOrder squadOrder(
++		orderType,
++		position,
++		radius,
++		status);
++	if (operation.assignedUnitTags.empty())
++	{
++		squad.setSquadOrder(squadOrder);
++		operation.squadOrderType = orderType;
++		operation.squadOrderRadius = radius;
++		return true;
++	}
++	const VoiProductionOperationIdentity identity = {
++		operation.policyUpdateId,
++		operation.operationId,
++		operation.generation
++	};
++	const auto receipt = squad.setSquadOrder(
++		squadOrder,
++		identity,
++		"squad_order:" + voiSquadOrderName(orderType),
++		operation.assignedUnitTags);
++	BOT_ASSERT(
++		receipt.accepted,
++		"VOI production squad order application failed");
++	if (!receipt.accepted)
++	{
++		return false;
++	}
+ 	operation.squadOrderType = orderType;
+ 	operation.squadOrderRadius = radius;
+-	squad.setSquadOrder(
+-		SquadOrder(orderType, position, radius, status));
++	return true;
+ }
+ 
+ std::string voiSquadOrderName(size_t orderType)
+@@ -4134,23 +4018,14 @@ void CombatCommander::observeVoiOperations()
+ 			const auto submitted =
+ 				evidence->submittedPositions.find(
+ 					unit.getTag());
+-			const bool matchingSubmission =
+-				voiFamilyEffectHasMatchingSubmission(
+-					voiFamilyEffectTelemetrySnapshot(
+-						operation.generation,
+-						*evidence),
+-					operation.policyUpdateId,
+-					operation.generation,
+-					currentFrame);
+ 			const bool unitMoved =
+-				matchingSubmission
+-				&& submitted
++				submitted
+ 					!= evidence->submittedPositions.end()
+ 				&& Util::DistSq(
+ 					unit.getPosition(),
+ 					submitted->second) >= 1.0f;
+-			const bool movementOrEngagementEffect =
+-				voiFamilyEffectHasMatchingObservation(
++			const auto observation =
++				voiReduceOperationObservation(
+ 					voiFamilyEffectTelemetrySnapshot(
+ 						operation.generation,
+ 						*evidence),
+@@ -4160,27 +4035,17 @@ void CombatCommander::observeVoiOperations()
+ 					submitted
+ 						!= evidence->submittedPositions.end(),
+ 					unitMoved,
+-					unitEngaged);
+-			const bool abilityEffect =
+-				voiFamilyAbilityEffectHasMatchingUnitObservation(
+-					voiFamilyEffectTelemetrySnapshot(
+-						operation.generation,
+-						*evidence),
+-					operation.policyUpdateId,
+-					operation.generation,
+-					currentFrame,
+-					evidence->submittedPositions,
+-					unit.getTag(),
++					unitEngaged,
+ 					voiOperationAbilityStateObserved(
+ 						*evidence,
+ 						unit));
+ 			observedMovement =
+-				observedMovement || unitMoved;
++				observedMovement || observation.movement;
+ 			observedEnemy =
+-				observedEnemy || unitEngaged;
+-			if (abilityEffect)
++				observedEnemy || observation.engagement;
++			if (observation.abilityEffect)
+ 			{
+-				evidence->effectKind = "ability_state";
++				evidence->effectKind = observation.effectKind;
+ 				evidence->effectUnitTags.insert(
+ 					unit.getTag());
+ 				evidence->effectFrame = currentFrame;
+@@ -4190,12 +4055,10 @@ void CombatCommander::observeVoiOperations()
+ 			else if (
+ 				evidence->requiredEffect
+ 						== "movement_or_engagement"
+-				&& movementOrEngagementEffect)
++				&& (observation.movement
++					|| observation.engagement))
+ 			{
+-				evidence->effectKind =
+-					unitEngaged
+-						? "engagement"
+-						: "movement";
++				evidence->effectKind = observation.effectKind;
+ 				evidence->effectUnitTags.insert(
+ 					unit.getTag());
+ 				evidence->effectFrame = currentFrame;
+@@ -4254,10 +4117,8 @@ void CombatCommander::observeVoiOperations()
+ 				operation.activeTargetPosition,
+ 				8.0f) >= majority)
+ 		{
+-			operation.routeStageComplete = true;
+-			operation.activeTargetPosition =
+-				operation.targetPosition;
+-			voiSetOperationSquadOrder(
++			const bool orderApplied =
++				voiSetOperationSquadOrder(
+ 				operation,
+ 				squad,
+ 				voiOperationSquadOrderType(
+@@ -4266,6 +4127,18 @@ void CombatCommander::observeVoiOperations()
+ 				voiOperationSquadOrderRadius(
+ 					operation.taskType),
+ 				operation.status);
++			if (orderApplied)
++			{
++				operation.routeStageComplete = true;
++				operation.activeTargetPosition =
++					operation.targetPosition;
++			}
++			else
++			{
++				operation.status = "BLOCKED";
++				operation.blockedReason =
++					"squad_order_not_applied";
++			}
+ 		}
+ 
+ 		const float completionRadius =
+@@ -4738,10 +4611,15 @@ void CombatCommander::reconcileVoiOperation(
+ 				restoreSquad;
+ 			operation.assignedRoleByTag[unit.getTag()] = role;
+ 			m_squadData.assignUnitToSquad(unit, squad);
+-			m_voiOperationUnitOwners[unit.getTag()] =
+-				std::make_pair(
++			const auto ownership =
++				voiProductionAssignOperationOwner(
++					m_voiOperationUnitOwners,
++					unit.getTag(),
+ 					operation.operationId,
+ 					operation.generation);
++			BOT_ASSERT(
++				ownership.accepted,
++				"VOI production operation ownership assignment failed");
+ 		};
+ 	auto sortedCandidates =
+ 		[&](const std::string & requiredType)
+@@ -5027,13 +4905,17 @@ void CombatCommander::reconcileVoiOperation(
+ 		operation.status = "BLOCKED";
+ 		operation.blockedReason =
+ 			"emergency_retreat_preempted";
+-		voiSetOperationSquadOrder(
++		if (!voiSetOperationSquadOrder(
+ 			operation,
+ 			squad,
+ 			SquadOrderTypes::Retreat,
+ 			voiHomePosition(m_bot),
+ 			DefaultOrderRadius,
+-			"Retreat");
++			"Retreat"))
++		{
++			operation.blockedReason =
++				"squad_order_not_applied";
++		}
+ 		return;
+ 	}
+ 	const bool enoughUnits =
+@@ -5047,13 +4929,18 @@ void CombatCommander::reconcileVoiOperation(
+ 	{
+ 		operation.status = convergence.status;
+ 		operation.blockedReason = convergence.blocker;
+-		voiSetOperationSquadOrder(
++		if (!voiSetOperationSquadOrder(
+ 			operation,
+ 			squad,
+ 			SquadOrderTypes::Idle,
+ 			voiHomePosition(m_bot),
+ 			DefaultOrderRadius,
+-			operation.status);
++			operation.status))
++		{
++			operation.status = "BLOCKED";
++			operation.blockedReason =
++				"squad_order_not_applied";
++		}
+ 		return;
+ 	}
+ 	if (operation.assignedFrame == 0)
+@@ -5068,7 +4955,7 @@ void CombatCommander::reconcileVoiOperation(
+ 	{
+ 		operation.status = "ASSIGNED";
+ 	}
+-	voiSetOperationSquadOrder(
++	if (!voiSetOperationSquadOrder(
+ 		operation,
+ 		squad,
+ 		voiOperationSquadOrderType(
+@@ -5076,7 +4963,12 @@ void CombatCommander::reconcileVoiOperation(
+ 		operation.activeTargetPosition,
+ 		voiOperationSquadOrderRadius(
+ 			operation.taskType),
+-		operation.status);
++		operation.status))
++	{
++		operation.status = "BLOCKED";
++		operation.blockedReason =
++			"squad_order_not_applied";
++	}
+ }
+ 
+ void CombatCommander::updateVoiOperations()
+@@ -9300,6 +9192,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 			"Unsupported tactical_task.ability";
+ 		return;
+ 	}
++	const sc2::AbilityID abilityId(spec.abilityId);
+ 	if (m_lastVoiExplicitAbilityTerminalAttemptGeneration
+ 			== m_voiExplicitAbilityAttemptGeneration
+ 		&& (m_lastVoiExplicitAbilityStatus == "completed"
+@@ -9331,7 +9224,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 		const bool actorOrderObserved =
+ 			voiActorHasExactAbilityOrder(
+ 				actor,
+-				spec.abilityId,
++				abilityId,
+ 				m_lastVoiExplicitAbilityTargetTag,
+ 				m_lastVoiExplicitAbilityTargetPosition);
+ 		const bool actorTargetOrderObserved =
+@@ -9353,7 +9246,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 			actor != nullptr
+ 			&& m_lastVoiExplicitAbilityAvailableAtSubmission
+ 			&& !Util::IsAbilityAvailable(
+-				spec.abilityId,
++				abilityId,
+ 				actor,
+ 				m_unitsAbilities);
+ 		std::string desiredStateEvidence;
+@@ -9379,7 +9272,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 				m_lastVoiExplicitAbilityObservedAcceptedEvidence =
+ 					"actor_order:"
+ 					+ std::string(
+-						sc2::AbilityTypeToName(spec.abilityId));
++						sc2::AbilityTypeToName(abilityId));
+ 			}
+ 			else if (actorEnergySpent)
+ 			{
+@@ -9681,7 +9574,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 			return;
+ 		}
+ 		if (voiIsAbilityAvailableForCommand(
+-			spec.abilityId,
++			abilityId,
+ 			unit,
+ 			m_unitsAbilities))
+ 		{
+@@ -9721,7 +9614,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 		[&](float fallback)
+ 		{
+ 			const auto rangeIt =
+-				m_abilityCastingRanges.find(spec.abilityId);
++				m_abilityCastingRanges.find(abilityId);
+ 			return rangeIt != m_abilityCastingRanges.end()
+ 				&& rangeIt->second > 0.0f
+ 				? rangeIt->second
+@@ -10423,7 +10316,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 								* radius;
+ 						if (m_bot.Map().isValidPosition(candidate)
+ 							&& m_bot.Query()->Placement(
+-								spec.abilityId,
++								abilityId,
+ 								candidate,
+ 								caster))
+ 						{
+@@ -10465,7 +10358,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 	{
+ 		action = UnitAction(
+ 			MicroActionType::Ability,
+-			spec.abilityId,
++			abilityId,
+ 			true,
+ 			ACTION_REEXECUTION_FREQUENCY,
+ 			actionDescription,
+@@ -10479,7 +10372,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 	{
+ 		action = UnitAction(
+ 			MicroActionType::AbilityTarget,
+-			spec.abilityId,
++			abilityId,
+ 			selectedTarget,
+ 			true,
+ 			ACTION_REEXECUTION_FREQUENCY,
+@@ -10490,7 +10383,7 @@ void CombatCommander::updateVoiExplicitAbilityAction()
+ 	{
+ 		action = UnitAction(
+ 			MicroActionType::AbilityPosition,
+-			spec.abilityId,
++			abilityId,
+ 			selectedPosition,
+ 			true,
+ 			ACTION_REEXECUTION_FREQUENCY,
+@@ -16361,6 +16254,14 @@ void CombatCommander::ExecuteActions()
+ 		// Uninitialized action
+ 		if (action.description.empty())
+ 			continue;
++		const bool explicitAbilityAction =
++			action.description.rfind(
++				"VoiExplicitAbility:",
++				0) == 0;
++		const bool explicitAbilityStagingAction =
++			action.description.rfind(
++				"VoiExplicitAbilityStage:",
++				0) == 0;
+ 		const bool operationAction =
+ 			!action.operationId.empty()
+ 			|| action.operationGeneration != 0
+@@ -16394,6 +16295,48 @@ void CombatCommander::ExecuteActions()
+ 			&& commandEpochOperation->submittedPositions.find(
+ 				rangedUnit->tag)
+ 				== commandEpochOperation->submittedPositions.end();
++		VoiProductionActionBinding productionBinding;
++		const VoiProductionActionBinding *
++			productionBindingPtr = nullptr;
++		VoiProductionOperationIdentity productionIdentity;
++		if (commandEpochOperation != nullptr)
++		{
++			productionIdentity = {
++				commandEpochOperation->policyUpdateId,
++				commandEpochOperation->operationId,
++				commandEpochOperation->generation
++			};
++		}
++		else if (explicitAbilityAction)
++		{
++			productionIdentity = {
++				action.explicitAbilityUpdateId,
++				action.explicitAbilityTaskId,
++				action.explicitAbilityAttemptGeneration
++			};
++		}
++		if (voiProductionOperationIdentityIsValid(
++				productionIdentity))
++		{
++			productionBinding = voiProductionLiveActionBinding(
++				productionIdentity,
++				commandEpochOperation != nullptr
++					? voiOperationFamilyActionName(action)
++					: "execute_ability:"
++						+ action.explicitAbilityName,
++				static_cast<sc2::UNIT_TYPEID>(
++					rangedUnit->unit_type),
++				explicitAbilityAction
++					? action.explicitAbilityName
++					: "",
++				explicitAbilityAction
++					? static_cast<std::uint32_t>(
++						action.abilityID)
++					: 0,
++				voiProductionObservedCloakState(
++					rangedUnit->cloak));
++			productionBindingPtr = &productionBinding;
++		}
+ 
+ 		/*if (m_logVikingActions && rangedUnit->unit_type == sc2::UNIT_TYPEID::TERRAN_VIKINGFIGHTER)
+ 		{
+@@ -16422,14 +16365,6 @@ void CombatCommander::ExecuteActions()
+ 		std::stringstream ss;
+ 		bool skip = false;
+ 		bool issuedCommand = false;
+-		const bool explicitAbilityAction =
+-			action.description.rfind(
+-				"VoiExplicitAbility:",
+-				0) == 0;
+-		const bool explicitAbilityStagingAction =
+-			action.description.rfind(
+-				"VoiExplicitAbilityStage:",
+-				0) == 0;
+ 		const bool explicitScoutOrderAction =
+ 			action.description.rfind(
+ 				"VoiExplicitScoutOrder:",
+@@ -16487,13 +16422,22 @@ void CombatCommander::ExecuteActions()
+ 				{
+ 					if (rangedUnit->unit_type == sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER)
+ 					{
+-						Micro::SmartMove(rangedUnit, action.position, m_bot);
++						Micro::SmartMove(
++							rangedUnit,
++							action.position,
++							m_bot,
++							productionBindingPtr,
++							&issuedCommand);
+ 					}
+ 					else
+ 					{
+-						Micro::SmartAttackMove(rangedUnit, action.position, m_bot);
++						Micro::SmartAttackMove(
++							rangedUnit,
++							action.position,
++							m_bot,
++							productionBindingPtr,
++							&issuedCommand);
+ 					}
+-					issuedCommand = true;
+ 				}
+ 				break;
+ 			case MicroActionType::AttackUnit:
+@@ -16504,8 +16448,12 @@ void CombatCommander::ExecuteActions()
+ 					skip = true;
+ 				if (!skip)
+ 				{
+-					Micro::SmartAttackUnit(rangedUnit, action.target, m_bot);
+-					issuedCommand = true;
++					Micro::SmartAttackUnit(
++						rangedUnit,
++						action.target,
++						m_bot,
++						productionBindingPtr,
++						&issuedCommand);
+ 				}
+ 				break;
+ 			case MicroActionType::Move:
+@@ -16531,8 +16479,12 @@ void CombatCommander::ExecuteActions()
+ 				}
+ 				if (!skip)
+ 				{
+-					Micro::SmartMove(rangedUnit, action.position, m_bot);
+-					issuedCommand = true;
++					Micro::SmartMove(
++						rangedUnit,
++						action.position,
++						m_bot,
++						productionBindingPtr,
++						&issuedCommand);
+ 				}
+ 				break;
+ 			case MicroActionType::Ability:
+@@ -16550,8 +16502,25 @@ void CombatCommander::ExecuteActions()
+ 				}
+ 				else
+ 				{
+-					Micro::SmartAbility(rangedUnit, action.abilityID, m_bot);
+-					issuedCommand = true;
++					if (explicitAbilityAction
++						&& (productionBindingPtr == nullptr
++							|| !voiProductionBindLiveAbilityTarget(
++								productionBinding,
++								"ability")))
++					{
++						rejectExplicitAbility(
++							"waiting_ability",
++							"Explicit ability production binding did not match the live no-target dispatch");
++					}
++					if (!skip)
++					{
++						Micro::SmartAbility(
++							rangedUnit,
++							action.abilityID,
++							m_bot,
++							productionBindingPtr,
++							&issuedCommand);
++					}
+ 				}
+ 				break;
+ 			case MicroActionType::AbilityPosition:
+@@ -16632,14 +16601,28 @@ void CombatCommander::ExecuteActions()
+ 							"Cast issue guard rejected an out-of-range target; staging must complete first";
+ 					}
+ 				}
++				if (!skip
++					&& explicitAbilityAction
++					&& (productionBindingPtr == nullptr
++						|| !voiProductionBindLiveAbilityTarget(
++							productionBinding,
++							"ability_position",
++							action.position.x,
++							action.position.y)))
++				{
++					rejectExplicitAbility(
++						"waiting_target",
++						"Explicit ability production binding did not match the live position dispatch");
++				}
+ 				if (!skip)
+ 				{
+ 					Micro::SmartAbility(
+ 						rangedUnit,
+ 						action.abilityID,
+ 						action.position,
+-						m_bot);
+-					issuedCommand = true;
++						m_bot,
++						productionBindingPtr,
++						&issuedCommand);
+ 				}
+ 				break;
+ 			case MicroActionType::AbilityTarget:
+@@ -16689,14 +16672,29 @@ void CombatCommander::ExecuteActions()
+ 						}
+ 					}
+ 				}
++				if (!skip
++					&& explicitAbilityAction
++					&& (productionBindingPtr == nullptr
++						|| !voiProductionBindLiveAbilityTarget(
++							productionBinding,
++							"ability_target",
++							action.target->pos.x,
++							action.target->pos.y,
++							action.target->tag)))
++				{
++					rejectExplicitAbility(
++						"waiting_target",
++						"Explicit ability production binding did not match the live unit-target dispatch");
++				}
+ 				if (!skip)
+ 				{
+ 					Micro::SmartAbility(
+ 						rangedUnit,
+ 						action.abilityID,
+ 						action.target,
+-						m_bot);
+-					issuedCommand = true;
++						m_bot,
++						productionBindingPtr,
++						&issuedCommand);
+ 				}
+ 				break;
+ 			case MicroActionType::Stop:
+@@ -16706,12 +16704,20 @@ void CombatCommander::ExecuteActions()
+ 				skip = true;
+ 				break;
+ 			case MicroActionType::RightClick:
+-				Micro::SmartRightClick(rangedUnit, action.target, m_bot);
+-				issuedCommand = true;
++				Micro::SmartRightClick(
++					rangedUnit,
++					action.target,
++					m_bot,
++					productionBindingPtr,
++					&issuedCommand);
+ 				break;
+ 			case MicroActionType::ToggleAbility:
+-				Micro::SmartToggleAutoCast(rangedUnit, action.abilityID, m_bot);
+-				issuedCommand = true;
++				Micro::SmartToggleAutoCast(
++					rangedUnit,
++					action.abilityID,
++					m_bot,
++					productionBindingPtr,
++					&issuedCommand);
+ 				break;
+ 			default:
+ 				const int type = action.microActionType;
+diff --git a/src/Micro.cpp b/src/Micro.cpp
+index 344aaa67cd0dcaf436cb70fd217d61e539c8a55f..eafd7989e1ca9e5fa108e72e2e431e3cd47d5e1d 100644
+--- a/src/Micro.cpp
++++ b/src/Micro.cpp
+@@ -2,6 +2,34 @@
+ #include "Util.h"
+ #include "CCBot.h"
+ #include "sc2api/sc2_api.h"
++#include "voi_production_path.hpp"
++
++namespace
++{
++template <typename Dispatch>
++bool voiDispatchSc2Action(
++	const VoiProductionActionBinding * productionBinding,
++	const std::string & dispatchAction,
++	std::uint64_t unitTag,
++	bool * commandIssued,
++	VoiProductionSubmissionReceipt * submissionReceipt,
++	Dispatch dispatch)
++{
++	const bool dispatched = voiProductionDispatchSc2ActionAndRecord(
++		productionBinding,
++		dispatchAction,
++		unitTag,
++		commandIssued,
++		submissionReceipt,
++		dispatch);
++	BOT_ASSERT(
++		dispatched,
++		productionBinding == nullptr
++			? "SC2 action dispatch failed"
++			: "VOI production SC2 action submission failed");
++	return dispatched;
++}
++}
+ 
+ const float dotRadius = 0.1f;
+ 
+@@ -13,29 +41,87 @@ MicroActionType Micro::SmartStop(const sc2::Unit * attacker, CCBot & bot)
+ 	return MicroActionType::Stop;
+ }
+ 
+-MicroActionType Micro::SmartAttackUnit(const sc2::Unit * attacker, const sc2::Unit * target, CCBot & bot)
++MicroActionType Micro::SmartAttackUnit(
++	const sc2::Unit * attacker,
++	const sc2::Unit * target,
++	CCBot & bot,
++	const VoiProductionActionBinding * productionBinding,
++	bool * commandIssued,
++	VoiProductionSubmissionReceipt * submissionReceipt)
+ {
+     BOT_ASSERT(attacker != nullptr, "Attacker is null");
+     BOT_ASSERT(target != nullptr, "Target is null");
+-    bot.Actions()->UnitCommand(attacker, sc2::ABILITY_ID::ATTACK, target);
++	voiDispatchSc2Action(
++		productionBinding,
++		"attack_unit",
++		attacker->tag,
++		commandIssued,
++		submissionReceipt,
++		[&]()
++		{
++			bot.Actions()->UnitCommand(
++				attacker,
++				sc2::ABILITY_ID::ATTACK,
++				target);
++			return true;
++		});
+ 	return MicroActionType::AttackUnit;
+ }
+ 
+-MicroActionType Micro::SmartAttackMove(const sc2::Unit * attacker, const sc2::Point2D & targetPosition, CCBot & bot)
++MicroActionType Micro::SmartAttackMove(
++	const sc2::Unit * attacker,
++	const sc2::Point2D & targetPosition,
++	CCBot & bot,
++	const VoiProductionActionBinding * productionBinding,
++	bool * commandIssued,
++	VoiProductionSubmissionReceipt * submissionReceipt)
+ {
+     BOT_ASSERT(attacker != nullptr, "Attacker is null");
+-    bot.Actions()->UnitCommand(attacker, sc2::ABILITY_ID::ATTACK, targetPosition);
++	voiDispatchSc2Action(
++		productionBinding,
++		"attack_move",
++		attacker->tag,
++		commandIssued,
++		submissionReceipt,
++		[&]()
++		{
++			bot.Actions()->UnitCommand(
++				attacker,
++				sc2::ABILITY_ID::ATTACK,
++				targetPosition);
++			return true;
++		});
+ 	return MicroActionType::AttackMove;
+ }
+ 
+-MicroActionType Micro::SmartMove(const sc2::Unit * unit, const sc2::Point2D & targetPosition, CCBot & bot)
++MicroActionType Micro::SmartMove(
++	const sc2::Unit * unit,
++	const sc2::Point2D & targetPosition,
++	CCBot & bot,
++	const VoiProductionActionBinding * productionBinding,
++	bool * commandIssued,
++	VoiProductionSubmissionReceipt * submissionReceipt)
+ {
+     BOT_ASSERT(unit != nullptr, "Unit is null");
++	voiProductionResetCommandIssue(commandIssued);
+ 	if (bot.Commander().shouldSuppressRepeatedWorkerCommand(unit, sc2::ABILITY_ID::MOVE, 0, targetPosition, "micro_smart_move_position"))
+ 	{
+ 		return MicroActionType::Move;
+ 	}
+-    bot.Actions()->UnitCommand(unit, sc2::ABILITY_ID::MOVE, targetPosition);
++	voiDispatchSc2Action(
++		productionBinding,
++		"move",
++		unit->tag,
++		commandIssued,
++		submissionReceipt,
++		[&]()
++		{
++			bot.Actions()->UnitCommand(
++				unit,
++				sc2::ABILITY_ID::MOVE,
++				targetPosition);
++			return true;
++		});
+ 	return MicroActionType::Move;
+ }
+ 
+@@ -46,14 +132,34 @@ MicroActionType Micro::SmartHold(const sc2::Unit * unit, bool queued, CCBot & bo
+ 	return MicroActionType::Move;
+ }
+ 
+-MicroActionType Micro::SmartRightClick(const sc2::Unit * unit, const sc2::Unit * target, CCBot & bot)
++MicroActionType Micro::SmartRightClick(
++	const sc2::Unit * unit,
++	const sc2::Unit * target,
++	CCBot & bot,
++	const VoiProductionActionBinding * productionBinding,
++	bool * commandIssued,
++	VoiProductionSubmissionReceipt * submissionReceipt)
+ {
+ 	BOT_ASSERT(unit != nullptr, "Unit is null");
++	voiProductionResetCommandIssue(commandIssued);
+ 	if (target != nullptr && bot.Commander().shouldSuppressRepeatedWorkerCommand(unit, sc2::ABILITY_ID::SMART, target->tag, target->pos, "unit_ptr"))
+ 	{
+ 		return MicroActionType::RightClick;
+ 	}
+-	bot.Actions()->UnitCommand(unit, sc2::ABILITY_ID::SMART, target);
++	voiDispatchSc2Action(
++		productionBinding,
++		"right_click",
++		unit->tag,
++		commandIssued,
++		submissionReceipt,
++		[&]()
++		{
++			bot.Actions()->UnitCommand(
++				unit,
++				sc2::ABILITY_ID::SMART,
++				target);
++			return true;
++		});
+ 	return MicroActionType::RightClick;
+ }
+ 
+@@ -74,39 +180,109 @@ MicroActionType Micro::SmartRepair(const sc2::Unit * unit, const sc2::Unit * tar
+ 	return MicroActionType::RightClick;
+ }
+ 
+-MicroActionType Micro::SmartAbility(const sc2::Unit * unit, const sc2::AbilityID & abilityID, CCBot & bot)
++MicroActionType Micro::SmartAbility(
++	const sc2::Unit * unit,
++	const sc2::AbilityID & abilityID,
++	CCBot & bot,
++	const VoiProductionActionBinding * productionBinding,
++	bool * commandIssued,
++	VoiProductionSubmissionReceipt * submissionReceipt)
+ {
+ 	BOT_ASSERT(unit != nullptr, "Unit using smart ability is null");
+-	bot.Actions()->UnitCommand(unit, abilityID);
++	voiDispatchSc2Action(
++		productionBinding,
++		"ability",
++		unit->tag,
++		commandIssued,
++		submissionReceipt,
++		[&]()
++		{
++			bot.Actions()->UnitCommand(unit, abilityID);
++			return true;
++		});
+ 	return MicroActionType::Ability;
+ }
+ 
+-MicroActionType Micro::SmartAbility(const sc2::Unit * unit, const sc2::AbilityID & abilityID, CCPosition position, CCBot & bot)
++MicroActionType Micro::SmartAbility(
++	const sc2::Unit * unit,
++	const sc2::AbilityID & abilityID,
++	CCPosition position,
++	CCBot & bot,
++	const VoiProductionActionBinding * productionBinding,
++	bool * commandIssued,
++	VoiProductionSubmissionReceipt * submissionReceipt)
+ {
+ 	BOT_ASSERT(unit != nullptr, "Unit using smart ability is null");
++	voiProductionResetCommandIssue(commandIssued);
+ 	if (bot.Commander().shouldSuppressRepeatedWorkerCommand(unit, abilityID, 0, position, "ability_position"))
+ 	{
+ 		return MicroActionType::AbilityPosition;
+ 	}
+-	bot.Actions()->UnitCommand(unit, abilityID, position);
++	voiDispatchSc2Action(
++		productionBinding,
++		"ability_position",
++		unit->tag,
++		commandIssued,
++		submissionReceipt,
++		[&]()
++		{
++			bot.Actions()->UnitCommand(unit, abilityID, position);
++			return true;
++		});
+ 	return MicroActionType::AbilityPosition;
+ }
+ 
+-MicroActionType Micro::SmartAbility(const sc2::Unit * unit, const sc2::AbilityID & abilityID, const sc2::Unit * target, CCBot & bot)
++MicroActionType Micro::SmartAbility(
++	const sc2::Unit * unit,
++	const sc2::AbilityID & abilityID,
++	const sc2::Unit * target,
++	CCBot & bot,
++	const VoiProductionActionBinding * productionBinding,
++	bool * commandIssued,
++	VoiProductionSubmissionReceipt * submissionReceipt)
+ {
+ 	BOT_ASSERT(unit != nullptr, "Unit using smart ability is null");
+ 	BOT_ASSERT(target != nullptr, "Target of smart ability is null");
++	voiProductionResetCommandIssue(commandIssued);
+ 	if (bot.Commander().shouldSuppressRepeatedWorkerCommand(unit, abilityID, target->tag, target->pos, "ability_target"))
+ 	{
+ 		return MicroActionType::AbilityTarget;
+ 	}
+-	bot.Actions()->UnitCommand(unit, abilityID, target);
++	voiDispatchSc2Action(
++		productionBinding,
++		"ability_target",
++		unit->tag,
++		commandIssued,
++		submissionReceipt,
++		[&]()
++		{
++			bot.Actions()->UnitCommand(unit, abilityID, target);
++			return true;
++		});
+ 	return MicroActionType::AbilityTarget;
+ }
+ 
+-MicroActionType Micro::SmartToggleAutoCast(const sc2::Unit * unit, const sc2::AbilityID & abilityID, CCBot & bot)
++MicroActionType Micro::SmartToggleAutoCast(
++	const sc2::Unit * unit,
++	const sc2::AbilityID & abilityID,
++	CCBot & bot,
++	const VoiProductionActionBinding * productionBinding,
++	bool * commandIssued,
++	VoiProductionSubmissionReceipt * submissionReceipt)
+ {
+ 	BOT_ASSERT(unit != nullptr, "Unit using smart toggle auto cast is null");
+-	bot.Actions()->ToggleAutocast(unit->tag, abilityID);
++	voiDispatchSc2Action(
++		productionBinding,
++		"toggle_autocast",
++		unit->tag,
++		commandIssued,
++		submissionReceipt,
++		[&]()
++		{
++			bot.Actions()->ToggleAutocast(
++				unit->tag,
++				abilityID);
++			return true;
++		});
+ 	return MicroActionType::ToggleAbility;
+ }
+diff --git a/src/Micro.h b/src/Micro.h
+index f0653da743f8e3979a0c68d6a71addd4c2c4a221..178a50289fed6741fb26f9c577e46b4d9e3c1a2b 100644
+--- a/src/Micro.h
++++ b/src/Micro.h
+@@ -2,6 +2,7 @@
+ 
+ #include "Common.h"
+ #include "sc2api/sc2_api.h"
++#include "voi_production_path.hpp"
+ 
+ class CCBot;
+ 
+@@ -24,16 +25,77 @@ const std::string MicroActionTypeAccronyms[] = {"S", "AU", "AM", "M", "RC", "A",
+ 
+ namespace Micro
+ {
+-	MicroActionType SmartStop          (const sc2::Unit * attacker,  CCBot & bot);
+-	MicroActionType SmartAttackUnit    (const sc2::Unit * attacker,  const sc2::Unit * target, CCBot & bot);
+-	MicroActionType SmartAttackMove    (const sc2::Unit * attacker,  const sc2::Point2D & targetPosition, CCBot & bot);
+-	MicroActionType SmartMove          (const sc2::Unit * unit,  const sc2::Point2D & targetPosition, CCBot & bot);
+-	MicroActionType SmartHold          (const sc2::Unit * unit, bool queued, CCBot & bot);
+-	MicroActionType SmartRightClick    (const sc2::Unit * unit,      const sc2::Unit * target, CCBot & bot);
+-	MicroActionType SmartRightClick    (const sc2::Units & units, const sc2::Unit * target, CCBot & bot);
+-	MicroActionType SmartRepair        (const sc2::Unit * unit,      const sc2::Unit * target, CCBot & bot);
+-	MicroActionType SmartAbility	   (const sc2::Unit * unit, const sc2::AbilityID & abilityID, CCBot & bot);
+-	MicroActionType SmartAbility	   (const sc2::Unit * unit, const sc2::AbilityID & abilityID, CCPosition position, CCBot & bot);
+-	MicroActionType SmartAbility	   (const sc2::Unit * unit, const sc2::AbilityID & abilityID, const sc2::Unit * target, CCBot & bot);
+-	MicroActionType SmartToggleAutoCast(const sc2::Unit * unit, const sc2::AbilityID & abilityID, CCBot & bot);
+-};
+\ No newline at end of file
++	MicroActionType SmartStop(
++		const sc2::Unit * attacker,
++		CCBot & bot);
++	MicroActionType SmartAttackUnit(
++		const sc2::Unit * attacker,
++		const sc2::Unit * target,
++		CCBot & bot,
++		const VoiProductionActionBinding * productionBinding = nullptr,
++		bool * commandIssued = nullptr,
++		VoiProductionSubmissionReceipt * submissionReceipt = nullptr);
++	MicroActionType SmartAttackMove(
++		const sc2::Unit * attacker,
++		const sc2::Point2D & targetPosition,
++		CCBot & bot,
++		const VoiProductionActionBinding * productionBinding = nullptr,
++		bool * commandIssued = nullptr,
++		VoiProductionSubmissionReceipt * submissionReceipt = nullptr);
++	MicroActionType SmartMove(
++		const sc2::Unit * unit,
++		const sc2::Point2D & targetPosition,
++		CCBot & bot,
++		const VoiProductionActionBinding * productionBinding = nullptr,
++		bool * commandIssued = nullptr,
++		VoiProductionSubmissionReceipt * submissionReceipt = nullptr);
++	MicroActionType SmartHold(
++		const sc2::Unit * unit,
++		bool queued,
++		CCBot & bot);
++	MicroActionType SmartRightClick(
++		const sc2::Unit * unit,
++		const sc2::Unit * target,
++		CCBot & bot,
++		const VoiProductionActionBinding * productionBinding = nullptr,
++		bool * commandIssued = nullptr,
++		VoiProductionSubmissionReceipt * submissionReceipt = nullptr);
++	MicroActionType SmartRightClick(
++		const sc2::Units & units,
++		const sc2::Unit * target,
++		CCBot & bot);
++	MicroActionType SmartRepair(
++		const sc2::Unit * unit,
++		const sc2::Unit * target,
++		CCBot & bot);
++	MicroActionType SmartAbility(
++		const sc2::Unit * unit,
++		const sc2::AbilityID & abilityID,
++		CCBot & bot,
++		const VoiProductionActionBinding * productionBinding = nullptr,
++		bool * commandIssued = nullptr,
++		VoiProductionSubmissionReceipt * submissionReceipt = nullptr);
++	MicroActionType SmartAbility(
++		const sc2::Unit * unit,
++		const sc2::AbilityID & abilityID,
++		CCPosition position,
++		CCBot & bot,
++		const VoiProductionActionBinding * productionBinding = nullptr,
++		bool * commandIssued = nullptr,
++		VoiProductionSubmissionReceipt * submissionReceipt = nullptr);
++	MicroActionType SmartAbility(
++		const sc2::Unit * unit,
++		const sc2::AbilityID & abilityID,
++		const sc2::Unit * target,
++		CCBot & bot,
++		const VoiProductionActionBinding * productionBinding = nullptr,
++		bool * commandIssued = nullptr,
++		VoiProductionSubmissionReceipt * submissionReceipt = nullptr);
++	MicroActionType SmartToggleAutoCast(
++		const sc2::Unit * unit,
++		const sc2::AbilityID & abilityID,
++		CCBot & bot,
++		const VoiProductionActionBinding * productionBinding = nullptr,
++		bool * commandIssued = nullptr,
++		VoiProductionSubmissionReceipt * submissionReceipt = nullptr);
++}
+diff --git a/src/Squad.cpp b/src/Squad.cpp
+index 2c0e02912e3030f7eddb3119cb1943fc10c23020..0173f0d6bb396c41f907455e81c2ea9b7ba0bf93 100644
+--- a/src/Squad.cpp
++++ b/src/Squad.cpp
+@@ -428,7 +428,7 @@ bool Squad::needsToRegroup()
+     return shouldRegroup;
+ }
+ 
+-void Squad::setSquadOrder(const SquadOrder & so)
++bool Squad::applySquadOrderState(const SquadOrder & so)
+ {
+ 	if (so.getType() == SquadOrderTypes::Regroup && m_order.getType() != SquadOrderTypes::Regroup)
+ 		m_regroupStartFrame = m_bot.GetCurrentFrame();
+@@ -438,7 +438,55 @@ void Squad::setSquadOrder(const SquadOrder & so)
+ 		m_lastRegroupFrame = m_bot.GetCurrentFrame();
+ 	if (so.getType() != SquadOrderTypes::Retreat)
+ 		m_retreatStartFrame = 0;
+-    m_order = so;
++	m_order = so;
++	return m_order.getType() == so.getType()
++		&& m_order.getPosition() == so.getPosition()
++		&& m_order.getRadius() == so.getRadius()
++		&& m_order.getStatus() == so.getStatus();
++}
++
++void Squad::setSquadOrder(const SquadOrder & so)
++{
++	const bool applied = applySquadOrderState(so);
++	BOT_ASSERT(applied, "Squad order mutation failed");
++}
++
++VoiProductionSquadOrderReceipt Squad::setSquadOrder(
++	const SquadOrder & so,
++	const VoiProductionOperationIdentity & identity,
++	const std::string & action,
++	const std::vector<std::uint64_t> & unitTags)
++{
++	std::vector<std::uint64_t> actualUnitTags;
++	for (const auto & unit : m_units)
++	{
++		actualUnitTags.push_back(unit.getTag());
++	}
++	std::sort(actualUnitTags.begin(), actualUnitTags.end());
++	std::vector<std::uint64_t> requestedUnitTags = unitTags;
++	std::sort(requestedUnitTags.begin(), requestedUnitTags.end());
++	const bool membershipProof =
++		actualUnitTags == requestedUnitTags;
++	auto receipt = voiProductionIssueSquadOrder(
++		identity,
++		m_name,
++		action,
++		unitTags,
++		[&]()
++		{
++			return membershipProof
++				&& applySquadOrderState(so)
++				&& m_order.getType() == so.getType()
++				&& m_order.getPosition() == so.getPosition()
++				&& m_order.getRadius() == so.getRadius()
++				&& m_order.getStatus() == so.getStatus();
++		});
++	receipt.membershipProof = membershipProof;
++	receipt.squadOrderType = so.getType();
++	receipt.targetX = so.getPosition().x;
++	receipt.targetY = so.getPosition().y;
++	receipt.radius = so.getRadius();
++	return receipt;
+ }
+ 
+ bool Squad::containsUnit(const Unit & unit) const
+diff --git a/src/Squad.h b/src/Squad.h
+index def3e92e158d3958808193fddff16155261ed66d..1e0099e2ae783dcec9256f14ca99fb48f8248e64 100644
+--- a/src/Squad.h
++++ b/src/Squad.h
+@@ -4,6 +4,7 @@
+ #include "MeleeManager.h"
+ #include "RangedManager.h"
+ #include "SquadOrder.h"
++#include "voi_production_path.hpp"
+ #include <ctime>
+ 
+ class CCBot;
+@@ -45,6 +46,7 @@ class Squad
+ 
+     bool isUnitNearEnemy(const Unit & unit) const;
+     int  squadUnitsNear(const CCPosition & pos) const;
++    bool applySquadOrderState(const SquadOrder & so);
+ 
+ public:
+ 
+@@ -58,6 +60,11 @@ public:
+ 
+     void onFrame();
+     void setSquadOrder(const SquadOrder & so);
++    VoiProductionSquadOrderReceipt setSquadOrder(
++        const SquadOrder & so,
++        const VoiProductionOperationIdentity & identity,
++        const std::string & action,
++        const std::vector<std::uint64_t> & unitTags);
+     void addUnit(const Unit & unit);
+     void removeUnit(const Unit & unit);
+     void giveBackWorkers();
+diff --git a/src/main.cpp b/src/main.cpp
+index 451c6087564bf5868a9ac335aac968a24a6c9986..679819dddcf8b1f8341507c20fe9526c42ab1eea 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -1,6 +1,8 @@
+ #include "Common.h"
+ #include "CCBot.h"
+ #include "JSONTools.h"
++#include "Micro.h"
++#include "Squad.h"
+ #include "Util.h"
+ #include "voi_build_identity.hpp"
+ #include "voi_pre_live_journey_adapter.hpp"
+@@ -12,6 +14,7 @@
+ 
+ #include "sc2utils/sc2_manage_process.h"
+ #include "sc2api/sc2_api.h"
++#include <map>
+ #include <string>
+ #include <utility>
+ #include <vector>
+@@ -122,7 +125,487 @@ public:
+         {
+             setenv(item.first.c_str(), item.second.c_str(), 1);
+         }
+-    }
++	}
++};
++
++class VoiMicroMachinePreLiveProductionExecutor
++	: public VoiPreLiveProductionExecutor
++{
++	CCBot * m_bot;
++	std::map<std::string, Squad *> m_squads;
++	std::map<std::uint64_t, sc2::Unit *> m_units;
++	std::map<std::uint64_t, sc2::Unit *> m_targets;
++
++	Squad & squadFor(const std::string & squadName)
++	{
++		const auto existing = m_squads.find(squadName);
++		if (existing != m_squads.end())
++		{
++			return *existing->second;
++		}
++		Squad * squad = new Squad(
++			squadName,
++			SquadOrder(
++				SquadOrderTypes::Idle,
++				CCPosition(0.0f, 0.0f),
++				0.0f,
++				"pre_live_initial"),
++			1,
++			*m_bot);
++		m_squads[squadName] = squad;
++		return *squad;
++	}
++
++	static bool concreteUnitTypeId(
++		const std::string & unitType,
++		sc2::UNIT_TYPEID & unitTypeId)
++	{
++		if (unitType == "TERRAN_MARINE")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_MARINE;
++		}
++		else if (unitType == "TERRAN_MARAUDER")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_MARAUDER;
++		}
++		else if (unitType == "TERRAN_REAPER")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_REAPER;
++		}
++		else if (unitType == "TERRAN_GHOST")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_GHOST;
++		}
++		else if (unitType == "TERRAN_HELLION")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_HELLION;
++		}
++		else if (unitType == "TERRAN_HELLIONTANK")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_HELLIONTANK;
++		}
++		else if (unitType == "TERRAN_WIDOWMINE")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_WIDOWMINE;
++		}
++		else if (unitType == "TERRAN_WIDOWMINEBURROWED")
++		{
++			unitTypeId =
++				sc2::UNIT_TYPEID::TERRAN_WIDOWMINEBURROWED;
++		}
++		else if (unitType == "TERRAN_CYCLONE")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_CYCLONE;
++		}
++		else if (unitType == "TERRAN_SIEGETANK")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_SIEGETANK;
++		}
++		else if (unitType == "TERRAN_SIEGETANKSIEGED")
++		{
++			unitTypeId =
++				sc2::UNIT_TYPEID::TERRAN_SIEGETANKSIEGED;
++		}
++		else if (unitType == "TERRAN_THOR")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_THOR;
++		}
++		else if (unitType == "TERRAN_THORAP")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_THORAP;
++		}
++		else if (unitType == "TERRAN_MEDIVAC")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_MEDIVAC;
++		}
++		else if (unitType == "TERRAN_RAVEN")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_RAVEN;
++		}
++		else if (unitType == "TERRAN_VIKINGFIGHTER")
++		{
++			unitTypeId =
++				sc2::UNIT_TYPEID::TERRAN_VIKINGFIGHTER;
++		}
++		else if (unitType == "TERRAN_VIKINGASSAULT")
++		{
++			unitTypeId =
++				sc2::UNIT_TYPEID::TERRAN_VIKINGASSAULT;
++		}
++		else if (unitType == "TERRAN_BANSHEE")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_BANSHEE;
++		}
++		else if (unitType == "TERRAN_LIBERATOR")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_LIBERATOR;
++		}
++		else if (unitType == "TERRAN_LIBERATORAG")
++		{
++			unitTypeId = sc2::UNIT_TYPEID::TERRAN_LIBERATORAG;
++		}
++		else if (unitType == "TERRAN_BATTLECRUISER")
++		{
++			unitTypeId =
++				sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER;
++		}
++		else
++		{
++			return false;
++		}
++		return true;
++	}
++
++	sc2::Unit * unitFor(
++		std::uint64_t unitTag,
++		const VoiProductionActionBinding & binding,
++		std::string & blocker)
++	{
++		sc2::UNIT_TYPEID unitTypeId =
++			sc2::UNIT_TYPEID::TERRAN_MARINE;
++		if (!concreteUnitTypeId(binding.unitType, unitTypeId))
++		{
++			blocker = "unsupported_pre_live_unit_type";
++			return nullptr;
++		}
++		if (!binding.abilityName.empty()
++			&& !voiExplicitAbilityCasterStateMatches(
++				binding.abilityName,
++				binding.unitType,
++				binding.cloakState))
++		{
++			blocker = "pre_live_ability_caster_state_mismatch";
++			return nullptr;
++		}
++		const auto cloak =
++			binding.cloakState == "cloaked"
++				? sc2::Unit::Cloaked
++				: sc2::Unit::NotCloaked;
++		const auto existing = m_units.find(unitTag);
++		if (existing != m_units.end())
++		{
++			if (existing->second->unit_type != unitTypeId
++				|| existing->second->cloak != cloak)
++			{
++				blocker = "pre_live_unit_state_mismatch";
++				return nullptr;
++			}
++			return existing->second;
++		}
++		sc2::Unit * unit = new sc2::Unit();
++		unit->tag = unitTag;
++		unit->unit_type = unitTypeId;
++		unit->build_progress = 1.0f;
++		unit->cloak = cloak;
++		m_units[unitTag] = unit;
++		return unit;
++	}
++
++	sc2::Unit * targetFor(
++		const VoiProductionActionBinding & binding)
++	{
++		if (binding.targetTag == 0)
++		{
++			return nullptr;
++		}
++		const auto existing = m_targets.find(binding.targetTag);
++		if (existing != m_targets.end())
++		{
++			return existing->second;
++		}
++		sc2::Unit * target = new sc2::Unit();
++		target->tag = binding.targetTag;
++		target->unit_type =
++			binding.abilityName == "interference_matrix"
++				? sc2::UNIT_TYPEID::TERRAN_CYCLONE
++				: sc2::UNIT_TYPEID::TERRAN_MARINE;
++		target->build_progress = 1.0f;
++		target->pos = sc2::Point3D(
++			static_cast<float>(binding.targetX),
++			static_cast<float>(binding.targetY),
++			0.0f);
++		m_targets[binding.targetTag] = target;
++		return target;
++	}
++
++	static bool squadOrderType(
++		const std::string & orderKind,
++		std::size_t & orderType)
++	{
++		if (orderKind == "scout")
++		{
++			orderType = SquadOrderTypes::Scout;
++		}
++		else if (orderKind == "defend")
++		{
++			orderType = SquadOrderTypes::Defend;
++		}
++		else if (orderKind == "harass")
++		{
++			orderType = SquadOrderTypes::Harass;
++		}
++		else if (orderKind == "attack")
++		{
++			orderType = SquadOrderTypes::Attack;
++		}
++		else if (orderKind == "retreat")
++		{
++			orderType = SquadOrderTypes::Retreat;
++		}
++		else if (orderKind == "idle")
++		{
++			orderType = SquadOrderTypes::Idle;
++		}
++		else
++		{
++			return false;
++		}
++		return true;
++	}
++
++public:
++	VoiMicroMachinePreLiveProductionExecutor()
++		: m_bot(new CCBot("voi-pre-live", "1", false))
++	{
++	}
++
++	const char * executorKind() const override
++	{
++		return "micromachine_concrete_pre_live";
++	}
++
++	const char * squadOrderExecutionPath() const override
++	{
++		return "Squad::setSquadOrder";
++	}
++
++	const char * sc2SubmissionExecutionPath() const override
++	{
++		return "Micro::*->CCBot::Actions()->UnitCommand";
++	}
++
++	VoiProductionSquadOrderReceipt issueSquadOrder(
++		const VoiProductionActionBinding & binding,
++		const std::string & squadName,
++		const std::string & squadOrderKind,
++		double squadOrderRadius,
++		const std::vector<std::uint64_t> & unitTags) override
++	{
++		std::size_t orderType = 0;
++		if (!squadOrderType(squadOrderKind, orderType))
++		{
++			VoiProductionSquadOrderReceipt receipt;
++			receipt.updateId = binding.identity.updateId;
++			receipt.operationId =
++				binding.identity.operationId;
++			receipt.generation =
++				binding.identity.generation;
++			receipt.squadName = squadName;
++			receipt.action = binding.action;
++			receipt.unitTags = unitTags;
++			receipt.blocker =
++				"unsupported_pre_live_squad_order";
++			return receipt;
++		}
++		Squad & squad = squadFor(squadName);
++		std::vector<sc2::Unit *> concreteUnits;
++		for (const auto unitTag : unitTags)
++		{
++			std::string blocker;
++			sc2::Unit * unit =
++				unitFor(unitTag, binding, blocker);
++			if (unit == nullptr)
++			{
++				VoiProductionSquadOrderReceipt receipt;
++				receipt.updateId =
++					binding.identity.updateId;
++				receipt.operationId =
++					binding.identity.operationId;
++				receipt.generation =
++					binding.identity.generation;
++				receipt.squadName = squadName;
++				receipt.action = binding.action;
++				receipt.unitTags = unitTags;
++				receipt.blocker = blocker;
++				return receipt;
++			}
++			concreteUnits.push_back(unit);
++		}
++		const auto previousUnits = squad.getUnits();
++		for (const auto & unit : previousUnits)
++		{
++			squad.removeUnit(unit);
++		}
++		for (auto * unit : concreteUnits)
++		{
++			squad.addUnit(Unit(unit, *m_bot));
++		}
++		return squad.setSquadOrder(
++			SquadOrder(
++				static_cast<int>(orderType),
++				CCPosition(
++					static_cast<float>(binding.targetX),
++					static_cast<float>(binding.targetY)),
++				static_cast<float>(squadOrderRadius),
++				binding.action),
++			binding.identity,
++			binding.action,
++			unitTags);
++	}
++
++	VoiProductionSubmissionReceipt submitSc2Action(
++		const VoiProductionActionBinding & binding,
++		const std::string & dispatchAction,
++		std::uint64_t unitTag) override
++	{
++		std::string unitBlocker;
++		sc2::Unit * unit =
++			unitFor(unitTag, binding, unitBlocker);
++		bool commandIssued = false;
++		VoiProductionSubmissionReceipt receipt;
++		if (unit == nullptr)
++		{
++			receipt.updateId = binding.identity.updateId;
++			receipt.operationId =
++				binding.identity.operationId;
++			receipt.generation =
++				binding.identity.generation;
++			receipt.action = binding.action;
++			receipt.dispatchAction = dispatchAction;
++			receipt.unitType = binding.unitType;
++			receipt.unitTags = {unitTag};
++			receipt.blocker = unitBlocker;
++			return receipt;
++		}
++		if (dispatchAction == "attack_move")
++		{
++			Micro::SmartAttackMove(
++				unit,
++				sc2::Point2D(
++					static_cast<float>(binding.targetX),
++					static_cast<float>(binding.targetY)),
++				*m_bot,
++				&binding,
++				&commandIssued,
++				&receipt);
++		}
++		else if (dispatchAction == "move")
++		{
++			Micro::SmartMove(
++				unit,
++				sc2::Point2D(
++					static_cast<float>(binding.targetX),
++					static_cast<float>(binding.targetY)),
++				*m_bot,
++				&binding,
++				&commandIssued,
++				&receipt);
++		}
++		else if (dispatchAction == "ability"
++			|| dispatchAction == "ability_position"
++			|| dispatchAction == "ability_target")
++		{
++			VoiExplicitAbilitySpec spec;
++			const bool resolved =
++				voiResolveExplicitAbilitySpec(
++					binding.abilityName,
++					spec);
++			const std::string resolvedTargetKind =
++				resolved
++					? voiExplicitAbilityTargetKindName(
++						spec.targetKind)
++					: "";
++			if (!resolved
++				|| binding.abilityId
++					!= static_cast<std::uint32_t>(
++						spec.abilityId)
++				|| binding.targetKind != resolvedTargetKind)
++			{
++				receipt.updateId =
++					binding.identity.updateId;
++				receipt.operationId =
++					binding.identity.operationId;
++				receipt.generation =
++					binding.identity.generation;
++				receipt.action = binding.action;
++				receipt.dispatchAction = dispatchAction;
++				receipt.unitType = binding.unitType;
++				receipt.unitTags = {unitTag};
++				receipt.blocker =
++					"unsupported_pre_live_ability";
++				return receipt;
++			}
++			const auto ability =
++				sc2::AbilityID(spec.abilityId);
++			if (dispatchAction == "ability")
++			{
++				Micro::SmartAbility(
++					unit,
++					ability,
++					*m_bot,
++					&binding,
++					&commandIssued,
++					&receipt);
++			}
++			else if (dispatchAction == "ability_position")
++			{
++				Micro::SmartAbility(
++					unit,
++					ability,
++					CCPosition(
++						static_cast<float>(binding.targetX),
++						static_cast<float>(binding.targetY)),
++					*m_bot,
++					&binding,
++					&commandIssued,
++					&receipt);
++			}
++			else
++			{
++				sc2::Unit * target = targetFor(binding);
++				if (target == nullptr
++					|| target->tag != binding.targetTag)
++				{
++					receipt.updateId =
++						binding.identity.updateId;
++					receipt.operationId =
++						binding.identity.operationId;
++					receipt.generation =
++						binding.identity.generation;
++					receipt.action = binding.action;
++					receipt.dispatchAction = dispatchAction;
++					receipt.unitType = binding.unitType;
++					receipt.unitTags = {unitTag};
++					receipt.blocker =
++						"pre_live_ability_target_mismatch";
++					return receipt;
++				}
++				Micro::SmartAbility(
++					unit,
++					ability,
++					target,
++					*m_bot,
++					&binding,
++					&commandIssued,
++					&receipt);
++			}
++		}
++		else
++		{
++			receipt.updateId = binding.identity.updateId;
++			receipt.operationId =
++				binding.identity.operationId;
++			receipt.generation =
++				binding.identity.generation;
++			receipt.action = binding.action;
++			receipt.dispatchAction = dispatchAction;
++			receipt.unitType = binding.unitType;
++			receipt.unitTags = {unitTag};
++			receipt.blocker =
++				"unsupported_pre_live_dispatch_action";
++		}
++		return receipt;
++	}
+ };
+ 
+ void handler(int sig) {
+@@ -243,11 +726,16 @@ int main(int argc, char* argv[])
+ 			argv[1] == nullptr ? "" : argv[1])
+ 			== "--voi-pre-live-journey-adapter")
+ 	{
++		// Keep the offline CCBot alive until process exit; its destructor
++		// assumes a live SC2 result channel.
++		auto * executor =
++			new VoiMicroMachinePreLiveProductionExecutor();
+ 		return voiRunPreLiveJourneyAdapterFile(
+ 			argv[2] == nullptr ? "" : argv[2],
+ 			std::cin,
+ 			std::cout,
+-			std::cerr);
++			std::cerr,
++			*executor);
+ 	}
+ 
+ 	signal(SIGABRT, handler);
+diff --git a/src/voi_explicit_ability_catalog.hpp b/src/voi_explicit_ability_catalog.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..afff43f2a16813263b623b8f27b8d5eba554e88e
+--- /dev/null
++++ b/src/voi_explicit_ability_catalog.hpp
+@@ -0,0 +1,206 @@
++#pragma once
++
++#include <cstdint>
++#include <string>
++
++enum class VoiExplicitAbilityTargetKind
++{
++	None,
++	EnemyPosition,
++	EnemyUnit,
++	FriendlyUnit,
++	FriendlyPassenger,
++	StrategicPosition,
++	CasterPosition,
++	GhostEmp,
++	GhostSnipe,
++	YamatoTarget,
++	AutoTurretPosition,
++	LiberatorDefenderPosition,
++};
++
++struct VoiExplicitAbilitySpec
++{
++	std::uint32_t abilityId = 0;
++	VoiExplicitAbilityTargetKind targetKind =
++		VoiExplicitAbilityTargetKind::None;
++};
++
++inline const char * voiExplicitAbilityTargetKindName(
++	VoiExplicitAbilityTargetKind targetKind)
++{
++	switch (targetKind)
++	{
++	case VoiExplicitAbilityTargetKind::None:
++		return "none";
++	case VoiExplicitAbilityTargetKind::EnemyPosition:
++		return "enemy_position";
++	case VoiExplicitAbilityTargetKind::EnemyUnit:
++		return "enemy_unit";
++	case VoiExplicitAbilityTargetKind::FriendlyUnit:
++		return "friendly_unit";
++	case VoiExplicitAbilityTargetKind::FriendlyPassenger:
++		return "friendly_passenger";
++	case VoiExplicitAbilityTargetKind::StrategicPosition:
++		return "strategic_position";
++	case VoiExplicitAbilityTargetKind::CasterPosition:
++		return "caster_position";
++	case VoiExplicitAbilityTargetKind::GhostEmp:
++		return "ghost_emp";
++	case VoiExplicitAbilityTargetKind::GhostSnipe:
++		return "ghost_snipe";
++	case VoiExplicitAbilityTargetKind::YamatoTarget:
++		return "yamato_target";
++	case VoiExplicitAbilityTargetKind::AutoTurretPosition:
++		return "auto_turret_position";
++	case VoiExplicitAbilityTargetKind::LiberatorDefenderPosition:
++		return "liberator_defender_position";
++	}
++	return "";
++}
++
++inline bool voiResolveExplicitAbilitySpec(
++	const std::string & abilityName,
++	VoiExplicitAbilitySpec & spec)
++{
++	if (abilityName == "stimpack"
++		|| abilityName == "marine_stimpack"
++		|| abilityName == "marauder_stimpack")
++	{
++		spec = {3675, VoiExplicitAbilityTargetKind::None};
++	}
++	else if (abilityName == "kd8_charge")
++	{
++		spec = {2588, VoiExplicitAbilityTargetKind::EnemyPosition};
++	}
++	else if (abilityName == "emp")
++	{
++		spec = {1628, VoiExplicitAbilityTargetKind::GhostEmp};
++	}
++	else if (abilityName == "snipe")
++	{
++		spec = {2714, VoiExplicitAbilityTargetKind::GhostSnipe};
++	}
++	else if (abilityName == "ghost_cloak")
++	{
++		spec = {382, VoiExplicitAbilityTargetKind::None};
++	}
++	else if (abilityName == "ghost_decloak")
++	{
++		spec = {383, VoiExplicitAbilityTargetKind::None};
++	}
++	else if (abilityName == "widow_mine_burrow")
++	{
++		spec = {2095, VoiExplicitAbilityTargetKind::None};
++	}
++	else if (abilityName == "widow_mine_unburrow")
++	{
++		spec = {2097, VoiExplicitAbilityTargetKind::None};
++	}
++	else if (abilityName == "lock_on")
++	{
++		spec = {2350, VoiExplicitAbilityTargetKind::EnemyUnit};
++	}
++	else if (abilityName == "siege_mode")
++	{
++		spec = {388, VoiExplicitAbilityTargetKind::None};
++	}
++	else if (abilityName == "unsiege")
++	{
++		spec = {390, VoiExplicitAbilityTargetKind::None};
++	}
++	else if (abilityName == "hellbat_mode")
++	{
++		spec = {1998, VoiExplicitAbilityTargetKind::None};
++	}
++	else if (abilityName == "hellion_mode")
++	{
++		spec = {1978, VoiExplicitAbilityTargetKind::None};
++	}
++	else if (abilityName == "thor_high_impact_mode")
++	{
++		spec = {2362, VoiExplicitAbilityTargetKind::None};
++	}
++	else if (abilityName == "thor_explosive_mode")
++	{
++		spec = {2364, VoiExplicitAbilityTargetKind::None};
++	}
++	else if (abilityName == "medivac_afterburners")
++	{
++		spec = {2116, VoiExplicitAbilityTargetKind::None};
++	}
++	else if (abilityName == "medivac_heal")
++	{
++		spec = {386, VoiExplicitAbilityTargetKind::FriendlyUnit};
++	}
++	else if (abilityName == "medivac_load")
++	{
++		spec = {394, VoiExplicitAbilityTargetKind::FriendlyPassenger};
++	}
++	else if (abilityName == "medivac_unload_all")
++	{
++		spec = {396, VoiExplicitAbilityTargetKind::CasterPosition};
++	}
++	else if (abilityName == "viking_fighter_mode")
++	{
++		spec = {405, VoiExplicitAbilityTargetKind::None};
++	}
++	else if (abilityName == "viking_assault_mode")
++	{
++		spec = {403, VoiExplicitAbilityTargetKind::None};
++	}
++	else if (abilityName == "liberator_defender_mode")
++	{
++		spec = {
++			2558,
++			VoiExplicitAbilityTargetKind::LiberatorDefenderPosition
++		};
++	}
++	else if (abilityName == "liberator_fighter_mode")
++	{
++		spec = {2560, VoiExplicitAbilityTargetKind::None};
++	}
++	else if (abilityName == "banshee_cloak")
++	{
++		spec = {392, VoiExplicitAbilityTargetKind::None};
++	}
++	else if (abilityName == "banshee_decloak")
++	{
++		spec = {393, VoiExplicitAbilityTargetKind::None};
++	}
++	else if (abilityName == "auto_turret")
++	{
++		spec = {
++			1764,
++			VoiExplicitAbilityTargetKind::AutoTurretPosition
++		};
++	}
++	else if (abilityName == "interference_matrix")
++	{
++		spec = {3747, VoiExplicitAbilityTargetKind::EnemyUnit};
++	}
++	else if (abilityName == "anti_armor_missile")
++	{
++		spec = {3753, VoiExplicitAbilityTargetKind::EnemyUnit};
++	}
++	else if (abilityName == "yamato")
++	{
++		spec = {401, VoiExplicitAbilityTargetKind::YamatoTarget};
++	}
++	else if (abilityName == "tactical_jump")
++	{
++		spec = {
++			2358,
++			VoiExplicitAbilityTargetKind::StrategicPosition
++		};
++	}
++	else if (abilityName == "tactical_nuke")
++	{
++		spec = {1622, VoiExplicitAbilityTargetKind::EnemyPosition};
++	}
++	else
++	{
++		return false;
++	}
++	return true;
++}
+diff --git a/src/voi_explicit_ability_spec.hpp b/src/voi_explicit_ability_spec.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..8f6b2f1747add418b523ab0f2d0c4976f956ff96
+--- /dev/null
++++ b/src/voi_explicit_ability_spec.hpp
+@@ -0,0 +1,150 @@
++#pragma once
++
++#include "voi_explicit_ability_catalog.hpp"
++
++struct VoiExplicitAbilityCasterState
++{
++	std::string unitType;
++	std::string cloakState;
++};
++
++inline bool voiResolveExplicitAbilityCasterState(
++	const std::string & abilityName,
++	VoiExplicitAbilityCasterState & state)
++{
++	if (abilityName == "stimpack")
++	{
++		state = {"", ""};
++	}
++	else if (abilityName == "marine_stimpack")
++	{
++		state = {"TERRAN_MARINE", ""};
++	}
++	else if (abilityName == "marauder_stimpack")
++	{
++		state = {"TERRAN_MARAUDER", ""};
++	}
++	else if (abilityName == "kd8_charge")
++	{
++		state = {"TERRAN_REAPER", ""};
++	}
++	else if (abilityName == "emp"
++		|| abilityName == "snipe"
++		|| abilityName == "tactical_nuke")
++	{
++		state = {"TERRAN_GHOST", ""};
++	}
++	else if (abilityName == "ghost_cloak")
++	{
++		state = {"TERRAN_GHOST", "not_cloaked"};
++	}
++	else if (abilityName == "ghost_decloak")
++	{
++		state = {"TERRAN_GHOST", "cloaked"};
++	}
++	else if (abilityName == "hellbat_mode")
++	{
++		state = {"TERRAN_HELLION", ""};
++	}
++	else if (abilityName == "hellion_mode")
++	{
++		state = {"TERRAN_HELLIONTANK", ""};
++	}
++	else if (abilityName == "widow_mine_burrow")
++	{
++		state = {"TERRAN_WIDOWMINE", ""};
++	}
++	else if (abilityName == "widow_mine_unburrow")
++	{
++		state = {"TERRAN_WIDOWMINEBURROWED", ""};
++	}
++	else if (abilityName == "lock_on")
++	{
++		state = {"TERRAN_CYCLONE", ""};
++	}
++	else if (abilityName == "siege_mode")
++	{
++		state = {"TERRAN_SIEGETANK", ""};
++	}
++	else if (abilityName == "unsiege")
++	{
++		state = {"TERRAN_SIEGETANKSIEGED", ""};
++	}
++	else if (abilityName == "thor_high_impact_mode")
++	{
++		state = {"TERRAN_THOR", ""};
++	}
++	else if (abilityName == "thor_explosive_mode")
++	{
++		state = {"TERRAN_THORAP", ""};
++	}
++	else if (abilityName == "medivac_afterburners"
++		|| abilityName == "medivac_heal"
++		|| abilityName == "medivac_load"
++		|| abilityName == "medivac_unload_all")
++	{
++		state = {"TERRAN_MEDIVAC", ""};
++	}
++	else if (abilityName == "auto_turret"
++		|| abilityName == "interference_matrix"
++		|| abilityName == "anti_armor_missile")
++	{
++		state = {"TERRAN_RAVEN", ""};
++	}
++	else if (abilityName == "viking_fighter_mode")
++	{
++		state = {"TERRAN_VIKINGASSAULT", ""};
++	}
++	else if (abilityName == "viking_assault_mode")
++	{
++		state = {"TERRAN_VIKINGFIGHTER", ""};
++	}
++	else if (abilityName == "banshee_cloak")
++	{
++		state = {"TERRAN_BANSHEE", "not_cloaked"};
++	}
++	else if (abilityName == "banshee_decloak")
++	{
++		state = {"TERRAN_BANSHEE", "cloaked"};
++	}
++	else if (abilityName == "liberator_defender_mode")
++	{
++		state = {"TERRAN_LIBERATOR", ""};
++	}
++	else if (abilityName == "liberator_fighter_mode")
++	{
++		state = {"TERRAN_LIBERATORAG", ""};
++	}
++	else if (abilityName == "yamato"
++		|| abilityName == "tactical_jump")
++	{
++		state = {"TERRAN_BATTLECRUISER", ""};
++	}
++	else
++	{
++		return false;
++	}
++	return true;
++}
++
++inline bool voiExplicitAbilityCasterStateMatches(
++	const std::string & abilityName,
++	const std::string & unitType,
++	const std::string & cloakState)
++{
++	VoiExplicitAbilityCasterState expected;
++	if (!voiResolveExplicitAbilityCasterState(
++			abilityName,
++			expected))
++	{
++		return false;
++	}
++	const bool unitTypeMatches =
++		abilityName == "stimpack"
++			? unitType == "TERRAN_MARINE"
++				|| unitType == "TERRAN_MARAUDER"
++			: unitType == expected.unitType;
++	return unitTypeMatches
++		&& (expected.cloakState.empty()
++			|| cloakState == expected.cloakState);
++}
+diff --git a/src/voi_live_production_binding.hpp b/src/voi_live_production_binding.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..50f4cf165429b93a87f32abb17117aa141dda6bb
+--- /dev/null
++++ b/src/voi_live_production_binding.hpp
+@@ -0,0 +1,140 @@
++#pragma once
++
++#include "sc2api/sc2_typeenums.h"
++#include "voi_explicit_ability_catalog.hpp"
++#include "voi_production_path.hpp"
++
++inline std::string voiProductionCanonicalTerranUnitType(
++	sc2::UNIT_TYPEID unitType)
++{
++	switch (unitType)
++	{
++	case sc2::UNIT_TYPEID::TERRAN_MARINE:
++		return "TERRAN_MARINE";
++	case sc2::UNIT_TYPEID::TERRAN_MARAUDER:
++		return "TERRAN_MARAUDER";
++	case sc2::UNIT_TYPEID::TERRAN_REAPER:
++		return "TERRAN_REAPER";
++	case sc2::UNIT_TYPEID::TERRAN_GHOST:
++		return "TERRAN_GHOST";
++	case sc2::UNIT_TYPEID::TERRAN_HELLION:
++		return "TERRAN_HELLION";
++	case sc2::UNIT_TYPEID::TERRAN_HELLIONTANK:
++		return "TERRAN_HELLIONTANK";
++	case sc2::UNIT_TYPEID::TERRAN_WIDOWMINE:
++		return "TERRAN_WIDOWMINE";
++	case sc2::UNIT_TYPEID::TERRAN_WIDOWMINEBURROWED:
++		return "TERRAN_WIDOWMINEBURROWED";
++	case sc2::UNIT_TYPEID::TERRAN_CYCLONE:
++		return "TERRAN_CYCLONE";
++	case sc2::UNIT_TYPEID::TERRAN_SIEGETANK:
++		return "TERRAN_SIEGETANK";
++	case sc2::UNIT_TYPEID::TERRAN_SIEGETANKSIEGED:
++		return "TERRAN_SIEGETANKSIEGED";
++	case sc2::UNIT_TYPEID::TERRAN_THOR:
++		return "TERRAN_THOR";
++	case sc2::UNIT_TYPEID::TERRAN_THORAP:
++		return "TERRAN_THORAP";
++	case sc2::UNIT_TYPEID::TERRAN_MEDIVAC:
++		return "TERRAN_MEDIVAC";
++	case sc2::UNIT_TYPEID::TERRAN_RAVEN:
++		return "TERRAN_RAVEN";
++	case sc2::UNIT_TYPEID::TERRAN_VIKINGFIGHTER:
++		return "TERRAN_VIKINGFIGHTER";
++	case sc2::UNIT_TYPEID::TERRAN_VIKINGASSAULT:
++		return "TERRAN_VIKINGASSAULT";
++	case sc2::UNIT_TYPEID::TERRAN_BANSHEE:
++		return "TERRAN_BANSHEE";
++	case sc2::UNIT_TYPEID::TERRAN_LIBERATOR:
++		return "TERRAN_LIBERATOR";
++	case sc2::UNIT_TYPEID::TERRAN_LIBERATORAG:
++		return "TERRAN_LIBERATORAG";
++	case sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER:
++		return "TERRAN_BATTLECRUISER";
++	default:
++		return "";
++	}
++}
++
++inline VoiProductionActionBinding voiProductionLiveActionBinding(
++	const VoiProductionOperationIdentity & identity,
++	const std::string & action,
++	sc2::UNIT_TYPEID unitType,
++	const std::string & abilityName = "",
++	std::uint32_t abilityId = 0,
++	const std::string & cloakState = "")
++{
++	VoiProductionActionBinding binding;
++	binding.identity = identity;
++	binding.action = action;
++	binding.unitType =
++		voiProductionCanonicalTerranUnitType(unitType);
++	binding.abilityName = abilityName;
++	binding.abilityId = abilityId;
++	binding.cloakState = cloakState;
++	return binding;
++}
++
++inline const char * voiProductionExplicitAbilityDispatchAction(
++	VoiExplicitAbilityTargetKind targetKind)
++{
++	switch (targetKind)
++	{
++	case VoiExplicitAbilityTargetKind::None:
++		return "ability";
++	case VoiExplicitAbilityTargetKind::EnemyUnit:
++	case VoiExplicitAbilityTargetKind::FriendlyUnit:
++	case VoiExplicitAbilityTargetKind::FriendlyPassenger:
++	case VoiExplicitAbilityTargetKind::GhostSnipe:
++	case VoiExplicitAbilityTargetKind::YamatoTarget:
++		return "ability_target";
++	default:
++		return "ability_position";
++	}
++}
++
++inline bool voiProductionBindLiveAbilityTarget(
++	VoiProductionActionBinding & binding,
++	const std::string & dispatchAction,
++	double targetX = 0.0,
++	double targetY = 0.0,
++	std::uint64_t targetTag = 0)
++{
++	VoiExplicitAbilitySpec spec;
++	if (!voiProductionOperationIdentityIsValid(binding.identity)
++		|| binding.unitType.empty()
++		|| binding.abilityName.empty()
++		|| binding.action
++			!= "execute_ability:" + binding.abilityName
++		|| !voiResolveExplicitAbilitySpec(
++			binding.abilityName,
++			spec)
++		|| binding.abilityId
++			!= static_cast<std::uint32_t>(spec.abilityId)
++		|| dispatchAction
++			!= voiProductionExplicitAbilityDispatchAction(
++				spec.targetKind)
++		|| !std::isfinite(targetX)
++		|| !std::isfinite(targetY)
++		|| (dispatchAction == "ability_target"
++			? targetTag == 0
++			: targetTag != 0))
++	{
++		return false;
++	}
++	binding.targetKind =
++		voiExplicitAbilityTargetKindName(spec.targetKind);
++	if (dispatchAction == "ability")
++	{
++		binding.targetX = 0.0;
++		binding.targetY = 0.0;
++		binding.targetTag = 0;
++	}
++	else
++	{
++		binding.targetX = targetX;
++		binding.targetY = targetY;
++		binding.targetTag = targetTag;
++	}
++	return true;
++}
+diff --git a/src/voi_operation_observation.hpp b/src/voi_operation_observation.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..4e1671b5145ce606774662150ca226f59e7f297c
+--- /dev/null
++++ b/src/voi_operation_observation.hpp
+@@ -0,0 +1,66 @@
++#pragma once
++
++#include "voi_family_effect_lifecycle.hpp"
++
++#include <cstdint>
++#include <string>
++
++struct VoiOperationObservationDecision
++{
++	bool matchingSubmission = false;
++	bool movement = false;
++	bool engagement = false;
++	bool abilityEffect = false;
++	std::string effectKind;
++};
++
++inline VoiOperationObservationDecision voiReduceOperationObservation(
++	const VoiFamilyEffectTelemetrySnapshot & snapshot,
++	const std::string & expectedUpdateId,
++	std::uint64_t expectedGeneration,
++	std::uint32_t currentFrame,
++	bool submittedPositionPresent,
++	bool unitMoved,
++	bool unitEngaged,
++	bool abilityStateObserved)
++{
++	VoiOperationObservationDecision decision;
++	decision.matchingSubmission =
++		voiFamilyEffectHasMatchingSubmission(
++			snapshot,
++			expectedUpdateId,
++			expectedGeneration,
++			currentFrame);
++	if (!decision.matchingSubmission)
++	{
++		return decision;
++	}
++	if (snapshot.requiredEffect == "ability_state_or_effect")
++	{
++		decision.abilityEffect =
++			submittedPositionPresent && abilityStateObserved;
++		if (decision.abilityEffect)
++		{
++			decision.effectKind = "ability_state";
++		}
++		return decision;
++	}
++	const bool observed =
++		voiFamilyEffectHasMatchingObservation(
++			snapshot,
++			expectedUpdateId,
++			expectedGeneration,
++			currentFrame,
++			submittedPositionPresent,
++			unitMoved,
++			unitEngaged);
++	if (!observed)
++	{
++		return decision;
++	}
++	decision.engagement = unitEngaged;
++	decision.movement = !unitEngaged && unitMoved;
++	decision.effectKind =
++		decision.engagement ? "engagement" : "movement";
++	return decision;
++}
+diff --git a/src/voi_pre_live_journey_adapter.hpp b/src/voi_pre_live_journey_adapter.hpp
+index 5adac665fd95c96273ecd5e23a0e6e70fa04c14d..3ab59406fcf138fd85617d70d13fdb37370837dd 100644
+--- a/src/voi_pre_live_journey_adapter.hpp
++++ b/src/voi_pre_live_journey_adapter.hpp
+@@ -2,9 +2,12 @@
+ 
+ #include "json/json.hpp"
+ #include "voi_battlefield_projection.hpp"
++#include "voi_explicit_ability_spec.hpp"
+ #include "voi_family_effect_lifecycle.hpp"
+ #include "voi_operation_hud_selection.hpp"
++#include "voi_operation_observation.hpp"
+ #include "voi_operation_transfer_admission.hpp"
++#include "voi_production_path.hpp"
+ #include "voi_runtime_convergence.hpp"
+ 
+ #include <algorithm>
+@@ -26,6 +29,7 @@ struct VoiPreLiveUnitState
+ 	std::uint64_t tag = 0;
+ 	std::string unitType;
+ 	std::string family;
++	std::string cloakState;
+ 	bool alive = true;
+ 	bool complete = true;
+ 	bool selfOwned = true;
+@@ -70,9 +74,27 @@ struct VoiPreLiveOperationState
+ 	std::string status = "RECEIVED";
+ 	std::string blocker;
+ 	std::string action;
++	std::string unitType;
++	std::string squadOrderReceiptId;
++	std::string dispatchAction;
++	std::string squadOrderKind;
++	std::string abilityTargetKind;
++	std::uint32_t abilityId = 0;
++	std::string cloakState;
++	double targetX = 0.0;
++	double targetY = 0.0;
++	std::uint64_t targetTag = 0;
++	double squadOrderRadius = 0.0;
+ 	std::string editAction;
+ 	std::string counterpartOperationId;
+ 	std::size_t transferCount = 0;
++	std::vector<VoiPreLiveRequirementState> transferSelection;
++	bool transferApplied = false;
++	std::vector<std::uint64_t> transferredTags;
++	std::uint64_t transferSourceGeneration = 0;
++	std::uint64_t transferDestinationGeneration = 0;
++	std::uint64_t releasedGeneration = 0;
++	std::vector<std::uint64_t> releasedTags;
+ 	int minimumUnits = 0;
+ 	int maximumUnits = 0;
+ 	bool allowPartial = false;
+@@ -84,12 +106,34 @@ struct VoiPreLiveOperationState
+ 	double priority = 0.0;
+ 	std::vector<VoiPreLiveRequirementState> requirements;
+ 	std::vector<std::uint64_t> assignedTags;
++	std::vector<std::string> submissionIds;
++};
++
++class VoiPreLiveProductionExecutor
++{
++public:
++	virtual ~VoiPreLiveProductionExecutor() {}
++
++	virtual const char * executorKind() const = 0;
++	virtual const char * squadOrderExecutionPath() const = 0;
++	virtual const char * sc2SubmissionExecutionPath() const = 0;
++	virtual VoiProductionSquadOrderReceipt issueSquadOrder(
++		const VoiProductionActionBinding & binding,
++		const std::string & squadName,
++		const std::string & squadOrderKind,
++		double squadOrderRadius,
++		const std::vector<std::uint64_t> & unitTags) = 0;
++	virtual VoiProductionSubmissionReceipt submitSc2Action(
++		const VoiProductionActionBinding & binding,
++		const std::string & dispatchAction,
++		std::uint64_t unitTag) = 0;
+ };
+ 
+ class VoiPreLiveJourneyAdapter
+ {
++	VoiPreLiveProductionExecutor & m_productionExecutor;
+ 	std::map<std::uint64_t, VoiPreLiveUnitState> m_units;
+-	std::map<std::uint64_t, std::string> m_owners;
++	VoiProductionOperationOwners m_owners;
+ 	std::map<std::string, VoiPreLiveOperationState> m_operations;
+ 	std::map<std::string, int> m_protectedMinimum;
+ 	std::set<std::string> m_structures;
+@@ -102,6 +146,19 @@ class VoiPreLiveJourneyAdapter
+ 	bool m_baseThreatened = false;
+ 	std::string m_baseId = "self_main";
+ 	std::size_t m_requiredDefenders = 0;
++	int m_minerals = 0;
++	int m_vespene = 0;
++	std::uint64_t m_eventCursor = 0;
++	bool m_voiceEnabled = false;
++	bool m_muted = false;
++	bool m_allPrerequisitesAvailable = false;
++	std::size_t m_operationOwnershipReceiptCount = 0;
++	std::size_t m_squadOrderReceiptCount = 0;
++	std::size_t m_sc2SubmissionReceiptCount = 0;
++	std::vector<VoiProductionSquadOrderReceipt>
++		m_squadOrderReceipts;
++	std::vector<VoiProductionSubmissionReceipt>
++		m_sc2SubmissionReceipts;
+ 
+ 	static bool hasForbiddenAuthorityInput(
+ 		const VoiPreLiveJson & value,
+@@ -161,7 +218,9 @@ class VoiPreLiveJourneyAdapter
+ 	{
+ 		if (!operation.ability.empty())
+ 		{
+-			return "ability:" + operation.ability;
++			return operation.taskType == "execute_ability"
++				? "ability:" + operation.ability
++				: "";
+ 		}
+ 		if (operation.taskType == "scout_with_units")
+ 		{
+@@ -175,7 +234,11 @@ class VoiPreLiveJourneyAdapter
+ 		{
+ 			return "squad_order:harass";
+ 		}
+-		return "squad_order:attack";
++		if (operation.taskType == "pressure_with_main_army")
++		{
++			return "squad_order:attack";
++		}
++		return "";
+ 	}
+ 
+ 	static std::string canonicalTask(
+@@ -193,7 +256,189 @@ class VoiPreLiveJourneyAdapter
+ 		{
+ 			return "harass";
+ 		}
+-		return "attack";
++		if (operation.taskType == "pressure_with_main_army")
++		{
++			return "attack";
++		}
++		if (operation.taskType == "execute_ability")
++		{
++			return "ability";
++		}
++		return "";
++	}
++
++	static bool deterministicLocationTarget(
++		const std::string & locationIntent,
++		double & targetX,
++		double & targetY)
++	{
++		if (locationIntent == "enemy_main")
++		{
++			targetX = 96.0;
++			targetY = 96.0;
++		}
++		else if (locationIntent == "enemy_natural")
++		{
++			targetX = 72.0;
++			targetY = 72.0;
++		}
++		else if (locationIntent == "self_main")
++		{
++			targetX = 16.0;
++			targetY = 16.0;
++		}
++		else if (locationIntent == "self_natural")
++		{
++			targetX = 32.0;
++			targetY = 32.0;
++		}
++		else if (locationIntent == "map_center")
++		{
++			targetX = 64.0;
++			targetY = 64.0;
++		}
++		else
++		{
++			return false;
++		}
++		return true;
++	}
++
++	static bool validCloakState(const std::string & cloakState)
++	{
++		return cloakState.empty()
++			|| cloakState == "not_cloaked"
++			|| cloakState == "cloaked";
++	}
++
++	static std::string squadOrderKind(
++		const VoiPreLiveOperationState & operation)
++	{
++		if (!operation.ability.empty())
++		{
++			return "idle";
++		}
++		if (operation.action == "retreat")
++		{
++			return "retreat";
++		}
++		return canonicalTask(operation);
++	}
++
++	static double squadOrderRadius(
++		const std::string & orderKind)
++	{
++		if (orderKind == "scout")
++		{
++			return 15.0;
++		}
++		if (orderKind == "defend")
++		{
++			return 50.0;
++		}
++		if (orderKind == "attack"
++			|| orderKind == "harass")
++		{
++			return 25.0;
++		}
++		if (orderKind == "retreat")
++		{
++			return 8.0;
++		}
++		if (orderKind == "idle")
++		{
++			return 0.0;
++		}
++		return -1.0;
++	}
++
++	static VoiProductionOperationIdentity productionIdentity(
++		const VoiPreLiveOperationState & operation)
++	{
++		return {
++			operation.updateId,
++			operation.operationId,
++			operation.generation
++		};
++	}
++
++	static std::string deterministicDispatchAction(
++		const VoiPreLiveOperationState & operation)
++	{
++		if (!operation.ability.empty())
++		{
++			if (operation.abilityTargetKind == "none")
++			{
++				return "ability";
++			}
++			if (operation.abilityTargetKind == "enemy_unit"
++				|| operation.abilityTargetKind == "friendly_unit"
++				|| operation.abilityTargetKind
++					== "friendly_passenger"
++				|| operation.abilityTargetKind == "ghost_snipe"
++				|| operation.abilityTargetKind == "yamato_target")
++			{
++				return "ability_target";
++			}
++			return "ability_position";
++		}
++		if (operation.action == "retreat"
++			|| operation.action == "squad_order:scout")
++		{
++			return "move";
++		}
++		return "attack_move";
++	}
++
++	std::uint64_t deterministicAbilityTargetTag(
++		const VoiPreLiveOperationState & operation) const
++	{
++		if (deterministicDispatchAction(operation)
++			!= "ability_target")
++		{
++			return 0;
++		}
++		const bool requiresEnemy =
++			operation.abilityTargetKind == "enemy_unit"
++			|| operation.abilityTargetKind == "ghost_snipe"
++			|| operation.abilityTargetKind == "yamato_target";
++		const std::string requiredTargetUnitType =
++			operation.ability == "interference_matrix"
++				? "TERRAN_CYCLONE"
++				: "TERRAN_MARINE";
++		for (const auto & unitEntry : m_units)
++		{
++			const auto & unit = unitEntry.second;
++			if (!unit.alive
++				|| !unit.complete
++				|| unit.combat
++				|| unit.selfOwned == requiresEnemy
++				|| unit.unitType != requiredTargetUnitType
++				|| std::find(
++					operation.assignedTags.begin(),
++					operation.assignedTags.end(),
++					unit.tag)
++					!= operation.assignedTags.end())
++			{
++				continue;
++			}
++			return unit.tag;
++		}
++		return 0;
++	}
++
++	static std::pair<int, int> unitResourceCost(
++		const std::string & unitType)
++	{
++		if (unitType == "TERRAN_SIEGETANK")
++		{
++			return std::make_pair(150, 125);
++		}
++		if (unitType == "TERRAN_MARINE")
++		{
++			return std::make_pair(50, 0);
++		}
++		return std::make_pair(0, 0);
+ 	}
+ 
+ 	void emit(
+@@ -265,6 +510,68 @@ class VoiPreLiveJourneyAdapter
+ 		return tags;
+ 	}
+ 
++	static std::map<std::pair<std::string, std::string>, int>
++	requirementCounts(
++		const std::vector<VoiPreLiveRequirementState> & requirements)
++	{
++		std::map<std::pair<std::string, std::string>, int> counts;
++		for (const auto & requirement : requirements)
++		{
++			if (!requirement.unitType.empty()
++				&& requirement.targetCount > 0)
++			{
++				counts[{
++					requirement.unitType,
++					requirement.role
++				}] += requirement.targetCount;
++			}
++		}
++		return counts;
++	}
++
++	static std::vector<std::uint64_t> requirementAssignedTags(
++		const VoiPreLiveOperationState & operation)
++	{
++		std::vector<std::uint64_t> tags;
++		for (const auto & requirement : operation.requirements)
++		{
++			tags.insert(
++				tags.end(),
++				requirement.assignedTags.begin(),
++				requirement.assignedTags.end());
++		}
++		std::sort(tags.begin(), tags.end());
++		return tags;
++	}
++
++	static bool operationAssignmentsAreExact(
++		const VoiPreLiveOperationState & operation)
++	{
++		auto assigned = operation.assignedTags;
++		std::sort(assigned.begin(), assigned.end());
++		return std::adjacent_find(
++				assigned.begin(),
++				assigned.end()) == assigned.end()
++			&& assigned == requirementAssignedTags(operation);
++	}
++
++	static std::vector<std::uint64_t> ownedTagsForIdentity(
++		const VoiProductionOperationOwners & owners,
++		const std::string & operationId,
++		std::uint64_t generation)
++	{
++		std::vector<std::uint64_t> tags;
++		for (const auto & owner : owners)
++		{
++			if (owner.second
++				== std::make_pair(operationId, generation))
++			{
++				tags.push_back(owner.first);
++			}
++		}
++		return tags;
++	}
++
+ 	static std::string jsonString(
+ 		const VoiPreLiveJson & value,
+ 		const char * key,
+@@ -318,6 +625,14 @@ class VoiPreLiveJourneyAdapter
+ 
+ 	void loadInitialState(const VoiPreLiveJson & state)
+ 	{
++		m_minerals = std::max(0, jsonInt(state, "minerals"));
++		m_vespene = std::max(0, jsonInt(state, "vespene"));
++		m_eventCursor = jsonUint64(state, "event_cursor");
++		m_voiceEnabled = jsonBool(state, "voice_enabled", false);
++		m_muted = jsonBool(state, "muted", false);
++		m_allPrerequisitesAvailable =
++			jsonString(state, "prerequisites")
++				== "all_available";
+ 		const auto protectedMinimum =
+ 			state.find("protected_minimum");
+ 		if (protectedMinimum != state.end()
+@@ -361,11 +676,17 @@ class VoiPreLiveJourneyAdapter
+ 			VoiPreLiveUnitState unit;
+ 			unit.tag = jsonUint64(item, "tag");
+ 			unit.unitType = jsonString(item, "unit_type");
++			unit.cloakState = jsonString(item, "cloak_state");
+ 			if (unit.tag == 0 || unit.unitType.empty())
+ 			{
+ 				throw std::runtime_error(
+ 					"initial_state unit identity is invalid");
+ 			}
++			if (!validCloakState(unit.cloakState))
++			{
++				throw std::runtime_error(
++					"initial_state unit cloak_state is invalid");
++			}
+ 			unit.family =
+ 				voiCanonicalTerranFamilyForUnitType(
+ 					unit.unitType);
+@@ -464,13 +785,28 @@ class VoiPreLiveJourneyAdapter
+ 				{
+ 					if (selected.is_object())
+ 					{
+-						operation.transferCount +=
+-							static_cast<std::size_t>(
+-								std::max(
+-									0,
+-									jsonInt(
+-										selected,
+-										"count")));
++						VoiPreLiveRequirementState requirement;
++						requirement.unitType =
++							jsonString(
++								selected,
++								"unit_type");
++						requirement.role =
++							jsonString(selected, "role");
++						requirement.targetCount =
++							std::max(
++								0,
++								jsonInt(
++									selected,
++									"count"));
++						if (!requirement.unitType.empty()
++							&& requirement.targetCount > 0)
++						{
++							operation.transferSelection.push_back(
++								requirement);
++							operation.transferCount +=
++								static_cast<std::size_t>(
++									requirement.targetCount);
++						}
+ 					}
+ 				}
+ 			}
+@@ -525,7 +861,65 @@ class VoiPreLiveJourneyAdapter
+ 			throw std::runtime_error(
+ 				"operation identity or task is invalid");
+ 		}
++		operation.unitType =
++			operation.requirements.empty()
++				? ""
++				: operation.requirements.front().unitType;
++		if (operation.unitType.empty())
++		{
++			throw std::runtime_error(
++				"operation concrete unit type is invalid");
++		}
+ 		operation.action = taskAction(operation);
++		if (operation.action.empty())
++		{
++			throw std::runtime_error(
++				"operation task type is unsupported");
++		}
++		if (!deterministicLocationTarget(
++				operation.locationIntent,
++				operation.targetX,
++				operation.targetY))
++		{
++			throw std::runtime_error(
++				"operation location_intent is unsupported");
++		}
++		operation.squadOrderKind = squadOrderKind(operation);
++		operation.squadOrderRadius =
++			squadOrderRadius(operation.squadOrderKind);
++		if (operation.squadOrderKind.empty()
++			|| operation.squadOrderRadius < 0.0)
++		{
++			throw std::runtime_error(
++				"operation Squad order is unsupported");
++		}
++		if (!operation.ability.empty())
++		{
++			VoiExplicitAbilitySpec spec;
++			VoiExplicitAbilityCasterState casterState;
++			if (!voiResolveExplicitAbilitySpec(
++					operation.ability,
++					spec)
++				|| !voiResolveExplicitAbilityCasterState(
++					operation.ability,
++					casterState))
++			{
++				throw std::runtime_error(
++					"operation ability is unsupported");
++			}
++			if (!casterState.unitType.empty()
++				&& operation.unitType != casterState.unitType)
++			{
++				throw std::runtime_error(
++					"operation ability caster unit type is invalid");
++			}
++			operation.abilityId =
++				static_cast<std::uint32_t>(spec.abilityId);
++			operation.abilityTargetKind =
++				voiExplicitAbilityTargetKindName(
++					spec.targetKind);
++			operation.cloakState = casterState.cloakState;
++		}
+ 		return operation;
+ 	}
+ 
+@@ -547,7 +941,7 @@ class VoiPreLiveJourneyAdapter
+ 			}
+ 			const auto owner = m_owners.find(unit.tag);
+ 			if (owner == m_owners.end()
+-				|| owner->second == operationId)
++				|| owner->second.first == operationId)
+ 			{
+ 				tags.push_back(unit.tag);
+ 			}
+@@ -585,25 +979,21 @@ class VoiPreLiveJourneyAdapter
+ 		return tags;
+ 	}
+ 
+-	void releaseOperationOwnership(const std::string & operationId)
++	void releaseOperationOwnership(
++		const std::string & operationId,
++		std::uint64_t generation)
+ 	{
+-		for (auto owner = m_owners.begin();
+-			owner != m_owners.end();)
+-		{
+-			if (owner->second == operationId)
+-			{
+-				owner = m_owners.erase(owner);
+-			}
+-			else
+-			{
+-				++owner;
+-			}
+-		}
++		voiProductionReleaseOperationOwnership(
++			m_owners,
++			operationId,
++			generation);
+ 	}
+ 
+ 	void assignOperation(VoiPreLiveOperationState & operation)
+ 	{
+-		releaseOperationOwnership(operation.operationId);
++		releaseOperationOwnership(
++			operation.operationId,
++			operation.generation);
+ 		operation.assignedTags.clear();
+ 		std::vector<VoiRuntimeRequirementSnapshot> convergenceRows;
+ 		for (auto & requirement : operation.requirements)
+@@ -633,7 +1023,19 @@ class VoiPreLiveJourneyAdapter
+ 			for (std::size_t index = 0; index < count; ++index)
+ 			{
+ 				const auto tag = candidates[index];
+-				m_owners[tag] = operation.operationId;
++				const auto ownership =
++					voiProductionAssignOperationOwner(
++						m_owners,
++						tag,
++						operation.operationId,
++						operation.generation);
++				if (!ownership.accepted)
++				{
++					throw std::runtime_error(
++						"production operation ownership "
++						"assignment failed: "
++						+ ownership.blocker);
++				}
+ 				requirement.assignedTags.push_back(tag);
+ 				operation.assignedTags.push_back(tag);
+ 			}
+@@ -654,7 +1056,8 @@ class VoiPreLiveJourneyAdapter
+ 			for (const auto & prerequisite :
+ 				snapshot.prerequisites)
+ 			{
+-				if (m_structures.find(prerequisite)
++				if (!m_allPrerequisitesAvailable
++					&& m_structures.find(prerequisite)
+ 					== m_structures.end())
+ 				{
+ 					snapshot.missingPrerequisites.push_back(
+@@ -667,6 +1070,22 @@ class VoiPreLiveJourneyAdapter
+ 				snapshot.productionBlocker =
+ 					"missing_prerequisites";
+ 			}
++			else if (snapshot.assignedCount
++				< snapshot.targetCount)
++			{
++				const auto cost =
++					unitResourceCost(requirement.unitType);
++				const int missing =
++					snapshot.targetCount
++						- snapshot.assignedCount;
++				if (m_minerals < cost.first * missing
++					|| m_vespene < cost.second * missing)
++				{
++					snapshot.representedCount = 0;
++					snapshot.productionBlocker =
++						"insufficient_resources";
++				}
++			}
+ 			convergenceRows.push_back(snapshot);
+ 		}
+ 		std::sort(
+@@ -701,7 +1120,7 @@ class VoiPreLiveJourneyAdapter
+ 						&& unit.selfOwned
+ 						&& unit.combat
+ 						&& (owner == m_owners.end()
+-							|| owner->second
++							|| owner->second.first
+ 								== operation.operationId))
+ 					{
+ 						++eligibleCount;
+@@ -721,7 +1140,9 @@ class VoiPreLiveJourneyAdapter
+ 									0,
+ 									requirement.targetCount)));
+ 			}
+-			releaseOperationOwnership(operation.operationId);
++			releaseOperationOwnership(
++				operation.operationId,
++				operation.generation);
+ 			operation.assignedTags.clear();
+ 			for (auto & requirement : operation.requirements)
+ 			{
+@@ -792,20 +1213,45 @@ class VoiPreLiveJourneyAdapter
+ 				{ "partial",
+ 					operation.assignedTags.size()
+ 						< static_cast<std::size_t>(
+-							operation.maximumUnits) },
++					operation.maximumUnits) },
+ 			});
++		emitOwnershipReceipts(operation);
+ 		emitOwnership(operation, "assigned");
+ 		submitOperation(operation);
+ 	}
+ 
++	void emitOwnershipReceipts(
++		const VoiPreLiveOperationState & operation)
++	{
++		for (const auto tag : operation.assignedTags)
++		{
++			++m_operationOwnershipReceiptCount;
++			emit(
++				"production_path_receipt",
++				operation,
++				"accepted",
++				{
++					{ "entrypoint",
++						"voiProductionAssignOperationOwner" },
++					{ "unit_tag", tag },
++				});
++		}
++	}
++
+ 	void emitOwnership(
+ 		const VoiPreLiveOperationState & operation,
+ 		const std::string & stage)
+ 	{
+ 		std::map<std::string, std::vector<std::uint64_t>> owners;
++		VoiPreLiveJson ownerBindings =
++			VoiPreLiveJson::object();
+ 		for (const auto & owner : m_owners)
+ 		{
+-			owners[owner.second].push_back(owner.first);
++			owners[owner.second.first].push_back(owner.first);
++			ownerBindings[std::to_string(owner.first)] = {
++				{ "operation_id", owner.second.first },
++				{ "generation", owner.second.second },
++			};
+ 		}
+ 		emit(
+ 			"ownership_snapshot",
+@@ -814,6 +1260,7 @@ class VoiPreLiveJourneyAdapter
+ 			{
+ 				{ "action", "assign" },
+ 				{ "owners", owners },
++				{ "owner_bindings", ownerBindings },
+ 				{ "assigned_unit_tags", operation.assignedTags },
+ 			});
+ 	}
+@@ -826,6 +1273,179 @@ class VoiPreLiveJourneyAdapter
+ 		{
+ 			return;
+ 		}
++		operation.squadOrderReceiptId.clear();
++		operation.dispatchAction.clear();
++		operation.submissionIds.clear();
++		const auto identity = productionIdentity(operation);
++		double targetX = operation.targetX;
++		double targetY = operation.targetY;
++		if (operation.action == "retreat"
++			&& !deterministicLocationTarget(
++				"self_main",
++				targetX,
++				targetY))
++		{
++			throw std::runtime_error(
++				"retreat target resolution failed");
++		}
++		operation.targetX = targetX;
++		operation.targetY = targetY;
++		for (const auto tag : operation.assignedTags)
++		{
++			const auto unit = m_units.find(tag);
++			if (unit == m_units.end()
++				|| unit->second.unitType != operation.unitType)
++			{
++				throw std::runtime_error(
++					"assigned ability caster unit type is invalid");
++			}
++			if (!operation.ability.empty()
++				&& !voiExplicitAbilityCasterStateMatches(
++					operation.ability,
++					unit->second.unitType,
++					unit->second.cloakState))
++			{
++				throw std::runtime_error(
++					"assigned ability caster cloak state is invalid");
++			}
++		}
++		const VoiProductionActionBinding squadOrderBinding = {
++			identity,
++			operation.action,
++			operation.unitType,
++			operation.ability,
++			operation.abilityId,
++			operation.abilityTargetKind,
++			targetX,
++			targetY,
++			0,
++			operation.cloakState,
++		};
++		const std::string squadName =
++			"VoiOp:" + operation.operationId;
++		const auto squadOrder =
++			m_productionExecutor.issueSquadOrder(
++			squadOrderBinding,
++			squadName,
++			operation.squadOrderKind,
++			operation.squadOrderRadius,
++			operation.assignedTags);
++		if (!squadOrder.accepted)
++		{
++			throw std::runtime_error(
++				"production squad order failed: "
++				+ squadOrder.blocker);
++		}
++		++m_squadOrderReceiptCount;
++		m_squadOrderReceipts.push_back(squadOrder);
++		operation.squadOrderReceiptId =
++			squadOrder.receiptId;
++		emit(
++			"production_path_receipt",
++			operation,
++			"accepted",
++			{
++				{ "entrypoint",
++					"voiProductionIssueSquadOrder" },
++				{ "receipt_id", squadOrder.receiptId },
++				{ "update_id", squadOrder.updateId },
++				{ "operation_id", squadOrder.operationId },
++				{ "generation", squadOrder.generation },
++				{ "action", squadOrder.action },
++				{ "squad_order_type",
++					squadOrder.squadOrderType },
++				{ "target_x", squadOrder.targetX },
++				{ "target_y", squadOrder.targetY },
++				{ "radius", squadOrder.radius },
++				{ "unit_tags", squadOrder.unitTags },
++				{ "applied_proof",
++					squadOrder.appliedProof },
++				{ "membership_proof",
++					squadOrder.membershipProof },
++			});
++		std::vector<std::uint64_t> submittedTags;
++		const std::string dispatchAction =
++			deterministicDispatchAction(operation);
++		auto submissionBinding = squadOrderBinding;
++		if (dispatchAction == "ability")
++		{
++			submissionBinding.targetX = 0.0;
++			submissionBinding.targetY = 0.0;
++		}
++		else if (dispatchAction == "ability_target")
++		{
++			submissionBinding.targetTag =
++				deterministicAbilityTargetTag(operation);
++			if (submissionBinding.targetTag == 0)
++			{
++				throw std::runtime_error(
++					"deterministic unit-target ability target is missing");
++			}
++		}
++		operation.targetX = submissionBinding.targetX;
++		operation.targetY = submissionBinding.targetY;
++		operation.targetTag = submissionBinding.targetTag;
++		operation.dispatchAction = dispatchAction;
++		for (const auto tag : operation.assignedTags)
++		{
++			const auto submission =
++				m_productionExecutor.submitSc2Action(
++					submissionBinding,
++					dispatchAction,
++					tag);
++			if (!submission.submitted)
++			{
++				throw std::runtime_error(
++					"production SC2 submission failed: "
++					+ submission.blocker);
++			}
++			submittedTags.push_back(tag);
++			operation.submissionIds.push_back(
++				submission.submissionId);
++			++m_sc2SubmissionReceiptCount;
++			m_sc2SubmissionReceipts.push_back(submission);
++			emit(
++				"production_path_receipt",
++				operation,
++				"accepted",
++				{
++					{ "entrypoint",
++						"voiProductionSubmitSc2Action" },
++					{ "submission_id",
++						submission.submissionId },
++					{ "update_id", submission.updateId },
++					{ "operation_id",
++						submission.operationId },
++					{ "generation",
++						submission.generation },
++					{ "action", submission.action },
++					{ "dispatch_action",
++						submission.dispatchAction },
++					{ "unit_type",
++						submission.unitType },
++					{ "ability_name",
++						submission.abilityName },
++					{ "ability_id",
++						submission.abilityId },
++					{ "target_kind",
++						submission.targetKind },
++					{ "target_x",
++						submission.targetX },
++					{ "target_y",
++						submission.targetY },
++					{ "target_tag",
++						submission.targetTag },
++					{ "cloak_state",
++						submission.cloakState },
++					{ "unit_tags",
++						submission.unitTags },
++					{ "dispatch_proof",
++						submission.dispatchProof },
++				});
++		}
++		std::sort(
++			operation.submissionIds.begin(),
++			operation.submissionIds.end());
+ 		operation.submitted = true;
+ 		for (auto & requirement : operation.requirements)
+ 		{
+@@ -865,7 +1485,14 @@ class VoiPreLiveJourneyAdapter
+ 			"order_issued",
+ 			{
+ 				{ "action", operation.action },
+-				{ "unit_tags", operation.assignedTags },
++				{ "receipt_id",
++					operation.squadOrderReceiptId },
++				{ "squad_order_type",
++					squadOrder.squadOrderType },
++				{ "target_x", squadOrder.targetX },
++				{ "target_y", squadOrder.targetY },
++				{ "radius", squadOrder.radius },
++				{ "unit_tags", squadOrder.unitTags },
+ 			});
+ 		emit(
+ 			"submission",
+@@ -873,7 +1500,19 @@ class VoiPreLiveJourneyAdapter
+ 			"submitted",
+ 			{
+ 				{ "action", operation.action },
+-				{ "unit_tags", operation.assignedTags },
++				{ "dispatch_action",
++					operation.dispatchAction },
++				{ "unit_type", operation.unitType },
++				{ "ability_name", operation.ability },
++				{ "ability_id", operation.abilityId },
++				{ "target_kind",
++					operation.abilityTargetKind },
++				{ "target_x", submissionBinding.targetX },
++				{ "target_y", submissionBinding.targetY },
++				{ "target_tag", submissionBinding.targetTag },
++				{ "submission_ids",
++					operation.submissionIds },
++				{ "unit_tags", submittedTags },
+ 			});
+ 		operation.status = "EXECUTING";
+ 	}
+@@ -961,6 +1600,22 @@ class VoiPreLiveJourneyAdapter
+ 			first.editAction == "transfer_in"
+ 				? &first
+ 				: &second;
++		if (source->updateId != destination->updateId)
++		{
++			first.blocker =
++				second.blocker =
++					"transfer_selection_update_mismatch";
++			return;
++		}
++		if (requirementCounts(source->transferSelection)
++			!= requirementCounts(
++				destination->transferSelection))
++		{
++			first.blocker =
++				second.blocker =
++					"transfer_selection_contract_mismatch";
++			return;
++		}
+ 		const auto existingSource =
+ 			m_operations.find(source->operationId);
+ 		if (existingSource == m_operations.end())
+@@ -970,33 +1625,429 @@ class VoiPreLiveJourneyAdapter
+ 					"transfer_pair_not_active";
+ 			return;
+ 		}
+-		const std::size_t protectedCount =
+-			static_cast<std::size_t>(
+-				std::max(0, source->minimumUnits));
++		const auto existingDestination =
++			m_operations.find(destination->operationId);
++		if (existingDestination == m_operations.end())
++		{
++			first.blocker =
++				second.blocker =
++					"transfer_pair_not_active";
++			return;
++		}
++		if (!operationAssignmentsAreExact(
++				existingSource->second)
++			|| !operationAssignmentsAreExact(
++				existingDestination->second))
++		{
++			first.blocker =
++				second.blocker =
++					"transfer_operation_assignment_mismatch";
++			return;
++		}
++		std::vector<std::uint64_t> selected;
++		std::set<std::uint64_t> selectedSet;
++		for (const auto & selection :
++			source->transferSelection)
++		{
++			std::vector<std::uint64_t> candidates;
++			for (const auto & requirement :
++				existingSource->second.requirements)
++			{
++				if (requirement.unitType
++						!= selection.unitType
++					|| (!selection.role.empty()
++						&& requirement.role
++							!= selection.role))
++				{
++					continue;
++				}
++				for (const auto tag :
++					requirement.assignedTags)
++				{
++					if (selectedSet.find(tag)
++						== selectedSet.end())
++					{
++						candidates.push_back(tag);
++					}
++				}
++			}
++			std::sort(candidates.begin(), candidates.end());
++			candidates.erase(
++				std::unique(
++					candidates.begin(),
++					candidates.end()),
++				candidates.end());
++			const auto count =
++				static_cast<std::size_t>(
++					std::max(0, selection.targetCount));
++			if (candidates.size() < count)
++			{
++				first.blocker =
++					second.blocker =
++						"transfer_units_unavailable";
++				return;
++			}
++			for (std::size_t index = 0;
++				index < count;
++				++index)
++			{
++				selected.push_back(candidates[index]);
++				selectedSet.insert(candidates[index]);
++			}
++		}
++		std::sort(selected.begin(), selected.end());
+ 		if (source->transferCount == 0
++			|| selected.size() != source->transferCount
++			|| selected.size()
++				!= destination->transferCount
+ 			|| existingSource->second.assignedTags.size()
+-				< source->transferCount + protectedCount)
++				< selected.size()
++					+ static_cast<std::size_t>(
++						std::max(
++							0,
++							source->minimumUnits)))
+ 		{
+ 			first.blocker =
+ 				second.blocker =
+ 					"source_operation_minimum_violation";
+ 			return;
+ 		}
+-		std::vector<std::uint64_t> selected(
+-			existingSource->second.assignedTags.end()
+-				- source->transferCount,
++		if (existingDestination->second.assignedTags.size()
++				+ selected.size()
++			> static_cast<std::size_t>(
++				std::max(0, destination->maximumUnits)))
++		{
++			first.blocker =
++				second.blocker =
++					"transfer_destination_capacity_exceeded";
++			return;
++		}
++		VoiOperationTransferSelectionIdentity<std::uint64_t>
++			selectionIdentity;
++		selectionIdentity.updateId = source->updateId;
++		selectionIdentity.sourceOperationId =
++			source->operationId;
++		selectionIdentity.counterpartOperationId =
++			destination->operationId;
++		selectionIdentity.sourceAction = "transfer_out";
++		selectionIdentity.counterpartAction = "transfer_in";
++		selectionIdentity.sourceGeneration =
++			existingSource->second.generation;
++		selectionIdentity.counterpartGeneration =
++			existingDestination->second.generation;
++		selectionIdentity.requestedSourceGeneration =
++			source->generation;
++		selectionIdentity.requestedCounterpartGeneration =
++			destination->generation;
++		selectionIdentity.requestedCount = selected.size();
++		selectionIdentity.selectedUnitTags = selected;
++		const auto selectionValidation =
++			voiCanonicalizeOperationTransferSelectionIdentity(
++				selectionIdentity);
++		if (!selectionValidation.valid)
++		{
++			first.blocker =
++				second.blocker =
++					selectionValidation.blocker;
++			return;
++		}
++		auto roleKey = [](
++			const std::string & unitType,
++			const std::string & role)
++		{
++			return unitType + "\n" + role;
++		};
++		std::map<std::string, std::vector<std::uint64_t>>
++			sourcePools;
++		std::map<std::string, std::vector<std::uint64_t>>
++			destinationPools;
++		for (const auto & requirement :
++			existingSource->second.requirements)
++		{
++			for (const auto tag : requirement.assignedTags)
++			{
++				if (selectedSet.find(tag) == selectedSet.end())
++				{
++					sourcePools[
++						roleKey(
++							requirement.unitType,
++							requirement.role)]
++						.push_back(tag);
++				}
++				else
++				{
++					destinationPools[
++						roleKey(
++							requirement.unitType,
++							requirement.role)]
++						.push_back(tag);
++				}
++			}
++		}
++		for (const auto & requirement :
++			existingDestination->second.requirements)
++		{
++			auto & pool =
++				destinationPools[
++					roleKey(
++						requirement.unitType,
++						requirement.role)];
++			pool.insert(
++				pool.end(),
++				requirement.assignedTags.begin(),
++				requirement.assignedTags.end());
++		}
++		auto bindRequirements = [&](
++			VoiPreLiveOperationState & operation,
++			std::map<std::string, std::vector<std::uint64_t>> pools)
++		{
++			operation.assignedTags.clear();
++			for (auto & requirement : operation.requirements)
++			{
++				auto & pool =
++					pools[
++						roleKey(
++							requirement.unitType,
++							requirement.role)];
++				std::sort(pool.begin(), pool.end());
++				const std::size_t required =
++					static_cast<std::size_t>(
++						std::max(
++							0,
++							requirement.targetCount));
++				if (pool.size() < required)
++				{
++					return false;
++				}
++				requirement.assignedTags.assign(
++					pool.begin(),
++					pool.begin() + required);
++				operation.assignedTags.insert(
++					operation.assignedTags.end(),
++					requirement.assignedTags.begin(),
++					requirement.assignedTags.end());
++				pool.erase(
++					pool.begin(),
++					pool.begin() + required);
++			}
++			for (const auto & pool : pools)
++			{
++				if (!pool.second.empty())
++				{
++					return false;
++				}
++			}
++			std::sort(
++				operation.assignedTags.begin(),
++				operation.assignedTags.end());
++			return operationAssignmentsAreExact(operation);
++		};
++		if (!bindRequirements(*source, sourcePools)
++			|| !bindRequirements(
++				*destination,
++				destinationPools))
++		{
++			first.blocker =
++				second.blocker =
++					"transfer_role_binding_mismatch";
++			return;
++		}
++		const std::set<std::uint64_t> sourceBeforeTags(
++			existingSource->second.assignedTags.begin(),
+ 			existingSource->second.assignedTags.end());
+-		if (!voiTransferOwnershipAtomically(
+-				m_owners,
+-				selected,
++		const std::set<std::uint64_t> destinationBeforeTags(
++			existingDestination->second.assignedTags.begin(),
++			existingDestination->second.assignedTags.end());
++		std::set<std::uint64_t> expectedSourceAfter =
++			sourceBeforeTags;
++		for (const auto tag : selected)
++		{
++			if (expectedSourceAfter.erase(tag) != 1)
++			{
++				first.blocker =
++					second.blocker =
++						"transfer_selection_tags_mismatch";
++				return;
++			}
++		}
++		std::set<std::uint64_t> expectedDestinationAfter =
++			destinationBeforeTags;
++		expectedDestinationAfter.insert(
++			selected.begin(),
++			selected.end());
++		if (std::set<std::uint64_t>(
++				source->assignedTags.begin(),
++				source->assignedTags.end())
++				!= expectedSourceAfter
++			|| std::set<std::uint64_t>(
++				destination->assignedTags.begin(),
++				destination->assignedTags.end())
++				!= expectedDestinationAfter)
++		{
++			first.blocker =
++				second.blocker =
++					"transfer_assignment_result_mismatch";
++			return;
++		}
++		VoiProductionOperationOwners nextOwners = m_owners;
++		const auto currentSourceOwner =
++			std::make_pair(
+ 				source->operationId,
+-				destination->operationId))
++				existingSource->second.generation);
++		const auto currentDestinationOwner =
++			std::make_pair(
++				destination->operationId,
++				existingDestination->second.generation);
++		for (const auto & owner : m_owners)
++		{
++			if (owner.second == currentSourceOwner
++				&& sourceBeforeTags.find(owner.first)
++					== sourceBeforeTags.end())
++			{
++				first.blocker =
++					second.blocker =
++						"transfer_source_owner_set_mismatch";
++				return;
++			}
++			if (owner.second == currentDestinationOwner
++				&& destinationBeforeTags.find(owner.first)
++					== destinationBeforeTags.end())
++			{
++				first.blocker =
++					second.blocker =
++						"transfer_destination_owner_set_mismatch";
++				return;
++			}
++		}
++		for (const auto tag : sourceBeforeTags)
++		{
++			const auto owner = nextOwners.find(tag);
++			if (owner == nextOwners.end()
++				|| owner->second != currentSourceOwner)
++			{
++				first.blocker =
++					second.blocker =
++						"transfer_runtime_ownership_mismatch";
++				return;
++			}
++			owner->second =
++				selectedSet.find(tag) != selectedSet.end()
++					? std::make_pair(
++						destination->operationId,
++						destination->generation)
++					: std::make_pair(
++						source->operationId,
++						source->generation);
++		}
++		for (const auto tag : destinationBeforeTags)
++		{
++			const auto owner = nextOwners.find(tag);
++			if (owner == nextOwners.end()
++				|| owner->second != currentDestinationOwner)
++			{
++				first.blocker =
++					second.blocker =
++						"transfer_runtime_ownership_mismatch";
++				return;
++			}
++			owner->second = std::make_pair(
++				destination->operationId,
++				destination->generation);
++		}
++		for (auto * operation : {source, destination})
++		{
++			operation->transferApplied = true;
++			operation->transferredTags = selected;
++			operation->transferSourceGeneration =
++				existingSource->second.generation;
++			operation->transferDestinationGeneration =
++				existingDestination->second.generation;
++			operation->status = "ASSIGNED";
++			operation->blocker.clear();
++			operation->submitted = false;
++		}
++		source->movementObserved =
++			existingSource->second.movementObserved;
++		source->engagementObserved =
++			existingSource->second.engagementObserved;
++		source->targetReached =
++			existingSource->second.targetReached;
++		destination->movementObserved =
++			existingDestination->second.movementObserved;
++		destination->engagementObserved =
++			existingDestination->second.engagementObserved;
++		destination->targetReached =
++			existingDestination->second.targetReached;
++		VoiOperationTransferSelectionRuntimeEvidence<
++			std::uint64_t> runtimeEvidence;
++		runtimeEvidence.sourceUpdateId = source->updateId;
++		runtimeEvidence.counterpartUpdateId =
++			destination->updateId;
++		runtimeEvidence.sourceOperationId =
++			source->operationId;
++		runtimeEvidence.counterpartOperationId =
++			destination->operationId;
++		runtimeEvidence.sourceAction = "transfer_out";
++		runtimeEvidence.counterpartAction = "transfer_in";
++		runtimeEvidence.sourceGeneration = source->generation;
++		runtimeEvidence.counterpartGeneration =
++			destination->generation;
++		runtimeEvidence.requestedSourceGeneration =
++			source->generation;
++		runtimeEvidence.requestedCounterpartGeneration =
++			destination->generation;
++		runtimeEvidence.sourceResolution = "applied";
++		runtimeEvidence.counterpartResolution = "applied";
++		runtimeEvidence.sourceOwnedTags =
++			source->assignedTags;
++		runtimeEvidence.destinationOwnedTags =
++			destination->assignedTags;
++		const auto runtimeValidation =
++			voiValidateOperationTransferSelectionRuntimeEvidence(
++				selectionIdentity,
++				runtimeEvidence);
++		if (!runtimeValidation.valid)
+ 		{
+ 			first.blocker =
+ 				second.blocker =
+-					"transfer_runtime_ownership_mismatch";
++					runtimeValidation.blocker;
+ 			return;
+ 		}
++		for (const auto & owner : m_owners)
++		{
++			const auto replacement = nextOwners.find(owner.first);
++			if (replacement == nextOwners.end())
++			{
++				first.blocker =
++					second.blocker =
++						"transfer_owner_binding_removed";
++				return;
++			}
++			if (owner.second != currentSourceOwner
++				&& owner.second != currentDestinationOwner
++				&& replacement->second != owner.second)
++			{
++				first.blocker =
++					second.blocker =
++						"transfer_unrelated_owner_mutated";
++				return;
++			}
++		}
++		std::map<std::string, VoiPreLiveOperationState>
++			nextOperations = m_operations;
++		nextOperations[source->operationId] = *source;
++		nextOperations[destination->operationId] =
++			*destination;
++		const auto sourceGenerationBefore =
++			existingSource->second.generation;
++		const auto destinationGenerationBefore =
++			existingDestination->second.generation;
++		const auto sourceTagsBefore =
++			existingSource->second.assignedTags;
++		const auto destinationTagsBefore =
++			existingDestination->second.assignedTags;
++		m_owners.swap(nextOwners);
++		m_operations.swap(nextOperations);
+ 		emit(
+ 			"transfer",
+ 			*source,
+@@ -1005,6 +2056,22 @@ class VoiPreLiveJourneyAdapter
+ 				{ "action", "transfer_out" },
+ 				{ "counterpart_operation_id",
+ 					destination->operationId },
++				{ "source_generation_before",
++					sourceGenerationBefore },
++				{ "source_generation_after",
++					source->generation },
++				{ "destination_generation_before",
++					destinationGenerationBefore },
++				{ "destination_generation_after",
++					destination->generation },
++				{ "source_unit_tags_before",
++					sourceTagsBefore },
++				{ "source_unit_tags_after",
++					source->assignedTags },
++				{ "destination_unit_tags_before",
++					destinationTagsBefore },
++				{ "destination_unit_tags_after",
++					destination->assignedTags },
+ 				{ "unit_tags", selected },
+ 				{ "resolution", "applied" },
+ 			});
+@@ -1046,6 +2113,9 @@ class VoiPreLiveJourneyAdapter
+ 					continue;
+ 				}
+ 				operation.action = "retreat";
++				operation.squadOrderKind = "retreat";
++				operation.squadOrderRadius =
++					squadOrderRadius("retreat");
+ 				operation.updateId = updateId;
+ 				operation.submitted = false;
+ 				emit(
+@@ -1093,6 +2163,24 @@ class VoiPreLiveJourneyAdapter
+ 				if (existing != m_operations.end())
+ 				{
+ 					auto cancelled = existing->second;
++					const auto releasedGeneration =
++						cancelled.generation;
++					auto releasedTags =
++						ownedTagsForIdentity(
++							m_owners,
++							cancelled.operationId,
++							releasedGeneration);
++					auto assignedTags =
++						cancelled.assignedTags;
++					std::sort(
++						assignedTags.begin(),
++						assignedTags.end());
++					if (!operationAssignmentsAreExact(cancelled)
++						|| releasedTags != assignedTags)
++					{
++						throw std::runtime_error(
++							"cancellation ownership binding mismatch");
++					}
+ 					cancelled.updateId = operation.updateId;
+ 					cancelled.generation =
+ 						operation.generation;
+@@ -1103,8 +2191,38 @@ class VoiPreLiveJourneyAdapter
+ 					cancelled.completionReason =
+ 						"cancelled_by_user";
+ 					cancelled.completionFrame = m_frame;
+-					releaseOperationOwnership(
+-						cancelled.operationId);
++					cancelled.releasedGeneration =
++						releasedGeneration;
++					cancelled.releasedTags = releasedTags;
++					VoiProductionOperationOwners nextOwners =
++						m_owners;
++					voiProductionReleaseOperationOwnership(
++						nextOwners,
++						cancelled.operationId,
++						releasedGeneration);
++					for (const auto & owner : nextOwners)
++					{
++						if (owner.second.first
++							== cancelled.operationId)
++						{
++							throw std::runtime_error(
++								"cancellation did not fully release ownership");
++						}
++					}
++					cancelled.assignedTags.clear();
++					for (auto & requirement :
++						cancelled.requirements)
++					{
++						requirement.assignedTags.clear();
++					}
++					std::map<
++						std::string,
++						VoiPreLiveOperationState>
++						nextOperations = m_operations;
++					nextOperations[cancelled.operationId] =
++						cancelled;
++					m_owners.swap(nextOwners);
++					m_operations.swap(nextOperations);
+ 					emit(
+ 						"cancellation",
+ 						cancelled,
+@@ -1113,9 +2231,11 @@ class VoiPreLiveJourneyAdapter
+ 							{ "action", "cancel" },
+ 							{ "reason",
+ 								"cancelled_by_user" },
++							{ "released_generation",
++								releasedGeneration },
++							{ "released_unit_tags",
++								releasedTags },
+ 						});
+-					m_operations[cancelled.operationId] =
+-						cancelled;
+ 				}
+ 				continue;
+ 			}
+@@ -1144,6 +2264,40 @@ class VoiPreLiveJourneyAdapter
+ 					existing->second.targetReached;
+ 			}
+ 			operation.submitted = false;
++			if (operation.transferApplied)
++			{
++				m_operations[operation.operationId] =
++					operation;
++				auto & committed =
++					m_operations[operation.operationId];
++				emit(
++					"launch_decision",
++					committed,
++					"launch_admitted",
++					{
++						{ "action", "launch" },
++						{ "launch_count",
++							committed.assignedTags.size() },
++						{ "minimum_units",
++							committed.minimumUnits },
++						{ "maximum_units",
++							committed.maximumUnits },
++						{ "partial",
++							committed.assignedTags.size()
++								< static_cast<std::size_t>(
++									committed.maximumUnits) },
++					});
++				emitOwnershipReceipts(committed);
++				emitOwnership(committed, "assigned");
++				submitOperation(committed);
++				continue;
++			}
++			if (existing != m_operations.end())
++			{
++				releaseOperationOwnership(
++					existing->second.operationId,
++					existing->second.generation);
++			}
+ 			m_operations[operation.operationId] = operation;
+ 			assignOperation(
+ 				m_operations[operation.operationId]);
+@@ -1200,11 +2354,18 @@ class VoiPreLiveJourneyAdapter
+ 				created.tag = tag;
+ 				created.unitType =
+ 					jsonString(item, "unit_type");
++				created.cloakState =
++					jsonString(item, "cloak_state");
+ 				if (created.unitType.empty())
+ 				{
+ 					throw std::runtime_error(
+ 						"observed new unit lacks unit_type");
+ 				}
++				if (!validCloakState(created.cloakState))
++				{
++					throw std::runtime_error(
++						"observed new unit cloak_state is invalid");
++				}
+ 				created.family =
+ 					voiCanonicalTerranFamilyForUnitType(
+ 						created.unitType);
+@@ -1270,26 +2431,84 @@ class VoiPreLiveJourneyAdapter
+ 				{
+ 					continue;
+ 				}
+-				if (unit->second.homeDistance
+-					> previousDistance[tag] + 0.5)
++				VoiPreLiveRequirementState * requirement = nullptr;
++				for (auto & candidate : operation.requirements)
+ 				{
+-					moved.push_back(tag);
++					if (std::find(
++							candidate.assignedTags.begin(),
++							candidate.assignedTags.end(),
++							tag)
++						!= candidate.assignedTags.end())
++					{
++						requirement = &candidate;
++						break;
++					}
+ 				}
+-				if (unit->second.engaged
+-					&& !previousEngaged[tag])
++				if (requirement == nullptr)
+ 				{
+-					engaged.push_back(tag);
++					continue;
+ 				}
+-				if (!operation.ability.empty()
++				VoiFamilyEffectTelemetrySnapshot snapshot;
++				snapshot.policyUpdateId = operation.updateId;
++				snapshot.operationGeneration =
++					operation.generation;
++				snapshot.action = operation.action;
++				snapshot.requiredEffect =
++					operation.ability.empty()
++						? "movement_or_engagement"
++						: "ability_state_or_effect";
++				snapshot.attemptGeneration =
++					requirement->attemptGeneration;
++				snapshot.attemptedCount =
++					static_cast<int>(
++						requirement->assignedTags.size());
++				snapshot.attemptedFrame =
++					requirement->attemptedFrame;
++				snapshot.attemptedUnitTags.insert(
++					requirement->assignedTags.begin(),
++					requirement->assignedTags.end());
++				snapshot.submittedCount =
++					snapshot.attemptedCount;
++				snapshot.submittedFrame =
++					requirement->submittedFrame;
++				snapshot.submittedUnitTags =
++					snapshot.attemptedUnitTags;
++				const bool unitMoved =
++					unit->second.homeDistance
++						> previousDistance[tag] + 0.5;
++				const bool unitEngaged =
++					unit->second.engaged
++						&& !previousEngaged[tag];
++				const bool abilityStateObserved =
++					!operation.ability.empty()
+ 					&& unit->second.observedAbilities.find(
+ 							operation.ability)
+ 						!= unit->second.observedAbilities.end()
+ 					&& previousAbilities[tag].find(
+ 							operation.ability)
+-						== previousAbilities[tag].end())
++						== previousAbilities[tag].end();
++				const auto observation =
++					voiReduceOperationObservation(
++						snapshot,
++						operation.updateId,
++						operation.generation,
++						static_cast<std::uint32_t>(m_frame),
++						operation.submitted,
++						unitMoved,
++						unitEngaged,
++						abilityStateObserved);
++				if (observation.abilityEffect)
+ 				{
+ 					abilityEffects.push_back(tag);
+ 				}
++				else if (observation.engagement)
++				{
++					engaged.push_back(tag);
++				}
++				else if (observation.movement)
++				{
++					moved.push_back(tag);
++				}
+ 			}
+ 			if (!abilityEffects.empty())
+ 			{
+@@ -1402,6 +2621,18 @@ class VoiPreLiveJourneyAdapter
+ 			"effect_observed",
+ 			{
+ 				{ "action", operation.action },
++				{ "dispatch_action",
++					operation.dispatchAction },
++				{ "unit_type", operation.unitType },
++				{ "ability_name", operation.ability },
++				{ "ability_id", operation.abilityId },
++				{ "target_kind",
++					operation.abilityTargetKind },
++				{ "target_x", operation.targetX },
++				{ "target_y", operation.targetY },
++				{ "target_tag", operation.targetTag },
++				{ "submission_ids",
++					operation.submissionIds },
+ 				{ "unit_tags", tags },
+ 				{ "effect_kind", effectKind },
+ 			});
+@@ -1413,6 +2644,8 @@ class VoiPreLiveJourneyAdapter
+ 
+ 	void applyResourceObservation(const VoiPreLiveJson & step)
+ 	{
++		m_minerals = jsonInt(step, "minerals", m_minerals);
++		m_vespene = jsonInt(step, "vespene", m_vespene);
+ 		const auto structures = step.find("structures");
+ 		if (structures != step.end() && structures->is_array())
+ 		{
+@@ -1445,6 +2678,14 @@ class VoiPreLiveJourneyAdapter
+ 				VoiPreLiveUnitState unit;
+ 				unit.tag = tag;
+ 				unit.unitType = unitType;
++				unit.cloakState =
++					jsonString(item, "cloak_state");
++				if (!validCloakState(unit.cloakState))
++				{
++					throw std::runtime_error(
++						"resource observation unit cloak_state "
++						"is invalid");
++				}
+ 				unit.family =
+ 					voiCanonicalTerranFamilyForUnitType(
+ 						unitType);
+@@ -1555,6 +2796,7 @@ class VoiPreLiveJourneyAdapter
+ 				{ "tag", unit.tag },
+ 				{ "unit_type", unit.unitType },
+ 				{ "family", unit.family },
++				{ "cloak_state", unit.cloakState },
+ 				{ "alive", unit.alive },
+ 				{ "complete", unit.complete },
+ 				{ "self_owned", unit.selfOwned },
+@@ -1569,9 +2811,15 @@ class VoiPreLiveJourneyAdapter
+ 			});
+ 		}
+ 		VoiPreLiveJson owners = VoiPreLiveJson::object();
++		VoiPreLiveJson ownerBindings =
++			VoiPreLiveJson::object();
+ 		for (const auto & owner : m_owners)
+ 		{
+-			owners[owner.second].push_back(owner.first);
++			owners[owner.second.first].push_back(owner.first);
++			ownerBindings[std::to_string(owner.first)] = {
++				{ "operation_id", owner.second.first },
++				{ "generation", owner.second.second },
++			};
+ 		}
+ 		VoiPreLiveJson operations = VoiPreLiveJson::array();
+ 		for (const auto & entry : m_operations)
+@@ -1585,6 +2833,19 @@ class VoiPreLiveJourneyAdapter
+ 				{ "active", operation.active },
+ 				{ "assigned_unit_tags",
+ 					operation.assignedTags },
++				{ "edit_action", operation.editAction },
++				{ "counterpart_operation_id",
++					operation.counterpartOperationId },
++				{ "transferred_unit_tags",
++					operation.transferredTags },
++				{ "transfer_source_generation",
++					operation.transferSourceGeneration },
++				{ "transfer_destination_generation",
++					operation.transferDestinationGeneration },
++				{ "released_generation",
++					operation.releasedGeneration },
++				{ "released_unit_tags",
++					operation.releasedTags },
+ 				{ "action", operation.action },
+ 				{ "blocker", operation.blocker },
+ 			});
+@@ -1593,12 +2854,22 @@ class VoiPreLiveJourneyAdapter
+ 			{ "frame", m_frame },
+ 			{ "units", units },
+ 			{ "owners", owners },
++			{ "owner_bindings", ownerBindings },
+ 			{ "operations", operations },
+ 			{ "structures",
+ 				std::vector<std::string>(
+ 					m_structures.begin(),
+ 					m_structures.end()) },
+ 			{ "base_threatened", m_baseThreatened },
++			{ "minerals", m_minerals },
++			{ "vespene", m_vespene },
++			{ "event_cursor", m_eventCursor },
++			{ "voice_enabled", m_voiceEnabled },
++			{ "muted", m_muted },
++			{ "prerequisites",
++				m_allPrerequisitesAvailable
++					? "all_available"
++					: "" },
+ 		};
+ 	}
+ 
+@@ -1638,13 +2909,13 @@ class VoiPreLiveJourneyAdapter
+ 			if (owner != m_owners.end())
+ 			{
+ 				const auto operation =
+-					m_operations.find(owner->second);
++					m_operations.find(owner->second.first);
+ 				const std::uint64_t generation =
+ 					operation != m_operations.end()
+ 						? operation->second.generation
+-						: 0;
++						: owner->second.second;
+ 				unit.explicitOwners.push_back(
+-					"operation:" + owner->second
++					"operation:" + owner->second.first
+ 						+ "#" + std::to_string(generation));
+ 			}
+ 			if (!source.autonomousOwner.empty())
+@@ -1948,11 +3219,147 @@ class VoiPreLiveJourneyAdapter
+ 		};
+ 	}
+ 
++	VoiPreLiveJson productionPathJson() const
++	{
++		VoiPreLiveJson appliedSquadOrders =
++			VoiPreLiveJson::array();
++		for (const auto & receipt : m_squadOrderReceipts)
++		{
++			appliedSquadOrders.push_back({
++				{ "receipt_id", receipt.receiptId },
++				{ "update_id", receipt.updateId },
++				{ "operation_id",
++					receipt.operationId },
++				{ "generation", receipt.generation },
++				{ "squad_name", receipt.squadName },
++				{ "action", receipt.action },
++				{ "squad_order_type",
++					receipt.squadOrderType },
++				{ "target_x", receipt.targetX },
++				{ "target_y", receipt.targetY },
++				{ "radius", receipt.radius },
++				{ "unit_tags", receipt.unitTags },
++			});
++		}
++		VoiPreLiveJson dispatchedSc2Actions =
++			VoiPreLiveJson::array();
++		for (const auto & receipt : m_sc2SubmissionReceipts)
++		{
++			dispatchedSc2Actions.push_back({
++				{ "submission_id", receipt.submissionId },
++				{ "update_id", receipt.updateId },
++				{ "operation_id",
++					receipt.operationId },
++				{ "generation", receipt.generation },
++				{ "action", receipt.action },
++				{ "dispatch_action",
++					receipt.dispatchAction },
++				{ "unit_type", receipt.unitType },
++				{ "ability_name",
++					receipt.abilityName },
++				{ "ability_id", receipt.abilityId },
++				{ "target_kind",
++					receipt.targetKind },
++				{ "target_x", receipt.targetX },
++				{ "target_y", receipt.targetY },
++				{ "target_tag", receipt.targetTag },
++				{ "cloak_state", receipt.cloakState },
++				{ "unit_tags", receipt.unitTags },
++			});
++		}
++		VoiPreLiveJson squadOrderReceipts =
++			VoiPreLiveJson::array();
++		for (const auto & receipt : m_squadOrderReceipts)
++		{
++			squadOrderReceipts.push_back({
++				{ "receipt_id", receipt.receiptId },
++				{ "update_id", receipt.updateId },
++				{ "operation_id", receipt.operationId },
++				{ "generation", receipt.generation },
++				{ "squad_name", receipt.squadName },
++				{ "action", receipt.action },
++				{ "squad_order_type",
++					receipt.squadOrderType },
++				{ "target_x", receipt.targetX },
++				{ "target_y", receipt.targetY },
++				{ "radius", receipt.radius },
++				{ "unit_tags", receipt.unitTags },
++				{ "callback_executed",
++					receipt.callbackExecuted },
++				{ "applied_proof", receipt.appliedProof },
++				{ "membership_proof",
++					receipt.membershipProof },
++			});
++		}
++		VoiPreLiveJson submissionReceipts =
++			VoiPreLiveJson::array();
++		for (const auto & receipt : m_sc2SubmissionReceipts)
++		{
++			submissionReceipts.push_back({
++				{ "submission_id", receipt.submissionId },
++				{ "update_id", receipt.updateId },
++				{ "operation_id", receipt.operationId },
++				{ "generation", receipt.generation },
++				{ "action", receipt.action },
++				{ "dispatch_action",
++					receipt.dispatchAction },
++				{ "unit_type", receipt.unitType },
++				{ "ability_name",
++					receipt.abilityName },
++				{ "ability_id", receipt.abilityId },
++				{ "target_kind",
++					receipt.targetKind },
++				{ "target_x", receipt.targetX },
++				{ "target_y", receipt.targetY },
++				{ "target_tag", receipt.targetTag },
++				{ "cloak_state", receipt.cloakState },
++				{ "unit_tags", receipt.unitTags },
++				{ "callback_executed",
++					receipt.callbackExecuted },
++				{ "dispatch_proof",
++					receipt.dispatchProof },
++			});
++		}
++		return {
++			{ "executor_kind",
++				m_productionExecutor.executorKind() },
++			{ "squad_order_execution_path",
++				m_productionExecutor.squadOrderExecutionPath() },
++			{ "sc2_submission_execution_path",
++				m_productionExecutor.sc2SubmissionExecutionPath() },
++			{ "operation_manager_entrypoint",
++				"voiProductionAssignOperationOwner" },
++			{ "squad_order_entrypoint",
++				"voiProductionIssueSquadOrder" },
++			{ "sc2_submission_entrypoint",
++				"voiProductionSubmitSc2Action" },
++			{ "operation_ownership_receipt_count",
++				m_operationOwnershipReceiptCount },
++			{ "squad_order_receipt_count",
++				m_squadOrderReceiptCount },
++			{ "sc2_submission_receipt_count",
++				m_sc2SubmissionReceiptCount },
++			{ "applied_squad_orders", appliedSquadOrders },
++			{ "dispatched_sc2_actions",
++				dispatchedSc2Actions },
++			{ "squad_order_receipts",
++				squadOrderReceipts },
++			{ "sc2_submission_receipts",
++				submissionReceipts },
++		};
++	}
++
+ public:
++	explicit VoiPreLiveJourneyAdapter(
++		VoiPreLiveProductionExecutor & productionExecutor)
++		: m_productionExecutor(productionExecutor)
++	{
++	}
++
+ 	VoiPreLiveJson run(const VoiPreLiveJson & input)
+ 	{
+ 		if (!input.is_object()
+-			|| input.value("schema_version", 0) != 1)
++			|| input.value("schema_version", 0) != 2)
+ 		{
+ 			throw std::runtime_error(
+ 				"pre-live adapter schema_version is unsupported");
+@@ -2016,14 +3423,17 @@ public:
+ 			}
+ 			else if (kind == "client_reconnect")
+ 			{
++				m_eventCursor =
++					jsonUint64(
++						step,
++						"after_event_seq",
++						m_eventCursor);
+ 				emitGlobal(
+ 					"client_reconnect",
+ 					"observed",
+ 					{
+ 						{ "after_event_seq",
+-							jsonUint64(
+-								step,
+-								"after_event_seq") },
++							m_eventCursor },
+ 					});
+ 				recordSnapshot("client_reconnect");
+ 			}
+@@ -2040,13 +3450,14 @@ public:
+ 				voiBattlefieldProjectionJson(projection));
+ 		const auto director = operationDirectorJson();
+ 		return {
+-			{ "schema_version", 1 },
++			{ "schema_version", 2 },
+ 			{ "events", m_events },
+ 			{ "snapshots", m_snapshots },
+ 			{ "final_state", stateJson() },
+ 			{ "operation_director", director },
+ 			{ "battlefield_overview", battlefield },
+ 			{ "hud", hudJson() },
++			{ "production_path", productionPathJson() },
+ 			{ "telemetry", {
+ 				{ "protocol_version", "voi-mm-bridge/v1" },
+ 				{ "frame", m_frame },
+@@ -2070,9 +3481,10 @@ public:
+ };
+ 
+ inline VoiPreLiveJson voiRunPreLiveJourneyAdapter(
+-	const VoiPreLiveJson & input)
++	const VoiPreLiveJson & input,
++	VoiPreLiveProductionExecutor & productionExecutor)
+ {
+-	VoiPreLiveJourneyAdapter adapter;
++	VoiPreLiveJourneyAdapter adapter(productionExecutor);
+ 	return adapter.run(input);
+ }
+ 
+@@ -2080,7 +3492,8 @@ inline int voiRunPreLiveJourneyAdapterFile(
+ 	const std::string & path,
+ 	std::istream & standardInput,
+ 	std::ostream & output,
+-	std::ostream & error)
++	std::ostream & error,
++	VoiPreLiveProductionExecutor & productionExecutor)
+ {
+ 	try
+ 	{
+@@ -2099,7 +3512,9 @@ inline int voiRunPreLiveJourneyAdapterFile(
+ 		}
+ 		VoiPreLiveJson payload;
+ 		*input >> payload;
+-		output << voiRunPreLiveJourneyAdapter(payload).dump()
++		output << voiRunPreLiveJourneyAdapter(
++			payload,
++			productionExecutor).dump()
+ 			<< "\n";
+ 		return 0;
+ 	}
+diff --git a/src/voi_production_path.hpp b/src/voi_production_path.hpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..8a8d14576cd00b7cc449f28578bad2b834e9102d
+--- /dev/null
++++ b/src/voi_production_path.hpp
+@@ -0,0 +1,506 @@
++#pragma once
++
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++#include <iomanip>
++#include <map>
++#include <set>
++#include <sstream>
++#include <string>
++#include <utility>
++#include <vector>
++
++using VoiProductionOperationOwners =
++	std::map<std::uint64_t, std::pair<std::string, std::uint64_t>>;
++
++struct VoiProductionOwnershipReceipt
++{
++	bool accepted = false;
++	std::uint64_t unitTag = 0;
++	std::string operationId;
++	std::uint64_t generation = 0;
++	std::string blocker;
++};
++
++inline VoiProductionOwnershipReceipt
++voiProductionAssignOperationOwner(
++	VoiProductionOperationOwners & owners,
++	std::uint64_t unitTag,
++	const std::string & operationId,
++	std::uint64_t generation)
++{
++	VoiProductionOwnershipReceipt receipt;
++	receipt.unitTag = unitTag;
++	receipt.operationId = operationId;
++	receipt.generation = generation;
++	if (unitTag == 0 || operationId.empty() || generation == 0)
++	{
++		receipt.blocker = "invalid_operation_ownership_identity";
++		return receipt;
++	}
++	const auto existing = owners.find(unitTag);
++	if (existing != owners.end()
++		&& existing->second
++			!= std::make_pair(operationId, generation))
++	{
++		receipt.blocker = "unit_already_owned_by_other_operation";
++		return receipt;
++	}
++	owners[unitTag] = std::make_pair(operationId, generation);
++	receipt.accepted = true;
++	return receipt;
++}
++
++inline void voiProductionReleaseOperationOwnership(
++	VoiProductionOperationOwners & owners,
++	const std::string & operationId,
++	std::uint64_t generation)
++{
++	for (auto owner = owners.begin(); owner != owners.end();)
++	{
++		if (owner->second
++			== std::make_pair(operationId, generation))
++		{
++			owner = owners.erase(owner);
++		}
++		else
++		{
++			++owner;
++		}
++	}
++}
++
++inline bool voiProductionTransferOperationOwnership(
++	VoiProductionOperationOwners & owners,
++	const std::vector<std::uint64_t> & unitTags,
++	const std::string & sourceOperationId,
++	std::uint64_t sourceGeneration,
++	const std::string & destinationOperationId,
++	std::uint64_t destinationGeneration)
++{
++	if (unitTags.empty()
++		|| sourceOperationId.empty()
++		|| destinationOperationId.empty()
++		|| sourceGeneration == 0
++		|| destinationGeneration == 0)
++	{
++		return false;
++	}
++	for (const auto unitTag : unitTags)
++	{
++		const auto owner = owners.find(unitTag);
++		if (owner == owners.end()
++			|| owner->second
++				!= std::make_pair(
++					sourceOperationId,
++					sourceGeneration))
++		{
++			return false;
++		}
++	}
++	for (const auto unitTag : unitTags)
++	{
++		owners[unitTag] = std::make_pair(
++			destinationOperationId,
++			destinationGeneration);
++	}
++	return true;
++}
++
++struct VoiProductionSquadOrderReceipt
++{
++	bool accepted = false;
++	bool callbackExecuted = false;
++	bool appliedProof = false;
++	bool membershipProof = false;
++	std::string updateId;
++	std::string operationId;
++	std::uint64_t generation = 0;
++	std::string squadName;
++	std::string action;
++	std::size_t squadOrderType = 0;
++	double targetX = 0.0;
++	double targetY = 0.0;
++	double radius = 0.0;
++	std::vector<std::uint64_t> unitTags;
++	std::string receiptId;
++	std::string blocker;
++};
++
++struct VoiProductionOperationIdentity
++{
++	std::string updateId;
++	std::string operationId;
++	std::uint64_t generation = 0;
++};
++
++struct VoiProductionActionBinding
++{
++	VoiProductionOperationIdentity identity;
++	std::string action;
++	std::string unitType;
++	std::string abilityName;
++	std::uint32_t abilityId = 0;
++	std::string targetKind;
++	double targetX = 0.0;
++	double targetY = 0.0;
++	std::uint64_t targetTag = 0;
++	std::string cloakState;
++};
++
++inline bool voiProductionAbilityTargetMetadataIsValid(
++	const VoiProductionActionBinding & binding,
++	const std::string & dispatchAction)
++{
++	if (binding.abilityName.empty())
++	{
++		return true;
++	}
++	if (binding.targetKind.empty()
++		|| !std::isfinite(binding.targetX)
++		|| !std::isfinite(binding.targetY))
++	{
++		return false;
++	}
++	if (dispatchAction == "ability")
++	{
++		return binding.targetKind == "none"
++			&& binding.targetX == 0.0
++			&& binding.targetY == 0.0
++			&& binding.targetTag == 0;
++	}
++	if (dispatchAction == "ability_position")
++	{
++		return binding.targetKind != "none"
++			&& binding.targetTag == 0;
++	}
++	if (dispatchAction == "ability_target")
++	{
++		return binding.targetKind != "none"
++			&& binding.targetTag > 0;
++	}
++	return false;
++}
++
++inline bool voiProductionOperationIdentityIsValid(
++	const VoiProductionOperationIdentity & identity)
++{
++	return !identity.updateId.empty()
++		&& !identity.operationId.empty()
++		&& identity.generation > 0;
++}
++
++inline bool voiProductionCanonicalizeUnitTags(
++	const std::vector<std::uint64_t> & unitTags,
++	std::vector<std::uint64_t> & canonical,
++	std::string & blocker)
++{
++	if (unitTags.empty())
++	{
++		blocker = "missing_production_unit_tags";
++		return false;
++	}
++	canonical = unitTags;
++	std::sort(canonical.begin(), canonical.end());
++	if (canonical.front() == 0)
++	{
++		blocker = "invalid_production_unit_tag";
++		return false;
++	}
++	if (std::adjacent_find(canonical.begin(), canonical.end())
++		!= canonical.end())
++	{
++		blocker = "duplicate_production_unit_tag";
++		return false;
++	}
++	return true;
++}
++
++inline void voiProductionAppendDeterministicField(
++	std::ostringstream & canonical,
++	const std::string & value)
++{
++	canonical << value.size() << ":" << value << "|";
++}
++
++inline std::string voiProductionDeterministicReceiptId(
++	const std::string & prefix,
++	const VoiProductionOperationIdentity & identity,
++	const std::string & action,
++	const std::string & dispatchAction,
++	const std::vector<std::uint64_t> & unitTags,
++	const VoiProductionActionBinding * binding = nullptr)
++{
++	std::ostringstream canonical;
++	voiProductionAppendDeterministicField(canonical, prefix);
++	voiProductionAppendDeterministicField(
++		canonical,
++		identity.updateId);
++	voiProductionAppendDeterministicField(
++		canonical,
++		identity.operationId);
++	canonical << identity.generation << "|";
++	voiProductionAppendDeterministicField(canonical, action);
++	voiProductionAppendDeterministicField(
++		canonical,
++		dispatchAction);
++	for (const auto unitTag : unitTags)
++	{
++		canonical << unitTag << ",";
++	}
++	canonical << "|";
++	if (binding != nullptr)
++	{
++		voiProductionAppendDeterministicField(
++			canonical,
++			binding->unitType);
++		voiProductionAppendDeterministicField(
++			canonical,
++			binding->abilityName);
++		canonical << binding->abilityId << "|";
++		voiProductionAppendDeterministicField(
++			canonical,
++			binding->targetKind);
++		canonical << std::setprecision(17)
++			<< binding->targetX << "|"
++			<< binding->targetY << "|";
++		canonical << binding->targetTag << "|";
++		voiProductionAppendDeterministicField(
++			canonical,
++			binding->cloakState);
++	}
++
++	std::uint64_t hash = 1469598103934665603ULL;
++	for (const unsigned char value : canonical.str())
++	{
++		hash ^= static_cast<std::uint64_t>(value);
++		hash *= 1099511628211ULL;
++	}
++	std::ostringstream receiptId;
++	receiptId << prefix << "-"
++		<< std::hex << std::setfill('0') << std::setw(16) << hash;
++	return receiptId.str();
++}
++
++template <typename Apply>
++VoiProductionSquadOrderReceipt voiProductionIssueSquadOrder(
++	const VoiProductionOperationIdentity & identity,
++	const std::string & squadName,
++	const std::string & action,
++	const std::vector<std::uint64_t> & unitTags,
++	Apply apply)
++{
++	VoiProductionSquadOrderReceipt receipt;
++	receipt.updateId = identity.updateId;
++	receipt.operationId = identity.operationId;
++	receipt.generation = identity.generation;
++	receipt.squadName = squadName;
++	receipt.action = action;
++	if (!voiProductionOperationIdentityIsValid(identity))
++	{
++		receipt.blocker = "invalid_squad_order_identity";
++		return receipt;
++	}
++	if (squadName.empty() || action.empty())
++	{
++		receipt.blocker = "invalid_squad_order";
++		return receipt;
++	}
++	if (!voiProductionCanonicalizeUnitTags(
++			unitTags,
++			receipt.unitTags,
++			receipt.blocker))
++	{
++		return receipt;
++	}
++	receipt.callbackExecuted = true;
++	receipt.appliedProof = static_cast<bool>(apply());
++	if (!receipt.appliedProof)
++	{
++		receipt.blocker = "squad_order_not_applied";
++		return receipt;
++	}
++	receipt.receiptId = voiProductionDeterministicReceiptId(
++		"voi-squad-order",
++		identity,
++		action,
++		"",
++		receipt.unitTags);
++	receipt.accepted = true;
++	return receipt;
++}
++
++struct VoiProductionSubmissionReceipt
++{
++	bool submitted = false;
++	bool callbackExecuted = false;
++	bool dispatchProof = false;
++	std::string updateId;
++	std::string operationId;
++	std::uint64_t generation = 0;
++	std::string action;
++	std::string dispatchAction;
++	std::string unitType;
++	std::string abilityName;
++	std::uint32_t abilityId = 0;
++	std::string targetKind;
++	double targetX = 0.0;
++	double targetY = 0.0;
++	std::uint64_t targetTag = 0;
++	std::string cloakState;
++	std::vector<std::uint64_t> unitTags;
++	std::string submissionId;
++	std::string blocker;
++};
++
++template <typename Submit>
++VoiProductionSubmissionReceipt voiProductionSubmitSc2Action(
++	const VoiProductionOperationIdentity & identity,
++	const std::string & action,
++	const std::string & dispatchAction,
++	const std::vector<std::uint64_t> & unitTags,
++	const VoiProductionActionBinding * binding,
++	Submit submit)
++{
++	VoiProductionSubmissionReceipt receipt;
++	receipt.updateId = identity.updateId;
++	receipt.operationId = identity.operationId;
++	receipt.generation = identity.generation;
++	receipt.action = action;
++	receipt.dispatchAction = dispatchAction;
++	if (binding != nullptr)
++	{
++		receipt.unitType = binding->unitType;
++		receipt.abilityName = binding->abilityName;
++		receipt.abilityId = binding->abilityId;
++		receipt.targetKind = binding->targetKind;
++		receipt.targetX = binding->targetX;
++		receipt.targetY = binding->targetY;
++		receipt.targetTag = binding->targetTag;
++		receipt.cloakState = binding->cloakState;
++	}
++	if (!voiProductionOperationIdentityIsValid(identity))
++	{
++		receipt.blocker = "invalid_sc2_submission_identity";
++		return receipt;
++	}
++	if (action.empty()
++		|| dispatchAction.empty()
++		|| (binding != nullptr
++			&& !binding->abilityName.empty()
++			&& (binding->unitType.empty()
++				|| !voiProductionAbilityTargetMetadataIsValid(
++					*binding,
++					dispatchAction))))
++	{
++		receipt.blocker = "invalid_sc2_submission";
++		return receipt;
++	}
++	if (!voiProductionCanonicalizeUnitTags(
++			unitTags,
++			receipt.unitTags,
++			receipt.blocker))
++	{
++		return receipt;
++	}
++	receipt.callbackExecuted = true;
++	receipt.dispatchProof = static_cast<bool>(submit());
++	if (!receipt.dispatchProof)
++	{
++		receipt.blocker = "sc2_action_not_dispatched";
++		return receipt;
++	}
++	receipt.submissionId = voiProductionDeterministicReceiptId(
++		"voi-sc2-submission",
++		identity,
++		action,
++		dispatchAction,
++		receipt.unitTags,
++		binding);
++	receipt.submitted = true;
++	return receipt;
++}
++
++template <typename Submit>
++VoiProductionSubmissionReceipt voiProductionSubmitSc2Action(
++	const VoiProductionOperationIdentity & identity,
++	const std::string & action,
++	const std::string & dispatchAction,
++	const std::vector<std::uint64_t> & unitTags,
++	Submit submit)
++{
++	return voiProductionSubmitSc2Action(
++		identity,
++		action,
++		dispatchAction,
++		unitTags,
++		nullptr,
++		submit);
++}
++
++inline void voiProductionResetCommandIssue(bool * commandIssued)
++{
++	if (commandIssued != nullptr)
++	{
++		*commandIssued = false;
++	}
++}
++
++template <typename Dispatch>
++bool voiProductionDispatchSc2ActionAndRecord(
++	const VoiProductionActionBinding * productionBinding,
++	const std::string & dispatchAction,
++	std::uint64_t unitTag,
++	bool * commandIssued,
++	VoiProductionSubmissionReceipt * submissionReceipt,
++	Dispatch dispatch)
++{
++	voiProductionResetCommandIssue(commandIssued);
++	if (submissionReceipt != nullptr)
++	{
++		*submissionReceipt = VoiProductionSubmissionReceipt();
++	}
++	bool dispatched = false;
++	if (productionBinding == nullptr)
++	{
++		dispatched = static_cast<bool>(dispatch());
++	}
++	else
++	{
++		const auto receipt = voiProductionSubmitSc2Action(
++			productionBinding->identity,
++			productionBinding->action,
++			dispatchAction,
++			std::vector<std::uint64_t>({unitTag}),
++			productionBinding,
++			dispatch);
++		dispatched = receipt.submitted;
++		if (submissionReceipt != nullptr)
++		{
++			*submissionReceipt = receipt;
++		}
++	}
++	if (commandIssued != nullptr)
++	{
++		*commandIssued = dispatched;
++	}
++	return dispatched;
++}
++
++template <typename Dispatch>
++bool voiProductionDispatchSc2ActionAndRecord(
++	const VoiProductionActionBinding * productionBinding,
++	const std::string & dispatchAction,
++	std::uint64_t unitTag,
++	bool * commandIssued,
++	Dispatch dispatch)
++{
++	return voiProductionDispatchSc2ActionAndRecord(
++		productionBinding,
++		dispatchAction,
++		unitTag,
++		commandIssued,
++		nullptr,
++		dispatch);
++}
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 3ddbf11d2e439417f4f15a8e09f2d35ce921fde4..534667e55d021a887cf7ef13e38ced7265210cd5 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -142,3 +142,18 @@ add_test(
+     NAME voi_pre_live_journey_adapter
+     COMMAND voi_pre_live_journey_adapter_test
+ )
++
++add_executable(
++    voi_production_path_test
++    production_path_test.cpp
++)
++target_include_directories(
++    voi_production_path_test
++    PRIVATE
++    "${PROJECT_SOURCE_DIR}/src"
++    "${SC2Api_INCLUDE_DIRS}"
++)
++add_test(
++    NAME voi_production_path
++    COMMAND voi_production_path_test
++)
+diff --git a/tests/pre_live_journey_adapter_test.cpp b/tests/pre_live_journey_adapter_test.cpp
+index 5aad7ef44cc680ba359b6102f836f375e7782a62..7d3e697cb0a3c8a0bb632be9651214cea98f33b8 100644
+--- a/tests/pre_live_journey_adapter_test.cpp
++++ b/tests/pre_live_journey_adapter_test.cpp
+@@ -2,7 +2,9 @@
+ 
+ #include <iostream>
+ #include <sstream>
++#include <set>
+ #include <string>
++#include <vector>
+ 
+ namespace
+ {
+@@ -19,6 +21,76 @@ int failures = 0;
+ 		}                                                                    \
+ 	} while (false)
+ 
++class VoiPreLiveTestProductionExecutor
++	: public VoiPreLiveProductionExecutor
++{
++public:
++	const char * executorKind() const override
++	{
++		return "deterministic_test_fake";
++	}
++
++	const char * squadOrderExecutionPath() const override
++	{
++		return "test_fake::issueSquadOrder";
++	}
++
++	const char * sc2SubmissionExecutionPath() const override
++	{
++		return "test_fake::submitSc2Action";
++	}
++
++	VoiProductionSquadOrderReceipt issueSquadOrder(
++		const VoiProductionActionBinding & binding,
++		const std::string & squadName,
++		const std::string & squadOrderKind,
++		double squadOrderRadius,
++		const std::vector<std::uint64_t> & unitTags) override
++	{
++		auto receipt = voiProductionIssueSquadOrder(
++			binding.identity,
++			squadName,
++			binding.action,
++			unitTags,
++			[]()
++			{
++				return true;
++			});
++		receipt.membershipProof = true;
++		receipt.squadOrderType =
++			squadOrderKind == "attack"
++				? 2U
++				: 1U;
++		receipt.targetX = binding.targetX;
++		receipt.targetY = binding.targetY;
++		receipt.radius = squadOrderRadius;
++		return receipt;
++	}
++
++	VoiProductionSubmissionReceipt submitSc2Action(
++		const VoiProductionActionBinding & binding,
++		const std::string & dispatchAction,
++		std::uint64_t unitTag) override
++	{
++		return voiProductionSubmitSc2Action(
++			binding.identity,
++			binding.action,
++			dispatchAction,
++			std::vector<std::uint64_t>({unitTag}),
++			&binding,
++			[]()
++			{
++				return true;
++			});
++	}
++};
++
++VoiPreLiveJson runAdapter(const VoiPreLiveJson & input)
++{
++	VoiPreLiveTestProductionExecutor executor;
++	return voiRunPreLiveJourneyAdapter(input, executor);
++}
++
+ VoiPreLiveJson operationUpdate()
+ {
+ 	return {
+@@ -71,8 +143,12 @@ VoiPreLiveJson operationUpdate()
+ VoiPreLiveJson validInput()
+ {
+ 	return {
+-		{ "schema_version", 1 },
++		{ "schema_version", 2 },
+ 		{ "initial_state", {
++			{ "event_cursor", 41 },
++			{ "minerals", 500 },
++			{ "muted", false },
++			{ "prerequisites", "all_available" },
+ 			{ "protected_minimum", {
+ 				{ "TERRAN_MARINE", 0 },
+ 			} },
+@@ -91,6 +167,8 @@ VoiPreLiveJson validInput()
+ 					{ "home_distance", 0.0 },
+ 				},
+ 			} },
++			{ "vespene", 125 },
++			{ "voice_enabled", true },
+ 		} },
+ 		{ "steps", {
+ 			{
+@@ -115,10 +193,272 @@ VoiPreLiveJson validInput()
+ 		} },
+ 	};
+ }
++
++VoiPreLiveJson abilityInput(
++	const std::string & ability,
++	const std::string & unitType,
++	const std::string & cloakState)
++{
++	auto input = validInput();
++	input["initial_state"]["units"] = {
++		{
++			{ "tag", 11 },
++			{ "unit_type", unitType },
++			{ "cloak_state", cloakState },
++			{ "home_distance", 0.0 },
++		},
++	};
++	VoiExplicitAbilitySpec spec;
++	if (voiResolveExplicitAbilitySpec(ability, spec)
++		&& (spec.targetKind == VoiExplicitAbilityTargetKind::EnemyUnit
++			|| spec.targetKind == VoiExplicitAbilityTargetKind::GhostSnipe
++			|| spec.targetKind == VoiExplicitAbilityTargetKind::YamatoTarget
++			|| spec.targetKind == VoiExplicitAbilityTargetKind::FriendlyUnit
++			|| spec.targetKind
++				== VoiExplicitAbilityTargetKind::FriendlyPassenger))
++	{
++		const bool friendly =
++			spec.targetKind == VoiExplicitAbilityTargetKind::FriendlyUnit
++			|| spec.targetKind
++				== VoiExplicitAbilityTargetKind::FriendlyPassenger;
++		input["initial_state"]["units"].push_back({
++			{ "tag", 99 },
++			{ "unit_type",
++				ability == "interference_matrix"
++					? "TERRAN_CYCLONE"
++					: "TERRAN_MARINE" },
++			{ "self_owned", friendly },
++			{ "combat", false },
++			{ "home_distance", 0.0 },
++		});
++	}
++	input["steps"].erase(input["steps"].begin() + 1);
++	auto & operation =
++		input["steps"][0]["update"]["vector"]["operations"][0];
++	operation["tactical_task"]["task_type"] =
++		"execute_ability";
++	operation["tactical_task"]["ability"] = ability;
++	operation["tactical_task"]["min_units"] = 1;
++	operation["tactical_task"]["max_units"] = 1;
++	operation["composition_requirements"] = {
++		{
++			{ "unit_type", unitType },
++			{ "count", 1 },
++			{ "role", "caster" },
++		},
++	};
++	return input;
++}
++
++VoiPreLiveJson makeOperation(
++	const std::string & operationId,
++	std::uint64_t generation,
++	int unitCount,
++	int minimumUnits,
++	int maximumUnits,
++	const std::string & editAction = "",
++	const std::string & counterpartOperationId = "",
++	const std::string & completionState = "active")
++{
++	VoiPreLiveJson unitSelection =
++		VoiPreLiveJson::array();
++	if (editAction == "transfer_in"
++		|| editAction == "transfer_out")
++	{
++		unitSelection.push_back({
++			{ "unit_type", "TERRAN_MARINE" },
++			{ "count", 1 },
++			{ "role", "frontline" },
++		});
++	}
++	return {
++		{ "operation_id", operationId },
++		{ "generation", generation },
++		{ "issued_at_frame", generation == 1 ? 100 : 200 },
++		{ "tactical_task", {
++			{ "task_type", "pressure_with_main_army" },
++			{ "ability", "" },
++			{ "location_intent", "enemy_main" },
++			{ "priority", 0.9 },
++			{ "min_units", minimumUnits },
++			{ "max_units", maximumUnits },
++			{ "allow_partial", false },
++		} },
++		{ "lifetime", {
++			{ "mode", "until_completed" },
++			{ "completion_state", completionState },
++		} },
++		{ "composition_requirements", {
++			{
++				{ "unit_type", "TERRAN_MARINE" },
++				{ "count", unitCount },
++				{ "role", "frontline" },
++			},
++		} },
++		{ "operation_edit", {
++			{ "action", editAction },
++			{ "counterpart_operation_id",
++				counterpartOperationId },
++			{ "unit_selection", unitSelection },
++		} },
++	};
++}
++
++VoiPreLiveJson ownershipInput(
++	const std::vector<VoiPreLiveJson> & initialOperations,
++	const std::vector<VoiPreLiveJson> & updatedOperations,
++	std::size_t unitCount)
++{
++	VoiPreLiveJson units = VoiPreLiveJson::array();
++	for (std::size_t index = 0; index < unitCount; ++index)
++	{
++		units.push_back({
++			{ "tag", 11 + index },
++			{ "unit_type", "TERRAN_MARINE" },
++			{ "home_distance", 0.0 },
++		});
++	}
++	return {
++		{ "schema_version", 2 },
++		{ "initial_state", {
++			{ "event_cursor", 0 },
++			{ "minerals", 500 },
++			{ "muted", false },
++			{ "prerequisites", "all_available" },
++			{ "protected_minimum", {
++				{ "TERRAN_MARINE", 0 },
++			} },
++			{ "structures", {
++				"TERRAN_BARRACKS",
++			} },
++			{ "units", units },
++			{ "vespene", 125 },
++			{ "voice_enabled", false },
++		} },
++		{ "steps", {
++			{
++				{ "frame", 100 },
++				{ "kind", "policy_update" },
++				{ "update", {
++					{ "protocol_version",
++						"voi-mm-bridge/v1" },
++					{ "update_id", "ownership-initial" },
++					{ "issued_at_frame", 100 },
++					{ "vector", {
++						{ "emergency", {
++							{ "cancel_attacks", false },
++							{ "force_retreat", false },
++						} },
++						{ "operations",
++							initialOperations },
++					} },
++				} },
++			},
++			{
++				{ "frame", 200 },
++				{ "kind", "policy_update" },
++				{ "update", {
++					{ "protocol_version",
++						"voi-mm-bridge/v1" },
++					{ "update_id", "ownership-update" },
++					{ "issued_at_frame", 200 },
++					{ "vector", {
++						{ "emergency", {
++							{ "cancel_attacks", false },
++							{ "force_retreat", false },
++						} },
++						{ "operations",
++							updatedOperations },
++					} },
++				} },
++			},
++		} },
++	};
++}
++
++VoiPreLiveJson transferInput()
++{
++	return ownershipInput(
++		{
++			makeOperation("source", 1, 3, 2, 3),
++			makeOperation("destination", 1, 1, 1, 1),
++			makeOperation("sibling", 1, 1, 1, 1),
++		},
++		{
++			makeOperation(
++				"source",
++				2,
++				2,
++				2,
++				2,
++				"transfer_out",
++				"destination"),
++			makeOperation(
++				"destination",
++				2,
++				2,
++				2,
++				2,
++				"transfer_in",
++				"source"),
++		},
++		5);
++}
++
++const VoiPreLiveJson & operationState(
++	const VoiPreLiveJson & output,
++	const std::string & operationId)
++{
++	for (const auto & operation :
++		output["final_state"]["operations"])
++	{
++		if (operation["operation_id"] == operationId)
++		{
++			return operation;
++		}
++	}
++	throw std::runtime_error(
++		"missing final operation: " + operationId);
++}
++
++void checkFinalSnapshotConsistency(
++	const VoiPreLiveJson & output)
++{
++	const auto & snapshot =
++		output["snapshots"][output["snapshots"].size() - 1]
++			["state"];
++	CHECK(
++		snapshot["owners"]
++			== output["final_state"]["owners"]);
++	CHECK(
++		snapshot["owner_bindings"]
++			== output["final_state"]["owner_bindings"]);
++	CHECK(
++		snapshot["operations"]
++			== output["final_state"]["operations"]);
++}
++
++void expectRuntimeError(
++	const VoiPreLiveJson & input,
++	const std::string & expected)
++{
++	try
++	{
++		(void)runAdapter(input);
++		CHECK(false);
++	}
++	catch (const std::runtime_error & error)
++	{
++		CHECK(
++			std::string(error.what()).find(expected)
++				!= std::string::npos);
++	}
++}
+ }
+ 
+ int main()
+ {
++	VoiPreLiveTestProductionExecutor standardInputExecutor;
+ 	std::istringstream standardInput(validInput().dump());
+ 	std::ostringstream standardOutput;
+ 	std::ostringstream standardError;
+@@ -127,17 +467,26 @@ int main()
+ 			"-",
+ 			standardInput,
+ 			standardOutput,
+-			standardError) == 0);
++			standardError,
++			standardInputExecutor) == 0);
+ 	CHECK(standardError.str().empty());
+ 	const auto standardOutputPayload =
+ 		VoiPreLiveJson::parse(standardOutput.str());
+-	CHECK(standardOutputPayload["schema_version"] == 1);
++	CHECK(standardOutputPayload["schema_version"] == 2);
+ 
+ 	const auto output =
+-		voiRunPreLiveJourneyAdapter(validInput());
+-	CHECK(output["schema_version"] == 1);
++		runAdapter(validInput());
++	CHECK(output["schema_version"] == 2);
+ 	CHECK(output["events"].is_array());
+ 	CHECK(output["events"].size() >= 6);
++	CHECK(output["final_state"]["minerals"] == 500);
++	CHECK(output["final_state"]["vespene"] == 125);
++	CHECK(output["final_state"]["event_cursor"] == 41);
++	CHECK(output["final_state"]["voice_enabled"] == true);
++	CHECK(output["final_state"]["muted"] == false);
++	CHECK(
++		output["final_state"]["prerequisites"]
++			== "all_available");
+ 	CHECK(
+ 		output["battlefield_overview"]["authority"]
+ 			== "micromachine_cpp");
+@@ -152,6 +501,292 @@ int main()
+ 			["family_evidence"][0]["effect_kind"]
+ 			== "movement");
+ 	CHECK(output["hud"]["rows"].is_array());
++	CHECK(
++		output["production_path"]["executor_kind"]
++			== "deterministic_test_fake");
++	CHECK(
++		output["production_path"]["squad_order_execution_path"]
++			== "test_fake::issueSquadOrder");
++	CHECK(
++		output["production_path"]["sc2_submission_execution_path"]
++			== "test_fake::submitSc2Action");
++	CHECK(
++		output["production_path"]["operation_manager_entrypoint"]
++			== "voiProductionAssignOperationOwner");
++	CHECK(
++		output["production_path"]["squad_order_entrypoint"]
++			== "voiProductionIssueSquadOrder");
++	CHECK(
++		output["production_path"]["sc2_submission_entrypoint"]
++			== "voiProductionSubmitSc2Action");
++	CHECK(
++		output["production_path"]
++			["operation_ownership_receipt_count"] == 2);
++	CHECK(
++		output["production_path"]["squad_order_receipt_count"]
++			== 1);
++	CHECK(
++		output["production_path"]["sc2_submission_receipt_count"]
++			== 2);
++	CHECK(
++		output["production_path"]["applied_squad_orders"].size()
++			== 1);
++	CHECK(
++		output["production_path"]["dispatched_sc2_actions"].size()
++			== 2);
++	CHECK(
++		output["production_path"]["squad_order_receipts"].size()
++			== 1);
++	CHECK(
++		output["production_path"]["sc2_submission_receipts"].size()
++			== 2);
++	const auto & squadOrderReceipt =
++		output["production_path"]["squad_order_receipts"][0];
++	CHECK(
++		squadOrderReceipt["update_id"] == "adapter-test");
++	CHECK(
++		squadOrderReceipt["operation_id"] == "assault-alpha");
++	CHECK(squadOrderReceipt["generation"] == 1);
++	CHECK(
++		squadOrderReceipt["action"] == "squad_order:attack");
++	CHECK(
++		squadOrderReceipt["unit_tags"]
++			== VoiPreLiveJson::array({11, 12}));
++	CHECK(squadOrderReceipt["callback_executed"] == true);
++	CHECK(squadOrderReceipt["applied_proof"] == true);
++	CHECK(
++		squadOrderReceipt["receipt_id"]
++			.get<std::string>().find("voi-squad-order-") == 0);
++	CHECK(
++		output["production_path"]["applied_squad_orders"][0]
++			["receipt_id"] == squadOrderReceipt["receipt_id"]);
++	const auto & appliedOrder =
++		output["production_path"]["applied_squad_orders"][0];
++	CHECK(appliedOrder.size() == 11);
++	CHECK(appliedOrder["update_id"] == "adapter-test");
++	CHECK(appliedOrder["operation_id"] == "assault-alpha");
++	CHECK(appliedOrder["generation"] == 1);
++	CHECK(appliedOrder["squad_name"] == "VoiOp:assault-alpha");
++	CHECK(appliedOrder["action"] == "squad_order:attack");
++	CHECK(
++		appliedOrder["unit_tags"]
++			== VoiPreLiveJson::array({11, 12}));
++	std::set<std::string> submissionIds;
++	const auto & submissions =
++		output["production_path"]["sc2_submission_receipts"];
++	const auto & dispatchedActions =
++		output["production_path"]["dispatched_sc2_actions"];
++	for (std::size_t index = 0;
++		index < submissions.size();
++		++index)
++	{
++		const auto & submission = submissions[index];
++		const auto & dispatched = dispatchedActions[index];
++		CHECK(submission["update_id"] == "adapter-test");
++		CHECK(submission["operation_id"] == "assault-alpha");
++		CHECK(submission["generation"] == 1);
++		CHECK(submission["action"] == "squad_order:attack");
++		CHECK(submission["dispatch_action"] == "attack_move");
++		CHECK(submission["unit_type"] == "TERRAN_MARINE");
++		CHECK(submission["cloak_state"] == "");
++		CHECK(submission["unit_tags"].size() == 1);
++		CHECK(submission["callback_executed"] == true);
++		CHECK(submission["dispatch_proof"] == true);
++		const std::string submissionId =
++			submission["submission_id"].get<std::string>();
++		CHECK(
++			submissionId.find("voi-sc2-submission-") == 0);
++		submissionIds.insert(submissionId);
++		CHECK(dispatched.size() == 15);
++		CHECK(dispatched["submission_id"] == submissionId);
++		CHECK(dispatched["update_id"] == "adapter-test");
++		CHECK(dispatched["operation_id"] == "assault-alpha");
++		CHECK(dispatched["generation"] == 1);
++		CHECK(dispatched["action"] == "squad_order:attack");
++		CHECK(dispatched["dispatch_action"] == "attack_move");
++		CHECK(dispatched["unit_type"] == submission["unit_type"]);
++		CHECK(
++			dispatched["cloak_state"]
++				== submission["cloak_state"]);
++		CHECK(dispatched["unit_tags"] == submission["unit_tags"]);
++	}
++	CHECK(submissionIds.size() == 2);
++	std::size_t productionPathReceiptCount = 0;
++	bool squadOrderReceiptEventObserved = false;
++	std::set<std::string> submissionReceiptEventIds;
++	for (const auto & event : output["events"])
++	{
++		productionPathReceiptCount +=
++			event["event_type"] == "production_path_receipt"
++				? 1
++				: 0;
++		if (event["event_type"] != "production_path_receipt")
++		{
++			continue;
++		}
++		const auto & payload = event["payload"];
++		if (payload["entrypoint"]
++			== "voiProductionIssueSquadOrder")
++		{
++			squadOrderReceiptEventObserved =
++				payload["receipt_id"]
++					== squadOrderReceipt["receipt_id"]
++				&& payload["update_id"] == "adapter-test"
++				&& payload["operation_id"] == "assault-alpha"
++				&& payload["generation"] == 1
++				&& payload["action"] == "squad_order:attack"
++				&& payload["unit_tags"]
++					== VoiPreLiveJson::array({11, 12})
++				&& payload["applied_proof"] == true;
++		}
++		else if (payload["entrypoint"]
++			== "voiProductionSubmitSc2Action")
++		{
++			CHECK(payload["update_id"] == "adapter-test");
++			CHECK(payload["operation_id"] == "assault-alpha");
++			CHECK(payload["generation"] == 1);
++			CHECK(payload["action"] == "squad_order:attack");
++			CHECK(payload["dispatch_action"] == "attack_move");
++			CHECK(payload["unit_type"] == "TERRAN_MARINE");
++			CHECK(payload["unit_tags"].size() == 1);
++			CHECK(payload["dispatch_proof"] == true);
++			submissionReceiptEventIds.insert(
++				payload["submission_id"].get<std::string>());
++		}
++	}
++	CHECK(productionPathReceiptCount == 5);
++	CHECK(squadOrderReceiptEventObserved);
++	CHECK(submissionReceiptEventIds == submissionIds);
++	VoiPreLiveJson expectedSubmissionIds =
++		VoiPreLiveJson::array();
++	for (const auto & submissionId : submissionIds)
++	{
++		expectedSubmissionIds.push_back(submissionId);
++	}
++	bool canonicalSquadOrderObserved = false;
++	bool canonicalSubmissionObserved = false;
++	bool canonicalEffectObserved = false;
++	for (const auto & event : output["events"])
++	{
++		const auto & payload = event["payload"];
++		if (event["event_type"] == "squad_order")
++		{
++			canonicalSquadOrderObserved =
++				payload["receipt_id"]
++					== squadOrderReceipt["receipt_id"]
++				&& payload["unit_tags"]
++					== VoiPreLiveJson::array({11, 12});
++		}
++		else if (event["event_type"] == "submission")
++		{
++			canonicalSubmissionObserved =
++				payload["dispatch_action"] == "attack_move"
++				&& payload["unit_type"] == "TERRAN_MARINE"
++				&& payload["submission_ids"]
++					== expectedSubmissionIds
++				&& payload["unit_tags"]
++					== VoiPreLiveJson::array({11, 12});
++		}
++		else if (event["event_type"] == "movement")
++		{
++			canonicalEffectObserved =
++				payload["dispatch_action"] == "attack_move"
++				&& payload["unit_type"] == "TERRAN_MARINE"
++				&& payload["submission_ids"]
++					== expectedSubmissionIds
++				&& payload["unit_tags"]
++					== VoiPreLiveJson::array({11, 12});
++		}
++	}
++	CHECK(canonicalSquadOrderObserved);
++	CHECK(canonicalSubmissionObserved);
++	CHECK(canonicalEffectObserved);
++
++	const auto noTargetAbilityOutput =
++		runAdapter(
++			abilityInput(
++				"ghost_cloak",
++				"TERRAN_GHOST",
++				"not_cloaked"));
++	const auto & noTargetAbilityOrder =
++		noTargetAbilityOutput["production_path"]
++			["squad_order_receipts"][0];
++	CHECK(noTargetAbilityOrder["target_x"] == 96.0);
++	CHECK(noTargetAbilityOrder["target_y"] == 96.0);
++	const auto & noTargetAbilitySubmission =
++		noTargetAbilityOutput["production_path"]
++			["sc2_submission_receipts"][0];
++	CHECK(
++		noTargetAbilitySubmission["dispatch_action"]
++			== "ability");
++	CHECK(
++		noTargetAbilitySubmission["target_kind"]
++			== "none");
++	CHECK(noTargetAbilitySubmission["target_x"] == 0.0);
++	CHECK(noTargetAbilitySubmission["target_y"] == 0.0);
++	CHECK(noTargetAbilitySubmission["target_tag"] == 0);
++	bool noTargetSubmissionEventObserved = false;
++	for (const auto & event : noTargetAbilityOutput["events"])
++	{
++		if (event["event_type"] == "submission")
++		{
++			noTargetSubmissionEventObserved =
++				event["payload"]["dispatch_action"]
++					== "ability"
++				&& event["payload"]["target_kind"] == "none"
++				&& event["payload"]["target_x"] == 0.0
++				&& event["payload"]["target_y"] == 0.0
++				&& event["payload"]["target_tag"] == 0;
++		}
++	}
++	CHECK(noTargetSubmissionEventObserved);
++
++	const auto unitTargetAbilityOutput =
++		runAdapter(
++			abilityInput(
++				"yamato",
++				"TERRAN_BATTLECRUISER",
++				""));
++	const auto & unitTargetAbilitySubmission =
++		unitTargetAbilityOutput["production_path"]
++			["sc2_submission_receipts"][0];
++	CHECK(
++		unitTargetAbilitySubmission["dispatch_action"]
++			== "ability_target");
++	CHECK(unitTargetAbilitySubmission["target_tag"] == 99);
++	bool unitTargetSubmissionEventObserved = false;
++	for (const auto & event : unitTargetAbilityOutput["events"])
++	{
++		if (event["event_type"] == "submission")
++		{
++			unitTargetSubmissionEventObserved =
++				event["payload"]["target_tag"] == 99;
++		}
++	}
++	CHECK(unitTargetSubmissionEventObserved);
++
++	const auto interferenceMatrixInput =
++		abilityInput(
++			"interference_matrix",
++			"TERRAN_RAVEN",
++			"");
++	CHECK(
++		interferenceMatrixInput["initial_state"]["units"][1]
++			["unit_type"] == "TERRAN_CYCLONE");
++	const auto interferenceMatrixOutput =
++		runAdapter(interferenceMatrixInput);
++	CHECK(
++		interferenceMatrixOutput["production_path"]
++			["sc2_submission_receipts"][0]["target_tag"] == 99);
++
++	const auto friendlyTargetInput =
++		abilityInput(
++			"medivac_heal",
++			"TERRAN_MEDIVAC",
++			"");
++	CHECK(
++		friendlyTargetInput["initial_state"]["units"][1]
++			["unit_type"] == "TERRAN_MARINE");
+ 
+ 	auto multiRole = validInput();
+ 	multiRole["initial_state"]["units"].push_back({
+@@ -186,7 +821,7 @@ int main()
+ 		},
+ 	};
+ 	const auto multiRoleOutput =
+-		voiRunPreLiveJourneyAdapter(multiRole);
++		runAdapter(multiRole);
+ 	CHECK(
+ 		multiRoleOutput["operation_director"][0]["assigned_count"]
+ 			== 5);
+@@ -220,11 +855,21 @@ int main()
+ 	protectedMinimum["steps"].erase(
+ 		protectedMinimum["steps"].begin() + 1);
+ 	const auto protectedOutput =
+-		voiRunPreLiveJourneyAdapter(protectedMinimum);
++		runAdapter(protectedMinimum);
+ 	CHECK(protectedOutput["operation_director"].empty());
+ 	CHECK(protectedOutput["final_state"]["operations"].empty());
+ 	CHECK(protectedOutput["final_state"]["owners"].empty());
++	CHECK(
++		protectedOutput["production_path"]
++			["operation_ownership_receipt_count"] == 0);
++	CHECK(
++		protectedOutput["production_path"]
++			["squad_order_receipt_count"] == 0);
++	CHECK(
++		protectedOutput["production_path"]
++			["sc2_submission_receipt_count"] == 0);
+ 	bool protectedRejectionObserved = false;
++	bool protectedProductionReceiptObserved = false;
+ 	for (const auto & event : protectedOutput["events"])
+ 	{
+ 		protectedRejectionObserved =
+@@ -232,14 +877,321 @@ int main()
+ 			|| (event["event_type"] == "rejection"
+ 				&& event["payload"]["reason"]
+ 					== "protected_minimum_violation");
++		protectedProductionReceiptObserved =
++			protectedProductionReceiptObserved
++			|| event["event_type"] == "production_path_receipt";
+ 	}
+ 	CHECK(protectedRejectionObserved);
++	CHECK(!protectedProductionReceiptObserved);
++
++	const auto transferOutput =
++		runAdapter(transferInput());
++	const auto & transferState =
++		transferOutput["final_state"];
++	CHECK(
++		transferState["owners"]["source"]
++			== VoiPreLiveJson::array({12, 13}));
++	CHECK(
++		transferState["owners"]["destination"]
++			== VoiPreLiveJson::array({11, 14}));
++	CHECK(
++		transferState["owners"]["sibling"]
++			== VoiPreLiveJson::array({15}));
++	CHECK(
++		transferState["owner_bindings"]["11"]
++			["operation_id"] == "destination");
++	CHECK(
++		transferState["owner_bindings"]["11"]
++			["generation"] == 2);
++	CHECK(
++		transferState["owner_bindings"]["12"]
++			["operation_id"] == "source");
++	CHECK(
++		transferState["owner_bindings"]["12"]
++			["generation"] == 2);
++	CHECK(
++		transferState["owner_bindings"]["13"]
++			["operation_id"] == "source");
++	CHECK(
++		transferState["owner_bindings"]["13"]
++			["generation"] == 2);
++	CHECK(
++		transferState["owner_bindings"]["14"]
++			["operation_id"] == "destination");
++	CHECK(
++		transferState["owner_bindings"]["14"]
++			["generation"] == 2);
++	CHECK(
++		transferState["owner_bindings"]["15"]
++			["operation_id"] == "sibling");
++	CHECK(
++		transferState["owner_bindings"]["15"]
++			["generation"] == 1);
++	const auto & transferredSource =
++		operationState(transferOutput, "source");
++	const auto & transferredDestination =
++		operationState(transferOutput, "destination");
++	const auto & preservedSibling =
++		operationState(transferOutput, "sibling");
++	CHECK(transferredSource["generation"] == 2);
++	CHECK(
++		transferredSource["assigned_unit_tags"]
++			== VoiPreLiveJson::array({12, 13}));
++	CHECK(
++		transferredSource["transferred_unit_tags"]
++			== VoiPreLiveJson::array({11}));
++	CHECK(
++		transferredSource["transfer_source_generation"]
++			== 1);
++	CHECK(
++		transferredSource["transfer_destination_generation"]
++			== 1);
++	CHECK(transferredDestination["generation"] == 2);
++	CHECK(
++		transferredDestination["assigned_unit_tags"]
++			== VoiPreLiveJson::array({11, 14}));
++	CHECK(
++		transferredDestination["transferred_unit_tags"]
++			== VoiPreLiveJson::array({11}));
++	CHECK(preservedSibling["generation"] == 1);
++	CHECK(
++		preservedSibling["assigned_unit_tags"]
++			== VoiPreLiveJson::array({15}));
++	bool exactTransferEventObserved = false;
++	bool generatedOwnershipSnapshotObserved = false;
++	for (const auto & event : transferOutput["events"])
++	{
++		if (event["event_type"] == "transfer")
++		{
++			const auto & payload = event["payload"];
++			exactTransferEventObserved =
++				event["identity"]["operation_id"] == "source"
++				&& event["identity"]["generation"] == 2
++				&& payload["source_generation_before"] == 1
++				&& payload["source_generation_after"] == 2
++				&& payload["destination_generation_before"]
++					== 1
++				&& payload["destination_generation_after"]
++					== 2
++				&& payload["source_unit_tags_before"]
++					== VoiPreLiveJson::array({11, 12, 13})
++				&& payload["source_unit_tags_after"]
++					== VoiPreLiveJson::array({12, 13})
++				&& payload["destination_unit_tags_before"]
++					== VoiPreLiveJson::array({14})
++				&& payload["destination_unit_tags_after"]
++					== VoiPreLiveJson::array({11, 14})
++				&& payload["unit_tags"]
++					== VoiPreLiveJson::array({11});
++		}
++		else if (event["event_type"]
++			== "ownership_snapshot"
++			&& event["identity"]["generation"] == 2)
++		{
++			generatedOwnershipSnapshotObserved =
++				generatedOwnershipSnapshotObserved
++				|| (event["payload"]["owner_bindings"]["11"]
++						["operation_id"] == "destination"
++					&& event["payload"]["owner_bindings"]["11"]
++						["generation"] == 2
++					&& event["payload"]["owner_bindings"]["15"]
++						["operation_id"] == "sibling"
++					&& event["payload"]["owner_bindings"]["15"]
++						["generation"] == 1);
++		}
++	}
++	CHECK(exactTransferEventObserved);
++	CHECK(generatedOwnershipSnapshotObserved);
++	checkFinalSnapshotConsistency(transferOutput);
++
++	auto selectionMismatch = transferInput();
++	selectionMismatch["steps"][1]["update"]["vector"]
++		["operations"][1]["operation_edit"]["unit_selection"][0]
++		["role"] = "support";
++	const auto selectionMismatchOutput =
++		runAdapter(selectionMismatch);
++	CHECK(
++		selectionMismatchOutput["final_state"]["owner_bindings"]
++			["11"]["operation_id"] == "source");
++	CHECK(
++		selectionMismatchOutput["final_state"]["owner_bindings"]
++			["11"]["generation"] == 1);
++	CHECK(
++		selectionMismatchOutput["final_state"]["owner_bindings"]
++			["14"]["operation_id"] == "destination");
++	CHECK(
++		selectionMismatchOutput["final_state"]["owner_bindings"]
++			["14"]["generation"] == 1);
++	CHECK(
++		operationState(selectionMismatchOutput, "source")
++			["generation"] == 1);
++	CHECK(
++		operationState(selectionMismatchOutput, "destination")
++			["generation"] == 1);
++	bool selectionMismatchRejected = false;
++	bool selectionMismatchApplied = false;
++	for (const auto & event :
++		selectionMismatchOutput["events"])
++	{
++		selectionMismatchRejected =
++			selectionMismatchRejected
++			|| (event["event_type"] == "rejection"
++				&& event["payload"]["reason"]
++					== "transfer_selection_contract_mismatch");
++		selectionMismatchApplied =
++			selectionMismatchApplied
++			|| event["event_type"] == "transfer";
++	}
++	CHECK(selectionMismatchRejected);
++	CHECK(!selectionMismatchApplied);
++	checkFinalSnapshotConsistency(selectionMismatchOutput);
++
++	auto generationMismatch = transferInput();
++	generationMismatch["steps"][1]["update"]["vector"]
++		["operations"][1]["generation"] = 1;
++	const auto generationMismatchOutput =
++		runAdapter(generationMismatch);
++	CHECK(
++		generationMismatchOutput["final_state"]["owner_bindings"]
++			["11"]["operation_id"] == "source");
++	CHECK(
++		generationMismatchOutput["final_state"]["owner_bindings"]
++			["11"]["generation"] == 1);
++	CHECK(
++		operationState(generationMismatchOutput, "source")
++			["generation"] == 1);
++	CHECK(
++		operationState(generationMismatchOutput, "destination")
++			["generation"] == 1);
++	bool generationMismatchRejected = false;
++	for (const auto & event :
++		generationMismatchOutput["events"])
++	{
++		generationMismatchRejected =
++			generationMismatchRejected
++			|| (event["event_type"] == "rejection"
++				&& event["payload"]["reason"]
++					== "transfer_pair_requires_generation_increment");
++	}
++	CHECK(generationMismatchRejected);
++	checkFinalSnapshotConsistency(generationMismatchOutput);
++
++	const auto cancellationOutput =
++		runAdapter(
++			ownershipInput(
++				{
++					makeOperation(
++						"cancel-target",
++						1,
++						2,
++						2,
++						2),
++					makeOperation("sibling", 1, 1, 1, 1),
++				},
++				{
++					makeOperation(
++						"cancel-target",
++						2,
++						2,
++						2,
++						2,
++						"cancel",
++						"",
++						"cancelled"),
++				},
++				3));
++	const auto & cancelled =
++		operationState(cancellationOutput, "cancel-target");
++	CHECK(cancelled["generation"] == 2);
++	CHECK(cancelled["active"] == false);
++	CHECK(cancelled["status"] == "COMPLETED");
++	CHECK(
++		cancelled["assigned_unit_tags"]
++			== VoiPreLiveJson::array());
++	CHECK(cancelled["released_generation"] == 1);
++	CHECK(
++		cancelled["released_unit_tags"]
++			== VoiPreLiveJson::array({11, 12}));
++	CHECK(
++		cancellationOutput["final_state"]["owners"]["sibling"]
++			== VoiPreLiveJson::array({13}));
++	CHECK(
++		cancellationOutput["final_state"]["owner_bindings"]
++			.size() == 1);
++	CHECK(
++		cancellationOutput["final_state"]["owner_bindings"]
++			["13"]["operation_id"] == "sibling");
++	CHECK(
++		cancellationOutput["final_state"]["owner_bindings"]
++			["13"]["generation"] == 1);
++	bool exactCancellationObserved = false;
++	for (const auto & event : cancellationOutput["events"])
++	{
++		if (event["event_type"] == "cancellation")
++		{
++			exactCancellationObserved =
++				event["identity"]["operation_id"]
++					== "cancel-target"
++				&& event["identity"]["generation"] == 2
++				&& event["payload"]["released_generation"] == 1
++				&& event["payload"]["released_unit_tags"]
++					== VoiPreLiveJson::array({11, 12});
++		}
++	}
++	CHECK(exactCancellationObserved);
++	checkFinalSnapshotConsistency(cancellationOutput);
++
++	auto unknownTask = validInput();
++	unknownTask["steps"][0]["update"]["vector"]["operations"][0]
++		["tactical_task"]["task_type"] = "unknown_task";
++	expectRuntimeError(
++		unknownTask,
++		"operation task type is unsupported");
++
++	auto unknownLocation = validInput();
++	unknownLocation["steps"][0]["update"]["vector"]
++		["operations"][0]["tactical_task"]["location_intent"]
++			= "unknown_location";
++	expectRuntimeError(
++		unknownLocation,
++		"operation location_intent is unsupported");
++
++	auto unknownAbility = validInput();
++	unknownAbility["steps"][0]["update"]["vector"]["operations"][0]
++		["tactical_task"]["task_type"] = "execute_ability";
++	unknownAbility["steps"][0]["update"]["vector"]["operations"][0]
++		["tactical_task"]["ability"] = "unknown_ability";
++	expectRuntimeError(
++		unknownAbility,
++		"operation ability is unsupported");
++
++	expectRuntimeError(
++		abilityInput(
++			"unsiege",
++			"TERRAN_SIEGETANK",
++			""),
++		"operation ability caster unit type is invalid");
++
++	expectRuntimeError(
++		abilityInput(
++			"banshee_decloak",
++			"TERRAN_BANSHEE",
++			"not_cloaked"),
++		"assigned ability caster cloak state is invalid");
++
++	auto interferenceMatrixWithoutMechanicalTarget =
++		interferenceMatrixInput;
++	interferenceMatrixWithoutMechanicalTarget["initial_state"]
++		["units"][1]["unit_type"] = "TERRAN_MARINE";
++	expectRuntimeError(
++		interferenceMatrixWithoutMechanicalTarget,
++		"deterministic unit-target ability target is missing");
+ 
+ 	auto forbidden = validInput();
+ 	forbidden["steps"][0]["submission_success"] = true;
+ 	try
+ 	{
+-		(void)voiRunPreLiveJourneyAdapter(forbidden);
++		(void)runAdapter(forbidden);
+ 		CHECK(false);
+ 	}
+ 	catch (const std::runtime_error & error)
+@@ -254,7 +1206,7 @@ int main()
+ 	regressive["steps"][1]["frame"] = 99;
+ 	try
+ 	{
+-		(void)voiRunPreLiveJourneyAdapter(regressive);
++		(void)runAdapter(regressive);
+ 		CHECK(false);
+ 	}
+ 	catch (const std::runtime_error & error)
+@@ -263,3 +1215,6 @@ int main()
+ 			std::string(error.what()).find("regressed")
+ 				!= std::string::npos);
+ 	}
++
++	return failures == 0 ? 0 : 1;
++}
+diff --git a/tests/production_path_test.cpp b/tests/production_path_test.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..12ffa56cb2a54facf383cbdec7922fa84bb9004f
+--- /dev/null
++++ b/tests/production_path_test.cpp
+@@ -0,0 +1,757 @@
++#include "voi_live_production_binding.hpp"
++
++#include <iostream>
++#include <limits>
++#include <string>
++#include <vector>
++
++namespace
++{
++int failures = 0;
++
++#define CHECK(condition)                                                     \
++	do                                                                       \
++	{                                                                        \
++		if (!(condition))                                                     \
++		{                                                                    \
++			std::cerr << __FILE__ << ":" << __LINE__                         \
++				<< ": CHECK failed: " #condition << "\n";                    \
++			++failures;                                                       \
++		}                                                                    \
++	} while (false)
++}
++
++int main()
++{
++	const VoiProductionOperationIdentity identity = {
++		"update-17",
++		"operation-alpha",
++		3
++	};
++	const std::vector<std::uint64_t> unorderedTags = {12, 11};
++	const std::vector<
++		std::pair<sc2::UNIT_TYPEID, std::string>>
++		liveUnitTypeCases = {
++			{
++				sc2::UNIT_TYPEID::TERRAN_MARINE,
++				"TERRAN_MARINE"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_MARAUDER,
++				"TERRAN_MARAUDER"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_REAPER,
++				"TERRAN_REAPER"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_GHOST,
++				"TERRAN_GHOST"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_HELLION,
++				"TERRAN_HELLION"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_HELLIONTANK,
++				"TERRAN_HELLIONTANK"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_WIDOWMINE,
++				"TERRAN_WIDOWMINE"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_WIDOWMINEBURROWED,
++				"TERRAN_WIDOWMINEBURROWED"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_CYCLONE,
++				"TERRAN_CYCLONE"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_SIEGETANK,
++				"TERRAN_SIEGETANK"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_SIEGETANKSIEGED,
++				"TERRAN_SIEGETANKSIEGED"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_THOR,
++				"TERRAN_THOR"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_THORAP,
++				"TERRAN_THORAP"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_MEDIVAC,
++				"TERRAN_MEDIVAC"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_RAVEN,
++				"TERRAN_RAVEN"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_VIKINGFIGHTER,
++				"TERRAN_VIKINGFIGHTER"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_VIKINGASSAULT,
++				"TERRAN_VIKINGASSAULT"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_BANSHEE,
++				"TERRAN_BANSHEE"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_LIBERATOR,
++				"TERRAN_LIBERATOR"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_LIBERATORAG,
++				"TERRAN_LIBERATORAG"
++			},
++			{
++				sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER,
++				"TERRAN_BATTLECRUISER"
++			}
++		};
++	for (const auto & liveUnitTypeCase : liveUnitTypeCases)
++	{
++		const auto liveBinding = voiProductionLiveActionBinding(
++			identity,
++			"squad_order:attack",
++			liveUnitTypeCase.first);
++		CHECK(liveBinding.identity.updateId == identity.updateId);
++		CHECK(
++			liveBinding.identity.operationId
++				== identity.operationId);
++		CHECK(
++			liveBinding.identity.generation
++				== identity.generation);
++		CHECK(liveBinding.action == "squad_order:attack");
++		CHECK(liveBinding.unitType == liveUnitTypeCase.second);
++	}
++	const auto explicitLiveBinding =
++		voiProductionLiveActionBinding(
++			identity,
++			"execute_ability:ghost_cloak",
++			sc2::UNIT_TYPEID::TERRAN_GHOST,
++			"ghost_cloak",
++			382,
++			"not_cloaked");
++	CHECK(explicitLiveBinding.unitType == "TERRAN_GHOST");
++	CHECK(explicitLiveBinding.abilityName == "ghost_cloak");
++	CHECK(explicitLiveBinding.abilityId == 382);
++	CHECK(explicitLiveBinding.cloakState == "not_cloaked");
++	CHECK(explicitLiveBinding.targetKind.empty());
++	CHECK(explicitLiveBinding.targetTag == 0);
++	auto noTargetLiveBinding = explicitLiveBinding;
++	CHECK(voiProductionBindLiveAbilityTarget(
++		noTargetLiveBinding,
++		"ability"));
++	CHECK(noTargetLiveBinding.targetKind == "none");
++	CHECK(noTargetLiveBinding.targetX == 0.0);
++	CHECK(noTargetLiveBinding.targetY == 0.0);
++	CHECK(noTargetLiveBinding.targetTag == 0);
++	auto positionLiveBinding = voiProductionLiveActionBinding(
++		identity,
++		"execute_ability:emp",
++		sc2::UNIT_TYPEID::TERRAN_GHOST,
++		"emp",
++		1628,
++		"not_cloaked");
++	CHECK(voiProductionBindLiveAbilityTarget(
++		positionLiveBinding,
++		"ability_position",
++		44.5,
++		20.25));
++	CHECK(positionLiveBinding.targetKind == "ghost_emp");
++	CHECK(positionLiveBinding.targetX == 44.5);
++	CHECK(positionLiveBinding.targetY == 20.25);
++	CHECK(positionLiveBinding.targetTag == 0);
++	auto unitTargetLiveBinding = voiProductionLiveActionBinding(
++		identity,
++		"execute_ability:yamato",
++		sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER,
++		"yamato",
++		401,
++		"not_cloaked");
++	CHECK(voiProductionBindLiveAbilityTarget(
++		unitTargetLiveBinding,
++		"ability_target",
++		91.0,
++		73.5,
++		4242));
++	CHECK(unitTargetLiveBinding.targetKind == "yamato_target");
++	CHECK(unitTargetLiveBinding.targetX == 91.0);
++	CHECK(unitTargetLiveBinding.targetY == 73.5);
++	CHECK(unitTargetLiveBinding.targetTag == 4242);
++	auto missingUnitTargetTagBinding = unitTargetLiveBinding;
++	missingUnitTargetTagBinding.targetKind.clear();
++	missingUnitTargetTagBinding.targetTag = 0;
++	CHECK(!voiProductionBindLiveAbilityTarget(
++		missingUnitTargetTagBinding,
++		"ability_target",
++		91.0,
++		73.5));
++	CHECK(missingUnitTargetTagBinding.targetKind.empty());
++	auto mismatchedTargetLiveBinding = positionLiveBinding;
++	mismatchedTargetLiveBinding.targetKind.clear();
++	mismatchedTargetLiveBinding.targetX = 0.0;
++	mismatchedTargetLiveBinding.targetY = 0.0;
++	CHECK(!voiProductionBindLiveAbilityTarget(
++		mismatchedTargetLiveBinding,
++		"ability_target",
++		44.5,
++		20.25));
++	CHECK(mismatchedTargetLiveBinding.targetKind.empty());
++	auto nonFiniteTargetLiveBinding = positionLiveBinding;
++	nonFiniteTargetLiveBinding.targetKind.clear();
++	CHECK(!voiProductionBindLiveAbilityTarget(
++		nonFiniteTargetLiveBinding,
++		"ability_position",
++		std::numeric_limits<double>::quiet_NaN(),
++		20.25));
++	CHECK(nonFiniteTargetLiveBinding.targetKind.empty());
++	auto invalidIdentityLiveBinding =
++		voiProductionLiveActionBinding(
++			VoiProductionOperationIdentity(),
++			"execute_ability:emp",
++			sc2::UNIT_TYPEID::TERRAN_GHOST,
++			"emp",
++			1628,
++			"not_cloaked");
++	CHECK(!voiProductionBindLiveAbilityTarget(
++		invalidIdentityLiveBinding,
++		"ability_position",
++		44.5,
++		20.25));
++	CHECK(invalidIdentityLiveBinding.targetKind.empty());
++	const auto unsupportedLiveBinding =
++		voiProductionLiveActionBinding(
++			identity,
++			"squad_order:attack",
++			sc2::UNIT_TYPEID::TERRAN_SCV);
++	CHECK(unsupportedLiveBinding.unitType.empty());
++
++	int invalidOrderCallbackCount = 0;
++	const auto invalidOrder = voiProductionIssueSquadOrder(
++		VoiProductionOperationIdentity(),
++		"VoiOp:operation-alpha",
++		"squad_order:attack",
++		unorderedTags,
++		[&]()
++		{
++			++invalidOrderCallbackCount;
++			return true;
++		});
++	CHECK(!invalidOrder.accepted);
++	CHECK(!invalidOrder.callbackExecuted);
++	CHECK(invalidOrderCallbackCount == 0);
++	CHECK(invalidOrder.receiptId.empty());
++	CHECK(invalidOrder.blocker == "invalid_squad_order_identity");
++
++	int rejectedOrderCallbackCount = 0;
++	const auto rejectedOrder = voiProductionIssueSquadOrder(
++		identity,
++		"VoiOp:operation-alpha",
++		"squad_order:attack",
++		unorderedTags,
++		[&]()
++		{
++			++rejectedOrderCallbackCount;
++			return false;
++		});
++	CHECK(!rejectedOrder.accepted);
++	CHECK(rejectedOrder.callbackExecuted);
++	CHECK(!rejectedOrder.appliedProof);
++	CHECK(rejectedOrderCallbackCount == 1);
++	CHECK(rejectedOrder.receiptId.empty());
++	CHECK(rejectedOrder.blocker == "squad_order_not_applied");
++
++	bool orderApplied = false;
++	const auto acceptedOrder = voiProductionIssueSquadOrder(
++		identity,
++		"VoiOp:operation-alpha",
++		"squad_order:attack",
++		unorderedTags,
++		[&]()
++		{
++			orderApplied = true;
++			return orderApplied;
++		});
++	CHECK(acceptedOrder.accepted);
++	CHECK(acceptedOrder.callbackExecuted);
++	CHECK(acceptedOrder.appliedProof);
++	CHECK(orderApplied);
++	CHECK(acceptedOrder.updateId == "update-17");
++	CHECK(acceptedOrder.operationId == "operation-alpha");
++	CHECK(acceptedOrder.generation == 3);
++	CHECK(acceptedOrder.action == "squad_order:attack");
++	CHECK(acceptedOrder.unitTags
++		== std::vector<std::uint64_t>({11, 12}));
++	CHECK(!acceptedOrder.receiptId.empty());
++
++	const auto repeatedOrder = voiProductionIssueSquadOrder(
++		identity,
++		"VoiOp:operation-alpha",
++		"squad_order:attack",
++		std::vector<std::uint64_t>({11, 12}),
++		[]()
++		{
++			return true;
++		});
++	CHECK(repeatedOrder.receiptId == acceptedOrder.receiptId);
++
++	int invalidOrderPayloadCallbackCount = 0;
++	const auto invalidOrderPayload = voiProductionIssueSquadOrder(
++		identity,
++		"VoiOp:operation-alpha",
++		"",
++		std::vector<std::uint64_t>({11}),
++		[&]()
++		{
++			++invalidOrderPayloadCallbackCount;
++			return true;
++		});
++	CHECK(!invalidOrderPayload.accepted);
++	CHECK(!invalidOrderPayload.callbackExecuted);
++	CHECK(invalidOrderPayloadCallbackCount == 0);
++
++	int invalidSubmissionCallbackCount = 0;
++	const auto invalidSubmission = voiProductionSubmitSc2Action(
++		VoiProductionOperationIdentity(),
++		"squad_order:attack",
++		"attack_move",
++		std::vector<std::uint64_t>({11}),
++		[&]()
++		{
++			++invalidSubmissionCallbackCount;
++			return true;
++		});
++	CHECK(!invalidSubmission.submitted);
++	CHECK(!invalidSubmission.callbackExecuted);
++	CHECK(invalidSubmissionCallbackCount == 0);
++	CHECK(invalidSubmission.submissionId.empty());
++	CHECK(
++		invalidSubmission.blocker
++			== "invalid_sc2_submission_identity");
++
++	bool suppressedCommandIssued = true;
++	voiProductionResetCommandIssue(&suppressedCommandIssued);
++	CHECK(!suppressedCommandIssued);
++
++	bool invalidDispatchCommandIssued = true;
++	int invalidDispatchCallbackCount = 0;
++	const VoiProductionActionBinding invalidBinding;
++	CHECK(!voiProductionDispatchSc2ActionAndRecord(
++		&invalidBinding,
++		"attack_move",
++		11,
++		&invalidDispatchCommandIssued,
++		[&]()
++		{
++			++invalidDispatchCallbackCount;
++			return true;
++		}));
++	CHECK(!invalidDispatchCommandIssued);
++	CHECK(invalidDispatchCallbackCount == 0);
++
++	int rejectedSubmissionCallbackCount = 0;
++	const auto rejectedSubmission = voiProductionSubmitSc2Action(
++		identity,
++		"squad_order:attack",
++		"attack_move",
++		std::vector<std::uint64_t>({11}),
++		[&]()
++		{
++			++rejectedSubmissionCallbackCount;
++			return false;
++		});
++	CHECK(!rejectedSubmission.submitted);
++	CHECK(rejectedSubmission.callbackExecuted);
++	CHECK(!rejectedSubmission.dispatchProof);
++	CHECK(rejectedSubmissionCallbackCount == 1);
++	CHECK(rejectedSubmission.submissionId.empty());
++	CHECK(
++		rejectedSubmission.blocker
++			== "sc2_action_not_dispatched");
++
++	bool rejectedDispatchCommandIssued = true;
++	int rejectedDispatchCallbackCount = 0;
++	const VoiProductionActionBinding binding = {
++		identity,
++		"squad_order:attack",
++		"TERRAN_MARINE"
++	};
++	CHECK(!voiProductionDispatchSc2ActionAndRecord(
++		&binding,
++		"attack_move",
++		11,
++		&rejectedDispatchCommandIssued,
++		[&]()
++		{
++			++rejectedDispatchCallbackCount;
++			return false;
++		}));
++	CHECK(!rejectedDispatchCommandIssued);
++	CHECK(rejectedDispatchCallbackCount == 1);
++
++	bool actionDispatched = false;
++	const auto acceptedSubmission = voiProductionSubmitSc2Action(
++		identity,
++		"squad_order:attack",
++		"attack_move",
++		std::vector<std::uint64_t>({11}),
++		&binding,
++		[&]()
++		{
++			actionDispatched = true;
++			return actionDispatched;
++		});
++	CHECK(acceptedSubmission.submitted);
++	CHECK(acceptedSubmission.callbackExecuted);
++	CHECK(acceptedSubmission.dispatchProof);
++	CHECK(actionDispatched);
++	CHECK(acceptedSubmission.updateId == "update-17");
++	CHECK(acceptedSubmission.operationId == "operation-alpha");
++	CHECK(acceptedSubmission.generation == 3);
++	CHECK(acceptedSubmission.action == "squad_order:attack");
++	CHECK(acceptedSubmission.dispatchAction == "attack_move");
++	CHECK(acceptedSubmission.unitType == "TERRAN_MARINE");
++	CHECK(
++		acceptedSubmission.unitTags
++			== std::vector<std::uint64_t>({11}));
++	CHECK(!acceptedSubmission.submissionId.empty());
++
++	int unboundExplicitCallbackCount = 0;
++	const auto unboundExplicitSubmission =
++		voiProductionSubmitSc2Action(
++			identity,
++			explicitLiveBinding.action,
++			"ability",
++			std::vector<std::uint64_t>({11}),
++			&explicitLiveBinding,
++			[&]()
++			{
++				++unboundExplicitCallbackCount;
++				return true;
++			});
++	CHECK(!unboundExplicitSubmission.submitted);
++	CHECK(!unboundExplicitSubmission.callbackExecuted);
++	CHECK(unboundExplicitCallbackCount == 0);
++	CHECK(
++		unboundExplicitSubmission.blocker
++			== "invalid_sc2_submission");
++
++	const auto explicitSubmission = voiProductionSubmitSc2Action(
++		identity,
++		noTargetLiveBinding.action,
++		"ability",
++		std::vector<std::uint64_t>({11}),
++		&noTargetLiveBinding,
++		[]()
++		{
++			return true;
++		});
++	CHECK(explicitSubmission.submitted);
++	CHECK(explicitSubmission.unitType == "TERRAN_GHOST");
++	CHECK(explicitSubmission.abilityName == "ghost_cloak");
++	CHECK(explicitSubmission.abilityId == 382);
++	CHECK(explicitSubmission.targetKind == "none");
++	CHECK(explicitSubmission.targetX == 0.0);
++	CHECK(explicitSubmission.targetY == 0.0);
++	CHECK(explicitSubmission.cloakState == "not_cloaked");
++	const auto positionSubmission = voiProductionSubmitSc2Action(
++		identity,
++		positionLiveBinding.action,
++		"ability_position",
++		std::vector<std::uint64_t>({11}),
++		&positionLiveBinding,
++		[]()
++		{
++			return true;
++		});
++	CHECK(positionSubmission.submitted);
++	CHECK(positionSubmission.targetKind == "ghost_emp");
++	CHECK(positionSubmission.targetX == 44.5);
++	CHECK(positionSubmission.targetY == 20.25);
++	CHECK(positionSubmission.targetTag == 0);
++	const auto unitTargetSubmission = voiProductionSubmitSc2Action(
++		identity,
++		unitTargetLiveBinding.action,
++		"ability_target",
++		std::vector<std::uint64_t>({12}),
++		&unitTargetLiveBinding,
++		[]()
++		{
++			return true;
++		});
++	CHECK(unitTargetSubmission.submitted);
++	CHECK(unitTargetSubmission.targetKind == "yamato_target");
++	CHECK(unitTargetSubmission.targetX == 91.0);
++	CHECK(unitTargetSubmission.targetY == 73.5);
++	CHECK(unitTargetSubmission.targetTag == 4242);
++	auto retargetedUnitBinding = unitTargetLiveBinding;
++	CHECK(voiProductionBindLiveAbilityTarget(
++		retargetedUnitBinding,
++		"ability_target",
++		91.0,
++		73.5,
++		4343));
++	const auto retargetedUnitSubmission =
++		voiProductionSubmitSc2Action(
++			identity,
++			retargetedUnitBinding.action,
++			"ability_target",
++			std::vector<std::uint64_t>({12}),
++			&retargetedUnitBinding,
++			[]()
++			{
++				return true;
++			});
++	CHECK(retargetedUnitSubmission.submitted);
++	CHECK(retargetedUnitSubmission.targetTag == 4343);
++	CHECK(
++		retargetedUnitSubmission.submissionId
++			!= unitTargetSubmission.submissionId);
++	auto retargetedPositionBinding = positionLiveBinding;
++	CHECK(voiProductionBindLiveAbilityTarget(
++		retargetedPositionBinding,
++		"ability_position",
++		45.5,
++		20.25));
++	const auto retargetedPositionSubmission =
++		voiProductionSubmitSc2Action(
++			identity,
++			retargetedPositionBinding.action,
++			"ability_position",
++			std::vector<std::uint64_t>({11}),
++			&retargetedPositionBinding,
++			[]()
++			{
++				return true;
++			});
++	CHECK(retargetedPositionSubmission.submitted);
++	CHECK(
++		retargetedPositionSubmission.submissionId
++			!= positionSubmission.submissionId);
++	auto cloakedExplicitBinding = noTargetLiveBinding;
++	cloakedExplicitBinding.cloakState = "cloaked";
++	const auto cloakedExplicitSubmission =
++		voiProductionSubmitSc2Action(
++			identity,
++			cloakedExplicitBinding.action,
++			"ability",
++			std::vector<std::uint64_t>({11}),
++			&cloakedExplicitBinding,
++			[]()
++			{
++				return true;
++			});
++	CHECK(cloakedExplicitSubmission.submitted);
++	CHECK(
++		cloakedExplicitSubmission.submissionId
++			!= explicitSubmission.submissionId);
++
++	bool acceptedDispatchCommandIssued = false;
++	int acceptedDispatchCallbackCount = 0;
++	VoiProductionSubmissionReceipt acceptedDispatchReceipt;
++	CHECK(voiProductionDispatchSc2ActionAndRecord(
++		&binding,
++		"attack_move",
++		11,
++		&acceptedDispatchCommandIssued,
++		&acceptedDispatchReceipt,
++		[&]()
++		{
++			++acceptedDispatchCallbackCount;
++			return true;
++		}));
++	CHECK(acceptedDispatchCommandIssued);
++	CHECK(acceptedDispatchCallbackCount == 1);
++	CHECK(acceptedDispatchReceipt.submitted);
++	CHECK(
++		acceptedDispatchReceipt.submissionId
++			== acceptedSubmission.submissionId);
++	auto retargetedBinding = binding;
++	retargetedBinding.targetX = 72.0;
++	const auto retargetedSubmission = voiProductionSubmitSc2Action(
++		identity,
++		"squad_order:attack",
++		"attack_move",
++		std::vector<std::uint64_t>({11}),
++		&retargetedBinding,
++		[]()
++		{
++			return true;
++		});
++	CHECK(retargetedSubmission.submitted);
++	CHECK(
++		retargetedSubmission.submissionId
++			!= acceptedSubmission.submissionId);
++	auto changedUnitTypeBinding = binding;
++	changedUnitTypeBinding.unitType = "TERRAN_MARAUDER";
++	const auto changedUnitTypeSubmission =
++		voiProductionSubmitSc2Action(
++			identity,
++			"squad_order:attack",
++			"attack_move",
++			std::vector<std::uint64_t>({11}),
++			&changedUnitTypeBinding,
++			[]()
++			{
++				return true;
++			});
++	CHECK(changedUnitTypeSubmission.submitted);
++	CHECK(
++		changedUnitTypeSubmission.unitType
++			== "TERRAN_MARAUDER");
++	CHECK(
++		changedUnitTypeSubmission.submissionId
++			!= acceptedSubmission.submissionId);
++
++	bool directDispatchCommandIssued = false;
++	VoiProductionSubmissionReceipt directDispatchReceipt;
++	CHECK(voiProductionDispatchSc2ActionAndRecord(
++		nullptr,
++		"attack_move",
++		11,
++		&directDispatchCommandIssued,
++		&directDispatchReceipt,
++		[]()
++		{
++			return true;
++		}));
++	CHECK(directDispatchCommandIssued);
++	CHECK(!directDispatchReceipt.submitted);
++
++	const auto repeatedSubmission = voiProductionSubmitSc2Action(
++		identity,
++		"squad_order:attack",
++		"attack_move",
++		std::vector<std::uint64_t>({11}),
++		&binding,
++		[]()
++		{
++			return true;
++		});
++	CHECK(
++		repeatedSubmission.submissionId
++			== acceptedSubmission.submissionId);
++
++	const auto changedDispatchSubmission =
++		voiProductionSubmitSc2Action(
++		identity,
++		"squad_order:attack",
++		"move",
++		std::vector<std::uint64_t>({11}),
++		[]()
++		{
++			return true;
++		});
++	CHECK(
++		changedDispatchSubmission.submissionId
++			!= acceptedSubmission.submissionId);
++	const auto changedUpdateSubmission =
++		voiProductionSubmitSc2Action(
++			{"update-18", "operation-alpha", 3},
++			"squad_order:attack",
++			"attack_move",
++			std::vector<std::uint64_t>({11}),
++			[]()
++			{
++				return true;
++			});
++	const auto changedOperationSubmission =
++		voiProductionSubmitSc2Action(
++			{"update-17", "operation-beta", 3},
++			"squad_order:attack",
++			"attack_move",
++			std::vector<std::uint64_t>({11}),
++			[]()
++			{
++				return true;
++			});
++	const auto changedGenerationSubmission =
++		voiProductionSubmitSc2Action(
++			{"update-17", "operation-alpha", 4},
++			"squad_order:attack",
++			"attack_move",
++			std::vector<std::uint64_t>({11}),
++			[]()
++			{
++				return true;
++			});
++	const auto changedActionSubmission =
++		voiProductionSubmitSc2Action(
++			identity,
++			"squad_order:defend",
++			"attack_move",
++			std::vector<std::uint64_t>({11}),
++			[]()
++			{
++				return true;
++			});
++	const auto changedTagsSubmission =
++		voiProductionSubmitSc2Action(
++			identity,
++			"squad_order:attack",
++			"attack_move",
++			std::vector<std::uint64_t>({12}),
++			[]()
++			{
++				return true;
++			});
++	CHECK(
++		changedUpdateSubmission.submissionId
++			!= acceptedSubmission.submissionId);
++	CHECK(
++		changedOperationSubmission.submissionId
++			!= acceptedSubmission.submissionId);
++	CHECK(
++		changedGenerationSubmission.submissionId
++			!= acceptedSubmission.submissionId);
++	CHECK(
++		changedActionSubmission.submissionId
++			!= acceptedSubmission.submissionId);
++	CHECK(
++		changedTagsSubmission.submissionId
++			!= acceptedSubmission.submissionId);
++
++	int invalidTagsCallbackCount = 0;
++	const auto invalidTagsSubmission =
++		voiProductionSubmitSc2Action(
++			identity,
++			"squad_order:attack",
++			"attack_move",
++			std::vector<std::uint64_t>({0}),
++			[&]()
++			{
++				++invalidTagsCallbackCount;
++				return true;
++			});
++	CHECK(!invalidTagsSubmission.submitted);
++	CHECK(!invalidTagsSubmission.callbackExecuted);
++	CHECK(invalidTagsCallbackCount == 0);
++
++	int duplicateTagsCallbackCount = 0;
++	const auto duplicateTagsSubmission =
++		voiProductionSubmitSc2Action(
++			identity,
++			"squad_order:attack",
++			"attack_move",
++			std::vector<std::uint64_t>({11, 11}),
++			[&]()
++			{
++				++duplicateTagsCallbackCount;
++				return true;
++			});
++	CHECK(!duplicateTagsSubmission.submitted);
++	CHECK(!duplicateTagsSubmission.callbackExecuted);
++	CHECK(duplicateTagsCallbackCount == 0);
++
++	return failures == 0 ? 0 : 1;
++}

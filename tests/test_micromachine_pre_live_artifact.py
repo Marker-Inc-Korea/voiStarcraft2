@@ -9,11 +9,15 @@ import json
 from pathlib import Path
 import stat
 import struct
+import subprocess
 import tempfile
 import unittest
+from unittest import mock
 import warnings
 import zipfile
 
+from starcraft_commander import micromachine_pre_live_artifact as artifact_module
+from starcraft_commander import micromachine_pre_live_provenance as provenance
 from starcraft_commander.micromachine_build_identity import (
     MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
     MICROMACHINE_REQUIRED_NATIVE_TESTS,
@@ -26,9 +30,12 @@ from starcraft_commander.micromachine_pre_live_artifact import (
     PRE_LIVE_ARTIFACT_SCHEMA,
     PRE_LIVE_ARTIFACT_SCHEMA_VERSION,
     PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION,
+    PRE_LIVE_DETERMINISTIC_JOURNEY_MEMBER_NAME,
+    PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID,
     PreLiveArtifactLimits,
     PreLiveArtifactMetadata,
     PreLiveBuildAdmissionSnapshot,
+    bind_deterministic_journey_bundle_to_build,
     build_pre_live_artifact_bundle,
     canonical_ctest_evidence_bytes,
     canonical_json_bytes,
@@ -132,6 +139,7 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
             binary_bytes=self.members[self.metadata.binary_member],
             binary_mode=stat.S_IFREG | 0o755,
         )
+        self.node_descriptor = Path("/dev/fd/321")
         self.bundle = build_pre_live_artifact_bundle(
             self.metadata,
             self.members,
@@ -223,6 +231,44 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                 }
             ),
         }
+
+    def make_deterministic_artifact_bundle(
+        self,
+        *,
+        node_executable: Path | str,
+    ) -> bytes:
+        metadata = replace(
+            self.metadata,
+            producer_policy_id=PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID,
+            artifact_member=PRE_LIVE_DETERMINISTIC_JOURNEY_MEMBER_NAME,
+            producer_output_member=PRE_LIVE_DETERMINISTIC_JOURNEY_MEMBER_NAME,
+        )
+        raw_journeys = make_stub_deterministic_journey_bundle()
+        bound_journeys = bind_deterministic_journey_bundle_to_build(
+            raw_journeys,
+            build_report_bytes=self.members[self.metadata.build_report_member],
+            binary_bytes=self.binary,
+            node_executable=node_executable,
+        )
+        members = dict(self.members)
+        del members[self.metadata.producer_output_member]
+        members[PRE_LIVE_DETERMINISTIC_JOURNEY_MEMBER_NAME] = bound_journeys
+        producer_provenance = json.loads(
+            members[self.metadata.producer_provenance_member]
+        )
+        producer_provenance["producer_id"] = (
+            PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+        )
+        producer_provenance["output_sha256"] = sha256(bound_journeys)
+        members[self.metadata.producer_provenance_member] = canonical_json_bytes(
+            producer_provenance
+        )
+        return build_pre_live_artifact_bundle(
+            metadata,
+            members,
+            admission_snapshot=self.admission_snapshot,
+            node_executable=node_executable,
+        )
 
     def test_deterministic_rebuild_and_verified_evidence(self) -> None:
         rebuilt = build_pre_live_artifact_bundle(
@@ -333,6 +379,1071 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
                 manifest["artifact"]["sha256"],
                 manifest["producer"]["output_sha256"],
             )
+
+    def test_deterministic_journey_output_is_semantically_verified(self) -> None:
+        metadata = replace(
+            self.metadata,
+            producer_policy_id=PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID,
+            artifact_member=PRE_LIVE_DETERMINISTIC_JOURNEY_MEMBER_NAME,
+            producer_output_member=PRE_LIVE_DETERMINISTIC_JOURNEY_MEMBER_NAME,
+        )
+
+        def journey_members(output: bytes) -> dict[str, bytes]:
+            members = dict(self.members)
+            del members[self.metadata.producer_output_member]
+            members[PRE_LIVE_DETERMINISTIC_JOURNEY_MEMBER_NAME] = output
+            provenance = json.loads(
+                members[self.metadata.producer_provenance_member]
+            )
+            provenance["producer_id"] = (
+                PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+            )
+            provenance["output_sha256"] = sha256(output)
+            members[self.metadata.producer_provenance_member] = (
+                canonical_json_bytes(provenance)
+            )
+            return members
+
+        raw_verifier = (
+            "starcraft_commander.micromachine_pre_live_journeys."
+            "_verify_pre_live_journey_payload_cache"
+        )
+        with mock.patch(
+            raw_verifier,
+            return_value={
+                "ok": True,
+                "blockers": [],
+                "binary_sha256": sha256(self.binary),
+                "embedded_build_input_identity": (
+                    self.repository_input_identity
+                ),
+            },
+        ):
+            unbound_journeys = make_stub_deterministic_journey_bundle()
+            pretty_build_report = json.dumps(
+                json.loads(
+                    self.members[self.metadata.build_report_member]
+                ),
+                indent=2,
+            ).encode("utf-8")
+            pretty_bound_journeys = (
+                bind_deterministic_journey_bundle_to_build(
+                    unbound_journeys,
+                    build_report_bytes=pretty_build_report,
+                    binary_bytes=self.binary,
+                    node_executable=self.node_descriptor,
+                )
+            )
+            bound_journeys = bind_deterministic_journey_bundle_to_build(
+                unbound_journeys,
+                build_report_bytes=(
+                    self.members[self.metadata.build_report_member]
+                ),
+                binary_bytes=self.binary,
+                node_executable=self.node_descriptor,
+            )
+            self.assertEqual(bound_journeys, pretty_bound_journeys)
+            bundle = build_pre_live_artifact_bundle(
+                metadata,
+                journey_members(bound_journeys),
+                admission_snapshot=self.admission_snapshot,
+                node_executable=self.node_descriptor,
+            )
+            report = verify_pre_live_artifact_bundle(
+                bundle,
+                admission_snapshot=self.admission_snapshot,
+                node_executable=self.node_descriptor,
+            )
+            self.assertTrue(report["ok"], report)
+            self.assertTrue(
+                report["role_evidence"]["deterministic_journeys"]["ok"]
+            )
+            binding = report["role_evidence"]["deterministic_journeys"][
+                "build_binding"
+            ]
+            self.assertEqual(sha256(self.binary), binding["binary_sha256"])
+            self.assertEqual(
+                self.repository_input_identity,
+                binding["embedded_build_input_identity"],
+            )
+            nested_identity_cases = {
+                "binary": (
+                    "deterministic_journey_nested_binary_digest_mismatch",
+                    {
+                        "binary_sha256": "0" * 64,
+                        "embedded_build_input_identity": (
+                            self.repository_input_identity
+                        ),
+                    },
+                ),
+                "embedded identity": (
+                    "deterministic_journey_nested_embedded_identity_mismatch",
+                    {
+                        "binary_sha256": sha256(self.binary),
+                        "embedded_build_input_identity": (
+                            "sha256:" + ("0" * 64)
+                        ),
+                    },
+                ),
+            }
+            for name, (code, identities) in nested_identity_cases.items():
+                with self.subTest(name=f"nested {name}"), mock.patch(
+                    raw_verifier,
+                    return_value={
+                        "ok": True,
+                        "blockers": [],
+                        **identities,
+                    },
+                ):
+                    rejected = verify_pre_live_artifact_bundle(
+                        bundle,
+                        admission_snapshot=self.admission_snapshot,
+                        node_executable=self.node_descriptor,
+                    )
+                    self.assertFalse(rejected["ok"], rejected)
+                    self.assertIn(code, blocker_codes(rejected))
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "deterministic_journey_build_binding_missing",
+            ):
+                build_pre_live_artifact_bundle(
+                    metadata,
+                    journey_members(unbound_journeys),
+                    admission_snapshot=self.admission_snapshot,
+                    node_executable=self.node_descriptor,
+                )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "deterministic_journey_bundle_rejected",
+            ):
+                build_pre_live_artifact_bundle(
+                    metadata,
+                    journey_members(b"not-a-journey-zip"),
+                    admission_snapshot=self.admission_snapshot,
+                    node_executable=self.node_descriptor,
+                )
+
+            mismatch_mutations = {
+                "binary": (
+                    "deterministic_journey_binary_digest_mismatch",
+                    lambda root: root["build_binding"].update(
+                        {"binary_sha256": "0" * 64}
+                    ),
+                ),
+                "embedded identity": (
+                    "deterministic_journey_embedded_build_identity_mismatch",
+                    lambda root: root["build_binding"].update(
+                        {
+                            "embedded_build_input_identity": (
+                                "sha256:" + ("0" * 64)
+                            )
+                        }
+                    ),
+                ),
+                "fabricated authority": (
+                    "deterministic_journey_fabricated_authority",
+                    lambda root: root["build_binding"].update(
+                        {"authority": "micromachine_cpp"}
+                    ),
+                ),
+                "boolean schema version": (
+                    "deterministic_journey_build_binding_schema_mismatch",
+                    lambda root: root["build_binding"].update(
+                        {"schema_version": True}
+                    ),
+                ),
+            }
+            for name, (code, mutation) in mismatch_mutations.items():
+                with self.subTest(name=name), self.assertRaisesRegex(
+                    ValueError,
+                    code,
+                ):
+                    build_pre_live_artifact_bundle(
+                        metadata,
+                        journey_members(
+                            mutate_nested_journey_manifest(
+                                bound_journeys,
+                                mutation,
+                            )
+                        ),
+                        admission_snapshot=self.admission_snapshot,
+                        node_executable=self.node_descriptor,
+                    )
+
+    def test_build_binder_rejects_float_schema_before_journey_verification(
+        self,
+    ) -> None:
+        report = json.loads(
+            self.members[self.metadata.build_report_member]
+        )
+        report["schema_version"] = float(report["schema_version"])
+        raw_verifier = (
+            "starcraft_commander.micromachine_pre_live_journeys."
+            "_verify_pre_live_journey_payload_cache"
+        )
+        with (
+            mock.patch(
+                raw_verifier,
+                side_effect=AssertionError(
+                    "invalid build report must stop before journey verification"
+                ),
+            ) as semantic_verifier,
+            self.assertRaisesRegex(
+                ValueError,
+                "build report is not an admitted build identity",
+            ),
+        ):
+            bind_deterministic_journey_bundle_to_build(
+                make_stub_deterministic_journey_bundle(),
+                build_report_bytes=canonical_json_bytes(report),
+                binary_bytes=self.binary,
+                node_executable=self.node_descriptor,
+            )
+        semantic_verifier.assert_not_called()
+
+    def test_outer_admission_failure_stops_before_nested_journey_verification(
+        self,
+    ) -> None:
+        raw_verifier = (
+            "starcraft_commander.micromachine_pre_live_journeys."
+            "_verify_pre_live_journey_payload_cache"
+        )
+        accepted = {
+            "ok": True,
+            "blockers": [],
+            "binary_sha256": sha256(self.binary),
+            "embedded_build_input_identity": self.repository_input_identity,
+        }
+        with mock.patch(raw_verifier, return_value=accepted):
+            bundle = self.make_deterministic_artifact_bundle(
+                node_executable=self.node_descriptor,
+            )
+
+        def contradict_report_identity(manifest: dict[str, object]) -> None:
+            manifest["build"]["report_identity"] = "sha256:" + ("d" * 64)
+
+        malformed = mutate_manifest(bundle, contradict_report_identity)
+        with mock.patch.object(
+            artifact_module,
+            "_verify_bound_deterministic_journey_bundle",
+            side_effect=AssertionError(
+                "outer admission failure must stop before nested verification"
+            ),
+        ) as nested_verifier:
+            rejected = verify_pre_live_artifact_bundle(
+                malformed,
+                admission_snapshot=self.admission_snapshot,
+                node_executable=self.node_descriptor,
+            )
+
+        nested_verifier.assert_not_called()
+        self.assertFalse(rejected["ok"], rejected)
+        self.assertIn(
+            "build_report_identity_mismatch",
+            blocker_codes(rejected),
+        )
+
+    def test_bound_journey_preflights_root_before_single_payload_read(
+        self,
+    ) -> None:
+        payload_name = "payload/stub.json"
+        payload = b"{}"
+        root = json.loads(
+            read_entries(make_stub_deterministic_journey_bundle())[
+                PRE_LIVE_ARTIFACT_MANIFEST_NAME
+            ]
+        )
+        root["members"] = [
+            {
+                "name": payload_name,
+                "sha256": sha256(payload),
+                "size_bytes": len(payload),
+            }
+        ]
+        unbound_bundle = raw_zip(
+            {
+                PRE_LIVE_ARTIFACT_MANIFEST_NAME: canonical_json_bytes(root),
+                payload_name: payload,
+            }
+        )
+        accepted = {
+            "ok": True,
+            "blockers": [],
+            "binary_sha256": sha256(self.binary),
+            "embedded_build_input_identity": self.repository_input_identity,
+        }
+        raw_verifier = (
+            "starcraft_commander.micromachine_pre_live_journeys."
+            "_verify_pre_live_journey_payload_cache"
+        )
+        with mock.patch(raw_verifier, return_value=accepted):
+            bound_bundle = bind_deterministic_journey_bundle_to_build(
+                unbound_bundle,
+                build_report_bytes=(
+                    self.members[self.metadata.build_report_member]
+                ),
+                binary_bytes=self.binary,
+                node_executable=self.node_descriptor,
+            )
+        outer_manifest = json.loads(
+            read_entries(self.bundle)[PRE_LIVE_ARTIFACT_MANIFEST_NAME]
+        )
+        original_read = artifact_module.zipfile.ZipFile.read
+
+        def verify_with_tracked_reads(
+            candidate: bytes,
+            *,
+            verifier_result: object,
+        ) -> tuple[dict[str, object], list[str], mock.Mock]:
+            reads: list[str] = []
+
+            def tracking_read(
+                archive: zipfile.ZipFile,
+                member: object,
+                *args: object,
+                **kwargs: object,
+            ) -> bytes:
+                member_name = (
+                    member.filename
+                    if isinstance(member, zipfile.ZipInfo)
+                    else str(member)
+                )
+                reads.append(member_name)
+                return original_read(archive, member, *args, **kwargs)
+
+            with (
+                mock.patch.object(
+                    artifact_module.zipfile.ZipFile,
+                    "read",
+                    new=tracking_read,
+                ),
+                mock.patch(
+                    raw_verifier,
+                    side_effect=verifier_result,
+                ) as semantic_verifier,
+            ):
+                verification = (
+                    artifact_module._verify_bound_deterministic_journey_bundle(
+                        candidate,
+                        build_report_bytes=(
+                            self.members[self.metadata.build_report_member]
+                        ),
+                        manifest=outer_manifest,
+                        limits=PreLiveArtifactLimits(),
+                        node_executable=self.node_descriptor,
+                    )
+                )
+            return verification, reads, semantic_verifier
+
+        verified, reads, semantic_verifier = verify_with_tracked_reads(
+            bound_bundle,
+            verifier_result=lambda *args, **kwargs: accepted,
+        )
+        self.assertTrue(verified["ok"], verified)
+        self.assertEqual(
+            [PRE_LIVE_ARTIFACT_MANIFEST_NAME, payload_name],
+            reads,
+        )
+        semantic_verifier.assert_called_once()
+        self.assertEqual(
+            {payload_name: payload},
+            semantic_verifier.call_args.args[1],
+        )
+
+        cases = {
+            "root schema": (
+                "deterministic_journey_build_binding_schema_mismatch",
+                lambda candidate_root: candidate_root.update(
+                    {"unexpected": True}
+                ),
+            ),
+            "member descriptor": (
+                "deterministic_journey_bundle_rejected",
+                lambda candidate_root: candidate_root["members"][0].update(
+                    {"size_bytes": True}
+                ),
+            ),
+            "boolean build binding schema": (
+                "deterministic_journey_build_binding_schema_mismatch",
+                lambda candidate_root: candidate_root[
+                    "build_binding"
+                ].update({"schema_version": True}),
+            ),
+        }
+        for name, (code, mutation) in cases.items():
+            with self.subTest(name=name):
+                malformed = mutate_nested_journey_manifest(
+                    bound_bundle,
+                    mutation,
+                )
+                rejected, reads, semantic_verifier = (
+                    verify_with_tracked_reads(
+                        malformed,
+                        verifier_result=AssertionError(
+                            "semantic replay must not run after root rejection"
+                        ),
+                    )
+                )
+                self.assertFalse(rejected["ok"], rejected)
+                self.assertIn(code, blocker_codes(rejected))
+                self.assertEqual(
+                    [PRE_LIVE_ARTIFACT_MANIFEST_NAME],
+                    reads,
+                )
+                semantic_verifier.assert_not_called()
+
+    def test_deterministic_replay_requires_and_threads_node_descriptor(
+        self,
+    ) -> None:
+        raw_verifier = (
+            "starcraft_commander.micromachine_pre_live_journeys."
+            "_verify_pre_live_journey_payload_cache"
+        )
+        accepted = {
+            "ok": True,
+            "blockers": [],
+            "binary_sha256": sha256(self.binary),
+            "embedded_build_input_identity": self.repository_input_identity,
+        }
+        raw_journeys = make_stub_deterministic_journey_bundle()
+        with (
+            mock.patch(raw_verifier) as semantic_verifier,
+            self.assertRaisesRegex(
+                ValueError,
+                "requires an admitted Node.js executable or descriptor",
+            ),
+        ):
+            bind_deterministic_journey_bundle_to_build(
+                raw_journeys,
+                build_report_bytes=(
+                    self.members[self.metadata.build_report_member]
+                ),
+                binary_bytes=self.binary,
+            )
+        semantic_verifier.assert_not_called()
+
+        with mock.patch(raw_verifier, return_value=accepted) as semantic_verifier:
+            bundle = self.make_deterministic_artifact_bundle(
+                node_executable=self.node_descriptor,
+            )
+            self.assertGreaterEqual(semantic_verifier.call_count, 2)
+            for call in semantic_verifier.call_args_list:
+                self.assertEqual(
+                    self.node_descriptor,
+                    call.kwargs["node_executable"],
+                )
+
+        with mock.patch(
+            raw_verifier,
+            side_effect=AssertionError(
+                "missing Node admission must not reach journey replay"
+            ),
+        ) as semantic_verifier:
+            missing = verify_pre_live_artifact_bundle(
+                bundle,
+                admission_snapshot=self.admission_snapshot,
+            )
+        semantic_verifier.assert_not_called()
+        self.assertFalse(missing["ok"], missing)
+        self.assertIn(
+            "deterministic_journey_node_executable_missing",
+            blocker_codes(missing),
+        )
+
+        with mock.patch(raw_verifier, return_value=accepted) as semantic_verifier:
+            direct = verify_pre_live_artifact_bundle(
+                bundle,
+                admission_snapshot=self.admission_snapshot,
+                node_executable=self.node_descriptor,
+            )
+        self.assertTrue(direct["ok"], direct)
+        semantic_verifier.assert_called_once()
+        self.assertEqual(
+            self.node_descriptor,
+            semantic_verifier.call_args.kwargs["node_executable"],
+        )
+
+        wrapper = raw_zip(
+            {GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME: bundle},
+            compression=zipfile.ZIP_DEFLATED,
+        )
+        with mock.patch(raw_verifier, return_value=accepted) as semantic_verifier:
+            downloaded = verify_downloaded_pre_live_artifact(
+                wrapper,
+                admission_snapshot=self.admission_snapshot,
+                node_executable=self.node_descriptor,
+            )
+        self.assertTrue(downloaded["ok"], downloaded)
+        self.assertEqual(
+            "github_artifact_zip",
+            downloaded["delivery"]["kind"],
+        )
+        semantic_verifier.assert_called_once()
+        self.assertEqual(
+            self.node_descriptor,
+            semantic_verifier.call_args.kwargs["node_executable"],
+        )
+
+    def test_nested_journey_limits_apply_before_allocation_and_payload_reads(
+        self,
+    ) -> None:
+        too_many_entries = raw_zip(
+            {
+                PRE_LIVE_ARTIFACT_MANIFEST_NAME: b"{}",
+                "payload/a": b"",
+                "payload/b": b"",
+            }
+        )
+        entry_limits = PreLiveArtifactLimits(
+            max_archive_bytes=len(too_many_entries) + 1,
+            max_manifest_bytes=16,
+            max_entries=2,
+            max_member_compressed_bytes=64,
+            max_member_uncompressed_bytes=64,
+            max_total_uncompressed_bytes=128,
+            max_compression_ratio=200,
+        )
+        with (
+            mock.patch.object(
+                artifact_module,
+                "_archive_framing_error",
+                side_effect=AssertionError(
+                    "framing parser must not inspect excessive EOCD entries"
+                ),
+            ),
+            mock.patch.object(
+                artifact_module.zipfile,
+                "ZipFile",
+                side_effect=AssertionError(
+                    "ZipFile must not be constructed after excessive EOCD count"
+                ),
+            ),
+            self.assertRaisesRegex(ValueError, "max_entries"),
+        ):
+            artifact_module._read_deterministic_journey_archive(
+                too_many_entries,
+                limits=entry_limits,
+            )
+
+        boundary_limits = replace(entry_limits, max_entries=3)
+        root, payloads = artifact_module._read_deterministic_journey_archive(
+            too_many_entries,
+            limits=boundary_limits,
+        )
+        self.assertEqual({}, root)
+        self.assertEqual({"payload/a": b"", "payload/b": b""}, payloads)
+
+        malformed = too_many_entries + b"trailing-data"
+        with self.assertRaisesRegex(ValueError, "framing is invalid"):
+            artifact_module._read_deterministic_journey_archive(
+                malformed,
+                limits=replace(
+                    boundary_limits,
+                    max_archive_bytes=len(malformed) + 1,
+                ),
+            )
+
+        limit_cases = {
+            "compressed member": (
+                raw_zip(
+                    {
+                        PRE_LIVE_ARTIFACT_MANIFEST_NAME: b"{}",
+                        "payload/a": b"1234",
+                    }
+                ),
+                PreLiveArtifactLimits(
+                    max_archive_bytes=1024,
+                    max_manifest_bytes=2,
+                    max_entries=2,
+                    max_member_compressed_bytes=3,
+                    max_member_uncompressed_bytes=8,
+                    max_total_uncompressed_bytes=16,
+                    max_compression_ratio=200,
+                ),
+                "compressed_size_limit_exceeded",
+            ),
+            "uncompressed member": (
+                raw_zip(
+                    {
+                        PRE_LIVE_ARTIFACT_MANIFEST_NAME: b"{}",
+                        "payload/a": b"1234",
+                    }
+                ),
+                PreLiveArtifactLimits(
+                    max_archive_bytes=1024,
+                    max_manifest_bytes=2,
+                    max_entries=2,
+                    max_member_compressed_bytes=8,
+                    max_member_uncompressed_bytes=3,
+                    max_total_uncompressed_bytes=16,
+                    max_compression_ratio=200,
+                ),
+                "uncompressed_size_limit_exceeded",
+            ),
+            "total uncompressed": (
+                raw_zip(
+                    {
+                        PRE_LIVE_ARTIFACT_MANIFEST_NAME: b"{}",
+                        "payload/a": b"12",
+                        "payload/b": b"34",
+                    }
+                ),
+                PreLiveArtifactLimits(
+                    max_archive_bytes=1024,
+                    max_manifest_bytes=2,
+                    max_entries=3,
+                    max_member_compressed_bytes=4,
+                    max_member_uncompressed_bytes=4,
+                    max_total_uncompressed_bytes=5,
+                    max_compression_ratio=200,
+                ),
+                "total_uncompressed_size_limit_exceeded",
+            ),
+        }
+        for name, (bundle, limits, error) in limit_cases.items():
+            with (
+                self.subTest(name=name),
+                mock.patch.object(
+                    artifact_module.zipfile.ZipFile,
+                    "read",
+                    side_effect=AssertionError(
+                        "nested payload must not be read before limit checks"
+                    ),
+                ),
+                self.assertRaisesRegex(ValueError, error),
+            ):
+                artifact_module._read_deterministic_journey_archive(
+                    bundle,
+                    limits=limits,
+                )
+
+        metadata = replace(
+            self.metadata,
+            producer_policy_id=PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID,
+            artifact_member=PRE_LIVE_DETERMINISTIC_JOURNEY_MEMBER_NAME,
+            producer_output_member=PRE_LIVE_DETERMINISTIC_JOURNEY_MEMBER_NAME,
+        )
+        nested_payloads = {
+            f"payload/{index:02d}.json": b"" for index in range(10)
+        }
+        nested_root = json.loads(
+            read_entries(make_stub_deterministic_journey_bundle())[
+                PRE_LIVE_ARTIFACT_MANIFEST_NAME
+            ]
+        )
+        nested_root["members"] = [
+            {
+                "name": name,
+                "sha256": sha256(payload),
+                "size_bytes": len(payload),
+            }
+            for name, payload in sorted(nested_payloads.items())
+        ]
+        nested_entries = {
+            PRE_LIVE_ARTIFACT_MANIFEST_NAME: canonical_json_bytes(nested_root),
+            **nested_payloads,
+        }
+        nested_bundle = raw_zip(nested_entries)
+        nested_identity = {
+            "ok": True,
+            "blockers": [],
+            "binary_sha256": sha256(self.binary),
+            "embedded_build_input_identity": self.repository_input_identity,
+        }
+        raw_verifier = (
+            "starcraft_commander.micromachine_pre_live_journeys."
+            "_verify_pre_live_journey_payload_cache"
+        )
+        with mock.patch(raw_verifier, return_value=nested_identity):
+            bound_bundle = bind_deterministic_journey_bundle_to_build(
+                nested_bundle,
+                build_report_bytes=(
+                    self.members[self.metadata.build_report_member]
+                ),
+                binary_bytes=self.binary,
+                node_executable=self.node_descriptor,
+            )
+        members = dict(self.members)
+        del members[self.metadata.producer_output_member]
+        members[PRE_LIVE_DETERMINISTIC_JOURNEY_MEMBER_NAME] = bound_bundle
+        provenance_payload = json.loads(
+            members[self.metadata.producer_provenance_member]
+        )
+        provenance_payload["producer_id"] = (
+            PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+        )
+        provenance_payload["output_sha256"] = sha256(bound_bundle)
+        members[self.metadata.producer_provenance_member] = canonical_json_bytes(
+            provenance_payload
+        )
+        outer_limits = replace(PreLiveArtifactLimits(), max_entries=10)
+        with (
+            mock.patch(
+                raw_verifier,
+                side_effect=AssertionError(
+                    "semantic verifier must not run before nested preflight"
+                ),
+            ) as semantic_verifier,
+            self.assertRaisesRegex(
+                ValueError,
+                "deterministic_journey_bundle_rejected",
+            ),
+        ):
+            build_pre_live_artifact_bundle(
+                metadata,
+                members,
+                limits=outer_limits,
+                admission_snapshot=self.admission_snapshot,
+                node_executable=self.node_descriptor,
+            )
+        semantic_verifier.assert_not_called()
+
+        canonical_nested = make_stub_deterministic_journey_bundle()
+        eocd_offset = canonical_nested.rfind(b"PK\x05\x06")
+        eocd = list(
+            artifact_module._END_CENTRAL_DIRECTORY.unpack_from(
+                canonical_nested,
+                eocd_offset,
+            )
+        )
+        central_offset = eocd[6]
+        hidden = b"orphan-hidden-framing"
+        eocd[6] += len(hidden)
+        hidden_nested = b"".join(
+            (
+                canonical_nested[:central_offset],
+                hidden,
+                canonical_nested[central_offset:eocd_offset],
+                artifact_module._END_CENTRAL_DIRECTORY.pack(*eocd),
+            )
+        )
+        with (
+            mock.patch(
+                raw_verifier,
+                side_effect=AssertionError(
+                    "semantic verifier must not normalize hidden ZIP framing"
+                ),
+            ) as semantic_verifier,
+            self.assertRaisesRegex(
+                ValueError,
+                "contiguous with the central directory",
+            ),
+        ):
+            bind_deterministic_journey_bundle_to_build(
+                hidden_nested,
+                build_report_bytes=(
+                    self.members[self.metadata.build_report_member]
+                ),
+                binary_bytes=self.binary,
+                node_executable=self.node_descriptor,
+            )
+        semantic_verifier.assert_not_called()
+
+    def test_outer_entry_limits_apply_before_framing_and_zipfile_allocation(
+        self,
+    ) -> None:
+        excessive_bundle = raw_zip(
+            {
+                "entry-a": b"",
+                "entry-b": b"",
+                "entry-c": b"",
+            }
+        )
+        limits = replace(
+            PreLiveArtifactLimits(),
+            max_archive_bytes=len(excessive_bundle) + 1,
+            max_entries=2,
+        )
+        with (
+            mock.patch.object(
+                artifact_module,
+                "_archive_framing_error",
+                side_effect=AssertionError(
+                    "framing parser must not inspect excessive EOCD entries"
+                ),
+            ),
+            mock.patch.object(
+                artifact_module.zipfile,
+                "ZipFile",
+                side_effect=AssertionError(
+                    "ZipFile must not allocate excessive EOCD entries"
+                ),
+            ),
+        ):
+            rejected = verify_pre_live_artifact_bundle(
+                excessive_bundle,
+                limits=limits,
+                admission_snapshot=self.admission_snapshot,
+            )
+        self.assertFalse(rejected["ok"], rejected)
+        self.assertIn(
+            "archive_entry_count_limit_exceeded",
+            blocker_codes(rejected),
+        )
+
+        wrapper = raw_zip(
+            {
+                GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME: b"",
+                "unexpected.zip": b"",
+            },
+            compression=zipfile.ZIP_DEFLATED,
+        )
+        direct_rejection = {
+            "ok": False,
+            "blockers": [],
+            "manifest": None,
+            "manifest_evidence": {},
+            "member_evidence": [],
+        }
+        with (
+            mock.patch.object(
+                artifact_module,
+                "verify_pre_live_artifact_bundle",
+                return_value=direct_rejection,
+            ),
+            mock.patch.object(
+                artifact_module,
+                "_archive_framing_error",
+                side_effect=AssertionError(
+                    "wrapper framing must not inspect excessive EOCD entries"
+                ),
+            ),
+            mock.patch.object(
+                artifact_module.zipfile,
+                "ZipFile",
+                side_effect=AssertionError(
+                    "wrapper ZipFile must not allocate excessive EOCD entries"
+                ),
+            ),
+        ):
+            wrapper_rejected = verify_downloaded_pre_live_artifact(
+                wrapper,
+                limits=replace(
+                    PreLiveArtifactLimits(),
+                    max_archive_bytes=len(wrapper) + 1,
+                ),
+                admission_snapshot=self.admission_snapshot,
+            )
+        self.assertFalse(wrapper_rejected["ok"], wrapper_rejected)
+        self.assertIn(
+            "github_artifact_entry_count_mismatch",
+            blocker_codes(wrapper_rejected),
+        )
+
+    def test_deterministic_policy_requires_exact_admitted_executables(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            policy_path = root / provenance.PRODUCER_POLICY_RELATIVE_PATH
+            policy_path.parent.mkdir(parents=True)
+            state_dir = root / ".state"
+            state_dir.mkdir()
+            binary_path = root / "build" / "MicroMachine"
+            binary_path.parent.mkdir()
+            binary_path.write_bytes(self.binary)
+            binary_path.chmod(0o755)
+            expected_digest = sha256(self.binary)
+            node_path = root / "tools" / "node"
+            node_path.parent.mkdir()
+            node_path.write_bytes(b"fixture Node.js executable")
+            node_path.chmod(0o755)
+            expected_node_digest = sha256(node_path.read_bytes())
+
+            def policy_bytes(
+                *,
+                binary_placeholder: str = "{micromachine_binary}",
+                node_placeholder: str = "{node}",
+                raw_argv: list[str] | None = None,
+                cwd: str = ".",
+                output: str = (
+                    "producer/deterministic-journeys.zip"
+                ),
+            ) -> bytes:
+                default_argv = [
+                    "{python}",
+                    "-I",
+                    "-B",
+                    "-S",
+                    "-c",
+                    provenance.ISOLATED_PYTHON_BOOTSTRAP,
+                    "{repository}",
+                    (
+                        "starcraft_commander/"
+                        "micromachine_pre_live_journeys.py"
+                    ),
+                    "--emit-bundle",
+                    "{output}",
+                    "--micromachine-binary",
+                    binary_placeholder,
+                    "--node-executable",
+                    node_placeholder,
+                ]
+                return canonical_json_bytes(
+                    {
+                        "schema_version": 1,
+                        "producers": {
+                            PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID: {
+                                "argv": (
+                                    default_argv
+                                    if raw_argv is None
+                                    else raw_argv
+                                ),
+                                "cwd": cwd,
+                                "output": output,
+                            }
+                        },
+                    }
+                )
+
+            def resolve(
+                payload: bytes,
+                *,
+                candidate_path: Path | str | None = binary_path,
+                candidate_digest: str | None = expected_digest,
+                candidate_node: Path | str | None = node_path,
+            ) -> dict[str, object]:
+                policy_path.write_bytes(payload)
+
+                def git_runner(
+                    *args: object,
+                    **kwargs: object,
+                ) -> subprocess.CompletedProcess[bytes]:
+                    return subprocess.CompletedProcess(
+                        args[0],
+                        0,
+                        payload,
+                        b"",
+                    )
+
+                accepted_component = {
+                    "ok": True,
+                    "status": "accepted",
+                    "blockers": [],
+                    "files": [],
+                    "digest": "sha256:" + ("1" * 64),
+                }
+                with (
+                    mock.patch.object(
+                        provenance,
+                        "canonical_pre_live_state_dir",
+                        return_value=state_dir,
+                    ),
+                    mock.patch.object(
+                        provenance,
+                        "_attest_committed_file",
+                        return_value=accepted_component,
+                    ),
+                    mock.patch.object(
+                        provenance,
+                        "_attest_committed_python_sources",
+                        return_value=accepted_component,
+                    ),
+                ):
+                    return provenance.resolve_local_producer_policy(
+                        repository_dir=root,
+                        expected_commit="a" * 40,
+                        producer_id=(
+                            PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID
+                        ),
+                        git_runner=git_runner,
+                        micromachine_binary_path=candidate_path,
+                        micromachine_binary_sha256=candidate_digest,
+                        node_executable=candidate_node,
+                    )
+
+            accepted = resolve(policy_bytes())
+            self.assertTrue(accepted["ok"], accepted)
+            binary_index = accepted["argv"].index("--micromachine-binary") + 1
+            self.assertEqual(
+                str(binary_path),
+                accepted["argv"][binary_index],
+            )
+            self.assertEqual(
+                str(binary_path),
+                accepted["micromachine_binary_path"],
+            )
+            self.assertEqual(
+                expected_digest,
+                accepted["micromachine_binary_sha256"],
+            )
+            node_index = accepted["argv"].index("--node-executable") + 1
+            self.assertEqual(str(node_path), accepted["argv"][node_index])
+            self.assertEqual(
+                str(node_path),
+                accepted["node_executable_path"],
+            )
+            self.assertEqual(
+                expected_node_digest,
+                accepted["node_executable_sha256"],
+            )
+            self.assertEqual(
+                {
+                    str(binary_path): expected_digest,
+                    str(node_path): expected_node_digest,
+                },
+                provenance._producer_pinned_argv_file_digests(accepted),
+            )
+
+            required_argv = list(
+                provenance.DETERMINISTIC_JOURNEY_PRODUCER_RAW_ARGV
+            )
+            substituted_script = list(required_argv)
+            substituted_script[7] = (
+                "starcraft_commander/micromachine_pre_live_provenance.py"
+            )
+            reordered_argv = list(required_argv)
+            reordered_argv[8], reordered_argv[10] = (
+                reordered_argv[10],
+                reordered_argv[8],
+            )
+            rejected = {
+                "missing binary placeholder": resolve(
+                    policy_bytes(binary_placeholder=str(binary_path))
+                ),
+                "missing node placeholder": resolve(
+                    policy_bytes(node_placeholder=str(node_path))
+                ),
+                "missing admitted node": resolve(
+                    policy_bytes(),
+                    candidate_node=None,
+                ),
+                "relative path": resolve(
+                    policy_bytes(),
+                    candidate_path=Path("build/MicroMachine"),
+                ),
+                "digest mismatch": resolve(
+                    policy_bytes(),
+                    candidate_digest="0" * 64,
+                ),
+                "relative node path": resolve(
+                    policy_bytes(),
+                    candidate_node=Path("tools/node"),
+                ),
+                "script substitution": resolve(
+                    policy_bytes(raw_argv=substituted_script)
+                ),
+                "extra argv": resolve(
+                    policy_bytes(raw_argv=[*required_argv, "--forged"])
+                ),
+                "missing argv": resolve(
+                    policy_bytes(raw_argv=required_argv[:-1])
+                ),
+                "reordered argv": resolve(
+                    policy_bytes(raw_argv=reordered_argv)
+                ),
+                "cwd substitution": resolve(
+                    policy_bytes(cwd="starcraft_commander")
+                ),
+                "output substitution": resolve(
+                    policy_bytes(output="producer/forged.zip")
+                ),
+            }
+            for name, result in rejected.items():
+                with self.subTest(name=name):
+                    self.assertFalse(result["ok"], result)
 
     def test_rejects_toctou_replacement_after_build_admission(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -848,6 +1959,10 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
         for name, malformed in (
             ("prefix", b"hidden-prefix" + self.bundle),
             ("suffix", self.bundle + b"hidden-suffix"),
+            (
+                "forged trailing EOCD",
+                append_forged_eocd(self.bundle, b"hidden-suffix"),
+            ),
         ):
             with self.subTest(name=name):
                 report = verify_pre_live_artifact_bundle(malformed)
@@ -1221,6 +2336,159 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
             report["delivery"]["bundle_sha256"],
         )
 
+    def test_rejects_trailing_github_artifact_wrapper_bytes(self) -> None:
+        wrapper = raw_zip(
+            {GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME: self.bundle},
+            compression=zipfile.ZIP_DEFLATED,
+        )
+        for name, malformed in (
+            ("raw suffix", wrapper + b"hidden-suffix"),
+            (
+                "forged trailing EOCD",
+                append_forged_eocd(wrapper, b"hidden-suffix"),
+            ),
+            (
+                "hidden before central directory",
+                insert_hidden_before_central_directory(
+                    wrapper,
+                    b"hidden-before-central-directory",
+                ),
+            ),
+        ):
+            with self.subTest(name=name):
+                report = verify_downloaded_pre_live_artifact(malformed)
+
+                self.assertFalse(report["ok"], report)
+                self.assertEqual("invalid", report["delivery"]["kind"])
+                self.assertIn(
+                    "noncanonical_github_artifact_framing",
+                    blocker_codes(report),
+                )
+
+    def test_rejects_github_wrapper_descriptor_flag_mismatch(self) -> None:
+        wrapper = raw_zip(
+            {GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME: self.bundle},
+            compression=zipfile.ZIP_DEFLATED,
+        )
+        for signed in (False, True):
+            with self.subTest(signed=signed):
+                report = verify_downloaded_pre_live_artifact(
+                    add_data_descriptor(
+                        wrapper,
+                        signed=signed,
+                        local=False,
+                    )
+                )
+
+                self.assertFalse(report["ok"], report)
+                self.assertEqual("invalid", report["delivery"]["kind"])
+                self.assertIn(
+                    "noncanonical_github_artifact_framing",
+                    blocker_codes(report),
+                )
+
+    def test_rejects_github_wrapper_local_flag_mismatch(self) -> None:
+        wrapper = raw_zip(
+            {GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME: self.bundle},
+            compression=zipfile.ZIP_DEFLATED,
+        )
+        for name, flag in (
+            ("encryption", 0x0001),
+            ("strong encryption", 0x0040),
+        ):
+            with self.subTest(name=name):
+                report = verify_downloaded_pre_live_artifact(
+                    add_local_flags(wrapper, flag)
+                )
+
+                self.assertFalse(report["ok"], report)
+                self.assertEqual("invalid", report["delivery"]["kind"])
+                self.assertIn(
+                    "noncanonical_github_artifact_framing",
+                    blocker_codes(report),
+                )
+
+    def test_rejects_github_wrapper_matching_unsupported_flags(self) -> None:
+        wrapper = raw_zip(
+            {GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME: self.bundle},
+            compression=zipfile.ZIP_DEFLATED,
+        )
+        for name, flag in (
+            ("patched data", 0x0020),
+            ("reserved", 0x4000),
+        ):
+            with self.subTest(name=name):
+                report = verify_downloaded_pre_live_artifact(
+                    add_matching_flags(wrapper, flag)
+                )
+
+                self.assertFalse(report["ok"], report)
+                self.assertEqual("invalid", report["delivery"]["kind"])
+                self.assertIn(
+                    "noncanonical_github_artifact_framing",
+                    blocker_codes(report),
+                )
+
+    def test_rejects_github_wrapper_raw_filename_nul_suffix(self) -> None:
+        wrapper = raw_zip(
+            {GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME: self.bundle},
+            compression=zipfile.ZIP_DEFLATED,
+        )
+
+        report = verify_downloaded_pre_live_artifact(
+            add_raw_filename_suffix(wrapper, b"\x00shadow")
+        )
+
+        self.assertFalse(report["ok"], report)
+        self.assertEqual("invalid", report["delivery"]["kind"])
+        self.assertIn(
+            "noncanonical_github_artifact_framing",
+            blocker_codes(report),
+        )
+
+    def test_accepts_github_wrapper_data_descriptors(self) -> None:
+        wrapper = raw_zip(
+            {GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME: self.bundle},
+            compression=zipfile.ZIP_DEFLATED,
+        )
+        for signed in (False, True):
+            with self.subTest(signed=signed):
+                report = verify_downloaded_pre_live_artifact(
+                    add_data_descriptor(
+                        wrapper,
+                        signed=signed,
+                        local=True,
+                    )
+                )
+
+                self.assertTrue(report["ok"], report["blockers"])
+                self.assertEqual(
+                    "github_artifact_zip",
+                    report["delivery"]["kind"],
+                )
+
+    def test_rejects_github_wrapper_zip64_ambiguity(self) -> None:
+        wrapper = raw_zip(
+            {GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME: self.bundle},
+            compression=zipfile.ZIP_DEFLATED,
+        )
+        for name, malformed in (
+            ("local ZIP64 metadata", add_local_zip64_metadata(wrapper)),
+            (
+                "sentinel-free central ZIP64 extra",
+                add_central_zip64_extra(wrapper),
+            ),
+        ):
+            with self.subTest(name=name):
+                report = verify_downloaded_pre_live_artifact(malformed)
+
+                self.assertFalse(report["ok"], report)
+                self.assertEqual("invalid", report["delivery"]["kind"])
+                self.assertIn(
+                    "noncanonical_github_artifact_framing",
+                    blocker_codes(report),
+                )
+
     def test_rejects_ambiguous_or_wrong_github_artifact_wrapper(self) -> None:
         for name, entries in {
             "extra member": {
@@ -1443,6 +2711,240 @@ def raw_zip(
     return output.getvalue()
 
 
+def append_forged_eocd(bundle: bytes, hidden: bytes) -> bytes:
+    eocd_offset = len(bundle) - artifact_module._END_CENTRAL_DIRECTORY.size
+    eocd = list(
+        artifact_module._END_CENTRAL_DIRECTORY.unpack_from(
+            bundle,
+            eocd_offset,
+        )
+    )
+    eocd[5] += artifact_module._END_CENTRAL_DIRECTORY.size + len(hidden)
+    return b"".join(
+        (
+            bundle,
+            hidden,
+            artifact_module._END_CENTRAL_DIRECTORY.pack(*eocd),
+        )
+    )
+
+
+def insert_hidden_before_central_directory(
+    bundle: bytes,
+    hidden: bytes,
+) -> bytes:
+    eocd_offset = len(bundle) - artifact_module._END_CENTRAL_DIRECTORY.size
+    eocd = list(
+        artifact_module._END_CENTRAL_DIRECTORY.unpack_from(
+            bundle,
+            eocd_offset,
+        )
+    )
+    central_offset = eocd[6]
+    eocd[6] += len(hidden)
+    return b"".join(
+        (
+            bundle[:central_offset],
+            hidden,
+            bundle[central_offset:eocd_offset],
+            artifact_module._END_CENTRAL_DIRECTORY.pack(*eocd),
+        )
+    )
+
+
+def add_data_descriptor(
+    bundle: bytes,
+    *,
+    signed: bool,
+    local: bool,
+) -> bytes:
+    eocd_offset = len(bundle) - artifact_module._END_CENTRAL_DIRECTORY.size
+    eocd = list(
+        artifact_module._END_CENTRAL_DIRECTORY.unpack_from(
+            bundle,
+            eocd_offset,
+        )
+    )
+    central_offset = eocd[6]
+    central = list(
+        artifact_module._CENTRAL_DIRECTORY_HEADER.unpack_from(
+            bundle,
+            central_offset,
+        )
+    )
+    central[3] |= 0x0008
+    descriptor = struct.pack("<III", central[7], central[8], central[9])
+    if signed:
+        descriptor = b"PK\x07\x08" + descriptor
+    eocd[6] += len(descriptor)
+    local_data = bundle[:central_offset]
+    if local:
+        local_header = list(
+            artifact_module._LOCAL_FILE_HEADER.unpack_from(bundle, 0)
+        )
+        local_header[2] |= 0x0008
+        local_header[6:9] = [0, 0, 0]
+        local_data = b"".join(
+            (
+                artifact_module._LOCAL_FILE_HEADER.pack(*local_header),
+                bundle[
+                    artifact_module._LOCAL_FILE_HEADER.size : central_offset
+                ],
+            )
+        )
+    return b"".join(
+        (
+            local_data,
+            descriptor,
+            artifact_module._CENTRAL_DIRECTORY_HEADER.pack(*central),
+            bundle[
+                central_offset
+                + artifact_module._CENTRAL_DIRECTORY_HEADER.size : eocd_offset
+            ],
+            artifact_module._END_CENTRAL_DIRECTORY.pack(*eocd),
+        )
+    )
+
+
+def add_local_flags(bundle: bytes, flags: int) -> bytes:
+    mutated = bytearray(bundle)
+    local_flags = struct.unpack_from("<H", mutated, 6)[0]
+    struct.pack_into("<H", mutated, 6, local_flags | flags)
+    return bytes(mutated)
+
+
+def add_matching_flags(bundle: bytes, flags: int) -> bytes:
+    mutated = bytearray(add_local_flags(bundle, flags))
+    eocd_offset = len(bundle) - artifact_module._END_CENTRAL_DIRECTORY.size
+    eocd = artifact_module._END_CENTRAL_DIRECTORY.unpack_from(
+        bundle,
+        eocd_offset,
+    )
+    central_flags_offset = eocd[6] + 8
+    central_flags = struct.unpack_from(
+        "<H",
+        mutated,
+        central_flags_offset,
+    )[0]
+    struct.pack_into(
+        "<H",
+        mutated,
+        central_flags_offset,
+        central_flags | flags,
+    )
+    return bytes(mutated)
+
+
+def add_raw_filename_suffix(bundle: bytes, suffix: bytes) -> bytes:
+    eocd_offset = len(bundle) - artifact_module._END_CENTRAL_DIRECTORY.size
+    eocd = list(
+        artifact_module._END_CENTRAL_DIRECTORY.unpack_from(
+            bundle,
+            eocd_offset,
+        )
+    )
+    central_offset = eocd[6]
+    local = list(artifact_module._LOCAL_FILE_HEADER.unpack_from(bundle, 0))
+    local_filename_start = artifact_module._LOCAL_FILE_HEADER.size
+    local_filename_end = local_filename_start + local[9]
+    central = list(
+        artifact_module._CENTRAL_DIRECTORY_HEADER.unpack_from(
+            bundle,
+            central_offset,
+        )
+    )
+    central_filename_start = (
+        central_offset + artifact_module._CENTRAL_DIRECTORY_HEADER.size
+    )
+    central_filename_end = central_filename_start + central[10]
+    local[9] += len(suffix)
+    central[10] += len(suffix)
+    eocd[5] += len(suffix)
+    eocd[6] += len(suffix)
+    return b"".join(
+        (
+            artifact_module._LOCAL_FILE_HEADER.pack(*local),
+            bundle[local_filename_start:local_filename_end],
+            suffix,
+            bundle[local_filename_end:central_offset],
+            artifact_module._CENTRAL_DIRECTORY_HEADER.pack(*central),
+            bundle[central_filename_start:central_filename_end],
+            suffix,
+            bundle[central_filename_end:eocd_offset],
+            artifact_module._END_CENTRAL_DIRECTORY.pack(*eocd),
+        )
+    )
+
+
+def add_local_zip64_metadata(bundle: bytes) -> bytes:
+    eocd_offset = len(bundle) - artifact_module._END_CENTRAL_DIRECTORY.size
+    eocd = list(
+        artifact_module._END_CENTRAL_DIRECTORY.unpack_from(
+            bundle,
+            eocd_offset,
+        )
+    )
+    central_offset = eocd[6]
+    local = list(artifact_module._LOCAL_FILE_HEADER.unpack_from(bundle, 0))
+    filename_end = artifact_module._LOCAL_FILE_HEADER.size + local[9]
+    extra_end = filename_end + local[10]
+    zip64_extra = struct.pack("<HHQQ", 0x0001, 16, local[7], local[8])
+    local[1] = 45
+    local[7] = 0xFFFFFFFF
+    local[8] = 0xFFFFFFFF
+    local[10] += len(zip64_extra)
+    eocd[6] += len(zip64_extra)
+    return b"".join(
+        (
+            artifact_module._LOCAL_FILE_HEADER.pack(*local),
+            bundle[artifact_module._LOCAL_FILE_HEADER.size : extra_end],
+            zip64_extra,
+            bundle[extra_end:central_offset],
+            bundle[central_offset:eocd_offset],
+            artifact_module._END_CENTRAL_DIRECTORY.pack(*eocd),
+        )
+    )
+
+
+def add_central_zip64_extra(bundle: bytes) -> bytes:
+    eocd_offset = len(bundle) - artifact_module._END_CENTRAL_DIRECTORY.size
+    eocd = list(
+        artifact_module._END_CENTRAL_DIRECTORY.unpack_from(
+            bundle,
+            eocd_offset,
+        )
+    )
+    central_offset = eocd[6]
+    central = list(
+        artifact_module._CENTRAL_DIRECTORY_HEADER.unpack_from(
+            bundle,
+            central_offset,
+        )
+    )
+    filename_end = (
+        central_offset
+        + artifact_module._CENTRAL_DIRECTORY_HEADER.size
+        + central[10]
+    )
+    extra_end = filename_end + central[11]
+    zip64_extra = struct.pack("<HHQQ", 0x0001, 16, central[8], central[9])
+    central[11] += len(zip64_extra)
+    eocd[5] += len(zip64_extra)
+    return b"".join(
+        (
+            bundle[:central_offset],
+            artifact_module._CENTRAL_DIRECTORY_HEADER.pack(*central),
+            bundle[
+                central_offset
+                + artifact_module._CENTRAL_DIRECTORY_HEADER.size : extra_end
+            ],
+            zip64_extra,
+            bundle[extra_end:eocd_offset],
+            artifact_module._END_CENTRAL_DIRECTORY.pack(*eocd),
+        )
+    )
+
+
 def rewrite_bundle(
     bundle: bytes,
     *,
@@ -1493,6 +2995,55 @@ def mutate_manifest(
     all_replacements = dict(replacements or {})
     all_replacements[PRE_LIVE_ARTIFACT_MANIFEST_NAME] = canonical_json_bytes(manifest)
     return rewrite_bundle(bundle, replacements=all_replacements)
+
+
+def mutate_nested_journey_manifest(
+    bundle: bytes,
+    mutation: object,
+) -> bytes:
+    entries = read_entries(bundle)
+    manifest = json.loads(entries[PRE_LIVE_ARTIFACT_MANIFEST_NAME])
+    mutation(manifest)
+    return rewrite_bundle(
+        bundle,
+        replacements={
+            PRE_LIVE_ARTIFACT_MANIFEST_NAME: canonical_json_bytes(manifest)
+        },
+    )
+
+
+def make_stub_deterministic_journey_bundle() -> bytes:
+    manifest = canonical_json_bytes(
+        {
+            "schema_version": 1,
+            "evidence_kind": (
+                "deterministic_micromachine_pre_live_journeys"
+            ),
+            "suite_id": "unit-test-native-verifier-stub",
+            "journey_count": 0,
+            "failed_count": 0,
+            "report_sha256": sha256(b""),
+            "members": [],
+        }
+    )
+    output = io.BytesIO()
+    with zipfile.ZipFile(
+        output,
+        mode="w",
+        compression=zipfile.ZIP_STORED,
+        allowZip64=False,
+    ) as archive:
+        info = zipfile.ZipInfo(
+            PRE_LIVE_ARTIFACT_MANIFEST_NAME,
+            date_time=DETERMINISTIC_ZIP_TIMESTAMP,
+        )
+        info.compress_type = zipfile.ZIP_STORED
+        info.create_system = 3
+        info.create_version = 20
+        info.extract_version = 20
+        info.external_attr = 0o100644 << 16
+        archive.writestr(info, manifest)
+    return output.getvalue()
 
 
 def member_descriptor(

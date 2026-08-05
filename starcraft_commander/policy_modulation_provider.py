@@ -15,6 +15,7 @@ from enum import Enum
 from typing import Protocol
 
 from starcraft_commander.policy_modulation import (
+    MICROMACHINE_CANONICAL_UNIT_FORM_TOKENS,
     MICROMACHINE_COMPLETION_CONDITIONS,
     MICROMACHINE_COMPLETION_STATES,
     MICROMACHINE_LIFETIME_MODES,
@@ -23,6 +24,9 @@ from starcraft_commander.policy_modulation import (
     PolicyModulationVector,
     PolicyOverrideLevel,
     reject_raw_policy_control_keys,
+)
+from starcraft_commander.micromachine_terran_capabilities import (
+    terran_ability_caster_state,
 )
 
 
@@ -1547,6 +1551,16 @@ def _normalize_provider_operations(
             default_goal=default_goal,
             path=f"operations[{index}]",
         )
+        tactical_task = operation.get("tactical_task")
+        if (
+            isinstance(tactical_task, Mapping)
+            and tactical_task.get("task_type") == "execute_ability"
+        ):
+            raise ValueError(
+                f"operations[{index}].tactical_task.task_type='execute_ability' "
+                "is not supported by the live operation director; use the "
+                "top-level tactical_task instead."
+            )
         normalized.append(operation)
         warnings.extend(operation_warnings)
     return normalized, tuple(warnings)
@@ -1718,21 +1732,25 @@ def _canonicalize_micromachine_payload(payload: dict[str, object]) -> None:
             targets = domain_value.get("production_targets")
             if isinstance(targets, tuple):
                 domain_value["production_targets"] = tuple(
-                    _canonicalize_micromachine_key(item) for item in targets
+                    _canonicalize_micromachine_production_token(item)
+                    for item in targets
                 )
             elif _is_non_text_sequence(targets):
                 domain_value["production_targets"] = [
-                    _canonicalize_micromachine_key(item) for item in targets
+                    _canonicalize_micromachine_production_token(item)
+                    for item in targets
                 ]
         if domain_name == "production_plan":
             targets = domain_value.get("targets")
             if isinstance(targets, tuple):
                 domain_value["targets"] = tuple(
-                    _canonicalize_micromachine_key(item) for item in targets
+                    _canonicalize_micromachine_production_token(item)
+                    for item in targets
                 )
             elif _is_non_text_sequence(targets):
                 domain_value["targets"] = [
-                    _canonicalize_micromachine_key(item) for item in targets
+                    _canonicalize_micromachine_production_token(item)
+                    for item in targets
                 ]
     _canonicalize_rich_intent_sequences(payload)
     _normalize_micromachine_composition_and_roles(payload)
@@ -1762,8 +1780,14 @@ def _canonicalize_rich_intent_sequences(payload: dict[str, object]) -> None:
                 continue
             normalized = dict(item)
             if field_name in normalized:
-                normalized[field_name] = _canonicalize_micromachine_key(
-                    normalized[field_name]
+                normalized[field_name] = (
+                    _canonicalize_micromachine_production_token(
+                        normalized[field_name]
+                    )
+                    if key in {"composition_requirements", "unit_roles"}
+                    else _canonicalize_micromachine_key(
+                        normalized[field_name]
+                    )
                 )
             if key in {"composition_requirements", "unit_roles"} and "role" in normalized:
                 normalized["role"] = _canonicalize_enum_alias(
@@ -2690,15 +2714,36 @@ def _repair_micromachine_ability_task_defaults(
         requested_unit_classes = tactical_task.get("unit_classes")
         if not _is_non_text_sequence(requested_unit_classes):
             requested_unit_classes = ()
-        unit_classes = _merge_ordered_tokens(
-            requested_unit_classes,
-            default_unit_classes if not requested_unit_classes else (),
+        caster_state = terran_ability_caster_state(ability)
+        unit_classes = (
+            (caster_state.unit_type,)
+            if caster_state is not None
+            else _merge_ordered_tokens(
+                requested_unit_classes,
+                default_unit_classes if not requested_unit_classes else (),
+            )
         )
         tactical_task["unit_classes"] = list(unit_classes)
+        production_unit_classes = tuple(
+            _canonicalize_micromachine_production_token(unit_type)
+            for unit_type in unit_classes
+        )
         production_targets = _merge_ordered_tokens(
-            tactical_task.get("production_targets", ()),
-            unit_classes,
-            ability_defaults["production_targets"],
+            tuple(
+                _canonicalize_micromachine_production_token(target)
+                for target in (
+                    tactical_task.get("production_targets", ())
+                    if _is_non_text_sequence(
+                        tactical_task.get("production_targets")
+                    )
+                    else ()
+                )
+            ),
+            production_unit_classes,
+            tuple(
+                _canonicalize_micromachine_production_token(target)
+                for target in ability_defaults["production_targets"]
+            ),
         )
         tactical_task["production_targets"] = list(production_targets)
         production_plan = _ensure_micromachine_domain_dict(
@@ -2707,7 +2752,16 @@ def _repair_micromachine_ability_task_defaults(
         )
         production_plan["targets"] = list(
             _merge_ordered_tokens(
-                production_plan.get("targets", ()),
+                tuple(
+                    _canonicalize_micromachine_production_token(target)
+                    for target in (
+                        production_plan.get("targets", ())
+                        if _is_non_text_sequence(
+                            production_plan.get("targets")
+                        )
+                        else ()
+                    )
+                ),
                 production_targets,
             )
         )
@@ -2721,7 +2775,10 @@ def _repair_micromachine_ability_task_defaults(
                 else ()
             )
             if isinstance(item, Mapping)
-            and str(item.get("unit_type", "") or "") not in unit_classes
+            and _canonicalize_micromachine_production_token(
+                item.get("unit_type")
+            )
+            not in production_unit_classes
         ]
         existing_roles.extend(
             {
@@ -2730,9 +2787,32 @@ def _repair_micromachine_ability_task_defaults(
                 "priority": 0.9,
                 "ability_policy": ability,
             }
-            for unit_type in unit_classes
+            for unit_type in production_unit_classes
         )
         payload["unit_roles"] = existing_roles[:32]
+        transformed_caster_production_types = {
+            _canonicalize_micromachine_production_token(unit_type)
+            for unit_type in unit_classes
+            if unit_type in MICROMACHINE_CANONICAL_UNIT_FORM_TOKENS
+        }
+        if transformed_caster_production_types:
+            # The native adapter selects exact ability casters from the task
+            # only when its production-family composition is not duplicated.
+            payload["composition_requirements"] = [
+                dict(item)
+                for item in (
+                    payload.get("composition_requirements", ())
+                    if _is_non_text_sequence(
+                        payload.get("composition_requirements")
+                    )
+                    else ()
+                )
+                if isinstance(item, Mapping)
+                and _canonicalize_micromachine_production_token(
+                    item.get("unit_type")
+                )
+                not in transformed_caster_production_types
+            ]
     else:
         raise ValueError(
             "tactical_task.ability is required for execute_ability tactical tasks."
@@ -3070,7 +3150,7 @@ def _canonicalize_bias_mapping(value: object) -> object:
     if not isinstance(value, Mapping):
         return value
     return {
-        _canonicalize_micromachine_key(key): bias_value
+        _canonicalize_micromachine_production_token(key): bias_value
         for key, bias_value in value.items()
     }
 
@@ -3110,6 +3190,11 @@ def _canonicalize_micromachine_key(value: object) -> str:
         _canonical_key_token(key),
         key,
     )
+
+
+def _canonicalize_micromachine_production_token(value: object) -> str:
+    token = _canonicalize_micromachine_key(value)
+    return MICROMACHINE_CANONICAL_UNIT_FORM_TOKENS.get(token, token)
 
 
 def _canonical_key_token(value: str) -> str:

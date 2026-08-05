@@ -1,6 +1,26 @@
 {
   "schema_version": 1,
   "producers": {
+    "deterministic_journeys": {
+      "argv": [
+        "{python}",
+        "-I",
+        "-B",
+        "-S",
+        "-c",
+        "import runpy,sys;root,relative,*args=sys.argv[1:];script=root+'/'+relative;sys.path.insert(0,root);sys.argv=[script,*args];runpy.run_path(script,run_name='__main__')",
+        "{repository}",
+        "starcraft_commander/micromachine_pre_live_journeys.py",
+        "--emit-bundle",
+        "{output}",
+        "--micromachine-binary",
+        "{micromachine_binary}",
+        "--node-executable",
+        "{node}"
+      ],
+      "cwd": ".",
+      "output": "producer/deterministic-journeys.zip"
+    },
     "provenance_qualification": {
       "argv": [
         "{python}",

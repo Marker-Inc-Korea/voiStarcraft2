@@ -8,15 +8,20 @@ import json
 import os
 import stat
 import subprocess
+import sys
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Final
 
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
-TRUSTED_GIT_EXECUTABLE: Final[str] = "/usr/bin/git"
+TRUSTED_GIT_EXECUTABLE: Final[str] = (
+    "/Applications/Xcode.app/Contents/Developer/usr/bin/git"
+    if sys.platform == "darwin"
+    else "/usr/bin/git"
+)
 SANITIZED_GIT_ENV: Final[dict[str, str]] = {
     "GIT_CONFIG_GLOBAL": "/dev/null",
     "GIT_CONFIG_NOSYSTEM": "1",
@@ -26,8 +31,8 @@ SANITIZED_GIT_ENV: Final[dict[str, str]] = {
     "LC_ALL": "C",
     "PATH": "/usr/bin:/bin",
 }
-MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 76
-MICROMACHINE_SOURCE_ATTESTATION_SCHEMA_VERSION: Final[int] = 5
+MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 80
+MICROMACHINE_SOURCE_ATTESTATION_SCHEMA_VERSION: Final[int] = 6
 MICROMACHINE_BUILD_TRANSACTION_SCHEMA_VERSION: Final[int] = 1
 MICROMACHINE_CTEST_REGISTRY_SCHEMA_VERSION: Final[int] = 1
 MICROMACHINE_RUNTIME_MUTABLE_PATHS: Final[tuple[str, ...]] = ("bin/BotConfig.txt",)
@@ -40,8 +45,24 @@ MICROMACHINE_REQUIRED_NATIVE_TESTS: Final[dict[str, str]] = {
     "voi_atomic_telemetry": "voi_atomic_telemetry_test",
     "voi_operation_hud_selection": "voi_operation_hud_selection_test",
     "voi_operation_hud_selection_ndebug": "voi_operation_hud_selection_ndebug_test",
+    "voi_pre_live_journey_adapter": "voi_pre_live_journey_adapter_test",
+    "voi_production_path": "voi_production_path_test",
 }
+BinaryIdentityRunner = Callable[
+    [Sequence[str], Path],
+    subprocess.CompletedProcess[object],
+]
+CTestRegistryRunner = Callable[
+    [Sequence[str], Path, Mapping[str, str], float],
+    subprocess.CompletedProcess[object],
+]
+GitCommandRunner = Callable[
+    [Sequence[str], Path, Mapping[str, str], float],
+    subprocess.CompletedProcess[object],
+]
 CMAKE_CTEST_COMMAND_PREFIX: Final[str] = "CMAKE_CTEST_COMMAND:INTERNAL="
+CTEST_REGISTRY_TIMEOUT_SECONDS: Final[float] = 120.0
+GIT_INSPECTION_TIMEOUT_SECONDS: Final[float] = 30.0
 DEFAULT_MICROMACHINE_COMMIT: Final[str] = "eb893161371dab975a0a7e600f9e250ac03ec1ef"
 DEFAULT_S2CLIENT_COMMIT: Final[str] = "614acc00abb5355e4c94a1b0279b46e9d845b7ce"
 DEFAULT_MICROMACHINE_PATCH: Final[Path] = (
@@ -584,6 +605,20 @@ DEFAULT_MICROMACHINE_BOUNDED_TERMINAL_OPERATION_HUD_PATCH: Final[Path] = (
     / "patches"
     / "0076-bounded-terminal-operation-hud.patch"
 )
+DEFAULT_MICROMACHINE_DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0077-deterministic-pre-live-journey-adapter.patch"
+)
+DEFAULT_MICROMACHINE_PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0078-production-path-journey-review-closure.patch"
+)
 DEFAULT_S2CLIENT_PATCH: Final[Path] = (
     REPO_ROOT
     / "integrations"
@@ -832,6 +867,12 @@ class MicroMachineBuildIdentityConfig:
     micromachine_bounded_terminal_operation_hud_patch: Path = (
         DEFAULT_MICROMACHINE_BOUNDED_TERMINAL_OPERATION_HUD_PATCH
     )
+    micromachine_deterministic_pre_live_journey_adapter_patch: Path = (
+        DEFAULT_MICROMACHINE_DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH
+    )
+    micromachine_production_path_journey_review_closure_patch: Path = (
+        DEFAULT_MICROMACHINE_PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH
+    )
     s2client_patch: Path = DEFAULT_S2CLIENT_PATCH
     hook_manifest: Path = DEFAULT_HOOK_MANIFEST
     map_pool: Path = DEFAULT_MAP_POOL
@@ -859,6 +900,10 @@ class MicroMachineBuildIdentityConfig:
 
 def build_micromachine_build_identity(
     config: MicroMachineBuildIdentityConfig,
+    *,
+    binary_identity_runner: BinaryIdentityRunner | None = None,
+    ctest_registry_runner: CTestRegistryRunner | None = None,
+    git_command_runner: GitCommandRunner | None = None,
 ) -> dict[str, object]:
     """Create a machine-readable identity report without modifying worktrees."""
 
@@ -870,16 +915,24 @@ def build_micromachine_build_identity(
         config.resolved_s2client_build_dir,
         source_root=config.s2client_dir,
     )
-    observed_micro = _git_head(config.micromachine_dir)
-    observed_s2 = _git_head(config.s2client_dir)
+    observed_micro = _git_head(
+        config.micromachine_dir,
+        command_runner=git_command_runner,
+    )
+    observed_s2 = _git_head(
+        config.s2client_dir,
+        command_runner=git_command_runner,
+    )
     observed_micro_source_state = _git_source_state_sha256(
         config.micromachine_dir,
         excluded_roots=(config.micromachine_build_dir,),
         excluded_paths=MICROMACHINE_RUNTIME_MUTABLE_PATHS,
+        command_runner=git_command_runner,
     )
     observed_s2_source_state = _git_source_state_sha256(
         config.s2client_dir,
         excluded_roots=(config.resolved_s2client_build_dir,),
+        command_runner=git_command_runner,
     )
     observed_s2_build_state = (
         _directory_state_sha256(config.resolved_s2client_build_dir)
@@ -907,7 +960,10 @@ def build_micromachine_build_identity(
         native_test_failures: list[dict[str, object]] = []
     else:
         native_test_attestation, native_test_failures = (
-            _native_test_artifact_attestation(config)
+            _native_test_artifact_attestation(
+                config,
+                ctest_registry_runner=ctest_registry_runner,
+            )
         )
     failures.extend(native_test_failures)
     if s2client_build_root is None:
@@ -1264,6 +1320,16 @@ def build_micromachine_build_identity(
         "micromachine_bounded_terminal_operation_hud_patch_sha256": _sha256_file(
             config.micromachine_bounded_terminal_operation_hud_patch
         ),
+        "micromachine_deterministic_pre_live_journey_adapter_patch_sha256": (
+            _sha256_file(
+                config.micromachine_deterministic_pre_live_journey_adapter_patch
+            )
+        ),
+        "micromachine_production_path_journey_review_closure_patch_sha256": (
+            _sha256_file(
+                config.micromachine_production_path_journey_review_closure_patch
+            )
+        ),
         "s2client_patch_sha256": _sha256_file(config.s2client_patch),
         "hook_manifest_sha256": _sha256_file(config.hook_manifest),
         "map_pool_sha256": _sha256_file(config.map_pool),
@@ -1283,7 +1349,12 @@ def build_micromachine_build_identity(
     expected_build_input_identity = _build_input_identity(checksums)
     embedded_header_identity = _read_embedded_build_identity_header(config)
     embedded_binary_identity = (
-        _read_binary_build_input_identity(config) if binary_is_executable else None
+        _read_binary_build_input_identity(
+            config,
+            command_runner=binary_identity_runner,
+        )
+        if binary_is_executable
+        else None
     )
     if embedded_header_identity != expected_build_input_identity:
         failures.append(
@@ -1422,8 +1493,12 @@ def build_micromachine_build_identity(
             "binary_executable": binary_is_executable,
             "embedded_build_input_identity": embedded_binary_identity,
             "native_tests": native_test_attestation,
-            "micromachine_build_root": micromachine_build_root,
-            "s2client_build_root": s2client_build_root,
+            "micromachine_build_root": _transport_directory_root_identity(
+                micromachine_build_root
+            ),
+            "s2client_build_root": _transport_directory_root_identity(
+                s2client_build_root
+            ),
         },
         "paths": {
             "micromachine_dir": str(config.micromachine_dir),
@@ -1655,6 +1730,12 @@ def build_micromachine_build_identity(
             "micromachine_bounded_terminal_operation_hud_patch": str(
                 config.micromachine_bounded_terminal_operation_hud_patch
             ),
+            "micromachine_deterministic_pre_live_journey_adapter_patch": str(
+                config.micromachine_deterministic_pre_live_journey_adapter_patch
+            ),
+            "micromachine_production_path_journey_review_closure_patch": str(
+                config.micromachine_production_path_journey_review_closure_patch
+            ),
             "embedded_build_identity_header": str(
                 config.embedded_build_identity_header_path
             ),
@@ -1810,8 +1891,12 @@ def write_micromachine_source_attestation(
         "micromachine_source_state_sha256": micromachine_source_state,
         "s2client_source_state_sha256": s2client_source_state,
         "s2client_build_state_sha256": s2client_build_state,
-        "micromachine_build_root": micromachine_build_root,
-        "s2client_build_root": s2client_build_root,
+        "micromachine_build_root": _transport_directory_root_identity(
+            micromachine_build_root
+        ),
+        "s2client_build_root": _transport_directory_root_identity(
+            s2client_build_root
+        ),
         "build_transaction": {
             "before": build_transaction_before,
             "after": None,
@@ -2306,6 +2391,18 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--micromachine-bounded-terminal-operation-hud-patch",
         default=str(DEFAULT_MICROMACHINE_BOUNDED_TERMINAL_OPERATION_HUD_PATCH),
     )
+    parser.add_argument(
+        "--micromachine-deterministic-pre-live-journey-adapter-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-production-path-journey-review-closure-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH
+        ),
+    )
     parser.add_argument("--s2client-patch", default=str(DEFAULT_S2CLIENT_PATCH))
     parser.add_argument("--hook-manifest", default=str(DEFAULT_HOOK_MANIFEST))
     parser.add_argument("--map-pool", default=str(DEFAULT_MAP_POOL))
@@ -2575,6 +2672,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         micromachine_bounded_terminal_operation_hud_patch=Path(
             args.micromachine_bounded_terminal_operation_hud_patch
         ),
+        micromachine_deterministic_pre_live_journey_adapter_patch=Path(
+            args.micromachine_deterministic_pre_live_journey_adapter_patch
+        ),
+        micromachine_production_path_journey_review_closure_patch=Path(
+            args.micromachine_production_path_journey_review_closure_patch
+        ),
         s2client_patch=Path(args.s2client_patch),
         hook_manifest=Path(args.hook_manifest),
         map_pool=Path(args.map_pool),
@@ -2669,6 +2772,7 @@ def _ctest_registry_attestation(
     *,
     ctest_path: Path,
     build_dir: Path,
+    command_runner: CTestRegistryRunner | None = None,
 ) -> tuple[dict[str, object] | None, list[dict[str, object]]]:
     failures: list[dict[str, object]] = []
     argv = [
@@ -2689,19 +2793,30 @@ def _ctest_registry_attestation(
             ],
         )
     try:
-        completed = subprocess.run(
-            argv,
-            cwd=str(build_dir),
-            check=False,
-            capture_output=True,
-            text=True,
-            shell=False,
-            env={
-                "LANG": "C",
-                "LC_ALL": "C",
-                "PATH": "/usr/bin:/bin",
-            },
-        )
+        environment = {
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PATH": "/usr/bin:/bin",
+        }
+        if command_runner is None:
+            completed = subprocess.run(
+                argv,
+                cwd=str(build_dir),
+                stdin=subprocess.DEVNULL,
+                check=False,
+                capture_output=True,
+                text=True,
+                shell=False,
+                timeout=CTEST_REGISTRY_TIMEOUT_SECONDS,
+                env=environment,
+            )
+        else:
+            completed = command_runner(
+                argv,
+                build_dir,
+                environment,
+                CTEST_REGISTRY_TIMEOUT_SECONDS,
+            )
     except Exception as exc:
         return (
             None,
@@ -2729,7 +2844,19 @@ def _ctest_registry_attestation(
                 "returncode": completed.returncode,
             }
         )
-    if completed.stderr:
+    stdout = completed.stdout
+    stderr = completed.stderr
+    if isinstance(stdout, bytes):
+        try:
+            stdout = stdout.decode("utf-8")
+        except UnicodeDecodeError:
+            stdout = None
+    if isinstance(stderr, bytes):
+        try:
+            stderr = stderr.decode("utf-8")
+        except UnicodeDecodeError:
+            stderr = None
+    if stderr:
         failures.append(
             {
                 "code": "ctest_registry_discovery_stderr",
@@ -2737,7 +2864,7 @@ def _ctest_registry_attestation(
             }
         )
     try:
-        payload = json.loads(completed.stdout)
+        payload = json.loads(stdout)
     except (TypeError, json.JSONDecodeError) as exc:
         failures.append(
             {
@@ -2807,6 +2934,8 @@ def _ctest_registry_attestation(
 
 def _native_test_artifact_attestation(
     config: MicroMachineBuildIdentityConfig,
+    *,
+    ctest_registry_runner: CTestRegistryRunner | None = None,
 ) -> tuple[dict[str, object] | None, list[dict[str, object]]]:
     failures: list[dict[str, object]] = []
     build_root = _secure_directory_root_identity(
@@ -2894,6 +3023,7 @@ def _native_test_artifact_attestation(
         registry, registry_failures = _ctest_registry_attestation(
             ctest_path=ctest_path,
             build_dir=build_dir,
+            command_runner=ctest_registry_runner,
         )
         failures.extend(registry_failures)
 
@@ -2997,6 +3127,8 @@ def _read_embedded_build_identity_header(
 
 def _read_binary_build_input_identity(
     config: MicroMachineBuildIdentityConfig,
+    *,
+    command_runner: BinaryIdentityRunner | None = None,
 ) -> str | None:
     descriptor: int | None = None
     snapshot_path: Path | None = None
@@ -3018,14 +3150,18 @@ def _read_binary_build_input_identity(
             descriptor,
             directory=config.binary_path.parent,
         )
-        completed = subprocess.run(
-            [str(config.binary_path), "--voi-build-input-identity"],
-            executable=str(snapshot_path),
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        argv = [str(config.binary_path), "--voi-build-input-identity"]
+        if command_runner is None:
+            completed = subprocess.run(
+                argv,
+                executable=str(snapshot_path),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        else:
+            completed = command_runner(argv, snapshot_path)
     except (OSError, subprocess.SubprocessError):
         return None
     finally:
@@ -3070,7 +3206,17 @@ def _read_binary_build_input_identity(
         return None
     if completed.returncode != 0:
         return None
-    lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    stdout = completed.stdout
+    if isinstance(stdout, bytes):
+        try:
+            stdout_text = stdout.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    elif isinstance(stdout, str):
+        stdout_text = stdout
+    else:
+        return None
+    lines = [line.strip() for line in stdout_text.splitlines() if line.strip()]
     if len(lines) != 1:
         return None
     identity = lines[0]
@@ -3175,7 +3321,17 @@ def _source_attestation_failures(
             observed_s2client_build_root,
         ),
     ):
-        if not isinstance(expected, Mapping):
+        expected_transport = (
+            _transport_directory_root_identity(expected)
+            if isinstance(expected, Mapping)
+            else None
+        )
+        actual_transport = _transport_directory_root_identity(actual)
+        if (
+            expected_transport is None
+            or not isinstance(expected, Mapping)
+            or dict(expected) != expected_transport
+        ):
             failures.append(
                 {
                     "code": "invalid_source_attestation",
@@ -3183,12 +3339,12 @@ def _source_attestation_failures(
                     "path": str(config.source_attestation_path),
                 }
             )
-        elif actual is None or dict(expected) != dict(actual):
+        elif actual_transport is None or expected_transport != actual_transport:
             failures.append(
                 {
                     "code": f"{name}_build_root_mismatch",
-                    "expected": dict(expected),
-                    "actual": dict(actual) if actual is not None else None,
+                    "expected": expected_transport,
+                    "actual": actual_transport,
                 }
             )
     if source_attestation.get("build_input_identity") != expected_input_identity:
@@ -3490,20 +3646,82 @@ def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:
     temporary.replace(path)
 
 
-def _git_head(path: Path) -> str | None:
+def _run_git_inspection_command(
+    path: Path,
+    arguments: Sequence[str],
+    *,
+    command_runner: GitCommandRunner | None = None,
+) -> subprocess.CompletedProcess[object]:
+    resolved_path = path.resolve()
+    argv = [
+        TRUSTED_GIT_EXECUTABLE,
+        "-c",
+        f"safe.directory={resolved_path}",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "credential.helper=",
+        "--no-pager",
+        "-C",
+        str(resolved_path),
+        *arguments,
+    ]
+    environment = dict(SANITIZED_GIT_ENV)
+    if command_runner is not None:
+        return command_runner(
+            argv,
+            resolved_path,
+            environment,
+            GIT_INSPECTION_TIMEOUT_SECONDS,
+        )
+    return subprocess.run(
+        argv,
+        cwd=str(resolved_path),
+        stdin=subprocess.DEVNULL,
+        check=False,
+        capture_output=True,
+        text=False,
+        shell=False,
+        timeout=GIT_INSPECTION_TIMEOUT_SECONDS,
+        env=environment,
+    )
+
+
+def _completed_stdout_bytes(
+    completed: subprocess.CompletedProcess[object],
+) -> bytes | None:
+    stdout = completed.stdout
+    if isinstance(stdout, bytes):
+        return stdout
+    if isinstance(stdout, str):
+        return stdout.encode("utf-8")
+    return None
+
+
+def _git_head(
+    path: Path,
+    *,
+    command_runner: GitCommandRunner | None = None,
+) -> str | None:
     if not (path / ".git").exists():
         return None
     try:
-        completed = subprocess.run(
-            [TRUSTED_GIT_EXECUTABLE, "-C", str(path), "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=dict(SANITIZED_GIT_ENV),
+        completed = _run_git_inspection_command(
+            path,
+            ("rev-parse", "HEAD"),
+            command_runner=command_runner,
         )
-    except (OSError, subprocess.CalledProcessError):
+    except (OSError, subprocess.SubprocessError):
         return None
-    value = completed.stdout.strip()
+    stdout = _completed_stdout_bytes(completed)
+    if completed.returncode != 0 or stdout is None:
+        return None
+    try:
+        value = stdout.decode("ascii").strip()
+    except UnicodeDecodeError:
+        return None
     return value or None
 
 
@@ -3512,11 +3730,13 @@ def _git_source_state_sha256(
     *,
     excluded_roots: Sequence[Path] = (),
     excluded_paths: Sequence[str] = (),
+    command_runner: GitCommandRunner | None = None,
 ) -> str | None:
     inspection = inspect_git_worktree_state(
         path,
         excluded_roots=excluded_roots,
         excluded_paths=excluded_paths,
+        command_runner=command_runner,
     )
     if inspection is None:
         return None
@@ -3570,11 +3790,29 @@ def _secure_directory_root_identity(
     }
 
 
+def _transport_directory_root_identity(
+    identity: Mapping[str, object] | None,
+) -> dict[str, object] | None:
+    """Project a secure root identity onto fields stable across artifact transport."""
+
+    if identity is None:
+        return None
+    path = identity.get("path")
+    mode = identity.get("mode")
+    if not isinstance(path, str) or not path or type(mode) is not int:
+        return None
+    return {
+        "path": path,
+        "mode": mode,
+    }
+
+
 def inspect_git_worktree_state(
     path: Path,
     *,
     excluded_roots: Sequence[Path] = (),
     excluded_paths: Sequence[str] = (),
+    command_runner: GitCommandRunner | None = None,
 ) -> dict[str, object] | None:
     """Hash HEAD and actual worktree bytes without trusting index stat hints."""
 
@@ -3622,61 +3860,49 @@ def inspect_git_worktree_state(
         )
 
     try:
-        object_format = subprocess.run(
-            [
-                TRUSTED_GIT_EXECUTABLE,
-                "-C",
-                str(resolved_root),
-                "rev-parse",
-                "--show-object-format",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=dict(SANITIZED_GIT_ENV),
-        ).stdout.strip()
-        tree_output = subprocess.run(
-            [
-                TRUSTED_GIT_EXECUTABLE,
-                "-C",
-                str(resolved_root),
-                "ls-tree",
-                "-r",
-                "-z",
-                "--full-tree",
-                "HEAD",
-            ],
-            check=True,
-            capture_output=True,
-            env=dict(SANITIZED_GIT_ENV),
-        ).stdout
-        untracked_output = subprocess.run(
-            [
-                TRUSTED_GIT_EXECUTABLE,
-                "-C",
-                str(resolved_root),
-                "ls-files",
-                "--others",
-                "-z",
-            ],
-            check=True,
-            capture_output=True,
-            env=dict(SANITIZED_GIT_ENV),
-        ).stdout
-        index_flags_output = subprocess.run(
-            [
-                TRUSTED_GIT_EXECUTABLE,
-                "-C",
-                str(resolved_root),
-                "ls-files",
-                "-v",
-                "-z",
-            ],
-            check=True,
-            capture_output=True,
-            env=dict(SANITIZED_GIT_ENV),
-        ).stdout
-    except (OSError, subprocess.CalledProcessError):
+        object_format_result = _run_git_inspection_command(
+            resolved_root,
+            ("rev-parse", "--show-object-format"),
+            command_runner=command_runner,
+        )
+        tree_result = _run_git_inspection_command(
+            resolved_root,
+            ("ls-tree", "-r", "-z", "--full-tree", "HEAD"),
+            command_runner=command_runner,
+        )
+        untracked_result = _run_git_inspection_command(
+            resolved_root,
+            ("ls-files", "--others", "-z"),
+            command_runner=command_runner,
+        )
+        index_flags_result = _run_git_inspection_command(
+            resolved_root,
+            ("ls-files", "-v", "-z"),
+            command_runner=command_runner,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    results = (
+        object_format_result,
+        tree_result,
+        untracked_result,
+        index_flags_result,
+    )
+    if any(result.returncode != 0 for result in results):
+        return None
+    raw_outputs = tuple(_completed_stdout_bytes(result) for result in results)
+    if any(output is None for output in raw_outputs):
+        return None
+    object_format_output, tree_output, untracked_output, index_flags_output = (
+        raw_outputs
+    )
+    assert object_format_output is not None
+    assert tree_output is not None
+    assert untracked_output is not None
+    assert index_flags_output is not None
+    try:
+        object_format = object_format_output.decode("ascii").strip()
+    except UnicodeDecodeError:
         return None
     if object_format not in {"sha1", "sha256"}:
         return None

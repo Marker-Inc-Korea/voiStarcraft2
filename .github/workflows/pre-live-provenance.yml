@@ -210,6 +210,14 @@ jobs:
             "${VOI_CANDIDATE_WORKSPACE}" \
             "${VOI_TRUSTED_VERIFIER_WORKSPACE}" \
             "${ROOT_DIR}"
+          sudo /bin/chmod -RN \
+            "${VOI_CANDIDATE_WORKSPACE}" \
+            "${VOI_TRUSTED_VERIFIER_WORKSPACE}" \
+            "${ROOT_DIR}"
+          sudo /bin/chmod -R go-w \
+            "${VOI_CANDIDATE_WORKSPACE}" \
+            "${VOI_TRUSTED_VERIFIER_WORKSPACE}" \
+            "${ROOT_DIR}"
           sudo chmod 0755 \
             "${VOI_CANDIDATE_WORKSPACE}" \
             "${VOI_TRUSTED_VERIFIER_WORKSPACE}" \

@@ -63,8 +63,29 @@ class TerranUnitFamilyCapability:
             "default_role": self.default_role,
             "prerequisites": list(self.prerequisites),
             "abilities": list(self.abilities),
+            "ability_caster_states": [
+                state.to_dict()
+                for ability in self.abilities
+                if (state := terran_ability_caster_state(ability)) is not None
+            ],
             "micro_managers": list(self.micro_managers),
             "operation_tasks": list(self.operation_tasks),
+        }
+
+
+@dataclass(frozen=True)
+class TerranAbilityCasterState:
+    """Required source form and actor state for one explicit ability."""
+
+    ability: str
+    unit_type: str
+    cloak_state: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "ability": self.ability,
+            "unit_type": self.unit_type,
+            "cloak_state": self.cloak_state,
         }
 
 
@@ -284,6 +305,42 @@ TERRAN_UNIT_FAMILY_BY_ALIAS: Final[dict[str, TerranUnitFamilyCapability]] = {
 TERRAN_UNIT_FAMILY_BY_NAME: Final[dict[str, TerranUnitFamilyCapability]] = {
     family.family: family for family in TERRAN_UNIT_FAMILIES
 }
+_TERRAN_ABILITY_CASTER_OVERRIDES: Final[
+    Mapping[str, tuple[str, str]]
+] = {
+    "ghost_cloak": ("TERRAN_GHOST", "not_cloaked"),
+    "ghost_decloak": ("TERRAN_GHOST", "cloaked"),
+    "hellion_mode": ("TERRAN_HELLIONTANK", ""),
+    "widow_mine_unburrow": ("TERRAN_WIDOWMINEBURROWED", ""),
+    "unsiege": ("TERRAN_SIEGETANKSIEGED", ""),
+    "thor_explosive_mode": ("TERRAN_THORAP", ""),
+    "viking_fighter_mode": ("TERRAN_VIKINGASSAULT", ""),
+    "banshee_cloak": ("TERRAN_BANSHEE", "not_cloaked"),
+    "banshee_decloak": ("TERRAN_BANSHEE", "cloaked"),
+    "liberator_fighter_mode": ("TERRAN_LIBERATORAG", ""),
+}
+TERRAN_ABILITY_CASTER_STATES: Final[
+    tuple[TerranAbilityCasterState, ...]
+] = tuple(
+    TerranAbilityCasterState(
+        ability=ability,
+        unit_type=_TERRAN_ABILITY_CASTER_OVERRIDES.get(
+            ability,
+            (family.unit_types[0], ""),
+        )[0],
+        cloak_state=_TERRAN_ABILITY_CASTER_OVERRIDES.get(
+            ability,
+            (family.unit_types[0], ""),
+        )[1],
+    )
+    for family in TERRAN_UNIT_FAMILIES
+    for ability in family.abilities
+)
+TERRAN_ABILITY_CASTER_STATE_BY_NAME: Final[
+    dict[str, TerranAbilityCasterState]
+] = {
+    state.ability: state for state in TERRAN_ABILITY_CASTER_STATES
+}
 
 TERRAN_NATURAL_LANGUAGE_FORMS: Final[
     tuple[TerranNaturalLanguageForm, ...]
@@ -470,6 +527,29 @@ def all_terran_capability_matrix() -> tuple[dict[str, object], ...]:
     return tuple(family.to_dict() for family in TERRAN_UNIT_FAMILIES)
 
 
+def terran_ability_caster_state(
+    ability: object,
+) -> TerranAbilityCasterState | None:
+    """Return the exact source form/state required to issue one ability."""
+
+    return TERRAN_ABILITY_CASTER_STATE_BY_NAME.get(str(ability or "").strip())
+
+
+def terran_ability_caster_state_matches(
+    ability: object,
+    unit_type: object,
+    *,
+    cloak_state: object = "",
+) -> bool:
+    """Reject transformed-form and cloak-state substitutions."""
+
+    expected = terran_ability_caster_state(ability)
+    if expected is None or str(unit_type or "").strip() != expected.unit_type:
+        return False
+    observed_cloak = str(cloak_state or "").strip()
+    return not expected.cloak_state or observed_cloak == expected.cloak_state
+
+
 def lower_terran_natural_language_units(
     text: str,
     *,
@@ -626,6 +706,7 @@ def validate_terran_capability_contract() -> tuple[str, ...]:
     errors: list[str] = []
     seen_families: set[str] = set()
     seen_unit_types: set[str] = set()
+    seen_abilities: set[str] = set()
     supported_abilities = MICROMACHINE_TACTICAL_ABILITIES - {""}
     for family in TERRAN_UNIT_FAMILIES:
         if family.family in seen_families:
@@ -641,6 +722,18 @@ def validate_terran_capability_contract() -> tuple[str, ...]:
                 f"{family.family} has unsupported abilities: "
                 + ",".join(unsupported_abilities)
             )
+        for ability in family.abilities:
+            if ability in seen_abilities:
+                errors.append(f"duplicate ability: {ability}")
+            seen_abilities.add(ability)
+            caster_state = terran_ability_caster_state(ability)
+            if (
+                caster_state is None
+                or caster_state.unit_type not in family.unit_types
+            ):
+                errors.append(
+                    f"{family.family}/{ability} caster state is incomplete"
+                )
         if set(family.operation_tasks) != set(TERRAN_OPERATION_TASKS):
             errors.append(
                 f"{family.family} does not expose the complete operation task set"
@@ -650,6 +743,8 @@ def validate_terran_capability_contract() -> tuple[str, ...]:
     form_families = {form.family for form in TERRAN_NATURAL_LANGUAGE_FORMS}
     if form_families != seen_families:
         errors.append("natural-language forms do not cover every Terran family")
+    if seen_abilities != set(TERRAN_ABILITY_CASTER_STATE_BY_NAME):
+        errors.append("ability caster states do not cover every Terran ability")
     hellbat_forms = tuple(
         form
         for form in TERRAN_NATURAL_LANGUAGE_FORMS

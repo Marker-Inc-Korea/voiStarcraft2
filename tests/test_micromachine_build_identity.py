@@ -4,13 +4,16 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from starcraft_commander.micromachine_build_identity import (
     MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
     MICROMACHINE_REQUIRED_NATIVE_TESTS,
+    TRUSTED_GIT_EXECUTABLE,
     MicroMachineBuildIdentityConfig,
     _ctest_registry_attestation,
     build_argument_parser,
@@ -27,8 +30,59 @@ from starcraft_commander.micromachine_build_identity import (
 
 
 class MicroMachineBuildIdentityTest(unittest.TestCase):
+    def test_git_inspection_uses_the_platform_native_executable(self) -> None:
+        if sys.platform == "darwin":
+            self.assertEqual(
+                "/Applications/Xcode.app/Contents/Developer/usr/bin/git",
+                TRUSTED_GIT_EXECUTABLE,
+            )
+        else:
+            self.assertEqual("/usr/bin/git", TRUSTED_GIT_EXECUTABLE)
+
+    def test_ctest_registry_discovery_closes_stdin_and_is_bounded(self) -> None:
+        with tempfile.TemporaryDirectory(
+            dir=Path(__file__).resolve().parents[1],
+        ) as directory:
+            build_dir = Path(directory)
+            ctest_path = build_dir / "ctest"
+            ctest_path.write_text("#!/bin/sh\nexit 0\n")
+            ctest_path.chmod(0o755)
+            registry = {
+                "tests": [
+                    {
+                        "name": test_name,
+                        "command": [
+                            str((build_dir / "bin" / executable_name).resolve())
+                        ],
+                    }
+                    for test_name, executable_name in sorted(
+                        MICROMACHINE_REQUIRED_NATIVE_TESTS.items()
+                    )
+                ]
+            }
+            completed = subprocess.CompletedProcess(
+                [str(ctest_path)],
+                0,
+                json.dumps(registry),
+                "",
+            )
+
+            with mock.patch(
+                "starcraft_commander.micromachine_build_identity.subprocess.run",
+                return_value=completed,
+            ) as runner:
+                attestation, failures = _ctest_registry_attestation(
+                    ctest_path=ctest_path,
+                    build_dir=build_dir,
+                )
+
+        self.assertEqual([], failures)
+        self.assertIsNotNone(attestation)
+        self.assertIs(subprocess.DEVNULL, runner.call_args.kwargs["stdin"])
+        self.assertEqual(120.0, runner.call_args.kwargs["timeout"])
+
     def test_live_admission_requires_the_supported_schema(self) -> None:
-        self.assertEqual(76, MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION)
+        self.assertEqual(80, MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION)
         passing = {
             "schema_version": MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
             "identity": "sha256:fixture",
@@ -101,6 +155,15 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             )
             self.assertTrue(str(report["identity"]).startswith("sha256:"))
             self.assertEqual(report["identity"], read_build_identity(output))
+            for name in (
+                "micromachine_build_root",
+                "s2client_build_root",
+            ):
+                with self.subTest(root=name):
+                    self.assertEqual(
+                        {"mode", "path"},
+                        set(report["observed"][name]),
+                    )
             self.assertIn(
                 "micromachine_atomic_telemetry_publication_patch",
                 report["paths"],
@@ -139,6 +202,22 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             )
             self.assertIn(
                 "micromachine_bounded_terminal_operation_hud_patch_sha256",
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_deterministic_pre_live_journey_adapter_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                "micromachine_deterministic_pre_live_journey_adapter_patch_sha256",
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_production_path_journey_review_closure_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                "micromachine_production_path_journey_review_closure_patch_sha256",
                 report["checksums"],
             )
             self.assertIn(
@@ -2336,6 +2415,30 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             Path(args.micromachine_bounded_terminal_operation_hud_patch).name,
         )
 
+    def test_deterministic_pre_live_journey_adapter_cli_defaults_to_patch_0077(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0077-deterministic-pre-live-journey-adapter.patch",
+            Path(
+                args.micromachine_deterministic_pre_live_journey_adapter_patch
+            ).name,
+        )
+
+    def test_production_path_journey_review_cli_defaults_to_patch_0078(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0078-production-path-journey-review-closure.patch",
+            Path(
+                args.micromachine_production_path_journey_review_closure_patch
+            ).name,
+        )
+
     def test_operation_edit_ownership_handoff_patch_changes_identity(
         self,
     ) -> None:
@@ -3104,6 +3207,117 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 },
             )
 
+    def test_deterministic_pre_live_journey_adapter_patch_changes_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            checksum = (
+                "micromachine_deterministic_pre_live_journey_adapter_patch_sha256"
+            )
+
+            config.micromachine_deterministic_pre_live_journey_adapter_patch.write_text(
+                "changed deterministic pre-live journey adapter\n"
+            )
+            second = build_micromachine_build_identity(config)
+
+            self.assertTrue(first["ok"], first)
+            self.assertFalse(second["ok"], second)
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+            self.assertIn(
+                "source_attestation_input_mismatch",
+                {failure["code"] for failure in second["failures"]},
+            )
+
+    def test_missing_deterministic_pre_live_journey_adapter_patch_fails_closed(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_deterministic_pre_live_journey_adapter_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"], report)
+            self.assertIn(
+                "micromachine_deterministic_pre_live_journey_adapter_patch_sha256",
+                {
+                    failure.get("checksum")
+                    for failure in report["failures"]
+                    if failure["code"] == "missing_required_build_input"
+                },
+            )
+
+    def test_production_path_journey_review_patch_changes_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            checksum = (
+                "micromachine_production_path_journey_review_closure_patch_sha256"
+            )
+
+            config.micromachine_production_path_journey_review_closure_patch.write_text(
+                "changed production path journey review closure\n"
+            )
+            second = build_micromachine_build_identity(config)
+
+            self.assertTrue(first["ok"], first)
+            self.assertFalse(second["ok"], second)
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+            self.assertIn(
+                "source_attestation_input_mismatch",
+                {failure["code"] for failure in second["failures"]},
+            )
+
+    def test_missing_production_path_journey_review_patch_fails_closed(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_production_path_journey_review_closure_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"], report)
+            self.assertIn(
+                "micromachine_production_path_journey_review_closure_patch_sha256",
+                {
+                    failure.get("checksum")
+                    for failure in report["failures"]
+                    if failure["code"] == "missing_required_build_input"
+                },
+            )
+
+    def test_pre_live_journey_native_tests_are_required(self) -> None:
+        self.assertEqual(
+            {
+                "voi_pre_live_journey_adapter": (
+                    "voi_pre_live_journey_adapter_test"
+                ),
+                "voi_production_path": "voi_production_path_test",
+            },
+            {
+                name: MICROMACHINE_REQUIRED_NATIVE_TESTS[name]
+                for name in (
+                    "voi_pre_live_journey_adapter",
+                    "voi_production_path",
+                )
+            },
+        )
+
     def test_operation_hud_selection_native_tests_are_required(self) -> None:
         self.assertEqual(
             {
@@ -3420,6 +3634,56 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 inspection["unsafe_symlink_entries"],
             )
 
+    def test_git_inspection_disables_local_helpers_and_closes_stdin(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            sentinel = root / "fsmonitor-executed"
+            helper = root / "malicious-fsmonitor"
+            helper.write_text(
+                "#!/bin/sh\n"
+                f"touch {sentinel}\n"
+                "exit 1\n"
+            )
+            helper.chmod(0o755)
+            subprocess.run(
+                [
+                    "/usr/bin/git",
+                    "-C",
+                    str(config.micromachine_dir),
+                    "config",
+                    "core.fsmonitor",
+                    str(helper),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            real_run = subprocess.run
+
+            with mock.patch(
+                "starcraft_commander.micromachine_build_identity.subprocess.run",
+                side_effect=real_run,
+            ) as runner:
+                inspection = inspect_git_worktree_state(
+                    config.micromachine_dir,
+                    excluded_roots=(config.micromachine_build_dir,),
+                )
+
+            self.assertIsNotNone(inspection)
+            self.assertFalse(sentinel.exists())
+            self.assertEqual(4, runner.call_count)
+            for call in runner.call_args_list:
+                argv = list(call.args[0])
+                self.assertIn("core.fsmonitor=false", argv)
+                self.assertIn("core.hooksPath=/dev/null", argv)
+                self.assertIn("credential.helper=", argv)
+                self.assertTrue(
+                    any(value.startswith("safe.directory=") for value in argv)
+                )
+                self.assertIs(subprocess.DEVNULL, call.kwargs["stdin"])
+                self.assertEqual(30.0, call.kwargs["timeout"])
+                self.assertFalse(call.kwargs["shell"])
+
     def test_micromachine_build_root_symlink_is_rejected_without_execution(
         self,
     ) -> None:
@@ -3683,6 +3947,45 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             self.assertFalse(report["ok"])
             self.assertIn(
                 "micromachine_attested_commit_mismatch",
+                {failure["code"] for failure in report["failures"]},
+            )
+
+    def test_source_attestation_persists_only_transport_safe_root_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+
+            attestation = json.loads(config.source_attestation_path.read_text())
+
+            for name in (
+                "micromachine_build_root",
+                "s2client_build_root",
+            ):
+                with self.subTest(root=name):
+                    self.assertEqual(
+                        {"mode", "path"},
+                        set(attestation[name]),
+                    )
+
+    def test_source_attestation_rejects_volatile_root_identity_fields(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            attestation = json.loads(config.source_attestation_path.read_text())
+            attestation["micromachine_build_root"]["inode"] = 1
+            config.source_attestation_path.write_text(
+                json.dumps(attestation, indent=2, sort_keys=True) + "\n"
+            )
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"], report)
+            self.assertIn(
+                "invalid_source_attestation",
                 {failure["code"] for failure in report["failures"]},
             )
 
@@ -3964,6 +4267,12 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         micromachine_bounded_terminal_operation_hud_patch = (
             root / "micromachine-bounded-terminal-operation-hud.patch"
         )
+        micromachine_deterministic_pre_live_journey_adapter_patch = (
+            root / "micromachine-deterministic-pre-live-journey-adapter.patch"
+        )
+        micromachine_production_path_journey_review_closure_patch = (
+            root / "micromachine-production-path-journey-review-closure.patch"
+        )
         s2client_patch = root / "s2client.patch"
         hook_manifest = root / "HOOK_MANIFEST.json"
         map_pool = root / "MICROMACHINE_MAP_POOL.json"
@@ -4045,6 +4354,8 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             micromachine_autonomous_owner_composition_evidence_patch,
             micromachine_battlefield_review_closure_patch,
             micromachine_bounded_terminal_operation_hud_patch,
+            micromachine_deterministic_pre_live_journey_adapter_patch,
+            micromachine_production_path_journey_review_closure_patch,
             s2client_patch,
             hook_manifest,
             map_pool,
@@ -4271,6 +4582,12 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             ),
             micromachine_bounded_terminal_operation_hud_patch=(
                 micromachine_bounded_terminal_operation_hud_patch
+            ),
+            micromachine_deterministic_pre_live_journey_adapter_patch=(
+                micromachine_deterministic_pre_live_journey_adapter_patch
+            ),
+            micromachine_production_path_journey_review_closure_patch=(
+                micromachine_production_path_journey_review_closure_patch
             ),
             s2client_patch=s2client_patch,
             hook_manifest=hook_manifest,

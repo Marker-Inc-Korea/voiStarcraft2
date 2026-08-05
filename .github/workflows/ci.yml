@@ -35,48 +35,71 @@ jobs:
           bash -n integrations/micromachine/scripts/soak_macos_local.sh
           bash -n integrations/micromachine/scripts/soak_matrix_macos_local.sh
 
-  pre-live-provenance:
+  pre-live-candidate-qualification:
     if: >-
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.id == github.event.repository.id
     needs:
       - unit-contracts
-    name: pre-live-provenance
+    name: pre-live-candidate-qualification
     runs-on: macos-14
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
-      actions: read
       contents: read
     env:
       PYTHONDONTWRITEBYTECODE: "1"
       ROOT_DIR: /private/tmp/voi-micromachine-runtime
       BUILD_JOBS: "3"
+      VOI_RELEASE_COMMIT: ${{ github.event.pull_request.head.sha }}
+      VOI_MICROMACHINE_BINARY: /private/tmp/voi-micromachine-runtime/MicroMachine/build-latest-api/bin/MicroMachine
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Build exact MicroMachine integration
-        run: integrations/micromachine/scripts/build_macos_local.sh
-      - name: Emit canonical authenticated provenance bundle
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          VOI_RELEASE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Verify candidate dedicated producer isolation
         run: |
-          mkdir -p "${RUNNER_TEMP}/pre-live"
-          python3 -B -m starcraft_commander.micromachine_pre_live_provenance \
-            --emit-github-actions-bundle \
-            "${RUNNER_TEMP}/pre-live/pre-live-provenance.zip" \
-            "${ROOT_DIR}/MicroMachine/build-latest-api/voi_build_identity.json" \
-            "${ROOT_DIR}/MicroMachine/build-latest-api"
-      - name: Upload canonical authenticated provenance bundle
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: pre-live
-          path: ${{ runner.temp }}/pre-live/pre-live-provenance.zip
-          compression-level: 0
-          if-no-files-found: error
+          PYTHON_EXECUTABLE="$(python3 -c 'import os, sys; print(os.path.realpath(sys.executable))')"
+          sudo env -u GITHUB_TOKEN -u GH_TOKEN \
+            DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+            PYTHONDONTWRITEBYTECODE="1" \
+            PYTHONPATH="${PWD}" \
+            VOI_PRODUCER_UID="65001" \
+            VOI_PRODUCER_GID="65001" \
+            "${PYTHON_EXECUTABLE}" -W error::ResourceWarning -B \
+              tests/test_micromachine_pre_live_provenance.py \
+              -k dedicated_producer_uid
+      - name: Build exact MicroMachine integration without credentials
+        run: integrations/micromachine/scripts/build_macos_local.sh
+      - name: Verify deterministic pre-live candidate
+        run: |
+          PYTHONPATH="${PWD}" \
+            python3 -B tests/test_micromachine_pre_live_journeys.py
+          PYTHONPATH="${PWD}" \
+            python3 -B tests/test_micromachine_terran_capabilities.py
+
+  pre-live-workflow-registration:
+    if: github.event_name == 'push'
+    needs:
+      - unit-contracts
+    name: pre-live-workflow-registration
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Verify default-branch workflow registration
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          workflow="$(
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/pre-live-provenance.yml"
+          )"
+          test "$(jq -r '.path' <<<"${workflow}")" = \
+            ".github/workflows/pre-live-provenance.yml"
+          test "$(jq -r '.state' <<<"${workflow}")" = "active"
 
   micromachine-macos-contracts:
     if: github.event_name == 'push'

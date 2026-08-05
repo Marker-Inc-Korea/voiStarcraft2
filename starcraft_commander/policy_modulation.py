@@ -433,18 +433,34 @@ MICROMACHINE_ALLOWED_UNIT_TOKENS: Final[frozenset[str]] = frozenset(
         "TERRAN_REAPER",
         "TERRAN_GHOST",
         "TERRAN_HELLION",
+        "TERRAN_HELLIONTANK",
         "TERRAN_WIDOWMINE",
+        "TERRAN_WIDOWMINEBURROWED",
         "TERRAN_CYCLONE",
         "TERRAN_THOR",
+        "TERRAN_THORAP",
         "TERRAN_SIEGETANK",
+        "TERRAN_SIEGETANKSIEGED",
         "TERRAN_MEDIVAC",
         "TERRAN_VIKINGFIGHTER",
+        "TERRAN_VIKINGASSAULT",
         "TERRAN_LIBERATOR",
+        "TERRAN_LIBERATORAG",
         "TERRAN_BANSHEE",
         "TERRAN_RAVEN",
         "TERRAN_BATTLECRUISER",
     }
 )
+
+MICROMACHINE_CANONICAL_UNIT_FORM_TOKENS: Final[dict[str, str]] = {
+    "TERRAN_HELLIONTANK": "TERRAN_HELLION",
+    "TERRAN_WIDOWMINEBURROWED": "TERRAN_WIDOWMINE",
+    "TERRAN_THORAP": "TERRAN_THOR",
+    "TERRAN_SIEGETANKSIEGED": "TERRAN_SIEGETANK",
+    "TERRAN_VIKINGASSAULT": "TERRAN_VIKINGFIGHTER",
+    "TERRAN_LIBERATORAG": "TERRAN_LIBERATOR",
+}
+"""Transient unit forms lowered to production and role family tokens."""
 
 MICROMACHINE_ALLOWED_BUILDING_TOKENS: Final[frozenset[str]] = frozenset(
     {
@@ -1425,11 +1441,7 @@ class CompositionRequirement:
         object.__setattr__(
             self,
             "unit_type",
-            _canonicalize_allowed_task_token(
-                "unit_type",
-                self.unit_type,
-                allowed=MICROMACHINE_ALLOWED_UNIT_TOKENS,
-            ),
+            _canonicalize_composition_unit_token(self.unit_type),
         )
         object.__setattr__(
             self,
@@ -1459,11 +1471,7 @@ class UnitRoleAssignment:
         object.__setattr__(
             self,
             "unit_type",
-            _canonicalize_allowed_task_token(
-                "unit_type",
-                self.unit_type,
-                allowed=MICROMACHINE_ALLOWED_UNIT_TOKENS,
-            ),
+            _canonicalize_composition_unit_token(self.unit_type),
         )
         object.__setattr__(
             self,
@@ -2838,6 +2846,15 @@ def _canonicalize_allowed_task_token(
             f"{field_name} must be an allowed MicroMachine unit/building/addon token."
         )
     return token
+
+
+def _canonicalize_composition_unit_token(value: object) -> str:
+    token = _canonicalize_allowed_task_token(
+        "unit_type",
+        value,
+        allowed=MICROMACHINE_ALLOWED_UNIT_TOKENS,
+    )
+    return MICROMACHINE_CANONICAL_UNIT_FORM_TOKENS.get(token, token)
 
 
 def _canonicalize_task_token(value: str) -> str:
