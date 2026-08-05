@@ -210,6 +210,39 @@ class ArchivePolicyTest(unittest.TestCase):
         self.assertIn("unexpected_archive_entry", content_codes)
         self.assertIn("unexpected_archive_payload", manifest_codes)
 
+    def test_sdist_rejects_alternate_egg_info_namespace(self) -> None:
+        expected_payload = b"expected runtime"
+        snapshot = ArchiveSnapshot(
+            kind="sdist",
+            path=Path("voistarcraft2-0.1.0.tar.gz"),
+            digest="c" * 64,
+            entries=(),
+            files={
+                (
+                    "voistarcraft2-0.1.0/"
+                    "starcraft_commander/runtime_data.py"
+                ): expected_payload,
+                "voistarcraft2-0.1.0/attacker.egg-info/PKG-INFO": b"attacker",
+            },
+            blockers=(),
+        )
+        expected = {
+            "starcraft_commander/runtime_data.py": (
+                compliance_module.sha256_bytes(expected_payload)
+            )
+        }
+
+        content_codes = {
+            str(item["code"]) for item in archive_content_blockers(snapshot)
+        }
+        manifest_codes = {
+            str(item["code"])
+            for item in archive_manifest_blockers(snapshot, expected)
+        }
+
+        self.assertIn("unexpected_archive_entry", content_codes)
+        self.assertIn("unexpected_archive_payload", manifest_codes)
+
     def test_archive_manifest_rejects_missing_extra_and_modified_payloads(
         self,
     ) -> None:

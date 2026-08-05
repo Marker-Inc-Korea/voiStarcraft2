@@ -26,6 +26,7 @@ DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION: Final[int] = 1
 EXPECTED_LICENSE_EXPRESSION: Final[str] = (
     "AGPL-3.0-or-later OR LicenseRef-Commercial"
 )
+EXPECTED_PROJECT_NAME: Final[str] = "voiStarcraft2"
 EXPECTED_DISTRIBUTION_NAME: Final[str] = "voistarcraft2"
 EXPECTED_LICENSE_FILE_SHA256: Final[Mapping[str, str]] = {
     "LICENSE": "888136505768579bc729c27a60a5adc9360ef41fb0b05fc3a0bb2a49bfad8b9a",
@@ -1735,9 +1736,7 @@ def _allowed_sdist_path(path: PurePosixPath) -> bool:
         return True
     if len(path.parts) == 1 and path.name in {"PKG-INFO", "setup.cfg"}:
         return True
-    expected_egg_info = (
-        EXPECTED_DISTRIBUTION_NAME.replace("-", "_") + ".egg-info"
-    )
+    expected_egg_info = EXPECTED_PROJECT_NAME + ".egg-info"
     return (
         len(path.parts) == 2
         and path.parts[0] == expected_egg_info
@@ -1920,9 +1919,7 @@ def _generated_archive_path(
         return bool(
             expected_root and path.parts and path.parts[0] == expected_root
         )
-    expected_egg_info = (
-        EXPECTED_DISTRIBUTION_NAME.replace("-", "_") + ".egg-info"
-    )
+    expected_egg_info = EXPECTED_PROJECT_NAME + ".egg-info"
     return (
         (len(path.parts) == 1 and path.name in {"PKG-INFO", "setup.cfg"})
         or bool(path.parts and path.parts[0] == expected_egg_info)
