@@ -128,12 +128,16 @@ _REQUIREMENT_NAME_RE: Final[re.Pattern[str]] = re.compile(
 _PRIVATE_MODEL_RE: Final[re.Pattern[str]] = re.compile(
     r"(?im)^\s*(?:export\s+)?[\"']?"
     r"(?:DEFAULT_MYPROXY_MODEL|VOI_MYPROXY_MODEL)[\"']?"
-    r"\s*(?:(?::[^=\n]+)?=|:)\s*[\"']?([^\"'\s,#}\n]+)[\"']?"
+    r"(?![A-Za-z0-9_])"
+    r"\s*(?:(?::[^=\n]+)?=|:(?![^\n=]*=))"
+    r"\s*[\"']?([^\"'\s,#}\n]+)[\"']?"
 )
 _PRIVATE_ENDPOINT_RE: Final[re.Pattern[str]] = re.compile(
     r"(?im)^\s*(?:export\s+)?[\"']?"
     r"(?:MYPROXY_OPENAI_BASE_URL|VOI_MYPROXY_OPENAI_BASE_URL)[\"']?"
-    r"\s*(?:(?::[^=\n]+)?=|:)\s*[\"']?([^\"'\s,#}\n]+)[\"']?"
+    r"(?![A-Za-z0-9_])"
+    r"\s*(?:(?::[^=\n]+)?=|:(?![^\n=]*=))"
+    r"\s*[\"']?([^\"'\s,#}\n]+)[\"']?"
 )
 _API_KEY_RE: Final[re.Pattern[str]] = re.compile(
     r"\b("

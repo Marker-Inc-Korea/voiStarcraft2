@@ -268,6 +268,31 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             {str(item["rule_id"]) for item in findings},
         )
 
+    def test_private_config_scanner_ignores_names_and_empty_constants(self) -> None:
+        endpoint_key = "MYPROXY_OPENAI_BASE_" + "URL"
+        payload = (
+            f'{endpoint_key}_ENV_VAR: Final[str] = "{endpoint_key}"\n'
+            f'{endpoint_key}: Final[str] = ""\n'
+        ).encode()
+
+        self.assertEqual([], scan_payload("llm_interpreter.py", payload))
+
+    def test_detects_typed_and_mapping_private_config_assignments(self) -> None:
+        model_key = "DEFAULT_MYPROXY_" + "MODEL"
+        endpoint_key = "MYPROXY_OPENAI_BASE_" + "URL"
+        payload = (
+            f'{model_key}: Final[str] = "internal-deployment-alpha"\n'
+            f'"{endpoint_key}": "https://proxy.corp.example:8443/v1"\n'
+        ).encode()
+
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
+            {
+                str(item["rule_id"])
+                for item in scan_payload("private-config.yaml", payload)
+            },
+        )
+
     def test_detects_environment_and_credential_filenames(self) -> None:
         env_findings = scan_payload(".env.local", b"SAFE=value")
         credential_findings = scan_payload("config/service.credentials.json", b"{}")
