@@ -496,6 +496,29 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             {str(item["rule_id"]) for item in findings},
         )
 
+    def test_detects_docker_and_kubernetes_layout_variants(self) -> None:
+        host_key = "VOI_MYPROXY_" + "HOST"
+        payload = (
+            f"ENV SAFE=x {host_key}=10.20.30.40\n"
+            f"- {{name: {host_key}, value: 10.20.30.40}}\n"
+            "- value: 10.20.30.40\n"
+            f"  name: {host_key}\n"
+        ).encode()
+
+        findings = scan_payload("deployment.yaml", payload)
+
+        self.assertEqual(3, len(findings))
+        self.assertEqual(
+            {"private_endpoint"},
+            {str(item["rule_id"]) for item in findings},
+        )
+        unrelated_value = (
+            f"- name: {host_key}\n"
+            "- name: SAFE\n"
+            "  value: 10.20.30.40\n"
+        ).encode()
+        self.assertEqual([], scan_payload("deployment.yaml", unrelated_value))
+
     def test_private_config_scanner_ignores_names_and_empty_constants(self) -> None:
         endpoint_key = "MYPROXY_OPENAI_BASE_" + "URL"
         payload = (
@@ -789,53 +812,121 @@ dev = ["build>=1.2", "pytest>=7"]
             )
             + "\n"
         )
-        wheel_generated = {
-            *(f"{wheel_root}/{name}" for name in ("METADATA", "RECORD", "WHEEL")),
-            f"{wheel_root}/top_level.txt",
+        top_level_raw = (
+            "broodwar_commander\n"
+            "integrations\n"
+            "starcraft_commander\n"
+            "toycraft_commander\n"
+        )
+        wheel_raw_by_entry = {
+            metadata_entry: metadata_raw,
+            f"{wheel_root}/WHEEL": (
+                "Wheel-Version: 1.0\n"
+                "Generator: setuptools (83.0.0)\n"
+                "Root-Is-Purelib: true\n"
+                "Tag: py3-none-any\n\n"
+            ),
+            f"{wheel_root}/top_level.txt": top_level_raw,
+        }
+        wheel_license_entries = {
             f"{wheel_root}/licenses/LICENSE",
             f"{wheel_root}/licenses/LICENSES/AGPL-3.0-or-later.txt",
             f"{wheel_root}/licenses/THIRD_PARTY_NOTICES.md",
         }
         wheel_file_manifest = {
             "starcraft_commander/runtime_data.py": digest,
-            **{entry: digest for entry in wheel_generated},
+            **{entry: digest for entry in wheel_license_entries},
+            **{
+                entry: compliance_module.sha256_bytes(raw.encode())
+                for entry, raw in wheel_raw_by_entry.items()
+            },
         }
-        wheel_file_manifest[metadata_entry] = (
-            compliance_module.sha256_bytes(metadata_raw.encode())
+        wheel_record_entry = f"{wheel_root}/RECORD"
+        wheel_record_raw = "".join(
+            (
+                f"{entry},,"
+                if entry == wheel_record_entry
+                else (
+                    f"{entry},"
+                    f"{compliance_module._record_hash_from_sha256(entry_digest)},"
+                    "1"
+                )
+            )
+            + "\n"
+            for entry, entry_digest in sorted(
+                {
+                    **wheel_file_manifest,
+                    wheel_record_entry: digest,
+                }.items()
+            )
+        )
+        wheel_raw_by_entry[wheel_record_entry] = wheel_record_raw
+        wheel_file_manifest[wheel_record_entry] = (
+            compliance_module.sha256_bytes(wheel_record_raw.encode())
         )
         sdist_root = "voistarcraft2-0.1.0"
         sdist_egg_info = f"{sdist_root}/voiStarcraft2.egg-info"
-        sdist_generated = {
-            f"{sdist_root}/PKG-INFO",
-            f"{sdist_root}/setup.cfg",
-            *(
-                f"{sdist_egg_info}/{name}"
-                for name in (
-                    "PKG-INFO",
-                    "SOURCES.txt",
-                    "dependency_links.txt",
-                    "requires.txt",
-                    "top_level.txt",
-                )
-            ),
-        }
         sdist_source = (
             f"{sdist_root}/starcraft_commander/runtime_data.py"
         )
         sdist_pyproject = f"{sdist_root}/pyproject.toml"
+        sdist_expected_manifest = {
+            "pyproject.toml": source_pyproject_digest,
+            "starcraft_commander/runtime_data.py": digest,
+        }
+        sdist_requires_raw = (
+            "[dev]\n"
+            "build>=1.2\n"
+            "pytest>=7\n\n"
+            "[llm]\n"
+            "anthropic>=0.40\n"
+            "openai>=1.0\n\n"
+            "[sc2]\n"
+            "burnysc2>=6.5\n\n"
+            "[voice]\n"
+            "faster-whisper>=1.0\n"
+            "sounddevice>=0.4.6\n"
+        )
+        sdist_sources_raw = "\n".join(
+            sorted(
+                {
+                    *sdist_expected_manifest,
+                    *(
+                        f"voiStarcraft2.egg-info/{name}"
+                        for name in (
+                            "PKG-INFO",
+                            "SOURCES.txt",
+                            "dependency_links.txt",
+                            "requires.txt",
+                            "top_level.txt",
+                        )
+                    ),
+                }
+            )
+        ) + "\n"
+        sdist_raw_by_entry = {
+            f"{sdist_root}/PKG-INFO": metadata_raw,
+            f"{sdist_root}/setup.cfg": (
+                "\n[egg_info]\ntag_build = \ntag_date = 0\n\n"
+            ),
+            f"{sdist_egg_info}/PKG-INFO": metadata_raw,
+            f"{sdist_egg_info}/SOURCES.txt": sdist_sources_raw,
+            f"{sdist_egg_info}/dependency_links.txt": "",
+            f"{sdist_egg_info}/requires.txt": sdist_requires_raw,
+            f"{sdist_egg_info}/top_level.txt": top_level_raw,
+        }
         sdist_file_manifest = {
             sdist_source: digest,
             sdist_pyproject: source_pyproject_digest,
-            **{entry: digest for entry in sdist_generated},
+            **{
+                entry: compliance_module.sha256_bytes(raw.encode())
+                for entry, raw in sdist_raw_by_entry.items()
+            },
         }
         sdist_metadata_entries = (
             f"{sdist_root}/PKG-INFO",
             f"{sdist_egg_info}/PKG-INFO",
         )
-        for entry in sdist_metadata_entries:
-            sdist_file_manifest[entry] = compliance_module.sha256_bytes(
-                metadata_raw.encode()
-            )
         sdist_directories = [sdist_root, sdist_egg_info]
         self.report = {
             "repository": {
@@ -879,8 +970,7 @@ dev = ["build>=1.2", "pytest>=7"]
                     "starcraft_commander/runtime_data.py": digest,
                 },
                 "sdist": {
-                    "pyproject.toml": source_pyproject_digest,
-                    "starcraft_commander/runtime_data.py": digest,
+                    **sdist_expected_manifest,
                 },
             },
             "metadata": {
@@ -892,6 +982,16 @@ dev = ["build>=1.2", "pytest>=7"]
                     {"entry": entry, "raw": metadata_raw}
                     for entry in sdist_metadata_entries
                 ],
+                "generated": {
+                    "wheel": [
+                        {"entry": entry, "raw": raw}
+                        for entry, raw in sorted(wheel_raw_by_entry.items())
+                    ],
+                    "sdist": [
+                        {"entry": entry, "raw": raw}
+                        for entry, raw in sorted(sdist_raw_by_entry.items())
+                    ],
+                },
             },
             "source_pyproject": {
                 "raw": source_pyproject_raw,
@@ -1116,6 +1216,101 @@ dev = ["build>=1.2", "pytest>=7"]
 
                 self.assertIn("wrong_license_expression", reasons)
                 self.assertIn("source_requires_dist_mismatch", reasons)
+
+    def test_generated_sdist_metadata_is_bound_to_source_provenance(
+        self,
+    ) -> None:
+        mutations = (
+            (
+                "requires.txt",
+                lambda raw: raw + "\nattacker-runtime>=1\n",
+                "source_requires_txt_mismatch",
+            ),
+            (
+                "SOURCES.txt",
+                lambda raw: raw + "attacker_payload.py\n",
+                "source_manifest_mismatch",
+            ),
+        )
+        for suffix, mutate, expected_reason in mutations:
+            with self.subTest(suffix=suffix):
+                report = dict(self.report)
+                metadata = dict(self.report["metadata"])
+                generated = {
+                    kind: [dict(item) for item in items]
+                    for kind, items in metadata["generated"].items()
+                }
+                target = next(
+                    item
+                    for item in generated["sdist"]
+                    if str(item["entry"]).endswith(suffix)
+                )
+                target["raw"] = mutate(str(target["raw"]))
+                metadata["generated"] = generated
+                report["metadata"] = metadata
+                artifacts = {
+                    kind: dict(value)
+                    for kind, value in self.report["artifacts"].items()
+                }
+                sdist_manifest = dict(
+                    artifacts["sdist"]["file_manifest"]
+                )
+                sdist_manifest[str(target["entry"])] = (
+                    compliance_module.sha256_bytes(
+                        str(target["raw"]).encode()
+                    )
+                )
+                artifacts["sdist"]["file_manifest"] = sdist_manifest
+                artifacts["sdist"]["sha256"] = "e" * 64
+                report["artifacts"] = artifacts
+
+                reasons = {
+                    str(item.get("reason"))
+                    for item in distribution_report_blockers(report)
+                    if item.get("code")
+                    == "invalid_generated_metadata_evidence"
+                }
+
+                self.assertIn(expected_reason, reasons)
+
+    def test_generated_wheel_record_is_bound_to_file_manifest(self) -> None:
+        report = dict(self.report)
+        metadata = dict(self.report["metadata"])
+        generated = {
+            kind: [dict(item) for item in items]
+            for kind, items in metadata["generated"].items()
+        }
+        record = next(
+            item
+            for item in generated["wheel"]
+            if str(item["entry"]).endswith("/RECORD")
+        )
+        record["raw"] = str(record["raw"]).replace(
+            "sha256=",
+            "sha256=attacker",
+            1,
+        )
+        metadata["generated"] = generated
+        report["metadata"] = metadata
+        artifacts = {
+            kind: dict(value)
+            for kind, value in self.report["artifacts"].items()
+        }
+        wheel_manifest = dict(artifacts["wheel"]["file_manifest"])
+        wheel_manifest[str(record["entry"])] = (
+            compliance_module.sha256_bytes(str(record["raw"]).encode())
+        )
+        artifacts["wheel"]["file_manifest"] = wheel_manifest
+        artifacts["wheel"]["sha256"] = "e" * 64
+        report["artifacts"] = artifacts
+
+        reasons = {
+            str(item.get("reason"))
+            for item in distribution_report_blockers(report)
+            if item.get("code") == "invalid_generated_metadata_evidence"
+        }
+
+        self.assertIn("invalid_wheel_record", reasons)
 
     def test_rejects_wrong_license_missing_notices_and_runtime_data(self) -> None:
         report = dict(self.report)

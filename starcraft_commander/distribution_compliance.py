@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import csv
 import hashlib
+import io
 import json
 import os
 import re
@@ -28,6 +31,12 @@ EXPECTED_LICENSE_EXPRESSION: Final[str] = (
 )
 EXPECTED_PROJECT_NAME: Final[str] = "voiStarcraft2"
 EXPECTED_DISTRIBUTION_NAME: Final[str] = "voistarcraft2"
+EXPECTED_TOP_LEVEL_PACKAGES: Final[tuple[str, ...]] = (
+    "broodwar_commander",
+    "integrations",
+    "starcraft_commander",
+    "toycraft_commander",
+)
 EXPECTED_LICENSE_FILE_SHA256: Final[Mapping[str, str]] = {
     "LICENSE": "888136505768579bc729c27a60a5adc9360ef41fb0b05fc3a0bb2a49bfad8b9a",
     "LICENSES/AGPL-3.0-or-later.txt": (
@@ -162,28 +171,62 @@ _PRIVATE_ENDPOINT_RE: Final[re.Pattern[str]] = re.compile(
     + r"[\"']?([^\"'\s,#}\n]+)[\"']?"
 )
 _PRIVATE_MODEL_DOCKER_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?im)^[ \t]*(?:ENV|ARG)[ \t]+"
+    r"(?im)^[ \t]*(?:ENV|ARG)[ \t]+(?:"
     + _PRIVATE_MODEL_KEY_PATTERN
     + _CONFIG_ASSIGNMENT_KEY_SUFFIX
-    + r"[ \t]+[\"']?([^\"'\s,#}\n]+)[\"']?"
+    + r"[ \t]+|[^\n]*?[ \t]+"
+    + _PRIVATE_MODEL_KEY_PATTERN
+    + _CONFIG_ASSIGNMENT_KEY_SUFFIX
+    + r"[ \t]*=[ \t]*)[\"']?([^\"'\s,#}\n]+)[\"']?"
 )
 _PRIVATE_ENDPOINT_DOCKER_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?im)^[ \t]*(?:ENV|ARG)[ \t]+"
+    r"(?im)^[ \t]*(?:ENV|ARG)[ \t]+(?:"
     + _PRIVATE_ENDPOINT_KEY_PATTERN
     + _CONFIG_ASSIGNMENT_KEY_SUFFIX
-    + r"[ \t]+[\"']?([^\"'\s,#}\n]+)[\"']?"
+    + r"[ \t]+|[^\n]*?[ \t]+"
+    + _PRIVATE_ENDPOINT_KEY_PATTERN
+    + _CONFIG_ASSIGNMENT_KEY_SUFFIX
+    + r"[ \t]*=[ \t]*)[\"']?([^\"'\s,#}\n]+)[\"']?"
 )
 _PRIVATE_MODEL_KUBERNETES_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?im)^[ \t]*-[ \t]*name[ \t]*:[ \t]*[\"']?"
+    r"(?im)(?:"
+    r"^[ \t]*-[ \t]*\{"
+    r"(?=[^{}\n]*\bname[ \t]*:[ \t]*[\"']?"
+    + _PRIVATE_MODEL_KEY_PATTERN
+    + r"[\"']?(?![A-Za-z0-9_]))"
+    r"(?=[^{}\n]*\bvalue[ \t]*:[ \t]*[\"']?"
+    r"([^\"'\s,#}\n]+)[\"']?)[^{}\n]*\}"
+    r"|^[ \t]*-[ \t]*name[ \t]*:[ \t]*[\"']?"
     + _PRIVATE_MODEL_KEY_PATTERN
     + r"[\"']?[ \t]*(?:#[^\n]*)?\r?\n"
-    + r"[ \t]*value[ \t]*:[ \t]*[\"']?([^\"'\s,#}\n]+)[\"']?"
+    r"(?:(?![ \t]*-[ \t])[ \t]+[^\n]*\r?\n)*?"
+    r"[ \t]+value[ \t]*:[ \t]*[\"']?([^\"'\s,#}\n]+)[\"']?"
+    r"|^[ \t]*-[ \t]*value[ \t]*:[ \t]*[\"']?"
+    r"([^\"'\s,#}\n]+)[\"']?[ \t]*(?:#[^\n]*)?\r?\n"
+    r"(?:(?![ \t]*-[ \t])[ \t]+[^\n]*\r?\n)*?"
+    r"[ \t]+name[ \t]*:[ \t]*[\"']?"
+    + _PRIVATE_MODEL_KEY_PATTERN
+    + r"[\"']?(?![A-Za-z0-9_]))"
 )
 _PRIVATE_ENDPOINT_KUBERNETES_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?im)^[ \t]*-[ \t]*name[ \t]*:[ \t]*[\"']?"
+    r"(?im)(?:"
+    r"^[ \t]*-[ \t]*\{"
+    r"(?=[^{}\n]*\bname[ \t]*:[ \t]*[\"']?"
+    + _PRIVATE_ENDPOINT_KEY_PATTERN
+    + r"[\"']?(?![A-Za-z0-9_]))"
+    r"(?=[^{}\n]*\bvalue[ \t]*:[ \t]*[\"']?"
+    r"([^\"'\s,#}\n]+)[\"']?)[^{}\n]*\}"
+    r"|^[ \t]*-[ \t]*name[ \t]*:[ \t]*[\"']?"
     + _PRIVATE_ENDPOINT_KEY_PATTERN
     + r"[\"']?[ \t]*(?:#[^\n]*)?\r?\n"
-    + r"[ \t]*value[ \t]*:[ \t]*[\"']?([^\"'\s,#}\n]+)[\"']?"
+    r"(?:(?![ \t]*-[ \t])[ \t]+[^\n]*\r?\n)*?"
+    r"[ \t]+value[ \t]*:[ \t]*[\"']?([^\"'\s,#}\n]+)[\"']?"
+    r"|^[ \t]*-[ \t]*value[ \t]*:[ \t]*[\"']?"
+    r"([^\"'\s,#}\n]+)[\"']?[ \t]*(?:#[^\n]*)?\r?\n"
+    r"(?:(?![ \t]*-[ \t])[ \t]+[^\n]*\r?\n)*?"
+    r"[ \t]+name[ \t]*:[ \t]*[\"']?"
+    + _PRIVATE_ENDPOINT_KEY_PATTERN
+    + r"[\"']?(?![A-Za-z0-9_]))"
 )
 _API_KEY_RE: Final[re.Pattern[str]] = re.compile(
     r"\b("
@@ -734,7 +777,14 @@ def scan_payload(
     for rule_id, pattern in rules:
         for match in pattern.finditer(text):
             matched = match.group(0)
-            captured = match.group(1).strip() if match.lastindex else ""
+            captured = next(
+                (
+                    group.strip()
+                    for group in match.groups()
+                    if group is not None
+                ),
+                "",
+            )
             if (
                 rule_id == "private_model_override"
                 and captured == "configured-locally"
@@ -910,6 +960,10 @@ def build_distribution_report(
         metadata = BytesParser().parsebytes(metadata_bytes or b"")
         license_expressions = metadata.get_all("License-Expression", [])
         requires_dist = metadata.get_all("Requires-Dist", [])
+        generated_metadata = {
+            "wheel": _generated_metadata_evidence(wheel),
+            "sdist": _generated_metadata_evidence(sdist),
+        }
         sdist_root = _expected_sdist_root(sdist.path)
         sdist_metadata: list[dict[str, str]] = []
         for entry in (
@@ -1000,6 +1054,7 @@ def build_distribution_report(
                     errors="replace",
                 ),
                 "sdist": sdist_metadata,
+                "generated": generated_metadata,
             },
             "source_pyproject": {
                 "raw": pyproject_text,
@@ -2298,6 +2353,28 @@ def _required_generated_archive_files(
     )
 
 
+def _required_generated_metadata_files(
+    kind: str,
+    archive_path: Path,
+) -> frozenset[str]:
+    if kind == "wheel":
+        root = _expected_wheel_dist_info_root(archive_path)
+        if not root:
+            return frozenset()
+        return frozenset(f"{root}/{name}" for name in _DIST_INFO_FILES)
+    root = _expected_sdist_root(archive_path)
+    if not root:
+        return frozenset()
+    egg_info_root = f"{root}/{EXPECTED_PROJECT_NAME}.egg-info"
+    return frozenset(
+        {
+            f"{root}/PKG-INFO",
+            f"{root}/setup.cfg",
+            *(f"{egg_info_root}/{name}" for name in _EGG_INFO_FILES),
+        }
+    )
+
+
 def _sha256_manifest(value: object) -> dict[str, str] | None:
     if not isinstance(value, Mapping) or not value:
         return None
@@ -2373,6 +2450,17 @@ def _metadata_evidence_blockers(
                     "reason": "missing_version",
                 }
             )
+    blockers.extend(
+        _generated_metadata_evidence_blockers(
+            metadata.get("generated"),
+            source_raw if isinstance(source_raw, str) else "",
+            wheel_path,
+            sdist_path,
+            wheel_file_manifest,
+            sdist_file_manifest,
+            sdist_expected_manifest,
+        )
+    )
     expected_root = _expected_wheel_dist_info_root(wheel_path)
     expected_entry = f"{expected_root}/METADATA" if expected_root else ""
     entry = metadata.get("entry")
@@ -2604,6 +2692,368 @@ def _metadata_evidence_blockers(
     return blockers
 
 
+def _generated_metadata_evidence_blockers(
+    generated_value: object,
+    source_pyproject_raw: str,
+    wheel_path: Path,
+    sdist_path: Path,
+    wheel_file_manifest: Mapping[str, str],
+    sdist_file_manifest: Mapping[str, str],
+    sdist_expected_manifest: Mapping[str, str],
+) -> list[dict[str, object]]:
+    blockers: list[dict[str, object]] = []
+    generated = _mapping(generated_value)
+    if set(generated) != {"wheel", "sdist"}:
+        blockers.append(
+            {
+                "code": "invalid_generated_metadata_evidence",
+                "reason": "wrong_kind_set",
+            }
+        )
+    raw_by_kind: dict[str, dict[str, str]] = {}
+    for kind, artifact_path, file_manifest in (
+        ("wheel", wheel_path, wheel_file_manifest),
+        ("sdist", sdist_path, sdist_file_manifest),
+    ):
+        expected_entries = _required_generated_metadata_files(
+            kind,
+            artifact_path,
+        )
+        by_entry: dict[str, str] = {}
+        evidence_items = generated.get(kind)
+        if not isinstance(evidence_items, list):
+            blockers.append(
+                {
+                    "code": "invalid_generated_metadata_evidence",
+                    "reason": "missing_projection",
+                    "kind": kind,
+                }
+            )
+        else:
+            for item in evidence_items:
+                evidence = _mapping(item)
+                entry = evidence.get("entry")
+                raw = evidence.get("raw")
+                if (
+                    not isinstance(entry, str)
+                    or entry in by_entry
+                    or not isinstance(raw, str)
+                ):
+                    blockers.append(
+                        {
+                            "code": "invalid_generated_metadata_evidence",
+                            "reason": "invalid_or_duplicate_entry",
+                            "kind": kind,
+                        }
+                    )
+                    continue
+                by_entry[entry] = raw
+        if set(by_entry) != set(expected_entries):
+            blockers.append(
+                {
+                    "code": "invalid_generated_metadata_evidence",
+                    "reason": "wrong_entry_set",
+                    "kind": kind,
+                    "expected": sorted(expected_entries),
+                }
+            )
+        for entry in sorted(expected_entries & set(by_entry)):
+            raw_digest = sha256_bytes(by_entry[entry].encode("utf-8"))
+            if file_manifest.get(entry) != raw_digest:
+                blockers.append(
+                    {
+                        "code": "invalid_generated_metadata_evidence",
+                        "reason": "raw_digest_mismatch",
+                        "kind": kind,
+                        "entry": entry,
+                    }
+                )
+        raw_by_kind[kind] = by_entry
+    blockers.extend(
+        _wheel_generated_metadata_blockers(
+            wheel_path,
+            wheel_file_manifest,
+            raw_by_kind.get("wheel", {}),
+        )
+    )
+    blockers.extend(
+        _sdist_generated_metadata_blockers(
+            source_pyproject_raw,
+            sdist_path,
+            sdist_expected_manifest,
+            raw_by_kind.get("sdist", {}),
+        )
+    )
+    return blockers
+
+
+def _wheel_generated_metadata_blockers(
+    wheel_path: Path,
+    file_manifest: Mapping[str, str],
+    raw_by_entry: Mapping[str, str],
+) -> list[dict[str, object]]:
+    blockers: list[dict[str, object]] = []
+    root = _expected_wheel_dist_info_root(wheel_path)
+    if not root:
+        return [
+            {
+                "code": "invalid_generated_metadata_evidence",
+                "reason": "invalid_wheel_namespace",
+                "kind": "wheel",
+            }
+        ]
+    wheel_entry = f"{root}/WHEEL"
+    wheel_raw = raw_by_entry.get(wheel_entry)
+    if wheel_raw is not None:
+        parsed = BytesParser().parsebytes(wheel_raw.encode("utf-8"))
+        if (
+            set(parsed.keys())
+            != {"Wheel-Version", "Generator", "Root-Is-Purelib", "Tag"}
+            or parsed.get_all("Wheel-Version", []) != ["1.0"]
+            or parsed.get_all("Root-Is-Purelib", []) != ["true"]
+            or parsed.get_all("Tag", []) != ["py3-none-any"]
+            or len(parsed.get_all("Generator", [])) != 1
+            or not parsed.get_all("Generator", [""])[0].startswith(
+                "setuptools ("
+            )
+            or str(parsed.get_payload()).strip()
+        ):
+            blockers.append(
+                {
+                    "code": "invalid_generated_metadata_evidence",
+                    "reason": "invalid_wheel_metadata",
+                    "kind": "wheel",
+                    "entry": wheel_entry,
+                }
+            )
+    top_level_entry = f"{root}/top_level.txt"
+    top_level_raw = raw_by_entry.get(top_level_entry)
+    if (
+        top_level_raw is not None
+        and _nonempty_lines(top_level_raw) != EXPECTED_TOP_LEVEL_PACKAGES
+    ):
+        blockers.append(
+            {
+                "code": "invalid_generated_metadata_evidence",
+                "reason": "top_level_mismatch",
+                "kind": "wheel",
+                "entry": top_level_entry,
+            }
+        )
+    record_entry = f"{root}/RECORD"
+    record_raw = raw_by_entry.get(record_entry)
+    if record_raw is not None:
+        blockers.extend(
+            _wheel_record_blockers(
+                record_entry,
+                record_raw,
+                file_manifest,
+            )
+        )
+    return blockers
+
+
+def _wheel_record_blockers(
+    record_entry: str,
+    record_raw: str,
+    file_manifest: Mapping[str, str],
+) -> list[dict[str, object]]:
+    invalid = {
+        "code": "invalid_generated_metadata_evidence",
+        "reason": "invalid_wheel_record",
+        "kind": "wheel",
+        "entry": record_entry,
+    }
+    try:
+        rows = list(csv.reader(io.StringIO(record_raw, newline="")))
+    except csv.Error:
+        return [invalid]
+    if any(len(row) != 3 for row in rows):
+        return [invalid]
+    by_path: dict[str, tuple[str, str]] = {}
+    for path, digest, size in rows:
+        if not path or path in by_path:
+            return [invalid]
+        by_path[path] = (digest, size)
+    if set(by_path) != set(file_manifest):
+        return [invalid]
+    for path, expected_digest in file_manifest.items():
+        recorded_digest, recorded_size = by_path[path]
+        if path == record_entry:
+            if recorded_digest or recorded_size:
+                return [invalid]
+            continue
+        if (
+            recorded_digest != _record_hash_from_sha256(expected_digest)
+            or not recorded_size.isdecimal()
+        ):
+            return [invalid]
+    return []
+
+
+def _record_hash_from_sha256(digest: str) -> str:
+    encoded = base64.urlsafe_b64encode(bytes.fromhex(digest)).decode("ascii")
+    return f"sha256={encoded.rstrip('=')}"
+
+
+def _sdist_generated_metadata_blockers(
+    source_pyproject_raw: str,
+    sdist_path: Path,
+    expected_source_manifest: Mapping[str, str],
+    raw_by_entry: Mapping[str, str],
+) -> list[dict[str, object]]:
+    blockers: list[dict[str, object]] = []
+    root = _expected_sdist_root(sdist_path)
+    if not root:
+        return [
+            {
+                "code": "invalid_generated_metadata_evidence",
+                "reason": "invalid_sdist_namespace",
+                "kind": "sdist",
+            }
+        ]
+    egg_root = f"{root}/{EXPECTED_PROJECT_NAME}.egg-info"
+    setup_entry = f"{root}/setup.cfg"
+    setup_raw = raw_by_entry.get(setup_entry)
+    if setup_raw is not None and _nonempty_lines(setup_raw) != (
+        "[egg_info]",
+        "tag_build =",
+        "tag_date = 0",
+    ):
+        blockers.append(
+            {
+                "code": "invalid_generated_metadata_evidence",
+                "reason": "invalid_setup_cfg",
+                "kind": "sdist",
+                "entry": setup_entry,
+            }
+        )
+    dependency_entry = f"{egg_root}/dependency_links.txt"
+    dependency_raw = raw_by_entry.get(dependency_entry)
+    if dependency_raw is not None and dependency_raw.strip():
+        blockers.append(
+            {
+                "code": "invalid_generated_metadata_evidence",
+                "reason": "unexpected_dependency_link",
+                "kind": "sdist",
+                "entry": dependency_entry,
+            }
+        )
+    top_level_entry = f"{egg_root}/top_level.txt"
+    top_level_raw = raw_by_entry.get(top_level_entry)
+    if (
+        top_level_raw is not None
+        and _nonempty_lines(top_level_raw) != EXPECTED_TOP_LEVEL_PACKAGES
+    ):
+        blockers.append(
+            {
+                "code": "invalid_generated_metadata_evidence",
+                "reason": "top_level_mismatch",
+                "kind": "sdist",
+                "entry": top_level_entry,
+            }
+        )
+    requires_entry = f"{egg_root}/requires.txt"
+    requires_raw = raw_by_entry.get(requires_entry)
+    expected_groups = _requirement_groups_from_pyproject(
+        source_pyproject_raw
+    )
+    if (
+        requires_raw is not None
+        and _requires_txt_groups(requires_raw) != expected_groups
+    ):
+        blockers.append(
+            {
+                "code": "invalid_generated_metadata_evidence",
+                "reason": "source_requires_txt_mismatch",
+                "kind": "sdist",
+                "entry": requires_entry,
+            }
+        )
+    sources_entry = f"{egg_root}/SOURCES.txt"
+    sources_raw = raw_by_entry.get(sources_entry)
+    expected_sources = {
+        *expected_source_manifest,
+        *(
+            f"{EXPECTED_PROJECT_NAME}.egg-info/{name}"
+            for name in _EGG_INFO_FILES
+        ),
+    }
+    if sources_raw is not None:
+        source_lines = sources_raw.splitlines()
+        if (
+            any(
+                not line
+                or line != PurePosixPath(line).as_posix()
+                or _archive_path_error(line)
+                for line in source_lines
+            )
+            or len(source_lines) != len(set(source_lines))
+            or set(source_lines) != expected_sources
+        ):
+            blockers.append(
+                {
+                    "code": "invalid_generated_metadata_evidence",
+                    "reason": "source_manifest_mismatch",
+                    "kind": "sdist",
+                    "entry": sources_entry,
+                }
+            )
+    return blockers
+
+
+def _requirement_groups_from_pyproject(
+    text: str,
+) -> dict[str, tuple[str, ...]]:
+    groups: dict[str, tuple[str, ...]] = {
+        "": _toml_array_assignment_values(
+            _pyproject_section(text, "project"),
+            "dependencies",
+        )
+    }
+    optional_section = _pyproject_section(
+        text,
+        "project.optional-dependencies",
+    )
+    assignment_pattern = re.compile(
+        r"(?ms)^\s*([A-Za-z0-9_.-]+)\s*=\s*\[(.*?)\]"
+        r"(?=\s*(?:^[A-Za-z0-9_.-]+\s*=|\Z))"
+    )
+    for match in assignment_pattern.finditer(optional_section):
+        extra = re.sub(r"[-_.]+", "-", match.group(1).lower())
+        groups[extra] = _toml_quoted_values(match.group(2))
+    return {key: value for key, value in groups.items() if value}
+
+
+def _requires_txt_groups(raw: str) -> dict[str, tuple[str, ...]] | None:
+    groups: dict[str, list[str]] = {}
+    current = ""
+    for raw_line in raw.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        section = re.fullmatch(r"\[([A-Za-z0-9_.-]+)\]", line)
+        if section is not None:
+            current = re.sub(r"[-_.]+", "-", section.group(1).lower())
+            if current in groups:
+                return None
+            groups[current] = []
+            continue
+        groups.setdefault(current, []).append(line)
+    normalized = {
+        key: tuple(values)
+        for key, values in groups.items()
+        if values
+    }
+    if any(len(values) != len(set(values)) for values in normalized.values()):
+        return None
+    return normalized
+
+
+def _nonempty_lines(raw: str) -> tuple[str, ...]:
+    return tuple(line.strip() for line in raw.splitlines() if line.strip())
+
+
 def _is_credential_path(basename: str, lowered_parts: set[str]) -> bool:
     return (
         basename in _CREDENTIAL_FILENAMES
@@ -2765,6 +3215,25 @@ def _artifact_evidence(snapshot: ArchiveSnapshot) -> dict[str, object]:
         },
         "directory_entries": list(snapshot.directories),
     }
+
+
+def _generated_metadata_evidence(
+    snapshot: ArchiveSnapshot,
+) -> list[dict[str, str]]:
+    required = _required_generated_metadata_files(
+        snapshot.kind,
+        snapshot.path,
+    )
+    return [
+        {
+            "entry": entry,
+            "raw": snapshot.files.get(entry, b"").decode(
+                "utf-8",
+                errors="replace",
+            ),
+        }
+        for entry in sorted(required)
+    ]
 
 
 def _license_evidence(
