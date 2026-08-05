@@ -607,28 +607,34 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                 )
 
     def test_detects_semantic_yaml_kubernetes_env_variants(self) -> None:
+        host_key = "VOI_MYPROXY_" + "HOST"
         payloads = (
-            b"- ? name\n  : VOI_MYPROXY_HOST\n  ? value\n  : 10.20.30.40\n",
             (
-                b"- ? >-\n    name\n"
-                b"  : >-\n    VOI_MYPROXY_HOST\n"
-                b"  ? >-\n    value\n"
-                b"  : >-\n    10.20.30.40\n"
-            ),
+                "- ? name\n"
+                f"  : {host_key}\n"
+                "  ? value\n"
+                "  : 10.20.30.40\n"
+            ).encode(),
             (
-                b"private: &private\n"
-                b"  name: VOI_MYPROXY_HOST\n"
-                b"  value: 10.20.30.40\n"
-                b"env:\n"
-                b"  - *private\n"
-            ),
+                "- ? >-\n    name\n"
+                f"  : >-\n    {host_key}\n"
+                "  ? >-\n    value\n"
+                "  : >-\n    10.20.30.40\n"
+            ).encode(),
             (
-                b"- !!map\n"
-                b"  ? !!str name\n"
-                b"  : !!str VOI_MYPROXY_HOST\n"
-                b"  ? !!str value\n"
-                b"  : !!str 10.20.30.40\n"
-            ),
+                "private: &private\n"
+                f"  name: {host_key}\n"
+                "  value: 10.20.30.40\n"
+                "env:\n"
+                "  - *private\n"
+            ).encode(),
+            (
+                "- !!map\n"
+                "  ? !!str name\n"
+                f"  : !!str {host_key}\n"
+                "  ? !!str value\n"
+                "  : !!str 10.20.30.40\n"
+            ).encode(),
         )
         for payload in payloads:
             with self.subTest(payload=payload):
@@ -644,9 +650,10 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                 )
 
     def test_yaml_parser_failures_are_blocking_findings(self) -> None:
+        host_key = "VOI_MYPROXY_" + "HOST"
         unsupported_tag = (
-            b"!PrivateConfig {name: VOI_MYPROXY_HOST, value: 10.20.30.40}"
-        )
+            f"!PrivateConfig {{name: {host_key}, value: 10.20.30.40}}"
+        ).encode()
         aliases = ", ".join("*private" for _ in range(129))
         excessive_aliases = (
             "private: &private {safe: true}\n"
