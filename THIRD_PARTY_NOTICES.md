@@ -85,6 +85,10 @@ License: Apache-2.0
 
 License: MIT
 
+### Python distribution: `setuptools`
+
+License: MIT
+
 ### Python distribution: `sounddevice`
 
 License: MIT

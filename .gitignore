@@ -6,6 +6,8 @@ __pycache__/
 .DS_Store
 .codex/
 build/
+dist/
+distribution-compliance-evidence/
 .env
 .env.*
 !.env.example

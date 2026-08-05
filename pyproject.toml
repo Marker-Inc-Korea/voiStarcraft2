@@ -30,19 +30,17 @@ dev = ["build>=1.2", "pytest>=7"]
 
 [tool.setuptools.packages.find]
 # Only ship the product packages; tests/ and docs/ stay out of the distribution.
-include = ["toycraft_commander*", "starcraft_commander*", "broodwar_commander*"]
+include = [
+    "toycraft_commander*",
+    "starcraft_commander*",
+    "broodwar_commander*",
+    "integrations*",
+]
 
-[tool.setuptools.data-files]
-"share/voiStarcraft2/integrations/micromachine" = [
-    "integrations/micromachine/HOOK_MANIFEST.json",
-    "integrations/micromachine/MICROMACHINE_MAP_POOL.json",
-    "integrations/micromachine/PRE_LIVE_JOURNEYS.json",
-    "integrations/micromachine/PRE_LIVE_PRODUCERS.json",
-    "integrations/micromachine/voi_policy_blackboard.hpp",
-]
-"share/voiStarcraft2/integrations/micromachine/patches" = [
-    "integrations/micromachine/patches/*.patch",
-]
-"share/voiStarcraft2/integrations/micromachine/scripts" = [
-    "integrations/micromachine/scripts/*.sh",
+[tool.setuptools.package-data]
+"integrations.micromachine" = [
+    "*.json",
+    "*.hpp",
+    "patches/*.patch",
+    "scripts/*.sh",
 ]

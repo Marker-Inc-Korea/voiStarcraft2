@@ -11,13 +11,17 @@ import zipfile
 
 from starcraft_commander import distribution_compliance as compliance_module
 from starcraft_commander.distribution_compliance import (
+    EXPECTED_BUILD_DISTRIBUTIONS,
     EXPECTED_DIRECT_DISTRIBUTIONS,
     EXPECTED_LICENSE_EXPRESSION,
+    EXPECTED_PROJECT_DISTRIBUTIONS,
     REQUIRED_LICENSE_FILES,
     REQUIRED_RUNTIME_FILES,
     ArchiveSnapshot,
     _isolated_venv_builder,
     archive_content_blockers,
+    archive_manifest_blockers,
+    build_dependencies_from_pyproject,
     declared_dependencies_from_pyproject,
     distribution_report_blockers,
     inspect_wheel,
@@ -31,6 +35,10 @@ class DependencyInventoryTest(unittest.TestCase):
         self,
     ) -> None:
         pyproject = """
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
 [project.optional-dependencies]
 # The importable package is called 'sc2'; this is not a distribution.
 sc2 = ["burnysc2>=6.5"]
@@ -49,6 +57,10 @@ include-package-data = true
                 "package-with-hash",
             },
             set(declared_dependencies_from_pyproject(pyproject)),
+        )
+        self.assertEqual(
+            {"setuptools"},
+            set(build_dependencies_from_pyproject(pyproject)),
         )
 
 
@@ -115,6 +127,31 @@ class ArchivePolicyTest(unittest.TestCase):
 
         self.assertEqual("unsafe_archive_entry", snapshot.blockers[0]["code"])
 
+    def test_archive_manifest_rejects_missing_package_and_integration_assets(
+        self,
+    ) -> None:
+        expected = {
+            "starcraft_commander/runtime_data.py",
+            "integrations/micromachine/voi_policy_blackboard.hpp",
+            "integrations/micromachine/patches/0001-fixture.patch",
+            "integrations/micromachine/scripts/smoke_macos_local.sh",
+        }
+        snapshot = ArchiveSnapshot(
+            kind="wheel",
+            path=Path("candidate.whl"),
+            digest="c" * 64,
+            entries=(),
+            files={"starcraft_commander/runtime_data.py": b""},
+            blockers=(),
+        )
+
+        blockers = archive_manifest_blockers(snapshot, expected)
+
+        self.assertEqual(
+            expected - {"starcraft_commander/runtime_data.py"},
+            {str(item["entry"]) for item in blockers},
+        )
+
 
 class PrivateConfigurationScannerTest(unittest.TestCase):
     def test_detects_required_secret_and_private_configuration_classes(self) -> None:
@@ -148,6 +185,21 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
         serialized = repr(findings)
         for sensitive in (api_key, bearer, endpoint, model, credential_path):
             self.assertNotIn(sensitive, serialized)
+
+    def test_detects_generic_myproxy_model_and_endpoint_assignments(self) -> None:
+        model_key = "VOI_MYPROXY_" + "MODEL"
+        endpoint_key = "VOI_MYPROXY_OPENAI_BASE_" + "URL"
+        payload = (
+            f"{model_key} = 'internal-deployment-alpha'\n"
+            f'"{endpoint_key}": "https://proxy.corp.example:8443/v1"\n'
+        ).encode()
+
+        findings = scan_payload("config.py", payload)
+
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
+            {str(item["rule_id"]) for item in findings},
+        )
 
     def test_detects_environment_and_credential_filenames(self) -> None:
         env_findings = scan_payload(".env.local", b"SAFE=value")
@@ -230,6 +282,16 @@ class DerivedVerdictTest(unittest.TestCase):
     def setUp(self) -> None:
         digest = "d" * 64
         self.report = {
+            "repository": {
+                phase: {
+                    "ok": True,
+                    "head": digest[:40],
+                    "tree": digest[:40],
+                    "dirty_entries": [],
+                    "source_root_matches": True,
+                }
+                for phase in ("before", "after")
+            },
             "artifacts": {
                 "wheel": {"sha256": digest, "entries": ["package.py"]},
                 "sdist": {"sha256": digest, "entries": ["root/package.py"]},
@@ -257,10 +319,24 @@ class DerivedVerdictTest(unittest.TestCase):
                 for path in REQUIRED_RUNTIME_FILES
             ],
             "dependencies": {
-                source: sorted(EXPECTED_DIRECT_DISTRIBUTIONS)
-                for source in ("expected", "declared", "lock", "metadata", "notices")
+                "expected": sorted(EXPECTED_DIRECT_DISTRIBUTIONS),
+                "expected_project": sorted(EXPECTED_PROJECT_DISTRIBUTIONS),
+                "expected_build": sorted(EXPECTED_BUILD_DISTRIBUTIONS),
+                "declared": sorted(EXPECTED_PROJECT_DISTRIBUTIONS),
+                "build_system": sorted(EXPECTED_BUILD_DISTRIBUTIONS),
+                "lock": sorted(EXPECTED_PROJECT_DISTRIBUTIONS),
+                "metadata": sorted(EXPECTED_PROJECT_DISTRIBUTIONS),
+                "notices": sorted(EXPECTED_DIRECT_DISTRIBUTIONS),
             },
-            "install_smoke": {"attempted": False},
+            "install_smoke": {
+                "attempted": True,
+                "returncode": 0,
+                "payload": {
+                    "license_expression": EXPECTED_LICENSE_EXPRESSION,
+                    "runtime_data_loaded": True,
+                    "target_runtime_data_loaded": True,
+                },
+            },
             "secret_scan": {"findings": []},
         }
 
@@ -303,6 +379,24 @@ class DerivedVerdictTest(unittest.TestCase):
 
         self.assertIn("dependency_notice_drift", codes)
         self.assertIn("secret_or_private_config_detected", codes)
+
+    def test_rejects_dirty_repository_and_skipped_install_smoke(self) -> None:
+        report = dict(self.report)
+        repository = {
+            phase: dict(value)
+            for phase, value in self.report["repository"].items()
+        }
+        repository["before"]["ok"] = False
+        repository["before"]["dirty_entries"] = [" M README.md"]
+        report["repository"] = repository
+        report["install_smoke"] = {"attempted": False}
+
+        codes = {
+            str(item["code"]) for item in distribution_report_blockers(report)
+        }
+
+        self.assertIn("repository_not_clean_commit", codes)
+        self.assertIn("isolated_install_not_attempted", codes)
 
     def test_rejects_wheel_only_and_sdist_only_runtime_data(self) -> None:
         for missing_key in ("wheel_present", "sdist_present"):

@@ -50,6 +50,7 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Callable, Final, Protocol, runtime_checkable
 from urllib.parse import parse_qs, urlsplit
 from weakref import WeakValueDictionary
@@ -100,7 +101,7 @@ from starcraft_commander.policy_modulation import (
     reject_raw_policy_control_keys,
 )
 from starcraft_commander.runtime_deps import MissingLLMDependencyError
-from starcraft_commander.runtime_data import micromachine_data_root
+from starcraft_commander.runtime_data import source_repository_root
 from starcraft_commander.state_resolver import (
     DEFAULT_SC2_STATE_RESOLVER,
     SC2StateResolverInterface,
@@ -119,8 +120,11 @@ WEB_GUI_TOKEN_HEADER: Final[str] = "X-voiStarcraft2-Token"
 DEFAULT_WEB_GUI_PORT: Final[int] = 8350
 """Default web GUI port; ``0`` requests an ephemeral port (used by tests)."""
 
-_REPO_ROOT: Final[str] = str(micromachine_data_root().parents[1])
-"""Repository root resolved from this module, independent of process cwd."""
+_SOURCE_REPOSITORY_ROOT: Final[Path | None] = source_repository_root()
+_REPO_ROOT: Final[str] = (
+    str(_SOURCE_REPOSITORY_ROOT) if _SOURCE_REPOSITORY_ROOT is not None else ""
+)
+"""Source checkout root; empty for installed-wheel execution."""
 
 
 def _default_sc2_install_path() -> str:
@@ -7971,14 +7975,19 @@ class _MicroMachineLaunchManager:
             _MicroMachineTelemetryFileIdentity | None
         ) = None
         self._runtime_instance_id = ""
-        self._cwd = cwd.strip() or _REPO_ROOT
+        self._cwd = cwd.strip() or _REPO_ROOT or os.getcwd()
         candidate_script = script_path.strip()
         if candidate_script and not os.path.isabs(candidate_script):
             candidate_script = os.path.join(self._cwd, candidate_script)
-        self._script_path = candidate_script or os.path.join(
-            _REPO_ROOT,
-            _MICROMACHINE_SMOKE_SCRIPT_RELATIVE_PATH,
+        self._script_path = candidate_script or (
+            os.path.join(
+                _REPO_ROOT,
+                _MICROMACHINE_SMOKE_SCRIPT_RELATIVE_PATH,
+            )
+            if _REPO_ROOT
+            else ""
         )
+        self._launch_available = bool(self._script_path)
 
     def start(
         self,
@@ -8014,6 +8023,13 @@ class _MicroMachineLaunchManager:
             self._status = "starting"
             self._error = ""
             self._last_line = ""
+            if not self._launch_available:
+                self._status = "blocked"
+                self._error = (
+                    "MicroMachine launch is available only from a source "
+                    "checkout with Git provenance."
+                )
+                return self._snapshot_unlocked()
             if not os.path.isfile(self._script_path):
                 self._status = "failed"
                 self._error = (
@@ -8189,7 +8205,7 @@ class _MicroMachineLaunchManager:
             runtime_attached and telemetry_snapshot.current_for_process
         )
         return {
-            "enabled": True,
+            "enabled": self._launch_available,
             "mode": COMMAND_MODE_MICROMACHINE,
             "status": self._status,
             "pid": process.pid if runtime_attached else None,
@@ -16000,12 +16016,12 @@ function selectedLlmChoice() {
   if (!selectedProvider) {
     throw new Error("LLM provider is not selected.");
   }
-  if (!modelSelect || !modelSelect.value) {
+  if (!modelSelect || (!modelSelect.value && selectedProvider.value !== "myproxy")) {
     throw new Error("LLM model is not selected.");
   }
   return {
     provider: selectedProvider.value || "openai",
-    model: modelSelect.value
+    model: modelSelect.value || ""
   };
 }
 

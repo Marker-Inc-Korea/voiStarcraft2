@@ -41,7 +41,7 @@ REQUIRED_RUNTIME_FILES: Final[tuple[str, ...]] = (
     "PRE_LIVE_JOURNEYS.json",
     "PRE_LIVE_PRODUCERS.json",
 )
-EXPECTED_DIRECT_DISTRIBUTIONS: Final[frozenset[str]] = frozenset(
+EXPECTED_PROJECT_DISTRIBUTIONS: Final[frozenset[str]] = frozenset(
     {
         "anthropic",
         "build",
@@ -51,6 +51,10 @@ EXPECTED_DIRECT_DISTRIBUTIONS: Final[frozenset[str]] = frozenset(
         "pytest",
         "sounddevice",
     }
+)
+EXPECTED_BUILD_DISTRIBUTIONS: Final[frozenset[str]] = frozenset({"setuptools"})
+EXPECTED_DIRECT_DISTRIBUTIONS: Final[frozenset[str]] = (
+    EXPECTED_PROJECT_DISTRIBUTIONS | EXPECTED_BUILD_DISTRIBUTIONS
 )
 MAX_ARCHIVE_ENTRIES: Final[int] = 4096
 MAX_ARCHIVE_MEMBER_BYTES: Final[int] = 64 * 1024 * 1024
@@ -99,15 +103,14 @@ _REQUIREMENT_NAME_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*([A-Za-z0-9][A-Za-z0-9_.-]*)"
 )
 _PRIVATE_MODEL_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?i)(?:myproxy.{0,100}model|DEFAULT_MYPROXY_MODEL|VOI_MYPROXY_MODEL)"
-    r"[^\n]{0,80}[\"']((?:gpt|claude|gemini|grok)-[A-Za-z0-9_.-]+)[\"']"
+    r"(?im)^\s*(?:export\s+)?[\"']?"
+    r"(?:DEFAULT_MYPROXY_MODEL|VOI_MYPROXY_MODEL)[\"']?"
+    r"\s*(?:(?::[^=\n]+)?=|:)\s*[\"']([^\"'\n]+)[\"']"
 )
 _PRIVATE_ENDPOINT_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?i)(?:myproxy|proxy)[^\n]{0,120}"
-    r"(https?://(?:localhost|127(?:\.\d{1,3}){3}|10(?:\.\d{1,3}){3}|"
-    r"192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])"
-    r"(?:\.\d{1,3}){2}|[^/\s\"']*nomadamas[^/\s\"']*)"
-    r"(?::\d+)?(?:/[^\s\"']*)?)"
+    r"(?im)^\s*(?:export\s+)?[\"']?"
+    r"(?:MYPROXY_OPENAI_BASE_URL|VOI_MYPROXY_OPENAI_BASE_URL)[\"']?"
+    r"\s*(?:(?::[^=\n]+)?=|:)\s*[\"']([^\"'\n]+)[\"']"
 )
 _API_KEY_RE: Final[re.Pattern[str]] = re.compile(
     r"\b("
@@ -478,6 +481,12 @@ def scan_payload(
     for rule_id, pattern in rules:
         for match in pattern.finditer(text):
             matched = match.group(0)
+            captured = match.group(1).strip() if match.lastindex else ""
+            if (
+                rule_id == "private_model_override"
+                and captured == "configured-locally"
+            ):
+                continue
             if allow_safe_fixtures and _safe_fixture_match(
                 normalized_path,
                 rule_id,
@@ -588,12 +597,24 @@ def build_distribution_report(
     dist_dir = dist_dir.resolve()
     dist_dir.mkdir(parents=True, exist_ok=True)
     try:
+        repository_before = repository_state_evidence(
+            repository_root,
+            source_root,
+        )
         _build_distributions(source_root, dist_dir)
+        repository_after = repository_state_evidence(
+            repository_root,
+            source_root,
+        )
         wheel_paths = sorted(dist_dir.glob("*.whl"))
         sdist_paths = sorted(dist_dir.glob("*.tar.gz"))
         if len(wheel_paths) != 1 or len(sdist_paths) != 1:
             report: dict[str, object] = {
                 "schema_version": DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION,
+                "repository": {
+                    "before": repository_before,
+                    "after": repository_after,
+                },
                 "artifacts": {
                     "wheel_count": len(wheel_paths),
                     "sdist_count": len(sdist_paths),
@@ -628,6 +649,11 @@ def build_distribution_report(
                 (source_root / "pyproject.toml").read_text(encoding="utf-8")
             )
         )
+        build_dependencies = sorted(
+            build_dependencies_from_pyproject(
+                (source_root / "pyproject.toml").read_text(encoding="utf-8")
+            )
+        )
         lock_dependencies = sorted(
             direct_dependencies_from_uv_lock(
                 (source_root / "uv.lock").read_text(encoding="utf-8")
@@ -642,6 +668,7 @@ def build_distribution_report(
         )
         licenses = _license_evidence(source_root, wheel, sdist)
         runtime_data = _runtime_data_evidence(source_root, wheel, sdist)
+        expected_payloads = expected_archive_payloads(source_root)
         install_smoke = (
             isolated_wheel_install_smoke(wheel.path)
             if run_install_smoke
@@ -649,6 +676,10 @@ def build_distribution_report(
         )
         report = {
             "schema_version": DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION,
+            "repository": {
+                "before": repository_before,
+                "after": repository_after,
+            },
             "artifacts": {
                 "wheel": _artifact_evidence(wheel),
                 "sdist": _artifact_evidence(sdist),
@@ -658,7 +689,19 @@ def build_distribution_report(
                 *sdist.blockers,
                 *archive_content_blockers(wheel),
                 *archive_content_blockers(sdist),
+                *archive_manifest_blockers(
+                    wheel,
+                    expected_payloads["wheel"],
+                ),
+                *archive_manifest_blockers(
+                    sdist,
+                    expected_payloads["sdist"],
+                ),
             ],
+            "archive_manifests": {
+                kind: sorted(paths)
+                for kind, paths in expected_payloads.items()
+            },
             "metadata": {
                 "entry": metadata_entry,
                 "license_expressions": license_expressions,
@@ -672,7 +715,10 @@ def build_distribution_report(
             "runtime_data": runtime_data,
             "dependencies": {
                 "expected": sorted(EXPECTED_DIRECT_DISTRIBUTIONS),
+                "expected_project": sorted(EXPECTED_PROJECT_DISTRIBUTIONS),
+                "expected_build": sorted(EXPECTED_BUILD_DISTRIBUTIONS),
                 "declared": declared_dependencies,
+                "build_system": build_dependencies,
                 "lock": lock_dependencies,
                 "metadata": metadata_dependencies,
                 "notices": notice_dependencies,
@@ -704,6 +750,20 @@ def distribution_report_blockers(
     """Derive the verdict from raw evidence, never caller-provided booleans."""
 
     blockers: list[dict[str, object]] = []
+    repository = _mapping(report.get("repository"))
+    for phase in ("before", "after"):
+        state = _mapping(repository.get(phase))
+        if state.get("ok") is not True:
+            blockers.append(
+                {
+                    "code": "repository_not_clean_commit",
+                    "phase": phase,
+                    "head": state.get("head"),
+                    "tree": state.get("tree"),
+                    "dirty_entries": state.get("dirty_entries"),
+                    "source_root_matches": state.get("source_root_matches"),
+                }
+            )
     archive_blockers = report.get("archive_blockers")
     if isinstance(archive_blockers, Sequence) and not isinstance(
         archive_blockers,
@@ -784,19 +844,33 @@ def distribution_report_blockers(
             )
     dependencies = _mapping(report.get("dependencies"))
     expected = sorted(EXPECTED_DIRECT_DISTRIBUTIONS)
-    for source_name in ("expected", "declared", "lock", "metadata", "notices"):
+    project_expected = sorted(EXPECTED_PROJECT_DISTRIBUTIONS)
+    build_expected = sorted(EXPECTED_BUILD_DISTRIBUTIONS)
+    dependency_expectations = {
+        "expected": expected,
+        "expected_project": project_expected,
+        "expected_build": build_expected,
+        "declared": project_expected,
+        "build_system": build_expected,
+        "lock": project_expected,
+        "metadata": project_expected,
+        "notices": expected,
+    }
+    for source_name, source_expected in dependency_expectations.items():
         observed = dependencies.get(source_name)
-        if observed != expected:
+        if observed != source_expected:
             blockers.append(
                 {
                     "code": "dependency_notice_drift",
                     "source": source_name,
                     "observed": observed,
-                    "expected": expected,
+                    "expected": source_expected,
                 }
             )
     install_smoke = _mapping(report.get("install_smoke"))
-    if install_smoke.get("attempted") is not False:
+    if install_smoke.get("attempted") is not True:
+        blockers.append({"code": "isolated_install_not_attempted"})
+    else:
         payload = _mapping(install_smoke.get("payload"))
         if install_smoke.get("returncode") != 0:
             blockers.append(
@@ -814,6 +888,8 @@ def distribution_report_blockers(
             )
         if payload.get("runtime_data_loaded") is not True:
             blockers.append({"code": "installed_runtime_data_failed"})
+        if payload.get("target_runtime_data_loaded") is not True:
+            blockers.append({"code": "target_install_runtime_data_failed"})
     secret_scan = _mapping(report.get("secret_scan"))
     findings = secret_scan.get("findings")
     if isinstance(findings, list) and findings:
@@ -995,10 +1071,76 @@ def isolated_wheel_install_smoke(wheel_path: Path) -> dict[str, object]:
                     payload = json.loads(result.stdout)
                 except json.JSONDecodeError:
                     payload = {}
+            normalized_payload = (
+                dict(payload) if isinstance(payload, Mapping) else {}
+            )
+            target_root = Path(temporary) / "target"
+            failure_stage = "install_wheel_target"
+            target_install = subprocess.run(
+                [
+                    str(python_path),
+                    "-m",
+                    "pip",
+                    "install",
+                    "--disable-pip-version-check",
+                    "--no-deps",
+                    "--no-index",
+                    "--target",
+                    str(target_root),
+                    str(wheel_path),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            if target_install.returncode == 0:
+                failure_stage = "load_target_package"
+                target_script = (
+                    "import json,sys\n"
+                    "from pathlib import Path\n"
+                    "target = Path(sys.argv[1]).resolve()\n"
+                    "sys.path.insert(0, str(target))\n"
+                    "from starcraft_commander.runtime_data import "
+                    "micromachine_data_path, micromachine_data_root\n"
+                    "required = ['HOOK_MANIFEST.json', "
+                    "'MICROMACHINE_MAP_POOL.json', 'PRE_LIVE_JOURNEYS.json', "
+                    "'PRE_LIVE_PRODUCERS.json']\n"
+                    "root = micromachine_data_root().resolve()\n"
+                    "loaded = all(micromachine_data_path(name).is_file() "
+                    "for name in required) and target in root.parents\n"
+                    "print(json.dumps({'loaded': loaded}, sort_keys=True))\n"
+                )
+                target_result = subprocess.run(
+                    [
+                        str(python_path),
+                        "-I",
+                        "-c",
+                        target_script,
+                        str(target_root),
+                    ],
+                    cwd=temporary,
+                    env=environment,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                )
+                try:
+                    target_payload = json.loads(target_result.stdout)
+                except json.JSONDecodeError:
+                    target_payload = {}
+                normalized_payload["target_runtime_data_loaded"] = bool(
+                    target_result.returncode == 0
+                    and isinstance(target_payload, Mapping)
+                    and target_payload.get("loaded") is True
+                )
+            else:
+                normalized_payload["target_runtime_data_loaded"] = False
             return {
                 "attempted": True,
                 "returncode": result.returncode,
-                "payload": payload if isinstance(payload, Mapping) else {},
+                "payload": normalized_payload,
                 "stderr_fingerprint": (
                     sha256_bytes(result.stderr.encode("utf-8", errors="replace"))
                     if result.stderr
@@ -1045,6 +1187,32 @@ def declared_dependencies_from_pyproject(text: str) -> frozenset[str]:
     return frozenset(
         name
         for requirement in requirements
+        if (name := normalized_dependency_name(requirement))
+    )
+
+
+def build_dependencies_from_pyproject(text: str) -> frozenset[str]:
+    """Extract direct build backend requirements from project TOML."""
+
+    sanitized = "\n".join(
+        _strip_toml_line_comment(line) for line in text.splitlines()
+    )
+    match = re.search(
+        r"(?ms)^\[build-system\]\s*$"
+        r"(.*?)(?=^\[[^\n]+\]\s*$|\Z)",
+        sanitized,
+    )
+    if match is None:
+        return frozenset()
+    requires = re.search(
+        r"(?ms)^\s*requires\s*=\s*\[(.*?)\]",
+        match.group(1),
+    )
+    if requires is None:
+        return frozenset()
+    return frozenset(
+        name
+        for requirement in re.findall(r"[\"']([^\"']+)[\"']", requires.group(1))
         if (name := normalized_dependency_name(requirement))
     )
 
@@ -1189,6 +1357,13 @@ def _allowed_integration_path(path: PurePosixPath) -> bool:
 def _allowed_wheel_path(path: PurePosixPath) -> bool:
     if path.parts and path.parts[0] in PRODUCT_PACKAGE_ROOTS:
         return path.suffix == ".py"
+    if path.as_posix() in {
+        "integrations/__init__.py",
+        "integrations/micromachine/__init__.py",
+    }:
+        return True
+    if _allowed_integration_path(path):
+        return True
     if len(path.parts) >= 2 and path.parts[0].endswith(".dist-info"):
         tail = PurePosixPath(*path.parts[1:]).as_posix()
         if tail in _DIST_INFO_FILES:
@@ -1198,19 +1373,6 @@ def _allowed_wheel_path(path: PurePosixPath) -> bool:
             "licenses/LICENSES/AGPL-3.0-or-later.txt",
             "licenses/THIRD_PARTY_NOTICES.md",
         }
-    marker = (
-        "data",
-        "share",
-        "voiStarcraft2",
-        "integrations",
-        "micromachine",
-    )
-    if len(path.parts) >= 7 and path.parts[0].endswith(".data"):
-        if path.parts[1:6] != marker:
-            return False
-        return _allowed_integration_path(
-            PurePosixPath("integrations", "micromachine", *path.parts[6:])
-        )
     return False
 
 
@@ -1221,9 +1383,75 @@ def _allowed_sdist_path(path: PurePosixPath) -> bool:
         return True
     if path.parts and path.parts[0] in PRODUCT_PACKAGE_ROOTS:
         return path.suffix == ".py"
+    if path.as_posix() in {
+        "integrations/__init__.py",
+        "integrations/micromachine/__init__.py",
+    }:
+        return True
     if path.parts and path.parts[0].lower().endswith(".egg-info"):
         return len(path.parts) == 2 and path.parts[1] in _EGG_INFO_FILES
     return _allowed_integration_path(path)
+
+
+def expected_archive_payloads(
+    source_root: Path,
+) -> dict[str, frozenset[str]]:
+    """Return source-derived payload manifests independent of built archives."""
+
+    payloads: set[str] = set()
+    for package_root in sorted(PRODUCT_PACKAGE_ROOTS):
+        for path in sorted((source_root / package_root).rglob("*.py")):
+            if path.is_file():
+                payloads.add(path.relative_to(source_root).as_posix())
+    for relative in (
+        Path("integrations/__init__.py"),
+        Path("integrations/micromachine/__init__.py"),
+    ):
+        if (source_root / relative).is_file():
+            payloads.add(relative.as_posix())
+    integration_root = source_root / "integrations" / "micromachine"
+    for path in sorted(integration_root.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(source_root)
+        if _allowed_integration_path(PurePosixPath(relative.as_posix())):
+            payloads.add(relative.as_posix())
+    sdist_payloads = set(payloads)
+    sdist_payloads.update(
+        {
+            "LICENSE",
+            "LICENSES/AGPL-3.0-or-later.txt",
+            "MANIFEST.in",
+            "README.md",
+            "THIRD_PARTY_NOTICES.md",
+            "pyproject.toml",
+        }
+    )
+    return {
+        "wheel": frozenset(payloads),
+        "sdist": frozenset(sdist_payloads),
+    }
+
+
+def archive_manifest_blockers(
+    snapshot: ArchiveSnapshot,
+    expected_paths: Iterable[str],
+) -> list[dict[str, object]]:
+    """Return blockers for source payloads omitted from an archive."""
+
+    observed = {
+        relative.as_posix()
+        for entry in snapshot.files
+        if (relative := _archive_relative_path(snapshot.kind, entry)) is not None
+    }
+    return [
+        {
+            "code": "missing_archive_entry",
+            "kind": snapshot.kind,
+            "entry": expected,
+        }
+        for expected in sorted(set(expected_paths) - observed)
+    ]
 
 
 def _safe_fixture_match(path: str, rule_id: str, matched: str) -> bool:
@@ -1258,6 +1486,56 @@ def _git_output(repository_root: Path, arguments: Sequence[str]) -> bytes:
     if len(result.stdout) > MAX_GIT_OUTPUT_BYTES:
         raise RuntimeError("git output exceeds compliance scan limit")
     return result.stdout
+
+
+def repository_state_evidence(
+    repository_root: Path,
+    source_root: Path,
+) -> dict[str, object]:
+    """Bind release evidence to one clean Git commit and source root."""
+
+    repository_top = Path(
+        _git_output(repository_root, ["rev-parse", "--show-toplevel"])
+        .decode("utf-8", errors="strict")
+        .strip()
+    ).resolve()
+    source_top = Path(
+        _git_output(source_root, ["rev-parse", "--show-toplevel"])
+        .decode("utf-8", errors="strict")
+        .strip()
+    ).resolve()
+    dirty_entries = (
+        _git_output(
+            repository_root,
+            ["status", "--porcelain=v1", "--untracked-files=all"],
+        )
+        .decode("utf-8", errors="replace")
+        .splitlines()
+    )
+    head = (
+        _git_output(repository_root, ["rev-parse", "HEAD"])
+        .decode("ascii", errors="strict")
+        .strip()
+    )
+    tree = (
+        _git_output(repository_root, ["rev-parse", "HEAD^{tree}"])
+        .decode("ascii", errors="strict")
+        .strip()
+    )
+    source_root_matches = (
+        repository_top == repository_root.resolve()
+        and source_top == repository_top
+        and source_root.resolve() == repository_top
+    )
+    return {
+        "repository_root": str(repository_top),
+        "source_root": str(source_root.resolve()),
+        "source_root_matches": source_root_matches,
+        "head": head,
+        "tree": tree,
+        "dirty_entries": dirty_entries,
+        "ok": source_root_matches and not dirty_entries,
+    }
 
 
 def _added_diff_payload(diff: bytes) -> bytes:
@@ -1367,7 +1645,7 @@ def _runtime_data_evidence(
             source_root / "integrations" / "micromachine" / relative
         ).read_bytes()
         wheel_suffix = (
-            "/share/voiStarcraft2/integrations/micromachine/" + relative
+            "integrations/micromachine/" + relative
         )
         _, wheel_payload = _single_file_with_suffix(wheel.files, wheel_suffix)
         _, sdist_payload = _single_file_with_suffix(

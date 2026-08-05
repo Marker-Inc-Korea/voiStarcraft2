@@ -26,7 +26,7 @@ jobs:
       - name: Set up Python
         run: uv python install ${{ matrix.python-version }}
       - name: Install package
-        run: uv sync --python ${{ matrix.python-version }} --extra dev --extra llm
+        run: uv sync --locked --python ${{ matrix.python-version }} --extra dev --extra llm
       - name: Run tests
         run: uv run --python ${{ matrix.python-version }} pytest -q
       - name: Check soak scripts
@@ -52,7 +52,9 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
       - name: Install build dependencies
-        run: uv sync --python 3.12 --extra dev
+        run: uv sync --locked --python 3.12 --extra dev
+      - name: Verify clean release source
+        run: test -z "$(git status --porcelain=v1 --untracked-files=all)"
       - name: Build and verify release artifacts
         run: |
           uv run --python 3.12 python -m \
@@ -61,6 +63,8 @@ jobs:
             --source-root . \
             --dist-dir dist \
             --output-dir distribution-compliance-evidence
+      - name: Verify release source remained clean
+        run: test -z "$(git status --porcelain=v1 --untracked-files=all)"
       - name: Upload compliance evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

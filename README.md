@@ -694,6 +694,11 @@ python -m starcraft_commander.distribution_compliance \
 The gate verifies the exact package allowlist, installed license expression,
 license and third-party notice files, runtime manifests, dependency notices,
 isolated wheel loading, and redacted secret/private-configuration scan results.
+Qualification requires a clean Git checkout before and after the build and
+records the exact HEAD and tree identities. `--skip-install-smoke` is
+diagnostic-only and always produces a non-qualifying report. Installed wheels
+provide relocatable read-only MicroMachine assets; launching the provenance-
+bound local MicroMachine runtime remains available only from a source checkout.
 The separate commercial license applies only to voiStarcraft2 copyrights. It
 does not replace or waive MicroMachine, s2client-api, Python dependency, or
 other third-party license and attribution obligations.

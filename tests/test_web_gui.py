@@ -10016,6 +10016,17 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             )
             self.assertFalse(launcher._script_path.startswith(directory))  # noqa: SLF001
 
+    def test_installed_wheel_disables_source_provenance_launcher(self):
+        with mock.patch.object(web_gui, "_REPO_ROOT", ""):
+            launcher = web_gui._MicroMachineLaunchManager()
+            snapshot = launcher.snapshot()
+            started = launcher.start()
+
+        self.assertFalse(snapshot["enabled"])
+        self.assertFalse(started["enabled"])
+        self.assertEqual("blocked", started["status"])
+        self.assertIn("source checkout", started["error"])
+
     def test_micromachine_smoke_cli_rejects_enemy_difficulty_outside_1_to_10(self):
         script = os.path.join(
             web_gui._REPO_ROOT,  # noqa: SLF001 - repo-local smoke CLI contract.
@@ -27253,6 +27264,7 @@ assert(evidenceText.length <= 1350, "briefing evidence is bounded: " + evidenceT
         harness = r"""
 var radios = [
   { value: "openai", checked: true },
+  { value: "myproxy", checked: false },
   { value: "anthropic", checked: false },
   { value: "gemini", checked: false },
   { value: "grok", checked: false }
@@ -27267,6 +27279,7 @@ var modelSelect = {
   },
   set innerHTML(value) {
     this.children = [];
+    this.value = "";
   },
   get innerHTML() {
     return "";
@@ -27324,6 +27337,10 @@ assert.strictEqual(selectedProviderValue(), "grok");
 assert(modelValues().includes("grok-4.3"));
 assert(!modelValues().includes("gemini-3.5-flash"));
 assert.strictEqual(modelSelect.value, "grok-4.3");
+handleProviderChoiceChange("myproxy");
+assert.strictEqual(selectedProviderValue(), "myproxy");
+assert.deepStrictEqual(modelValues(), [""]);
+assert.deepStrictEqual(selectedLlmChoice(), { provider: "myproxy", model: "" });
 """
         with tempfile.NamedTemporaryFile("w", suffix=".js") as script_file:
             script_file.write(harness)
