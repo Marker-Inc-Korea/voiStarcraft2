@@ -206,6 +206,7 @@ class ArchiveSnapshot:
     entries: tuple[str, ...]
     files: Mapping[str, bytes]
     blockers: tuple[Mapping[str, object], ...]
+    directories: tuple[str, ...] = ()
 
 
 def canonical_json_text(value: object) -> str:
@@ -237,6 +238,7 @@ def inspect_wheel(path: Path) -> ArchiveSnapshot:
 
     blockers: list[dict[str, object]] = []
     files: dict[str, bytes] = {}
+    directories: list[str] = []
     entries: list[str] = []
     total_bytes = 0
     with zipfile.ZipFile(path) as archive:
@@ -277,6 +279,7 @@ def inspect_wheel(path: Path) -> ArchiveSnapshot:
                 continue
             seen.add(canonical_name)
             if info.is_dir():
+                directories.append(name)
                 continue
             mode = (info.external_attr >> 16) & 0o170000
             if mode == stat.S_IFLNK:
@@ -327,6 +330,7 @@ def inspect_wheel(path: Path) -> ArchiveSnapshot:
         entries=tuple(sorted(entries)),
         files=files,
         blockers=tuple(blockers),
+        directories=tuple(sorted(directories)),
     )
 
 
@@ -335,6 +339,7 @@ def inspect_sdist(path: Path) -> ArchiveSnapshot:
 
     blockers: list[dict[str, object]] = []
     files: dict[str, bytes] = {}
+    directories: list[str] = []
     entries: list[str] = []
     total_bytes = 0
     expected_root = _expected_sdist_root(path)
@@ -399,6 +404,7 @@ def inspect_sdist(path: Path) -> ArchiveSnapshot:
                 continue
             seen.add(canonical_name)
             if member.isdir():
+                directories.append(name)
                 continue
             if member.issym() or member.islnk():
                 blockers.append(
@@ -458,6 +464,7 @@ def inspect_sdist(path: Path) -> ArchiveSnapshot:
         entries=tuple(sorted(entries)),
         files=files,
         blockers=tuple(blockers),
+        directories=tuple(sorted(directories)),
     )
 
 
@@ -919,28 +926,51 @@ def distribution_report_blockers(
                 {"code": "invalid_archive_manifest_evidence", "kind": kind}
             )
         file_manifest = _sha256_manifest(artifact.get("file_manifest"))
+        directory_entries = artifact.get("directory_entries")
         if (
             not isinstance(filename, str)
             or not filename
             or file_manifest is None
+            or not isinstance(directory_entries, list)
+            or any(not isinstance(entry, str) for entry in directory_entries)
         ):
             blockers.append(
                 {"code": "invalid_artifact_file_manifest", "kind": kind}
             )
             continue
-        blockers.extend(
-            _archive_entry_evidence_blockers(
-                kind,
-                Path(filename),
-                entries if isinstance(entries, list) else [],
-            )
+        entry_names = (
+            [entry for entry in entries if isinstance(entry, str)]
+            if isinstance(entries, list)
+            else []
         )
-        if isinstance(entries, list) and not set(file_manifest).issubset(
-            {entry for entry in entries if isinstance(entry, str)}
+        if (
+            set(file_manifest) & set(directory_entries)
+            or set(file_manifest) | set(directory_entries) != set(entry_names)
+            or len(file_manifest) + len(directory_entries) != len(entry_names)
         ):
             blockers.append(
                 {"code": "artifact_entry_manifest_mismatch", "kind": kind}
             )
+        required_generated = _required_generated_archive_files(
+            kind,
+            Path(filename),
+        )
+        missing_generated = sorted(required_generated - set(file_manifest))
+        if missing_generated:
+            blockers.append(
+                {
+                    "code": "missing_generated_archive_evidence",
+                    "kind": kind,
+                    "entries": missing_generated,
+                }
+            )
+        blockers.extend(
+            _archive_entry_evidence_blockers(
+                kind,
+                Path(filename),
+                entry_names,
+            )
+        )
         snapshot = ArchiveSnapshot(
             kind=kind,
             path=Path(filename),
@@ -1926,6 +1956,35 @@ def _generated_archive_path(
     )
 
 
+def _required_generated_archive_files(
+    kind: str,
+    archive_path: Path,
+) -> frozenset[str]:
+    if kind == "wheel":
+        root = _expected_wheel_dist_info_root(archive_path)
+        if not root:
+            return frozenset()
+        return frozenset(
+            {
+                *(f"{root}/{name}" for name in _DIST_INFO_FILES),
+                f"{root}/licenses/LICENSE",
+                f"{root}/licenses/LICENSES/AGPL-3.0-or-later.txt",
+                f"{root}/licenses/THIRD_PARTY_NOTICES.md",
+            }
+        )
+    root = _expected_sdist_root(archive_path)
+    if not root:
+        return frozenset()
+    egg_info_root = f"{root}/{EXPECTED_PROJECT_NAME}.egg-info"
+    return frozenset(
+        {
+            f"{root}/PKG-INFO",
+            f"{root}/setup.cfg",
+            *(f"{egg_info_root}/{name}" for name in _EGG_INFO_FILES),
+        }
+    )
+
+
 def _sha256_manifest(value: object) -> dict[str, str] | None:
     if not isinstance(value, Mapping) or not value:
         return None
@@ -2101,6 +2160,7 @@ def _artifact_evidence(snapshot: ArchiveSnapshot) -> dict[str, object]:
             entry: sha256_bytes(payload)
             for entry, payload in sorted(snapshot.files.items())
         },
+        "directory_entries": list(snapshot.directories),
     }
 
 

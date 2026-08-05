@@ -491,6 +491,42 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
 class DerivedVerdictTest(unittest.TestCase):
     def setUp(self) -> None:
         digest = "d" * 64
+        wheel_root = "voistarcraft2-0.1.0.dist-info"
+        wheel_generated = {
+            *(f"{wheel_root}/{name}" for name in ("METADATA", "RECORD", "WHEEL")),
+            f"{wheel_root}/top_level.txt",
+            f"{wheel_root}/licenses/LICENSE",
+            f"{wheel_root}/licenses/LICENSES/AGPL-3.0-or-later.txt",
+            f"{wheel_root}/licenses/THIRD_PARTY_NOTICES.md",
+        }
+        wheel_file_manifest = {
+            "starcraft_commander/runtime_data.py": digest,
+            **{entry: digest for entry in wheel_generated},
+        }
+        sdist_root = "voistarcraft2-0.1.0"
+        sdist_egg_info = f"{sdist_root}/voiStarcraft2.egg-info"
+        sdist_generated = {
+            f"{sdist_root}/PKG-INFO",
+            f"{sdist_root}/setup.cfg",
+            *(
+                f"{sdist_egg_info}/{name}"
+                for name in (
+                    "PKG-INFO",
+                    "SOURCES.txt",
+                    "dependency_links.txt",
+                    "requires.txt",
+                    "top_level.txt",
+                )
+            ),
+        }
+        sdist_source = (
+            f"{sdist_root}/starcraft_commander/runtime_data.py"
+        )
+        sdist_file_manifest = {
+            sdist_source: digest,
+            **{entry: digest for entry in sdist_generated},
+        }
+        sdist_directories = [sdist_root, sdist_egg_info]
         self.report = {
             "repository": {
                 phase: {
@@ -508,28 +544,23 @@ class DerivedVerdictTest(unittest.TestCase):
                 "wheel": {
                     "filename": "voistarcraft2-0.1.0-py3-none-any.whl",
                     "sha256": digest,
-                    "entry_count": 1,
-                    "entries": ["starcraft_commander/runtime_data.py"],
-                    "file_manifest": {
-                        "starcraft_commander/runtime_data.py": digest
-                    },
+                    "entry_count": len(wheel_file_manifest),
+                    "entries": list(wheel_file_manifest),
+                    "file_manifest": wheel_file_manifest,
+                    "directory_entries": [],
                 },
                 "sdist": {
                     "filename": "voistarcraft2-0.1.0.tar.gz",
                     "sha256": digest,
-                    "entry_count": 1,
+                    "entry_count": (
+                        len(sdist_file_manifest) + len(sdist_directories)
+                    ),
                     "entries": [
-                        (
-                            "voistarcraft2-0.1.0/"
-                            "starcraft_commander/runtime_data.py"
-                        )
+                        *sdist_file_manifest,
+                        *sdist_directories,
                     ],
-                    "file_manifest": {
-                        (
-                            "voistarcraft2-0.1.0/"
-                            "starcraft_commander/runtime_data.py"
-                        ): digest
-                    },
+                    "file_manifest": sdist_file_manifest,
+                    "directory_entries": sdist_directories,
                 },
             },
             "archive_blockers": [],
@@ -730,6 +761,50 @@ class DerivedVerdictTest(unittest.TestCase):
         }
 
         self.assertIn("archive_payload_mismatch", codes)
+
+    def test_rejects_unmanifested_entries_and_missing_generated_files(
+        self,
+    ) -> None:
+        report = dict(self.report)
+        artifacts = {
+            kind: dict(value)
+            for kind, value in self.report["artifacts"].items()
+        }
+        wheel_entries = list(artifacts["wheel"]["entries"])
+        wheel_entries.append("starcraft_commander/attacker_payload.py")
+        artifacts["wheel"]["entries"] = wheel_entries
+        artifacts["wheel"]["entry_count"] = len(wheel_entries)
+        report["artifacts"] = artifacts
+
+        codes = {
+            str(item["code"]) for item in distribution_report_blockers(report)
+        }
+
+        self.assertIn("artifact_entry_manifest_mismatch", codes)
+
+        missing_generated = {
+            "wheel": "voistarcraft2-0.1.0.dist-info/RECORD",
+            "sdist": "voistarcraft2-0.1.0/PKG-INFO",
+        }
+        for kind, entry in missing_generated.items():
+            with self.subTest(kind=kind):
+                report = dict(self.report)
+                artifacts = {
+                    name: dict(value)
+                    for name, value in self.report["artifacts"].items()
+                }
+                file_manifest = dict(artifacts[kind]["file_manifest"])
+                file_manifest.pop(entry)
+                artifacts[kind]["file_manifest"] = file_manifest
+                report["artifacts"] = artifacts
+
+                codes = {
+                    str(item["code"])
+                    for item in distribution_report_blockers(report)
+                }
+
+                self.assertIn("artifact_entry_manifest_mismatch", codes)
+                self.assertIn("missing_generated_archive_evidence", codes)
 
     def test_rejects_wheel_only_and_sdist_only_runtime_data(self) -> None:
         for missing_key in ("wheel_present", "sdist_present"):
