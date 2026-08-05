@@ -57,6 +57,7 @@ from starcraft_commander.micromachine_terran_capabilities import (
     terran_production_targets,
 )
 from starcraft_commander.policy_modulation import PolicyModulationVector
+from starcraft_commander.runtime_data import micromachine_data_path
 
 
 PRE_LIVE_JOURNEY_SCHEMA_VERSION: Final[int] = 1
@@ -75,7 +76,7 @@ MAX_TACTICAL_RADIO_OUTPUT_BYTES: Final[int] = 256 * 1024
 PINNED_NATIVE_EXEC_ROOT_ENV: Final[str] = "VOI_PINNED_NATIVE_EXEC_ROOT"
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
 DEFAULT_JOURNEY_MANIFEST: Final[Path] = (
-    REPO_ROOT / "integrations" / "micromachine" / "PRE_LIVE_JOURNEYS.json"
+    micromachine_data_path("PRE_LIVE_JOURNEYS.json")
 )
 DETERMINISTIC_ZIP_TIMESTAMP: Final[tuple[int, int, int, int, int, int]] = (
     1980,

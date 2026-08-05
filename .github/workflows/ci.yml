@@ -35,6 +35,41 @@ jobs:
           bash -n integrations/micromachine/scripts/soak_macos_local.sh
           bash -n integrations/micromachine/scripts/soak_matrix_macos_local.sh
 
+  distribution-compliance:
+    needs:
+      - unit-contracts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
+        with:
+          enable-cache: true
+      - name: Set up Python
+        run: uv python install 3.12
+      - name: Install build dependencies
+        run: uv sync --python 3.12 --extra dev
+      - name: Build and verify release artifacts
+        run: |
+          uv run --python 3.12 python -m \
+            starcraft_commander.distribution_compliance \
+            --repository . \
+            --source-root . \
+            --dist-dir dist \
+            --output-dir distribution-compliance-evidence
+      - name: Upload compliance evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: distribution-compliance-evidence
+          path: distribution-compliance-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
   pre-live-candidate-qualification:
     if: >-
       github.event_name == 'pull_request' &&

@@ -11,7 +11,6 @@ dependencies happen to be installed.
 import importlib.util
 import pathlib
 import shutil
-import subprocess
 import sys
 import tarfile
 import tempfile
@@ -20,6 +19,7 @@ import unittest
 import zipfile
 from unittest import mock
 
+from starcraft_commander.distribution_compliance import _build_distributions
 from starcraft_commander.runtime_deps import (
     ANTHROPIC_INSTALL_HINT,
     ANTHROPIC_MODULE_NAME,
@@ -229,6 +229,7 @@ class DistributionLicenseFilesTest(unittest.TestCase):
 
             for filename in (
                 "pyproject.toml",
+                "MANIFEST.in",
                 "README.md",
                 "LICENSE",
                 "THIRD_PARTY_NOTICES.md",
@@ -239,6 +240,7 @@ class DistributionLicenseFilesTest(unittest.TestCase):
                 "toycraft_commander",
                 "starcraft_commander",
                 "broodwar_commander",
+                "integrations",
             ):
                 shutil.copytree(
                     repo_root / directory,
@@ -246,21 +248,7 @@ class DistributionLicenseFilesTest(unittest.TestCase):
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
                 )
 
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "build",
-                    "--outdir",
-                    str(dist_root),
-                    str(source_root),
-                ],
-                cwd=repo_root,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
+            _build_distributions(source_root, dist_root)
 
             wheel_path = next(dist_root.glob("*.whl"))
             with zipfile.ZipFile(wheel_path) as wheel:

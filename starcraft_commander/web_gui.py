@@ -100,6 +100,7 @@ from starcraft_commander.policy_modulation import (
     reject_raw_policy_control_keys,
 )
 from starcraft_commander.runtime_deps import MissingLLMDependencyError
+from starcraft_commander.runtime_data import micromachine_data_root
 from starcraft_commander.state_resolver import (
     DEFAULT_SC2_STATE_RESOLVER,
     SC2StateResolverInterface,
@@ -118,7 +119,7 @@ WEB_GUI_TOKEN_HEADER: Final[str] = "X-voiStarcraft2-Token"
 DEFAULT_WEB_GUI_PORT: Final[int] = 8350
 """Default web GUI port; ``0`` requests an ephemeral port (used by tests)."""
 
-_REPO_ROOT: Final[str] = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_REPO_ROOT: Final[str] = str(micromachine_data_root().parents[1])
 """Repository root resolved from this module, independent of process cwd."""
 
 
@@ -11724,12 +11725,7 @@ var COMMAND_MODE_MICROMACHINE = "__COMMAND_MODE_MICROMACHINE__";
 var COMMAND_MODE_LEGACY_COMMANDER = "__COMMAND_MODE_LEGACY_COMMANDER__";
 var activeCommandMode = COMMAND_MODE_MICROMACHINE;
 var LLM_MODELS = {
-  myproxy: [
-    { value: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
-    { value: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
-    { value: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
-    { value: "gpt-5.5", label: "GPT-5.5" }
-  ],
+  myproxy: [],
   openai: [
     { value: "gpt-5.5", label: "GPT-5.5" },
     { value: "gpt-4.1-mini", label: "GPT-4.1 Mini" },
@@ -16039,8 +16035,17 @@ function handleProviderChoiceChange(provider) {
 function renderModelSelect(provider, selectedModel) {
   var modelSelect = document.getElementById("llm-model-select");
   var models = LLM_MODELS[provider] || LLM_MODELS.openai;
-  if (!modelSelect || !models.length) { return; }
+  if (!modelSelect) { return; }
   modelSelect.innerHTML = "";
+  if (!models.length) {
+    var localOption = document.createElement("option");
+    localOption.value = selectedModel || "";
+    localOption.textContent = selectedModel || "Configured by local environment";
+    localOption.disabled = !selectedModel;
+    localOption.selected = true;
+    modelSelect.appendChild(localOption);
+    return;
+  }
   models.forEach(function (model) {
     var option = document.createElement("option");
     option.value = model.value;

@@ -1,0 +1,18 @@
+include LICENSE
+include MANIFEST.in
+include README.md
+include THIRD_PARTY_NOTICES.md
+include pyproject.toml
+recursive-include LICENSES *.txt
+recursive-include integrations/micromachine *.json *.hpp *.patch *.sh
+prune .codex
+prune .codex-recovery
+prune .github
+prune .ouroboros
+prune docs
+prune tests
+global-exclude .DS_Store
+global-exclude .env
+global-exclude .env.*
+global-exclude *.py[cod]
+global-exclude __pycache__

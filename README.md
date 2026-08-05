@@ -679,6 +679,25 @@ Then issue a parallel command against the same blackboard from the web cockpit
 or the live-session CLI. A pass requires separate operation IDs, non-overlapping
 assigned unit tags, SC2 action submission, and observed movement or engagement.
 
+## Distribution Compliance
+
+Release artifacts are qualified from the built wheel and sdist rather than from
+source-tree claims:
+
+```bash
+python -m starcraft_commander.distribution_compliance \
+  --repository . \
+  --dist-dir dist \
+  --output-dir distribution-compliance-evidence
+```
+
+The gate verifies the exact package allowlist, installed license expression,
+license and third-party notice files, runtime manifests, dependency notices,
+isolated wheel loading, and redacted secret/private-configuration scan results.
+The separate commercial license applies only to voiStarcraft2 copyrights. It
+does not replace or waive MicroMachine, s2client-api, Python dependency, or
+other third-party license and attribution obligations.
+
 ## Project Direction
 
 The project has deliberately moved through four stages:
