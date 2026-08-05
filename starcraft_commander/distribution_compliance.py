@@ -157,9 +157,13 @@ _ENV_KEY_ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(
 _CREDENTIAL_PATH_RE: Final[re.Pattern[str]] = re.compile(
     r"(?i)(?:credential(?:s)?_?(?:file|path)|"
     r"GOOGLE_APPLICATION_CREDENTIALS|AWS_SHARED_CREDENTIALS_FILE)"
-    r"\s*[:=]\s*[\"']"
-    r"([^\n\"']*(?:\.aws/credentials|\.netrc|id_rsa|credentials\.json|"
-    r"[A-Za-z0-9_.-]+\.credentials\.json))[\"']"
+    r"\s*[:=]\s*(?:"
+    r"[\"'][^\"'\n]*(?:\.aws[\\/]credentials|\.netrc|\.pypirc|_netrc|"
+    r"id_(?:rsa|ed25519)|credentials\.json|"
+    r"[A-Za-z0-9_.-]+\.credentials\.json)[^\"'\n]*[\"']|"
+    r"[^\"'\s,#}\n]*(?:\.aws[\\/]credentials|\.netrc|\.pypirc|_netrc|"
+    r"id_(?:rsa|ed25519)|credentials\.json|"
+    r"[A-Za-z0-9_.-]+\.credentials\.json)[^\"'\s,#}\n]*)"
 )
 _SAFE_FIXTURE_RULES: Final[Mapping[str, frozenset[str]]] = {
     "tests/test_llm_interpreter.py": frozenset(
@@ -332,6 +336,15 @@ def inspect_sdist(path: Path) -> ArchiveSnapshot:
     files: dict[str, bytes] = {}
     entries: list[str] = []
     total_bytes = 0
+    expected_root = _expected_sdist_root(path)
+    if not expected_root:
+        blockers.append(
+            {
+                "code": "invalid_sdist_filename",
+                "kind": "sdist",
+                "filename": path.name,
+            }
+        )
     with tarfile.open(path, "r:gz") as archive:
         members = archive.getmembers()
         if len(members) > MAX_ARCHIVE_ENTRIES:
@@ -359,6 +372,21 @@ def inspect_sdist(path: Path) -> ArchiveSnapshot:
                 )
                 continue
             canonical_name = _canonical_archive_name(name)
+            archive_path = PurePosixPath(canonical_name)
+            if (
+                not expected_root
+                or not archive_path.parts
+                or archive_path.parts[0] != expected_root
+            ):
+                blockers.append(
+                    {
+                        "code": "invalid_archive_root",
+                        "kind": "sdist",
+                        "entry": name,
+                        "expected_root": expected_root,
+                    }
+                )
+                continue
             if canonical_name in seen:
                 blockers.append(
                     {
@@ -437,7 +465,22 @@ def archive_content_blockers(snapshot: ArchiveSnapshot) -> list[dict[str, object
 
     blockers: list[dict[str, object]] = []
     for entry in snapshot.files:
-        relative = _archive_relative_path(snapshot.kind, entry)
+        path_error = _archive_path_error(entry)
+        if path_error:
+            blockers.append(
+                {
+                    "code": "unsafe_archive_entry",
+                    "kind": snapshot.kind,
+                    "entry": entry,
+                    "reason": path_error,
+                }
+            )
+            continue
+        relative = _archive_relative_path(
+            snapshot.kind,
+            snapshot.path,
+            entry,
+        )
         if relative is None:
             blockers.append(
                 {
@@ -459,7 +502,7 @@ def archive_content_blockers(snapshot: ArchiveSnapshot) -> list[dict[str, object
             )
             continue
         allowed = (
-            _allowed_wheel_path(relative)
+            _allowed_wheel_path(relative, snapshot.path)
             if snapshot.kind == "wheel"
             else _allowed_sdist_path(relative)
         )
@@ -838,22 +881,83 @@ def distribution_report_blockers(
                 }
             )
     archive_blockers = report.get("archive_blockers")
-    if isinstance(archive_blockers, Sequence) and not isinstance(
-        archive_blockers,
-        (str, bytes, bytearray),
-    ):
+    if not isinstance(archive_blockers, list):
+        blockers.append({"code": "invalid_archive_blocker_evidence"})
+    else:
         for item in archive_blockers:
             if isinstance(item, Mapping):
                 blockers.append(dict(item))
+            else:
+                blockers.append({"code": "invalid_archive_blocker_evidence"})
+    archive_manifests_value = report.get("archive_manifests")
+    archive_manifests = (
+        archive_manifests_value
+        if isinstance(archive_manifests_value, Mapping)
+        else {}
+    )
+    if set(archive_manifests) != {"wheel", "sdist"}:
+        blockers.append({"code": "invalid_archive_manifest_evidence"})
     artifacts = _mapping(report.get("artifacts"))
     for kind in ("wheel", "sdist"):
         artifact = _mapping(artifacts.get(kind))
+        filename = artifact.get("filename")
         digest = artifact.get("sha256")
+        entry_count = artifact.get("entry_count")
         entries = artifact.get("entries")
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             blockers.append({"code": "missing_artifact_digest", "kind": kind})
         if not isinstance(entries, list) or not entries:
             blockers.append({"code": "missing_artifact_entries", "kind": kind})
+        elif type(entry_count) is not int or entry_count != len(entries):
+            blockers.append(
+                {"code": "artifact_entry_count_mismatch", "kind": kind}
+            )
+        expected_manifest = _sha256_manifest(archive_manifests.get(kind))
+        if expected_manifest is None:
+            blockers.append(
+                {"code": "invalid_archive_manifest_evidence", "kind": kind}
+            )
+        file_manifest = _sha256_manifest(artifact.get("file_manifest"))
+        if (
+            not isinstance(filename, str)
+            or not filename
+            or file_manifest is None
+        ):
+            blockers.append(
+                {"code": "invalid_artifact_file_manifest", "kind": kind}
+            )
+            continue
+        blockers.extend(
+            _archive_entry_evidence_blockers(
+                kind,
+                Path(filename),
+                entries if isinstance(entries, list) else [],
+            )
+        )
+        if isinstance(entries, list) and not set(file_manifest).issubset(
+            {entry for entry in entries if isinstance(entry, str)}
+        ):
+            blockers.append(
+                {"code": "artifact_entry_manifest_mismatch", "kind": kind}
+            )
+        snapshot = ArchiveSnapshot(
+            kind=kind,
+            path=Path(filename),
+            digest=str(digest),
+            entries=tuple(),
+            files={entry: b"" for entry in file_manifest},
+            blockers=(),
+        )
+        blockers.extend(archive_content_blockers(snapshot))
+        if expected_manifest is not None:
+            blockers.extend(
+                _archive_manifest_digest_blockers(
+                    kind,
+                    snapshot.path,
+                    file_manifest,
+                    expected_manifest,
+                )
+            )
     metadata = _mapping(report.get("metadata"))
     expressions = metadata.get("license_expressions")
     if expressions != [EXPECTED_LICENSE_EXPRESSION]:
@@ -1421,13 +1525,119 @@ def _canonical_archive_name(name: str) -> str:
     return name[:-1] if name.endswith("/") else name
 
 
-def _archive_relative_path(kind: str, entry: str) -> PurePosixPath | None:
+def _archive_entry_evidence_blockers(
+    kind: str,
+    archive_path: Path,
+    entries: Sequence[object],
+) -> list[dict[str, object]]:
+    blockers: list[dict[str, object]] = []
+    expected_sdist_root = (
+        _expected_sdist_root(archive_path) if kind == "sdist" else ""
+    )
+    if kind == "wheel" and not _expected_wheel_dist_info_root(archive_path):
+        blockers.append(
+            {
+                "code": "invalid_wheel_filename",
+                "filename": archive_path.name,
+            }
+        )
+    if kind == "sdist" and not expected_sdist_root:
+        blockers.append(
+            {
+                "code": "invalid_sdist_filename",
+                "filename": archive_path.name,
+            }
+        )
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, str):
+            blockers.append(
+                {"code": "invalid_artifact_entry_evidence", "kind": kind}
+            )
+            continue
+        path_error = _archive_path_error(entry)
+        if path_error:
+            blockers.append(
+                {
+                    "code": "unsafe_archive_entry",
+                    "kind": kind,
+                    "entry": entry,
+                    "reason": path_error,
+                }
+            )
+            continue
+        canonical_name = _canonical_archive_name(entry)
+        if canonical_name in seen:
+            blockers.append(
+                {
+                    "code": "duplicate_archive_entry",
+                    "kind": kind,
+                    "entry": entry,
+                }
+            )
+            continue
+        seen.add(canonical_name)
+        if kind == "sdist":
+            path = PurePosixPath(canonical_name)
+            if (
+                not expected_sdist_root
+                or not path.parts
+                or path.parts[0] != expected_sdist_root
+            ):
+                blockers.append(
+                    {
+                        "code": "invalid_archive_root",
+                        "kind": kind,
+                        "entry": entry,
+                        "expected_root": expected_sdist_root,
+                    }
+                )
+    return blockers
+
+
+def _archive_relative_path(
+    kind: str,
+    archive_path: Path,
+    entry: str,
+) -> PurePosixPath | None:
     path = PurePosixPath(_canonical_archive_name(entry))
     if kind == "wheel":
         return path
-    if len(path.parts) < 2:
+    expected_root = _expected_sdist_root(archive_path)
+    if (
+        len(path.parts) < 2
+        or not expected_root
+        or path.parts[0] != expected_root
+    ):
         return None
     return PurePosixPath(*path.parts[1:])
+
+
+def _expected_sdist_root(path: Path) -> str:
+    filename = path.name
+    if not filename.endswith(".tar.gz"):
+        return ""
+    root = filename[: -len(".tar.gz")]
+    if not root.startswith(f"{EXPECTED_DISTRIBUTION_NAME}-"):
+        return ""
+    return root
+
+
+def _expected_wheel_dist_info_root(path: Path) -> str:
+    filename = path.name
+    if not filename.endswith(".whl"):
+        return ""
+    components = filename[: -len(".whl")].split("-")
+    if len(components) < 5:
+        return ""
+    distribution, version = components[:2]
+    if (
+        not version
+        or normalized_dependency_name(distribution)
+        != normalized_dependency_name(EXPECTED_DISTRIBUTION_NAME)
+    ):
+        return ""
+    return f"{distribution}-{version}.dist-info"
 
 
 def _denied_distribution_path(path: PurePosixPath) -> str:
@@ -1471,7 +1681,7 @@ def _allowed_integration_path(path: PurePosixPath) -> bool:
     return False
 
 
-def _allowed_wheel_path(path: PurePosixPath) -> bool:
+def _allowed_wheel_source_path(path: PurePosixPath) -> bool:
     if path.parts and path.parts[0] in PRODUCT_PACKAGE_ROOTS:
         return path.suffix == ".py"
     if path.as_posix() in {
@@ -1479,9 +1689,18 @@ def _allowed_wheel_path(path: PurePosixPath) -> bool:
         "integrations/micromachine/__init__.py",
     }:
         return True
-    if _allowed_integration_path(path):
+    return _allowed_integration_path(path)
+
+
+def _allowed_wheel_path(path: PurePosixPath, archive_path: Path) -> bool:
+    if _allowed_wheel_source_path(path):
         return True
-    if len(path.parts) >= 2 and path.parts[0].endswith(".dist-info"):
+    expected_root = _expected_wheel_dist_info_root(archive_path)
+    if (
+        expected_root
+        and len(path.parts) >= 2
+        and path.parts[0] == expected_root
+    ):
         tail = PurePosixPath(*path.parts[1:]).as_posix()
         if tail in _DIST_INFO_FILES:
             return True
@@ -1493,8 +1712,11 @@ def _allowed_wheel_path(path: PurePosixPath) -> bool:
     return False
 
 
-def _allowed_sdist_path(path: PurePosixPath) -> bool:
-    if len(path.parts) == 1 and path.name in _SDIST_ROOT_FILES:
+def _allowed_sdist_source_path(path: PurePosixPath) -> bool:
+    if (
+        len(path.parts) == 1
+        and path.name in _SDIST_ROOT_FILES - {"PKG-INFO", "setup.cfg"}
+    ):
         return True
     if path.as_posix() == "LICENSES/AGPL-3.0-or-later.txt":
         return True
@@ -1505,9 +1727,22 @@ def _allowed_sdist_path(path: PurePosixPath) -> bool:
         "integrations/micromachine/__init__.py",
     }:
         return True
-    if path.parts and path.parts[0].lower().endswith(".egg-info"):
-        return len(path.parts) == 2 and path.parts[1] in _EGG_INFO_FILES
     return _allowed_integration_path(path)
+
+
+def _allowed_sdist_path(path: PurePosixPath) -> bool:
+    if _allowed_sdist_source_path(path):
+        return True
+    if len(path.parts) == 1 and path.name in {"PKG-INFO", "setup.cfg"}:
+        return True
+    expected_egg_info = (
+        EXPECTED_DISTRIBUTION_NAME.replace("-", "_") + ".egg-info"
+    )
+    return (
+        len(path.parts) == 2
+        and path.parts[0] == expected_egg_info
+        and path.parts[1] in _EGG_INFO_FILES
+    )
 
 
 def expected_archive_payloads(
@@ -1534,8 +1769,8 @@ def expected_archive_payloads(
             raise RuntimeError("Git tree contains an unsupported release entry")
         path_text = raw_path.decode("utf-8", errors="strict")
         path = PurePosixPath(path_text)
-        wheel_allowed = _allowed_wheel_path(path)
-        sdist_allowed = _allowed_sdist_path(path)
+        wheel_allowed = _allowed_wheel_source_path(path)
+        sdist_allowed = _allowed_sdist_source_path(path)
         if not wheel_allowed and not sdist_allowed:
             continue
         if fields[1] != b"blob":
@@ -1562,19 +1797,67 @@ def archive_manifest_blockers(
 ) -> list[dict[str, object]]:
     """Return blockers for payload path or content drift from the Git tree."""
 
+    return _archive_manifest_digest_blockers(
+        snapshot.kind,
+        snapshot.path,
+        {
+            entry: sha256_bytes(payload)
+            for entry, payload in snapshot.files.items()
+        },
+        expected_paths,
+    )
+
+
+def _archive_manifest_digest_blockers(
+    kind: str,
+    archive_path: Path,
+    file_manifest: Mapping[str, str],
+    expected_paths: Mapping[str, str],
+) -> list[dict[str, object]]:
     blockers: list[dict[str, object]] = []
-    observed: dict[str, bytes] = {}
-    for entry, payload in snapshot.files.items():
-        relative = _archive_relative_path(snapshot.kind, entry)
-        if relative is None or _generated_archive_path(snapshot.kind, relative):
+    observed: dict[str, str] = {}
+    for entry, digest in file_manifest.items():
+        path_error = _archive_path_error(entry)
+        if path_error:
+            blockers.append(
+                {
+                    "code": "unsafe_archive_entry",
+                    "kind": kind,
+                    "entry": entry,
+                    "reason": path_error,
+                }
+            )
             continue
-        observed[relative.as_posix()] = payload
+        relative = _archive_relative_path(kind, archive_path, entry)
+        if relative is None:
+            blockers.append(
+                {
+                    "code": "invalid_archive_root",
+                    "kind": kind,
+                    "entry": entry,
+                }
+            )
+            continue
+        if _generated_archive_path(kind, archive_path, relative):
+            continue
+        relative_path = relative.as_posix()
+        if relative_path in observed:
+            blockers.append(
+                {
+                    "code": "duplicate_archive_payload_path",
+                    "kind": kind,
+                    "entry": entry,
+                    "relative_path": relative_path,
+                }
+            )
+            continue
+        observed[relative_path] = digest
     expected = dict(expected_paths)
     for path in sorted(set(expected) - set(observed)):
         blockers.append(
             {
                 "code": "missing_archive_entry",
-                "kind": snapshot.kind,
+                "kind": kind,
                 "entry": path,
             }
         )
@@ -1582,17 +1865,17 @@ def archive_manifest_blockers(
         blockers.append(
             {
                 "code": "unexpected_archive_payload",
-                "kind": snapshot.kind,
+                "kind": kind,
                 "entry": path,
             }
         )
     for path in sorted(set(expected) & set(observed)):
-        observed_digest = sha256_bytes(observed[path])
+        observed_digest = observed[path]
         if observed_digest != expected[path]:
             blockers.append(
                 {
                     "code": "archive_payload_mismatch",
-                    "kind": snapshot.kind,
+                    "kind": kind,
                     "entry": path,
                     "observed": observed_digest,
                     "expected": expected[path],
@@ -1627,13 +1910,39 @@ def _safe_fixture_match(path: str, rule_id: str, matched: str) -> bool:
     return False
 
 
-def _generated_archive_path(kind: str, path: PurePosixPath) -> bool:
+def _generated_archive_path(
+    kind: str,
+    archive_path: Path,
+    path: PurePosixPath,
+) -> bool:
     if kind == "wheel":
-        return bool(path.parts and path.parts[0].endswith(".dist-info"))
+        expected_root = _expected_wheel_dist_info_root(archive_path)
+        return bool(
+            expected_root and path.parts and path.parts[0] == expected_root
+        )
+    expected_egg_info = (
+        EXPECTED_DISTRIBUTION_NAME.replace("-", "_") + ".egg-info"
+    )
     return (
         (len(path.parts) == 1 and path.name in {"PKG-INFO", "setup.cfg"})
-        or bool(path.parts and path.parts[0].lower().endswith(".egg-info"))
+        or bool(path.parts and path.parts[0] == expected_egg_info)
     )
+
+
+def _sha256_manifest(value: object) -> dict[str, str] | None:
+    if not isinstance(value, Mapping) or not value:
+        return None
+    manifest: dict[str, str] = {}
+    for raw_path, raw_digest in value.items():
+        if (
+            not isinstance(raw_path, str)
+            or not raw_path
+            or not isinstance(raw_digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", raw_digest) is None
+        ):
+            return None
+        manifest[raw_path] = raw_digest
+    return manifest
 
 
 def _is_credential_path(basename: str, lowered_parts: set[str]) -> bool:
@@ -1791,6 +2100,10 @@ def _artifact_evidence(snapshot: ArchiveSnapshot) -> dict[str, object]:
         "sha256": snapshot.digest,
         "entry_count": len(snapshot.entries),
         "entries": list(snapshot.entries),
+        "file_manifest": {
+            entry: sha256_bytes(payload)
+            for entry, payload in sorted(snapshot.files.items())
+        },
     }
 
 

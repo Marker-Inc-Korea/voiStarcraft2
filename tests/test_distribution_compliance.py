@@ -104,7 +104,7 @@ class ArchivePolicyTest(unittest.TestCase):
     def test_sdist_allows_generated_setup_cfg_but_rejects_tests(self) -> None:
         snapshot = ArchiveSnapshot(
             kind="sdist",
-            path=Path("candidate.tar.gz"),
+            path=Path("voistarcraft2-0.1.0.tar.gz"),
             digest="b" * 64,
             entries=(),
             files={
@@ -146,6 +146,69 @@ class ArchivePolicyTest(unittest.TestCase):
             "unsafe_archive_entry",
             {str(item["code"]) for item in snapshot.blockers},
         )
+
+    def test_sdist_rejects_alternate_root_payloads(self) -> None:
+        expected_payload = b"expected runtime"
+        snapshot = ArchiveSnapshot(
+            kind="sdist",
+            path=Path("voistarcraft2-0.1.0.tar.gz"),
+            digest="c" * 64,
+            entries=(),
+            files={
+                "attacker-9.9/starcraft_commander/runtime_data.py": b"attacker",
+                (
+                    "voistarcraft2-0.1.0/"
+                    "starcraft_commander/runtime_data.py"
+                ): expected_payload,
+            },
+            blockers=(),
+        )
+        expected = {
+            "starcraft_commander/runtime_data.py": (
+                compliance_module.sha256_bytes(expected_payload)
+            )
+        }
+
+        content_codes = {
+            str(item["code"]) for item in archive_content_blockers(snapshot)
+        }
+        manifest_codes = {
+            str(item["code"])
+            for item in archive_manifest_blockers(snapshot, expected)
+        }
+
+        self.assertIn("invalid_archive_root", content_codes)
+        self.assertIn("invalid_archive_root", manifest_codes)
+
+    def test_wheel_rejects_alternate_dist_info_namespace(self) -> None:
+        expected_payload = b"expected runtime"
+        snapshot = ArchiveSnapshot(
+            kind="wheel",
+            path=Path("voistarcraft2-0.1.0-py3-none-any.whl"),
+            digest="c" * 64,
+            entries=(),
+            files={
+                "starcraft_commander/runtime_data.py": expected_payload,
+                "attacker-9.9.dist-info/RECORD": b"attacker",
+            },
+            blockers=(),
+        )
+        expected = {
+            "starcraft_commander/runtime_data.py": (
+                compliance_module.sha256_bytes(expected_payload)
+            )
+        }
+
+        content_codes = {
+            str(item["code"]) for item in archive_content_blockers(snapshot)
+        }
+        manifest_codes = {
+            str(item["code"])
+            for item in archive_manifest_blockers(snapshot, expected)
+        }
+
+        self.assertIn("unexpected_archive_entry", content_codes)
+        self.assertIn("unexpected_archive_payload", manifest_codes)
 
     def test_archive_manifest_rejects_missing_extra_and_modified_payloads(
         self,
@@ -297,10 +360,23 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
         env_findings = scan_payload(".env.local", b"SAFE=value")
         credential_findings = scan_payload("config/service.credentials.json", b"{}")
         netrc_findings = scan_payload(".netrc", b"machine private.example")
+        netrc_path = "/home/user/" + ".netrc"
+        aws_path = "/home/user/.aws/" + "credentials"
+        unquoted_findings = scan_payload(
+            "config.py",
+            (
+                f"credential_path={netrc_path}\n"
+                f"AWS_SHARED_CREDENTIALS_FILE={aws_path}\n"
+            ).encode(),
+        )
 
         self.assertEqual("env_file", env_findings[0]["rule_id"])
         self.assertEqual("credential_file", credential_findings[0]["rule_id"])
         self.assertEqual("credential_file", netrc_findings[0]["rule_id"])
+        self.assertEqual(
+            ["credential_path", "credential_path"],
+            [str(item["rule_id"]) for item in unquoted_findings],
+        )
 
     def test_fixture_allowlist_is_bound_to_path_rule_and_safe_marker(self) -> None:
         fake_key = "sk-" + "testfixtureabcdefghijkl"
@@ -396,10 +472,38 @@ class DerivedVerdictTest(unittest.TestCase):
                 for phase in ("before", "after")
             },
             "artifacts": {
-                "wheel": {"sha256": digest, "entries": ["package.py"]},
-                "sdist": {"sha256": digest, "entries": ["root/package.py"]},
+                "wheel": {
+                    "filename": "voistarcraft2-0.1.0-py3-none-any.whl",
+                    "sha256": digest,
+                    "entry_count": 1,
+                    "entries": ["starcraft_commander/runtime_data.py"],
+                    "file_manifest": {
+                        "starcraft_commander/runtime_data.py": digest
+                    },
+                },
+                "sdist": {
+                    "filename": "voistarcraft2-0.1.0.tar.gz",
+                    "sha256": digest,
+                    "entry_count": 1,
+                    "entries": [
+                        (
+                            "voistarcraft2-0.1.0/"
+                            "starcraft_commander/runtime_data.py"
+                        )
+                    ],
+                    "file_manifest": {
+                        (
+                            "voistarcraft2-0.1.0/"
+                            "starcraft_commander/runtime_data.py"
+                        ): digest
+                    },
+                },
             },
             "archive_blockers": [],
+            "archive_manifests": {
+                kind: {"starcraft_commander/runtime_data.py": digest}
+                for kind in ("wheel", "sdist")
+            },
             "metadata": {"license_expressions": [EXPECTED_LICENSE_EXPRESSION]},
             "licenses": [
                 {
@@ -557,6 +661,42 @@ class DerivedVerdictTest(unittest.TestCase):
         }
 
         self.assertIn("invalid_secret_scan_evidence", codes)
+
+    def test_rejects_missing_or_malformed_archive_evidence(self) -> None:
+        for field in ("archive_blockers", "archive_manifests"):
+            with self.subTest(field=field):
+                report = dict(self.report)
+                report.pop(field)
+
+                codes = {
+                    str(item["code"])
+                    for item in distribution_report_blockers(report)
+                }
+
+                self.assertIn(
+                    (
+                        "invalid_archive_blocker_evidence"
+                        if field == "archive_blockers"
+                        else "invalid_archive_manifest_evidence"
+                    ),
+                    codes,
+                )
+
+        report = dict(self.report)
+        artifacts = {
+            kind: dict(value)
+            for kind, value in self.report["artifacts"].items()
+        }
+        wheel_manifest = dict(artifacts["wheel"]["file_manifest"])
+        wheel_manifest["starcraft_commander/runtime_data.py"] = "e" * 64
+        artifacts["wheel"]["file_manifest"] = wheel_manifest
+        report["artifacts"] = artifacts
+
+        codes = {
+            str(item["code"]) for item in distribution_report_blockers(report)
+        }
+
+        self.assertIn("archive_payload_mismatch", codes)
 
     def test_rejects_wheel_only_and_sdist_only_runtime_data(self) -> None:
         for missing_key in ("wheel_present", "sdist_present"):
