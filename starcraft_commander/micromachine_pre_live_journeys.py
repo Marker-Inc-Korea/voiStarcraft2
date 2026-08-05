@@ -923,11 +923,16 @@ def _expand_initial_state(
                     matrix_ability=caster_state.ability,
                 )
         execution.allocate_unit(
-            "TERRAN_SCV",
+            "TERRAN_MARINE",
             combat=False,
         )
         execution.allocate_unit(
             "TERRAN_MARINE",
+            self_owned=False,
+            combat=False,
+        )
+        execution.allocate_unit(
+            "TERRAN_CYCLONE",
             self_owned=False,
             combat=False,
         )
@@ -2682,6 +2687,11 @@ def _validate_native_production_path(
                 "unit_tags",
             ),
         )
+    if expected_input is not None:
+        _validate_native_target_bindings(
+            submission_receipts,
+            expected_input,
+        )
     _validate_native_ownership_causality(
         events,
         receipt_events["voiProductionAssignOperationOwner"],
@@ -2696,6 +2706,66 @@ def _validate_native_production_path(
             == "all_terran_family_ability_blocker_matrix"
         ),
     )
+
+
+def _validate_native_target_bindings(
+    submission_receipts: Sequence[Mapping[str, object]],
+    expected_input: Mapping[str, object],
+) -> None:
+    initial_state = expected_input.get("initial_state")
+    if not isinstance(initial_state, Mapping):
+        raise ValueError("native expected initial state is malformed")
+    units_by_tag: dict[int, Mapping[str, object]] = {}
+    for unit in _mapping_sequence(initial_state.get("units")):
+        tag = unit.get("tag")
+        if type(tag) is not int or tag <= 0 or tag in units_by_tag:
+            raise ValueError("native expected target fixture identity is invalid")
+        units_by_tag[tag] = unit
+    enemy_target_kinds = {
+        "enemy_unit",
+        "ghost_snipe",
+        "yamato_target",
+    }
+    for receipt in submission_receipts:
+        if receipt.get("dispatch_action") != "ability_target":
+            continue
+        target_tag = receipt.get("target_tag")
+        if type(target_tag) is not int or target_tag <= 0:
+            raise ValueError("native unit-target receipt target tag is invalid")
+        target = units_by_tag.get(target_tag)
+        if target is None:
+            raise ValueError(
+                "native unit-target receipt is not bound to an initial fixture"
+            )
+        caster_tags = _native_unit_tags(receipt.get("unit_tags"))
+        if target_tag in caster_tags:
+            raise ValueError("native unit-target receipt targets its caster")
+        target_kind = str(receipt.get("target_kind", "") or "")
+        requires_enemy = target_kind in enemy_target_kinds
+        self_owned = target.get("self_owned", True)
+        if type(self_owned) is not bool or self_owned == requires_enemy:
+            raise ValueError(
+                "native unit-target fixture ownership is invalid"
+            )
+        if target.get("combat", True) is not False:
+            raise ValueError("native unit-target fixture must be noncombat")
+        ability_name = str(receipt.get("ability_name", "") or "")
+        target_unit_type = str(target.get("unit_type", "") or "")
+        if (
+            ability_name == "interference_matrix"
+            and target_unit_type != "TERRAN_CYCLONE"
+        ):
+            raise ValueError(
+                "native Interference Matrix target fixture must be "
+                "an enemy noncombat TERRAN_CYCLONE"
+            )
+        if (
+            ability_name != "interference_matrix"
+            and target_unit_type != "TERRAN_MARINE"
+        ):
+            raise ValueError(
+                "native unit-target fixture must use TERRAN_MARINE"
+            )
 
 
 def _validate_native_applied_squad_order_payload(

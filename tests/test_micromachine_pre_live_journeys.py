@@ -621,6 +621,59 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
                 receipt["submission_id"].startswith("voi-sc2-submission-")
             )
 
+    def test_interference_matrix_receipt_targets_enemy_noncombat_cyclone(
+        self,
+    ) -> None:
+        adapter = self.artifacts[
+            "all_terran_family_ability_blocker_matrix"
+        ]["products"]["native_adapter"]
+        receipt = next(
+            row
+            for row in adapter["output"]["production_path"][
+                "sc2_submission_receipts"
+            ]
+            if row["ability_name"] == "interference_matrix"
+        )
+        target = next(
+            unit
+            for unit in adapter["input"]["initial_state"]["units"]
+            if unit["tag"] == receipt["target_tag"]
+        )
+        self.assertEqual("TERRAN_CYCLONE", target["unit_type"])
+        self.assertIs(False, target["self_owned"])
+        self.assertIs(False, target["combat"])
+
+    def test_native_output_rejects_nonmechanical_interference_matrix_target(
+        self,
+    ) -> None:
+        adapter = deepcopy(
+            self.artifacts["all_terran_family_ability_blocker_matrix"][
+                "products"
+            ]["native_adapter"]
+        )
+        receipt = next(
+            row
+            for row in adapter["output"]["production_path"][
+                "sc2_submission_receipts"
+            ]
+            if row["ability_name"] == "interference_matrix"
+        )
+        target = next(
+            unit
+            for unit in adapter["input"]["initial_state"]["units"]
+            if unit["tag"] == receipt["target_tag"]
+        )
+        target["unit_type"] = "TERRAN_MARINE"
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Interference Matrix target fixture",
+        ):
+            _validate_native_output_payload(
+                adapter["output"],
+                expected_input=adapter["input"],
+            )
+
     def test_native_receipts_fail_closed_without_execution_proof(self) -> None:
         native = deepcopy(
             self.artifacts["safe_partial_launch"]["products"][
