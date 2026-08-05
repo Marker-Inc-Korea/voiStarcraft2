@@ -2138,6 +2138,63 @@ class PolicyModulationProviderCompilerTest(unittest.TestCase):
                     payload["unit_roles"],
                 )
 
+    def test_transformed_ability_tasks_preserve_unrelated_composition(
+        self,
+    ) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "source": "llm",
+                "goal": "unsiege the tank with infantry support",
+                "tactical_task": {
+                    "task_type": "execute_ability",
+                    "ability": "unsiege",
+                    "unit_classes": ["TERRAN_SIEGETANKSIEGED"],
+                    "min_units": 1,
+                    "max_units": 1,
+                },
+                "composition_requirements": [
+                    {
+                        "unit_type": "TERRAN_MARINE",
+                        "count": 8,
+                        "role": "frontline",
+                    },
+                    {
+                        "unit_type": "TERRAN_SIEGETANKSIEGED",
+                        "count": 1,
+                        "role": "support",
+                    },
+                    {
+                        "unit_type": "TERRAN_MEDIVAC",
+                        "count": 2,
+                        "role": "support",
+                    },
+                ],
+            }
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        payload = result.to_dict()["vector"]
+        assert isinstance(payload, dict)
+        self.assertEqual(
+            [
+                {
+                    "unit_type": "TERRAN_MARINE",
+                    "count": 8,
+                    "role": "frontline",
+                },
+                {
+                    "unit_type": "TERRAN_MEDIVAC",
+                    "count": 2,
+                    "role": "support",
+                },
+            ],
+            payload["composition_requirements"],
+        )
+        self.assertEqual(
+            ["TERRAN_SIEGETANKSIEGED"],
+            payload["tactical_task"]["unit_classes"],
+        )
+
     def test_execute_ability_is_rejected_inside_operations(self) -> None:
         result = compile_policy_modulation_provider_output(
             {

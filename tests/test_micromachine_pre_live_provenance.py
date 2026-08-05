@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -1449,6 +1450,20 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         )[0]
         self.assertIn(
             "          sudo chown -RP 0:0 \\\n"
+            '            "${VOI_CANDIDATE_WORKSPACE}" \\\n'
+            '            "${VOI_TRUSTED_VERIFIER_WORKSPACE}" \\\n'
+            '            "${ROOT_DIR}"\n',
+            emission_step,
+        )
+        self.assertIn(
+            "          sudo /bin/chmod -RN \\\n"
+            '            "${VOI_CANDIDATE_WORKSPACE}" \\\n'
+            '            "${VOI_TRUSTED_VERIFIER_WORKSPACE}" \\\n'
+            '            "${ROOT_DIR}"\n',
+            emission_step,
+        )
+        self.assertIn(
+            "          sudo /bin/chmod -R go-w \\\n"
             '            "${VOI_CANDIDATE_WORKSPACE}" \\\n'
             '            "${VOI_TRUSTED_VERIFIER_WORKSPACE}" \\\n'
             '            "${ROOT_DIR}"\n',
@@ -3551,9 +3566,13 @@ class BuildBindingTest(unittest.TestCase):
             )
 
     def test_pinned_ctest_uses_disposable_writable_workdirs(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            tempfile.TemporaryDirectory() as secure_directory,
+        ):
             fixture = make_build_fixture(Path(directory))
             build_dir = fixture["config"].micromachine_build_dir.resolve()
+            secure_root = Path(secure_directory).resolve()
             writable_test = (
                 build_dir
                 / "bin"
@@ -3600,6 +3619,40 @@ class BuildBindingTest(unittest.TestCase):
                 del uid, gid
                 path.chmod(0o700)
 
+            def current_user_execution_directory(
+                *,
+                uid: int,
+                gid: int,
+            ) -> tempfile.TemporaryDirectory[str]:
+                del uid, gid
+                return tempfile.TemporaryDirectory(
+                    prefix=".execution-",
+                    dir=secure_root,
+                )
+
+            observed_runtime_paths: list[Path] = []
+
+            def record_secure_execution(
+                argv: object,
+                *,
+                cwd: str,
+                env: object,
+                timeout: float,
+                uid: int,
+                gid: int,
+                deadline: object = None,
+            ) -> subprocess.CompletedProcess:
+                observed_runtime_paths.append(Path(cwd).resolve())
+                return run_as_current_user(
+                    argv,
+                    cwd=cwd,
+                    env=env,
+                    timeout=timeout,
+                    uid=uid,
+                    gid=gid,
+                    deadline=deadline,
+                )
+
             with (
                 mock.patch.object(
                     provenance_module,
@@ -3609,12 +3662,17 @@ class BuildBindingTest(unittest.TestCase):
                 mock.patch.object(
                     provenance_module,
                     "_run_dedicated_uid_native_command",
-                    side_effect=run_as_current_user,
+                    side_effect=record_secure_execution,
                 ),
                 mock.patch.object(
                     provenance_module,
                     "_chown_private_directory",
                     side_effect=chown_as_current_user,
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "_dedicated_producer_execution_directory",
+                    side_effect=current_user_execution_directory,
                 ),
             ):
                 result = provenance_module._run_ctest(
@@ -3626,6 +3684,14 @@ class BuildBindingTest(unittest.TestCase):
 
             self.assertTrue(result["ok"], result)
             self.assertEqual(REQUIRED_CTEST_COUNT, result["passed"])
+            self.assertTrue(observed_runtime_paths)
+            self.assertTrue(
+                all(
+                    runtime_path.is_relative_to(secure_root)
+                    for runtime_path in observed_runtime_paths
+                ),
+                observed_runtime_paths,
+            )
 
     def test_rejects_missing_atomic_telemetry_artifact_before_ctest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -5104,6 +5170,60 @@ class GitHubActionsBundleEmissionTest(unittest.TestCase):
                     local_execution
                 )
 
+    def test_regular_snapshot_rejects_fifo_and_socket_without_blocking(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fifo_path = root / "producer-output.fifo"
+            os.mkfifo(fifo_path)
+            unix_socket_path = root / "producer-output.socket"
+            unix_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            unix_socket.bind(str(unix_socket_path))
+            real_open = os.open
+            observed_flags: list[int] = []
+
+            def require_nonblocking_open(
+                path: object,
+                flags: int,
+                *args: object,
+                **kwargs: object,
+            ) -> int:
+                observed_flags.append(flags)
+                if not flags & os.O_NONBLOCK:
+                    raise AssertionError(
+                        "special producer outputs must never be opened "
+                        "with blocking semantics"
+                    )
+                return real_open(path, flags, *args, **kwargs)
+
+            try:
+                with mock.patch.object(
+                    provenance_module.os,
+                    "open",
+                    side_effect=require_nonblocking_open,
+                ):
+                    with self.assertRaisesRegex(
+                        OSError,
+                        "file is not regular",
+                    ):
+                        provenance_module._read_regular_file_snapshot(
+                            fifo_path,
+                            maximum=1024,
+                        )
+                    with self.assertRaises(OSError):
+                        provenance_module._read_regular_file_snapshot(
+                            unix_socket_path,
+                            maximum=1024,
+                        )
+            finally:
+                unix_socket.close()
+
+            self.assertEqual(2, len(observed_flags))
+            self.assertTrue(
+                all(flags & os.O_NONBLOCK for flags in observed_flags)
+            )
+
     def test_real_binder_emission_and_local_attestation_share_bound_digest(
         self,
     ) -> None:
@@ -5916,9 +6036,12 @@ class LocalProducerTest(unittest.TestCase):
         ctest_candidate = shutil.which("ctest")
         if ctest_candidate is None:
             self.skipTest("ctest is required")
-        with tempfile.TemporaryDirectory(
-            dir=BUILD_IDENTITY_REPO_ROOT,
-        ) as directory:
+        with (
+            tempfile.TemporaryDirectory(
+                dir=BUILD_IDENTITY_REPO_ROOT,
+            ) as directory,
+            tempfile.TemporaryDirectory() as secure_directory,
+        ):
             build_dir = Path(directory) / "build"
             build_dir.mkdir()
             manifest = build_dir / "CTestTestfile.cmake"
@@ -5965,6 +6088,16 @@ class LocalProducerTest(unittest.TestCase):
                         "_chown_private_directory",
                         side_effect=lambda path, **kwargs: path.chmod(0o700),
                     ),
+                    mock.patch.object(
+                        provenance_module,
+                        "_dedicated_producer_execution_directory",
+                        side_effect=lambda **kwargs: (
+                            current_user_execution_directory(
+                                Path(secure_directory),
+                                **kwargs,
+                            )
+                        ),
+                    ),
                 ):
                     completed = (
                         provenance_module._run_ctest_registry_from_snapshot(
@@ -6008,9 +6141,12 @@ class LocalProducerTest(unittest.TestCase):
             self.skipTest("ctest is required")
         for name, linked in (("missing", False), ("linked", True)):
             with self.subTest(name=name):
-                with tempfile.TemporaryDirectory(
-                    dir=BUILD_IDENTITY_REPO_ROOT,
-                ) as directory:
+                with (
+                    tempfile.TemporaryDirectory(
+                        dir=BUILD_IDENTITY_REPO_ROOT,
+                    ) as directory,
+                    tempfile.TemporaryDirectory() as secure_directory,
+                ):
                     build_dir = Path(directory) / "build"
                     build_dir.mkdir()
                     if linked:
@@ -6018,12 +6154,24 @@ class LocalProducerTest(unittest.TestCase):
                         target.write_text("")
                         (build_dir / "CTestTestfile.cmake").symlink_to(target)
 
-                    with self.assertRaisesRegex(
-                        OSError,
-                        (
-                            "top-level CTest registry metadata is missing"
-                            if not linked
-                            else "CTest registry metadata is linked"
+                    with (
+                        mock.patch.object(
+                            provenance_module,
+                            "_dedicated_producer_execution_directory",
+                            side_effect=lambda **kwargs: (
+                                current_user_execution_directory(
+                                    Path(secure_directory),
+                                    **kwargs,
+                                )
+                            ),
+                        ),
+                        self.assertRaisesRegex(
+                            OSError,
+                            (
+                                "top-level CTest registry metadata is missing"
+                                if not linked
+                                else "CTest registry metadata is linked"
+                            ),
                         ),
                     ):
                         provenance_module._run_ctest_registry_from_snapshot(
@@ -6044,9 +6192,12 @@ class LocalProducerTest(unittest.TestCase):
         ctest_candidate = shutil.which("ctest")
         if ctest_candidate is None:
             self.skipTest("ctest is required")
-        with tempfile.TemporaryDirectory(
-            dir=BUILD_IDENTITY_REPO_ROOT,
-        ) as directory:
+        with (
+            tempfile.TemporaryDirectory(
+                dir=BUILD_IDENTITY_REPO_ROOT,
+            ) as directory,
+            tempfile.TemporaryDirectory() as secure_directory,
+        ):
             build_dir = Path(directory) / "build"
             build_dir.mkdir()
             manifest = build_dir / "CTestTestfile.cmake"
@@ -6073,6 +6224,16 @@ class LocalProducerTest(unittest.TestCase):
                     "_chown_private_directory",
                     side_effect=lambda path, **kwargs: path.chmod(0o700),
                 ),
+                mock.patch.object(
+                    provenance_module,
+                    "_dedicated_producer_execution_directory",
+                    side_effect=lambda **kwargs: (
+                        current_user_execution_directory(
+                            Path(secure_directory),
+                            **kwargs,
+                        )
+                    ),
+                ),
                 self.assertRaisesRegex(
                     OSError,
                     "CTest registry metadata changed during discovery",
@@ -6098,9 +6259,12 @@ class LocalProducerTest(unittest.TestCase):
             20.0,
             monotonic=clock,
         )
-        with tempfile.TemporaryDirectory(
-            dir=BUILD_IDENTITY_REPO_ROOT,
-        ) as directory:
+        with (
+            tempfile.TemporaryDirectory(
+                dir=BUILD_IDENTITY_REPO_ROOT,
+            ) as directory,
+            tempfile.TemporaryDirectory() as secure_directory,
+        ):
             snapshot_path = Path(directory) / "MicroMachine.snapshot"
             snapshot_path.write_bytes(b"fixture")
             (snapshot_path.parent / "CTestTestfile.cmake").write_text("")
@@ -6195,6 +6359,16 @@ class LocalProducerTest(unittest.TestCase):
                     provenance_module,
                     "_chown_private_directory",
                     side_effect=lambda path, **kwargs: path.chmod(0o700),
+                ),
+                mock.patch.object(
+                    provenance_module,
+                    "_dedicated_producer_execution_directory",
+                    side_effect=lambda **kwargs: (
+                        current_user_execution_directory(
+                            Path(secure_directory),
+                            **kwargs,
+                        )
+                    ),
                 ),
             ):
                 report = provenance_module._build_micromachine_identity_with_boundary(
@@ -9364,6 +9538,19 @@ def passing_ctest(*args: object, **kwargs: object) -> subprocess.CompletedProces
             f"{REQUIRED_CTEST_COUNT}\n"
         ),
         stderr="",
+    )
+
+
+def current_user_execution_directory(
+    root: Path,
+    *,
+    uid: int,
+    gid: int,
+) -> tempfile.TemporaryDirectory[str]:
+    del uid, gid
+    return tempfile.TemporaryDirectory(
+        prefix=".execution-",
+        dir=root,
     )
 
 

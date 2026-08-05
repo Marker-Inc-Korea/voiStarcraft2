@@ -6971,81 +6971,91 @@ def _run_ctest_registry_from_snapshot(
         Path,
         tuple[int, int, int, int, str],
     ] = {}
-    with tempfile.TemporaryDirectory(
-        prefix=".voi-ctest-registry-",
-        dir=build_dir.parent,
-    ) as directory:
-        snapshot_root = Path(directory)
-        copied_paths: list[Path] = []
-        for relative_path in _CTEST_REGISTRY_METADATA_PATHS:
-            source_path = build_dir / relative_path
-            if not os.path.lexists(source_path):
-                if relative_path == _CTEST_REGISTRY_METADATA_PATHS[0]:
-                    raise OSError("top-level CTest registry metadata is missing")
-                continue
-            if (
-                source_path.is_symlink()
-                or _path_has_symlink_component(source_path, stop=build_dir)
-            ):
-                raise OSError(
-                    f"CTest registry metadata is linked: {relative_path}"
+    with _dedicated_producer_execution_directory(
+        uid=execution_identity[0],
+        gid=execution_identity[1],
+    ) as execution_directory:
+        with tempfile.TemporaryDirectory(
+            prefix=".voi-ctest-registry-",
+            dir=execution_directory,
+        ) as directory:
+            snapshot_root = Path(directory)
+            copied_paths: list[Path] = []
+            for relative_path in _CTEST_REGISTRY_METADATA_PATHS:
+                source_path = build_dir / relative_path
+                if not os.path.lexists(source_path):
+                    if relative_path == _CTEST_REGISTRY_METADATA_PATHS[0]:
+                        raise OSError(
+                            "top-level CTest registry metadata is missing"
+                        )
+                    continue
+                if (
+                    source_path.is_symlink()
+                    or _path_has_symlink_component(source_path, stop=build_dir)
+                ):
+                    raise OSError(
+                        f"CTest registry metadata is linked: {relative_path}"
+                    )
+                payload, source_snapshot = _read_regular_file_snapshot(
+                    source_path,
+                    maximum=MAX_CTEST_REGISTRY_METADATA_BYTES,
                 )
-            payload, source_snapshot = _read_regular_file_snapshot(
-                source_path,
-                maximum=MAX_CTEST_REGISTRY_METADATA_BYTES,
-            )
-            snapshot_path = snapshot_root / relative_path
-            snapshot_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            _write_private_snapshot_file(snapshot_path, payload)
-            os.chmod(snapshot_path, 0o444)
-            original_snapshots[source_path] = source_snapshot
-            copied_paths.append(snapshot_path)
+                snapshot_path = snapshot_root / relative_path
+                snapshot_path.parent.mkdir(
+                    mode=0o700,
+                    parents=True,
+                    exist_ok=True,
+                )
+                _write_private_snapshot_file(snapshot_path, payload)
+                os.chmod(snapshot_path, 0o444)
+                original_snapshots[source_path] = source_snapshot
+                copied_paths.append(snapshot_path)
 
-        testing_root = snapshot_root / "Testing"
-        testing_root.mkdir(mode=0o700)
-        _chown_private_directory(
-            testing_root,
-            uid=execution_identity[0],
-            gid=execution_identity[1],
-        )
-        for snapshot_path in copied_paths:
-            parent = snapshot_path.parent
-            while parent != snapshot_root:
-                os.chmod(parent, 0o555)
-                parent = parent.parent
-        os.chmod(snapshot_root, 0o555)
-
-        snapshot_command = list(command)
-        snapshot_command[test_dir_index] = str(snapshot_root)
-        try:
-            completed = _run_ctest_command(
-                command_runner,
-                snapshot_command,
-                cwd=str(snapshot_root),
-                text=True,
-                env=env,
-                timeout=timeout,
-                execution_identity=execution_identity,
-                deadline=deadline,
+            testing_root = snapshot_root / "Testing"
+            testing_root.mkdir(mode=0o700)
+            _chown_private_directory(
+                testing_root,
+                uid=execution_identity[0],
+                gid=execution_identity[1],
             )
-        finally:
-            for source_path, source_snapshot in original_snapshots.items():
-                try:
-                    _, current_snapshot = _read_regular_file_snapshot(
-                        source_path,
-                        maximum=MAX_CTEST_REGISTRY_METADATA_BYTES,
-                    )
-                except OSError as exc:
-                    raise OSError(
-                        "CTest registry metadata changed during discovery: "
-                        f"{source_path}"
-                    ) from exc
-                if current_snapshot != source_snapshot:
-                    raise OSError(
-                        "CTest registry metadata changed during discovery: "
-                        f"{source_path}"
-                    )
-        return completed
+            for snapshot_path in copied_paths:
+                parent = snapshot_path.parent
+                while parent != snapshot_root:
+                    os.chmod(parent, 0o555)
+                    parent = parent.parent
+            os.chmod(snapshot_root, 0o555)
+
+            snapshot_command = list(command)
+            snapshot_command[test_dir_index] = str(snapshot_root)
+            try:
+                completed = _run_ctest_command(
+                    command_runner,
+                    snapshot_command,
+                    cwd=str(snapshot_root),
+                    text=True,
+                    env=env,
+                    timeout=timeout,
+                    execution_identity=execution_identity,
+                    deadline=deadline,
+                )
+            finally:
+                for source_path, source_snapshot in original_snapshots.items():
+                    try:
+                        _, current_snapshot = _read_regular_file_snapshot(
+                            source_path,
+                            maximum=MAX_CTEST_REGISTRY_METADATA_BYTES,
+                        )
+                    except OSError as exc:
+                        raise OSError(
+                            "CTest registry metadata changed during discovery: "
+                            f"{source_path}"
+                        ) from exc
+                    if current_snapshot != source_snapshot:
+                        raise OSError(
+                            "CTest registry metadata changed during discovery: "
+                            f"{source_path}"
+                        )
+            return completed
 
 
 def _run_ctest(
@@ -7110,9 +7120,17 @@ def _run_ctest(
         blockers.append(f"could not snapshot the ctest executable: {exc}")
     ctest_sha256_before = ctest_snapshot[4] if ctest_snapshot is not None else None
 
+    pinned_parent_directory: tempfile.TemporaryDirectory[str] | None = None
+    pinned_parent = build_dir.parent
+    if execution_identity is not None:
+        pinned_parent_directory = _dedicated_producer_execution_directory(
+            uid=execution_identity[0],
+            gid=execution_identity[1],
+        )
+        pinned_parent = Path(pinned_parent_directory.name)
     pinned_directory = tempfile.TemporaryDirectory(
         prefix=".voi-ctest-",
-        dir=build_dir.parent,
+        dir=pinned_parent,
     )
     pinned_root = Path(pinned_directory.name)
     pinned_ctest = pinned_root / "ctest"
@@ -7535,6 +7553,8 @@ def _run_ctest(
         stderr_sha256=hashlib.sha256(stderr.encode()).hexdigest(),
     )
     pinned_directory.cleanup()
+    if pinned_parent_directory is not None:
+        pinned_parent_directory.cleanup()
     return result
 
 
@@ -9004,7 +9024,7 @@ def _read_regular_file_snapshot(
     *,
     maximum: int,
 ) -> tuple[bytes, tuple[int, int, int, int, str]]:
-    flags = os.O_RDONLY
+    flags = os.O_RDONLY | os.O_NONBLOCK
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     descriptor = os.open(path, flags)

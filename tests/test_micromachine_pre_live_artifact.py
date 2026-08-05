@@ -907,6 +907,13 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
         )
         with (
             mock.patch.object(
+                artifact_module,
+                "_archive_framing_error",
+                side_effect=AssertionError(
+                    "framing parser must not inspect excessive EOCD entries"
+                ),
+            ),
+            mock.patch.object(
                 artifact_module.zipfile,
                 "ZipFile",
                 side_effect=AssertionError(
@@ -918,6 +925,24 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
             artifact_module._read_deterministic_journey_archive(
                 too_many_entries,
                 limits=entry_limits,
+            )
+
+        boundary_limits = replace(entry_limits, max_entries=3)
+        root, payloads = artifact_module._read_deterministic_journey_archive(
+            too_many_entries,
+            limits=boundary_limits,
+        )
+        self.assertEqual({}, root)
+        self.assertEqual({"payload/a": b"", "payload/b": b""}, payloads)
+
+        malformed = too_many_entries + b"trailing-data"
+        with self.assertRaisesRegex(ValueError, "framing is invalid"):
+            artifact_module._read_deterministic_journey_archive(
+                malformed,
+                limits=replace(
+                    boundary_limits,
+                    max_archive_bytes=len(malformed) + 1,
+                ),
             )
 
         limit_cases = {

@@ -654,6 +654,17 @@ def _preflight_deterministic_journey_central_directory(
         raise ValueError(
             "deterministic journey ZIP exceeds max_archive_bytes"
         )
+    if len(bundle) >= _END_CENTRAL_DIRECTORY.size:
+        eocd_offset = len(bundle) - _END_CENTRAL_DIRECTORY.size
+        if bundle[eocd_offset : eocd_offset + 4] == b"PK\x05\x06":
+            total_entries = _END_CENTRAL_DIRECTORY.unpack_from(
+                bundle,
+                eocd_offset,
+            )[4]
+            if total_entries > limits.max_entries:
+                raise ValueError(
+                    "deterministic journey ZIP exceeds max_entries"
+                )
     framing_error = _archive_framing_error(
         bundle,
         require_exact_local_flags=True,
@@ -675,8 +686,6 @@ def _preflight_deterministic_journey_central_directory(
         central_offset,
         _,
     ) = _END_CENTRAL_DIRECTORY.unpack_from(bundle, eocd_offset)
-    if total_entries > limits.max_entries:
-        raise ValueError("deterministic journey ZIP exceeds max_entries")
     if central_size > len(bundle):
         raise ValueError(
             "deterministic journey ZIP central directory is oversized"

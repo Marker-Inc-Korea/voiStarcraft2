@@ -1,5 +1,5 @@
 diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
-index 3733a2a..abf108c 100644
+index 3733a2a..480b74a 100644
 --- a/src/CombatCommander.cpp
 +++ b/src/CombatCommander.cpp
 @@ -1,4 +1,7 @@
@@ -671,22 +671,54 @@ index 3733a2a..abf108c 100644
  				}
  				break;
  			case MicroActionType::Ability:
-@@ -16550,8 +16502,12 @@ void CombatCommander::ExecuteActions()
+@@ -16550,8 +16502,25 @@ void CombatCommander::ExecuteActions()
  				}
  				else
  				{
 -					Micro::SmartAbility(rangedUnit, action.abilityID, m_bot);
 -					issuedCommand = true;
-+					Micro::SmartAbility(
-+						rangedUnit,
-+						action.abilityID,
-+						m_bot,
-+						productionBindingPtr,
-+						&issuedCommand);
++					if (explicitAbilityAction
++						&& (productionBindingPtr == nullptr
++							|| !voiProductionBindLiveAbilityTarget(
++								productionBinding,
++								"ability")))
++					{
++						rejectExplicitAbility(
++							"waiting_ability",
++							"Explicit ability production binding did not match the live no-target dispatch");
++					}
++					if (!skip)
++					{
++						Micro::SmartAbility(
++							rangedUnit,
++							action.abilityID,
++							m_bot,
++							productionBindingPtr,
++							&issuedCommand);
++					}
  				}
  				break;
  			case MicroActionType::AbilityPosition:
-@@ -16638,8 +16594,9 @@ void CombatCommander::ExecuteActions()
+@@ -16632,14 +16601,28 @@ void CombatCommander::ExecuteActions()
+ 							"Cast issue guard rejected an out-of-range target; staging must complete first";
+ 					}
+ 				}
++				if (!skip
++					&& explicitAbilityAction
++					&& (productionBindingPtr == nullptr
++						|| !voiProductionBindLiveAbilityTarget(
++							productionBinding,
++							"ability_position",
++							action.position.x,
++							action.position.y)))
++				{
++					rejectExplicitAbility(
++						"waiting_target",
++						"Explicit ability production binding did not match the live position dispatch");
++				}
+ 				if (!skip)
+ 				{
+ 					Micro::SmartAbility(
  						rangedUnit,
  						action.abilityID,
  						action.position,
@@ -698,7 +730,26 @@ index 3733a2a..abf108c 100644
  				}
  				break;
  			case MicroActionType::AbilityTarget:
-@@ -16695,8 +16652,9 @@ void CombatCommander::ExecuteActions()
+@@ -16689,14 +16672,28 @@ void CombatCommander::ExecuteActions()
+ 						}
+ 					}
+ 				}
++				if (!skip
++					&& explicitAbilityAction
++					&& (productionBindingPtr == nullptr
++						|| !voiProductionBindLiveAbilityTarget(
++							productionBinding,
++							"ability_target",
++							action.target->pos.x,
++							action.target->pos.y)))
++				{
++					rejectExplicitAbility(
++						"waiting_target",
++						"Explicit ability production binding did not match the live unit-target dispatch");
++				}
+ 				if (!skip)
+ 				{
+ 					Micro::SmartAbility(
  						rangedUnit,
  						action.abilityID,
  						action.target,
@@ -710,7 +761,7 @@ index 3733a2a..abf108c 100644
  				}
  				break;
  			case MicroActionType::Stop:
-@@ -16706,12 +16664,20 @@ void CombatCommander::ExecuteActions()
+@@ -16706,12 +16703,20 @@ void CombatCommander::ExecuteActions()
  				skip = true;
  				break;
  			case MicroActionType::RightClick:
@@ -2112,13 +2163,14 @@ index 0000000..8f6b2f1
 +}
 diff --git a/src/voi_live_production_binding.hpp b/src/voi_live_production_binding.hpp
 new file mode 100644
-index 0000000..3e30955
+index 0000000..71eff63
 --- /dev/null
 +++ b/src/voi_live_production_binding.hpp
-@@ -0,0 +1,75 @@
+@@ -0,0 +1,134 @@
 +#pragma once
 +
 +#include "sc2api/sc2_typeenums.h"
++#include "voi_explicit_ability_catalog.hpp"
 +#include "voi_production_path.hpp"
 +
 +inline std::string voiProductionCanonicalTerranUnitType(
@@ -2190,6 +2242,64 @@ index 0000000..3e30955
 +	binding.abilityId = abilityId;
 +	binding.cloakState = cloakState;
 +	return binding;
++}
++
++inline const char * voiProductionExplicitAbilityDispatchAction(
++	VoiExplicitAbilityTargetKind targetKind)
++{
++	switch (targetKind)
++	{
++	case VoiExplicitAbilityTargetKind::None:
++		return "ability";
++	case VoiExplicitAbilityTargetKind::EnemyUnit:
++	case VoiExplicitAbilityTargetKind::FriendlyUnit:
++	case VoiExplicitAbilityTargetKind::FriendlyPassenger:
++	case VoiExplicitAbilityTargetKind::GhostSnipe:
++	case VoiExplicitAbilityTargetKind::YamatoTarget:
++		return "ability_target";
++	default:
++		return "ability_position";
++	}
++}
++
++inline bool voiProductionBindLiveAbilityTarget(
++	VoiProductionActionBinding & binding,
++	const std::string & dispatchAction,
++	double targetX = 0.0,
++	double targetY = 0.0)
++{
++	VoiExplicitAbilitySpec spec;
++	if (!voiProductionOperationIdentityIsValid(binding.identity)
++		|| binding.unitType.empty()
++		|| binding.abilityName.empty()
++		|| binding.action
++			!= "execute_ability:" + binding.abilityName
++		|| !voiResolveExplicitAbilitySpec(
++			binding.abilityName,
++			spec)
++		|| binding.abilityId
++			!= static_cast<std::uint32_t>(spec.abilityId)
++		|| dispatchAction
++			!= voiProductionExplicitAbilityDispatchAction(
++				spec.targetKind)
++		|| !std::isfinite(targetX)
++		|| !std::isfinite(targetY))
++	{
++		return false;
++	}
++	binding.targetKind =
++		voiExplicitAbilityTargetKindName(spec.targetKind);
++	if (dispatchAction == "ability")
++	{
++		binding.targetX = 0.0;
++		binding.targetY = 0.0;
++	}
++	else
++	{
++		binding.targetX = targetX;
++		binding.targetY = targetY;
++	}
++	return true;
 +}
 diff --git a/src/voi_operation_observation.hpp b/src/voi_operation_observation.hpp
 new file mode 100644
@@ -2928,7 +3038,7 @@ index 5adac66..c6765eb 100644
  				{ "assigned_unit_tags", operation.assignedTags },
  			});
  	}
-@@ -826,6 +1235,157 @@ class VoiPreLiveJourneyAdapter
+@@ -826,6 +1235,165 @@ class VoiPreLiveJourneyAdapter
  		{
  			return;
  		}
@@ -2968,7 +3078,7 @@ index 5adac66..c6765eb 100644
 +					"assigned ability caster cloak state is invalid");
 +			}
 +		}
-+		const VoiProductionActionBinding binding = {
++		const VoiProductionActionBinding squadOrderBinding = {
 +			identity,
 +			operation.action,
 +			operation.unitType,
@@ -2983,7 +3093,7 @@ index 5adac66..c6765eb 100644
 +			"VoiOp:" + operation.operationId;
 +		const auto squadOrder =
 +			m_productionExecutor.issueSquadOrder(
-+			binding,
++			squadOrderBinding,
 +			squadName,
 +			operation.squadOrderKind,
 +			operation.squadOrderRadius,
@@ -3024,12 +3134,20 @@ index 5adac66..c6765eb 100644
 +		std::vector<std::uint64_t> submittedTags;
 +		const std::string dispatchAction =
 +			deterministicDispatchAction(operation);
++		auto submissionBinding = squadOrderBinding;
++		if (dispatchAction == "ability")
++		{
++			submissionBinding.targetX = 0.0;
++			submissionBinding.targetY = 0.0;
++		}
++		operation.targetX = submissionBinding.targetX;
++		operation.targetY = submissionBinding.targetY;
 +		operation.dispatchAction = dispatchAction;
 +		for (const auto tag : operation.assignedTags)
 +		{
 +			const auto submission =
 +				m_productionExecutor.submitSc2Action(
-+					binding,
++					submissionBinding,
 +					dispatchAction,
 +					tag);
 +			if (!submission.submitted)
@@ -3114,8 +3232,8 @@ index 5adac66..c6765eb 100644
 +				{ "ability_id", operation.abilityId },
 +				{ "target_kind",
 +					operation.abilityTargetKind },
-+				{ "target_x", targetX },
-+				{ "target_y", targetY },
++				{ "target_x", submissionBinding.targetX },
++				{ "target_y", submissionBinding.targetY },
 +				{ "submission_ids",
 +					operation.submissionIds },
 +				{ "unit_tags", submittedTags },
@@ -4200,13 +4318,14 @@ index 5adac66..c6765eb 100644
  	}
 diff --git a/src/voi_production_path.hpp b/src/voi_production_path.hpp
 new file mode 100644
-index 0000000..80e3e43
+index 0000000..b06f52f
 --- /dev/null
 +++ b/src/voi_production_path.hpp
-@@ -0,0 +1,464 @@
+@@ -0,0 +1,496 @@
 +#pragma once
 +
 +#include <algorithm>
++#include <cmath>
 +#include <cstdint>
 +#include <iomanip>
 +#include <map>
@@ -4352,6 +4471,34 @@ index 0000000..80e3e43
 +	double targetY = 0.0;
 +	std::string cloakState;
 +};
++
++inline bool voiProductionAbilityTargetMetadataIsValid(
++	const VoiProductionActionBinding & binding,
++	const std::string & dispatchAction)
++{
++	if (binding.abilityName.empty())
++	{
++		return true;
++	}
++	if (binding.targetKind.empty()
++		|| !std::isfinite(binding.targetX)
++		|| !std::isfinite(binding.targetY))
++	{
++		return false;
++	}
++	if (dispatchAction == "ability")
++	{
++		return binding.targetKind == "none"
++			&& binding.targetX == 0.0
++			&& binding.targetY == 0.0;
++	}
++	if (dispatchAction == "ability_position"
++		|| dispatchAction == "ability_target")
++	{
++		return binding.targetKind != "none";
++	}
++	return false;
++}
 +
 +inline bool voiProductionOperationIdentityIsValid(
 +	const VoiProductionOperationIdentity & identity)
@@ -4556,7 +4703,10 @@ index 0000000..80e3e43
 +		|| dispatchAction.empty()
 +		|| (binding != nullptr
 +			&& !binding->abilityName.empty()
-+			&& binding->unitType.empty()))
++			&& (binding->unitType.empty()
++				|| !voiProductionAbilityTargetMetadataIsValid(
++					*binding,
++					dispatchAction))))
 +	{
 +		receipt.blocker = "invalid_sc2_submission";
 +		return receipt;
@@ -5085,7 +5235,7 @@ index 5aad7ef..67de461 100644
  	CHECK(
  		output["battlefield_overview"]["authority"]
  			== "micromachine_cpp");
-@@ -152,6 +477,206 @@ int main()
+@@ -152,6 +477,243 @@ int main()
  			["family_evidence"][0]["effect_kind"]
  			== "movement");
  	CHECK(output["hud"]["rows"].is_array());
@@ -5289,6 +5439,43 @@ index 5aad7ef..67de461 100644
 +	CHECK(canonicalSquadOrderObserved);
 +	CHECK(canonicalSubmissionObserved);
 +	CHECK(canonicalEffectObserved);
++
++	const auto noTargetAbilityOutput =
++		runAdapter(
++			abilityInput(
++				"ghost_cloak",
++				"TERRAN_GHOST",
++				"not_cloaked"));
++	const auto & noTargetAbilityOrder =
++		noTargetAbilityOutput["production_path"]
++			["squad_order_receipts"][0];
++	CHECK(noTargetAbilityOrder["target_x"] == 96.0);
++	CHECK(noTargetAbilityOrder["target_y"] == 96.0);
++	const auto & noTargetAbilitySubmission =
++		noTargetAbilityOutput["production_path"]
++			["sc2_submission_receipts"][0];
++	CHECK(
++		noTargetAbilitySubmission["dispatch_action"]
++			== "ability");
++	CHECK(
++		noTargetAbilitySubmission["target_kind"]
++			== "none");
++	CHECK(noTargetAbilitySubmission["target_x"] == 0.0);
++	CHECK(noTargetAbilitySubmission["target_y"] == 0.0);
++	bool noTargetSubmissionEventObserved = false;
++	for (const auto & event : noTargetAbilityOutput["events"])
++	{
++		if (event["event_type"] == "submission")
++		{
++			noTargetSubmissionEventObserved =
++				event["payload"]["dispatch_action"]
++					== "ability"
++				&& event["payload"]["target_kind"] == "none"
++				&& event["payload"]["target_x"] == 0.0
++				&& event["payload"]["target_y"] == 0.0;
++		}
++	}
++	CHECK(noTargetSubmissionEventObserved);
  
  	auto multiRole = validInput();
  	multiRole["initial_state"]["units"].push_back({
@@ -5657,13 +5844,14 @@ index 5aad7ef..67de461 100644
 +}
 diff --git a/tests/production_path_test.cpp b/tests/production_path_test.cpp
 new file mode 100644
-index 0000000..e0937e2
+index 0000000..af1ea5e
 --- /dev/null
 +++ b/tests/production_path_test.cpp
-@@ -0,0 +1,575 @@
+@@ -0,0 +1,718 @@
 +#include "voi_live_production_binding.hpp"
 +
 +#include <iostream>
++#include <limits>
 +#include <string>
 +#include <vector>
 +
@@ -5807,6 +5995,76 @@ index 0000000..e0937e2
 +	CHECK(explicitLiveBinding.abilityName == "ghost_cloak");
 +	CHECK(explicitLiveBinding.abilityId == 382);
 +	CHECK(explicitLiveBinding.cloakState == "not_cloaked");
++	CHECK(explicitLiveBinding.targetKind.empty());
++	auto noTargetLiveBinding = explicitLiveBinding;
++	CHECK(voiProductionBindLiveAbilityTarget(
++		noTargetLiveBinding,
++		"ability"));
++	CHECK(noTargetLiveBinding.targetKind == "none");
++	CHECK(noTargetLiveBinding.targetX == 0.0);
++	CHECK(noTargetLiveBinding.targetY == 0.0);
++	auto positionLiveBinding = voiProductionLiveActionBinding(
++		identity,
++		"execute_ability:emp",
++		sc2::UNIT_TYPEID::TERRAN_GHOST,
++		"emp",
++		1628,
++		"not_cloaked");
++	CHECK(voiProductionBindLiveAbilityTarget(
++		positionLiveBinding,
++		"ability_position",
++		44.5,
++		20.25));
++	CHECK(positionLiveBinding.targetKind == "ghost_emp");
++	CHECK(positionLiveBinding.targetX == 44.5);
++	CHECK(positionLiveBinding.targetY == 20.25);
++	auto unitTargetLiveBinding = voiProductionLiveActionBinding(
++		identity,
++		"execute_ability:yamato",
++		sc2::UNIT_TYPEID::TERRAN_BATTLECRUISER,
++		"yamato",
++		401,
++		"not_cloaked");
++	CHECK(voiProductionBindLiveAbilityTarget(
++		unitTargetLiveBinding,
++		"ability_target",
++		91.0,
++		73.5));
++	CHECK(unitTargetLiveBinding.targetKind == "yamato_target");
++	CHECK(unitTargetLiveBinding.targetX == 91.0);
++	CHECK(unitTargetLiveBinding.targetY == 73.5);
++	auto mismatchedTargetLiveBinding = positionLiveBinding;
++	mismatchedTargetLiveBinding.targetKind.clear();
++	mismatchedTargetLiveBinding.targetX = 0.0;
++	mismatchedTargetLiveBinding.targetY = 0.0;
++	CHECK(!voiProductionBindLiveAbilityTarget(
++		mismatchedTargetLiveBinding,
++		"ability_target",
++		44.5,
++		20.25));
++	CHECK(mismatchedTargetLiveBinding.targetKind.empty());
++	auto nonFiniteTargetLiveBinding = positionLiveBinding;
++	nonFiniteTargetLiveBinding.targetKind.clear();
++	CHECK(!voiProductionBindLiveAbilityTarget(
++		nonFiniteTargetLiveBinding,
++		"ability_position",
++		std::numeric_limits<double>::quiet_NaN(),
++		20.25));
++	CHECK(nonFiniteTargetLiveBinding.targetKind.empty());
++	auto invalidIdentityLiveBinding =
++		voiProductionLiveActionBinding(
++			VoiProductionOperationIdentity(),
++			"execute_ability:emp",
++			sc2::UNIT_TYPEID::TERRAN_GHOST,
++			"emp",
++			1628,
++			"not_cloaked");
++	CHECK(!voiProductionBindLiveAbilityTarget(
++		invalidIdentityLiveBinding,
++		"ability_position",
++		44.5,
++		20.25));
++	CHECK(invalidIdentityLiveBinding.targetKind.empty());
 +	const auto unsupportedLiveBinding =
 +		voiProductionLiveActionBinding(
 +			identity,
@@ -6004,12 +6262,32 @@ index 0000000..e0937e2
 +			== std::vector<std::uint64_t>({11}));
 +	CHECK(!acceptedSubmission.submissionId.empty());
 +
++	int unboundExplicitCallbackCount = 0;
++	const auto unboundExplicitSubmission =
++		voiProductionSubmitSc2Action(
++			identity,
++			explicitLiveBinding.action,
++			"ability",
++			std::vector<std::uint64_t>({11}),
++			&explicitLiveBinding,
++			[&]()
++			{
++				++unboundExplicitCallbackCount;
++				return true;
++			});
++	CHECK(!unboundExplicitSubmission.submitted);
++	CHECK(!unboundExplicitSubmission.callbackExecuted);
++	CHECK(unboundExplicitCallbackCount == 0);
++	CHECK(
++		unboundExplicitSubmission.blocker
++			== "invalid_sc2_submission");
++
 +	const auto explicitSubmission = voiProductionSubmitSc2Action(
 +		identity,
-+		explicitLiveBinding.action,
++		noTargetLiveBinding.action,
 +		"ability",
 +		std::vector<std::uint64_t>({11}),
-+		&explicitLiveBinding,
++		&noTargetLiveBinding,
 +		[]()
 +		{
 +			return true;
@@ -6018,8 +6296,60 @@ index 0000000..e0937e2
 +	CHECK(explicitSubmission.unitType == "TERRAN_GHOST");
 +	CHECK(explicitSubmission.abilityName == "ghost_cloak");
 +	CHECK(explicitSubmission.abilityId == 382);
++	CHECK(explicitSubmission.targetKind == "none");
++	CHECK(explicitSubmission.targetX == 0.0);
++	CHECK(explicitSubmission.targetY == 0.0);
 +	CHECK(explicitSubmission.cloakState == "not_cloaked");
-+	auto cloakedExplicitBinding = explicitLiveBinding;
++	const auto positionSubmission = voiProductionSubmitSc2Action(
++		identity,
++		positionLiveBinding.action,
++		"ability_position",
++		std::vector<std::uint64_t>({11}),
++		&positionLiveBinding,
++		[]()
++		{
++			return true;
++		});
++	CHECK(positionSubmission.submitted);
++	CHECK(positionSubmission.targetKind == "ghost_emp");
++	CHECK(positionSubmission.targetX == 44.5);
++	CHECK(positionSubmission.targetY == 20.25);
++	const auto unitTargetSubmission = voiProductionSubmitSc2Action(
++		identity,
++		unitTargetLiveBinding.action,
++		"ability_target",
++		std::vector<std::uint64_t>({12}),
++		&unitTargetLiveBinding,
++		[]()
++		{
++			return true;
++		});
++	CHECK(unitTargetSubmission.submitted);
++	CHECK(unitTargetSubmission.targetKind == "yamato_target");
++	CHECK(unitTargetSubmission.targetX == 91.0);
++	CHECK(unitTargetSubmission.targetY == 73.5);
++	auto retargetedPositionBinding = positionLiveBinding;
++	CHECK(voiProductionBindLiveAbilityTarget(
++		retargetedPositionBinding,
++		"ability_position",
++		45.5,
++		20.25));
++	const auto retargetedPositionSubmission =
++		voiProductionSubmitSc2Action(
++			identity,
++			retargetedPositionBinding.action,
++			"ability_position",
++			std::vector<std::uint64_t>({11}),
++			&retargetedPositionBinding,
++			[]()
++			{
++				return true;
++			});
++	CHECK(retargetedPositionSubmission.submitted);
++	CHECK(
++		retargetedPositionSubmission.submissionId
++			!= positionSubmission.submissionId);
++	auto cloakedExplicitBinding = noTargetLiveBinding;
 +	cloakedExplicitBinding.cloakState = "cloaked";
 +	const auto cloakedExplicitSubmission =
 +		voiProductionSubmitSc2Action(
