@@ -210,6 +210,31 @@ class ArchivePolicyTest(unittest.TestCase):
         self.assertIn("unexpected_archive_entry", content_codes)
         self.assertIn("unexpected_archive_payload", manifest_codes)
 
+    def test_archive_directories_follow_policy_and_secret_scan(self) -> None:
+        secret_directory = "sk-" + "liveabcdefghijklmnop"
+        snapshot = ArchiveSnapshot(
+            kind="wheel",
+            path=Path("voistarcraft2-0.1.0-py3-none-any.whl"),
+            digest="c" * 64,
+            entries=(),
+            files={},
+            blockers=(),
+            directories=(
+                "tests",
+                ".env.private",
+                secret_directory,
+            ),
+        )
+
+        blockers = archive_content_blockers(snapshot)
+        codes = {str(item["code"]) for item in blockers}
+        reasons = {str(item.get("reason")) for item in blockers}
+
+        self.assertIn("denied_archive_entry", codes)
+        self.assertIn("sensitive_archive_directory", codes)
+        self.assertIn("denied_component:tests", reasons)
+        self.assertIn("local_environment_file", reasons)
+
     def test_sdist_rejects_alternate_egg_info_namespace(self) -> None:
         expected_payload = b"expected runtime"
         snapshot = ArchiveSnapshot(
@@ -389,6 +414,36 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             },
         )
 
+    def test_detects_compact_mapping_and_colon_assignments(self) -> None:
+        api_key_name = "MYPROXY_" + "API_KEY"
+        openai_key_name = "OPENAI_" + "API_KEY"
+        credential_key = "AWS_SHARED_CREDENTIALS_" + "FILE"
+        model_key = "VOI_MYPROXY_" + "MODEL"
+        endpoint_key = "VOI_MYPROXY_OPENAI_BASE_" + "URL"
+        credential_path = "/home/user/" + ".netrc"
+        payload = (
+            "{"
+            f'"{api_key_name}": "abcdefghijklmnop", '
+            f'"{credential_key}": "{credential_path}", '
+            f'"{model_key}": "internal-deployment-alpha", '
+            f'"{endpoint_key}": "https://proxy.corp.example:8443/v1"'
+            "}\n"
+            f"{openai_key_name}: abcdefghijklmnop\n"
+        ).encode()
+
+        self.assertEqual(
+            {
+                "api_key_assignment",
+                "credential_path",
+                "private_endpoint",
+                "private_model_override",
+            },
+            {
+                str(item["rule_id"])
+                for item in scan_payload("private-config.json", payload)
+            },
+        )
+
     def test_detects_environment_and_credential_filenames(self) -> None:
         env_findings = scan_payload(".env.local", b"SAFE=value")
         credential_findings = scan_payload("config/service.credentials.json", b"{}")
@@ -415,6 +470,8 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
         fake_key = "sk-" + "testfixtureabcdefghijkl"
         real_key = "sk-" + "liveabcdefghijklmnop"
         embedded_marker_key = "sk-" + "prodtestabcdefghijkl"
+        fake_assignment = 'CODEX_MYPROXY_API_KEY: "proxy-alias-key"'
+        real_assignment = 'CODEX_MYPROXY_API_KEY: "live-production-key"'
 
         self.assertEqual(
             [],
@@ -439,6 +496,25 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             scan_payload(
                 "tests/test_llm_interpreter.py",
                 f"value = '{embedded_marker_key}'".encode(),
+            )
+        )
+        self.assertEqual(
+            [],
+            scan_payload(
+                "tests/test_llm_interpreter.py",
+                fake_assignment.encode(),
+            ),
+        )
+        self.assertTrue(
+            scan_payload(
+                "tests/test_llm_interpreter.py",
+                real_assignment.encode(),
+            )
+        )
+        self.assertTrue(
+            scan_payload(
+                "tests/test_unlisted_fixture.py",
+                fake_assignment.encode(),
             )
         )
 
@@ -492,6 +568,19 @@ class DerivedVerdictTest(unittest.TestCase):
     def setUp(self) -> None:
         digest = "d" * 64
         wheel_root = "voistarcraft2-0.1.0.dist-info"
+        metadata_entry = f"{wheel_root}/METADATA"
+        metadata_requires_dist = sorted(EXPECTED_PROJECT_DISTRIBUTIONS)
+        metadata_raw = (
+            "Metadata-Version: 2.4\n"
+            "Name: voiStarcraft2\n"
+            "Version: 0.1.0\n"
+            f"License-Expression: {EXPECTED_LICENSE_EXPRESSION}\n"
+            + "".join(
+                f"Requires-Dist: {requirement}\n"
+                for requirement in metadata_requires_dist
+            )
+            + "\n"
+        )
         wheel_generated = {
             *(f"{wheel_root}/{name}" for name in ("METADATA", "RECORD", "WHEEL")),
             f"{wheel_root}/top_level.txt",
@@ -503,6 +592,9 @@ class DerivedVerdictTest(unittest.TestCase):
             "starcraft_commander/runtime_data.py": digest,
             **{entry: digest for entry in wheel_generated},
         }
+        wheel_file_manifest[metadata_entry] = (
+            compliance_module.sha256_bytes(metadata_raw.encode())
+        )
         sdist_root = "voistarcraft2-0.1.0"
         sdist_egg_info = f"{sdist_root}/voiStarcraft2.egg-info"
         sdist_generated = {
@@ -568,7 +660,12 @@ class DerivedVerdictTest(unittest.TestCase):
                 kind: {"starcraft_commander/runtime_data.py": digest}
                 for kind in ("wheel", "sdist")
             },
-            "metadata": {"license_expressions": [EXPECTED_LICENSE_EXPRESSION]},
+            "metadata": {
+                "entry": metadata_entry,
+                "license_expressions": [EXPECTED_LICENSE_EXPRESSION],
+                "requires_dist": metadata_requires_dist,
+                "raw": metadata_raw,
+            },
             "licenses": [
                 {
                     "path": path,
@@ -619,6 +716,46 @@ class DerivedVerdictTest(unittest.TestCase):
 
     def test_accepts_complete_raw_evidence(self) -> None:
         self.assertEqual([], distribution_report_blockers(self.report))
+
+    def test_rejects_missing_or_mutated_metadata_raw_evidence(self) -> None:
+        for field in ("entry", "raw", "requires_dist"):
+            with self.subTest(field=field):
+                report = dict(self.report)
+                metadata = dict(self.report["metadata"])
+                metadata.pop(field)
+                report["metadata"] = metadata
+
+                codes = {
+                    str(item["code"])
+                    for item in distribution_report_blockers(report)
+                }
+
+                self.assertIn("invalid_metadata_evidence", codes)
+
+        report = dict(self.report)
+        metadata = dict(self.report["metadata"])
+        mutated_raw = str(metadata["raw"]).replace(
+            "Name: voiStarcraft2",
+            "Name: attacker",
+        )
+        metadata["raw"] = mutated_raw
+        report["metadata"] = metadata
+        artifacts = {
+            kind: dict(value)
+            for kind, value in self.report["artifacts"].items()
+        }
+        wheel_manifest = dict(artifacts["wheel"]["file_manifest"])
+        wheel_manifest[str(metadata["entry"])] = (
+            compliance_module.sha256_bytes(mutated_raw.encode())
+        )
+        artifacts["wheel"]["file_manifest"] = wheel_manifest
+        report["artifacts"] = artifacts
+
+        codes = {
+            str(item["code"]) for item in distribution_report_blockers(report)
+        }
+
+        self.assertIn("invalid_metadata_evidence", codes)
 
     def test_rejects_wrong_license_missing_notices_and_runtime_data(self) -> None:
         report = dict(self.report)
@@ -782,12 +919,19 @@ class DerivedVerdictTest(unittest.TestCase):
 
         self.assertIn("artifact_entry_manifest_mismatch", codes)
 
-        missing_generated = {
-            "wheel": "voistarcraft2-0.1.0.dist-info/RECORD",
-            "sdist": "voistarcraft2-0.1.0/PKG-INFO",
-        }
-        for kind, entry in missing_generated.items():
-            with self.subTest(kind=kind):
+        missing_generated = (
+            ("wheel", "voistarcraft2-0.1.0.dist-info/RECORD"),
+            ("sdist", "voistarcraft2-0.1.0/PKG-INFO"),
+            (
+                "sdist",
+                (
+                    "voistarcraft2-0.1.0/"
+                    "voiStarcraft2.egg-info/SOURCES.txt"
+                ),
+            ),
+        )
+        for kind, entry in missing_generated:
+            with self.subTest(kind=kind, entry=entry):
                 report = dict(self.report)
                 artifacts = {
                     name: dict(value)

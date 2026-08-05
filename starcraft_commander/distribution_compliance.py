@@ -127,18 +127,18 @@ _REQUIREMENT_NAME_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*([A-Za-z0-9][A-Za-z0-9_.-]*)"
 )
 _PRIVATE_MODEL_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?im)^\s*(?:export\s+)?[\"']?"
+    r"(?im)(?:^|[{\[(,;])[ \t]*(?:export[ \t]+)?[\"']?"
     r"(?:DEFAULT_MYPROXY_MODEL|VOI_MYPROXY_MODEL)[\"']?"
     r"(?![A-Za-z0-9_])"
-    r"\s*(?:(?::[^=\n]+)?=|:(?![^\n=]*=))"
-    r"\s*[\"']?([^\"'\s,#}\n]+)[\"']?"
+    r"[ \t]*(?:(?::[^=\n,}]+)?=|:(?![^\n,}]*=))"
+    r"[ \t]*[\"']?([^\"'\s,#}\n]+)[\"']?"
 )
 _PRIVATE_ENDPOINT_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?im)^\s*(?:export\s+)?[\"']?"
+    r"(?im)(?:^|[{\[(,;])[ \t]*(?:export[ \t]+)?[\"']?"
     r"(?:MYPROXY_OPENAI_BASE_URL|VOI_MYPROXY_OPENAI_BASE_URL)[\"']?"
     r"(?![A-Za-z0-9_])"
-    r"\s*(?:(?::[^=\n]+)?=|:(?![^\n=]*=))"
-    r"\s*[\"']?([^\"'\s,#}\n]+)[\"']?"
+    r"[ \t]*(?:(?::[^=\n,}]+)?=|:(?![^\n,}]*=))"
+    r"[ \t]*[\"']?([^\"'\s,#}\n]+)[\"']?"
 )
 _API_KEY_RE: Final[re.Pattern[str]] = re.compile(
     r"\b("
@@ -151,14 +151,18 @@ _BEARER_TOKEN_RE: Final[re.Pattern[str]] = re.compile(
     r"(?i)\bBearer\s+([A-Za-z0-9._~+/=-]{12,})"
 )
 _ENV_KEY_ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?im)^\s*(?:export\s+)?"
+    r"(?im)(?:^|[{\[(,;])[ \t]*(?:export[ \t]+)?[\"']?"
     r"(?:OPENAI|ANTHROPIC|GEMINI|XAI|MYPROXY|CODEX_MYPROXY)_API_KEY"
-    r"\s*=\s*[\"']?([A-Za-z0-9._~+/=-]{12,})"
+    r"[\"']?(?![A-Za-z0-9_])"
+    r"[ \t]*(?:(?::[^=\n,}]+)?=|:(?![^\n,}]*=))"
+    r"[ \t]*[\"']?([A-Za-z0-9._~+/=-]{12,})"
 )
 _CREDENTIAL_PATH_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?i)(?:credential(?:s)?_?(?:file|path)|"
+    r"(?im)(?:^|[{\[(,;])[ \t]*[\"']?"
+    r"(?:credential(?:s)?_?(?:file|path)|"
     r"GOOGLE_APPLICATION_CREDENTIALS|AWS_SHARED_CREDENTIALS_FILE)"
-    r"\s*[:=]\s*(?:"
+    r"[\"']?(?![A-Za-z0-9_])"
+    r"[ \t]*(?:(?::[^=\n,}]+)?=|:(?![^\n,}]*=))[ \t]*(?:"
     r"[\"'][^\"'\n]*(?:\.aws[\\/]credentials|\.netrc|\.pypirc|_netrc|"
     r"id_(?:rsa|ed25519)|credentials\.json|"
     r"[A-Za-z0-9_.-]+\.credentials\.json)[^\"'\n]*[\"']|"
@@ -168,13 +172,28 @@ _CREDENTIAL_PATH_RE: Final[re.Pattern[str]] = re.compile(
 )
 _SAFE_FIXTURE_RULES: Final[Mapping[str, frozenset[str]]] = {
     "tests/test_llm_interpreter.py": frozenset(
-        {"api_key", "bearer_token", "credential_path"}
+        {
+            "api_key",
+            "api_key_assignment",
+            "bearer_token",
+            "credential_path",
+        }
     ),
     "tests/test_micromachine_pre_live_provenance.py": frozenset(
-        {"api_key", "bearer_token", "credential_path"}
+        {
+            "api_key",
+            "api_key_assignment",
+            "bearer_token",
+            "credential_path",
+        }
     ),
     "tests/test_web_gui.py": frozenset(
-        {"api_key", "bearer_token", "credential_path"}
+        {
+            "api_key",
+            "api_key_assignment",
+            "bearer_token",
+            "credential_path",
+        }
     ),
 }
 _SAFE_FIXTURE_MARKERS: Final[tuple[str, ...]] = (
@@ -183,6 +202,11 @@ _SAFE_FIXTURE_MARKERS: Final[tuple[str, ...]] = (
     "fixture",
     "secret",
     "test",
+)
+_SAFE_ASSIGNMENT_PREFIXES: Final[tuple[str, ...]] = (
+    *_SAFE_FIXTURE_MARKERS,
+    "proxy-alias",
+    "proxy-test",
 )
 _CREDENTIAL_FILENAMES: Final[frozenset[str]] = frozenset(
     {
@@ -472,6 +496,78 @@ def archive_content_blockers(snapshot: ArchiveSnapshot) -> list[dict[str, object
     """Return explicit package allowlist and denylist violations."""
 
     blockers: list[dict[str, object]] = []
+    for entry in snapshot.directories:
+        path_error = _archive_path_error(entry)
+        if path_error:
+            blockers.append(
+                {
+                    "code": "unsafe_archive_entry",
+                    "kind": snapshot.kind,
+                    "entry": entry,
+                    "reason": path_error,
+                }
+            )
+            continue
+        directory_findings = scan_payload(
+            "<archive-directory>",
+            entry.encode("utf-8"),
+            allow_safe_fixtures=False,
+        )
+        if directory_findings:
+            blockers.extend(
+                {
+                    "code": "sensitive_archive_directory",
+                    "kind": snapshot.kind,
+                    "rule_id": finding.get("rule_id"),
+                    "fingerprint": finding.get("fingerprint"),
+                }
+                for finding in directory_findings
+            )
+            continue
+        canonical_name = _canonical_archive_name(entry)
+        if (
+            snapshot.kind == "sdist"
+            and canonical_name == _expected_sdist_root(snapshot.path)
+        ):
+            continue
+        relative = _archive_relative_path(
+            snapshot.kind,
+            snapshot.path,
+            entry,
+        )
+        if relative is None:
+            blockers.append(
+                {
+                    "code": "invalid_archive_root",
+                    "kind": snapshot.kind,
+                    "entry": entry,
+                }
+            )
+            continue
+        denied = _denied_distribution_path(relative)
+        if denied:
+            blockers.append(
+                {
+                    "code": "denied_archive_entry",
+                    "kind": snapshot.kind,
+                    "entry": entry,
+                    "reason": denied,
+                }
+            )
+            continue
+        allowed = (
+            _allowed_wheel_directory(relative, snapshot.path)
+            if snapshot.kind == "wheel"
+            else _allowed_sdist_directory(relative)
+        )
+        if not allowed:
+            blockers.append(
+                {
+                    "code": "unexpected_archive_entry",
+                    "kind": snapshot.kind,
+                    "entry": entry,
+                }
+            )
     for entry in snapshot.files:
         path_error = _archive_path_error(entry)
         if path_error:
@@ -906,6 +1002,8 @@ def distribution_report_blockers(
     if set(archive_manifests) != {"wheel", "sdist"}:
         blockers.append({"code": "invalid_archive_manifest_evidence"})
     artifacts = _mapping(report.get("artifacts"))
+    artifact_paths: dict[str, Path] = {}
+    artifact_file_manifests: dict[str, Mapping[str, str]] = {}
     for kind in ("wheel", "sdist"):
         artifact = _mapping(artifacts.get(kind))
         filename = artifact.get("filename")
@@ -971,6 +1069,8 @@ def distribution_report_blockers(
                 entry_names,
             )
         )
+        artifact_paths[kind] = Path(filename)
+        artifact_file_manifests[kind] = file_manifest
         snapshot = ArchiveSnapshot(
             kind=kind,
             path=Path(filename),
@@ -978,6 +1078,7 @@ def distribution_report_blockers(
             entries=tuple(),
             files={entry: b"" for entry in file_manifest},
             blockers=(),
+            directories=tuple(directory_entries),
         )
         blockers.extend(archive_content_blockers(snapshot))
         if expected_manifest is not None:
@@ -990,6 +1091,14 @@ def distribution_report_blockers(
                 )
             )
     metadata = _mapping(report.get("metadata"))
+    blockers.extend(
+        _metadata_evidence_blockers(
+            metadata,
+            artifact_paths.get("wheel"),
+            artifact_file_manifests.get("wheel"),
+            _mapping(report.get("dependencies")),
+        )
+    )
     expressions = metadata.get("license_expressions")
     if expressions != [EXPECTED_LICENSE_EXPRESSION]:
         blockers.append(
@@ -1743,6 +1852,20 @@ def _allowed_wheel_path(path: PurePosixPath, archive_path: Path) -> bool:
     return False
 
 
+def _allowed_wheel_directory(path: PurePosixPath, archive_path: Path) -> bool:
+    expected_dist_info = _expected_wheel_dist_info_root(archive_path)
+    return path.parts in {
+        *((root,) for root in PRODUCT_PACKAGE_ROOTS),
+        ("integrations",),
+        ("integrations", "micromachine"),
+        ("integrations", "micromachine", "patches"),
+        ("integrations", "micromachine", "scripts"),
+        (expected_dist_info,),
+        (expected_dist_info, "licenses"),
+        (expected_dist_info, "licenses", "LICENSES"),
+    }
+
+
 def _allowed_sdist_source_path(path: PurePosixPath) -> bool:
     if (
         len(path.parts) == 1
@@ -1772,6 +1895,19 @@ def _allowed_sdist_path(path: PurePosixPath) -> bool:
         and path.parts[0] == expected_egg_info
         and path.parts[1] in _EGG_INFO_FILES
     )
+
+
+def _allowed_sdist_directory(path: PurePosixPath) -> bool:
+    expected_egg_info = EXPECTED_PROJECT_NAME + ".egg-info"
+    return path.parts in {
+        *((root,) for root in PRODUCT_PACKAGE_ROOTS),
+        ("LICENSES",),
+        ("integrations",),
+        ("integrations", "micromachine"),
+        ("integrations", "micromachine", "patches"),
+        ("integrations", "micromachine", "scripts"),
+        (expected_egg_info,),
+    }
 
 
 def expected_archive_payloads(
@@ -1931,6 +2067,12 @@ def _safe_fixture_match(path: str, rule_id: str, matched: str) -> bool:
             match is not None
             and match.group(1).startswith(_SAFE_FIXTURE_MARKERS)
         )
+    if rule_id == "api_key_assignment":
+        match = _ENV_KEY_ASSIGNMENT_RE.search(lowered)
+        return bool(
+            match is not None
+            and match.group(1).startswith(_SAFE_ASSIGNMENT_PREFIXES)
+        )
     if rule_id == "credential_path":
         return any(
             marker in PurePosixPath(lowered.replace("\\", "/")).parts
@@ -1999,6 +2141,113 @@ def _sha256_manifest(value: object) -> dict[str, str] | None:
             return None
         manifest[raw_path] = raw_digest
     return manifest
+
+
+def _metadata_evidence_blockers(
+    metadata: Mapping[str, object],
+    wheel_path: Path | None,
+    wheel_file_manifest: Mapping[str, str] | None,
+    dependencies: Mapping[str, object],
+) -> list[dict[str, object]]:
+    blockers: list[dict[str, object]] = []
+    if wheel_path is None or wheel_file_manifest is None:
+        return [{"code": "invalid_metadata_evidence", "reason": "missing_wheel"}]
+    expected_root = _expected_wheel_dist_info_root(wheel_path)
+    expected_entry = f"{expected_root}/METADATA" if expected_root else ""
+    entry = metadata.get("entry")
+    raw = metadata.get("raw")
+    reported_expressions = metadata.get("license_expressions")
+    reported_requires_dist = metadata.get("requires_dist")
+    if entry != expected_entry:
+        blockers.append(
+            {
+                "code": "invalid_metadata_evidence",
+                "reason": "wrong_entry",
+                "expected": expected_entry,
+            }
+        )
+    if not isinstance(raw, str) or not raw:
+        blockers.append(
+            {"code": "invalid_metadata_evidence", "reason": "missing_raw"}
+        )
+        return blockers
+    if (
+        not isinstance(reported_expressions, list)
+        or any(not isinstance(item, str) for item in reported_expressions)
+    ):
+        blockers.append(
+            {
+                "code": "invalid_metadata_evidence",
+                "reason": "invalid_license_projection",
+            }
+        )
+    if (
+        not isinstance(reported_requires_dist, list)
+        or any(not isinstance(item, str) for item in reported_requires_dist)
+    ):
+        blockers.append(
+            {
+                "code": "invalid_metadata_evidence",
+                "reason": "invalid_requires_dist_projection",
+            }
+        )
+    raw_bytes = raw.encode("utf-8")
+    if wheel_file_manifest.get(expected_entry) != sha256_bytes(raw_bytes):
+        blockers.append(
+            {"code": "metadata_raw_digest_mismatch", "entry": expected_entry}
+        )
+    parsed = BytesParser().parsebytes(raw_bytes)
+    raw_expressions = parsed.get_all("License-Expression", [])
+    raw_requires_dist = sorted(parsed.get_all("Requires-Dist", []))
+    if raw_expressions != reported_expressions:
+        blockers.append(
+            {
+                "code": "invalid_metadata_evidence",
+                "reason": "license_projection_mismatch",
+            }
+        )
+    if raw_requires_dist != reported_requires_dist:
+        blockers.append(
+            {
+                "code": "invalid_metadata_evidence",
+                "reason": "requires_dist_projection_mismatch",
+            }
+        )
+    if parsed.get_all("Name", []) != [EXPECTED_PROJECT_NAME]:
+        blockers.append(
+            {
+                "code": "invalid_metadata_evidence",
+                "reason": "wrong_project_name",
+            }
+        )
+    filename_components = wheel_path.name[: -len(".whl")].split("-")
+    expected_version = (
+        filename_components[1]
+        if wheel_path.name.endswith(".whl") and len(filename_components) >= 5
+        else ""
+    )
+    if not expected_version or parsed.get_all("Version", []) != [expected_version]:
+        blockers.append(
+            {
+                "code": "invalid_metadata_evidence",
+                "reason": "wrong_project_version",
+            }
+        )
+    raw_dependencies = sorted(
+        {
+            normalized_dependency_name(requirement)
+            for requirement in raw_requires_dist
+            if normalized_dependency_name(requirement)
+        }
+    )
+    if dependencies.get("metadata") != raw_dependencies:
+        blockers.append(
+            {
+                "code": "invalid_metadata_evidence",
+                "reason": "dependency_projection_mismatch",
+            }
+        )
+    return blockers
 
 
 def _is_credential_path(basename: str, lowered_parts: set[str]) -> bool:
