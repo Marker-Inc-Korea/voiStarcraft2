@@ -887,22 +887,37 @@ def _dockerfile_logical_text(path: str, text: str) -> str:
     ):
         return text
     directive_pattern = re.compile(
-        r"^[ \t]*#[ \t]*escape[ \t]*=[ \t]*([\\`])[ \t]*$",
+        r"^[ \t]*#[ \t]*(syntax|escape|check)[ \t]*="
+        r"[ \t]*(.*?)[ \t]*$",
         re.IGNORECASE,
     )
     escape = "\\"
-    for raw_line in text.splitlines():
+    directive_lines: set[int] = set()
+    physical_lines = text.splitlines()
+    for line_number, raw_line in enumerate(physical_lines):
         match = directive_pattern.fullmatch(raw_line)
-        if match is not None:
-            escape = match.group(1)
+        if match is None:
             break
+        directive_lines.add(line_number)
+        if (
+            match.group(1).lower() == "escape"
+            and match.group(2) in {"\\", "`"}
+        ):
+            escape = match.group(2)
 
     logical_lines: list[str] = []
     buffer = ""
     continuing = False
-    for raw_line in text.splitlines():
-        if not continuing and directive_pattern.fullmatch(raw_line):
+    for line_number, raw_line in enumerate(physical_lines):
+        if not continuing and line_number in directive_lines:
             logical_lines.append(raw_line)
+            continue
+        if raw_line.lstrip(" \t").startswith("#"):
+            if continuing:
+                continue
+            logical_lines.append(raw_line)
+            continue
+        if continuing and not raw_line.strip():
             continue
         fragment = raw_line.lstrip(" \t") if continuing else raw_line
         buffer += fragment

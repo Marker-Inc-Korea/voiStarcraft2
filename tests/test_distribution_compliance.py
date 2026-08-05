@@ -564,6 +564,60 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                 self.assertEqual(1, len(findings))
                 self.assertEqual(expected_rule, findings[0]["rule_id"])
 
+    def test_late_docker_escape_comments_do_not_change_continuations(
+        self,
+    ) -> None:
+        host_key = "VOI_MYPROXY_" + "HOST"
+        model_key = "VOI_MYPROXY_" + "MODEL"
+        payloads = (
+            (
+                "FROM scratch\n"
+                "# escape=`\n"
+                "ENV \\\n"
+                f"  {host_key} 10.20.30.40\n"
+            ).encode(),
+            (
+                "\n"
+                "# escape=`\n"
+                "ARG \\\n"
+                f"  {model_key}=private-model\n"
+            ).encode(),
+            (
+                "# ordinary comment\n"
+                "# escape=`\n"
+                "ENV \\\n"
+                f"  {model_key}=private-model\n"
+            ).encode(),
+            (
+                "FROM scratch\n"
+                "# escape=\\\n"
+                "ENV \\\n"
+                "# continued instruction comment\n"
+                "\n"
+                f"  {host_key} 10.20.30.40\n"
+            ).encode(),
+        )
+        expected_rules = (
+            "private_endpoint",
+            "private_model_override",
+            "private_model_override",
+            "private_endpoint",
+        )
+        for payload, expected_rule in zip(
+            payloads,
+            expected_rules,
+            strict=True,
+        ):
+            with self.subTest(payload=payload[:30]):
+                findings = scan_payload(
+                    "Dockerfile",
+                    payload,
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertEqual(1, len(findings))
+                self.assertEqual(expected_rule, findings[0]["rule_id"])
+
     def test_detects_json_and_quoted_yaml_kubernetes_env(self) -> None:
         host_key = "VOI_MYPROXY_" + "HOST"
         port_key = "VOI_MYPROXY_" + "PORT"
