@@ -24,6 +24,11 @@ from email.parser import BytesParser
 from pathlib import Path, PurePosixPath
 from typing import Final
 
+try:
+    import yaml as _yaml
+except ImportError:  # pragma: no cover - fail-closed behavior is tested by mock.
+    _yaml = None
+
 
 DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION: Final[int] = 2
 EXPECTED_LICENSE_EXPRESSION: Final[str] = (
@@ -43,7 +48,7 @@ EXPECTED_LICENSE_FILE_SHA256: Final[Mapping[str, str]] = {
         "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0"
     ),
     "THIRD_PARTY_NOTICES.md": (
-        "efe282974cf6c5a12e1f963554513a751aef206972ea083730cb7026ed50eabb"
+        "a6b6cda25c33ad4df9c17cf07390d9e06cff005254037d05411f7e81697289eb"
     ),
 }
 PRODUCT_PACKAGE_ROOTS: Final[frozenset[str]] = frozenset(
@@ -68,6 +73,7 @@ EXPECTED_PROJECT_DISTRIBUTIONS: Final[frozenset[str]] = frozenset(
         "faster-whisper",
         "openai",
         "pytest",
+        "pyyaml",
         "sounddevice",
     }
 )
@@ -82,6 +88,7 @@ EXPECTED_NOTICE_LICENSES: Final[Mapping[str, str]] = {
     "faster-whisper": "MIT",
     "openai": "Apache-2.0",
     "pytest": "MIT",
+    "pyyaml": "MIT",
     "setuptools": "MIT",
     "sounddevice": "MIT",
 }
@@ -90,6 +97,10 @@ MAX_ARCHIVE_MEMBER_BYTES: Final[int] = 64 * 1024 * 1024
 MAX_ARCHIVE_TOTAL_BYTES: Final[int] = 256 * 1024 * 1024
 MAX_SCAN_FILE_BYTES: Final[int] = 64 * 1024 * 1024
 MAX_GIT_OUTPUT_BYTES: Final[int] = 128 * 1024 * 1024
+MAX_YAML_ALIASES: Final[int] = 128
+MAX_YAML_DEPTH: Final[int] = 64
+MAX_YAML_DOCUMENTS: Final[int] = 64
+MAX_YAML_NODES: Final[int] = 16384
 _SDIST_ROOT_FILES: Final[frozenset[str]] = frozenset(
     {
         "LICENSE",
@@ -113,6 +124,34 @@ _EGG_INFO_FILES: Final[frozenset[str]] = frozenset(
 _DIST_INFO_FILES: Final[frozenset[str]] = frozenset(
     {"METADATA", "RECORD", "WHEEL", "top_level.txt"}
 )
+
+if _yaml is not None:
+
+    class _BoundedSafeLoader(_yaml.SafeLoader):
+        def __init__(self, stream: object) -> None:
+            super().__init__(stream)
+            self._voi_alias_count = 0
+            self._voi_depth = 0
+            self._voi_node_count = 0
+
+        def compose_node(self, parent: object, index: object) -> object:
+            if self.check_event(_yaml.events.AliasEvent):
+                self._voi_alias_count += 1
+                if self._voi_alias_count > MAX_YAML_ALIASES:
+                    raise _yaml.YAMLError("YAML alias limit exceeded")
+            self._voi_node_count += 1
+            if self._voi_node_count > MAX_YAML_NODES:
+                raise _yaml.YAMLError("YAML node limit exceeded")
+            self._voi_depth += 1
+            if self._voi_depth > MAX_YAML_DEPTH:
+                raise _yaml.YAMLError("YAML nesting limit exceeded")
+            try:
+                return super().compose_node(parent, index)
+            finally:
+                self._voi_depth -= 1
+
+else:
+    _BoundedSafeLoader = None
 _DENIED_PATH_COMPONENTS: Final[frozenset[str]] = frozenset(
     {
         ".codex",
@@ -776,7 +815,14 @@ def scan_payload(
         ("private_model_override", _PRIVATE_MODEL_KUBERNETES_RE),
         ("credential_path", _CREDENTIAL_PATH_RE),
     )
-    scan_texts = _configuration_scan_texts(normalized_path, text)
+    scan_texts, configuration_failures = _configuration_scan_texts(
+        normalized_path,
+        text,
+    )
+    findings.extend(
+        _path_finding(normalized_path, rule_id)
+        for rule_id in configuration_failures
+    )
     prior_match_counts: dict[tuple[str, str], int] = {}
     for scan_index, scan_text in enumerate(scan_texts):
         local_match_counts: dict[tuple[str, str], int] = {}
@@ -829,16 +875,25 @@ def scan_payload(
     return findings
 
 
-def _configuration_scan_texts(path: str, text: str) -> tuple[str, ...]:
+def _configuration_scan_texts(
+    path: str,
+    text: str,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     suffix = PurePosixPath(path).suffix.lower()
     if suffix not in {".json", ".yaml", ".yml"}:
-        return (text,)
+        return (text,), ()
 
     variants = [text]
+    failures: list[str] = []
     decoded_text = _decoded_configuration_escapes(path, text)
     if decoded_text != text:
         variants.append(decoded_text)
     if suffix in {".yaml", ".yml"}:
+        semantic_text, failure = _yaml_semantic_scan_text(text)
+        if failure:
+            failures.append(failure)
+        elif semantic_text and semantic_text not in variants:
+            variants.append(semantic_text)
         for candidate in tuple(variants):
             normalized = _yaml_double_quoted_line_continuations(candidate)
             if normalized not in variants:
@@ -855,7 +910,91 @@ def _configuration_scan_texts(path: str, text: str) -> tuple[str, ...]:
         )
         if canonical not in variants:
             variants.append(canonical)
-    return tuple(variants)
+    return tuple(variants), tuple(failures)
+
+
+def _yaml_semantic_scan_text(text: str) -> tuple[str, str]:
+    if _yaml is None or _BoundedSafeLoader is None:
+        return "", "yaml_parser_unavailable"
+    try:
+        documents: list[object] = []
+        for document_count, document in enumerate(
+            _yaml.load_all(text, Loader=_BoundedSafeLoader),
+            start=1,
+        ):
+            if document_count > MAX_YAML_DOCUMENTS:
+                raise _yaml.YAMLError("YAML document limit exceeded")
+            documents.append(document)
+        return _semantic_mapping_scan_text(documents), ""
+    except (
+        RecursionError,
+        TypeError,
+        ValueError,
+        _yaml.YAMLError,
+    ):
+        return "", "yaml_parse_failed"
+
+
+def _semantic_mapping_scan_text(values: Sequence[object]) -> str:
+    fragments: list[str] = []
+    visited: set[int] = set()
+
+    def visit(value: object, depth: int) -> None:
+        if depth > MAX_YAML_DEPTH:
+            raise ValueError("semantic YAML nesting limit exceeded")
+        if isinstance(value, Mapping):
+            identity = id(value)
+            if identity in visited:
+                return
+            visited.add(identity)
+            scalar_entries: dict[str, str] = {}
+            for raw_key, raw_value in value.items():
+                key = _configuration_scalar_text(raw_key)
+                item = _configuration_scalar_text(raw_value)
+                if key is not None and item is not None:
+                    scalar_entries[key] = item
+            if scalar_entries:
+                fragments.append(
+                    json.dumps(
+                        scalar_entries,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                )
+            for nested in value.values():
+                visit(nested, depth + 1)
+            return
+        if isinstance(value, Sequence) and not isinstance(
+            value,
+            (str, bytes, bytearray),
+        ):
+            identity = id(value)
+            if identity in visited:
+                return
+            visited.add(identity)
+            for nested in value:
+                visit(nested, depth + 1)
+
+    for value in values:
+        visit(value, 0)
+    return "\n".join(fragments)
+
+
+def _configuration_scalar_text(value: object) -> str | None:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if (
+        value is None
+        or isinstance(value, Mapping)
+        or (
+            isinstance(value, Sequence)
+            and not isinstance(value, (str, bytes, bytearray))
+        )
+    ):
+        return None
+    return str(value)
 
 
 def _decoded_configuration_escapes(path: str, text: str) -> str:

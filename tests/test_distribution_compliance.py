@@ -492,10 +492,15 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
 
         findings = scan_payload("deployment.yaml", payload)
 
-        self.assertEqual(4, len(findings))
+        endpoint_findings = [
+            item
+            for item in findings
+            if item["rule_id"] == "private_endpoint"
+        ]
+        self.assertEqual(4, len(endpoint_findings))
         self.assertEqual(
             {"private_endpoint"},
-            {str(item["rule_id"]) for item in findings},
+            {str(item["rule_id"]) for item in endpoint_findings},
         )
 
     def test_detects_docker_and_kubernetes_layout_variants(self) -> None:
@@ -509,10 +514,15 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
 
         findings = scan_payload("deployment.yaml", payload)
 
-        self.assertEqual(3, len(findings))
+        endpoint_findings = [
+            item
+            for item in findings
+            if item["rule_id"] == "private_endpoint"
+        ]
+        self.assertEqual(3, len(endpoint_findings))
         self.assertEqual(
             {"private_endpoint"},
-            {str(item["rule_id"]) for item in findings},
+            {str(item["rule_id"]) for item in endpoint_findings},
         )
         unrelated_value = (
             f"- name: {host_key}\n"
@@ -595,6 +605,74 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                     "private_endpoint",
                     findings[0]["rule_id"],
                 )
+
+    def test_detects_semantic_yaml_kubernetes_env_variants(self) -> None:
+        payloads = (
+            b"- ? name\n  : VOI_MYPROXY_HOST\n  ? value\n  : 10.20.30.40\n",
+            (
+                b"- ? >-\n    name\n"
+                b"  : >-\n    VOI_MYPROXY_HOST\n"
+                b"  ? >-\n    value\n"
+                b"  : >-\n    10.20.30.40\n"
+            ),
+            (
+                b"private: &private\n"
+                b"  name: VOI_MYPROXY_HOST\n"
+                b"  value: 10.20.30.40\n"
+                b"env:\n"
+                b"  - *private\n"
+            ),
+            (
+                b"- !!map\n"
+                b"  ? !!str name\n"
+                b"  : !!str VOI_MYPROXY_HOST\n"
+                b"  ? !!str value\n"
+                b"  : !!str 10.20.30.40\n"
+            ),
+        )
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                findings = scan_payload(
+                    "deployment.yaml",
+                    payload,
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertIn(
+                    "private_endpoint",
+                    {str(item["rule_id"]) for item in findings},
+                )
+
+    def test_yaml_parser_failures_are_blocking_findings(self) -> None:
+        unsupported_tag = (
+            b"!PrivateConfig {name: VOI_MYPROXY_HOST, value: 10.20.30.40}"
+        )
+        aliases = ", ".join("*private" for _ in range(129))
+        excessive_aliases = (
+            "private: &private {safe: true}\n"
+            f"aliases: [{aliases}]\n"
+        ).encode()
+
+        for payload in (unsupported_tag, excessive_aliases):
+            with self.subTest(payload=payload[:40]):
+                rule_ids = {
+                    str(item["rule_id"])
+                    for item in scan_payload(
+                        "deployment.yaml",
+                        payload,
+                        allow_safe_fixtures=False,
+                    )
+                }
+                self.assertIn("yaml_parse_failed", rule_ids)
+
+        with mock.patch.object(compliance_module, "_yaml", None):
+            findings = scan_payload(
+                "deployment.yaml",
+                b"safe: true\n",
+                allow_safe_fixtures=False,
+            )
+
+        self.assertEqual("yaml_parser_unavailable", findings[0]["rule_id"])
 
     def test_private_config_scanner_ignores_names_and_empty_constants(self) -> None:
         endpoint_key = "MYPROXY_OPENAI_BASE_" + "URL"
@@ -870,7 +948,7 @@ dependencies = []
 sc2 = ["burnysc2>=6.5"]
 voice = ["faster-whisper>=1.0", "sounddevice>=0.4.6"]
 llm = ["anthropic>=0.40", "openai>=1.0"]
-dev = ["build>=1.2", "pytest>=7"]
+dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3"]
 """
         source_pyproject_digest = compliance_module.sha256_bytes(
             source_pyproject_raw.encode()
@@ -984,6 +1062,7 @@ dev = ["build>=1.2", "pytest>=7"]
             "[dev]\n"
             "build>=1.2\n"
             "pytest>=7\n\n"
+            "pyyaml>=6.0.3\n\n"
             "[llm]\n"
             "anthropic>=0.40\n"
             "openai>=1.0\n\n"
