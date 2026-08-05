@@ -13,7 +13,9 @@ from starcraft_commander import distribution_compliance as compliance_module
 from starcraft_commander.distribution_compliance import (
     EXPECTED_BUILD_DISTRIBUTIONS,
     EXPECTED_DIRECT_DISTRIBUTIONS,
+    EXPECTED_LICENSE_FILE_SHA256,
     EXPECTED_LICENSE_EXPRESSION,
+    EXPECTED_NOTICE_LICENSES,
     EXPECTED_PROJECT_DISTRIBUTIONS,
     REQUIRED_LICENSE_FILES,
     REQUIRED_RUNTIME_FILES,
@@ -24,6 +26,7 @@ from starcraft_commander.distribution_compliance import (
     build_dependencies_from_pyproject,
     declared_dependencies_from_pyproject,
     distribution_report_blockers,
+    expected_archive_payloads,
     inspect_wheel,
     scan_git_and_artifacts,
     scan_payload,
@@ -127,30 +130,94 @@ class ArchivePolicyTest(unittest.TestCase):
 
         self.assertEqual("unsafe_archive_entry", snapshot.blockers[0]["code"])
 
-    def test_archive_manifest_rejects_missing_package_and_integration_assets(
+    def test_wheel_inspection_rejects_canonical_duplicate_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            wheel_path = Path(temporary) / "candidate.whl"
+            with zipfile.ZipFile(wheel_path, "w") as archive:
+                archive.writestr("starcraft_commander/runtime_data.py", "safe")
+                archive.writestr(
+                    "starcraft_commander/./runtime_data.py",
+                    "attacker",
+                )
+
+            snapshot = inspect_wheel(wheel_path)
+
+        self.assertIn(
+            "unsafe_archive_entry",
+            {str(item["code"]) for item in snapshot.blockers},
+        )
+
+    def test_archive_manifest_rejects_missing_extra_and_modified_payloads(
         self,
     ) -> None:
         expected = {
-            "starcraft_commander/runtime_data.py",
-            "integrations/micromachine/voi_policy_blackboard.hpp",
-            "integrations/micromachine/patches/0001-fixture.patch",
-            "integrations/micromachine/scripts/smoke_macos_local.sh",
+            "starcraft_commander/runtime_data.py": compliance_module.sha256_bytes(
+                b"expected runtime"
+            ),
+            "integrations/micromachine/voi_policy_blackboard.hpp": (
+                compliance_module.sha256_bytes(b"expected header")
+            ),
         }
         snapshot = ArchiveSnapshot(
             kind="wheel",
             path=Path("candidate.whl"),
             digest="c" * 64,
             entries=(),
-            files={"starcraft_commander/runtime_data.py": b""},
+            files={
+                "starcraft_commander/runtime_data.py": b"modified runtime",
+                "starcraft_commander/unapproved_payload.py": b"attacker",
+            },
             blockers=(),
         )
 
         blockers = archive_manifest_blockers(snapshot, expected)
 
         self.assertEqual(
-            expected - {"starcraft_commander/runtime_data.py"},
-            {str(item["entry"]) for item in blockers},
+            {
+                "archive_payload_mismatch",
+                "missing_archive_entry",
+                "unexpected_archive_payload",
+            },
+            {str(item["code"]) for item in blockers},
         )
+
+    def test_expected_archive_manifest_uses_only_git_blobs(self) -> None:
+        head = "a" * 40
+        runtime_blob = "b" * 40
+        tree = (
+            f"100644 blob {runtime_blob}\t"
+            "starcraft_commander/runtime_data.py\0"
+            f"100644 blob {'d' * 40}\tdocs/private.md\0"
+        ).encode()
+
+        def git_output(_root: Path, arguments: list[str]) -> bytes:
+            if arguments == ["ls-tree", "-r", "-z", "--full-tree", head]:
+                return tree
+            if arguments == ["cat-file", "blob", runtime_blob]:
+                return b"committed runtime"
+            raise AssertionError(arguments)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            untracked = root / "starcraft_commander" / "untracked_on_disk.py"
+            untracked.parent.mkdir()
+            untracked.write_text("attacker = True\n")
+            with mock.patch.object(
+                compliance_module,
+                "_git_output",
+                side_effect=git_output,
+            ):
+                manifests = expected_archive_payloads(root, head)
+
+        self.assertEqual(
+            compliance_module.sha256_bytes(b"committed runtime"),
+            manifests["wheel"]["starcraft_commander/runtime_data.py"],
+        )
+        self.assertNotIn(
+            "starcraft_commander/untracked_on_disk.py",
+            manifests["wheel"],
+        )
+        self.assertNotIn("docs/private.md", manifests["sdist"])
 
 
 class PrivateConfigurationScannerTest(unittest.TestCase):
@@ -190,8 +257,8 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
         model_key = "VOI_MYPROXY_" + "MODEL"
         endpoint_key = "VOI_MYPROXY_OPENAI_BASE_" + "URL"
         payload = (
-            f"{model_key} = 'internal-deployment-alpha'\n"
-            f'"{endpoint_key}": "https://proxy.corp.example:8443/v1"\n'
+            f"export {model_key}=internal-deployment-alpha\n"
+            f"{endpoint_key}=https://proxy.corp.example:8443/v1\n"
         ).encode()
 
         findings = scan_payload("config.py", payload)
@@ -204,13 +271,16 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
     def test_detects_environment_and_credential_filenames(self) -> None:
         env_findings = scan_payload(".env.local", b"SAFE=value")
         credential_findings = scan_payload("config/service.credentials.json", b"{}")
+        netrc_findings = scan_payload(".netrc", b"machine private.example")
 
         self.assertEqual("env_file", env_findings[0]["rule_id"])
         self.assertEqual("credential_file", credential_findings[0]["rule_id"])
+        self.assertEqual("credential_file", netrc_findings[0]["rule_id"])
 
     def test_fixture_allowlist_is_bound_to_path_rule_and_safe_marker(self) -> None:
         fake_key = "sk-" + "testfixtureabcdefghijkl"
         real_key = "sk-" + "liveabcdefghijklmnop"
+        embedded_marker_key = "sk-" + "prodtestabcdefghijkl"
 
         self.assertEqual(
             [],
@@ -229,6 +299,12 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             scan_payload(
                 "tests/test_unlisted_fixture.py",
                 f"value = '{fake_key}'".encode(),
+            )
+        )
+        self.assertTrue(
+            scan_payload(
+                "tests/test_llm_interpreter.py",
+                f"value = '{embedded_marker_key}'".encode(),
             )
         )
 
@@ -289,6 +365,8 @@ class DerivedVerdictTest(unittest.TestCase):
                     "tree": digest[:40],
                     "dirty_entries": [],
                     "source_root_matches": True,
+                    "repository_root": "/release",
+                    "source_root": "/release",
                 }
                 for phase in ("before", "after")
             },
@@ -301,9 +379,10 @@ class DerivedVerdictTest(unittest.TestCase):
             "licenses": [
                 {
                     "path": path,
-                    "source_sha256": digest,
-                    "wheel_sha256": digest,
-                    "sdist_sha256": digest,
+                    "expected_sha256": EXPECTED_LICENSE_FILE_SHA256[path],
+                    "source_sha256": EXPECTED_LICENSE_FILE_SHA256[path],
+                    "wheel_sha256": EXPECTED_LICENSE_FILE_SHA256[path],
+                    "sdist_sha256": EXPECTED_LICENSE_FILE_SHA256[path],
                 }
                 for path in REQUIRED_LICENSE_FILES
             ],
@@ -327,6 +406,7 @@ class DerivedVerdictTest(unittest.TestCase):
                 "lock": sorted(EXPECTED_PROJECT_DISTRIBUTIONS),
                 "metadata": sorted(EXPECTED_PROJECT_DISTRIBUTIONS),
                 "notices": sorted(EXPECTED_DIRECT_DISTRIBUTIONS),
+                "notice_licenses": dict(sorted(EXPECTED_NOTICE_LICENSES.items())),
             },
             "install_smoke": {
                 "attempted": True,
@@ -337,7 +417,11 @@ class DerivedVerdictTest(unittest.TestCase):
                     "target_runtime_data_loaded": True,
                 },
             },
-            "secret_scan": {"findings": []},
+            "secret_scan": {
+                "scanned_file_count": 10,
+                "finding_count": 0,
+                "findings": [],
+            },
         }
 
     def test_accepts_complete_raw_evidence(self) -> None:
@@ -397,6 +481,57 @@ class DerivedVerdictTest(unittest.TestCase):
 
         self.assertIn("repository_not_clean_commit", codes)
         self.assertIn("isolated_install_not_attempted", codes)
+
+    def test_rejects_repository_identity_drift_and_inconsistent_raw_state(
+        self,
+    ) -> None:
+        report = dict(self.report)
+        repository = {
+            phase: dict(value)
+            for phase, value in self.report["repository"].items()
+        }
+        repository["before"]["dirty_entries"] = [" M pyproject.toml"]
+        repository["before"]["ok"] = True
+        repository["after"]["head"] = "e" * 40
+        repository["after"]["tree"] = "f" * 40
+        report["repository"] = repository
+
+        codes = {
+            str(item["code"]) for item in distribution_report_blockers(report)
+        }
+
+        self.assertIn("repository_not_clean_commit", codes)
+        self.assertIn("repository_identity_changed", codes)
+
+    def test_rejects_mutated_license_and_notice_license_assignment(self) -> None:
+        report = dict(self.report)
+        licenses = [dict(item) for item in self.report["licenses"]]
+        licenses[0]["source_sha256"] = "e" * 64
+        licenses[0]["wheel_sha256"] = "e" * 64
+        licenses[0]["sdist_sha256"] = "e" * 64
+        report["licenses"] = licenses
+        dependencies = dict(self.report["dependencies"])
+        notice_licenses = dict(dependencies["notice_licenses"])
+        notice_licenses["openai"] = "MIT"
+        dependencies["notice_licenses"] = notice_licenses
+        report["dependencies"] = dependencies
+
+        codes = {
+            str(item["code"]) for item in distribution_report_blockers(report)
+        }
+
+        self.assertIn("license_content_mismatch", codes)
+        self.assertIn("dependency_notice_drift", codes)
+
+    def test_rejects_missing_secret_scan_evidence(self) -> None:
+        report = dict(self.report)
+        report.pop("secret_scan")
+
+        codes = {
+            str(item["code"]) for item in distribution_report_blockers(report)
+        }
+
+        self.assertIn("invalid_secret_scan_evidence", codes)
 
     def test_rejects_wheel_only_and_sdist_only_runtime_data(self) -> None:
         for missing_key in ("wheel_present", "sdist_present"):

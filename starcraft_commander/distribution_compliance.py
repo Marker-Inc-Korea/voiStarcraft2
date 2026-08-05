@@ -27,6 +27,15 @@ EXPECTED_LICENSE_EXPRESSION: Final[str] = (
     "AGPL-3.0-or-later OR LicenseRef-Commercial"
 )
 EXPECTED_DISTRIBUTION_NAME: Final[str] = "voistarcraft2"
+EXPECTED_LICENSE_FILE_SHA256: Final[Mapping[str, str]] = {
+    "LICENSE": "888136505768579bc729c27a60a5adc9360ef41fb0b05fc3a0bb2a49bfad8b9a",
+    "LICENSES/AGPL-3.0-or-later.txt": (
+        "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0"
+    ),
+    "THIRD_PARTY_NOTICES.md": (
+        "efe282974cf6c5a12e1f963554513a751aef206972ea083730cb7026ed50eabb"
+    ),
+}
 PRODUCT_PACKAGE_ROOTS: Final[frozenset[str]] = frozenset(
     {"broodwar_commander", "starcraft_commander", "toycraft_commander"}
 )
@@ -56,6 +65,16 @@ EXPECTED_BUILD_DISTRIBUTIONS: Final[frozenset[str]] = frozenset({"setuptools"})
 EXPECTED_DIRECT_DISTRIBUTIONS: Final[frozenset[str]] = (
     EXPECTED_PROJECT_DISTRIBUTIONS | EXPECTED_BUILD_DISTRIBUTIONS
 )
+EXPECTED_NOTICE_LICENSES: Final[Mapping[str, str]] = {
+    "anthropic": "MIT",
+    "build": "MIT",
+    "burnysc2": "MIT",
+    "faster-whisper": "MIT",
+    "openai": "Apache-2.0",
+    "pytest": "MIT",
+    "setuptools": "MIT",
+    "sounddevice": "MIT",
+}
 MAX_ARCHIVE_ENTRIES: Final[int] = 4096
 MAX_ARCHIVE_MEMBER_BYTES: Final[int] = 64 * 1024 * 1024
 MAX_ARCHIVE_TOTAL_BYTES: Final[int] = 256 * 1024 * 1024
@@ -99,18 +118,22 @@ _DENIED_PATH_COMPONENTS: Final[frozenset[str]] = frozenset(
 _NOTICE_DISTRIBUTION_RE: Final[re.Pattern[str]] = re.compile(
     r"(?m)^### Python distribution: `([A-Za-z0-9_.-]+)`\s*$"
 )
+_NOTICE_DISTRIBUTION_LICENSE_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?ms)^### Python distribution: `([A-Za-z0-9_.-]+)`\s*$"
+    r"(.*?)(?=^### Python distribution: |\Z)"
+)
 _REQUIREMENT_NAME_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*([A-Za-z0-9][A-Za-z0-9_.-]*)"
 )
 _PRIVATE_MODEL_RE: Final[re.Pattern[str]] = re.compile(
     r"(?im)^\s*(?:export\s+)?[\"']?"
     r"(?:DEFAULT_MYPROXY_MODEL|VOI_MYPROXY_MODEL)[\"']?"
-    r"\s*(?:(?::[^=\n]+)?=|:)\s*[\"']([^\"'\n]+)[\"']"
+    r"\s*(?:(?::[^=\n]+)?=|:)\s*[\"']?([^\"'\s,#}\n]+)[\"']?"
 )
 _PRIVATE_ENDPOINT_RE: Final[re.Pattern[str]] = re.compile(
     r"(?im)^\s*(?:export\s+)?[\"']?"
     r"(?:MYPROXY_OPENAI_BASE_URL|VOI_MYPROXY_OPENAI_BASE_URL)[\"']?"
-    r"\s*(?:(?::[^=\n]+)?=|:)\s*[\"']([^\"'\n]+)[\"']"
+    r"\s*(?:(?::[^=\n]+)?=|:)\s*[\"']?([^\"'\s,#}\n]+)[\"']?"
 )
 _API_KEY_RE: Final[re.Pattern[str]] = re.compile(
     r"\b("
@@ -151,6 +174,16 @@ _SAFE_FIXTURE_MARKERS: Final[tuple[str, ...]] = (
     "fixture",
     "secret",
     "test",
+)
+_CREDENTIAL_FILENAMES: Final[frozenset[str]] = frozenset(
+    {
+        ".netrc",
+        ".pypirc",
+        "_netrc",
+        "credentials.json",
+        "id_ed25519",
+        "id_rsa",
+    }
 )
 
 
@@ -223,7 +256,8 @@ def inspect_wheel(path: Path) -> ArchiveSnapshot:
                     }
                 )
                 continue
-            if name in seen:
+            canonical_name = _canonical_archive_name(name)
+            if canonical_name in seen:
                 blockers.append(
                     {
                         "code": "duplicate_archive_entry",
@@ -232,7 +266,7 @@ def inspect_wheel(path: Path) -> ArchiveSnapshot:
                     }
                 )
                 continue
-            seen.add(name)
+            seen.add(canonical_name)
             if info.is_dir():
                 continue
             mode = (info.external_attr >> 16) & 0o170000
@@ -320,7 +354,8 @@ def inspect_sdist(path: Path) -> ArchiveSnapshot:
                     }
                 )
                 continue
-            if name in seen:
+            canonical_name = _canonical_archive_name(name)
+            if canonical_name in seen:
                 blockers.append(
                     {
                         "code": "duplicate_archive_entry",
@@ -329,7 +364,7 @@ def inspect_sdist(path: Path) -> ArchiveSnapshot:
                     }
                 )
                 continue
-            seen.add(name)
+            seen.add(canonical_name)
             if member.isdir():
                 continue
             if member.issym() or member.islnk():
@@ -451,11 +486,7 @@ def scan_payload(
     basename = PurePosixPath(normalized_path).name.lower()
     if basename == ".env" or basename.startswith(".env."):
         findings.append(_path_finding(normalized_path, "env_file"))
-    if (
-        "credentials.json" == basename
-        or basename.endswith(".credentials.json")
-        or ".aws" in lowered_parts
-    ):
+    if _is_credential_path(basename, lowered_parts):
         findings.append(_path_finding(normalized_path, "credential_file"))
     if len(payload) > MAX_SCAN_FILE_BYTES:
         findings.append(
@@ -666,9 +697,13 @@ def build_distribution_report(
             normalized_dependency_name(name)
             for name in _NOTICE_DISTRIBUTION_RE.findall(notice_text)
         )
+        notice_licenses = notice_dependency_licenses(notice_text)
         licenses = _license_evidence(source_root, wheel, sdist)
         runtime_data = _runtime_data_evidence(source_root, wheel, sdist)
-        expected_payloads = expected_archive_payloads(source_root)
+        expected_payloads = expected_archive_payloads(
+            repository_root,
+            str(repository_before.get("head", "")),
+        )
         install_smoke = (
             isolated_wheel_install_smoke(wheel.path)
             if run_install_smoke
@@ -699,7 +734,7 @@ def build_distribution_report(
                 ),
             ],
             "archive_manifests": {
-                kind: sorted(paths)
+                kind: dict(sorted(paths.items()))
                 for kind, paths in expected_payloads.items()
             },
             "metadata": {
@@ -722,6 +757,7 @@ def build_distribution_report(
                 "lock": lock_dependencies,
                 "metadata": metadata_dependencies,
                 "notices": notice_dependencies,
+                "notice_licenses": notice_licenses,
             },
             "install_smoke": install_smoke,
         }
@@ -751,9 +787,28 @@ def distribution_report_blockers(
 
     blockers: list[dict[str, object]] = []
     repository = _mapping(report.get("repository"))
+    repository_states: dict[str, Mapping[str, object]] = {}
     for phase in ("before", "after"):
         state = _mapping(repository.get(phase))
-        if state.get("ok") is not True:
+        repository_states[phase] = state
+        head = state.get("head")
+        tree = state.get("tree")
+        dirty_entries = state.get("dirty_entries")
+        repository_root = state.get("repository_root")
+        source_root = state.get("source_root")
+        raw_state_valid = (
+            state.get("ok") is True
+            and state.get("source_root_matches") is True
+            and dirty_entries == []
+            and isinstance(head, str)
+            and re.fullmatch(r"[0-9a-f]{40,64}", head) is not None
+            and isinstance(tree, str)
+            and re.fullmatch(r"[0-9a-f]{40,64}", tree) is not None
+            and isinstance(repository_root, str)
+            and isinstance(source_root, str)
+            and repository_root == source_root
+        )
+        if not raw_state_valid:
             blockers.append(
                 {
                     "code": "repository_not_clean_commit",
@@ -762,6 +817,20 @@ def distribution_report_blockers(
                     "tree": state.get("tree"),
                     "dirty_entries": state.get("dirty_entries"),
                     "source_root_matches": state.get("source_root_matches"),
+                }
+            )
+    before_state = repository_states["before"]
+    after_state = repository_states["after"]
+    for identity in ("head", "tree"):
+        before_identity = before_state.get(identity)
+        after_identity = after_state.get(identity)
+        if before_identity != after_identity:
+            blockers.append(
+                {
+                    "code": "repository_identity_changed",
+                    "identity": identity,
+                    "before": before_identity,
+                    "after": after_identity,
                 }
             )
     archive_blockers = report.get("archive_blockers")
@@ -793,6 +862,8 @@ def distribution_report_blockers(
         )
     for item in _sequence(report.get("licenses")):
         evidence = _mapping(item)
+        path = str(evidence.get("path", ""))
+        expected_digest = EXPECTED_LICENSE_FILE_SHA256.get(path)
         if (
             evidence.get("source_sha256") != evidence.get("wheel_sha256")
             or evidence.get("source_sha256") != evidence.get("sdist_sha256")
@@ -801,6 +872,19 @@ def distribution_report_blockers(
                 {
                     "code": "license_file_mismatch",
                     "path": evidence.get("path"),
+                }
+            )
+        if (
+            expected_digest is None
+            or evidence.get("expected_sha256") != expected_digest
+            or evidence.get("source_sha256") != expected_digest
+        ):
+            blockers.append(
+                {
+                    "code": "license_content_mismatch",
+                    "path": evidence.get("path"),
+                    "observed": evidence.get("source_sha256"),
+                    "expected": expected_digest,
                 }
             )
     observed_license_paths = {
@@ -855,6 +939,7 @@ def distribution_report_blockers(
         "lock": project_expected,
         "metadata": project_expected,
         "notices": expected,
+        "notice_licenses": dict(sorted(EXPECTED_NOTICE_LICENSES.items())),
     }
     for source_name, source_expected in dependency_expectations.items():
         observed = dependencies.get(source_name)
@@ -892,6 +977,8 @@ def distribution_report_blockers(
             blockers.append({"code": "target_install_runtime_data_failed"})
     secret_scan = _mapping(report.get("secret_scan"))
     findings = secret_scan.get("findings")
+    finding_count = secret_scan.get("finding_count")
+    scanned_file_count = secret_scan.get("scanned_file_count")
     if isinstance(findings, list) and findings:
         blockers.append(
             {
@@ -899,7 +986,12 @@ def distribution_report_blockers(
                 "finding_count": len(findings),
             }
         )
-    elif "secret_scan" in report and findings != []:
+    elif (
+        findings != []
+        or finding_count != 0
+        or type(scanned_file_count) is not int
+        or scanned_file_count <= 0
+    ):
         blockers.append({"code": "invalid_secret_scan_evidence"})
     return _deduplicate_blockers(blockers)
 
@@ -1259,6 +1351,19 @@ def direct_dependencies_from_uv_lock(text: str) -> frozenset[str]:
     )
 
 
+def notice_dependency_licenses(text: str) -> dict[str, str]:
+    """Return one normalized declared license for each Python distribution."""
+
+    licenses: dict[str, str] = {}
+    for raw_name, section in _NOTICE_DISTRIBUTION_LICENSE_RE.findall(text):
+        name = normalized_dependency_name(raw_name)
+        matches = re.findall(r"(?m)^License:\s*([^\n]+?)\s*$", section)
+        if not name or len(matches) != 1 or name in licenses:
+            continue
+        licenses[name] = matches[0]
+    return dict(sorted(licenses.items()))
+
+
 def normalized_dependency_name(requirement: str) -> str:
     """Return the normalized leading distribution name from a requirement."""
 
@@ -1296,16 +1401,24 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _archive_path_error(name: str) -> str:
     if not name or "\x00" in name or "\\" in name:
         return "invalid_name"
-    path = PurePosixPath(name)
+    canonical_name = _canonical_archive_name(name)
+    if not canonical_name:
+        return "invalid_name"
+    raw_parts = canonical_name.split("/")
+    if any(part in {"", ".", ".."} for part in raw_parts):
+        return "path_traversal"
+    path = PurePosixPath(canonical_name)
     if path.is_absolute():
         return "absolute_path"
-    if any(part in {"", ".", ".."} for part in path.parts):
-        return "path_traversal"
     return ""
 
 
+def _canonical_archive_name(name: str) -> str:
+    return name[:-1] if name.endswith("/") else name
+
+
 def _archive_relative_path(kind: str, entry: str) -> PurePosixPath | None:
-    path = PurePosixPath(entry)
+    path = PurePosixPath(_canonical_archive_name(entry))
     if kind == "wheel":
         return path
     if len(path.parts) < 2:
@@ -1320,7 +1433,7 @@ def _denied_distribution_path(path: PurePosixPath) -> str:
             return f"denied_component:{part}"
         if part == ".env" or part.startswith(".env."):
             return "local_environment_file"
-        if part == "credentials.json" or part.endswith(".credentials.json"):
+        if _is_credential_path(part, set(lowered)):
             return "credential_file"
     if path.name.endswith((".pyc", ".pyo")):
         return "python_bytecode"
@@ -1394,64 +1507,94 @@ def _allowed_sdist_path(path: PurePosixPath) -> bool:
 
 
 def expected_archive_payloads(
-    source_root: Path,
-) -> dict[str, frozenset[str]]:
-    """Return source-derived payload manifests independent of built archives."""
+    repository_root: Path,
+    head: str,
+) -> dict[str, dict[str, str]]:
+    """Return exact path and content manifests from one immutable Git commit."""
 
-    payloads: set[str] = set()
-    for package_root in sorted(PRODUCT_PACKAGE_ROOTS):
-        for path in sorted((source_root / package_root).rglob("*.py")):
-            if path.is_file():
-                payloads.add(path.relative_to(source_root).as_posix())
-    for relative in (
-        Path("integrations/__init__.py"),
-        Path("integrations/micromachine/__init__.py"),
-    ):
-        if (source_root / relative).is_file():
-            payloads.add(relative.as_posix())
-    integration_root = source_root / "integrations" / "micromachine"
-    for path in sorted(integration_root.rglob("*")):
-        if not path.is_file():
-            continue
-        relative = path.relative_to(source_root)
-        if _allowed_integration_path(PurePosixPath(relative.as_posix())):
-            payloads.add(relative.as_posix())
-    sdist_payloads = set(payloads)
-    sdist_payloads.update(
-        {
-            "LICENSE",
-            "LICENSES/AGPL-3.0-or-later.txt",
-            "MANIFEST.in",
-            "README.md",
-            "THIRD_PARTY_NOTICES.md",
-            "pyproject.toml",
-        }
+    if re.fullmatch(r"[0-9a-f]{40,64}", head) is None:
+        raise ValueError("release manifest requires an exact Git commit")
+    tree = _git_output(
+        repository_root,
+        ["ls-tree", "-r", "-z", "--full-tree", head],
     )
-    return {
-        "wheel": frozenset(payloads),
-        "sdist": frozenset(sdist_payloads),
-    }
+    wheel: dict[str, str] = {}
+    sdist: dict[str, str] = {}
+    blob_cache: dict[str, str] = {}
+    for raw_record in tree.split(b"\0"):
+        if not raw_record:
+            continue
+        metadata, separator, raw_path = raw_record.partition(b"\t")
+        fields = metadata.split()
+        if not separator or len(fields) != 3:
+            raise RuntimeError("Git tree contains an unsupported release entry")
+        path_text = raw_path.decode("utf-8", errors="strict")
+        path = PurePosixPath(path_text)
+        wheel_allowed = _allowed_wheel_path(path)
+        sdist_allowed = _allowed_sdist_path(path)
+        if not wheel_allowed and not sdist_allowed:
+            continue
+        if fields[1] != b"blob":
+            raise RuntimeError("release payload is not a Git blob")
+        object_id = fields[2].decode("ascii", errors="strict")
+        digest = blob_cache.get(object_id)
+        if digest is None:
+            payload = _git_output(
+                repository_root,
+                ["cat-file", "blob", object_id],
+            )
+            digest = sha256_bytes(payload)
+            blob_cache[object_id] = digest
+        if wheel_allowed:
+            wheel[path_text] = digest
+        if sdist_allowed:
+            sdist[path_text] = digest
+    return {"wheel": wheel, "sdist": sdist}
 
 
 def archive_manifest_blockers(
     snapshot: ArchiveSnapshot,
-    expected_paths: Iterable[str],
+    expected_paths: Mapping[str, str],
 ) -> list[dict[str, object]]:
-    """Return blockers for source payloads omitted from an archive."""
+    """Return blockers for payload path or content drift from the Git tree."""
 
-    observed = {
-        relative.as_posix()
-        for entry in snapshot.files
-        if (relative := _archive_relative_path(snapshot.kind, entry)) is not None
-    }
-    return [
-        {
-            "code": "missing_archive_entry",
-            "kind": snapshot.kind,
-            "entry": expected,
-        }
-        for expected in sorted(set(expected_paths) - observed)
-    ]
+    blockers: list[dict[str, object]] = []
+    observed: dict[str, bytes] = {}
+    for entry, payload in snapshot.files.items():
+        relative = _archive_relative_path(snapshot.kind, entry)
+        if relative is None or _generated_archive_path(snapshot.kind, relative):
+            continue
+        observed[relative.as_posix()] = payload
+    expected = dict(expected_paths)
+    for path in sorted(set(expected) - set(observed)):
+        blockers.append(
+            {
+                "code": "missing_archive_entry",
+                "kind": snapshot.kind,
+                "entry": path,
+            }
+        )
+    for path in sorted(set(observed) - set(expected)):
+        blockers.append(
+            {
+                "code": "unexpected_archive_payload",
+                "kind": snapshot.kind,
+                "entry": path,
+            }
+        )
+    for path in sorted(set(expected) & set(observed)):
+        observed_digest = sha256_bytes(observed[path])
+        if observed_digest != expected[path]:
+            blockers.append(
+                {
+                    "code": "archive_payload_mismatch",
+                    "kind": snapshot.kind,
+                    "entry": path,
+                    "observed": observed_digest,
+                    "expected": expected[path],
+                }
+            )
+    return blockers
 
 
 def _safe_fixture_match(path: str, rule_id: str, matched: str) -> bool:
@@ -1459,7 +1602,46 @@ def _safe_fixture_match(path: str, rule_id: str, matched: str) -> bool:
     if allowed_rules is None or rule_id not in allowed_rules:
         return False
     lowered = matched.lower()
-    return any(marker in lowered for marker in _SAFE_FIXTURE_MARKERS)
+    if rule_id == "api_key":
+        match = _API_KEY_RE.search(lowered)
+        if match is None:
+            return False
+        token = match.group(1)
+        suffix = token.removeprefix("sk-").removeprefix("proj-")
+        return suffix.startswith(_SAFE_FIXTURE_MARKERS)
+    if rule_id == "bearer_token":
+        match = _BEARER_TOKEN_RE.search(lowered)
+        return bool(
+            match is not None
+            and match.group(1).startswith(_SAFE_FIXTURE_MARKERS)
+        )
+    if rule_id == "credential_path":
+        return any(
+            marker in PurePosixPath(lowered.replace("\\", "/")).parts
+            for marker in _SAFE_FIXTURE_MARKERS
+        )
+    return False
+
+
+def _generated_archive_path(kind: str, path: PurePosixPath) -> bool:
+    if kind == "wheel":
+        return bool(path.parts and path.parts[0].endswith(".dist-info"))
+    return (
+        (len(path.parts) == 1 and path.name in {"PKG-INFO", "setup.cfg"})
+        or bool(path.parts and path.parts[0].lower().endswith(".egg-info"))
+    )
+
+
+def _is_credential_path(basename: str, lowered_parts: set[str]) -> bool:
+    return (
+        basename in _CREDENTIAL_FILENAMES
+        or basename.endswith(".credentials.json")
+        or ".aws" in lowered_parts
+        or (
+            ".ssh" in lowered_parts
+            and basename.startswith(("id_", "identity"))
+        )
+    )
 
 
 def _path_finding(path: str, rule_id: str) -> dict[str, object]:
@@ -1626,6 +1808,7 @@ def _license_evidence(
         evidence.append(
             {
                 "path": relative,
+                "expected_sha256": EXPECTED_LICENSE_FILE_SHA256[relative],
                 "source_sha256": sha256_bytes(source),
                 "wheel_sha256": sha256_bytes(wheel_payload),
                 "sdist_sha256": sha256_bytes(sdist_payload),
