@@ -1,5 +1,5 @@
 diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
-index 3733a2a..480b74a 100644
+index 3733a2a51bfdd55ff3eedd23cc645740f2ca5a8c..28aacd73d62c6cb1262a2a9c0fe2e6ead49e07f1 100644
 --- a/src/CombatCommander.cpp
 +++ b/src/CombatCommander.cpp
 @@ -1,4 +1,7 @@
@@ -730,7 +730,7 @@ index 3733a2a..480b74a 100644
  				}
  				break;
  			case MicroActionType::AbilityTarget:
-@@ -16689,14 +16672,28 @@ void CombatCommander::ExecuteActions()
+@@ -16689,14 +16672,29 @@ void CombatCommander::ExecuteActions()
  						}
  					}
  				}
@@ -741,7 +741,8 @@ index 3733a2a..480b74a 100644
 +							productionBinding,
 +							"ability_target",
 +							action.target->pos.x,
-+							action.target->pos.y)))
++							action.target->pos.y,
++							action.target->tag)))
 +				{
 +					rejectExplicitAbility(
 +						"waiting_target",
@@ -761,7 +762,7 @@ index 3733a2a..480b74a 100644
  				}
  				break;
  			case MicroActionType::Stop:
-@@ -16706,12 +16703,20 @@ void CombatCommander::ExecuteActions()
+@@ -16706,12 +16704,20 @@ void CombatCommander::ExecuteActions()
  				skip = true;
  				break;
  			case MicroActionType::RightClick:
@@ -787,7 +788,7 @@ index 3733a2a..480b74a 100644
  			default:
  				const int type = action.microActionType;
 diff --git a/src/Micro.cpp b/src/Micro.cpp
-index 344aaa6..eafd798 100644
+index 344aaa67cd0dcaf436cb70fd217d61e539c8a55f..eafd7989e1ca9e5fa108e72e2e431e3cd47d5e1d 100644
 --- a/src/Micro.cpp
 +++ b/src/Micro.cpp
 @@ -2,6 +2,34 @@
@@ -1075,7 +1076,7 @@ index 344aaa6..eafd798 100644
  	return MicroActionType::ToggleAbility;
  }
 diff --git a/src/Micro.h b/src/Micro.h
-index f0653da..178a502 100644
+index f0653da743f8e3979a0c68d6a71addd4c2c4a221..178a50289fed6741fb26f9c577e46b4d9e3c1a2b 100644
 --- a/src/Micro.h
 +++ b/src/Micro.h
 @@ -2,6 +2,7 @@
@@ -1179,7 +1180,7 @@ index f0653da..178a502 100644
 +		VoiProductionSubmissionReceipt * submissionReceipt = nullptr);
 +}
 diff --git a/src/Squad.cpp b/src/Squad.cpp
-index 2c0e029..0173f0d 100644
+index 2c0e02912e3030f7eddb3119cb1943fc10c23020..0173f0d6bb396c41f907455e81c2ea9b7ba0bf93 100644
 --- a/src/Squad.cpp
 +++ b/src/Squad.cpp
 @@ -428,7 +428,7 @@ bool Squad::needsToRegroup()
@@ -1249,7 +1250,7 @@ index 2c0e029..0173f0d 100644
  
  bool Squad::containsUnit(const Unit & unit) const
 diff --git a/src/Squad.h b/src/Squad.h
-index def3e92..1e0099e 100644
+index def3e92e158d3958808193fddff16155261ed66d..1e0099e2ae783dcec9256f14ca99fb48f8248e64 100644
 --- a/src/Squad.h
 +++ b/src/Squad.h
 @@ -4,6 +4,7 @@
@@ -1281,7 +1282,7 @@ index def3e92..1e0099e 100644
      void removeUnit(const Unit & unit);
      void giveBackWorkers();
 diff --git a/src/main.cpp b/src/main.cpp
-index 451c608..861ff3b 100644
+index 451c6087564bf5868a9ac335aac968a24a6c9986..861ff3ba41b1d9e2ab4e4d9efd386f2365260c62 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
 @@ -1,6 +1,8 @@
@@ -1795,7 +1796,7 @@ index 451c608..861ff3b 100644
  	signal(SIGABRT, handler);
 diff --git a/src/voi_explicit_ability_catalog.hpp b/src/voi_explicit_ability_catalog.hpp
 new file mode 100644
-index 0000000..afff43f
+index 0000000000000000000000000000000000000000..afff43f2a16813263b623b8f27b8d5eba554e88e
 --- /dev/null
 +++ b/src/voi_explicit_ability_catalog.hpp
 @@ -0,0 +1,206 @@
@@ -2007,7 +2008,7 @@ index 0000000..afff43f
 +}
 diff --git a/src/voi_explicit_ability_spec.hpp b/src/voi_explicit_ability_spec.hpp
 new file mode 100644
-index 0000000..8f6b2f1
+index 0000000000000000000000000000000000000000..8f6b2f1747add418b523ab0f2d0c4976f956ff96
 --- /dev/null
 +++ b/src/voi_explicit_ability_spec.hpp
 @@ -0,0 +1,150 @@
@@ -2163,10 +2164,10 @@ index 0000000..8f6b2f1
 +}
 diff --git a/src/voi_live_production_binding.hpp b/src/voi_live_production_binding.hpp
 new file mode 100644
-index 0000000..71eff63
+index 0000000000000000000000000000000000000000..50f4cf165429b93a87f32abb17117aa141dda6bb
 --- /dev/null
 +++ b/src/voi_live_production_binding.hpp
-@@ -0,0 +1,134 @@
+@@ -0,0 +1,140 @@
 +#pragma once
 +
 +#include "sc2api/sc2_typeenums.h"
@@ -2266,7 +2267,8 @@ index 0000000..71eff63
 +	VoiProductionActionBinding & binding,
 +	const std::string & dispatchAction,
 +	double targetX = 0.0,
-+	double targetY = 0.0)
++	double targetY = 0.0,
++	std::uint64_t targetTag = 0)
 +{
 +	VoiExplicitAbilitySpec spec;
 +	if (!voiProductionOperationIdentityIsValid(binding.identity)
@@ -2283,7 +2285,10 @@ index 0000000..71eff63
 +			!= voiProductionExplicitAbilityDispatchAction(
 +				spec.targetKind)
 +		|| !std::isfinite(targetX)
-+		|| !std::isfinite(targetY))
++		|| !std::isfinite(targetY)
++		|| (dispatchAction == "ability_target"
++			? targetTag == 0
++			: targetTag != 0))
 +	{
 +		return false;
 +	}
@@ -2293,17 +2298,19 @@ index 0000000..71eff63
 +	{
 +		binding.targetX = 0.0;
 +		binding.targetY = 0.0;
++		binding.targetTag = 0;
 +	}
 +	else
 +	{
 +		binding.targetX = targetX;
 +		binding.targetY = targetY;
++		binding.targetTag = targetTag;
 +	}
 +	return true;
 +}
 diff --git a/src/voi_operation_observation.hpp b/src/voi_operation_observation.hpp
 new file mode 100644
-index 0000000..4e1671b
+index 0000000000000000000000000000000000000000..4e1671b5145ce606774662150ca226f59e7f297c
 --- /dev/null
 +++ b/src/voi_operation_observation.hpp
 @@ -0,0 +1,66 @@
@@ -2374,7 +2381,7 @@ index 0000000..4e1671b
 +	return decision;
 +}
 diff --git a/src/voi_pre_live_journey_adapter.hpp b/src/voi_pre_live_journey_adapter.hpp
-index 5adac66..c6765eb 100644
+index 5adac665fd95c96273ecd5e23a0e6e70fa04c14d..73abeaa3648ee220e102d03876e0516079d131b1 100644
 --- a/src/voi_pre_live_journey_adapter.hpp
 +++ b/src/voi_pre_live_journey_adapter.hpp
 @@ -2,9 +2,12 @@
@@ -2398,7 +2405,7 @@ index 5adac66..c6765eb 100644
  	bool alive = true;
  	bool complete = true;
  	bool selfOwned = true;
-@@ -70,9 +74,26 @@ struct VoiPreLiveOperationState
+@@ -70,9 +74,27 @@ struct VoiPreLiveOperationState
  	std::string status = "RECEIVED";
  	std::string blocker;
  	std::string action;
@@ -2411,6 +2418,7 @@ index 5adac66..c6765eb 100644
 +	std::string cloakState;
 +	double targetX = 0.0;
 +	double targetY = 0.0;
++	std::uint64_t targetTag = 0;
 +	double squadOrderRadius = 0.0;
  	std::string editAction;
  	std::string counterpartOperationId;
@@ -2425,7 +2433,7 @@ index 5adac66..c6765eb 100644
  	int minimumUnits = 0;
  	int maximumUnits = 0;
  	bool allowPartial = false;
-@@ -84,12 +105,34 @@ struct VoiPreLiveOperationState
+@@ -84,12 +106,34 @@ struct VoiPreLiveOperationState
  	double priority = 0.0;
  	std::vector<VoiPreLiveRequirementState> requirements;
  	std::vector<std::uint64_t> assignedTags;
@@ -2461,7 +2469,7 @@ index 5adac66..c6765eb 100644
  	std::map<std::string, VoiPreLiveOperationState> m_operations;
  	std::map<std::string, int> m_protectedMinimum;
  	std::set<std::string> m_structures;
-@@ -102,6 +145,19 @@ class VoiPreLiveJourneyAdapter
+@@ -102,6 +146,19 @@ class VoiPreLiveJourneyAdapter
  	bool m_baseThreatened = false;
  	std::string m_baseId = "self_main";
  	std::size_t m_requiredDefenders = 0;
@@ -2481,7 +2489,7 @@ index 5adac66..c6765eb 100644
  
  	static bool hasForbiddenAuthorityInput(
  		const VoiPreLiveJson & value,
-@@ -161,7 +217,9 @@ class VoiPreLiveJourneyAdapter
+@@ -161,7 +218,9 @@ class VoiPreLiveJourneyAdapter
  	{
  		if (!operation.ability.empty())
  		{
@@ -2492,7 +2500,7 @@ index 5adac66..c6765eb 100644
  		}
  		if (operation.taskType == "scout_with_units")
  		{
-@@ -175,7 +233,11 @@ class VoiPreLiveJourneyAdapter
+@@ -175,7 +234,11 @@ class VoiPreLiveJourneyAdapter
  		{
  			return "squad_order:harass";
  		}
@@ -2505,7 +2513,7 @@ index 5adac66..c6765eb 100644
  	}
  
  	static std::string canonicalTask(
-@@ -193,7 +255,152 @@ class VoiPreLiveJourneyAdapter
+@@ -193,7 +256,183 @@ class VoiPreLiveJourneyAdapter
  		{
  			return "harass";
  		}
@@ -2644,6 +2652,37 @@ index 5adac66..c6765eb 100644
 +		return "attack_move";
 +	}
 +
++	std::uint64_t deterministicAbilityTargetTag(
++		const VoiPreLiveOperationState & operation) const
++	{
++		if (deterministicDispatchAction(operation)
++			!= "ability_target")
++		{
++			return 0;
++		}
++		const bool requiresEnemy =
++			operation.abilityTargetKind == "enemy_unit"
++			|| operation.abilityTargetKind == "ghost_snipe"
++			|| operation.abilityTargetKind == "yamato_target";
++		for (const auto & unitEntry : m_units)
++		{
++			const auto & unit = unitEntry.second;
++			if (!unit.alive
++				|| !unit.complete
++				|| unit.selfOwned == requiresEnemy
++				|| std::find(
++					operation.assignedTags.begin(),
++					operation.assignedTags.end(),
++					unit.tag)
++					!= operation.assignedTags.end())
++			{
++				continue;
++			}
++			return unit.tag;
++		}
++		return 0;
++	}
++
 +	static std::pair<int, int> unitResourceCost(
 +		const std::string & unitType)
 +	{
@@ -2659,7 +2698,7 @@ index 5adac66..c6765eb 100644
  	}
  
  	void emit(
-@@ -265,6 +472,68 @@ class VoiPreLiveJourneyAdapter
+@@ -265,6 +504,68 @@ class VoiPreLiveJourneyAdapter
  		return tags;
  	}
  
@@ -2728,7 +2767,7 @@ index 5adac66..c6765eb 100644
  	static std::string jsonString(
  		const VoiPreLiveJson & value,
  		const char * key,
-@@ -318,6 +587,14 @@ class VoiPreLiveJourneyAdapter
+@@ -318,6 +619,14 @@ class VoiPreLiveJourneyAdapter
  
  	void loadInitialState(const VoiPreLiveJson & state)
  	{
@@ -2743,7 +2782,7 @@ index 5adac66..c6765eb 100644
  		const auto protectedMinimum =
  			state.find("protected_minimum");
  		if (protectedMinimum != state.end()
-@@ -361,11 +638,17 @@ class VoiPreLiveJourneyAdapter
+@@ -361,11 +670,17 @@ class VoiPreLiveJourneyAdapter
  			VoiPreLiveUnitState unit;
  			unit.tag = jsonUint64(item, "tag");
  			unit.unitType = jsonString(item, "unit_type");
@@ -2761,7 +2800,7 @@ index 5adac66..c6765eb 100644
  			unit.family =
  				voiCanonicalTerranFamilyForUnitType(
  					unit.unitType);
-@@ -464,13 +747,28 @@ class VoiPreLiveJourneyAdapter
+@@ -464,13 +779,28 @@ class VoiPreLiveJourneyAdapter
  				{
  					if (selected.is_object())
  					{
@@ -2797,7 +2836,7 @@ index 5adac66..c6765eb 100644
  					}
  				}
  			}
-@@ -525,7 +823,65 @@ class VoiPreLiveJourneyAdapter
+@@ -525,7 +855,65 @@ class VoiPreLiveJourneyAdapter
  			throw std::runtime_error(
  				"operation identity or task is invalid");
  		}
@@ -2863,7 +2902,7 @@ index 5adac66..c6765eb 100644
  		return operation;
  	}
  
-@@ -547,7 +903,7 @@ class VoiPreLiveJourneyAdapter
+@@ -547,7 +935,7 @@ class VoiPreLiveJourneyAdapter
  			}
  			const auto owner = m_owners.find(unit.tag);
  			if (owner == m_owners.end()
@@ -2872,7 +2911,7 @@ index 5adac66..c6765eb 100644
  			{
  				tags.push_back(unit.tag);
  			}
-@@ -585,25 +941,21 @@ class VoiPreLiveJourneyAdapter
+@@ -585,25 +973,21 @@ class VoiPreLiveJourneyAdapter
  		return tags;
  	}
  
@@ -2908,7 +2947,7 @@ index 5adac66..c6765eb 100644
  		operation.assignedTags.clear();
  		std::vector<VoiRuntimeRequirementSnapshot> convergenceRows;
  		for (auto & requirement : operation.requirements)
-@@ -633,7 +985,19 @@ class VoiPreLiveJourneyAdapter
+@@ -633,7 +1017,19 @@ class VoiPreLiveJourneyAdapter
  			for (std::size_t index = 0; index < count; ++index)
  			{
  				const auto tag = candidates[index];
@@ -2929,7 +2968,7 @@ index 5adac66..c6765eb 100644
  				requirement.assignedTags.push_back(tag);
  				operation.assignedTags.push_back(tag);
  			}
-@@ -654,7 +1018,8 @@ class VoiPreLiveJourneyAdapter
+@@ -654,7 +1050,8 @@ class VoiPreLiveJourneyAdapter
  			for (const auto & prerequisite :
  				snapshot.prerequisites)
  			{
@@ -2939,7 +2978,7 @@ index 5adac66..c6765eb 100644
  					== m_structures.end())
  				{
  					snapshot.missingPrerequisites.push_back(
-@@ -667,6 +1032,22 @@ class VoiPreLiveJourneyAdapter
+@@ -667,6 +1064,22 @@ class VoiPreLiveJourneyAdapter
  				snapshot.productionBlocker =
  					"missing_prerequisites";
  			}
@@ -2962,7 +3001,7 @@ index 5adac66..c6765eb 100644
  			convergenceRows.push_back(snapshot);
  		}
  		std::sort(
-@@ -701,7 +1082,7 @@ class VoiPreLiveJourneyAdapter
+@@ -701,7 +1114,7 @@ class VoiPreLiveJourneyAdapter
  						&& unit.selfOwned
  						&& unit.combat
  						&& (owner == m_owners.end()
@@ -2971,7 +3010,7 @@ index 5adac66..c6765eb 100644
  								== operation.operationId))
  					{
  						++eligibleCount;
-@@ -721,7 +1102,9 @@ class VoiPreLiveJourneyAdapter
+@@ -721,7 +1134,9 @@ class VoiPreLiveJourneyAdapter
  									0,
  									requirement.targetCount)));
  			}
@@ -2982,7 +3021,7 @@ index 5adac66..c6765eb 100644
  			operation.assignedTags.clear();
  			for (auto & requirement : operation.requirements)
  			{
-@@ -792,20 +1175,45 @@ class VoiPreLiveJourneyAdapter
+@@ -792,20 +1207,45 @@ class VoiPreLiveJourneyAdapter
  				{ "partial",
  					operation.assignedTags.size()
  						< static_cast<std::size_t>(
@@ -3030,7 +3069,7 @@ index 5adac66..c6765eb 100644
  		}
  		emit(
  			"ownership_snapshot",
-@@ -814,6 +1222,7 @@ class VoiPreLiveJourneyAdapter
+@@ -814,6 +1254,7 @@ class VoiPreLiveJourneyAdapter
  			{
  				{ "action", "assign" },
  				{ "owners", owners },
@@ -3038,7 +3077,7 @@ index 5adac66..c6765eb 100644
  				{ "assigned_unit_tags", operation.assignedTags },
  			});
  	}
-@@ -826,6 +1235,165 @@ class VoiPreLiveJourneyAdapter
+@@ -826,6 +1267,179 @@ class VoiPreLiveJourneyAdapter
  		{
  			return;
  		}
@@ -3087,6 +3126,7 @@ index 5adac66..c6765eb 100644
 +			operation.abilityTargetKind,
 +			targetX,
 +			targetY,
++			0,
 +			operation.cloakState,
 +		};
 +		const std::string squadName =
@@ -3140,8 +3180,19 @@ index 5adac66..c6765eb 100644
 +			submissionBinding.targetX = 0.0;
 +			submissionBinding.targetY = 0.0;
 +		}
++		else if (dispatchAction == "ability_target")
++		{
++			submissionBinding.targetTag =
++				deterministicAbilityTargetTag(operation);
++			if (submissionBinding.targetTag == 0)
++			{
++				throw std::runtime_error(
++					"deterministic unit-target ability target is missing");
++			}
++		}
 +		operation.targetX = submissionBinding.targetX;
 +		operation.targetY = submissionBinding.targetY;
++		operation.targetTag = submissionBinding.targetTag;
 +		operation.dispatchAction = dispatchAction;
 +		for (const auto tag : operation.assignedTags)
 +		{
@@ -3190,6 +3241,8 @@ index 5adac66..c6765eb 100644
 +						submission.targetX },
 +					{ "target_y",
 +						submission.targetY },
++					{ "target_tag",
++						submission.targetTag },
 +					{ "cloak_state",
 +						submission.cloakState },
 +					{ "unit_tags",
@@ -3204,7 +3257,7 @@ index 5adac66..c6765eb 100644
  		operation.submitted = true;
  		for (auto & requirement : operation.requirements)
  		{
-@@ -865,7 +1425,14 @@ class VoiPreLiveJourneyAdapter
+@@ -865,7 +1479,14 @@ class VoiPreLiveJourneyAdapter
  			"order_issued",
  			{
  				{ "action", operation.action },
@@ -3220,7 +3273,7 @@ index 5adac66..c6765eb 100644
  			});
  		emit(
  			"submission",
-@@ -873,7 +1440,18 @@ class VoiPreLiveJourneyAdapter
+@@ -873,7 +1494,19 @@ class VoiPreLiveJourneyAdapter
  			"submitted",
  			{
  				{ "action", operation.action },
@@ -3234,13 +3287,14 @@ index 5adac66..c6765eb 100644
 +					operation.abilityTargetKind },
 +				{ "target_x", submissionBinding.targetX },
 +				{ "target_y", submissionBinding.targetY },
++				{ "target_tag", submissionBinding.targetTag },
 +				{ "submission_ids",
 +					operation.submissionIds },
 +				{ "unit_tags", submittedTags },
  			});
  		operation.status = "EXECUTING";
  	}
-@@ -961,6 +1539,22 @@ class VoiPreLiveJourneyAdapter
+@@ -961,6 +1594,22 @@ class VoiPreLiveJourneyAdapter
  			first.editAction == "transfer_in"
  				? &first
  				: &second;
@@ -3263,7 +3317,7 @@ index 5adac66..c6765eb 100644
  		const auto existingSource =
  			m_operations.find(source->operationId);
  		if (existingSource == m_operations.end())
-@@ -970,33 +1564,429 @@ class VoiPreLiveJourneyAdapter
+@@ -970,33 +1619,429 @@ class VoiPreLiveJourneyAdapter
  					"transfer_pair_not_active";
  			return;
  		}
@@ -3705,7 +3759,7 @@ index 5adac66..c6765eb 100644
  		emit(
  			"transfer",
  			*source,
-@@ -1005,6 +1995,22 @@ class VoiPreLiveJourneyAdapter
+@@ -1005,6 +2050,22 @@ class VoiPreLiveJourneyAdapter
  				{ "action", "transfer_out" },
  				{ "counterpart_operation_id",
  					destination->operationId },
@@ -3728,7 +3782,7 @@ index 5adac66..c6765eb 100644
  				{ "unit_tags", selected },
  				{ "resolution", "applied" },
  			});
-@@ -1046,6 +2052,9 @@ class VoiPreLiveJourneyAdapter
+@@ -1046,6 +2107,9 @@ class VoiPreLiveJourneyAdapter
  					continue;
  				}
  				operation.action = "retreat";
@@ -3738,7 +3792,7 @@ index 5adac66..c6765eb 100644
  				operation.updateId = updateId;
  				operation.submitted = false;
  				emit(
-@@ -1093,6 +2102,24 @@ class VoiPreLiveJourneyAdapter
+@@ -1093,6 +2157,24 @@ class VoiPreLiveJourneyAdapter
  				if (existing != m_operations.end())
  				{
  					auto cancelled = existing->second;
@@ -3763,7 +3817,7 @@ index 5adac66..c6765eb 100644
  					cancelled.updateId = operation.updateId;
  					cancelled.generation =
  						operation.generation;
-@@ -1103,8 +2130,38 @@ class VoiPreLiveJourneyAdapter
+@@ -1103,8 +2185,38 @@ class VoiPreLiveJourneyAdapter
  					cancelled.completionReason =
  						"cancelled_by_user";
  					cancelled.completionFrame = m_frame;
@@ -3804,7 +3858,7 @@ index 5adac66..c6765eb 100644
  					emit(
  						"cancellation",
  						cancelled,
-@@ -1113,9 +2170,11 @@ class VoiPreLiveJourneyAdapter
+@@ -1113,9 +2225,11 @@ class VoiPreLiveJourneyAdapter
  							{ "action", "cancel" },
  							{ "reason",
  								"cancelled_by_user" },
@@ -3818,7 +3872,7 @@ index 5adac66..c6765eb 100644
  				}
  				continue;
  			}
-@@ -1144,6 +2203,40 @@ class VoiPreLiveJourneyAdapter
+@@ -1144,6 +2258,40 @@ class VoiPreLiveJourneyAdapter
  					existing->second.targetReached;
  			}
  			operation.submitted = false;
@@ -3859,7 +3913,7 @@ index 5adac66..c6765eb 100644
  			m_operations[operation.operationId] = operation;
  			assignOperation(
  				m_operations[operation.operationId]);
-@@ -1200,11 +2293,18 @@ class VoiPreLiveJourneyAdapter
+@@ -1200,11 +2348,18 @@ class VoiPreLiveJourneyAdapter
  				created.tag = tag;
  				created.unitType =
  					jsonString(item, "unit_type");
@@ -3878,7 +3932,7 @@ index 5adac66..c6765eb 100644
  				created.family =
  					voiCanonicalTerranFamilyForUnitType(
  						created.unitType);
-@@ -1270,26 +2370,84 @@ class VoiPreLiveJourneyAdapter
+@@ -1270,26 +2425,84 @@ class VoiPreLiveJourneyAdapter
  				{
  					continue;
  				}
@@ -3971,7 +4025,7 @@ index 5adac66..c6765eb 100644
  			}
  			if (!abilityEffects.empty())
  			{
-@@ -1402,6 +2560,17 @@ class VoiPreLiveJourneyAdapter
+@@ -1402,6 +2615,18 @@ class VoiPreLiveJourneyAdapter
  			"effect_observed",
  			{
  				{ "action", operation.action },
@@ -3984,12 +4038,13 @@ index 5adac66..c6765eb 100644
 +					operation.abilityTargetKind },
 +				{ "target_x", operation.targetX },
 +				{ "target_y", operation.targetY },
++				{ "target_tag", operation.targetTag },
 +				{ "submission_ids",
 +					operation.submissionIds },
  				{ "unit_tags", tags },
  				{ "effect_kind", effectKind },
  			});
-@@ -1413,6 +2582,8 @@ class VoiPreLiveJourneyAdapter
+@@ -1413,6 +2638,8 @@ class VoiPreLiveJourneyAdapter
  
  	void applyResourceObservation(const VoiPreLiveJson & step)
  	{
@@ -3998,7 +4053,7 @@ index 5adac66..c6765eb 100644
  		const auto structures = step.find("structures");
  		if (structures != step.end() && structures->is_array())
  		{
-@@ -1445,6 +2616,14 @@ class VoiPreLiveJourneyAdapter
+@@ -1445,6 +2672,14 @@ class VoiPreLiveJourneyAdapter
  				VoiPreLiveUnitState unit;
  				unit.tag = tag;
  				unit.unitType = unitType;
@@ -4013,7 +4068,7 @@ index 5adac66..c6765eb 100644
  				unit.family =
  					voiCanonicalTerranFamilyForUnitType(
  						unitType);
-@@ -1555,6 +2734,7 @@ class VoiPreLiveJourneyAdapter
+@@ -1555,6 +2790,7 @@ class VoiPreLiveJourneyAdapter
  				{ "tag", unit.tag },
  				{ "unit_type", unit.unitType },
  				{ "family", unit.family },
@@ -4021,7 +4076,7 @@ index 5adac66..c6765eb 100644
  				{ "alive", unit.alive },
  				{ "complete", unit.complete },
  				{ "self_owned", unit.selfOwned },
-@@ -1569,9 +2749,15 @@ class VoiPreLiveJourneyAdapter
+@@ -1569,9 +2805,15 @@ class VoiPreLiveJourneyAdapter
  			});
  		}
  		VoiPreLiveJson owners = VoiPreLiveJson::object();
@@ -4038,7 +4093,7 @@ index 5adac66..c6765eb 100644
  		}
  		VoiPreLiveJson operations = VoiPreLiveJson::array();
  		for (const auto & entry : m_operations)
-@@ -1585,6 +2771,19 @@ class VoiPreLiveJourneyAdapter
+@@ -1585,6 +2827,19 @@ class VoiPreLiveJourneyAdapter
  				{ "active", operation.active },
  				{ "assigned_unit_tags",
  					operation.assignedTags },
@@ -4058,7 +4113,7 @@ index 5adac66..c6765eb 100644
  				{ "action", operation.action },
  				{ "blocker", operation.blocker },
  			});
-@@ -1593,12 +2792,22 @@ class VoiPreLiveJourneyAdapter
+@@ -1593,12 +2848,22 @@ class VoiPreLiveJourneyAdapter
  			{ "frame", m_frame },
  			{ "units", units },
  			{ "owners", owners },
@@ -4081,7 +4136,7 @@ index 5adac66..c6765eb 100644
  		};
  	}
  
-@@ -1638,13 +2847,13 @@ class VoiPreLiveJourneyAdapter
+@@ -1638,13 +2903,13 @@ class VoiPreLiveJourneyAdapter
  			if (owner != m_owners.end())
  			{
  				const auto operation =
@@ -4098,7 +4153,7 @@ index 5adac66..c6765eb 100644
  						+ "#" + std::to_string(generation));
  			}
  			if (!source.autonomousOwner.empty())
-@@ -1948,11 +3157,145 @@ class VoiPreLiveJourneyAdapter
+@@ -1948,11 +3213,147 @@ class VoiPreLiveJourneyAdapter
  		};
  	}
  
@@ -4145,6 +4200,7 @@ index 5adac66..c6765eb 100644
 +					receipt.targetKind },
 +				{ "target_x", receipt.targetX },
 +				{ "target_y", receipt.targetY },
++				{ "target_tag", receipt.targetTag },
 +				{ "cloak_state", receipt.cloakState },
 +				{ "unit_tags", receipt.unitTags },
 +			});
@@ -4193,6 +4249,7 @@ index 5adac66..c6765eb 100644
 +					receipt.targetKind },
 +				{ "target_x", receipt.targetX },
 +				{ "target_y", receipt.targetY },
++				{ "target_tag", receipt.targetTag },
 +				{ "cloak_state", receipt.cloakState },
 +				{ "unit_tags", receipt.unitTags },
 +				{ "callback_executed",
@@ -4245,7 +4302,7 @@ index 5adac66..c6765eb 100644
  		{
  			throw std::runtime_error(
  				"pre-live adapter schema_version is unsupported");
-@@ -2016,14 +3359,17 @@ public:
+@@ -2016,14 +3417,17 @@ public:
  			}
  			else if (kind == "client_reconnect")
  			{
@@ -4266,7 +4323,7 @@ index 5adac66..c6765eb 100644
  					});
  				recordSnapshot("client_reconnect");
  			}
-@@ -2040,13 +3386,14 @@ public:
+@@ -2040,13 +3444,14 @@ public:
  				voiBattlefieldProjectionJson(projection));
  		const auto director = operationDirectorJson();
  		return {
@@ -4282,7 +4339,7 @@ index 5adac66..c6765eb 100644
  			{ "telemetry", {
  				{ "protocol_version", "voi-mm-bridge/v1" },
  				{ "frame", m_frame },
-@@ -2070,9 +3417,10 @@ public:
+@@ -2070,9 +3475,10 @@ public:
  };
  
  inline VoiPreLiveJson voiRunPreLiveJourneyAdapter(
@@ -4295,7 +4352,7 @@ index 5adac66..c6765eb 100644
  	return adapter.run(input);
  }
  
-@@ -2080,7 +3428,8 @@ inline int voiRunPreLiveJourneyAdapterFile(
+@@ -2080,7 +3486,8 @@ inline int voiRunPreLiveJourneyAdapterFile(
  	const std::string & path,
  	std::istream & standardInput,
  	std::ostream & output,
@@ -4305,7 +4362,7 @@ index 5adac66..c6765eb 100644
  {
  	try
  	{
-@@ -2099,7 +3448,9 @@ inline int voiRunPreLiveJourneyAdapterFile(
+@@ -2099,7 +3506,9 @@ inline int voiRunPreLiveJourneyAdapterFile(
  		}
  		VoiPreLiveJson payload;
  		*input >> payload;
@@ -4318,10 +4375,10 @@ index 5adac66..c6765eb 100644
  	}
 diff --git a/src/voi_production_path.hpp b/src/voi_production_path.hpp
 new file mode 100644
-index 0000000..b06f52f
+index 0000000000000000000000000000000000000000..8a8d14576cd00b7cc449f28578bad2b834e9102d
 --- /dev/null
 +++ b/src/voi_production_path.hpp
-@@ -0,0 +1,496 @@
+@@ -0,0 +1,506 @@
 +#pragma once
 +
 +#include <algorithm>
@@ -4469,6 +4526,7 @@ index 0000000..b06f52f
 +	std::string targetKind;
 +	double targetX = 0.0;
 +	double targetY = 0.0;
++	std::uint64_t targetTag = 0;
 +	std::string cloakState;
 +};
 +
@@ -4490,12 +4548,18 @@ index 0000000..b06f52f
 +	{
 +		return binding.targetKind == "none"
 +			&& binding.targetX == 0.0
-+			&& binding.targetY == 0.0;
++			&& binding.targetY == 0.0
++			&& binding.targetTag == 0;
 +	}
-+	if (dispatchAction == "ability_position"
-+		|| dispatchAction == "ability_target")
++	if (dispatchAction == "ability_position")
 +	{
-+		return binding.targetKind != "none";
++		return binding.targetKind != "none"
++			&& binding.targetTag == 0;
++	}
++	if (dispatchAction == "ability_target")
++	{
++		return binding.targetKind != "none"
++			&& binding.targetTag > 0;
 +	}
 +	return false;
 +}
@@ -4582,6 +4646,7 @@ index 0000000..b06f52f
 +		canonical << std::setprecision(17)
 +			<< binding->targetX << "|"
 +			<< binding->targetY << "|";
++		canonical << binding->targetTag << "|";
 +		voiProductionAppendDeterministicField(
 +			canonical,
 +			binding->cloakState);
@@ -4663,6 +4728,7 @@ index 0000000..b06f52f
 +	std::string targetKind;
 +	double targetX = 0.0;
 +	double targetY = 0.0;
++	std::uint64_t targetTag = 0;
 +	std::string cloakState;
 +	std::vector<std::uint64_t> unitTags;
 +	std::string submissionId;
@@ -4692,6 +4758,7 @@ index 0000000..b06f52f
 +		receipt.targetKind = binding->targetKind;
 +		receipt.targetX = binding->targetX;
 +		receipt.targetY = binding->targetY;
++		receipt.targetTag = binding->targetTag;
 +		receipt.cloakState = binding->cloakState;
 +	}
 +	if (!voiProductionOperationIdentityIsValid(identity))
@@ -4819,7 +4886,7 @@ index 0000000..b06f52f
 +		dispatch);
 +}
 diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
-index 3ddbf11..534667e 100644
+index 3ddbf11d2e439417f4f15a8e09f2d35ce921fde4..534667e55d021a887cf7ef13e38ced7265210cd5 100644
 --- a/tests/CMakeLists.txt
 +++ b/tests/CMakeLists.txt
 @@ -142,3 +142,18 @@ add_test(
@@ -4842,7 +4909,7 @@ index 3ddbf11..534667e 100644
 +    COMMAND voi_production_path_test
 +)
 diff --git a/tests/pre_live_journey_adapter_test.cpp b/tests/pre_live_journey_adapter_test.cpp
-index 5aad7ef..67de461 100644
+index 5aad7ef44cc680ba359b6102f836f375e7782a62..292790d5cb1fd430c77e7b44d7a6ddc9fc755bd2 100644
 --- a/tests/pre_live_journey_adapter_test.cpp
 +++ b/tests/pre_live_journey_adapter_test.cpp
 @@ -2,7 +2,9 @@
@@ -4955,7 +5022,7 @@ index 5aad7ef..67de461 100644
  		} },
  		{ "steps", {
  			{
-@@ -115,10 +193,248 @@ VoiPreLiveJson validInput()
+@@ -115,10 +193,270 @@ VoiPreLiveJson validInput()
  		} },
  	};
  }
@@ -4974,6 +5041,28 @@ index 5aad7ef..67de461 100644
 +			{ "home_distance", 0.0 },
 +		},
 +	};
++	VoiExplicitAbilitySpec spec;
++	if (voiResolveExplicitAbilitySpec(ability, spec)
++		&& (spec.targetKind == VoiExplicitAbilityTargetKind::EnemyUnit
++			|| spec.targetKind == VoiExplicitAbilityTargetKind::GhostSnipe
++			|| spec.targetKind == VoiExplicitAbilityTargetKind::YamatoTarget
++			|| spec.targetKind == VoiExplicitAbilityTargetKind::FriendlyUnit
++			|| spec.targetKind
++				== VoiExplicitAbilityTargetKind::FriendlyPassenger))
++	{
++		const bool friendly =
++			spec.targetKind == VoiExplicitAbilityTargetKind::FriendlyUnit
++			|| spec.targetKind
++				== VoiExplicitAbilityTargetKind::FriendlyPassenger;
++		input["initial_state"]["units"].push_back({
++			{ "tag", 99 },
++			{ "unit_type",
++				friendly ? "TERRAN_SCV" : "TERRAN_MARINE" },
++			{ "self_owned", friendly },
++			{ "combat", false },
++			{ "home_distance", 0.0 },
++		});
++	}
 +	input["steps"].erase(input["steps"].begin() + 1);
 +	auto & operation =
 +		input["steps"][0]["update"]["vector"]["operations"][0];
@@ -5204,7 +5293,7 @@ index 5aad7ef..67de461 100644
  	std::istringstream standardInput(validInput().dump());
  	std::ostringstream standardOutput;
  	std::ostringstream standardError;
-@@ -127,17 +443,26 @@ int main()
+@@ -127,17 +465,26 @@ int main()
  			"-",
  			standardInput,
  			standardOutput,
@@ -5235,7 +5324,7 @@ index 5aad7ef..67de461 100644
  	CHECK(
  		output["battlefield_overview"]["authority"]
  			== "micromachine_cpp");
-@@ -152,6 +477,243 @@ int main()
+@@ -152,6 +499,269 @@ int main()
  			["family_evidence"][0]["effect_kind"]
  			== "movement");
  	CHECK(output["hud"]["rows"].is_array());
@@ -5335,7 +5424,7 @@ index 5aad7ef..67de461 100644
 +		CHECK(
 +			submissionId.find("voi-sc2-submission-") == 0);
 +		submissionIds.insert(submissionId);
-+		CHECK(dispatched.size() == 14);
++		CHECK(dispatched.size() == 15);
 +		CHECK(dispatched["submission_id"] == submissionId);
 +		CHECK(dispatched["update_id"] == "adapter-test");
 +		CHECK(dispatched["operation_id"] == "assault-alpha");
@@ -5462,6 +5551,7 @@ index 5aad7ef..67de461 100644
 +			== "none");
 +	CHECK(noTargetAbilitySubmission["target_x"] == 0.0);
 +	CHECK(noTargetAbilitySubmission["target_y"] == 0.0);
++	CHECK(noTargetAbilitySubmission["target_tag"] == 0);
 +	bool noTargetSubmissionEventObserved = false;
 +	for (const auto & event : noTargetAbilityOutput["events"])
 +	{
@@ -5472,14 +5562,39 @@ index 5aad7ef..67de461 100644
 +					== "ability"
 +				&& event["payload"]["target_kind"] == "none"
 +				&& event["payload"]["target_x"] == 0.0
-+				&& event["payload"]["target_y"] == 0.0;
++				&& event["payload"]["target_y"] == 0.0
++				&& event["payload"]["target_tag"] == 0;
 +		}
 +	}
 +	CHECK(noTargetSubmissionEventObserved);
++
++	const auto unitTargetAbilityOutput =
++		runAdapter(
++			abilityInput(
++				"yamato",
++				"TERRAN_BATTLECRUISER",
++				""));
++	const auto & unitTargetAbilitySubmission =
++		unitTargetAbilityOutput["production_path"]
++			["sc2_submission_receipts"][0];
++	CHECK(
++		unitTargetAbilitySubmission["dispatch_action"]
++			== "ability_target");
++	CHECK(unitTargetAbilitySubmission["target_tag"] == 99);
++	bool unitTargetSubmissionEventObserved = false;
++	for (const auto & event : unitTargetAbilityOutput["events"])
++	{
++		if (event["event_type"] == "submission")
++		{
++			unitTargetSubmissionEventObserved =
++				event["payload"]["target_tag"] == 99;
++		}
++	}
++	CHECK(unitTargetSubmissionEventObserved);
  
  	auto multiRole = validInput();
  	multiRole["initial_state"]["units"].push_back({
-@@ -186,7 +711,7 @@ int main()
+@@ -186,7 +796,7 @@ int main()
  		},
  	};
  	const auto multiRoleOutput =
@@ -5488,7 +5603,7 @@ index 5aad7ef..67de461 100644
  	CHECK(
  		multiRoleOutput["operation_director"][0]["assigned_count"]
  			== 5);
-@@ -220,11 +745,21 @@ int main()
+@@ -220,11 +830,21 @@ int main()
  	protectedMinimum["steps"].erase(
  		protectedMinimum["steps"].begin() + 1);
  	const auto protectedOutput =
@@ -5511,7 +5626,7 @@ index 5aad7ef..67de461 100644
  	for (const auto & event : protectedOutput["events"])
  	{
  		protectedRejectionObserved =
-@@ -232,14 +767,313 @@ int main()
+@@ -232,14 +852,313 @@ int main()
  			|| (event["event_type"] == "rejection"
  				&& event["payload"]["reason"]
  					== "protected_minimum_violation");
@@ -5826,7 +5941,7 @@ index 5aad7ef..67de461 100644
  		CHECK(false);
  	}
  	catch (const std::runtime_error & error)
-@@ -254,7 +1088,7 @@ int main()
+@@ -254,7 +1173,7 @@ int main()
  	regressive["steps"][1]["frame"] = 99;
  	try
  	{
@@ -5835,7 +5950,7 @@ index 5aad7ef..67de461 100644
  		CHECK(false);
  	}
  	catch (const std::runtime_error & error)
-@@ -263,3 +1097,6 @@ int main()
+@@ -263,3 +1182,6 @@ int main()
  			std::string(error.what()).find("regressed")
  				!= std::string::npos);
  	}
@@ -5844,10 +5959,10 @@ index 5aad7ef..67de461 100644
 +}
 diff --git a/tests/production_path_test.cpp b/tests/production_path_test.cpp
 new file mode 100644
-index 0000000..af1ea5e
+index 0000000000000000000000000000000000000000..12ffa56cb2a54facf383cbdec7922fa84bb9004f
 --- /dev/null
 +++ b/tests/production_path_test.cpp
-@@ -0,0 +1,718 @@
+@@ -0,0 +1,757 @@
 +#include "voi_live_production_binding.hpp"
 +
 +#include <iostream>
@@ -5996,6 +6111,7 @@ index 0000000..af1ea5e
 +	CHECK(explicitLiveBinding.abilityId == 382);
 +	CHECK(explicitLiveBinding.cloakState == "not_cloaked");
 +	CHECK(explicitLiveBinding.targetKind.empty());
++	CHECK(explicitLiveBinding.targetTag == 0);
 +	auto noTargetLiveBinding = explicitLiveBinding;
 +	CHECK(voiProductionBindLiveAbilityTarget(
 +		noTargetLiveBinding,
@@ -6003,6 +6119,7 @@ index 0000000..af1ea5e
 +	CHECK(noTargetLiveBinding.targetKind == "none");
 +	CHECK(noTargetLiveBinding.targetX == 0.0);
 +	CHECK(noTargetLiveBinding.targetY == 0.0);
++	CHECK(noTargetLiveBinding.targetTag == 0);
 +	auto positionLiveBinding = voiProductionLiveActionBinding(
 +		identity,
 +		"execute_ability:emp",
@@ -6018,6 +6135,7 @@ index 0000000..af1ea5e
 +	CHECK(positionLiveBinding.targetKind == "ghost_emp");
 +	CHECK(positionLiveBinding.targetX == 44.5);
 +	CHECK(positionLiveBinding.targetY == 20.25);
++	CHECK(positionLiveBinding.targetTag == 0);
 +	auto unitTargetLiveBinding = voiProductionLiveActionBinding(
 +		identity,
 +		"execute_ability:yamato",
@@ -6029,10 +6147,21 @@ index 0000000..af1ea5e
 +		unitTargetLiveBinding,
 +		"ability_target",
 +		91.0,
-+		73.5));
++		73.5,
++		4242));
 +	CHECK(unitTargetLiveBinding.targetKind == "yamato_target");
 +	CHECK(unitTargetLiveBinding.targetX == 91.0);
 +	CHECK(unitTargetLiveBinding.targetY == 73.5);
++	CHECK(unitTargetLiveBinding.targetTag == 4242);
++	auto missingUnitTargetTagBinding = unitTargetLiveBinding;
++	missingUnitTargetTagBinding.targetKind.clear();
++	missingUnitTargetTagBinding.targetTag = 0;
++	CHECK(!voiProductionBindLiveAbilityTarget(
++		missingUnitTargetTagBinding,
++		"ability_target",
++		91.0,
++		73.5));
++	CHECK(missingUnitTargetTagBinding.targetKind.empty());
 +	auto mismatchedTargetLiveBinding = positionLiveBinding;
 +	mismatchedTargetLiveBinding.targetKind.clear();
 +	mismatchedTargetLiveBinding.targetX = 0.0;
@@ -6314,6 +6443,7 @@ index 0000000..af1ea5e
 +	CHECK(positionSubmission.targetKind == "ghost_emp");
 +	CHECK(positionSubmission.targetX == 44.5);
 +	CHECK(positionSubmission.targetY == 20.25);
++	CHECK(positionSubmission.targetTag == 0);
 +	const auto unitTargetSubmission = voiProductionSubmitSc2Action(
 +		identity,
 +		unitTargetLiveBinding.action,
@@ -6328,6 +6458,30 @@ index 0000000..af1ea5e
 +	CHECK(unitTargetSubmission.targetKind == "yamato_target");
 +	CHECK(unitTargetSubmission.targetX == 91.0);
 +	CHECK(unitTargetSubmission.targetY == 73.5);
++	CHECK(unitTargetSubmission.targetTag == 4242);
++	auto retargetedUnitBinding = unitTargetLiveBinding;
++	CHECK(voiProductionBindLiveAbilityTarget(
++		retargetedUnitBinding,
++		"ability_target",
++		91.0,
++		73.5,
++		4343));
++	const auto retargetedUnitSubmission =
++		voiProductionSubmitSc2Action(
++			identity,
++			retargetedUnitBinding.action,
++			"ability_target",
++			std::vector<std::uint64_t>({12}),
++			&retargetedUnitBinding,
++			[]()
++			{
++				return true;
++			});
++	CHECK(retargetedUnitSubmission.submitted);
++	CHECK(retargetedUnitSubmission.targetTag == 4343);
++	CHECK(
++		retargetedUnitSubmission.submissionId
++			!= unitTargetSubmission.submissionId);
 +	auto retargetedPositionBinding = positionLiveBinding;
 +	CHECK(voiProductionBindLiveAbilityTarget(
 +		retargetedPositionBinding,

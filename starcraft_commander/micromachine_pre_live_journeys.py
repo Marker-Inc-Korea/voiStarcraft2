@@ -38,6 +38,7 @@ from starcraft_commander.micromachine_live_session import (
     StaticJsonPolicyModulationProvider,
 )
 from starcraft_commander.micromachine_pre_live_artifact import (
+    _archive_entry_count_error,
     _archive_framing_error,
     canonical_json_bytes,
 )
@@ -138,6 +139,7 @@ _NATIVE_ACTION_METADATA_FIELDS: Final[tuple[str, ...]] = (
     "target_kind",
     "target_x",
     "target_y",
+    "target_tag",
 )
 _ALL_TERRAN_COMPOSITION_BLOCKER: Final[str] = (
     "composition_prerequisites_pending"
@@ -473,6 +475,8 @@ class _JourneyExecution:
         *,
         cloak_state: str = "",
         matrix_ability: str = "",
+        self_owned: bool = True,
+        combat: bool = True,
     ) -> dict[str, object]:
         unit = {
             "tag": self.next_tag,
@@ -481,6 +485,10 @@ class _JourneyExecution:
         }
         if cloak_state:
             unit["cloak_state"] = cloak_state
+        if not self_owned:
+            unit["self_owned"] = False
+        if not combat:
+            unit["combat"] = False
         if matrix_ability:
             self.matrix_ability_by_tag[self.next_tag] = matrix_ability
         self.next_tag += 1
@@ -914,6 +922,15 @@ def _expand_initial_state(
                     cloak_state=caster_state.cloak_state,
                     matrix_ability=caster_state.ability,
                 )
+        execution.allocate_unit(
+            "TERRAN_SCV",
+            combat=False,
+        )
+        execution.allocate_unit(
+            "TERRAN_MARINE",
+            self_owned=False,
+            combat=False,
+        )
     else:
         raise ValueError("initial_state.units is unsupported")
     raw_structures = source.get("structures", ())
@@ -2638,6 +2655,7 @@ def _validate_native_production_path(
                 "target_kind",
                 "target_x",
                 "target_y",
+                "target_tag",
                 "cloak_state",
                 "unit_tags",
                 "dispatch_proof",
@@ -2659,6 +2677,7 @@ def _validate_native_production_path(
                 "target_kind",
                 "target_x",
                 "target_y",
+                "target_tag",
                 "cloak_state",
                 "unit_tags",
             ),
@@ -2731,6 +2750,7 @@ def _validate_native_dispatched_sc2_action_payload(
         "target_kind",
         "target_x",
         "target_y",
+        "target_tag",
         "cloak_state",
         "unit_tags",
     }
@@ -2850,6 +2870,7 @@ def _validate_native_submission_receipt_payload(
         "target_kind",
         "target_x",
         "target_y",
+        "target_tag",
         "cloak_state",
         "unit_tags",
         "dispatch_proof",
@@ -2868,6 +2889,7 @@ def _validate_native_submission_receipt_payload(
             "target_kind",
             "target_x",
             "target_y",
+            "target_tag",
             "cloak_state",
             "unit_tags",
             "callback_executed",
@@ -2929,7 +2951,7 @@ def _native_finite_number(
 
 def _native_action_metadata(
     payload: Mapping[str, object],
-) -> tuple[str, str, str, int, str, object, object, str]:
+) -> tuple[str, str, str, int, str, object, object, int, str]:
     unit_type = str(payload.get("unit_type", "") or "")
     dispatch_action = str(payload.get("dispatch_action", "") or "")
     ability_name = str(payload.get("ability_name", "") or "")
@@ -2937,6 +2959,7 @@ def _native_action_metadata(
     target_kind = str(payload.get("target_kind", "") or "")
     target_x = payload.get("target_x")
     target_y = payload.get("target_y")
+    target_tag = payload.get("target_tag")
     cloak_state = payload.get("cloak_state")
     supported_dispatches = {
         "attack_move",
@@ -2957,6 +2980,8 @@ def _native_action_metadata(
         or ability_id < 0
         or not _native_finite_number(target_x)
         or not _native_finite_number(target_y)
+        or type(target_tag) is not int
+        or target_tag < 0
         or type(cloak_state) is not str
         or cloak_state not in {"", "not_cloaked", "cloaked", "unknown"}
     ):
@@ -2968,7 +2993,11 @@ def _native_action_metadata(
             raise ValueError("native SC2 no-target ability metadata is invalid")
         if dispatch_action != "ability" and target_kind == "none":
             raise ValueError("native SC2 targeted ability metadata is invalid")
-    elif ability_name or ability_id != 0 or target_kind:
+        if dispatch_action == "ability_target" and target_tag <= 0:
+            raise ValueError("native SC2 unit-target ability metadata is invalid")
+        if dispatch_action != "ability_target" and target_tag != 0:
+            raise ValueError("native SC2 non-unit target metadata is invalid")
+    elif ability_name or ability_id != 0 or target_kind or target_tag != 0:
         raise ValueError("native non-ability action has ability metadata")
     return (
         unit_type,
@@ -2978,6 +3007,7 @@ def _native_action_metadata(
         target_kind,
         target_x,
         target_y,
+        target_tag,
         cloak_state,
     )
 
@@ -3021,7 +3051,7 @@ def _production_receipt_id(
     *,
     dispatch_action: str,
     action_metadata: (
-        tuple[str, str, str, int, str, object, object, str] | None
+        tuple[str, str, str, int, str, object, object, int, str] | None
     ) = None,
 ) -> str:
     update_id, operation_id, generation, action, unit_tags = binding
@@ -3041,6 +3071,7 @@ def _production_receipt_id(
             target_kind,
             target_x,
             target_y,
+            target_tag,
             cloak_state,
         ) = action_metadata
         canonical += f"{len(unit_type)}:{unit_type}|"
@@ -3048,6 +3079,7 @@ def _production_receipt_id(
         canonical += f"{ability_id}|"
         canonical += f"{len(target_kind)}:{target_kind}|"
         canonical += f"{float(target_x):.17g}|{float(target_y):.17g}|"
+        canonical += f"{target_tag}|"
         canonical += f"{len(cloak_state)}:{cloak_state}|"
     digest = 1_469_598_103_934_665_603
     for value in canonical.encode("utf-8"):
@@ -3302,6 +3334,7 @@ def _validate_native_submission_causality(
             target_kind,
             target_x,
             target_y,
+            target_tag,
             cloak_state,
         ) = key
         binding = {
@@ -3316,6 +3349,7 @@ def _validate_native_submission_causality(
             "target_kind": target_kind,
             "target_x": target_x,
             "target_y": target_y,
+            "target_tag": target_tag,
             "cloak_state": cloak_state,
             "submission_ids": sorted(
                 grouped_ids[key]
@@ -5786,6 +5820,8 @@ def _all_terran_compiler_bindings_from_native_input(
     available: dict[tuple[str, str], int] = {}
     available_by_type: dict[str, int] = {}
     for unit in _mapping_sequence(initial_state.get("units")):
+        if unit.get("self_owned", True) is not True or unit.get("combat", True) is not True:
+            continue
         unit_type = unit.get("unit_type")
         if type(unit_type) is not str or not unit_type:
             raise ValueError("all-Terran initial unit type is malformed")
@@ -6410,6 +6446,13 @@ def verify_pre_live_journey_bundle(
         return _verification_result(["journey bundle must be bytes"])
     if len(bundle) > MAX_JOURNEY_BUNDLE_BYTES:
         return _verification_result(["journey bundle exceeds the size limit"])
+    if _archive_entry_count_error(
+        bundle,
+        maximum=MAX_JOURNEY_BUNDLE_ENTRIES,
+    ) is not None:
+        return _verification_result(
+            ["journey bundle contains too many ZIP members"]
+        )
     if (
         _archive_framing_error(
             bundle,

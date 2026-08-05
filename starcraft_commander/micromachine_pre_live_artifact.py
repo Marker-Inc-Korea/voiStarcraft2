@@ -654,17 +654,13 @@ def _preflight_deterministic_journey_central_directory(
         raise ValueError(
             "deterministic journey ZIP exceeds max_archive_bytes"
         )
-    if len(bundle) >= _END_CENTRAL_DIRECTORY.size:
-        eocd_offset = len(bundle) - _END_CENTRAL_DIRECTORY.size
-        if bundle[eocd_offset : eocd_offset + 4] == b"PK\x05\x06":
-            total_entries = _END_CENTRAL_DIRECTORY.unpack_from(
-                bundle,
-                eocd_offset,
-            )[4]
-            if total_entries > limits.max_entries:
-                raise ValueError(
-                    "deterministic journey ZIP exceeds max_entries"
-                )
+    if _archive_entry_count_error(
+        bundle,
+        maximum=limits.max_entries,
+    ) is not None:
+        raise ValueError(
+            "deterministic journey ZIP exceeds max_entries"
+        )
     framing_error = _archive_framing_error(
         bundle,
         require_exact_local_flags=True,
@@ -1131,6 +1127,24 @@ def verify_pre_live_artifact_bundle(
             member_evidence,
             caller_claims,
         )
+    if _archive_entry_count_error(
+        bundle_bytes,
+        maximum=effective_limits.max_entries,
+    ) is not None:
+        _add_blocker(
+            blockers,
+            "archive_entry_count_limit_exceeded",
+            "$",
+            "archive exceeds max_entries",
+            maximum=effective_limits.max_entries,
+        )
+        return _verification_result(
+            blockers,
+            manifest,
+            manifest_evidence,
+            member_evidence,
+            caller_claims,
+        )
     framing_error = _archive_framing_error(bundle_bytes)
     if framing_error is not None:
         framing_code = (
@@ -1545,6 +1559,18 @@ def verify_downloaded_pre_live_artifact(
             "invalid_github_bundle_member_name",
             "$.delivery.member",
             "GitHub bundle member name must be one safe root ZIP filename",
+        )
+        return _download_verification_result(blockers, direct)
+    if _archive_entry_count_error(
+        artifact_bytes,
+        maximum=1,
+    ) is not None:
+        _add_blocker(
+            blockers,
+            "github_artifact_entry_count_mismatch",
+            "$.delivery",
+            "GitHub artifact wrapper must contain exactly one file",
+            maximum=1,
         )
         return _download_verification_result(blockers, direct)
     framing_error = _archive_framing_error(
@@ -2413,6 +2439,27 @@ def _zip_extra_field_error(extra: bytes) -> str | None:
         if field_id == _ZIP64_EXTRA_FIELD_ID:
             return "ZIP64 extra fields are not allowed"
         offset = field_end
+    return None
+
+
+def _archive_entry_count_error(
+    bundle: bytes,
+    *,
+    maximum: int,
+) -> str | None:
+    if maximum < 0:
+        return "ZIP entry limit is invalid"
+    if len(bundle) < _END_CENTRAL_DIRECTORY.size:
+        return None
+    eocd_offset = len(bundle) - _END_CENTRAL_DIRECTORY.size
+    if bundle[eocd_offset : eocd_offset + 4] != b"PK\x05\x06":
+        return None
+    total_entries = _END_CENTRAL_DIRECTORY.unpack_from(
+        bundle,
+        eocd_offset,
+    )[4]
+    if total_entries > maximum:
+        return "ZIP end-of-central-directory entry count exceeds the limit"
     return None
 
 

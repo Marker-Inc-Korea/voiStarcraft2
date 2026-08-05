@@ -1141,6 +1141,97 @@ class PreLiveArtifactBundleTest(unittest.TestCase):
             )
         semantic_verifier.assert_not_called()
 
+    def test_outer_entry_limits_apply_before_framing_and_zipfile_allocation(
+        self,
+    ) -> None:
+        excessive_bundle = raw_zip(
+            {
+                "entry-a": b"",
+                "entry-b": b"",
+                "entry-c": b"",
+            }
+        )
+        limits = replace(
+            PreLiveArtifactLimits(),
+            max_archive_bytes=len(excessive_bundle) + 1,
+            max_entries=2,
+        )
+        with (
+            mock.patch.object(
+                artifact_module,
+                "_archive_framing_error",
+                side_effect=AssertionError(
+                    "framing parser must not inspect excessive EOCD entries"
+                ),
+            ),
+            mock.patch.object(
+                artifact_module.zipfile,
+                "ZipFile",
+                side_effect=AssertionError(
+                    "ZipFile must not allocate excessive EOCD entries"
+                ),
+            ),
+        ):
+            rejected = verify_pre_live_artifact_bundle(
+                excessive_bundle,
+                limits=limits,
+                admission_snapshot=self.admission_snapshot,
+            )
+        self.assertFalse(rejected["ok"], rejected)
+        self.assertIn(
+            "archive_entry_count_limit_exceeded",
+            blocker_codes(rejected),
+        )
+
+        wrapper = raw_zip(
+            {
+                GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME: b"",
+                "unexpected.zip": b"",
+            },
+            compression=zipfile.ZIP_DEFLATED,
+        )
+        direct_rejection = {
+            "ok": False,
+            "blockers": [],
+            "manifest": None,
+            "manifest_evidence": {},
+            "member_evidence": [],
+        }
+        with (
+            mock.patch.object(
+                artifact_module,
+                "verify_pre_live_artifact_bundle",
+                return_value=direct_rejection,
+            ),
+            mock.patch.object(
+                artifact_module,
+                "_archive_framing_error",
+                side_effect=AssertionError(
+                    "wrapper framing must not inspect excessive EOCD entries"
+                ),
+            ),
+            mock.patch.object(
+                artifact_module.zipfile,
+                "ZipFile",
+                side_effect=AssertionError(
+                    "wrapper ZipFile must not allocate excessive EOCD entries"
+                ),
+            ),
+        ):
+            wrapper_rejected = verify_downloaded_pre_live_artifact(
+                wrapper,
+                limits=replace(
+                    PreLiveArtifactLimits(),
+                    max_archive_bytes=len(wrapper) + 1,
+                ),
+                admission_snapshot=self.admission_snapshot,
+            )
+        self.assertFalse(wrapper_rejected["ok"], wrapper_rejected)
+        self.assertIn(
+            "github_artifact_entry_count_mismatch",
+            blocker_codes(wrapper_rejected),
+        )
+
     def test_deterministic_policy_requires_exact_admitted_executables(
         self,
     ) -> None:

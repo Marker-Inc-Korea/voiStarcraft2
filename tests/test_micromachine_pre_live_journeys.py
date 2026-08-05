@@ -25,6 +25,7 @@ from starcraft_commander.micromachine_pre_live_artifact import (
 from starcraft_commander.micromachine_pre_live_journeys import (
     DEFAULT_JOURNEY_MANIFEST,
     DETERMINISTIC_ZIP_TIMESTAMP,
+    MAX_JOURNEY_BUNDLE_ENTRIES,
     _close_native_path_monitor,
     _compile_native_input,
     _execute_tactical_radio_runtime,
@@ -454,6 +455,39 @@ class NativeExecutableLaunchTest(unittest.TestCase):
                 _close_native_path_monitor(monitor)
                 root.chmod(0o700)
                 os.close(descriptor)
+
+
+class PreLiveJourneyBundlePreflightTest(unittest.TestCase):
+    def test_entry_limit_precedes_framing_and_zipfile_allocation(self) -> None:
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, mode="w") as archive:
+            for index in range(MAX_JOURNEY_BUNDLE_ENTRIES + 1):
+                archive.writestr(f"entry-{index:03d}", b"")
+        bundle = stream.getvalue()
+
+        with (
+            mock.patch(
+                "starcraft_commander.micromachine_pre_live_journeys."
+                "_archive_framing_error",
+                side_effect=AssertionError(
+                    "framing parser must not inspect excessive EOCD entries"
+                ),
+            ),
+            mock.patch(
+                "starcraft_commander.micromachine_pre_live_journeys."
+                "zipfile.ZipFile",
+                side_effect=AssertionError(
+                    "ZipFile must not allocate excessive EOCD entries"
+                ),
+            ),
+        ):
+            rejected = verify_pre_live_journey_bundle(bundle)
+
+        self.assertFalse(rejected["ok"], rejected)
+        self.assertIn(
+            "journey bundle contains too many ZIP members",
+            rejected["blockers"],
+        )
 
 
 @unittest.skipUnless(
@@ -2801,7 +2835,7 @@ def _resequence(events: list[dict[str, object]]) -> None:
 
 def _receipt_action_metadata(
     payload: dict[str, object],
-) -> tuple[str, str, str, int, str, object, object, str]:
+) -> tuple[str, str, str, int, str, object, object, int, str]:
     return (
         str(payload["unit_type"]),
         str(payload["dispatch_action"]),
@@ -2810,6 +2844,7 @@ def _receipt_action_metadata(
         str(payload["target_kind"]),
         payload["target_x"],
         payload["target_y"],
+        int(payload["target_tag"]),
         str(payload["cloak_state"]),
     )
 
