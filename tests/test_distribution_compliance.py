@@ -531,6 +531,39 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
         ).encode()
         self.assertEqual([], scan_payload("deployment.yaml", unrelated_value))
 
+    def test_detects_continued_docker_env_assignments(self) -> None:
+        host_key = "VOI_MYPROXY_" + "HOST"
+        model_key = "VOI_MYPROXY_" + "MODEL"
+        payloads = (
+            (
+                "Dockerfile",
+                (
+                    "ENV \\\n"
+                    f"  {host_key} 10.20.30.40\n"
+                ).encode(),
+                "private_endpoint",
+            ),
+            (
+                "Dockerfile.windows",
+                (
+                    "# escape=`\n"
+                    "ENV `\n"
+                    f"  {model_key}=private-model\n"
+                ).encode(),
+                "private_model_override",
+            ),
+        )
+        for path, payload, expected_rule in payloads:
+            with self.subTest(path=path):
+                findings = scan_payload(
+                    path,
+                    payload,
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertEqual(1, len(findings))
+                self.assertEqual(expected_rule, findings[0]["rule_id"])
+
     def test_detects_json_and_quoted_yaml_kubernetes_env(self) -> None:
         host_key = "VOI_MYPROXY_" + "HOST"
         port_key = "VOI_MYPROXY_" + "PORT"

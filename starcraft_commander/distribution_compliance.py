@@ -819,6 +819,9 @@ def scan_payload(
         normalized_path,
         text,
     )
+    dockerfile_text = _dockerfile_logical_text(normalized_path, text)
+    if dockerfile_text not in scan_texts:
+        scan_texts = (*scan_texts, dockerfile_text)
     findings.extend(
         _path_finding(normalized_path, rule_id)
         for rule_id in configuration_failures
@@ -873,6 +876,50 @@ def scan_payload(
                 count,
             )
     return findings
+
+
+def _dockerfile_logical_text(path: str, text: str) -> str:
+    basename = PurePosixPath(path).name.lower()
+    if not (
+        basename in {"containerfile", "dockerfile"}
+        or basename.startswith(("containerfile.", "dockerfile."))
+        or basename.endswith((".containerfile", ".dockerfile"))
+    ):
+        return text
+    directive_pattern = re.compile(
+        r"^[ \t]*#[ \t]*escape[ \t]*=[ \t]*([\\`])[ \t]*$",
+        re.IGNORECASE,
+    )
+    escape = "\\"
+    for raw_line in text.splitlines():
+        match = directive_pattern.fullmatch(raw_line)
+        if match is not None:
+            escape = match.group(1)
+            break
+
+    logical_lines: list[str] = []
+    buffer = ""
+    continuing = False
+    for raw_line in text.splitlines():
+        if not continuing and directive_pattern.fullmatch(raw_line):
+            logical_lines.append(raw_line)
+            continue
+        fragment = raw_line.lstrip(" \t") if continuing else raw_line
+        buffer += fragment
+        stripped = buffer.rstrip(" \t")
+        if stripped.endswith(escape):
+            buffer = stripped[:-1]
+            continuing = True
+            continue
+        logical_lines.append(buffer)
+        buffer = ""
+        continuing = False
+    if buffer:
+        logical_lines.append(buffer)
+    normalized = "\n".join(logical_lines)
+    if text.endswith(("\n", "\r")):
+        normalized += "\n"
+    return normalized
 
 
 def _configuration_scan_texts(
