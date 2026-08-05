@@ -22,7 +22,7 @@ from pathlib import Path, PurePosixPath
 from typing import Final
 
 
-DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION: Final[int] = 1
+DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION: Final[int] = 2
 EXPECTED_LICENSE_EXPRESSION: Final[str] = (
     "AGPL-3.0-or-later OR LicenseRef-Commercial"
 )
@@ -126,19 +126,33 @@ _NOTICE_DISTRIBUTION_LICENSE_RE: Final[re.Pattern[str]] = re.compile(
 _REQUIREMENT_NAME_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*([A-Za-z0-9][A-Za-z0-9_.-]*)"
 )
+_CONFIG_ASSIGNMENT_PREFIX: Final[str] = (
+    r"(?:^|[{\[(,;]|^[ \t]*-[ \t]+|"
+    r"(?:^|[ \t])(?:ENV|ARG|env)[ \t]+|"
+    r"os\.environ\[[ \t]*)"
+    r"[ \t]*(?:export[ \t]+)?[\"']?"
+)
+_CONFIG_ASSIGNMENT_KEY_SUFFIX: Final[str] = (
+    r"[\"']?(?:[ \t]*\])?(?![A-Za-z0-9_])"
+)
+_CONFIG_ASSIGNMENT_SEPARATOR: Final[str] = (
+    r"[ \t]*(?:(?::[^=\n,}]+)?=|:(?![^\n,}]*=))[ \t]*"
+)
 _PRIVATE_MODEL_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?im)(?:^|[{\[(,;])[ \t]*(?:export[ \t]+)?[\"']?"
-    r"(?:DEFAULT_MYPROXY_MODEL|VOI_MYPROXY_MODEL)[\"']?"
-    r"(?![A-Za-z0-9_])"
-    r"[ \t]*(?:(?::[^=\n,}]+)?=|:(?![^\n,}]*=))"
-    r"[ \t]*[\"']?([^\"'\s,#}\n]+)[\"']?"
+    r"(?im)"
+    + _CONFIG_ASSIGNMENT_PREFIX
+    + r"(?:DEFAULT_MYPROXY_MODEL|VOI_MYPROXY_MODEL)"
+    + _CONFIG_ASSIGNMENT_KEY_SUFFIX
+    + _CONFIG_ASSIGNMENT_SEPARATOR
+    + r"[\"']?([^\"'\s,#}\n]+)[\"']?"
 )
 _PRIVATE_ENDPOINT_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?im)(?:^|[{\[(,;])[ \t]*(?:export[ \t]+)?[\"']?"
-    r"(?:MYPROXY_OPENAI_BASE_URL|VOI_MYPROXY_OPENAI_BASE_URL)[\"']?"
-    r"(?![A-Za-z0-9_])"
-    r"[ \t]*(?:(?::[^=\n,}]+)?=|:(?![^\n,}]*=))"
-    r"[ \t]*[\"']?([^\"'\s,#}\n]+)[\"']?"
+    r"(?im)"
+    + _CONFIG_ASSIGNMENT_PREFIX
+    + r"(?:MYPROXY_OPENAI_BASE_URL|VOI_MYPROXY_OPENAI_BASE_URL)"
+    + _CONFIG_ASSIGNMENT_KEY_SUFFIX
+    + _CONFIG_ASSIGNMENT_SEPARATOR
+    + r"[\"']?([^\"'\s,#}\n]+)[\"']?"
 )
 _API_KEY_RE: Final[re.Pattern[str]] = re.compile(
     r"\b("
@@ -151,24 +165,31 @@ _BEARER_TOKEN_RE: Final[re.Pattern[str]] = re.compile(
     r"(?i)\bBearer\s+([A-Za-z0-9._~+/=-]{12,})"
 )
 _ENV_KEY_ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?im)(?:^|[{\[(,;])[ \t]*(?:export[ \t]+)?[\"']?"
-    r"(?:OPENAI|ANTHROPIC|GEMINI|XAI|MYPROXY|CODEX_MYPROXY)_API_KEY"
-    r"[\"']?(?![A-Za-z0-9_])"
-    r"[ \t]*(?:(?::[^=\n,}]+)?=|:(?![^\n,}]*=))"
-    r"[ \t]*[\"']?([A-Za-z0-9._~+/=-]{12,})"
+    r"(?im)"
+    + _CONFIG_ASSIGNMENT_PREFIX
+    + r"(?:OPENAI|ANTHROPIC|GEMINI|XAI|MYPROXY|CODEX_MYPROXY)_API_KEY"
+    + _CONFIG_ASSIGNMENT_KEY_SUFFIX
+    + _CONFIG_ASSIGNMENT_SEPARATOR
+    + r"[\"']?([A-Za-z0-9._~+/=-]{12,})"
 )
 _CREDENTIAL_PATH_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?im)(?:^|[{\[(,;])[ \t]*[\"']?"
-    r"(?:credential(?:s)?_?(?:file|path)|"
-    r"GOOGLE_APPLICATION_CREDENTIALS|AWS_SHARED_CREDENTIALS_FILE)"
-    r"[\"']?(?![A-Za-z0-9_])"
-    r"[ \t]*(?:(?::[^=\n,}]+)?=|:(?![^\n,}]*=))[ \t]*(?:"
-    r"[\"'][^\"'\n]*(?:\.aws[\\/]credentials|\.netrc|\.pypirc|_netrc|"
-    r"id_(?:rsa|ed25519)|credentials\.json|"
-    r"[A-Za-z0-9_.-]+\.credentials\.json)[^\"'\n]*[\"']|"
-    r"[^\"'\s,#}\n]*(?:\.aws[\\/]credentials|\.netrc|\.pypirc|_netrc|"
-    r"id_(?:rsa|ed25519)|credentials\.json|"
-    r"[A-Za-z0-9_.-]+\.credentials\.json)[^\"'\s,#}\n]*)"
+    r"(?im)(?:"
+    + _CONFIG_ASSIGNMENT_PREFIX
+    + r"(?:credential(?:s)?_?(?:file|path)|"
+    + r"GOOGLE_APPLICATION_CREDENTIALS|AWS_SHARED_CREDENTIALS_FILE)"
+    + _CONFIG_ASSIGNMENT_KEY_SUFFIX
+    + _CONFIG_ASSIGNMENT_SEPARATOR
+    + r"(?:"
+    + r"[\"'][^\"'\n]*(?:\.aws[\\/]credentials|\.netrc|\.pypirc|_netrc|"
+    + r"id_(?:rsa|ed25519)|credentials\.json|"
+    + r"[A-Za-z0-9_.-]+\.credentials\.json)[^\"'\n]*[\"']|"
+    + r"[^\"'\s,#}\n]*(?:\.aws[\\/]credentials|\.netrc|\.pypirc|_netrc|"
+    + r"id_(?:rsa|ed25519)|credentials\.json|"
+    + r"[A-Za-z0-9_.-]+\.credentials\.json)[^\"'\s,#}\n]*)|"
+    + r"\b(?:Path|open)[ \t]*\([ \t]*(?:[rubf]{0,2})?[\"']"
+    + r"[^\"'\n]*(?:\.aws[\\/]credentials|\.netrc|\.pypirc|_netrc|"
+    + r"id_(?:rsa|ed25519)|credentials\.json|"
+    + r"[A-Za-z0-9_.-]+\.credentials\.json)[^\"'\n]*[\"'])"
 )
 _SAFE_FIXTURE_RULES: Final[Mapping[str, frozenset[str]]] = {
     "tests/test_llm_interpreter.py": frozenset(
@@ -302,9 +323,6 @@ def inspect_wheel(path: Path) -> ArchiveSnapshot:
                 )
                 continue
             seen.add(canonical_name)
-            if info.is_dir():
-                directories.append(name)
-                continue
             mode = (info.external_attr >> 16) & 0o170000
             if mode == stat.S_IFLNK:
                 blockers.append(
@@ -314,6 +332,9 @@ def inspect_wheel(path: Path) -> ArchiveSnapshot:
                         "entry": name,
                     }
                 )
+                continue
+            if info.is_dir():
+                directories.append(name)
                 continue
             if info.flag_bits & 0x1:
                 blockers.append(
@@ -826,15 +847,14 @@ def build_distribution_report(
                 if normalized_dependency_name(requirement)
             }
         )
+        pyproject_text = (source_root / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
         declared_dependencies = sorted(
-            declared_dependencies_from_pyproject(
-                (source_root / "pyproject.toml").read_text(encoding="utf-8")
-            )
+            declared_dependencies_from_pyproject(pyproject_text)
         )
         build_dependencies = sorted(
-            build_dependencies_from_pyproject(
-                (source_root / "pyproject.toml").read_text(encoding="utf-8")
-            )
+            build_dependencies_from_pyproject(pyproject_text)
         )
         lock_dependencies = sorted(
             direct_dependencies_from_uv_lock(
@@ -896,6 +916,10 @@ def build_distribution_report(
                     "utf-8",
                     errors="replace",
                 ),
+            },
+            "source_pyproject": {
+                "raw": pyproject_text,
+                "sha256": sha256_bytes(pyproject_text.encode("utf-8")),
             },
             "licenses": licenses,
             "runtime_data": runtime_data,
@@ -1094,8 +1118,11 @@ def distribution_report_blockers(
     blockers.extend(
         _metadata_evidence_blockers(
             metadata,
+            _mapping(report.get("source_pyproject")),
             artifact_paths.get("wheel"),
+            artifact_paths.get("sdist"),
             artifact_file_manifests.get("wheel"),
+            _sha256_manifest(archive_manifests.get("sdist")),
             _mapping(report.get("dependencies")),
         )
     )
@@ -1512,23 +1539,57 @@ def _isolated_venv_builder() -> venv.EnvBuilder:
     )
 
 
-def declared_dependencies_from_pyproject(text: str) -> frozenset[str]:
-    """Extract direct optional dependencies from the project TOML section."""
+def project_version_from_pyproject(text: str) -> str:
+    """Return the exact static project version declared in TOML."""
 
-    sanitized = "\n".join(
-        _strip_toml_line_comment(line) for line in text.splitlines()
-    )
+    section = _pyproject_section(text, "project")
     match = re.search(
-        r"(?ms)^\[project\.optional-dependencies\]\s*$"
-        r"(.*?)(?=^\[[^\n]+\]\s*$|\Z)",
-        sanitized,
+        r"(?m)^\s*version\s*=\s*(?:"
+        r'"((?:\\.|[^"\\])*)"|'
+        r"'([^']*)'"
+        r")\s*$",
+        section,
     )
     if match is None:
-        return frozenset()
-    requirements = re.findall(r"[\"']([^\"']+)[\"']", match.group(1))
+        return ""
+    return _decode_toml_string(match.group(1), match.group(2))
+
+
+def metadata_requirements_from_pyproject(text: str) -> tuple[str, ...]:
+    """Derive exact METADATA Requires-Dist values from project TOML."""
+
+    project_section = _pyproject_section(text, "project")
+    requirements = list(
+        _toml_array_assignment_values(project_section, "dependencies")
+    )
+    optional_section = _pyproject_section(
+        text,
+        "project.optional-dependencies",
+    )
+    assignment_pattern = re.compile(
+        r"(?ms)^\s*([A-Za-z0-9_.-]+)\s*=\s*\[(.*?)\]"
+        r"(?=\s*(?:^[A-Za-z0-9_.-]+\s*=|\Z))"
+    )
+    for match in assignment_pattern.finditer(optional_section):
+        extra = re.sub(r"[-_.]+", "-", match.group(1).lower())
+        for requirement in _toml_quoted_values(match.group(2)):
+            base, separator, marker = requirement.partition(";")
+            extra_marker = f'extra == "{extra}"'
+            if separator:
+                requirements.append(
+                    f"{base.strip()}; ({marker.strip()}) and {extra_marker}"
+                )
+            else:
+                requirements.append(f"{base.strip()}; {extra_marker}")
+    return tuple(sorted(requirements))
+
+
+def declared_dependencies_from_pyproject(text: str) -> frozenset[str]:
+    """Extract direct core and optional dependencies from project TOML."""
+
     return frozenset(
         name
-        for requirement in requirements
+        for requirement in metadata_requirements_from_pyproject(text)
         if (name := normalized_dependency_name(requirement))
     )
 
@@ -1581,6 +1642,55 @@ def _strip_toml_line_comment(line: str) -> str:
         if character == "#":
             return line[:index]
     return line
+
+
+def _pyproject_section(text: str, section_name: str) -> str:
+    sanitized = "\n".join(
+        _strip_toml_line_comment(line) for line in text.splitlines()
+    )
+    match = re.search(
+        rf"(?ms)^\[{re.escape(section_name)}\]\s*$"
+        r"(.*?)(?=^\[[^\n]+\]\s*$|\Z)",
+        sanitized,
+    )
+    return match.group(1) if match is not None else ""
+
+
+def _toml_array_assignment_values(
+    section: str,
+    key: str,
+) -> tuple[str, ...]:
+    match = re.search(
+        rf"(?ms)^\s*{re.escape(key)}\s*=\s*\[(.*?)\]",
+        section,
+    )
+    return _toml_quoted_values(match.group(1)) if match is not None else ()
+
+
+def _toml_quoted_values(text: str) -> tuple[str, ...]:
+    values: list[str] = []
+    for match in re.finditer(
+        r'"((?:\\.|[^"\\])*)"|'
+        r"'([^']*)'",
+        text,
+    ):
+        value = _decode_toml_string(match.group(1), match.group(2))
+        if value:
+            values.append(value)
+    return tuple(values)
+
+
+def _decode_toml_string(
+    double_quoted: str | None,
+    single_quoted: str | None,
+) -> str:
+    if double_quoted is not None:
+        try:
+            decoded = json.loads(f'"{double_quoted}"')
+        except json.JSONDecodeError:
+            return ""
+        return decoded if isinstance(decoded, str) else ""
+    return single_quoted or ""
 
 
 def direct_dependencies_from_uv_lock(text: str) -> frozenset[str]:
@@ -2147,13 +2257,56 @@ def _sha256_manifest(value: object) -> dict[str, str] | None:
 
 def _metadata_evidence_blockers(
     metadata: Mapping[str, object],
+    source_pyproject: Mapping[str, object],
     wheel_path: Path | None,
+    sdist_path: Path | None,
     wheel_file_manifest: Mapping[str, str] | None,
+    sdist_expected_manifest: Mapping[str, str] | None,
     dependencies: Mapping[str, object],
 ) -> list[dict[str, object]]:
     blockers: list[dict[str, object]] = []
-    if wheel_path is None or wheel_file_manifest is None:
+    if (
+        wheel_path is None
+        or sdist_path is None
+        or wheel_file_manifest is None
+        or sdist_expected_manifest is None
+    ):
         return [{"code": "invalid_metadata_evidence", "reason": "missing_wheel"}]
+    source_raw = source_pyproject.get("raw")
+    source_digest = source_pyproject.get("sha256")
+    source_version = ""
+    source_requires_dist: list[str] = []
+    if not isinstance(source_raw, str) or not source_raw:
+        blockers.append(
+            {
+                "code": "invalid_source_pyproject_evidence",
+                "reason": "missing_raw",
+            }
+        )
+    else:
+        observed_source_digest = sha256_bytes(source_raw.encode("utf-8"))
+        if (
+            source_digest != observed_source_digest
+            or sdist_expected_manifest.get("pyproject.toml")
+            != observed_source_digest
+        ):
+            blockers.append(
+                {
+                    "code": "invalid_source_pyproject_evidence",
+                    "reason": "digest_mismatch",
+                }
+            )
+        source_version = project_version_from_pyproject(source_raw)
+        source_requires_dist = list(
+            metadata_requirements_from_pyproject(source_raw)
+        )
+        if not source_version:
+            blockers.append(
+                {
+                    "code": "invalid_source_pyproject_evidence",
+                    "reason": "missing_version",
+                }
+            )
     expected_root = _expected_wheel_dist_info_root(wheel_path)
     expected_entry = f"{expected_root}/METADATA" if expected_root else ""
     entry = metadata.get("entry")
@@ -2222,17 +2375,51 @@ def _metadata_evidence_blockers(
                 "reason": "wrong_project_name",
             }
         )
-    filename_components = wheel_path.name[: -len(".whl")].split("-")
-    expected_version = (
-        filename_components[1]
-        if wheel_path.name.endswith(".whl") and len(filename_components) >= 5
+    wheel_filename_components = wheel_path.name[: -len(".whl")].split("-")
+    wheel_filename_version = (
+        wheel_filename_components[1]
+        if wheel_path.name.endswith(".whl")
+        and len(wheel_filename_components) >= 5
         else ""
     )
-    if not expected_version or parsed.get_all("Version", []) != [expected_version]:
+    sdist_filename = sdist_path.name.removesuffix(".tar.gz")
+    sdist_filename_components = sdist_filename.split("-", 1)
+    sdist_filename_version = (
+        sdist_filename_components[1]
+        if sdist_path.name.endswith(".tar.gz")
+        and len(sdist_filename_components) == 2
+        else ""
+    )
+    for kind, observed_version in (
+        ("wheel", wheel_filename_version),
+        ("sdist", sdist_filename_version),
+    ):
+        if not source_version or observed_version != source_version:
+            blockers.append(
+                {
+                    "code": "invalid_metadata_evidence",
+                    "reason": "artifact_version_mismatch",
+                    "kind": kind,
+                    "expected": source_version,
+                    "observed": observed_version,
+                }
+            )
+    if (
+        not source_version
+        or parsed.get_all("Version", []) != [source_version]
+    ):
         blockers.append(
             {
                 "code": "invalid_metadata_evidence",
                 "reason": "wrong_project_version",
+                "expected": source_version,
+            }
+        )
+    if source_raw and raw_requires_dist != source_requires_dist:
+        blockers.append(
+            {
+                "code": "invalid_metadata_evidence",
+                "reason": "source_requires_dist_mismatch",
             }
         )
     raw_dependencies = sorted(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import stat
 import tempfile
 import unittest
 from unittest import mock
@@ -196,6 +197,23 @@ class ArchivePolicyTest(unittest.TestCase):
             "unsafe_archive_entry",
             {str(item["code"]) for item in snapshot.blockers},
         )
+
+    def test_wheel_inspection_rejects_directory_symlink_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            wheel_path = Path(temporary) / "candidate.whl"
+            link = zipfile.ZipInfo("starcraft_commander/")
+            link.create_system = 3
+            link.external_attr = (stat.S_IFLNK | 0o777) << 16
+            with zipfile.ZipFile(wheel_path, "w") as archive:
+                archive.writestr(link, "target")
+
+            snapshot = inspect_wheel(wheel_path)
+
+        self.assertIn(
+            "archive_link_entry",
+            {str(item["code"]) for item in snapshot.blockers},
+        )
+        self.assertEqual((), snapshot.directories)
 
     def test_sdist_rejects_alternate_root_payloads(self) -> None:
         expected_payload = b"expected runtime"
@@ -494,6 +512,36 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             },
         )
 
+    def test_detects_process_list_and_path_constructor_configuration(
+        self,
+    ) -> None:
+        api_key_name = "OPENAI_" + "API_KEY"
+        myproxy_key_name = "MYPROXY_" + "API_KEY"
+        model_key = "VOI_MYPROXY_" + "MODEL"
+        endpoint_key = "VOI_MYPROXY_OPENAI_BASE_" + "URL"
+        path_constructor = "Pa" + "th"
+        credential_path = "/home/user/" + ".netrc"
+        payload = (
+            f"- {api_key_name}=liveabcdefghijklmnop\n"
+            f"ENV {model_key}=internal-deployment-alpha\n"
+            f"env {endpoint_key}=https://proxy.corp.example:8443/v1\n"
+            f'os.environ["{myproxy_key_name}"] = "liveabcdefghijklmnop"\n'
+            f'{path_constructor}("{credential_path}")\n'
+        ).encode()
+
+        self.assertEqual(
+            {
+                "api_key_assignment",
+                "credential_path",
+                "private_endpoint",
+                "private_model_override",
+            },
+            {
+                str(item["rule_id"])
+                for item in scan_payload("deployment-config", payload)
+            },
+        )
+
     def test_detects_environment_and_credential_filenames(self) -> None:
         env_findings = scan_payload(".env.local", b"SAFE=value")
         credential_findings = scan_payload("config/service.credentials.json", b"{}")
@@ -619,7 +667,24 @@ class DerivedVerdictTest(unittest.TestCase):
         digest = "d" * 64
         wheel_root = "voistarcraft2-0.1.0.dist-info"
         metadata_entry = f"{wheel_root}/METADATA"
-        metadata_requires_dist = sorted(EXPECTED_PROJECT_DISTRIBUTIONS)
+        source_pyproject_raw = """[project]
+version = "0.1.0"
+dependencies = []
+
+[project.optional-dependencies]
+sc2 = ["burnysc2>=6.5"]
+voice = ["faster-whisper>=1.0", "sounddevice>=0.4.6"]
+llm = ["anthropic>=0.40", "openai>=1.0"]
+dev = ["build>=1.2", "pytest>=7"]
+"""
+        source_pyproject_digest = compliance_module.sha256_bytes(
+            source_pyproject_raw.encode()
+        )
+        metadata_requires_dist = list(
+            compliance_module.metadata_requirements_from_pyproject(
+                source_pyproject_raw
+            )
+        )
         metadata_raw = (
             "Metadata-Version: 2.4\n"
             "Name: voiStarcraft2\n"
@@ -664,8 +729,10 @@ class DerivedVerdictTest(unittest.TestCase):
         sdist_source = (
             f"{sdist_root}/starcraft_commander/runtime_data.py"
         )
+        sdist_pyproject = f"{sdist_root}/pyproject.toml"
         sdist_file_manifest = {
             sdist_source: digest,
+            sdist_pyproject: source_pyproject_digest,
             **{entry: digest for entry in sdist_generated},
         }
         sdist_directories = [sdist_root, sdist_egg_info]
@@ -707,14 +774,23 @@ class DerivedVerdictTest(unittest.TestCase):
             },
             "archive_blockers": [],
             "archive_manifests": {
-                kind: {"starcraft_commander/runtime_data.py": digest}
-                for kind in ("wheel", "sdist")
+                "wheel": {
+                    "starcraft_commander/runtime_data.py": digest,
+                },
+                "sdist": {
+                    "pyproject.toml": source_pyproject_digest,
+                    "starcraft_commander/runtime_data.py": digest,
+                },
             },
             "metadata": {
                 "entry": metadata_entry,
                 "license_expressions": [EXPECTED_LICENSE_EXPRESSION],
                 "requires_dist": metadata_requires_dist,
                 "raw": metadata_raw,
+            },
+            "source_pyproject": {
+                "raw": source_pyproject_raw,
+                "sha256": source_pyproject_digest,
             },
             "licenses": [
                 {
@@ -806,6 +882,88 @@ class DerivedVerdictTest(unittest.TestCase):
         }
 
         self.assertIn("invalid_metadata_evidence", codes)
+
+        report = dict(self.report)
+        report.pop("source_pyproject")
+        codes = {
+            str(item["code"]) for item in distribution_report_blockers(report)
+        }
+        self.assertIn("invalid_source_pyproject_evidence", codes)
+
+        report = dict(self.report)
+        source_pyproject = dict(self.report["source_pyproject"])
+        source_pyproject["raw"] = str(source_pyproject["raw"]).replace(
+            'version = "0.1.0"',
+            'version = "9.9.9"',
+        )
+        report["source_pyproject"] = source_pyproject
+        codes = {
+            str(item["code"]) for item in distribution_report_blockers(report)
+        }
+        self.assertIn("invalid_source_pyproject_evidence", codes)
+
+    def test_metadata_is_bound_to_source_version_and_requirement_semantics(
+        self,
+    ) -> None:
+        source_pyproject = self.report["source_pyproject"]
+        metadata = dict(self.report["metadata"])
+        wrong_version_raw = str(metadata["raw"]).replace(
+            "Version: 0.1.0",
+            "Version: 9.9.9",
+        )
+        wrong_version_entry = "voistarcraft2-9.9.9.dist-info/METADATA"
+        metadata["entry"] = wrong_version_entry
+        metadata["raw"] = wrong_version_raw
+        blockers = compliance_module._metadata_evidence_blockers(
+            metadata,
+            source_pyproject,
+            Path("voistarcraft2-9.9.9-py3-none-any.whl"),
+            Path("voistarcraft2-9.9.9.tar.gz"),
+            {
+                wrong_version_entry: compliance_module.sha256_bytes(
+                    wrong_version_raw.encode()
+                )
+            },
+            {"pyproject.toml": source_pyproject["sha256"]},
+            self.report["dependencies"],
+        )
+        reasons = {str(item.get("reason")) for item in blockers}
+        self.assertIn("wrong_project_version", reasons)
+        self.assertIn("artifact_version_mismatch", reasons)
+
+        report = dict(self.report)
+        metadata = dict(self.report["metadata"])
+        source_requirement = 'openai>=1.0; extra == "llm"'
+        private_requirement = (
+            "openai @ https://packages.example.invalid/openai.whl; "
+            'extra == "llm"'
+        )
+        mutated_raw = str(metadata["raw"]).replace(
+            f"Requires-Dist: {source_requirement}",
+            f"Requires-Dist: {private_requirement}",
+        )
+        metadata["raw"] = mutated_raw
+        metadata["requires_dist"] = sorted(
+            private_requirement if item == source_requirement else item
+            for item in metadata["requires_dist"]
+        )
+        report["metadata"] = metadata
+        artifacts = {
+            kind: dict(value)
+            for kind, value in self.report["artifacts"].items()
+        }
+        wheel_manifest = dict(artifacts["wheel"]["file_manifest"])
+        wheel_manifest[str(metadata["entry"])] = (
+            compliance_module.sha256_bytes(mutated_raw.encode())
+        )
+        artifacts["wheel"]["file_manifest"] = wheel_manifest
+        report["artifacts"] = artifacts
+
+        reasons = {
+            str(item.get("reason"))
+            for item in distribution_report_blockers(report)
+        }
+        self.assertIn("source_requires_dist_mismatch", reasons)
 
     def test_rejects_wrong_license_missing_notices_and_runtime_data(self) -> None:
         report = dict(self.report)
