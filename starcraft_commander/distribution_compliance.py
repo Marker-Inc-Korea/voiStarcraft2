@@ -1350,6 +1350,8 @@ def isolated_wheel_install_smoke(wheel_path: Path) -> dict[str, object]:
                 if os.name == "nt"
                 else environment_root / "bin" / "python"
             )
+            environment = os.environ.copy()
+            environment.pop("PYTHONPATH", None)
             failure_stage = "install_wheel"
             install = subprocess.run(
                 [
@@ -1362,6 +1364,7 @@ def isolated_wheel_install_smoke(wheel_path: Path) -> dict[str, object]:
                     "--no-index",
                     str(wheel_path),
                 ],
+                env=environment,
                 check=False,
                 capture_output=True,
                 text=True,
@@ -1393,8 +1396,6 @@ def isolated_wheel_install_smoke(wheel_path: Path) -> dict[str, object]:
                 "metadata('voiStarcraft2').get('License-Expression'), "
                 "'runtime_data_loaded': loaded}, sort_keys=True))\n"
             )
-            environment = os.environ.copy()
-            environment.pop("PYTHONPATH", None)
             failure_stage = "load_installed_package"
             result = subprocess.run(
                 [str(python_path), "-I", "-c", script],
@@ -1429,6 +1430,7 @@ def isolated_wheel_install_smoke(wheel_path: Path) -> dict[str, object]:
                     str(target_root),
                     str(wheel_path),
                 ],
+                env=environment,
                 check=False,
                 capture_output=True,
                 text=True,

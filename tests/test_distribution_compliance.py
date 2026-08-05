@@ -71,6 +71,56 @@ class IsolatedInstallTest(unittest.TestCase):
     def test_venv_preserves_managed_python_layout_on_posix(self) -> None:
         self.assertEqual(os.name != "nt", _isolated_venv_builder().symlinks)
 
+    def test_smoke_removes_pythonpath_from_all_isolated_processes(self) -> None:
+        successful_result = mock.Mock(returncode=0, stdout="", stderr="")
+        installed_result = mock.Mock(
+            returncode=0,
+            stdout=(
+                '{"license_expression": "'
+                + EXPECTED_LICENSE_EXPRESSION
+                + '", "runtime_data_loaded": true}'
+            ),
+            stderr="",
+        )
+        target_result = mock.Mock(
+            returncode=0,
+            stdout='{"loaded": true}',
+            stderr="",
+        )
+        builder = mock.Mock()
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"PYTHONPATH": "/private/source-tree"},
+            ),
+            mock.patch.object(
+                compliance_module,
+                "_isolated_venv_builder",
+                return_value=builder,
+            ),
+            mock.patch.object(
+                compliance_module.subprocess,
+                "run",
+                side_effect=(
+                    successful_result,
+                    installed_result,
+                    successful_result,
+                    target_result,
+                ),
+            ) as run,
+        ):
+            result = compliance_module.isolated_wheel_install_smoke(
+                Path("candidate.whl")
+            )
+
+        self.assertEqual(0, result["returncode"])
+        self.assertTrue(result["payload"]["target_runtime_data_loaded"])
+        self.assertEqual(4, run.call_count)
+        for call in run.call_args_list:
+            environment = call.kwargs.get("env")
+            self.assertIsNotNone(environment)
+            self.assertNotIn("PYTHONPATH", environment)
+
 
 class ArchivePolicyTest(unittest.TestCase):
     def test_wheel_allowlist_rejects_tests_docs_and_local_configuration(
