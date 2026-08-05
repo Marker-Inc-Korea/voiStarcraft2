@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import os
 from pathlib import Path
 import re
@@ -546,6 +547,26 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             {str(item["rule_id"]) for item in findings},
         )
 
+    def test_detects_unicode_escaped_kubernetes_env(self) -> None:
+        payloads = (
+            b'{"na\\u006de":"VOI_MYPROXY_HOST","value":"10.20.30.40"}',
+            b'{"name":"VOI_MYPROXY_H\\u004fST","value":"10.20.30.40"}',
+            b'{"name":"VOI_MYPR\\x4fXY_HOST","value":"10.20.30.40"}',
+        )
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                findings = scan_payload(
+                    "deployment.json",
+                    payload,
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertEqual(1, len(findings))
+                self.assertEqual(
+                    "private_endpoint",
+                    findings[0]["rule_id"],
+                )
+
     def test_private_config_scanner_ignores_names_and_empty_constants(self) -> None:
         endpoint_key = "MYPROXY_OPENAI_BASE_" + "URL"
         payload = (
@@ -812,6 +833,8 @@ class DerivedVerdictTest(unittest.TestCase):
         metadata_entry = f"{wheel_root}/METADATA"
         source_pyproject_raw = """[project]
 version = "0.1.0"
+description = "Synthetic distribution compliance fixture."
+requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
@@ -832,6 +855,8 @@ dev = ["build>=1.2", "pytest>=7"]
             "Metadata-Version: 2.4\n"
             "Name: voiStarcraft2\n"
             "Version: 0.1.0\n"
+            "Summary: Synthetic distribution compliance fixture.\n"
+            "Requires-Python: >=3.10\n"
             f"License-Expression: {EXPECTED_LICENSE_EXPRESSION}\n"
             + "".join(
                 f"Requires-Dist: {requirement}\n"
@@ -1122,9 +1147,77 @@ dev = ["build>=1.2", "pytest>=7"]
                 "findings": [],
             },
         }
+        trusted_evidence = (
+            copy.deepcopy(self.report["archive_manifests"]),
+            copy.deepcopy(self.report["archive_size_manifests"]),
+        )
+        trusted_patcher = mock.patch.object(
+            compliance_module,
+            "_trusted_archive_evidence",
+            return_value=trusted_evidence,
+        )
+        trusted_patcher.start()
+        self.addCleanup(trusted_patcher.stop)
 
     def test_accepts_complete_raw_evidence(self) -> None:
         self.assertEqual([], distribution_report_blockers(self.report))
+
+    def test_rejects_forged_exact_sha_archive_provenance(self) -> None:
+        report = copy.deepcopy(self.report)
+        target = "starcraft_commander/runtime_data.py"
+        old_digest = report["artifacts"]["wheel"]["file_manifest"][target]
+        old_size = report["artifacts"]["wheel"]["file_sizes"][target]
+        new_digest = "e" * 64
+        new_size = old_size + 1
+        report["archive_manifests"]["wheel"][target] = new_digest
+        report["archive_size_manifests"]["wheel"][target] = new_size
+        report["artifacts"]["wheel"]["file_manifest"][target] = new_digest
+        report["artifacts"]["wheel"]["file_sizes"][target] = new_size
+        record = next(
+            item
+            for item in report["metadata"]["generated"]["wheel"]
+            if str(item["entry"]).endswith("/RECORD")
+        )
+        record["raw"] = str(record["raw"]).replace(
+            (
+                f"{target},"
+                f"{compliance_module._record_hash_from_sha256(old_digest)},"
+                f"{old_size}"
+            ),
+            (
+                f"{target},"
+                f"{compliance_module._record_hash_from_sha256(new_digest)},"
+                f"{new_size}"
+            ),
+        )
+        record_entry = str(record["entry"])
+        report["artifacts"]["wheel"]["file_manifest"][record_entry] = (
+            compliance_module.sha256_bytes(str(record["raw"]).encode())
+        )
+        report["artifacts"]["wheel"]["file_sizes"][record_entry] = len(
+            str(record["raw"]).encode()
+        )
+        report["artifacts"]["wheel"]["sha256"] = "f" * 64
+
+        codes = {
+            str(item["code"]) for item in distribution_report_blockers(report)
+        }
+
+        self.assertIn("archive_manifest_provenance_mismatch", codes)
+        self.assertIn("archive_size_provenance_mismatch", codes)
+
+    def test_rejects_unverified_exact_sha_provenance(self) -> None:
+        with mock.patch.object(
+            compliance_module,
+            "_trusted_archive_evidence",
+            return_value=None,
+        ):
+            codes = {
+                str(item["code"])
+                for item in distribution_report_blockers(self.report)
+            }
+
+        self.assertIn("unverified_exact_sha_provenance", codes)
 
     def test_rejects_missing_or_mutated_metadata_raw_evidence(self) -> None:
         for field in ("entry", "raw", "requires_dist"):
@@ -1301,6 +1394,55 @@ dev = ["build>=1.2", "pytest>=7"]
 
                 self.assertIn("wrong_license_expression", reasons)
                 self.assertIn("source_requires_dist_mismatch", reasons)
+
+    def test_sdist_metadata_binds_python_and_summary_semantics(self) -> None:
+        mutations = (
+            (
+                "Requires-Python: >=3.10",
+                "Requires-Python: >=99",
+                "wrong_requires_python",
+            ),
+            (
+                "Summary: Synthetic distribution compliance fixture.",
+                "Summary: attacker summary",
+                "wrong_summary",
+            ),
+        )
+        for target_index in range(2):
+            for old, new, expected_reason in mutations:
+                with self.subTest(
+                    target_index=target_index,
+                    expected_reason=expected_reason,
+                ):
+                    report = copy.deepcopy(self.report)
+                    metadata = report["metadata"]
+                    target = metadata["sdist"][target_index]
+                    target["raw"] = str(target["raw"]).replace(old, new)
+                    generated_target = next(
+                        item
+                        for item in metadata["generated"]["sdist"]
+                        if item["entry"] == target["entry"]
+                    )
+                    generated_target["raw"] = target["raw"]
+                    entry = str(target["entry"])
+                    report["artifacts"]["sdist"]["file_manifest"][entry] = (
+                        compliance_module.sha256_bytes(
+                            str(target["raw"]).encode()
+                        )
+                    )
+                    report["artifacts"]["sdist"]["file_sizes"][entry] = len(
+                        str(target["raw"]).encode()
+                    )
+                    report["artifacts"]["sdist"]["sha256"] = "e" * 64
+
+                    reasons = {
+                        str(item.get("reason"))
+                        for item in distribution_report_blockers(report)
+                        if item.get("code")
+                        == "invalid_sdist_metadata_evidence"
+                    }
+
+                    self.assertIn(expected_reason, reasons)
 
     def test_generated_sdist_metadata_is_bound_to_source_provenance(
         self,

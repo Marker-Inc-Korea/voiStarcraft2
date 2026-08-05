@@ -776,39 +776,73 @@ def scan_payload(
         ("private_model_override", _PRIVATE_MODEL_KUBERNETES_RE),
         ("credential_path", _CREDENTIAL_PATH_RE),
     )
-    for rule_id, pattern in rules:
-        for match in pattern.finditer(text):
-            matched = match.group(0)
-            captured = next(
-                (
-                    group.strip()
-                    for group in match.groups()
-                    if group is not None
-                ),
-                "",
-            )
-            if (
-                rule_id == "private_model_override"
-                and captured == "configured-locally"
-            ):
-                continue
-            if allow_safe_fixtures and _safe_fixture_match(
-                normalized_path,
-                rule_id,
-                matched,
-            ):
-                continue
-            findings.append(
-                {
-                    "path": normalized_path,
-                    "line": text.count("\n", 0, match.start()) + 1,
-                    "rule_id": rule_id,
-                    "fingerprint": sha256_bytes(
-                        f"{rule_id}\0{matched}".encode("utf-8")
+    scan_texts = [text]
+    decoded_text = _decoded_configuration_escapes(normalized_path, text)
+    if decoded_text != text:
+        scan_texts.append(decoded_text)
+    raw_identities: set[tuple[str, int, str]] = set()
+    for scan_index, scan_text in enumerate(scan_texts):
+        for rule_id, pattern in rules:
+            for match in pattern.finditer(scan_text):
+                matched = match.group(0)
+                captured = next(
+                    (
+                        group.strip()
+                        for group in match.groups()
+                        if group is not None
                     ),
-                }
-            )
+                    "",
+                )
+                line = scan_text.count("\n", 0, match.start()) + 1
+                identity = (rule_id, line, captured)
+                if scan_index and identity in raw_identities:
+                    continue
+                if (
+                    rule_id == "private_model_override"
+                    and captured == "configured-locally"
+                ):
+                    continue
+                if allow_safe_fixtures and _safe_fixture_match(
+                    normalized_path,
+                    rule_id,
+                    matched,
+                ):
+                    continue
+                findings.append(
+                    {
+                        "path": normalized_path,
+                        "line": line,
+                        "rule_id": rule_id,
+                        "fingerprint": sha256_bytes(
+                            f"{rule_id}\0{matched}".encode("utf-8")
+                        ),
+                    }
+                )
+                if scan_index == 0:
+                    raw_identities.add(identity)
     return findings
+
+
+def _decoded_configuration_escapes(path: str, text: str) -> str:
+    if PurePosixPath(path).suffix.lower() not in {".json", ".yaml", ".yml"}:
+        return text
+
+    def replace(match: re.Match[str]) -> str:
+        token = match.group(0)
+        width = token[1]
+        codepoint = int(token[2:], 16)
+        if codepoint > 0x10FFFF or 0xD800 <= codepoint <= 0xDFFF:
+            return token
+        expected_digits = {"x": 2, "u": 4, "U": 8}[width]
+        if len(token) != expected_digits + 2:
+            return token
+        return chr(codepoint)
+
+    return re.sub(
+        r"\\(?:x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8})",
+        replace,
+        text,
+    )
 
 
 def scan_git_and_artifacts(
@@ -1155,6 +1189,15 @@ def distribution_report_blockers(
                     "after": after_identity,
                 }
             )
+    trusted_archive_evidence = _trusted_archive_evidence(report)
+    if trusted_archive_evidence is None:
+        blockers.append({"code": "unverified_exact_sha_provenance"})
+        trusted_archive_manifests: Mapping[str, Mapping[str, str]] = {}
+        trusted_archive_sizes: Mapping[str, Mapping[str, int]] = {}
+    else:
+        trusted_archive_manifests, trusted_archive_sizes = (
+            trusted_archive_evidence
+        )
     archive_blockers = report.get("archive_blockers")
     if not isinstance(archive_blockers, list):
         blockers.append({"code": "invalid_archive_blocker_evidence"})
@@ -1204,6 +1247,13 @@ def distribution_report_blockers(
             blockers.append(
                 {"code": "invalid_archive_manifest_evidence", "kind": kind}
             )
+        elif expected_manifest != trusted_archive_manifests.get(kind):
+            blockers.append(
+                {
+                    "code": "archive_manifest_provenance_mismatch",
+                    "kind": kind,
+                }
+            )
         expected_size_manifest = _size_manifest(
             archive_size_manifests.get(kind)
         )
@@ -1220,6 +1270,13 @@ def distribution_report_blockers(
             )
         else:
             expected_archive_sizes[kind] = expected_size_manifest
+            if expected_size_manifest != trusted_archive_sizes.get(kind):
+                blockers.append(
+                    {
+                        "code": "archive_size_provenance_mismatch",
+                        "kind": kind,
+                    }
+                )
         file_manifest = _sha256_manifest(artifact.get("file_manifest"))
         file_sizes = _size_manifest(artifact.get("file_sizes"))
         directory_entries = artifact.get("directory_entries")
@@ -1727,9 +1784,13 @@ def _isolated_venv_builder() -> venv.EnvBuilder:
 def project_version_from_pyproject(text: str) -> str:
     """Return the exact static project version declared in TOML."""
 
+    return _project_string_from_pyproject(text, "version")
+
+
+def _project_string_from_pyproject(text: str, key: str) -> str:
     section = _pyproject_section(text, "project")
     match = re.search(
-        r"(?m)^\s*version\s*=\s*(?:"
+        rf"(?m)^\s*{re.escape(key)}\s*=\s*(?:"
         r'"((?:\\.|[^"\\])*)"|'
         r"'([^']*)'"
         r")\s*$",
@@ -2505,6 +2566,8 @@ def _metadata_evidence_blockers(
     source_raw = source_pyproject.get("raw")
     source_digest = source_pyproject.get("sha256")
     source_version = ""
+    source_requires_python = ""
+    source_summary = ""
     source_requires_dist: list[str] = []
     if not isinstance(source_raw, str) or not source_raw:
         blockers.append(
@@ -2527,6 +2590,14 @@ def _metadata_evidence_blockers(
                 }
             )
         source_version = project_version_from_pyproject(source_raw)
+        source_requires_python = _project_string_from_pyproject(
+            source_raw,
+            "requires-python",
+        )
+        source_summary = _project_string_from_pyproject(
+            source_raw,
+            "description",
+        )
         source_requires_dist = list(
             metadata_requirements_from_pyproject(source_raw)
         )
@@ -2535,6 +2606,20 @@ def _metadata_evidence_blockers(
                 {
                     "code": "invalid_source_pyproject_evidence",
                     "reason": "missing_version",
+                }
+            )
+        if not source_requires_python:
+            blockers.append(
+                {
+                    "code": "invalid_source_pyproject_evidence",
+                    "reason": "missing_requires_python",
+                }
+            )
+        if not source_summary:
+            blockers.append(
+                {
+                    "code": "invalid_source_pyproject_evidence",
+                    "reason": "missing_summary",
                 }
             )
     blockers.extend(
@@ -2660,6 +2745,26 @@ def _metadata_evidence_blockers(
                 "expected": source_version,
             }
         )
+    if (
+        not source_requires_python
+        or parsed.get_all("Requires-Python", [])
+        != [source_requires_python]
+    ):
+        blockers.append(
+            {
+                "code": "invalid_metadata_evidence",
+                "reason": "wrong_requires_python",
+                "expected": source_requires_python,
+            }
+        )
+    if not source_summary or parsed.get_all("Summary", []) != [source_summary]:
+        blockers.append(
+            {
+                "code": "invalid_metadata_evidence",
+                "reason": "wrong_summary",
+                "expected": source_summary,
+            }
+        )
     if source_raw and raw_requires_dist != source_requires_dist:
         blockers.append(
             {
@@ -2746,6 +2851,31 @@ def _metadata_evidence_blockers(
                     "code": "invalid_sdist_metadata_evidence",
                     "reason": "wrong_project_version",
                     "entry": sdist_entry,
+                }
+            )
+        if (
+            not source_requires_python
+            or parsed_sdist.get_all("Requires-Python", [])
+            != [source_requires_python]
+        ):
+            blockers.append(
+                {
+                    "code": "invalid_sdist_metadata_evidence",
+                    "reason": "wrong_requires_python",
+                    "entry": sdist_entry,
+                    "expected": source_requires_python,
+                }
+            )
+        if (
+            not source_summary
+            or parsed_sdist.get_all("Summary", []) != [source_summary]
+        ):
+            blockers.append(
+                {
+                    "code": "invalid_sdist_metadata_evidence",
+                    "reason": "wrong_summary",
+                    "entry": sdist_entry,
+                    "expected": source_summary,
                 }
             )
         if parsed_sdist.get_all("License-Expression", []) != [
@@ -3258,6 +3388,54 @@ def _git_output(repository_root: Path, arguments: Sequence[str]) -> bytes:
     if len(result.stdout) > MAX_GIT_OUTPUT_BYTES:
         raise RuntimeError("git output exceeds compliance scan limit")
     return result.stdout
+
+
+def _trusted_archive_evidence(
+    report: Mapping[str, object],
+) -> tuple[
+    dict[str, dict[str, str]],
+    dict[str, dict[str, int]],
+] | None:
+    repository = _mapping(report.get("repository"))
+    before = _mapping(repository.get("before"))
+    root_value = before.get("repository_root")
+    head = before.get("head")
+    tree = before.get("tree")
+    if (
+        not isinstance(root_value, str)
+        or not isinstance(head, str)
+        or not isinstance(tree, str)
+    ):
+        return None
+    repository_root = Path(root_value)
+    try:
+        actual_root = Path(
+            _git_output(
+                repository_root,
+                ["rev-parse", "--show-toplevel"],
+            )
+            .decode("utf-8", errors="strict")
+            .strip()
+        ).resolve()
+        actual_head = (
+            _git_output(repository_root, ["rev-parse", "HEAD"])
+            .decode("ascii", errors="strict")
+            .strip()
+        )
+        actual_tree = (
+            _git_output(repository_root, ["rev-parse", "HEAD^{tree}"])
+            .decode("ascii", errors="strict")
+            .strip()
+        )
+        if (
+            actual_root != repository_root.resolve()
+            or actual_head != head
+            or actual_tree != tree
+        ):
+            return None
+        return _expected_archive_payload_evidence(repository_root, head)
+    except (OSError, RuntimeError, UnicodeError, ValueError):
+        return None
 
 
 def repository_state_evidence(
