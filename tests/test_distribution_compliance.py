@@ -1469,6 +1469,14 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                 "    launch(provider)\n"
                 'wrapper("my" + "proxy")\n'
             ),
+            "forwarding-local-alias": (
+                "def launch(provider):\n"
+                f"    {command}\n"
+                "def wrapper(provider):\n"
+                "    forwarded = provider\n"
+                "    launch(forwarded)\n"
+                'wrapper("my" + "proxy")\n'
+            ),
             "bounded-provider-state": (
                 "def launch(provider):\n"
                 f"    {command}\n"
@@ -2735,8 +2743,10 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
     def test_rejects_unscanned_secret_scan_fields_and_forged_verdict(
         self,
     ) -> None:
+        key_name = "X_" + "API_KEY"
+        secret_value = "private-" + "secret-value"
         report = copy.deepcopy(self.report)
-        report["secret_scan"]["X_API_KEY"] = "private-secret-value"
+        report["secret_scan"][key_name] = secret_value
 
         codes = {
             str(item["code"])
@@ -2751,7 +2761,7 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
         report["blockers"].append(
             {
                 "code": "attacker",
-                "X_API_KEY": "private-secret-value",
+                key_name: secret_value,
             }
         )
         report["ok"] = True

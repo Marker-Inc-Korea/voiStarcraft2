@@ -1666,11 +1666,109 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
         return tuple(result)
 
     def contains_cli_provider(node: ast.AST) -> bool:
-        for candidate in ast.walk(node):
+        pending = list(ast.iter_child_nodes(node))
+        while pending:
+            candidate = pending.pop()
+            if isinstance(
+                candidate,
+                (
+                    ast.FunctionDef,
+                    ast.AsyncFunctionDef,
+                    ast.ClassDef,
+                    ast.Lambda,
+                ),
+            ):
+                continue
             value = _constant_string_expression(candidate)
-            if value is not None and "--provider" in value:
+            if (
+                value is not None
+                and re.search(
+                    r"(?<![\w-])--provider(?:=|\s|$)",
+                    value,
+                )
+            ):
                 return True
+            pending.extend(ast.iter_child_nodes(candidate))
         return False
+
+    for candidate in ast.walk(tree):
+        if not isinstance(
+            candidate,
+            (ast.FunctionDef, ast.AsyncFunctionDef),
+        ):
+            continue
+        definitions = function_definitions.setdefault(candidate.name, [])
+        if candidate not in definitions:
+            definitions.append(candidate)
+
+    direct_provider_functions = {
+        name
+        for name, definitions in function_definitions.items()
+        if any(contains_cli_provider(definition) for definition in definitions)
+    }
+    function_calls: dict[str, set[str]] = {}
+    for name, definitions in function_definitions.items():
+        called: set[str] = set()
+        for definition in definitions:
+            parameter_names = set(shadowed_arguments(definition.args))
+            pending = list(ast.iter_child_nodes(definition))
+            while pending:
+                candidate = pending.pop()
+                if isinstance(
+                    candidate,
+                    (
+                        ast.FunctionDef,
+                        ast.AsyncFunctionDef,
+                        ast.ClassDef,
+                        ast.Lambda,
+                    ),
+                ):
+                    continue
+                if isinstance(candidate, ast.Call):
+                    forwarded_nodes = [
+                        *candidate.args,
+                        *(keyword.value for keyword in candidate.keywords),
+                    ]
+                    forwards_parameter_or_literal = any(
+                        (
+                            _constant_string_expression(argument)
+                            is not None
+                        )
+                        or any(
+                            isinstance(child, ast.Name)
+                            and child.id in parameter_names
+                            for child in ast.walk(argument)
+                        )
+                        for argument in forwarded_nodes
+                    )
+                    if forwards_parameter_or_literal:
+                        if isinstance(candidate.func, ast.Name):
+                            called.add(candidate.func.id)
+                        elif isinstance(candidate.func, ast.Attribute):
+                            called.add(candidate.func.attr)
+                pending.extend(ast.iter_child_nodes(candidate))
+        function_calls[name] = called
+    relevant_function_names = set(direct_provider_functions)
+    while True:
+        expanded = {
+            name
+            for name, called in function_calls.items()
+            if called & relevant_function_names
+        }
+        if expanded <= relevant_function_names:
+            break
+        relevant_function_names.update(expanded)
+
+    if (
+        not relevant_function_names
+        and not contains_cli_provider(tree)
+        and not any(
+            contains_cli_provider(candidate)
+            for candidate in ast.walk(tree)
+            if isinstance(candidate, ast.Lambda)
+        )
+    ):
+        return "", ""
 
     def evaluate_keyword_mapping(
         node: ast.AST,
@@ -2016,9 +2114,6 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                 environment.pop(name, None)
             states.append(environment)
         states = deduplicate_states(states)
-        deferred_scopes: list[
-            tuple[Sequence[ast.stmt], tuple[str, ...]]
-        ] = []
         try_statement_types = (
             ast.Try,
             getattr(ast, "TryStar", ast.Try),
@@ -2092,6 +2187,44 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                 return [(node.attr, None)]
             return callable_references(evaluate(node, environment))
 
+        def value_contains_myproxy(value: cli_value | None) -> bool:
+            alternatives = stored_alternatives(value)
+            if alternatives is not None:
+                return any(
+                    value_contains_myproxy(alternative)
+                    for alternative in alternatives
+                )
+            sequence = stored_sequence(value)
+            if sequence is not None:
+                return any(value_contains_myproxy(item) for item in sequence)
+            mapping = stored_mapping(value)
+            if mapping is not None:
+                return any(
+                    value_contains_myproxy(item)
+                    for item in mapping.values()
+                )
+            return (
+                isinstance(value, str)
+                and re.fullmatch(
+                    _MYPROXY_PROVIDER_PATTERN,
+                    value.strip(),
+                    re.IGNORECASE,
+                )
+                is not None
+            )
+
+        def call_contains_myproxy(
+            call: ast.Call,
+            environment: Mapping[str, cli_value],
+        ) -> bool:
+            return any(
+                value_contains_myproxy(evaluate(argument, environment))
+                for argument in (
+                    *call.args,
+                    *(keyword.value for keyword in call.keywords),
+                )
+            )
+
         def invoke_known_functions(
             node: ast.AST,
             environment: Mapping[str, cli_value],
@@ -2143,6 +2276,14 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                         function_name,
                         (),
                     ):
+                        if (
+                            function_name not in relevant_function_names
+                            and not call_contains_myproxy(
+                                candidate,
+                                environment,
+                            )
+                        ):
+                            continue
                         identity = id(definition)
                         if identity in active_function_calls:
                             continue
@@ -2259,7 +2400,6 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                     statement,
                     (ast.FunctionDef, ast.AsyncFunctionDef),
                 ):
-                    nested_shadowed = shadowed_arguments(statement.args)
                     definitions = function_definitions.setdefault(
                         statement.name,
                         [],
@@ -2293,20 +2433,10 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                                 )
                             finally:
                                 active_function_calls.remove(identity)
-                    else:
-                        process_scope(
-                            statement.body,
-                            result_states,
-                            nested_shadowed,
-                        )
-                    deferred_scopes.append(
-                        (statement.body, nested_shadowed)
-                    )
                     continue
                 if isinstance(statement, ast.ClassDef):
                     class_definitions.add(statement.name)
                     process_scope(statement.body, result_states)
-                    deferred_scopes.append((statement.body, ()))
                     continue
                 if isinstance(statement, ast.If):
                     next_states = process_block(
@@ -2414,14 +2544,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                 )
             return result_states
 
-        final_states = process_block(statements, states)
-        for nested_statements, nested_shadowed in deferred_scopes:
-            process_scope(
-                nested_statements,
-                final_states,
-                nested_shadowed,
-            )
-        return final_states
+        return process_block(statements, states)
 
     try:
         process_scope(tree.body, ({},))
