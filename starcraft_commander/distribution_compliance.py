@@ -340,16 +340,16 @@ _PRIVATE_KEY_RE: Final[re.Pattern[str]] = re.compile(
     r"(?:RSA|DSA|EC|OPENSSH|PGP)[ \t]+)?PRIVATE[ \t]+KEY-----"
 )
 _ENV_KEY_ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?im)"
+    r"(?m)"
     + _CONFIG_ASSIGNMENT_PREFIX
-    + r"(?:[A-Z][A-Z0-9_]{1,63}_)?API_KEY"
+    + r"[A-Z][A-Z0-9_]{1,63}_API_KEY"
     + _CONFIG_ASSIGNMENT_KEY_SUFFIX
     + _CONFIG_ASSIGNMENT_SEPARATOR
     + r"[\"']?([A-Za-z0-9._~+/=-]{12,})"
 )
 _ENV_KEY_CALL_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?im)\b(?:os\.)?(?:putenv|environ\.setdefault)[ \t]*\([ \t]*"
-    r"[\"'](?:[A-Z][A-Z0-9_]{1,63}_)?API_KEY[\"'][ \t]*,[ \t]*"
+    r"(?m)\b(?:os\.)?(?:putenv|environ\.setdefault)[ \t]*\([ \t]*"
+    r"[\"'][A-Z][A-Z0-9_]{1,63}_API_KEY[\"'][ \t]*,[ \t]*"
     r"[\"']([A-Za-z0-9._~+/=-]{12,})[\"']"
 )
 _CREDENTIAL_PATH_RE: Final[re.Pattern[str]] = re.compile(
