@@ -887,6 +887,97 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             {str(item["rule_id"]) for item in findings},
         )
 
+    def test_detects_multiline_env_calls_and_all_myproxy_cli_aliases(
+        self,
+    ) -> None:
+        endpoint_key = "VOI_MYPROXY_OPENAI_BASE_" + "URL"
+        model_key = "VOI_MYPROXY_" + "MODEL"
+        endpoint = "https://private." + "example/v1"
+        model = "internal-" + "deployment-alpha"
+        aliases = (
+            "my" + "proxy",
+            "pro" + "xy",
+            "nomada" + "mas",
+            "my-" + "proxy",
+        )
+        for alias in aliases:
+            with self.subTest(alias=alias):
+                payload = (
+                    "os.putenv(\n"
+                    f'    "{endpoint_key}",\n'
+                    f'    "{endpoint}",\n'
+                    ")\n"
+                    "os.environ.setdefault(\n"
+                    f'    "{model_key}",\n'
+                    f'    "{model}",\n'
+                    ")\n"
+                    f"commander --provider={alias} \\\n"
+                    f"    --base-url {endpoint} \\\n"
+                    f"    --model={model}\n"
+                ).encode()
+
+                findings = scan_payload(
+                    "launch.sh",
+                    payload,
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertEqual(
+                    {"private_endpoint", "private_model_override"},
+                    {str(item["rule_id"]) for item in findings},
+                )
+
+    def test_detects_myproxy_python_argument_lists(self) -> None:
+        alias = "nomada" + "mas"
+        endpoint = "https://proxy." + "corp.example/v1"
+        model = "private-" + "deployment"
+        payload = (
+            'subprocess.run([\n'
+            '    "commander",\n'
+            '    "--provider",\n'
+            f'    "{alias}",\n'
+            '    "--openai-base-url",\n'
+            f'    "{endpoint}",\n'
+            '    "--model",\n'
+            f'    "{model}",\n'
+            "])\n"
+        ).encode()
+
+        findings = scan_payload(
+            "launcher.py",
+            payload,
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
+            {str(item["rule_id"]) for item in findings},
+        )
+
+    def test_detects_short_generic_api_key_names_and_punctuation(
+        self,
+    ) -> None:
+        key_name = "X_" + "API_KEY"
+        value = "abcdefghijkl!" + "mnopqrst"
+        payload = (
+            f"Env {key_name}={value}\n"
+            "os.environ.setdefault(\n"
+            f'    "{key_name}",\n'
+            f'    "{value}",\n'
+            ")\n"
+        ).encode()
+
+        findings = scan_payload(
+            "Dockerfile",
+            payload,
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual(
+            {"api_key_assignment"},
+            {str(item["rule_id"]) for item in findings},
+        )
+
     def test_detects_structurally_reconstructed_kubernetes_env(self) -> None:
         payloads = (
             (
@@ -1252,6 +1343,62 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
 
 
 class DerivedVerdictTest(unittest.TestCase):
+    @staticmethod
+    def _secret_scan_evidence(
+        report: dict[str, object],
+    ) -> dict[str, object]:
+        source_payload = b"synthetic source\n"
+        manifest = [
+            {
+                "path": "README.md",
+                "size": len(source_payload),
+                "sha256": compliance_module.sha256_bytes(source_payload),
+            },
+            {
+                "path": "<git-diff>",
+                "size": 0,
+                "sha256": compliance_module.sha256_bytes(b""),
+            },
+        ]
+        artifacts = report["artifacts"]
+        assert isinstance(artifacts, dict)
+        for kind in ("wheel", "sdist"):
+            artifact = artifacts[kind]
+            assert isinstance(artifact, dict)
+            file_manifest = artifact["file_manifest"]
+            file_sizes = artifact["file_sizes"]
+            assert isinstance(file_manifest, dict)
+            assert isinstance(file_sizes, dict)
+            for path, digest in file_manifest.items():
+                manifest.append(
+                    {
+                        "path": f"{kind}/{path}",
+                        "size": file_sizes[path],
+                        "sha256": digest,
+                    }
+                )
+        generated = compliance_module._distribution_report_scan_payloads(
+            report
+        )
+        for name, payload in generated.items():
+            manifest.append(
+                {
+                    "path": f"report/{name}",
+                    "size": len(payload),
+                    "sha256": compliance_module.sha256_bytes(payload),
+                }
+            )
+        manifest.sort(key=lambda item: str(item["path"]))
+        return {
+            "scanned_file_count": len(manifest),
+            "input_manifest_sha256": compliance_module.sha256_bytes(
+                compliance_module.canonical_json_text(manifest).encode()
+            ),
+            "input_manifest": manifest,
+            "finding_count": 0,
+            "findings": [],
+        }
+
     def setUp(self) -> None:
         digest = "d" * 64
         wheel_root = "voistarcraft2-0.1.0.dist-info"
@@ -1612,12 +1759,8 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
                     "target_runtime_data_loaded": True,
                 },
             },
-            "secret_scan": {
-                "scanned_file_count": 10,
-                "finding_count": 0,
-                "findings": [],
-            },
         }
+        self.report["secret_scan"] = self._secret_scan_evidence(self.report)
         trusted_evidence = (
             copy.deepcopy(self.report["archive_manifests"]),
             copy.deepcopy(self.report["archive_size_manifests"]),
@@ -2212,6 +2355,14 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
 
         self.assertIn("dependency_notice_drift", codes)
         self.assertIn("secret_or_private_config_detected", codes)
+        self.assertIn("invalid_secret_scan_evidence", codes)
+
+        report = copy.deepcopy(self.report)
+        report["secret_scan"]["finding_count"] = 1
+        codes = {
+            str(item["code"]) for item in distribution_report_blockers(report)
+        }
+        self.assertIn("invalid_secret_scan_evidence", codes)
 
     def test_rejects_dirty_repository_and_skipped_install_smoke(self) -> None:
         report = dict(self.report)
@@ -2281,6 +2432,74 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
         }
 
         self.assertIn("invalid_secret_scan_evidence", codes)
+
+    def test_rejects_secret_scan_count_and_manifest_tampering(self) -> None:
+        for count in (1, 587, 999999):
+            with self.subTest(count=count):
+                report = copy.deepcopy(self.report)
+                report["secret_scan"]["scanned_file_count"] = count
+                codes = {
+                    str(item["code"])
+                    for item in distribution_report_blockers(report)
+                }
+                self.assertIn("invalid_secret_scan_evidence", codes)
+
+        mutations = ("missing", "extra", "digest")
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                report = copy.deepcopy(self.report)
+                secret_scan = report["secret_scan"]
+                manifest = secret_scan["input_manifest"]
+                if mutation == "missing":
+                    manifest.pop()
+                elif mutation == "extra":
+                    manifest.append(
+                        {
+                            "path": "report/unscanned-extra.json",
+                            "size": 2,
+                            "sha256": compliance_module.sha256_bytes(b"{}"),
+                        }
+                    )
+                else:
+                    manifest[0]["sha256"] = "e" * 64
+                secret_scan["scanned_file_count"] = len(manifest)
+                secret_scan["input_manifest_sha256"] = (
+                    compliance_module.sha256_bytes(
+                        compliance_module.canonical_json_text(manifest).encode()
+                    )
+                )
+
+                codes = {
+                    str(item["code"])
+                    for item in distribution_report_blockers(report)
+                }
+
+                self.assertIn("invalid_secret_scan_evidence", codes)
+
+    def test_rejects_report_projection_and_archive_scan_drift(self) -> None:
+        for prefix in ("report/", "wheel/", "sdist/"):
+            with self.subTest(prefix=prefix):
+                report = copy.deepcopy(self.report)
+                secret_scan = report["secret_scan"]
+                manifest = secret_scan["input_manifest"]
+                target = next(
+                    item
+                    for item in manifest
+                    if str(item["path"]).startswith(prefix)
+                )
+                target["size"] = int(target["size"]) + 1
+                secret_scan["input_manifest_sha256"] = (
+                    compliance_module.sha256_bytes(
+                        compliance_module.canonical_json_text(manifest).encode()
+                    )
+                )
+
+                codes = {
+                    str(item["code"])
+                    for item in distribution_report_blockers(report)
+                }
+
+                self.assertIn("invalid_secret_scan_evidence", codes)
 
     def test_rejects_missing_or_malformed_archive_evidence(self) -> None:
         for field in (

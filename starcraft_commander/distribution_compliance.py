@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import csv
 import hashlib
@@ -39,7 +40,7 @@ except ImportError:  # pragma: no cover - Python 3.10 uses the dev dependency.
         _toml = None
 
 
-DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION: Final[int] = 2
+DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION: Final[int] = 3
 EXPECTED_LICENSE_EXPRESSION: Final[str] = (
     "AGPL-3.0-or-later OR LicenseRef-Commercial"
 )
@@ -199,7 +200,7 @@ _REQUIREMENT_NAME_RE: Final[re.Pattern[str]] = re.compile(
 )
 _CONFIG_ASSIGNMENT_PREFIX: Final[str] = (
     r"(?:^|[{\[(,;]|&&|\|\||^[ \t]*-[ \t]+|"
-    r"(?:^|[ \t])(?:ENV|ARG|env)[ \t]+|"
+    r"(?:^|[ \t])(?:(?i:ENV|ARG)|env)[ \t]+|"
     r"os\.environ\[[ \t]*)"
     r"[ \t]*(?:(?:RUN|then|do)[ \t]+)*(?:export[ \t]+)?[\"']?"
 )
@@ -251,25 +252,40 @@ _PRIVATE_ENDPOINT_DOCKER_RE: Final[re.Pattern[str]] = re.compile(
     + r"[ \t]*=[ \t]*)[\"']?([^\"'\s,#}\n]+)[\"']?"
 )
 _PRIVATE_MODEL_ENV_CALL_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?im)\b(?:os\.)?(?:putenv|environ\.setdefault)[ \t]*\([ \t]*"
+    r"(?im)\b(?:os\.)?(?:putenv|environ\.setdefault)\s*\(\s*"
     r"[\"']"
     + _PRIVATE_MODEL_KEY_PATTERN
-    + r"[\"'][ \t]*,[ \t]*[\"']([^\"'\n]+)[\"']"
+    + r"[\"']\s*,\s*[\"']([^\"'\n]+)[\"']"
 )
 _PRIVATE_ENDPOINT_ENV_CALL_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?im)\b(?:os\.)?(?:putenv|environ\.setdefault)[ \t]*\([ \t]*"
+    r"(?im)\b(?:os\.)?(?:putenv|environ\.setdefault)\s*\(\s*"
     r"[\"']"
     + _PRIVATE_ENDPOINT_KEY_PATTERN
-    + r"[\"'][ \t]*,[ \t]*[\"']([^\"'\n]+)[\"']"
+    + r"[\"']\s*,\s*[\"']([^\"'\n]+)[\"']"
+)
+_MYPROXY_PROVIDER_PATTERN: Final[str] = (
+    r"(?:myproxy|proxy|nomadamas|my-proxy)"
+)
+_CLI_OPTION_VALUE_SEPARATOR: Final[str] = (
+    r"(?:[ \t]*=[ \t]*|[ \t]+|[\"'][ \t]*,[ \t]*[\"']?)"
 )
 _MYPROXY_CLI_MODEL_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?im)^(?=[^\n]*(?:--provider(?:[ \t]+|=)[\"']?myproxy\b))"
-    r"[^\n]*?--model(?:[ \t]+|=)[\"']?([^\"'\s\\]+)"
+    r"(?im)^(?=[^\n]{0,4096}--provider"
+    + _CLI_OPTION_VALUE_SEPARATOR
+    + r"[\"']?"
+    + _MYPROXY_PROVIDER_PATTERN
+    + r"\b)[^\n]{0,4096}?--model"
+    + _CLI_OPTION_VALUE_SEPARATOR
+    + r"[\"']?([^\"'\s,\\\])}]+)"
 )
 _MYPROXY_CLI_ENDPOINT_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?im)^(?=[^\n]*(?:--provider(?:[ \t]+|=)[\"']?myproxy\b))"
-    r"[^\n]*?--(?:base-url|openai-base-url)(?:[ \t]+|=)"
-    r"[\"']?([^\"'\s\\]+)"
+    r"(?im)^(?=[^\n]{0,4096}--provider"
+    + _CLI_OPTION_VALUE_SEPARATOR
+    + r"[\"']?"
+    + _MYPROXY_PROVIDER_PATTERN
+    + r"\b)[^\n]{0,4096}?--(?:base-url|openai-base-url)"
+    + _CLI_OPTION_VALUE_SEPARATOR
+    + r"[\"']?([^\"'\s,\\\])}]+)"
 )
 _PRIVATE_MODEL_KUBERNETES_RE: Final[re.Pattern[str]] = re.compile(
     r"(?im)(?:"
@@ -339,18 +355,25 @@ _PRIVATE_KEY_RE: Final[re.Pattern[str]] = re.compile(
     r"-----BEGIN[ \t]+("
     r"(?:RSA|DSA|EC|OPENSSH|PGP)[ \t]+)?PRIVATE[ \t]+KEY-----"
 )
+_ENV_API_KEY_NAME_PATTERN: Final[str] = r"[A-Z][A-Z0-9_]{0,63}_API_KEY"
+_ENV_API_KEY_VALUE_PATTERN: Final[str] = (
+    r"(?:\"([^\"\r\n]{12,})\"|'([^'\r\n]{12,})'|"
+    r"([A-Za-z0-9._~+/=!@#%^&*()-]{12,}))"
+)
 _ENV_KEY_ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(
     r"(?m)"
     + _CONFIG_ASSIGNMENT_PREFIX
-    + r"[A-Z][A-Z0-9_]{1,63}_API_KEY"
+    + _ENV_API_KEY_NAME_PATTERN
     + _CONFIG_ASSIGNMENT_KEY_SUFFIX
     + _CONFIG_ASSIGNMENT_SEPARATOR
-    + r"[\"']?([A-Za-z0-9._~+/=-]{12,})"
+    + _ENV_API_KEY_VALUE_PATTERN
 )
 _ENV_KEY_CALL_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?m)\b(?:os\.)?(?:putenv|environ\.setdefault)[ \t]*\([ \t]*"
-    r"[\"'][A-Z][A-Z0-9_]{1,63}_API_KEY[\"'][ \t]*,[ \t]*"
-    r"[\"']([A-Za-z0-9._~+/=-]{12,})[\"']"
+    r"(?m)\b(?:os\.)?(?:putenv|environ\.setdefault)\s*\(\s*"
+    r"[\"']"
+    + _ENV_API_KEY_NAME_PATTERN
+    + r"[\"']\s*,\s*"
+    + _ENV_API_KEY_VALUE_PATTERN
 )
 _CREDENTIAL_PATH_RE: Final[re.Pattern[str]] = re.compile(
     r"(?im)(?:"
@@ -379,7 +402,7 @@ _SAFE_FIXTURE_FINGERPRINTS: Final[
             {"6d7cff6a74f5a16be41aaf6ccc8d51b62357cf1115f4149e6d116b537f96b302"}
         ),
         "api_key_assignment": frozenset(
-            {"822682667b73f0a72661c0b19f9c79d6cdb98e57559309482bd5b15e0dc7325b"}
+            {"b8cbb6abbd7c6ba09041bb128a6907bb20f5464febde6f4d54159a3a1fa8b5a5"}
         ),
     },
     "tests/test_micromachine_pre_live_provenance.py": {
@@ -914,6 +937,17 @@ def scan_payload(
     if dockerfile_text not in scan_texts:
         scan_texts = (*scan_texts, dockerfile_text)
     for candidate in tuple(scan_texts):
+        for normalized in (
+            (
+                candidate
+                if _is_dockerfile_path(normalized_path)
+                else _shell_continuation_text(candidate)
+            ),
+            _python_cli_argument_text(normalized_path, candidate),
+        ):
+            if normalized and normalized not in scan_texts:
+                scan_texts = (*scan_texts, normalized)
+    for candidate in tuple(scan_texts):
         joined_literals = _joined_quoted_literal_text(candidate)
         if joined_literals not in scan_texts:
             scan_texts = (*scan_texts, joined_literals)
@@ -1019,13 +1053,37 @@ def _joined_quoted_literal_text(text: str) -> str:
     return normalized
 
 
+def _shell_continuation_text(text: str) -> str:
+    return re.sub(r"\\\r?\n[ \t]*", " ", text)
+
+
+def _python_cli_argument_text(path: str, text: str) -> str:
+    if PurePosixPath(path).suffix.lower() != ".py":
+        return ""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return ""
+    commands: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.List, ast.Tuple)):
+            continue
+        values: list[str] = []
+        for element in node.elts:
+            if not (
+                isinstance(element, ast.Constant)
+                and isinstance(element.value, str)
+            ):
+                values = []
+                break
+            values.append(element.value)
+        if values and any("--provider" in value for value in values):
+            commands.append(" ".join(values))
+    return "\n".join(commands)
+
+
 def _dockerfile_logical_text(path: str, text: str) -> str:
-    basename = PurePosixPath(path).name.lower()
-    if not (
-        basename in {"containerfile", "dockerfile"}
-        or basename.startswith(("containerfile.", "dockerfile."))
-        or basename.endswith((".containerfile", ".dockerfile"))
-    ):
+    if not _is_dockerfile_path(path):
         return text
     directive_pattern = re.compile(
         r"^[ \t]*#[ \t]*(syntax|escape|check)[ \t]*="
@@ -1076,6 +1134,15 @@ def _dockerfile_logical_text(path: str, text: str) -> str:
     if text.endswith(("\n", "\r")):
         normalized += "\n"
     return normalized
+
+
+def _is_dockerfile_path(path: str) -> bool:
+    basename = PurePosixPath(path).name.lower()
+    return (
+        basename in {"containerfile", "dockerfile"}
+        or basename.startswith(("containerfile.", "dockerfile."))
+        or basename.endswith((".containerfile", ".dockerfile"))
+    )
 
 
 def _configuration_scan_texts(
@@ -1306,7 +1373,34 @@ def scan_git_and_artifacts(
     """Scan tracked files, the current diff, archives, and generated reports."""
 
     findings: list[dict[str, object]] = []
-    scanned_files = 0
+    input_manifest: list[dict[str, object]] = []
+    input_paths: set[str] = set()
+
+    def scan_input(
+        path: str,
+        payload: bytes,
+        *,
+        allow_safe_fixtures: bool,
+    ) -> None:
+        normalized_path = path.replace("\\", "/")
+        if normalized_path in input_paths:
+            raise RuntimeError(f"Duplicate secret scan input: {normalized_path}")
+        input_paths.add(normalized_path)
+        input_manifest.append(
+            {
+                "path": normalized_path,
+                "size": len(payload),
+                "sha256": sha256_bytes(payload),
+            }
+        )
+        findings.extend(
+            scan_payload(
+                normalized_path,
+                payload,
+                allow_safe_fixtures=allow_safe_fixtures,
+            )
+        )
+
     tracked_paths: set[str] = set()
     tracked = _git_output(repository_root, ["ls-files", "--stage", "-z"])
     for raw_record in tracked.split(b"\0"):
@@ -1324,8 +1418,7 @@ def scan_git_and_artifacts(
             repository_root,
             ["cat-file", "blob", fields[1].decode("ascii", errors="strict")],
         )
-        scanned_files += 1
-        findings.extend(scan_payload(relative, payload))
+        scan_input(relative, payload, allow_safe_fixtures=True)
     untracked = _git_output(
         repository_root,
         ["ls-files", "--others", "--exclude-standard", "-z"],
@@ -1336,44 +1429,40 @@ def scan_git_and_artifacts(
         relative = raw_path.decode("utf-8", errors="strict")
         candidate = repository_root / relative
         if candidate.is_symlink():
-            scanned_files += 1
-            findings.extend(
-                scan_payload(relative, os.readlink(candidate).encode("utf-8"))
+            scan_input(
+                relative,
+                os.readlink(candidate).encode("utf-8"),
+                allow_safe_fixtures=True,
             )
         elif candidate.is_file():
-            scanned_files += 1
-            findings.extend(scan_payload(relative, candidate.read_bytes()))
+            scan_input(
+                relative,
+                candidate.read_bytes(),
+                allow_safe_fixtures=True,
+            )
     diff = _git_output(
         repository_root,
         ["diff", "--no-ext-diff", "--binary", "HEAD", "--"],
     )
-    scanned_files += 1
-    findings.extend(
-        scan_payload(
-            "<git-diff>",
-            _added_diff_payload(diff),
-            allow_safe_fixtures=False,
-        )
+    scan_input(
+        "<git-diff>",
+        _added_diff_payload(diff),
+        allow_safe_fixtures=False,
     )
     for snapshot in snapshots:
         for entry, payload in snapshot.files.items():
-            scanned_files += 1
-            findings.extend(
-                scan_payload(
-                    f"{snapshot.kind}/{entry}",
-                    payload,
-                    allow_safe_fixtures=False,
-                )
-            )
-    for name, payload in sorted((generated_payloads or {}).items()):
-        scanned_files += 1
-        findings.extend(
-            scan_payload(
-                f"report/{name}",
+            scan_input(
+                f"{snapshot.kind}/{entry}",
                 payload,
                 allow_safe_fixtures=False,
             )
+    for name, payload in sorted((generated_payloads or {}).items()):
+        scan_input(
+            f"report/{name}",
+            payload,
+            allow_safe_fixtures=False,
         )
+    input_manifest.sort(key=lambda item: str(item["path"]))
     findings.sort(
         key=lambda item: (
             str(item.get("path", "")),
@@ -1383,9 +1472,52 @@ def scan_git_and_artifacts(
         )
     )
     return {
-        "scanned_file_count": scanned_files,
+        "scanned_file_count": len(input_manifest),
+        "input_manifest_sha256": sha256_bytes(
+            canonical_json_text(input_manifest).encode("utf-8")
+        ),
+        "input_manifest": input_manifest,
         "finding_count": len(findings),
         "findings": findings,
+    }
+
+
+_REPORT_SCAN_JSON_NAME: Final[str] = (
+    "distribution-compliance.final-projection.json"
+)
+_REPORT_SCAN_MARKDOWN_NAME: Final[str] = (
+    "distribution-compliance.final-projection.md"
+)
+_REPORT_SCAN_EXCLUDED_FIELDS: Final[frozenset[str]] = frozenset(
+    {"blockers", "ok", "secret_scan", "status"}
+)
+
+
+def _distribution_report_scan_projection(
+    report: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        str(key): value
+        for key, value in report.items()
+        if key not in _REPORT_SCAN_EXCLUDED_FIELDS
+    }
+
+
+def _distribution_report_scan_payloads(
+    report: Mapping[str, object],
+) -> dict[str, bytes]:
+    projection = _distribution_report_scan_projection(report)
+    json_text = canonical_json_text(projection)
+    markdown_text = (
+        "# Distribution Compliance Final Projection\n\n"
+        "The canonical self-reference-free report payload follows.\n\n"
+        "```json\n"
+        f"{json_text}"
+        "```\n"
+    )
+    return {
+        _REPORT_SCAN_JSON_NAME: json_text.encode("utf-8"),
+        _REPORT_SCAN_MARKDOWN_NAME: markdown_text.encode("utf-8"),
     }
 
 
@@ -1579,18 +1711,10 @@ def build_distribution_report(
             },
             "install_smoke": install_smoke,
         }
-        preliminary = _with_derived_verdict(report)
-        preliminary_json = canonical_json_text(preliminary).encode("utf-8")
-        preliminary_markdown = render_distribution_markdown(preliminary).encode(
-            "utf-8"
-        )
         report["secret_scan"] = scan_git_and_artifacts(
             repository_root,
             (wheel, sdist),
-            {
-                "distribution-compliance.json": preliminary_json,
-                "distribution-compliance.md": preliminary_markdown,
-            },
+            _distribution_report_scan_payloads(report),
         )
         return _with_derived_verdict(report)
     finally:
@@ -2013,6 +2137,114 @@ def distribution_report_blockers(
     findings = secret_scan.get("findings")
     finding_count = secret_scan.get("finding_count")
     scanned_file_count = secret_scan.get("scanned_file_count")
+    input_manifest_value = secret_scan.get("input_manifest")
+    input_manifest_sha256 = secret_scan.get("input_manifest_sha256")
+    valid_manifest = isinstance(input_manifest_value, list)
+    manifest_by_path: dict[str, Mapping[str, object]] = {}
+    if valid_manifest:
+        for raw_entry in input_manifest_value:
+            entry = _mapping(raw_entry)
+            path = entry.get("path")
+            size = entry.get("size")
+            digest = entry.get("sha256")
+            if (
+                set(entry) != {"path", "size", "sha256"}
+                or not isinstance(path, str)
+                or not path
+                or "\\" in path
+                or path.startswith("./")
+                or path in manifest_by_path
+                or type(size) is not int
+                or size < 0
+                or not isinstance(digest, str)
+                or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            ):
+                valid_manifest = False
+                break
+            manifest_by_path[path] = entry
+    if valid_manifest:
+        expected_manifest_digest = sha256_bytes(
+            canonical_json_text(input_manifest_value).encode("utf-8")
+        )
+        valid_manifest = (
+            input_manifest_sha256 == expected_manifest_digest
+            and scanned_file_count == len(input_manifest_value)
+            and "<git-diff>" in manifest_by_path
+        )
+        diff_entry = manifest_by_path.get("<git-diff>", {})
+        valid_manifest = valid_manifest and (
+            diff_entry.get("size") == 0
+            and diff_entry.get("sha256") == sha256_bytes(b"")
+        )
+    if valid_manifest:
+        expected_report_payloads = _distribution_report_scan_payloads(report)
+        expected_report_paths = {
+            f"report/{name}" for name in expected_report_payloads
+        }
+        observed_report_paths = {
+            path
+            for path in manifest_by_path
+            if path.startswith("report/")
+        }
+        valid_manifest = observed_report_paths == expected_report_paths
+        for name, payload in expected_report_payloads.items():
+            entry = manifest_by_path.get(f"report/{name}", {})
+            if (
+                entry.get("size") != len(payload)
+                or entry.get("sha256") != sha256_bytes(payload)
+            ):
+                valid_manifest = False
+                break
+    if valid_manifest:
+        for kind in ("wheel", "sdist"):
+            artifact = _mapping(_mapping(report.get("artifacts")).get(kind))
+            file_manifest = _mapping(artifact.get("file_manifest"))
+            file_sizes = _mapping(artifact.get("file_sizes"))
+            expected_paths = {f"{kind}/{entry}" for entry in file_manifest}
+            observed_paths = {
+                path
+                for path in manifest_by_path
+                if path.startswith(f"{kind}/")
+            }
+            if observed_paths != expected_paths:
+                valid_manifest = False
+                break
+            for archive_entry, digest in file_manifest.items():
+                entry = manifest_by_path.get(f"{kind}/{archive_entry}", {})
+                if (
+                    entry.get("sha256") != digest
+                    or entry.get("size") != file_sizes.get(archive_entry)
+                ):
+                    valid_manifest = False
+                    break
+            if not valid_manifest:
+                break
+    valid_findings = isinstance(findings, list)
+    if valid_findings:
+        for raw_finding in findings:
+            finding = _mapping(raw_finding)
+            if (
+                set(finding) != {"path", "line", "rule_id", "fingerprint"}
+                or not isinstance(finding.get("path"), str)
+                or not finding.get("path")
+                or type(finding.get("line")) is not int
+                or int(finding.get("line", -1)) < 0
+                or not isinstance(finding.get("rule_id"), str)
+                or not finding.get("rule_id")
+                or not isinstance(finding.get("fingerprint"), str)
+                or re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(finding.get("fingerprint")),
+                )
+                is None
+            ):
+                valid_findings = False
+                break
+    valid_findings = (
+        valid_findings
+        and type(finding_count) is int
+        and finding_count == len(findings)
+    )
     if isinstance(findings, list) and findings:
         blockers.append(
             {
@@ -2020,11 +2252,11 @@ def distribution_report_blockers(
                 "finding_count": len(findings),
             }
         )
-    elif (
-        findings != []
-        or finding_count != 0
+    if (
+        not valid_findings
         or type(scanned_file_count) is not int
         or scanned_file_count <= 0
+        or not valid_manifest
     ):
         blockers.append({"code": "invalid_secret_scan_evidence"})
     return _deduplicate_blockers(blockers)
@@ -2113,6 +2345,8 @@ def write_distribution_evidence(
         canonical_json_text(_mapping(report.get("secret_scan"))),
         encoding="utf-8",
     )
+    for name, payload in _distribution_report_scan_payloads(report).items():
+        (output_dir / name).write_bytes(payload)
 
 
 def isolated_wheel_install_smoke(wheel_path: Path) -> dict[str, object]:
