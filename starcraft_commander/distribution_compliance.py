@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import unicodedata
 import venv
 import zipfile
 from collections.abc import Iterable, Mapping, Sequence
@@ -28,6 +29,14 @@ try:
     import yaml as _yaml
 except ImportError:  # pragma: no cover - fail-closed behavior is tested by mock.
     _yaml = None
+
+try:
+    import tomllib as _toml
+except ImportError:  # pragma: no cover - Python 3.10 uses the dev dependency.
+    try:
+        import tomli as _toml
+    except ImportError:  # pragma: no cover - fail-closed behavior is tested.
+        _toml = None
 
 
 DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION: Final[int] = 2
@@ -48,7 +57,7 @@ EXPECTED_LICENSE_FILE_SHA256: Final[Mapping[str, str]] = {
         "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0"
     ),
     "THIRD_PARTY_NOTICES.md": (
-        "a6b6cda25c33ad4df9c17cf07390d9e06cff005254037d05411f7e81697289eb"
+        "cfa0d0ed9d877198f700febedb4162ce55df8f8a1702d5c0063625222fed3d41"
     ),
 }
 PRODUCT_PACKAGE_ROOTS: Final[frozenset[str]] = frozenset(
@@ -75,9 +84,17 @@ EXPECTED_PROJECT_DISTRIBUTIONS: Final[frozenset[str]] = frozenset(
         "pytest",
         "pyyaml",
         "sounddevice",
+        "tomli",
     }
 )
 EXPECTED_BUILD_DISTRIBUTIONS: Final[frozenset[str]] = frozenset({"setuptools"})
+EXPECTED_BUILD_BACKEND_VERSION: Final[str] = "82.0.1"
+EXPECTED_BUILD_BACKEND_REQUIREMENT: Final[str] = (
+    f"setuptools=={EXPECTED_BUILD_BACKEND_VERSION}"
+)
+EXPECTED_BUILD_BACKEND_GENERATOR: Final[str] = (
+    f"setuptools ({EXPECTED_BUILD_BACKEND_VERSION})"
+)
 EXPECTED_DIRECT_DISTRIBUTIONS: Final[frozenset[str]] = (
     EXPECTED_PROJECT_DISTRIBUTIONS | EXPECTED_BUILD_DISTRIBUTIONS
 )
@@ -91,11 +108,15 @@ EXPECTED_NOTICE_LICENSES: Final[Mapping[str, str]] = {
     "pyyaml": "MIT",
     "setuptools": "MIT",
     "sounddevice": "MIT",
+    "tomli": "MIT",
 }
 MAX_ARCHIVE_ENTRIES: Final[int] = 4096
 MAX_ARCHIVE_MEMBER_BYTES: Final[int] = 64 * 1024 * 1024
 MAX_ARCHIVE_TOTAL_BYTES: Final[int] = 256 * 1024 * 1024
 MAX_SCAN_FILE_BYTES: Final[int] = 64 * 1024 * 1024
+MAX_CONFIGURATION_BYTES: Final[int] = 8 * 1024 * 1024
+MAX_CONFIGURATION_DEPTH: Final[int] = 64
+MAX_CONFIGURATION_NODES: Final[int] = 16384
 MAX_GIT_OUTPUT_BYTES: Final[int] = 128 * 1024 * 1024
 MAX_YAML_ALIASES: Final[int] = 128
 MAX_YAML_DEPTH: Final[int] = 64
@@ -175,10 +196,10 @@ _REQUIREMENT_NAME_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*([A-Za-z0-9][A-Za-z0-9_.-]*)"
 )
 _CONFIG_ASSIGNMENT_PREFIX: Final[str] = (
-    r"(?:^|[{\[(,;]|^[ \t]*-[ \t]+|"
+    r"(?:^|[{\[(,;]|&&|\|\||^[ \t]*-[ \t]+|"
     r"(?:^|[ \t])(?:ENV|ARG|env)[ \t]+|"
     r"os\.environ\[[ \t]*)"
-    r"[ \t]*(?:export[ \t]+)?[\"']?"
+    r"[ \t]*(?:(?:RUN|then|do)[ \t]+)*(?:export[ \t]+)?[\"']?"
 )
 _CONFIG_ASSIGNMENT_KEY_SUFFIX: Final[str] = (
     r"[\"']?(?:[ \t]*\])?(?![A-Za-z0-9_])"
@@ -279,6 +300,22 @@ _API_KEY_RE: Final[re.Pattern[str]] = re.compile(
 _BEARER_TOKEN_RE: Final[re.Pattern[str]] = re.compile(
     r"(?i)\bBearer\s+([A-Za-z0-9._~+/=-]{12,})"
 )
+_AWS_ACCESS_KEY_ID_RE: Final[re.Pattern[str]] = re.compile(
+    r"\b((?:AKIA|ASIA)[A-Z0-9]{16})\b"
+)
+_SECRET_ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?im)"
+    + _CONFIG_ASSIGNMENT_PREFIX
+    + r"(?:AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|"
+    + r"AZURE_CLIENT_SECRET|GOOGLE_API_KEY)"
+    + _CONFIG_ASSIGNMENT_KEY_SUFFIX
+    + _CONFIG_ASSIGNMENT_SEPARATOR
+    + r"[\"']?([A-Za-z0-9._~+/=-]{12,})"
+)
+_PRIVATE_KEY_RE: Final[re.Pattern[str]] = re.compile(
+    r"-----BEGIN[ \t]+("
+    r"(?:RSA|DSA|EC|OPENSSH|PGP)[ \t]+)?PRIVATE[ \t]+KEY-----"
+)
 _ENV_KEY_ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(
     r"(?im)"
     + _CONFIG_ASSIGNMENT_PREFIX
@@ -339,6 +376,16 @@ _CREDENTIAL_FILENAMES: Final[frozenset[str]] = frozenset(
         "credentials.json",
         "id_ed25519",
         "id_rsa",
+    }
+)
+_WINDOWS_RESERVED_COMPONENTS: Final[frozenset[str]] = frozenset(
+    {
+        "aux",
+        "con",
+        "nul",
+        "prn",
+        *(f"com{number}" for number in range(1, 10)),
+        *(f"lpt{number}" for number in range(1, 10)),
     }
 )
 
@@ -415,7 +462,8 @@ def inspect_wheel(path: Path) -> ArchiveSnapshot:
                 )
                 continue
             canonical_name = _canonical_archive_name(name)
-            if canonical_name in seen:
+            portable_key = _portable_archive_key(canonical_name)
+            if portable_key in seen:
                 blockers.append(
                     {
                         "code": "duplicate_archive_entry",
@@ -424,7 +472,7 @@ def inspect_wheel(path: Path) -> ArchiveSnapshot:
                     }
                 )
                 continue
-            seen.add(canonical_name)
+            seen.add(portable_key)
             mode = (info.external_attr >> 16) & 0o170000
             if mode == stat.S_IFLNK:
                 blockers.append(
@@ -553,6 +601,7 @@ def inspect_sdist(path: Path) -> ArchiveSnapshot:
                 )
                 continue
             canonical_name = _canonical_archive_name(name)
+            portable_key = _portable_archive_key(canonical_name)
             archive_path = PurePosixPath(canonical_name)
             if (
                 not expected_root
@@ -568,7 +617,7 @@ def inspect_sdist(path: Path) -> ArchiveSnapshot:
                     }
                 )
                 continue
-            if canonical_name in seen:
+            if portable_key in seen:
                 blockers.append(
                     {
                         "code": "duplicate_archive_entry",
@@ -577,7 +626,7 @@ def inspect_sdist(path: Path) -> ArchiveSnapshot:
                     }
                 )
                 continue
-            seen.add(canonical_name)
+            seen.add(portable_key)
             if member.isdir():
                 directories.append(name)
                 continue
@@ -784,9 +833,13 @@ def scan_payload(
     if normalized_path.startswith("./"):
         normalized_path = normalized_path[2:]
     findings: list[dict[str, object]] = []
-    lowered_parts = {part.lower() for part in PurePosixPath(normalized_path).parts}
+    path_parts = PurePosixPath(normalized_path).parts
+    lowered_parts = {part.lower() for part in path_parts}
     basename = PurePosixPath(normalized_path).name.lower()
-    if basename == ".env" or basename.startswith(".env."):
+    if any(
+        part.lower() == ".env" or part.lower().startswith(".env.")
+        for part in path_parts
+    ):
         findings.append(_path_finding(normalized_path, "env_file"))
     if _is_credential_path(basename, lowered_parts):
         findings.append(_path_finding(normalized_path, "credential_file"))
@@ -802,10 +855,15 @@ def scan_payload(
             }
         )
         return findings
-    text = payload.decode("utf-8", errors="replace")
+    text, decode_failure = _decode_scan_payload(normalized_path, payload)
+    if decode_failure:
+        findings.append(_path_finding(normalized_path, decode_failure))
     rules: tuple[tuple[str, re.Pattern[str]], ...] = (
         ("api_key", _API_KEY_RE),
+        ("aws_access_key_id", _AWS_ACCESS_KEY_ID_RE),
+        ("secret_assignment", _SECRET_ASSIGNMENT_RE),
         ("bearer_token", _BEARER_TOKEN_RE),
+        ("private_key", _PRIVATE_KEY_RE),
         ("api_key_assignment", _ENV_KEY_ASSIGNMENT_RE),
         ("private_endpoint", _PRIVATE_ENDPOINT_RE),
         ("private_endpoint", _PRIVATE_ENDPOINT_DOCKER_RE),
@@ -822,6 +880,10 @@ def scan_payload(
     dockerfile_text = _dockerfile_logical_text(normalized_path, text)
     if dockerfile_text not in scan_texts:
         scan_texts = (*scan_texts, dockerfile_text)
+    for candidate in tuple(scan_texts):
+        joined_literals = _joined_quoted_literal_text(candidate)
+        if joined_literals not in scan_texts:
+            scan_texts = (*scan_texts, joined_literals)
     findings.extend(
         _path_finding(normalized_path, rule_id)
         for rule_id in configuration_failures
@@ -876,6 +938,52 @@ def scan_payload(
                 count,
             )
     return findings
+
+
+def _decode_scan_payload(path: str, payload: bytes) -> tuple[str, str]:
+    suffix = PurePosixPath(path).suffix.lower()
+    is_configuration = suffix in {".json", ".toml", ".yaml", ".yml"}
+    encoding = "utf-8"
+    if payload.startswith(b"\xef\xbb\xbf"):
+        encoding = "utf-8-sig"
+    elif payload.startswith((b"\xff\xfe", b"\xfe\xff")):
+        encoding = "utf-16"
+    elif is_configuration and len(payload) >= 4 and len(payload) % 2 == 0:
+        sample = payload[: min(len(payload), 128)]
+        even_nuls = sample[0::2].count(0)
+        odd_nuls = sample[1::2].count(0)
+        if odd_nuls > len(sample[1::2]) // 3 and not even_nuls:
+            encoding = "utf-16-le"
+        elif even_nuls > len(sample[0::2]) // 3 and not odd_nuls:
+            encoding = "utf-16-be"
+    try:
+        return payload.decode(
+            encoding,
+            errors="strict" if is_configuration else "replace",
+        ), ""
+    except UnicodeError:
+        return payload.decode("utf-8", errors="replace"), (
+            "configuration_decode_failed"
+        )
+
+
+def _joined_quoted_literal_text(text: str) -> str:
+    pattern = re.compile(
+        r"""(["'])([^"'\\\r\n]*)\1[ \t]*(["'])([^"'\\\r\n]*)\3"""
+    )
+    normalized = text
+    for _ in range(128):
+        updated, count = pattern.subn(
+            lambda match: (
+                f'{match.group(1)}{match.group(2)}'
+                f'{match.group(4)}{match.group(1)}'
+            ),
+            normalized,
+        )
+        normalized = updated
+        if not count:
+            break
+    return normalized
 
 
 def _dockerfile_logical_text(path: str, text: str) -> str:
@@ -942,15 +1050,36 @@ def _configuration_scan_texts(
     text: str,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     suffix = PurePosixPath(path).suffix.lower()
-    if suffix not in {".json", ".yaml", ".yml"}:
+    if suffix not in {".json", ".toml", ".yaml", ".yml"}:
         return (text,), ()
 
     variants = [text]
     failures: list[str] = []
+    if len(text.encode("utf-8")) > MAX_CONFIGURATION_BYTES:
+        return (text,), ("configuration_limit_exceeded",)
     decoded_text = _decoded_configuration_escapes(path, text)
     if decoded_text != text:
         variants.append(decoded_text)
-    if suffix in {".yaml", ".yml"}:
+    if suffix == ".json":
+        parsed = None
+        for candidate in tuple(variants):
+            try:
+                parsed = json.loads(candidate)
+                semantic_text = _semantic_mapping_scan_text((parsed,))
+            except (RecursionError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+            canonical = json.dumps(
+                parsed,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            for normalized in (canonical, semantic_text):
+                if normalized and normalized not in variants:
+                    variants.append(normalized)
+            break
+        if parsed is None:
+            failures.append("json_parse_failed")
+    elif suffix in {".yaml", ".yml"}:
         semantic_text, failure = _yaml_semantic_scan_text(text)
         if failure:
             failures.append(failure)
@@ -960,19 +1089,23 @@ def _configuration_scan_texts(
             normalized = _yaml_double_quoted_line_continuations(candidate)
             if normalized not in variants:
                 variants.append(normalized)
-    for candidate in tuple(variants):
-        try:
-            parsed = json.loads(candidate)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            continue
-        canonical = json.dumps(
-            parsed,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-        if canonical not in variants:
-            variants.append(canonical)
+    else:
+        semantic_text, failure = _toml_semantic_scan_text(text)
+        if failure:
+            failures.append(failure)
+        elif semantic_text and semantic_text not in variants:
+            variants.append(semantic_text)
     return tuple(variants), tuple(failures)
+
+
+def _toml_semantic_scan_text(text: str) -> tuple[str, str]:
+    if _toml is None:
+        return "", "toml_parser_unavailable"
+    try:
+        parsed = _toml.loads(text)
+        return _semantic_mapping_scan_text((parsed,)), ""
+    except (RecursionError, TypeError, ValueError):
+        return "", "toml_parse_failed"
 
 
 def _yaml_semantic_scan_text(text: str) -> tuple[str, str]:
@@ -1000,10 +1133,15 @@ def _yaml_semantic_scan_text(text: str) -> tuple[str, str]:
 def _semantic_mapping_scan_text(values: Sequence[object]) -> str:
     fragments: list[str] = []
     visited: set[int] = set()
+    node_count = 0
 
     def visit(value: object, depth: int) -> None:
-        if depth > MAX_YAML_DEPTH:
-            raise ValueError("semantic YAML nesting limit exceeded")
+        nonlocal node_count
+        node_count += 1
+        if node_count > MAX_CONFIGURATION_NODES:
+            raise ValueError("semantic configuration node limit exceeded")
+        if depth > MAX_CONFIGURATION_DEPTH:
+            raise ValueError("semantic configuration nesting limit exceeded")
         if isinstance(value, Mapping):
             identity = id(value)
             if identity in visited:
@@ -1305,16 +1443,22 @@ def build_distribution_report(
         pyproject_text = (source_root / "pyproject.toml").read_text(
             encoding="utf-8"
         )
+        lock_text = (source_root / "uv.lock").read_text(encoding="utf-8")
         declared_dependencies = sorted(
             declared_dependencies_from_pyproject(pyproject_text)
+        )
+        build_requirements = sorted(
+            build_requirements_from_pyproject(pyproject_text)
         )
         build_dependencies = sorted(
             build_dependencies_from_pyproject(pyproject_text)
         )
         lock_dependencies = sorted(
-            direct_dependencies_from_uv_lock(
-                (source_root / "uv.lock").read_text(encoding="utf-8")
-            )
+            direct_dependencies_from_uv_lock(lock_text)
+        )
+        build_locked_versions = locked_distribution_versions_from_uv_lock(
+            lock_text,
+            EXPECTED_BUILD_DISTRIBUTIONS,
         )
         notice_text = (source_root / "THIRD_PARTY_NOTICES.md").read_text(
             encoding="utf-8"
@@ -1392,6 +1536,9 @@ def build_distribution_report(
                 "expected_build": sorted(EXPECTED_BUILD_DISTRIBUTIONS),
                 "declared": declared_dependencies,
                 "build_system": build_dependencies,
+                "build_requirements": build_requirements,
+                "build_locked_versions": build_locked_versions,
+                "build_backend_generator": _wheel_generator(wheel),
                 "lock": lock_dependencies,
                 "metadata": metadata_dependencies,
                 "notices": notice_dependencies,
@@ -1434,10 +1581,12 @@ def distribution_report_blockers(
         dirty_entries = state.get("dirty_entries")
         repository_root = state.get("repository_root")
         source_root = state.get("source_root")
+        replacement_refs = state.get("replacement_refs")
         raw_state_valid = (
             state.get("ok") is True
             and state.get("source_root_matches") is True
             and dirty_entries == []
+            and replacement_refs == []
             and isinstance(head, str)
             and re.fullmatch(r"[0-9a-f]{40,64}", head) is not None
             and isinstance(tree, str)
@@ -1454,6 +1603,7 @@ def distribution_report_blockers(
                     "head": state.get("head"),
                     "tree": state.get("tree"),
                     "dirty_entries": state.get("dirty_entries"),
+                    "replacement_refs": state.get("replacement_refs"),
                     "source_root_matches": state.get("source_root_matches"),
                 }
             )
@@ -1782,6 +1932,11 @@ def distribution_report_blockers(
         "expected_build": build_expected,
         "declared": project_expected,
         "build_system": build_expected,
+        "build_requirements": [EXPECTED_BUILD_BACKEND_REQUIREMENT],
+        "build_locked_versions": {
+            "setuptools": EXPECTED_BUILD_BACKEND_VERSION,
+        },
+        "build_backend_generator": EXPECTED_BUILD_BACKEND_GENERATOR,
         "lock": project_expected,
         "metadata": project_expected,
         "notices": expected,
@@ -2172,6 +2327,16 @@ def declared_dependencies_from_pyproject(text: str) -> frozenset[str]:
 def build_dependencies_from_pyproject(text: str) -> frozenset[str]:
     """Extract direct build backend requirements from project TOML."""
 
+    return frozenset(
+        name
+        for requirement in build_requirements_from_pyproject(text)
+        if (name := normalized_dependency_name(requirement))
+    )
+
+
+def build_requirements_from_pyproject(text: str) -> tuple[str, ...]:
+    """Extract exact direct build backend requirements from project TOML."""
+
     sanitized = "\n".join(
         _strip_toml_line_comment(line) for line in text.splitlines()
     )
@@ -2181,17 +2346,22 @@ def build_dependencies_from_pyproject(text: str) -> frozenset[str]:
         sanitized,
     )
     if match is None:
-        return frozenset()
+        return ()
     requires = re.search(
         r"(?ms)^\s*requires\s*=\s*\[(.*?)\]",
         match.group(1),
     )
     if requires is None:
-        return frozenset()
-    return frozenset(
-        name
-        for requirement in re.findall(r"[\"']([^\"']+)[\"']", requires.group(1))
-        if (name := normalized_dependency_name(requirement))
+        return ()
+    return tuple(
+        sorted(
+            requirement
+            for requirement in re.findall(
+                r"[\"']([^\"']+)[\"']",
+                requires.group(1),
+            )
+            if normalized_dependency_name(requirement)
+        )
     )
 
 
@@ -2286,6 +2456,47 @@ def direct_dependencies_from_uv_lock(text: str) -> frozenset[str]:
     )
 
 
+def locked_distribution_versions_from_uv_lock(
+    text: str,
+    distributions: Iterable[str],
+) -> dict[str, str]:
+    """Return exact locked versions for the requested distributions."""
+
+    requested = {
+        normalized_dependency_name(distribution)
+        for distribution in distributions
+        if normalized_dependency_name(distribution)
+    }
+    versions: dict[str, str] = {}
+    for raw_name, version in re.findall(
+        r'(?ms)^\[\[package\]\]\s*\nname = "([^"]+)"\s*\n'
+        r'version = "([^"]+)"',
+        text,
+    ):
+        name = normalized_dependency_name(raw_name)
+        if name in requested and name not in versions:
+            versions[name] = version
+    return dict(sorted(versions.items()))
+
+
+def _locked_distribution_hashes_from_uv_lock(
+    text: str,
+    distribution: str,
+) -> tuple[str, ...]:
+    normalized = normalized_dependency_name(distribution)
+    for match in re.finditer(
+        r'(?ms)^\[\[package\]\]\s*\nname = "([^"]+)"\s*\n'
+        r'(.*?)(?=^\[\[package\]\]|\Z)',
+        text,
+    ):
+        if normalized_dependency_name(match.group(1)) != normalized:
+            continue
+        return tuple(
+            sorted(set(re.findall(r'hash = "(sha256:[0-9a-f]{64})"', match.group(2))))
+        )
+    return ()
+
+
 def notice_dependency_licenses(text: str) -> dict[str, str]:
     """Return one normalized declared license for each Python distribution."""
 
@@ -2342,6 +2553,16 @@ def _archive_path_error(name: str) -> str:
     raw_parts = canonical_name.split("/")
     if any(part in {"", ".", ".."} for part in raw_parts):
         return "path_traversal"
+    for part in raw_parts:
+        if (
+            ":" in part
+            or part.endswith((" ", "."))
+            or any(ord(character) < 32 for character in part)
+        ):
+            return "non_portable_component"
+        reserved_stem = part.split(".", 1)[0].casefold()
+        if reserved_stem in _WINDOWS_RESERVED_COMPONENTS:
+            return "reserved_component"
     path = PurePosixPath(canonical_name)
     if path.is_absolute():
         return "absolute_path"
@@ -2350,6 +2571,13 @@ def _archive_path_error(name: str) -> str:
 
 def _canonical_archive_name(name: str) -> str:
     return name[:-1] if name.endswith("/") else name
+
+
+def _portable_archive_key(name: str) -> str:
+    return "/".join(
+        unicodedata.normalize("NFKC", part).casefold()
+        for part in name.split("/")
+    )
 
 
 def _archive_entry_evidence_blockers(
@@ -2394,7 +2622,8 @@ def _archive_entry_evidence_blockers(
             )
             continue
         canonical_name = _canonical_archive_name(entry)
-        if canonical_name in seen:
+        portable_key = _portable_archive_key(canonical_name)
+        if portable_key in seen:
             blockers.append(
                 {
                     "code": "duplicate_archive_entry",
@@ -2403,7 +2632,7 @@ def _archive_entry_evidence_blockers(
                 }
             )
             continue
-        seen.add(canonical_name)
+        seen.add(portable_key)
         if kind == "sdist":
             path = PurePosixPath(canonical_name)
             if (
@@ -3437,10 +3666,8 @@ def _wheel_generated_metadata_blockers(
             or parsed.get_all("Wheel-Version", []) != ["1.0"]
             or parsed.get_all("Root-Is-Purelib", []) != ["true"]
             or parsed.get_all("Tag", []) != ["py3-none-any"]
-            or len(parsed.get_all("Generator", [])) != 1
-            or not parsed.get_all("Generator", [""])[0].startswith(
-                "setuptools ("
-            )
+            or parsed.get_all("Generator", [])
+            != [EXPECTED_BUILD_BACKEND_GENERATOR]
             or str(parsed.get_payload()).strip()
         ):
             blockers.append(
@@ -3703,9 +3930,12 @@ def _path_finding(path: str, rule_id: str) -> dict[str, object]:
 
 
 def _git_output(repository_root: Path, arguments: Sequence[str]) -> bytes:
+    environment = os.environ.copy()
+    environment["GIT_NO_REPLACE_OBJECTS"] = "1"
     result = subprocess.run(
         ["git", *arguments],
         cwd=repository_root,
+        env=environment,
         check=False,
         capture_output=True,
         timeout=30,
@@ -3717,6 +3947,17 @@ def _git_output(repository_root: Path, arguments: Sequence[str]) -> bytes:
     if len(result.stdout) > MAX_GIT_OUTPUT_BYTES:
         raise RuntimeError("git output exceeds compliance scan limit")
     return result.stdout
+
+
+def _git_replacement_refs(repository_root: Path) -> list[str]:
+    return (
+        _git_output(
+            repository_root,
+            ["for-each-ref", "--format=%(refname)", "refs/replace/"],
+        )
+        .decode("utf-8", errors="strict")
+        .splitlines()
+    )
 
 
 def _trusted_archive_evidence(
@@ -3757,7 +3998,9 @@ def _trusted_archive_evidence(
             .strip()
         )
         if (
-            actual_root != repository_root.resolve()
+            _git_replacement_refs(repository_root)
+            or before.get("replacement_refs") != []
+            or actual_root != repository_root.resolve()
             or actual_head != head
             or actual_tree != tree
         ):
@@ -3847,6 +4090,7 @@ def repository_state_evidence(
         .decode("ascii", errors="strict")
         .strip()
     )
+    replacement_refs = _git_replacement_refs(repository_root)
     source_root_matches = (
         repository_top == repository_root.resolve()
         and source_top == repository_top
@@ -3859,7 +4103,8 @@ def repository_state_evidence(
         "head": head,
         "tree": tree,
         "dirty_entries": dirty_entries,
-        "ok": source_root_matches and not dirty_entries,
+        "replacement_refs": replacement_refs,
+        "ok": source_root_matches and not dirty_entries and not replacement_refs,
     }
 
 
@@ -3879,34 +4124,56 @@ def _build_distributions(source_root: Path, dist_dir: Path) -> None:
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)
     uv_executable = shutil.which("uv")
-    command = (
-        [
-            uv_executable,
-            "build",
-            "--out-dir",
-            str(dist_dir),
-            str(source_root),
-        ]
-        if uv_executable
-        else [
-            sys.executable,
-            "-m",
-            "build",
-            "--no-isolation",
-            "--outdir",
-            str(dist_dir),
-            str(source_root),
-        ]
+    if uv_executable is None:
+        raise RuntimeError("uv is required for locked distribution builds")
+    pyproject_text = (source_root / "pyproject.toml").read_text(
+        encoding="utf-8"
     )
-    result = subprocess.run(
-        command,
-        cwd=source_root,
-        env=environment,
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=300,
+    lock_text = (source_root / "uv.lock").read_text(encoding="utf-8")
+    build_requirements = build_requirements_from_pyproject(pyproject_text)
+    locked_versions = locked_distribution_versions_from_uv_lock(
+        lock_text,
+        EXPECTED_BUILD_DISTRIBUTIONS,
     )
+    locked_hashes = _locked_distribution_hashes_from_uv_lock(
+        lock_text,
+        "setuptools",
+    )
+    if (
+        build_requirements != (EXPECTED_BUILD_BACKEND_REQUIREMENT,)
+        or locked_versions
+        != {"setuptools": EXPECTED_BUILD_BACKEND_VERSION}
+        or not locked_hashes
+    ):
+        raise RuntimeError("build backend is not bound to the expected lock")
+    with tempfile.TemporaryDirectory(
+        prefix="voi-build-constraints-"
+    ) as temporary:
+        constraints_path = Path(temporary) / "build-constraints.txt"
+        constraints_path.write_text(
+            EXPECTED_BUILD_BACKEND_REQUIREMENT
+            + "".join(f" --hash={digest}" for digest in locked_hashes)
+            + "\n",
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [
+                uv_executable,
+                "build",
+                "--build-constraints",
+                str(constraints_path),
+                "--require-hashes",
+                "--out-dir",
+                str(dist_dir),
+                str(source_root),
+            ],
+            cwd=source_root,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
     if result.returncode != 0:
         raise RuntimeError(
             "distribution build failed: "
@@ -3987,6 +4254,19 @@ def _license_evidence(
             }
         )
     return evidence
+
+
+def _wheel_generator(snapshot: ArchiveSnapshot) -> str:
+    entries = [
+        payload
+        for entry, payload in snapshot.files.items()
+        if entry.endswith(".dist-info/WHEEL")
+    ]
+    if len(entries) != 1:
+        return ""
+    parsed = BytesParser().parsebytes(entries[0])
+    generators = parsed.get_all("Generator", [])
+    return generators[0] if len(generators) == 1 else ""
 
 
 def _runtime_data_evidence(

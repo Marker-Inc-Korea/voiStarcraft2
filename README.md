@@ -699,6 +699,9 @@ records the exact HEAD and tree identities. `--skip-install-smoke` is
 diagnostic-only and always produces a non-qualifying report. Installed wheels
 provide relocatable read-only MicroMachine assets; launching the provenance-
 bound local MicroMachine runtime remains available only from a source checkout.
+Hosted CI uploads the qualified `dist/` bytes together with their compliance
+evidence as one artifact; any future publication workflow must consume those
+exact archives and verify their recorded SHA-256 digests instead of rebuilding.
 The separate commercial license applies only to voiStarcraft2 copyrights. It
 does not replace or waive MicroMachine, s2client-api, Python dependency, or
 other third-party license and attribution obligations.

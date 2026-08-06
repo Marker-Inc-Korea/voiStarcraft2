@@ -19,7 +19,10 @@ import unittest
 import zipfile
 from unittest import mock
 
-from starcraft_commander.distribution_compliance import _build_distributions
+from starcraft_commander.distribution_compliance import (
+    EXPECTED_BUILD_BACKEND_GENERATOR,
+    _build_distributions,
+)
 from starcraft_commander.runtime_deps import (
     ANTHROPIC_INSTALL_HINT,
     ANTHROPIC_MODULE_NAME,
@@ -233,6 +236,7 @@ class DistributionLicenseFilesTest(unittest.TestCase):
                 "README.md",
                 "LICENSE",
                 "THIRD_PARTY_NOTICES.md",
+                "uv.lock",
             ):
                 shutil.copy2(repo_root / filename, source_root / filename)
             for directory in (
@@ -258,6 +262,15 @@ class DistributionLicenseFilesTest(unittest.TestCase):
                         for name in wheel.namelist()
                     ),
                     wheel.namelist(),
+                )
+                wheel_metadata = next(
+                    name
+                    for name in wheel.namelist()
+                    if name.endswith(".dist-info/WHEEL")
+                )
+                self.assertIn(
+                    f"Generator: {EXPECTED_BUILD_BACKEND_GENERATOR}",
+                    wheel.read(wheel_metadata).decode("utf-8"),
                 )
 
             sdist_path = next(dist_root.glob("*.tar.gz"))

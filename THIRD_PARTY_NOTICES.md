@@ -96,3 +96,7 @@ License: MIT
 ### Python distribution: `sounddevice`
 
 License: MIT
+
+### Python distribution: `tomli`
+
+License: MIT

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -42,7 +43,7 @@ class DependencyInventoryTest(unittest.TestCase):
     ) -> None:
         pyproject = """
 [build-system]
-requires = ["setuptools>=77.0.3"]
+requires = ["setuptools==82.0.1"]
 build-backend = "setuptools.build_meta"
 
 [project.optional-dependencies]
@@ -199,6 +200,41 @@ class ArchivePolicyTest(unittest.TestCase):
             "unsafe_archive_entry",
             {str(item["code"]) for item in snapshot.blockers},
         )
+
+    def test_wheel_inspection_rejects_nonportable_and_colliding_entries(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            wheel_path = Path(temporary) / "candidate.whl"
+            with zipfile.ZipFile(wheel_path, "w") as archive:
+                archive.writestr(
+                    "starcraft_commander/runtime_data.py",
+                    "safe",
+                )
+                archive.writestr(
+                    "STARCRAFT_COMMANDER/RUNTIME_DATA.PY",
+                    "case collision",
+                )
+                archive.writestr(
+                    "starcraft_commander/runtime_data.py:payload.py",
+                    "alternate stream",
+                )
+                archive.writestr(
+                    "starcraft_commander/caf\u00e9.py",
+                    "normalized",
+                )
+                archive.writestr(
+                    "starcraft_commander/cafe\u0301.py",
+                    "decomposed",
+                )
+
+            snapshot = inspect_wheel(wheel_path)
+
+        codes = [str(item["code"]) for item in snapshot.blockers]
+        reasons = {str(item.get("reason")) for item in snapshot.blockers}
+        self.assertEqual(2, codes.count("duplicate_archive_entry"))
+        self.assertIn("unsafe_archive_entry", codes)
+        self.assertIn("non_portable_component", reasons)
 
     def test_wheel_inspection_rejects_directory_symlink_entries(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -427,6 +463,60 @@ class ArchivePolicyTest(unittest.TestCase):
         )
         self.assertNotIn("docs/private.md", manifests["sdist"])
 
+    def test_repository_state_rejects_commit_and_blob_replacements(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def git(*arguments: str) -> str:
+                result = subprocess.run(
+                    ["git", *arguments],
+                    cwd=root,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return result.stdout.strip()
+
+            git("init", "-q")
+            git("config", "user.email", "compliance@example.invalid")
+            git("config", "user.name", "Compliance Test")
+            tracked = root / "tracked.py"
+            tracked.write_text("value = 'original'\n", encoding="utf-8")
+            git("add", "tracked.py")
+            git("commit", "-qm", "original")
+            target_commit = git("rev-parse", "HEAD")
+            target_tree = git("rev-parse", "HEAD^{tree}")
+            target_blob = git("rev-parse", "HEAD:tracked.py")
+
+            tracked.write_text("value = 'replacement'\n", encoding="utf-8")
+            git("add", "tracked.py")
+            git("commit", "-qm", "replacement")
+            replacement_commit = git("rev-parse", "HEAD")
+            replacement_blob = git("rev-parse", "HEAD:tracked.py")
+            git("checkout", "--detach", "-q", target_commit)
+
+            replacements = (
+                (target_commit, replacement_commit),
+                (target_blob, replacement_blob),
+            )
+            for original, replacement in replacements:
+                with self.subTest(original=original):
+                    git("replace", original, replacement)
+
+                    state = compliance_module.repository_state_evidence(
+                        root,
+                        root,
+                    )
+
+                    self.assertFalse(state["ok"])
+                    self.assertEqual(target_commit, state["head"])
+                    self.assertEqual(target_tree, state["tree"])
+                    self.assertEqual(
+                        [f"refs/replace/{original}"],
+                        state["replacement_refs"],
+                    )
+                    git("replace", "-d", original)
+
 
 class PrivateConfigurationScannerTest(unittest.TestCase):
     def test_detects_required_secret_and_private_configuration_classes(self) -> None:
@@ -638,9 +728,13 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             allow_safe_fixtures=False,
         )
 
-        self.assertEqual(4, len(findings))
+        self.assertEqual(5, len(findings))
         self.assertEqual(
-            {"private_endpoint", "private_model_override"},
+            {
+                "json_parse_failed",
+                "private_endpoint",
+                "private_model_override",
+            },
             {str(item["rule_id"]) for item in findings},
         )
 
@@ -658,11 +752,112 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                     allow_safe_fixtures=False,
                 )
 
-                self.assertEqual(1, len(findings))
-                self.assertEqual(
+                self.assertIn(
                     "private_endpoint",
-                    findings[0]["rule_id"],
+                    {str(item["rule_id"]) for item in findings},
                 )
+
+    def test_detects_utf16_json_and_semantic_toml_configuration(self) -> None:
+        host_key = "VOI_MYPROXY_" + "HOST"
+        model_key = "VOI_MYPROXY_" + "MODEL"
+        json_payload = (
+            '{"env":[{"name":"'
+            + host_key
+            + '","value":"10.20.30.40"}]}'
+        ).encode("utf-16")
+        toml_payload = (
+            f'"{host_key}" = "10.20.30.40"\n'
+            f'"{model_key}" = """private-\\\n    model"""\n'
+        ).encode()
+
+        json_findings = scan_payload(
+            "deployment.json",
+            json_payload,
+            allow_safe_fixtures=False,
+        )
+        toml_findings = scan_payload(
+            "private.toml",
+            toml_payload,
+            allow_safe_fixtures=False,
+        )
+
+        self.assertIn(
+            "private_endpoint",
+            {str(item["rule_id"]) for item in json_findings},
+        )
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
+            {str(item["rule_id"]) for item in toml_findings},
+        )
+
+    def test_json_and_toml_parser_failures_are_blocking_findings(self) -> None:
+        json_findings = scan_payload(
+            "private.json",
+            b'{"safe": true',
+            allow_safe_fixtures=False,
+        )
+        toml_findings = scan_payload(
+            "private.toml",
+            b"safe = [",
+            allow_safe_fixtures=False,
+        )
+
+        self.assertIn(
+            "json_parse_failed",
+            {str(item["rule_id"]) for item in json_findings},
+        )
+        self.assertIn(
+            "toml_parse_failed",
+            {str(item["rule_id"]) for item in toml_findings},
+        )
+        with mock.patch.object(compliance_module, "_toml", None):
+            unavailable = scan_payload(
+                "private.toml",
+                b"safe = true\n",
+                allow_safe_fixtures=False,
+            )
+        self.assertEqual("toml_parser_unavailable", unavailable[0]["rule_id"])
+
+    def test_detects_executable_and_standard_secret_forms(self) -> None:
+        host_key = "VOI_MYPROXY_" + "HOST"
+        api_prefix = "sk-"
+        aws_access_key = "AKIA" + ("A" * 16)
+        aws_secret = "secret" + "abcdefghijklmnopqrstuv"
+        private_key_marker = "-----BEGIN " + "PRIVATE KEY-----"
+        payload = (
+            "RUN if true; then export "
+            f"{host_key}=10.20.30.40; fi\n"
+            f'token = "{api_prefix}" "liveabcdefghijklmnop"\n'
+            f"AWS_ACCESS_KEY_ID={aws_access_key}\n"
+            f"AWS_SECRET_ACCESS_KEY={aws_secret}\n"
+            f"{private_key_marker}\n"
+        ).encode()
+
+        findings = scan_payload(
+            "Dockerfile",
+            payload,
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual(
+            {
+                "api_key",
+                "aws_access_key_id",
+                "private_endpoint",
+                "private_key",
+                "secret_assignment",
+            },
+            {str(item["rule_id"]) for item in findings},
+        )
+        env_directory = scan_payload(
+            "config/.env.production/settings.toml",
+            b"safe = true\n",
+            allow_safe_fixtures=False,
+        )
+        self.assertIn(
+            "env_file",
+            {str(item["rule_id"]) for item in env_directory},
+        )
 
     def test_detects_structurally_reconstructed_kubernetes_env(self) -> None:
         payloads = (
@@ -814,6 +1009,7 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             {
                 "api_key_assignment",
                 "credential_path",
+                "json_parse_failed",
                 "private_endpoint",
                 "private_model_override",
             },
@@ -1042,7 +1238,7 @@ dependencies = []
 sc2 = ["burnysc2>=6.5"]
 voice = ["faster-whisper>=1.0", "sounddevice>=0.4.6"]
 llm = ["anthropic>=0.40", "openai>=1.0"]
-dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3"]
+dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
 """
         source_pyproject_digest = compliance_module.sha256_bytes(
             source_pyproject_raw.encode()
@@ -1075,7 +1271,7 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3"]
             metadata_entry: metadata_raw,
             f"{wheel_root}/WHEEL": (
                 "Wheel-Version: 1.0\n"
-                "Generator: setuptools (83.0.0)\n"
+                "Generator: setuptools (82.0.1)\n"
                 "Root-Is-Purelib: true\n"
                 "Tag: py3-none-any\n\n"
             ),
@@ -1156,7 +1352,8 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3"]
             "[dev]\n"
             "build>=1.2\n"
             "pytest>=7\n\n"
-            "pyyaml>=6.0.3\n\n"
+            "pyyaml>=6.0.3\n"
+            "tomli>=2.4.1\n\n"
             "[llm]\n"
             "anthropic>=0.40\n"
             "openai>=1.0\n\n"
@@ -1230,6 +1427,7 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3"]
                     "head": digest[:40],
                     "tree": digest[:40],
                     "dirty_entries": [],
+                    "replacement_refs": [],
                     "source_root_matches": True,
                     "repository_root": "/release",
                     "source_root": "/release",
@@ -1331,6 +1529,17 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3"]
                 "expected_build": sorted(EXPECTED_BUILD_DISTRIBUTIONS),
                 "declared": sorted(EXPECTED_PROJECT_DISTRIBUTIONS),
                 "build_system": sorted(EXPECTED_BUILD_DISTRIBUTIONS),
+                "build_requirements": [
+                    compliance_module.EXPECTED_BUILD_BACKEND_REQUIREMENT
+                ],
+                "build_locked_versions": {
+                    "setuptools": (
+                        compliance_module.EXPECTED_BUILD_BACKEND_VERSION
+                    ),
+                },
+                "build_backend_generator": (
+                    compliance_module.EXPECTED_BUILD_BACKEND_GENERATOR
+                ),
                 "lock": sorted(EXPECTED_PROJECT_DISTRIBUTIONS),
                 "metadata": sorted(EXPECTED_PROJECT_DISTRIBUTIONS),
                 "notices": sorted(EXPECTED_DIRECT_DISTRIBUTIONS),
@@ -1375,6 +1584,29 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3"]
 
     def test_accepts_complete_raw_evidence(self) -> None:
         self.assertEqual([], distribution_report_blockers(self.report))
+
+    def test_rejects_build_backend_identity_drift(self) -> None:
+        mutations = (
+            ("build_requirements", ["setuptools>=77.0.3"]),
+            ("build_locked_versions", {"setuptools": "83.0.0"}),
+            ("build_backend_generator", "setuptools (83.0.0)"),
+        )
+        for field, value in mutations:
+            with self.subTest(field=field):
+                report = copy.deepcopy(self.report)
+                report["dependencies"][field] = value
+
+                blockers = distribution_report_blockers(report)
+
+                self.assertIn(
+                    {
+                        "code": "dependency_notice_drift",
+                        "source": field,
+                        "observed": value,
+                        "expected": self.report["dependencies"][field],
+                    },
+                    blockers,
+                )
 
     def test_rejects_forged_exact_sha_archive_provenance(self) -> None:
         report = copy.deepcopy(self.report)
