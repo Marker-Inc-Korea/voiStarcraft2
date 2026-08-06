@@ -1100,11 +1100,15 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
     analysis_steps = 0
     analysis_limited = False
     analysis_limit_reason = ""
+    known_function_prefix = "<known-function:"
+    known_lambda_prefix = "<known-lambda:"
     function_definitions: dict[
         str,
         list[ast.FunctionDef | ast.AsyncFunctionDef],
     ] = {}
+    lambda_definitions: dict[int, ast.Lambda] = {}
     active_function_calls: set[int] = set()
+    active_lambda_calls: set[int] = set()
 
     def mark_limited(reason: str) -> None:
         nonlocal analysis_limited, analysis_limit_reason
@@ -1131,7 +1135,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             return tuple(values)
         full_text = " ".join(values)
         if re.search(
-            r"(?i)--provider[ \t]+"
+            r"(?i)--provider(?:[ \t]+|=)"
             + _MYPROXY_PROVIDER_PATTERN
             + r"\b",
             full_text,
@@ -1191,9 +1195,13 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
         value = _constant_string_expression(node)
         if value is not None:
             return bounded_string(value)
+        if isinstance(node, ast.Lambda):
+            identity = id(node)
+            lambda_definitions[identity] = node
+            return f"{known_lambda_prefix}{identity}>"
         if isinstance(node, ast.Name):
             return environment.get(node.id)
-        if isinstance(node, (ast.List, ast.Tuple)):
+        if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
             values: tuple[str, ...] = ()
             for element in node.elts:
                 if isinstance(element, ast.Starred):
@@ -1213,6 +1221,29 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                     ),
                 )
             return values
+        if isinstance(
+            node,
+            (ast.ListComp, ast.SetComp, ast.GeneratorExp),
+        ):
+            return evaluate_comprehension(
+                node.elt,
+                node.generators,
+                environment,
+            )
+        if isinstance(node, ast.Subscript):
+            sequence = evaluate(node.value, environment)
+            index = (
+                node.slice.value
+                if isinstance(node.slice, ast.Constant)
+                and isinstance(node.slice.value, int)
+                else None
+            )
+            if (
+                isinstance(sequence, tuple)
+                and index is not None
+                and -len(sequence) <= index < len(sequence)
+            ):
+                return sequence[index]
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             left = evaluate(node.left, environment)
             right = evaluate(node.right, environment)
@@ -1311,13 +1342,30 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                 return True
         return False
 
-    def bound_function_environment(
-        definition: ast.FunctionDef | ast.AsyncFunctionDef,
+    def evaluate_keyword_mapping(
+        node: ast.AST,
+        environment: Mapping[str, cli_value],
+    ) -> dict[str, cli_value] | None:
+        if not isinstance(node, ast.Dict):
+            return None
+        result: dict[str, cli_value] = {}
+        for key_node, value_node in zip(node.keys, node.values):
+            if key_node is None:
+                return None
+            key = _constant_string_expression(key_node)
+            if key is None:
+                return None
+            result[key] = (
+                evaluate(value_node, environment) or dynamic_argument
+            )
+        return result
+
+    def bound_arguments_environment(
+        arguments: ast.arguments,
         environment: Mapping[str, cli_value],
         call: ast.Call | None,
     ) -> cli_environment:
         result = dict(environment)
-        arguments = definition.args
         for name in shadowed_arguments(arguments):
             result.pop(name, None)
 
@@ -1358,7 +1406,14 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                 )
             for keyword in call.keywords:
                 if keyword.arg is None:
-                    unknown_keywords = True
+                    expanded = evaluate_keyword_mapping(
+                        keyword.value,
+                        environment,
+                    )
+                    if expanded is None:
+                        unknown_keywords = True
+                    else:
+                        keyword_values.update(expanded)
                     continue
                 keyword_values[keyword.arg] = (
                     evaluate(keyword.value, environment) or dynamic_argument
@@ -1414,9 +1469,11 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             return
         record(evaluate(node, environment))
         if isinstance(node, ast.Lambda):
-            nested_environment = dict(environment)
-            for name in shadowed_arguments(node.args):
-                nested_environment.pop(name, None)
+            nested_environment = bound_arguments_environment(
+                node.args,
+                environment,
+                None,
+            )
             record_expression(node.body, nested_environment)
             return
         for child in ast.iter_child_nodes(node):
@@ -1498,6 +1555,85 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
         # discarding paths or allowing combinatorial state growth.
         return [merge_environments(result)]
 
+    def iterable_values(
+        node: ast.AST,
+        environment: Mapping[str, cli_value],
+    ) -> list[cli_value]:
+        if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+            result: list[cli_value] = []
+            for element in node.elts:
+                if isinstance(element, ast.Starred):
+                    expanded = evaluate(element.value, environment)
+                    if isinstance(expanded, tuple):
+                        result.extend(expanded)
+                    else:
+                        result.append(dynamic_argument)
+                    continue
+                result.append(
+                    evaluate(element, environment) or dynamic_argument
+                )
+            if len(result) > max_arguments:
+                if all(isinstance(item, str) for item in result):
+                    return list(
+                        bounded_sequence(
+                            tuple(
+                                item
+                                for item in result
+                                if isinstance(item, str)
+                            )
+                        )
+                    )
+                full_text = " ".join(
+                    item
+                    if isinstance(item, str)
+                    else " ".join(item)
+                    for item in result
+                )
+                if re.search(
+                    r"(?i)--provider(?:[ \t]+|=)"
+                    + _MYPROXY_PROVIDER_PATTERN
+                    + r"\b",
+                    full_text,
+                ):
+                    mark_limited("arguments")
+                return result[:max_arguments]
+            return result
+        value = evaluate(node, environment)
+        if isinstance(value, tuple):
+            return list(value)
+        return [dynamic_argument]
+
+    def evaluate_comprehension(
+        element: ast.AST,
+        generators: Sequence[ast.comprehension],
+        environment: Mapping[str, cli_value],
+    ) -> tuple[str, ...]:
+        states = [dict(environment)]
+        for generator in generators:
+            next_states: list[cli_environment] = []
+            for state in states:
+                for item in iterable_values(generator.iter, state):
+                    iteration = dict(state)
+                    bind(iteration, generator.target, item)
+                    # Ignoring filters is conservative: values from a
+                    # potentially skipped branch still remain scannable.
+                    next_states.append(iteration)
+            states = deduplicate_states(next_states)
+            if not states:
+                break
+        result: tuple[str, ...] = ()
+        for state in states:
+            value = evaluate(element, state)
+            result = combine(
+                result,
+                (
+                    value
+                    if isinstance(value, str)
+                    else dynamic_argument,
+                ),
+            )
+        return result
+
     def process_scope(
         statements: Sequence[ast.stmt],
         inherited_states: Sequence[Mapping[str, cli_value]],
@@ -1525,15 +1661,59 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             for candidate in ast.walk(node):
                 if not isinstance(candidate, ast.Call):
                     continue
-                function_name = (
-                    candidate.func.id
-                    if isinstance(candidate.func, ast.Name)
-                    else (
-                        candidate.func.attr
-                        if isinstance(candidate.func, ast.Attribute)
-                        else ""
-                    )
-                )
+                function_name = ""
+                lambda_identity: int | None = None
+                if isinstance(candidate.func, ast.Name):
+                    reference = environment.get(candidate.func.id)
+                    if (
+                        isinstance(reference, str)
+                        and reference.startswith(known_function_prefix)
+                        and reference.endswith(">")
+                    ):
+                        function_name = reference[
+                            len(known_function_prefix):-1
+                        ]
+                    elif (
+                        isinstance(reference, str)
+                        and reference.startswith(known_lambda_prefix)
+                        and reference.endswith(">")
+                    ):
+                        try:
+                            lambda_identity = int(
+                                reference[len(known_lambda_prefix):-1]
+                            )
+                        except ValueError:
+                            lambda_identity = None
+                    else:
+                        function_name = candidate.func.id
+                elif isinstance(candidate.func, ast.Attribute):
+                    function_name = candidate.func.attr
+
+                if lambda_identity is not None:
+                    definition = lambda_definitions.get(lambda_identity)
+                    if (
+                        definition is not None
+                        and lambda_identity not in active_lambda_calls
+                    ):
+                        active_lambda_calls.add(lambda_identity)
+                        try:
+                            bound_environment = (
+                                bound_arguments_environment(
+                                    definition.args,
+                                    environment,
+                                    candidate,
+                                )
+                            )
+                            record_expression(
+                                definition.body,
+                                bound_environment,
+                            )
+                            invoke_known_functions(
+                                definition.body,
+                                bound_environment,
+                            )
+                        finally:
+                            active_lambda_calls.remove(lambda_identity)
                 for definition in function_definitions.get(
                     function_name,
                     (),
@@ -1546,8 +1726,8 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                         process_scope(
                             definition.body,
                             (
-                                bound_function_environment(
-                                    definition,
+                                bound_arguments_environment(
+                                    definition.args,
                                     environment,
                                     candidate,
                                 ),
@@ -1657,6 +1837,15 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                         )
                         if statement not in definitions:
                             definitions.append(statement)
+                        for state in result_states:
+                            bind(
+                                state,
+                                ast.Name(id=statement.name),
+                                (
+                                    f"{known_function_prefix}"
+                                    f"{statement.name}>"
+                                ),
+                            )
                         identity = id(statement)
                         if identity not in active_function_calls:
                             active_function_calls.add(identity)
@@ -1664,8 +1853,8 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                                 process_scope(
                                     statement.body,
                                     tuple(
-                                        bound_function_environment(
-                                            statement,
+                                        bound_arguments_environment(
+                                            statement.args,
                                             state,
                                             None,
                                         )
@@ -1740,22 +1929,15 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                     one_iteration: list[cli_environment] = []
                     if isinstance(statement, (ast.For, ast.AsyncFor)):
                         for state in result_states:
-                            iterable = evaluate(statement.iter, state)
-                            if isinstance(iterable, tuple):
-                                for item in iterable:
-                                    iteration = dict(state)
-                                    bind(
-                                        iteration,
-                                        statement.target,
-                                        item,
-                                    )
-                                    one_iteration.append(iteration)
-                            else:
+                            for item in iterable_values(
+                                statement.iter,
+                                state,
+                            ):
                                 iteration = dict(state)
                                 bind(
                                     iteration,
                                     statement.target,
-                                    dynamic_argument,
+                                    item,
                                 )
                                 one_iteration.append(iteration)
                     else:
