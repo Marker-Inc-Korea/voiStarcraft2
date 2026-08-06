@@ -95,6 +95,8 @@ EXPECTED_BUILD_BACKEND_REQUIREMENT: Final[str] = (
 EXPECTED_BUILD_BACKEND_GENERATOR: Final[str] = (
     f"setuptools ({EXPECTED_BUILD_BACKEND_VERSION})"
 )
+EXPECTED_METADATA_VERSION: Final[str] = "2.4"
+EXPECTED_DYNAMIC_METADATA_FIELDS: Final[tuple[str, ...]] = ("license-file",)
 EXPECTED_DIRECT_DISTRIBUTIONS: Final[frozenset[str]] = (
     EXPECTED_PROJECT_DISTRIBUTIONS | EXPECTED_BUILD_DISTRIBUTIONS
 )
@@ -248,6 +250,27 @@ _PRIVATE_ENDPOINT_DOCKER_RE: Final[re.Pattern[str]] = re.compile(
     + _CONFIG_ASSIGNMENT_KEY_SUFFIX
     + r"[ \t]*=[ \t]*)[\"']?([^\"'\s,#}\n]+)[\"']?"
 )
+_PRIVATE_MODEL_ENV_CALL_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?im)\b(?:os\.)?(?:putenv|environ\.setdefault)[ \t]*\([ \t]*"
+    r"[\"']"
+    + _PRIVATE_MODEL_KEY_PATTERN
+    + r"[\"'][ \t]*,[ \t]*[\"']([^\"'\n]+)[\"']"
+)
+_PRIVATE_ENDPOINT_ENV_CALL_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?im)\b(?:os\.)?(?:putenv|environ\.setdefault)[ \t]*\([ \t]*"
+    r"[\"']"
+    + _PRIVATE_ENDPOINT_KEY_PATTERN
+    + r"[\"'][ \t]*,[ \t]*[\"']([^\"'\n]+)[\"']"
+)
+_MYPROXY_CLI_MODEL_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?im)^(?=[^\n]*(?:--provider(?:[ \t]+|=)[\"']?myproxy\b))"
+    r"[^\n]*?--model(?:[ \t]+|=)[\"']?([^\"'\s\\]+)"
+)
+_MYPROXY_CLI_ENDPOINT_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?im)^(?=[^\n]*(?:--provider(?:[ \t]+|=)[\"']?myproxy\b))"
+    r"[^\n]*?--(?:base-url|openai-base-url)(?:[ \t]+|=)"
+    r"[\"']?([^\"'\s\\]+)"
+)
 _PRIVATE_MODEL_KUBERNETES_RE: Final[re.Pattern[str]] = re.compile(
     r"(?im)(?:"
     r"\{"
@@ -319,10 +342,15 @@ _PRIVATE_KEY_RE: Final[re.Pattern[str]] = re.compile(
 _ENV_KEY_ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(
     r"(?im)"
     + _CONFIG_ASSIGNMENT_PREFIX
-    + r"(?:OPENAI|ANTHROPIC|GEMINI|XAI|MYPROXY|CODEX_MYPROXY)_API_KEY"
+    + r"(?:[A-Z][A-Z0-9_]{1,63}_)?API_KEY"
     + _CONFIG_ASSIGNMENT_KEY_SUFFIX
     + _CONFIG_ASSIGNMENT_SEPARATOR
     + r"[\"']?([A-Za-z0-9._~+/=-]{12,})"
+)
+_ENV_KEY_CALL_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?im)\b(?:os\.)?(?:putenv|environ\.setdefault)[ \t]*\([ \t]*"
+    r"[\"'](?:[A-Z][A-Z0-9_]{1,63}_)?API_KEY[\"'][ \t]*,[ \t]*"
+    r"[\"']([A-Za-z0-9._~+/=-]{12,})[\"']"
 )
 _CREDENTIAL_PATH_RE: Final[re.Pattern[str]] = re.compile(
     r"(?im)(?:"
@@ -865,11 +893,16 @@ def scan_payload(
         ("bearer_token", _BEARER_TOKEN_RE),
         ("private_key", _PRIVATE_KEY_RE),
         ("api_key_assignment", _ENV_KEY_ASSIGNMENT_RE),
+        ("api_key_assignment", _ENV_KEY_CALL_RE),
         ("private_endpoint", _PRIVATE_ENDPOINT_RE),
         ("private_endpoint", _PRIVATE_ENDPOINT_DOCKER_RE),
+        ("private_endpoint", _PRIVATE_ENDPOINT_ENV_CALL_RE),
+        ("private_endpoint", _MYPROXY_CLI_ENDPOINT_RE),
         ("private_endpoint", _PRIVATE_ENDPOINT_KUBERNETES_RE),
         ("private_model_override", _PRIVATE_MODEL_RE),
         ("private_model_override", _PRIVATE_MODEL_DOCKER_RE),
+        ("private_model_override", _PRIVATE_MODEL_ENV_CALL_RE),
+        ("private_model_override", _MYPROXY_CLI_MODEL_RE),
         ("private_model_override", _PRIVATE_MODEL_KUBERNETES_RE),
         ("credential_path", _CREDENTIAL_PATH_RE),
     )
@@ -2314,6 +2347,87 @@ def metadata_requirements_from_pyproject(text: str) -> tuple[str, ...]:
     return tuple(sorted(requirements))
 
 
+def project_metadata_expectations_from_pyproject(
+    text: str,
+) -> dict[str, object]:
+    """Derive the complete static core-metadata contract from project TOML."""
+
+    if _toml is None:
+        return {}
+    try:
+        document = _toml.loads(text)
+    except (RecursionError, TypeError, ValueError):
+        return {}
+    project = document.get("project")
+    if not isinstance(project, Mapping):
+        return {}
+    required_strings = {
+        "name": project.get("name"),
+        "version": project.get("version"),
+        "summary": project.get("description"),
+        "requires_python": project.get("requires-python"),
+        "license_expression": project.get("license"),
+        "readme": project.get("readme"),
+    }
+    if any(
+        not isinstance(value, str) or not value
+        for value in required_strings.values()
+    ):
+        return {}
+    keywords = project.get("keywords")
+    license_files = project.get("license-files")
+    optional = project.get("optional-dependencies")
+    dependencies = project.get("dependencies")
+    if (
+        not isinstance(keywords, list)
+        or any(not isinstance(value, str) or not value for value in keywords)
+        or not isinstance(license_files, list)
+        or any(
+            not isinstance(value, str) or not value
+            for value in license_files
+        )
+        or not isinstance(optional, Mapping)
+        or any(
+            not isinstance(name, str)
+            or not name
+            or not isinstance(values, list)
+            or any(
+                not isinstance(value, str) or not value
+                for value in values
+            )
+            for name, values in optional.items()
+        )
+        or not isinstance(dependencies, list)
+        or any(
+            not isinstance(value, str) or not value
+            for value in dependencies
+        )
+    ):
+        return {}
+    readme = str(required_strings["readme"])
+    content_type = {
+        ".md": "text/markdown",
+        ".rst": "text/x-rst",
+        ".txt": "text/plain",
+    }.get(PurePosixPath(readme).suffix.lower(), "")
+    if not content_type:
+        return {}
+    provides_extra = tuple(
+        re.sub(r"[-_.]+", "-", str(name).lower())
+        for name in optional
+    )
+    if len(set(provides_extra)) != len(provides_extra):
+        return {}
+    return {
+        **required_strings,
+        "keywords": tuple(keywords),
+        "license_files": tuple(license_files),
+        "description_content_type": content_type,
+        "provides_extra": provides_extra,
+        "requires_dist": metadata_requirements_from_pyproject(text),
+    }
+
+
 def declared_dependencies_from_pyproject(text: str) -> frozenset[str]:
     """Extract direct core and optional dependencies from project TOML."""
 
@@ -3089,6 +3203,122 @@ def _size_manifest(value: object) -> dict[str, int] | None:
     return manifest
 
 
+def _metadata_description_payload(raw: str) -> str:
+    normalized = raw.replace("\r\n", "\n")
+    _, separator, payload = normalized.partition("\n\n")
+    return payload if separator else ""
+
+
+def _core_metadata_semantic_blockers(
+    parsed: object,
+    raw: str,
+    expectations: Mapping[str, object],
+    readme_digest: str,
+    *,
+    code: str,
+    entry: str,
+) -> list[dict[str, object]]:
+    blockers: list[dict[str, object]] = []
+    if not expectations:
+        return [
+            {
+                "code": code,
+                "reason": "missing_source_metadata_contract",
+                "entry": entry,
+            }
+        ]
+    expected_fields: dict[str, list[str]] = {
+        "Metadata-Version": [EXPECTED_METADATA_VERSION],
+        "Name": [str(expectations.get("name", ""))],
+        "Version": [str(expectations.get("version", ""))],
+        "Summary": [str(expectations.get("summary", ""))],
+        "License-Expression": [
+            str(expectations.get("license_expression", ""))
+        ],
+        "Keywords": [
+            ",".join(
+                str(value)
+                for value in _sequence(expectations.get("keywords"))
+            )
+        ],
+        "Requires-Python": [
+            str(expectations.get("requires_python", ""))
+        ],
+        "Description-Content-Type": [
+            str(expectations.get("description_content_type", ""))
+        ],
+        "License-File": [
+            str(value)
+            for value in _sequence(expectations.get("license_files"))
+        ],
+        "Provides-Extra": [
+            str(value)
+            for value in _sequence(expectations.get("provides_extra"))
+        ],
+        "Requires-Dist": [
+            str(value)
+            for value in _sequence(expectations.get("requires_dist"))
+        ],
+        "Dynamic": list(EXPECTED_DYNAMIC_METADATA_FIELDS),
+    }
+    expected_keys = {
+        field for field, values in expected_fields.items() if values
+    }
+    actual_keys = set(parsed.keys()) if hasattr(parsed, "keys") else set()
+    if actual_keys != expected_keys:
+        blockers.append(
+            {
+                "code": code,
+                "reason": "metadata_header_set_mismatch",
+                "entry": entry,
+                "expected": sorted(expected_keys),
+                "observed": sorted(actual_keys),
+            }
+        )
+    reason_by_field = {
+        "Metadata-Version": "wrong_metadata_version",
+        "Name": "wrong_project_name",
+        "Version": "wrong_project_version",
+        "Summary": "wrong_summary",
+        "License-Expression": "wrong_license_expression",
+        "Keywords": "wrong_keywords",
+        "Requires-Python": "wrong_requires_python",
+        "Description-Content-Type": "wrong_description_content_type",
+        "License-File": "wrong_license_files",
+        "Provides-Extra": "wrong_provides_extra",
+        "Requires-Dist": "source_requires_dist_mismatch",
+        "Dynamic": "wrong_dynamic_fields",
+    }
+    for field, expected in expected_fields.items():
+        observed = list(parsed.get_all(field, []))
+        if field == "Requires-Dist":
+            observed = sorted(observed)
+            expected = sorted(expected)
+        if observed != expected:
+            blockers.append(
+                {
+                    "code": code,
+                    "reason": reason_by_field[field],
+                    "entry": entry,
+                    "expected": expected,
+                    "observed": observed,
+                }
+            )
+    description = _metadata_description_payload(raw)
+    if (
+        not readme_digest
+        or sha256_bytes(description.encode("utf-8")) != readme_digest
+    ):
+        blockers.append(
+            {
+                "code": code,
+                "reason": "description_payload_mismatch",
+                "entry": entry,
+            }
+        )
+    return blockers
+
+
 def _metadata_evidence_blockers(
     metadata: Mapping[str, object],
     source_pyproject: Mapping[str, object],
@@ -3127,6 +3357,8 @@ def _metadata_evidence_blockers(
     source_requires_python = ""
     source_summary = ""
     source_requires_dist: list[str] = []
+    source_metadata_expectations: dict[str, object] = {}
+    source_readme_digest = ""
     if not isinstance(source_raw, str) or not source_raw:
         blockers.append(
             {
@@ -3147,18 +3379,50 @@ def _metadata_evidence_blockers(
                     "reason": "digest_mismatch",
                 }
             )
-        source_version = project_version_from_pyproject(source_raw)
-        source_requires_python = _project_string_from_pyproject(
-            source_raw,
-            "requires-python",
+        source_metadata_expectations = (
+            project_metadata_expectations_from_pyproject(source_raw)
         )
-        source_summary = _project_string_from_pyproject(
-            source_raw,
-            "description",
+        source_version = str(
+            source_metadata_expectations.get("version", "")
         )
-        source_requires_dist = list(
-            metadata_requirements_from_pyproject(source_raw)
+        source_requires_python = str(
+            source_metadata_expectations.get("requires_python", "")
         )
+        source_summary = str(
+            source_metadata_expectations.get("summary", "")
+        )
+        source_requires_dist = [
+            str(value)
+            for value in _sequence(
+                source_metadata_expectations.get("requires_dist")
+            )
+        ]
+        source_readme = str(
+            source_metadata_expectations.get("readme", "")
+        )
+        source_readme_digest = str(
+            sdist_expected_manifest.get(source_readme, "")
+        )
+        if (
+            not source_metadata_expectations
+            or source_metadata_expectations.get("name")
+            != EXPECTED_PROJECT_NAME
+            or source_metadata_expectations.get("license_expression")
+            != EXPECTED_LICENSE_EXPRESSION
+            or tuple(
+                _sequence(
+                    source_metadata_expectations.get("license_files")
+                )
+            )
+            != REQUIRED_LICENSE_FILES
+            or not source_readme_digest
+        ):
+            blockers.append(
+                {
+                    "code": "invalid_source_pyproject_evidence",
+                    "reason": "invalid_metadata_contract",
+                }
+            )
         if not source_version:
             blockers.append(
                 {
@@ -3242,6 +3506,16 @@ def _metadata_evidence_blockers(
     parsed = BytesParser().parsebytes(raw_bytes)
     raw_expressions = parsed.get_all("License-Expression", [])
     raw_requires_dist = sorted(parsed.get_all("Requires-Dist", []))
+    blockers.extend(
+        _core_metadata_semantic_blockers(
+            parsed,
+            raw,
+            source_metadata_expectations,
+            source_readme_digest,
+            code="invalid_metadata_evidence",
+            entry=expected_entry,
+        )
+    )
     if raw_expressions != reported_expressions:
         blockers.append(
             {
@@ -3392,6 +3666,16 @@ def _metadata_evidence_blockers(
                 }
             )
         parsed_sdist = BytesParser().parsebytes(sdist_raw_bytes)
+        blockers.extend(
+            _core_metadata_semantic_blockers(
+                parsed_sdist,
+                sdist_raw,
+                source_metadata_expectations,
+                source_readme_digest,
+                code="invalid_sdist_metadata_evidence",
+                entry=sdist_entry,
+            )
+        )
         if parsed_sdist.get_all("Name", []) != [EXPECTED_PROJECT_NAME]:
             blockers.append(
                 {

@@ -859,6 +859,34 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             {str(item["rule_id"]) for item in env_directory},
         )
 
+    def test_detects_env_calls_cli_myproxy_and_generic_api_keys(self) -> None:
+        endpoint_key = "VOI_MYPROXY_OPENAI_BASE_" + "URL"
+        model_key = "VOI_MYPROXY_" + "MODEL"
+        generic_api_key = "SERVICE_" + "API_KEY"
+        payload = (
+            f'os.putenv("{endpoint_key}", "https://private.example/v1")\n'
+            f'os.environ.setdefault("{model_key}", "private-model")\n'
+            "commander --provider myproxy "
+            "--base-url https://proxy.corp.example/v1 "
+            "--model internal-deployment-alpha\n"
+            f"{generic_api_key}=abcdefghijklmnopqrstuvwx\n"
+        ).encode()
+
+        findings = scan_payload(
+            "launch.sh",
+            payload,
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual(
+            {
+                "api_key_assignment",
+                "private_endpoint",
+                "private_model_override",
+            },
+            {str(item["rule_id"]) for item in findings},
+        )
+
     def test_detects_structurally_reconstructed_kubernetes_env(self) -> None:
         payloads = (
             (
@@ -1228,10 +1256,20 @@ class DerivedVerdictTest(unittest.TestCase):
         digest = "d" * 64
         wheel_root = "voistarcraft2-0.1.0.dist-info"
         metadata_entry = f"{wheel_root}/METADATA"
+        source_readme_raw = "# Synthetic fixture\n"
         source_pyproject_raw = """[project]
+name = "voiStarcraft2"
 version = "0.1.0"
 description = "Synthetic distribution compliance fixture."
+readme = "README.md"
 requires-python = ">=3.10"
+license = "AGPL-3.0-or-later OR LicenseRef-Commercial"
+license-files = [
+    "LICENSE",
+    "LICENSES/AGPL-3.0-or-later.txt",
+    "THIRD_PARTY_NOTICES.md",
+]
+keywords = ["starcraft", "sc2", "natural-language", "voice", "commander"]
 dependencies = []
 
 [project.optional-dependencies]
@@ -1248,18 +1286,34 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
                 source_pyproject_raw
             )
         )
+        metadata_expectations = (
+            compliance_module.project_metadata_expectations_from_pyproject(
+                source_pyproject_raw
+            )
+        )
         metadata_raw = (
             "Metadata-Version: 2.4\n"
             "Name: voiStarcraft2\n"
             "Version: 0.1.0\n"
             "Summary: Synthetic distribution compliance fixture.\n"
-            "Requires-Python: >=3.10\n"
             f"License-Expression: {EXPECTED_LICENSE_EXPRESSION}\n"
+            "Keywords: starcraft,sc2,natural-language,voice,commander\n"
+            "Requires-Python: >=3.10\n"
+            "Description-Content-Type: text/markdown\n"
+            + "".join(
+                f"License-File: {path}\n"
+                for path in REQUIRED_LICENSE_FILES
+            )
+            + "".join(
+                f"Provides-Extra: {extra}\n"
+                for extra in metadata_expectations["provides_extra"]
+            )
             + "".join(
                 f"Requires-Dist: {requirement}\n"
                 for requirement in metadata_requires_dist
             )
-            + "\n"
+            + "Dynamic: license-file\n\n"
+            + source_readme_raw
         )
         top_level_raw = (
             "broodwar_commander\n"
@@ -1338,6 +1392,9 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
             "THIRD_PARTY_NOTICES.md": EXPECTED_LICENSE_FILE_SHA256[
                 "THIRD_PARTY_NOTICES.md"
             ],
+            "README.md": compliance_module.sha256_bytes(
+                source_readme_raw.encode()
+            ),
             "pyproject.toml": source_pyproject_digest,
             "starcraft_commander/runtime_data.py": digest,
         }
@@ -1345,6 +1402,7 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
             "LICENSE": 1,
             "LICENSES/AGPL-3.0-or-later.txt": 1,
             "THIRD_PARTY_NOTICES.md": 1,
+            "README.md": len(source_readme_raw.encode()),
             "pyproject.toml": len(source_pyproject_raw.encode()),
             "starcraft_commander/runtime_data.py": 1,
         }
@@ -1814,6 +1872,93 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
             for item in distribution_report_blockers(report)
         }
         self.assertIn("source_requires_dist_mismatch", reasons)
+
+    def test_metadata_binds_extras_license_files_and_readme_payload(
+        self,
+    ) -> None:
+        mutations = (
+            (
+                "Provides-Extra: llm\n",
+                "",
+                "wrong_provides_extra",
+            ),
+            (
+                "License-File: THIRD_PARTY_NOTICES.md\n",
+                "",
+                "wrong_license_files",
+            ),
+            (
+                "# Synthetic fixture\n",
+                "# Mutated artifact description\n",
+                "description_payload_mismatch",
+            ),
+        )
+        targets = (
+            ("wheel", None),
+            ("sdist", 0),
+            ("sdist", 1),
+        )
+        for kind, index in targets:
+            for old, new, expected_reason in mutations:
+                with self.subTest(
+                    kind=kind,
+                    index=index,
+                    expected_reason=expected_reason,
+                ):
+                    report = copy.deepcopy(self.report)
+                    metadata = report["metadata"]
+                    artifacts = report["artifacts"]
+                    if kind == "wheel":
+                        entry = str(metadata["entry"])
+                        mutated_raw = str(metadata["raw"]).replace(
+                            old,
+                            new,
+                            1,
+                        )
+                        metadata["raw"] = mutated_raw
+                        generated_target = next(
+                            item
+                            for item in metadata["generated"]["wheel"]
+                            if item["entry"] == entry
+                        )
+                        generated_target["raw"] = mutated_raw
+                    else:
+                        target = metadata["sdist"][index]
+                        entry = str(target["entry"])
+                        mutated_raw = str(target["raw"]).replace(
+                            old,
+                            new,
+                            1,
+                        )
+                        target["raw"] = mutated_raw
+                        generated_target = next(
+                            item
+                            for item in metadata["generated"]["sdist"]
+                            if item["entry"] == entry
+                        )
+                        generated_target["raw"] = mutated_raw
+                    artifacts[kind]["file_manifest"][entry] = (
+                        compliance_module.sha256_bytes(
+                            mutated_raw.encode()
+                        )
+                    )
+                    artifacts[kind]["file_sizes"][entry] = len(
+                        mutated_raw.encode()
+                    )
+                    artifacts[kind]["sha256"] = "e" * 64
+
+                    blockers = distribution_report_blockers(report)
+                    reasons = {
+                        str(item.get("reason"))
+                        for item in blockers
+                        if item.get("code")
+                        in {
+                            "invalid_metadata_evidence",
+                            "invalid_sdist_metadata_evidence",
+                        }
+                    }
+
+                    self.assertIn(expected_reason, reasons)
 
     def test_sdist_metadata_is_bound_to_source_semantics(self) -> None:
         for target_index in range(2):
