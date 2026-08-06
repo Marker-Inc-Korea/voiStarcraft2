@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover - Python 3.10 uses the dev dependency.
         _toml = None
 
 
-DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION: Final[int] = 4
+DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION: Final[int] = 5
 EXPECTED_LICENSE_EXPRESSION: Final[str] = (
     "AGPL-3.0-or-later OR LicenseRef-Commercial"
 )
@@ -1084,9 +1084,9 @@ def _python_cli_argument_text(path: str, text: str) -> str:
         for element in node.elts:
             value = _constant_string_expression(element)
             if value is None:
-                values = []
-                break
-            values.append(value)
+                values.append("<dynamic-argument>")
+            else:
+                values.append(value)
         if values and any("--provider" in value for value in values):
             commands.append(" ".join(values))
     return "\n".join(commands)
@@ -1455,7 +1455,6 @@ def scan_git_and_artifacts(
     findings: list[dict[str, object]] = []
     input_manifest: list[dict[str, object]] = []
     input_paths: set[str] = set()
-    tracked_source_manifest: list[dict[str, object]] = []
 
     def scan_input(
         kind: str,
@@ -1463,19 +1462,26 @@ def scan_git_and_artifacts(
         payload: bytes,
         *,
         allow_safe_fixtures: bool,
+        identity: Mapping[str, str] | None = None,
     ) -> None:
         normalized_path = path.replace("\\", "/")
         if normalized_path in input_paths:
             raise RuntimeError(f"Duplicate secret scan input: {normalized_path}")
         input_paths.add(normalized_path)
-        input_manifest.append(
-            {
-                "kind": kind,
-                "path": normalized_path,
-                "size": len(payload),
-                "sha256": sha256_bytes(payload),
-            }
-        )
+        entry: dict[str, object] = {
+            "kind": kind,
+            "path": normalized_path,
+        }
+        if identity is None:
+            entry.update(
+                {
+                    "size": len(payload),
+                    "sha256": sha256_bytes(payload),
+                }
+            )
+        else:
+            entry.update(identity)
+        input_manifest.append(entry)
         findings.extend(
             scan_payload(
                 normalized_path,
@@ -1507,16 +1513,13 @@ def scan_git_and_artifacts(
             repository_root,
             ["cat-file", "blob", oid],
         )
-        tracked_source_manifest.append(
-            {
-                "path": relative,
-                "mode": mode,
-                "oid": oid,
-                "size": len(payload),
-                "sha256": sha256_bytes(payload),
-            }
+        scan_input(
+            "tracked",
+            relative,
+            payload,
+            allow_safe_fixtures=True,
+            identity={"mode": mode, "oid": oid},
         )
-        scan_input("tracked", relative, payload, allow_safe_fixtures=True)
     untracked = _git_output(
         repository_root,
         ["ls-files", "--others", "--exclude-standard", "-z"],
@@ -1566,7 +1569,6 @@ def scan_git_and_artifacts(
             allow_safe_fixtures=False,
         )
     input_manifest.sort(key=lambda item: str(item["path"]))
-    tracked_source_manifest.sort(key=lambda item: str(item["path"]))
     findings.sort(
         key=lambda item: (
             str(item.get("path", "")),
@@ -1581,10 +1583,6 @@ def scan_git_and_artifacts(
             canonical_json_text(input_manifest).encode("utf-8")
         ),
         "input_manifest": input_manifest,
-        "tracked_source_manifest_sha256": sha256_bytes(
-            canonical_json_text(tracked_source_manifest).encode("utf-8")
-        ),
-        "tracked_source_manifest": tracked_source_manifest,
         "finding_count": len(findings),
         "findings": findings,
     }
@@ -1627,11 +1625,6 @@ def _distribution_report_scan_payloads(
         _REPORT_SCAN_JSON_NAME: json_text.encode("utf-8"),
         _REPORT_SCAN_MARKDOWN_NAME: markdown_text.encode("utf-8"),
     }
-
-
-def _git_blob_oid(payload: bytes) -> str:
-    header = f"blob {len(payload)}\0".encode("ascii")
-    return hashlib.sha1(header + payload).hexdigest()
 
 
 def _git_tree_oid_from_manifest(
@@ -2310,10 +2303,6 @@ def distribution_report_blockers(
     scanned_file_count = secret_scan.get("scanned_file_count")
     input_manifest_value = secret_scan.get("input_manifest")
     input_manifest_sha256 = secret_scan.get("input_manifest_sha256")
-    tracked_manifest_value = secret_scan.get("tracked_source_manifest")
-    tracked_manifest_sha256 = secret_scan.get(
-        "tracked_source_manifest_sha256"
-    )
     valid_manifest = isinstance(input_manifest_value, list)
     manifest_by_path: dict[str, Mapping[str, object]] = {}
     if valid_manifest:
@@ -2321,11 +2310,9 @@ def distribution_report_blockers(
             entry = _mapping(raw_entry)
             kind = entry.get("kind")
             path = entry.get("path")
-            size = entry.get("size")
-            digest = entry.get("sha256")
-            if (
-                set(entry) != {"kind", "path", "size", "sha256"}
-                or kind not in {
+            invalid_common = (
+                kind
+                not in {
                     "tracked",
                     "untracked",
                     "diff",
@@ -2338,11 +2325,29 @@ def distribution_report_blockers(
                 or "\\" in path
                 or path.startswith("./")
                 or path in manifest_by_path
-                or type(size) is not int
-                or size < 0
-                or not isinstance(digest, str)
-                or re.fullmatch(r"[0-9a-f]{64}", digest) is None
-            ):
+            )
+            if kind == "tracked":
+                invalid_identity = (
+                    set(entry) != {"kind", "path", "mode", "oid"}
+                    or entry.get("mode") not in {"100644", "100755", "120000"}
+                    or not isinstance(entry.get("oid"), str)
+                    or re.fullmatch(
+                        r"[0-9a-f]{40}",
+                        str(entry.get("oid")),
+                    )
+                    is None
+                )
+            else:
+                size = entry.get("size")
+                digest = entry.get("sha256")
+                invalid_identity = (
+                    set(entry) != {"kind", "path", "size", "sha256"}
+                    or type(size) is not int
+                    or size < 0
+                    or not isinstance(digest, str)
+                    or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                )
+            if invalid_common or invalid_identity:
                 valid_manifest = False
                 break
             manifest_by_path[path] = entry
@@ -2366,70 +2371,30 @@ def distribution_report_blockers(
             and diff_entry.get("size") == 0
             and diff_entry.get("sha256") == sha256_bytes(b"")
         )
-    valid_tracked_manifest = isinstance(tracked_manifest_value, list)
-    tracked_by_path: dict[str, Mapping[str, object]] = {}
-    if valid_tracked_manifest:
-        for raw_entry in tracked_manifest_value:
-            entry = _mapping(raw_entry)
-            path = entry.get("path")
-            mode = entry.get("mode")
-            oid = entry.get("oid")
-            size = entry.get("size")
-            digest = entry.get("sha256")
-            input_entry = manifest_by_path.get(str(path), {})
-            if (
-                set(entry) != {"path", "mode", "oid", "size", "sha256"}
-                or not isinstance(path, str)
-                or not path
-                or "\\" in path
-                or path.startswith(("/", "./"))
-                or path in tracked_by_path
-                or mode not in {"100644", "100755", "120000"}
-                or not isinstance(oid, str)
-                or re.fullmatch(r"[0-9a-f]{40}", oid) is None
-                or type(size) is not int
-                or size < 0
-                or not isinstance(digest, str)
-                or re.fullmatch(r"[0-9a-f]{64}", digest) is None
-                or input_entry.get("kind") != "tracked"
-                or input_entry.get("size") != size
-                or input_entry.get("sha256") != digest
-            ):
-                valid_tracked_manifest = False
-                break
-            tracked_by_path[path] = entry
-    if valid_tracked_manifest:
-        expected_tracked_digest = sha256_bytes(
-            canonical_json_text(tracked_manifest_value).encode("utf-8")
-        )
-        tracked_input_paths = {
-            path
-            for path, entry in manifest_by_path.items()
-            if entry.get("kind") == "tracked"
-        }
-        untracked_input_paths = {
+    if valid_manifest:
+        tracked_manifest = [
+            entry
+            for entry in input_manifest_value
+            if _mapping(entry).get("kind") == "tracked"
+        ]
+        untracked_paths = {
             path
             for path, entry in manifest_by_path.items()
             if entry.get("kind") == "untracked"
         }
-        valid_tracked_manifest = (
-            tracked_manifest_sha256 == expected_tracked_digest
-            and tracked_input_paths == set(tracked_by_path)
-            and not untracked_input_paths
-        )
-    if valid_tracked_manifest:
+        valid_manifest = bool(tracked_manifest) and not untracked_paths
+    if valid_manifest:
         try:
             tracked_tree = _git_tree_oid_from_manifest(
-                tracked_manifest_value
+                tracked_manifest
             )
         except ValueError:
-            valid_tracked_manifest = False
+            valid_manifest = False
         else:
-            valid_tracked_manifest = all(
+            valid_manifest = all(
                 state.get("tree") == tracked_tree
                 for state in repository_states.values()
             )
-    valid_manifest = valid_manifest and valid_tracked_manifest
     if valid_manifest:
         expected_report_payloads = _distribution_report_scan_payloads(report)
         expected_report_paths = {

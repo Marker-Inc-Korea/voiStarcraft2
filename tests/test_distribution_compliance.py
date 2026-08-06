@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -933,6 +934,7 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
         model = "private-" + "deployment"
         payload = (
             'subprocess.run([\n'
+            "    sys.executable,\n"
             '    "commander",\n'
             '    "--provider",\n'
             f'    "{alias}",\n'
@@ -940,6 +942,7 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             f'    "{endpoint}",\n'
             '    "--model",\n'
             f'    "{model}",\n'
+            "    extra_arg,\n"
             "])\n"
         ).encode()
 
@@ -1435,18 +1438,16 @@ class DerivedVerdictTest(unittest.TestCase):
         report: dict[str, object],
     ) -> dict[str, object]:
         source_payload = b"synthetic source\n"
-        source_oid = compliance_module._git_blob_oid(source_payload)
-        tracked_manifest = [
-            {
-                "path": "README.md",
-                "mode": "100644",
-                "oid": source_oid,
-                "size": len(source_payload),
-                "sha256": compliance_module.sha256_bytes(source_payload),
-            }
-        ]
+        source_header = f"blob {len(source_payload)}\0".encode()
+        source_oid = hashlib.sha1(source_header + source_payload).hexdigest()
+        tracked_entry = {
+            "kind": "tracked",
+            "path": "README.md",
+            "mode": "100644",
+            "oid": source_oid,
+        }
         source_tree = compliance_module._git_tree_oid_from_manifest(
-            tracked_manifest
+            [tracked_entry]
         )
         repository = report["repository"]
         assert isinstance(repository, dict)
@@ -1454,12 +1455,7 @@ class DerivedVerdictTest(unittest.TestCase):
             assert isinstance(state, dict)
             state["tree"] = source_tree
         manifest = [
-            {
-                "kind": "tracked",
-                "path": "README.md",
-                "size": len(source_payload),
-                "sha256": compliance_module.sha256_bytes(source_payload),
-            },
+            tracked_entry,
             {
                 "kind": "diff",
                 "path": "<git-diff>",
@@ -1504,14 +1500,6 @@ class DerivedVerdictTest(unittest.TestCase):
                 compliance_module.canonical_json_text(manifest).encode()
             ),
             "input_manifest": manifest,
-            "tracked_source_manifest_sha256": (
-                compliance_module.sha256_bytes(
-                    compliance_module.canonical_json_text(
-                        tracked_manifest
-                    ).encode()
-                )
-            ),
-            "tracked_source_manifest": tracked_manifest,
             "finding_count": 0,
             "findings": [],
         }
@@ -2602,7 +2590,6 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
             for item in secret_scan["input_manifest"]
             if item["kind"] != "tracked"
         ]
-        secret_scan["tracked_source_manifest"] = []
         secret_scan["scanned_file_count"] = len(
             secret_scan["input_manifest"]
         )
@@ -2613,9 +2600,28 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
                 ).encode()
             )
         )
-        secret_scan["tracked_source_manifest_sha256"] = (
+
+        codes = {
+            str(item["code"]) for item in distribution_report_blockers(report)
+        }
+
+        self.assertIn("invalid_secret_scan_evidence", codes)
+
+    def test_rejects_forged_tracked_source_size_and_digest(self) -> None:
+        report = copy.deepcopy(self.report)
+        secret_scan = report["secret_scan"]
+        tracked = next(
+            item
+            for item in secret_scan["input_manifest"]
+            if item["kind"] == "tracked"
+        )
+        tracked["size"] = 1
+        tracked["sha256"] = "e" * 64
+        secret_scan["input_manifest_sha256"] = (
             compliance_module.sha256_bytes(
-                compliance_module.canonical_json_text([]).encode()
+                compliance_module.canonical_json_text(
+                    secret_scan["input_manifest"]
+                ).encode()
             )
         )
 
