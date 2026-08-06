@@ -1572,6 +1572,225 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                     {str(item["rule_id"]) for item in findings},
                 )
 
+    def test_python_cli_reconstruction_preserves_returned_closures(self) -> None:
+        payload = (
+            "def submit(provider):\n"
+            "    run([\n"
+            '        "c", "--provider", provider,\n'
+            '        "--base-url", '
+            '"https://x." + "private.example/v1",\n'
+            '        "--model", "private-" + "m",\n'
+            "    ])\n"
+            "def build_launcher(provider):\n"
+            "    def launch():\n"
+            "        submit(provider)\n"
+            "    return launch\n"
+            'runner = build_launcher("my" + "proxy")\n'
+            "runner()\n"
+        )
+
+        reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "launcher.py",
+                payload,
+            )
+        )
+        findings = scan_payload(
+            "launcher.py",
+            payload.encode(),
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual("", failure)
+        self.assertIn("myproxy", reconstructed)
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
+            {str(item["rule_id"]) for item in findings},
+        )
+
+    def test_python_cli_reconstruction_follows_local_callable_aliases(
+        self,
+    ) -> None:
+        payload = (
+            "def launch(provider):\n"
+            "    run([\n"
+            '        "c", "--provider", provider,\n'
+            '        "--base-url", "https://x." + "private.example/v1",\n'
+            '        "--model", "private-" + "m",\n'
+            "    ])\n"
+            "def wrapper():\n"
+            "    local_alias = launch\n"
+            '    local_alias("my" + "proxy")\n'
+            "wrapper()\n"
+        )
+
+        reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "launcher.py",
+                payload,
+            )
+        )
+        findings = scan_payload(
+            "launcher.py",
+            payload.encode(),
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual("", failure)
+        self.assertIn("myproxy", reconstructed)
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
+            {str(item["rule_id"]) for item in findings},
+        )
+
+    def test_python_cli_defaults_are_evaluated_at_definition_time(self) -> None:
+        payloads = {
+            "sensitive-default": (
+                'provider = "my" + "proxy"\n'
+                "def launch(selected=provider):\n"
+                "    run([\n"
+                '        "c", "--provider", selected,\n'
+                '        "--base-url", '
+                '"https://x." + "private.example/v1",\n'
+                '        "--model", "private-" + "m",\n'
+                "    ])\n"
+                'provider = "openai"\n'
+                "launch()\n"
+            ),
+            "safe-default": (
+                'provider = "openai"\n'
+                "def launch(selected=provider):\n"
+                "    run([\n"
+                '        "c", "--provider", selected,\n'
+                '        "--base-url", '
+                '"https://x." + "private.example/v1",\n'
+                '        "--model", "private-" + "m",\n'
+                "    ])\n"
+                'provider = "my" + "proxy"\n'
+                "launch()\n"
+            ),
+        }
+
+        for name, payload in payloads.items():
+            with self.subTest(name=name):
+                reconstructed, failure = (
+                    compliance_module._python_cli_argument_text(
+                        "launcher.py",
+                        payload,
+                    )
+                )
+                findings = scan_payload(
+                    "launcher.py",
+                    payload.encode(),
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertEqual("", failure)
+                if name == "sensitive-default":
+                    self.assertIn("myproxy", reconstructed)
+                    self.assertEqual(
+                        {"private_endpoint", "private_model_override"},
+                        {str(item["rule_id"]) for item in findings},
+                    )
+                else:
+                    self.assertNotIn("myproxy", reconstructed)
+                    self.assertEqual([], findings)
+
+    def test_python_cli_lambda_defaults_use_definition_time_values(self) -> None:
+        payload = (
+            'provider = "my" + "proxy"\n'
+            "launch = lambda selected=provider: run([\n"
+            '    "c", "--provider", selected,\n'
+            '    "--base-url", "https://x." + "private.example/v1",\n'
+            '    "--model", "private-" + "m",\n'
+            "])\n"
+            'provider = "openai"\n'
+            "launch()\n"
+        )
+
+        reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "launcher.py",
+                payload,
+            )
+        )
+        findings = scan_payload(
+            "launcher.py",
+            payload.encode(),
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual("", failure)
+        self.assertIn("myproxy", reconstructed)
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
+            {str(item["rule_id"]) for item in findings},
+        )
+
+    def test_python_cli_function_globals_use_call_time_values(self) -> None:
+        payload = (
+            'provider = "openai"\n'
+            "def launch():\n"
+            "    run([\n"
+            '        "c", "--provider", provider,\n'
+            '        "--base-url", "https://x." + "private.example/v1",\n'
+            '        "--model", "private-" + "m",\n'
+            "    ])\n"
+            'provider = "my" + "proxy"\n'
+            "launch()\n"
+        )
+
+        reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "launcher.py",
+                payload,
+            )
+        )
+        findings = scan_payload(
+            "launcher.py",
+            payload.encode(),
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual("", failure)
+        self.assertIn("myproxy", reconstructed)
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
+            {str(item["rule_id"]) for item in findings},
+        )
+
+    def test_python_cli_reconstruction_evaluates_f_string_values(self) -> None:
+        payload = (
+            'option = "provider"\n'
+            'provider_suffix = "proxy"\n'
+            'host = "private.example"\n'
+            'model_suffix = "m"\n'
+            "run([\n"
+            '    "c", f"--{option}", f"my{provider_suffix}",\n'
+            '    "--base-url", f"https://x.{host}/v1",\n'
+            '    "--model", f"private-{model_suffix}",\n'
+            "])\n"
+        )
+
+        reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "launcher.py",
+                payload,
+            )
+        )
+        findings = scan_payload(
+            "launcher.py",
+            payload.encode(),
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual("", failure)
+        self.assertIn("--provider myproxy", reconstructed)
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
+            {str(item["rule_id"]) for item in findings},
+        )
+
     def test_python_cli_reconstruction_binds_instance_methods(self) -> None:
         payload = (
             "class Client:\n"
@@ -1604,6 +1823,205 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             {"private_endpoint", "private_model_override"},
             {str(item["rule_id"]) for item in findings},
         )
+
+    def test_python_cli_reconstruction_resolves_python_method_dispatch(
+        self,
+    ) -> None:
+        command = (
+            "        run([\n"
+            '            "c", "--provider", provider,\n'
+            '            "--base-url", '
+            '"https://x." + "private.example/v1",\n'
+            '            "--model", "private-" + "m",\n'
+            "        ])\n"
+        )
+        payloads = {
+            "staticmethod-class": (
+                "class Client:\n"
+                "    @staticmethod\n"
+                "    def execute(provider):\n"
+                + command
+                + 'Client.execute("my" + "proxy")\n'
+            ),
+            "staticmethod-instance": (
+                "class Client:\n"
+                "    @staticmethod\n"
+                "    def execute(provider):\n"
+                + command
+                + "client = Client()\n"
+                + 'client.execute("my" + "proxy")\n'
+            ),
+            "classmethod": (
+                "class Client:\n"
+                "    @classmethod\n"
+                "    def execute(cls, provider):\n"
+                + command
+                + 'Client.execute("my" + "proxy")\n'
+            ),
+            "inherited-instance-method": (
+                "class Base:\n"
+                "    def execute(self, provider):\n"
+                + command
+                + "class Client(Base):\n"
+                + "    pass\n"
+                + "client = Client()\n"
+                + 'client.execute("my" + "proxy")\n'
+            ),
+            "super-dispatch": (
+                "class Base:\n"
+                "    def execute(self, provider):\n"
+                + command
+                + "class Client(Base):\n"
+                + "    def execute(self, provider):\n"
+                + "        super().execute(provider)\n"
+                + "client = Client()\n"
+                + 'client.execute("my" + "proxy")\n'
+            ),
+            "bound-method-alias": (
+                "class Client:\n"
+                "    def execute(self, provider):\n"
+                + command
+                + "client = Client()\n"
+                + "runner = client.execute\n"
+                + 'runner("my" + "proxy")\n'
+            ),
+            "conditional-instance": (
+                "class PrivateClient:\n"
+                "    def execute(self, provider):\n"
+                + command
+                + "class PublicClient:\n"
+                + "    def execute(self, provider):\n"
+                + '        run(["c", "--provider", provider, "status"])\n'
+                + "client = PrivateClient() if enabled else PublicClient()\n"
+                + 'client.execute("my" + "proxy")\n'
+            ),
+            "class-monkeypatch": (
+                "class Client:\n"
+                "    def execute(self, provider):\n"
+                + '        run(["c", "--provider", provider, "status"])\n'
+                + "def patched(self, provider):\n"
+                + command.replace("        run(", "    run(")
+                + "Client.execute = patched\n"
+                + "client = Client()\n"
+                + 'client.execute("my" + "proxy")\n'
+            ),
+        }
+
+        for name, payload in payloads.items():
+            with self.subTest(name=name):
+                reconstructed, failure = (
+                    compliance_module._python_cli_argument_text(
+                        "launcher.py",
+                        payload,
+                    )
+                )
+                findings = scan_payload(
+                    "launcher.py",
+                    payload.encode(),
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertEqual("", failure)
+                self.assertIn("myproxy", reconstructed)
+                self.assertEqual(
+                    {"private_endpoint", "private_model_override"},
+                    {str(item["rule_id"]) for item in findings},
+                )
+
+    def test_python_cli_unsupported_method_dispatch_fails_closed(self) -> None:
+        payload = (
+            "def decorate(function):\n"
+            "    return function\n"
+            "class Client:\n"
+            "    @decorate\n"
+            "    def execute(self, provider):\n"
+            "        run([\n"
+            '            "c", "--provider", provider,\n'
+            '            "--base-url", '
+            '"https://x." + "private.example/v1",\n'
+            '            "--model", "private-" + "m",\n'
+            "        ])\n"
+            "client = Client()\n"
+            'client.execute("my" + "proxy")\n'
+        )
+
+        _reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "launcher.py",
+                payload,
+            )
+        )
+        findings = scan_payload(
+            "launcher.py",
+            payload.encode(),
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual(
+            "python_cli_analysis_limit_exceeded:dispatch",
+            failure,
+        )
+        self.assertIn(
+            "python_cli_analysis_limit_exceeded",
+            {str(item["rule_id"]) for item in findings},
+        )
+
+    def test_python_cli_star_expansions_preserve_correlated_branches(
+        self,
+    ) -> None:
+        payloads = {
+            "args": (
+                "def launch(*args):\n"
+                '    run(["c", "--provider", *args])\n'
+                + "launch(*(\n"
+                + '    ("my" + "proxy",)\n'
+                + "    if private_provider else\n"
+                + '    ("openai", "--base-url", "https://x." '
+                '+ "private.example/v1", "--model", "private-" + "m")\n'
+                + "))\n"
+            ),
+            "kwargs": (
+                "def launch(**kwargs):\n"
+                "    run([\n"
+                '        "c", "--provider", kwargs["provider"],\n'
+                '        *kwargs["extras"],\n'
+                "    ])\n"
+                + "launch(**(\n"
+                + '    {"provider": "my" + "proxy", "extras": ()}\n'
+                + "    if private_provider else\n"
+                + '    {"provider": "openai", '
+                '"extras": ("--base-url", "https://x." '
+                '+ "private.example/v1", "--model", "private-" + "m")}\n'
+                + "))\n"
+            ),
+        }
+
+        for name, payload in payloads.items():
+            with self.subTest(name=name):
+                reconstructed, failure = (
+                    compliance_module._python_cli_argument_text(
+                        "launcher.py",
+                        payload,
+                    )
+                )
+                findings = scan_payload(
+                    "launcher.py",
+                    payload.encode(),
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertEqual("", failure)
+                self.assertIn("myproxy", reconstructed)
+                self.assertIn("private.example", reconstructed)
+                self.assertNotIn(
+                    "--provider myproxy --base-url",
+                    reconstructed,
+                )
+                self.assertNotIn(
+                    "--provider myproxy --model",
+                    reconstructed,
+                )
+                self.assertEqual([], findings)
 
     def test_python_cli_reconstruction_keeps_lexical_callables_distinct(
         self,

@@ -1107,6 +1107,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
     known_mapping_prefix = "<known-mapping:"
     known_alternatives_prefix = "<known-alternatives:"
     known_object_prefix = "<known-object:"
+    known_super_prefix = "<known-super:"
     function_definitions: dict[
         int,
         ast.FunctionDef | ast.AsyncFunctionDef,
@@ -1115,15 +1116,53 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
     class_definitions: dict[int, ast.ClassDef] = {}
     class_method_definitions: dict[int, dict[str, int]] = {}
     lambda_definitions: dict[int, ast.Lambda] = {}
+    function_references: dict[
+        int,
+        tuple[
+            int,
+            cli_environment,
+            dict[str, cli_value],
+            tuple[cli_value, ...],
+            int | None,
+        ],
+    ] = {}
+    lambda_references: dict[
+        int,
+        tuple[
+            int,
+            cli_environment,
+            dict[str, cli_value],
+            tuple[cli_value, ...],
+            int | None,
+        ],
+    ] = {}
+    class_value_definitions: dict[int, int] = {}
+    class_value_bases: dict[int, tuple[int, ...] | None] = {}
+    class_value_methods: dict[
+        int,
+        dict[str, tuple[cli_value, str]],
+    ] = {}
     sequence_values: dict[int, tuple[str, ...]] = {}
     mapping_values: dict[int, dict[str, cli_value]] = {}
     alternative_values: dict[int, tuple[cli_value, ...]] = {}
     object_values: dict[int, dict[str, cli_value]] = {}
     object_class_identities: dict[int, int | None] = {}
+    super_values: dict[int, tuple[int, cli_value]] = {}
+    bound_callable_cache: dict[
+        tuple[str, tuple[cli_value, ...], int | None],
+        cli_value,
+    ] = {}
     active_function_calls: set[int] = set()
     active_lambda_calls: set[int] = set()
     active_call_depth = 0
     max_call_depth = 48
+    next_runtime_identity = 0
+    lexical_names_key = "__python_cli_lexical_names__"
+
+    def runtime_identity() -> int:
+        nonlocal next_runtime_identity
+        next_runtime_identity += 1
+        return next_runtime_identity
 
     def mark_limited(reason: str) -> None:
         nonlocal analysis_limited, analysis_limit_reason
@@ -1264,6 +1303,35 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             return None
         return object_values.get(identity)
 
+    def stored_class_identity(value: cli_value | None) -> int | None:
+        if not isinstance(value, str):
+            return None
+        identity = stored_identity(value, known_class_prefix)
+        if identity not in class_value_definitions:
+            return None
+        return identity
+
+    def class_token(identity: int) -> str:
+        return f"{known_class_prefix}{identity}>"
+
+    def store_super(
+        declaring_class_identity: int,
+        receiver: cli_value,
+    ) -> str:
+        identity = runtime_identity()
+        super_values[identity] = (declaring_class_identity, receiver)
+        return f"{known_super_prefix}{identity}>"
+
+    def stored_super(
+        value: cli_value | None,
+    ) -> tuple[int, cli_value] | None:
+        if not isinstance(value, str):
+            return None
+        identity = stored_identity(value, known_super_prefix)
+        if identity is None:
+            return None
+        return super_values.get(identity)
+
     def mapping_alternatives(
         value: cli_value | None,
     ) -> list[dict[str, cli_value]]:
@@ -1312,7 +1380,11 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             return node.id
         if isinstance(node, ast.Attribute):
             owner_value = evaluate(node.value, environment)
-            if stored_object(owner_value) is not None:
+            if (
+                stored_object(owner_value) is not None
+                or stored_class_identity(owner_value) is not None
+                or stored_super(owner_value) is not None
+            ):
                 return f"{owner_value}.{node.attr}"
             owner_key = attribute_key(node.value, environment)
             if owner_key is not None:
@@ -1417,6 +1489,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                     )
                     or stored_identity(value, known_class_prefix) is not None
                     or stored_identity(value, known_lambda_prefix) is not None
+                    or stored_identity(value, known_super_prefix) is not None
                 )
             )
         )
@@ -1431,12 +1504,67 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
         if isinstance(node, ast.Lambda):
             identity = id(node)
             lambda_definitions[identity] = node
-            return f"{known_lambda_prefix}{identity}>"
+            return store_lambda_reference(identity, environment)
         if isinstance(node, ast.Name):
             return environment.get(node.id)
         if isinstance(node, ast.Attribute):
             key = attribute_key(node, environment)
-            return environment.get(key) if key is not None else None
+            if key is not None and key in environment:
+                return environment[key]
+            return resolve_attribute_value(node, environment)
+        if isinstance(node, ast.JoinedStr):
+            states = [""]
+            for component in node.values:
+                if (
+                    isinstance(component, ast.Constant)
+                    and isinstance(component.value, str)
+                ):
+                    states = [
+                        bounded_string(prefix + component.value)
+                        for prefix in states
+                    ]
+                    continue
+                if not isinstance(component, ast.FormattedValue):
+                    mark_limited("f_string")
+                    return None
+                formatted = scalar_alternatives(
+                    evaluate(component.value, environment)
+                )
+                if not formatted:
+                    mark_limited("f_string")
+                    return None
+                format_spec = ""
+                if component.format_spec is not None:
+                    format_values = scalar_alternatives(
+                        evaluate(component.format_spec, environment)
+                    )
+                    if len(format_values) != 1:
+                        mark_limited("f_string")
+                        return None
+                    format_spec = format_values[0]
+                converted: list[str] = []
+                for candidate in formatted:
+                    if component.conversion == ord("r"):
+                        candidate = repr(candidate)
+                    elif component.conversion == ord("a"):
+                        candidate = ascii(candidate)
+                    elif component.conversion not in {-1, ord("s")}:
+                        mark_limited("f_string")
+                        return None
+                    try:
+                        converted.append(format(candidate, format_spec))
+                    except (TypeError, ValueError):
+                        mark_limited("f_string")
+                        return None
+                states = [
+                    bounded_string(prefix + suffix)
+                    for prefix in states
+                    for suffix in converted
+                ]
+                if len(states) > max_commands:
+                    mark_limited("commands")
+                    states = states[:max_commands]
+            return store_alternatives(states)
         if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
             states: list[tuple[str, ...]] = [()]
             for element in node.elts:
@@ -1557,12 +1685,29 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             if sequence is not None:
                 return sequence
         if isinstance(node, ast.Call):
-            class_identity = stored_identity(
-                evaluate(node.func, environment) or "",
-                known_class_prefix,
+            if isinstance(node.func, ast.Name) and node.func.id == "super":
+                return evaluate_super_call(node, environment)
+            function_value = evaluate(node.func, environment)
+            class_identities = [
+                identity
+                for alternative in (
+                    stored_alternatives(function_value)
+                    or ((function_value,) if function_value is not None else ())
+                )
+                if (identity := stored_class_identity(alternative)) is not None
+            ]
+            if class_identities:
+                objects = [
+                    store_object(class_identity)
+                    for class_identity in class_identities
+                ]
+                return store_alternatives(objects)
+            return invoke_callable_value(
+                function_value,
+                node,
+                environment,
+                collect_return=True,
             )
-            if class_identity in class_definitions:
-                return store_object(class_identity)
         return None
 
     def record(value: cli_value | None) -> None:
@@ -1887,137 +2032,169 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             for key in keys
         }
 
-    def bound_arguments_environment(
+    def bound_arguments_environments(
         arguments: ast.arguments,
         environment: Mapping[str, cli_value],
         call: ast.Call | None,
         implicit_positional: Sequence[cli_value] = (),
-    ) -> cli_environment:
-        result = dict(environment)
-        for name in shadowed_arguments(arguments):
-            result.pop(name, None)
-
-        positional_parameters = (
-            *arguments.posonlyargs,
-            *arguments.args,
-        )
-        default_offset = len(positional_parameters) - len(arguments.defaults)
-        positional_defaults = {
-            positional_parameters[index].arg: arguments.defaults[
-                index - default_offset
-            ]
-            for index in range(default_offset, len(positional_parameters))
-        }
-        keyword_defaults = {
-            parameter.arg: default
-            for parameter, default in zip(
-                arguments.kwonlyargs,
-                arguments.kw_defaults,
-            )
-            if default is not None
-        }
-
-        positional_values: list[cli_value] = list(implicit_positional)
-        keyword_values: dict[str, cli_value] = {}
-        unknown_keywords = False
+        defaults: Mapping[str, cli_value] | None = None,
+    ) -> list[cli_environment]:
+        call_states: list[
+            tuple[list[cli_value], dict[str, cli_value], bool]
+        ] = [(list(implicit_positional), {}, False)]
         if call is not None:
             for item in call.args:
                 if isinstance(item, ast.Starred):
                     expanded = evaluate(item.value, environment)
                     expansions = sequence_alternatives(expanded)
                     if not expansions:
-                        positional_values.append(dynamic_argument)
-                    else:
-                        width = max(len(expansion) for expansion in expansions)
-                        positional_values.extend(
-                            merge_values(
-                                [
-                                    (
-                                        expansion[index]
-                                        if index < len(expansion)
-                                        else dynamic_argument
-                                    )
-                                    for expansion in expansions
-                                ]
-                            )
-                            for index in range(width)
+                        expansions = [(dynamic_argument,)]
+                    call_states = [
+                        (
+                            [*positional_values, *expansion],
+                            dict(keyword_values),
+                            unknown_keywords,
                         )
+                        for (
+                            positional_values,
+                            keyword_values,
+                            unknown_keywords,
+                        ) in call_states
+                        for expansion in expansions
+                    ]
                     continue
-                positional_values.append(
-                    evaluate(item, environment) or dynamic_argument
-                )
+                value = evaluate(item, environment) or dynamic_argument
+                call_states = [
+                    (
+                        [*positional_values, value],
+                        dict(keyword_values),
+                        unknown_keywords,
+                    )
+                    for (
+                        positional_values,
+                        keyword_values,
+                        unknown_keywords,
+                    ) in call_states
+                ]
             for keyword in call.keywords:
                 if keyword.arg is None:
-                    expanded = evaluate_keyword_mapping(
-                        keyword.value,
-                        environment,
+                    mappings = mapping_alternatives(
+                        evaluate(keyword.value, environment)
                     )
-                    if expanded is None:
-                        unknown_keywords = True
+                    if not mappings:
+                        call_states = [
+                            (
+                                list(positional_values),
+                                dict(keyword_values),
+                                True,
+                            )
+                            for (
+                                positional_values,
+                                keyword_values,
+                                _unknown_keywords,
+                            ) in call_states
+                        ]
                     else:
-                        keyword_values.update(expanded)
+                        call_states = [
+                            (
+                                list(positional_values),
+                                {**keyword_values, **mapping},
+                                unknown_keywords,
+                            )
+                            for (
+                                positional_values,
+                                keyword_values,
+                                unknown_keywords,
+                            ) in call_states
+                            for mapping in mappings
+                        ]
                     continue
-                keyword_values[keyword.arg] = (
-                    evaluate(keyword.value, environment) or dynamic_argument
-                )
-
-        for index, parameter in enumerate(positional_parameters):
-            if index < len(positional_values):
-                value = positional_values[index]
-            elif parameter.arg in keyword_values:
-                value = keyword_values[parameter.arg]
-            elif parameter.arg in positional_defaults:
                 value = (
-                    evaluate(positional_defaults[parameter.arg], environment)
+                    evaluate(keyword.value, environment)
                     or dynamic_argument
                 )
-            else:
-                value = dynamic_argument
-            bind(result, ast.Name(id=parameter.arg), value)
+                call_states = [
+                    (
+                        list(positional_values),
+                        {**keyword_values, keyword.arg: value},
+                        unknown_keywords,
+                    )
+                    for (
+                        positional_values,
+                        keyword_values,
+                        unknown_keywords,
+                    ) in call_states
+                ]
+            if len(call_states) > max_environment_states:
+                mark_limited("environment_states")
+                call_states = call_states[:max_environment_states]
 
-        extra_positional = positional_values[len(positional_parameters):]
-        if arguments.vararg is not None:
-            bind(
-                result,
-                ast.Name(id=arguments.vararg.arg),
-                tuple(extra_positional),
-            )
+        positional_parameters = (
+            *arguments.posonlyargs,
+            *arguments.args,
+        )
+        default_values = dict(defaults or {})
+        results: list[cli_environment] = []
+        for positional_values, keyword_values, unknown_keywords in call_states:
+            result = dict(environment)
+            for name in shadowed_arguments(arguments):
+                result.pop(name, None)
+            for index, parameter in enumerate(positional_parameters):
+                if index < len(positional_values):
+                    value = positional_values[index]
+                elif parameter.arg in keyword_values:
+                    value = keyword_values[parameter.arg]
+                else:
+                    value = default_values.get(
+                        parameter.arg,
+                        dynamic_argument,
+                    )
+                bind(result, ast.Name(id=parameter.arg), value)
 
-        for parameter in arguments.kwonlyargs:
-            if parameter.arg in keyword_values:
-                value = keyword_values[parameter.arg]
-            elif parameter.arg in keyword_defaults:
-                value = (
-                    evaluate(keyword_defaults[parameter.arg], environment)
-                    or dynamic_argument
+            extra_positional = positional_values[
+                len(positional_parameters):
+            ]
+            if arguments.vararg is not None:
+                bind(
+                    result,
+                    ast.Name(id=arguments.vararg.arg),
+                    tuple(extra_positional),
                 )
-            else:
-                value = dynamic_argument
-            bind(result, ast.Name(id=parameter.arg), value)
 
-        if arguments.kwarg is not None:
-            consumed_keywords = {
-                parameter.arg
-                for parameter in (
-                    *positional_parameters,
-                    *arguments.kwonlyargs,
+            for parameter in arguments.kwonlyargs:
+                value = keyword_values.get(
+                    parameter.arg,
+                    default_values.get(
+                        parameter.arg,
+                        dynamic_argument,
+                    ),
                 )
-            }
-            extra_keywords = {
-                key: value
-                for key, value in keyword_values.items()
-                if key not in consumed_keywords
-            }
-            bind(
-                result,
-                ast.Name(id=arguments.kwarg.arg),
-                (
-                    dynamic_argument
-                    if unknown_keywords
-                    else store_mapping(extra_keywords)
-                ),
-            )
-        return result
+                bind(result, ast.Name(id=parameter.arg), value)
+
+            if arguments.kwarg is not None:
+                consumed_keywords = {
+                    parameter.arg
+                    for parameter in (
+                        *positional_parameters,
+                        *arguments.kwonlyargs,
+                    )
+                }
+                extra_keywords = {
+                    key: value
+                    for key, value in keyword_values.items()
+                    if key not in consumed_keywords
+                }
+                bind(
+                    result,
+                    ast.Name(id=arguments.kwarg.arg),
+                    (
+                        dynamic_argument
+                        if unknown_keywords
+                        else store_mapping(extra_keywords)
+                    ),
+                )
+            results.append(result)
+        return deduplicate_states(results)
 
     def record_expression(
         node: ast.AST,
@@ -2027,12 +2204,14 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             return
         record(evaluate(node, environment))
         if isinstance(node, ast.Lambda):
-            nested_environment = bound_arguments_environment(
+            defaults = evaluated_default_values(node.args, environment)
+            for nested_environment in bound_arguments_environments(
                 node.args,
                 environment,
                 None,
-            )
-            record_expression(node.body, nested_environment)
+                defaults=defaults,
+            ):
+                record_expression(node.body, nested_environment)
             return
         for child in ast.iter_child_nodes(node):
             if isinstance(
@@ -2062,6 +2241,650 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
         if len(unique) == 1:
             return unique[0]
         return store_alternatives(unique)
+
+    def evaluated_default_values(
+        arguments: ast.arguments,
+        environment: Mapping[str, cli_value],
+    ) -> dict[str, cli_value]:
+        positional_parameters = (
+            *arguments.posonlyargs,
+            *arguments.args,
+        )
+        default_offset = len(positional_parameters) - len(arguments.defaults)
+        result = {
+            positional_parameters[index].arg: (
+                evaluate(
+                    arguments.defaults[index - default_offset],
+                    environment,
+                )
+                or dynamic_argument
+            )
+            for index in range(default_offset, len(positional_parameters))
+        }
+        result.update(
+            {
+                parameter.arg: evaluate(default, environment)
+                or dynamic_argument
+                for parameter, default in zip(
+                    arguments.kwonlyargs,
+                    arguments.kw_defaults,
+                )
+                if default is not None
+            }
+        )
+        return result
+
+    def captured_lexical_environment(
+        environment: Mapping[str, cli_value],
+    ) -> cli_environment:
+        names = environment.get(lexical_names_key)
+        if not isinstance(names, tuple):
+            return {}
+        return {
+            name: environment[name]
+            for name in names
+            if name in environment
+        }
+
+    def function_local_names(
+        definition: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+    ) -> tuple[str, ...]:
+        names = set(shadowed_arguments(definition.args))
+        global_names: set[str] = set()
+        nonlocal_names: set[str] = set()
+        pending = (
+            [definition.body]
+            if isinstance(definition, ast.Lambda)
+            else list(definition.body)
+        )
+        while pending:
+            candidate = pending.pop()
+            if isinstance(candidate, ast.Global):
+                global_names.update(candidate.names)
+                continue
+            if isinstance(candidate, ast.Nonlocal):
+                nonlocal_names.update(candidate.names)
+                continue
+            if isinstance(
+                candidate,
+                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+            ):
+                names.add(candidate.name)
+                continue
+            if isinstance(candidate, ast.Lambda):
+                continue
+            if (
+                isinstance(candidate, ast.Name)
+                and isinstance(candidate.ctx, ast.Store)
+            ):
+                names.add(candidate.id)
+            if isinstance(candidate, (ast.Import, ast.ImportFrom)):
+                names.update(
+                    alias.asname or alias.name.split(".", 1)[0]
+                    for alias in candidate.names
+                )
+            if (
+                isinstance(candidate, ast.ExceptHandler)
+                and isinstance(candidate.name, str)
+            ):
+                names.add(candidate.name)
+            pending.extend(ast.iter_child_nodes(candidate))
+        names.difference_update(global_names)
+        names.difference_update(nonlocal_names)
+        return tuple(sorted(names))
+
+    def store_function_reference(
+        definition_identity: int,
+        environment: Mapping[str, cli_value],
+        *,
+        implicit_positional: Sequence[cli_value] = (),
+        declaring_class_identity: int | None = None,
+        defaults: Mapping[str, cli_value] | None = None,
+        captured_environment: Mapping[str, cli_value] | None = None,
+    ) -> str:
+        definition = function_definitions[definition_identity]
+        identity = runtime_identity()
+        function_references[identity] = (
+            definition_identity,
+            (
+                dict(captured_environment)
+                if captured_environment is not None
+                else captured_lexical_environment(environment)
+            ),
+            (
+                dict(defaults)
+                if defaults is not None
+                else evaluated_default_values(definition.args, environment)
+            ),
+            tuple(implicit_positional),
+            declaring_class_identity,
+        )
+        return f"{known_function_prefix}{identity}>"
+
+    def store_lambda_reference(
+        definition_identity: int,
+        environment: Mapping[str, cli_value],
+        *,
+        implicit_positional: Sequence[cli_value] = (),
+        declaring_class_identity: int | None = None,
+        defaults: Mapping[str, cli_value] | None = None,
+        captured_environment: Mapping[str, cli_value] | None = None,
+    ) -> str:
+        definition = lambda_definitions[definition_identity]
+        identity = runtime_identity()
+        lambda_references[identity] = (
+            definition_identity,
+            (
+                dict(captured_environment)
+                if captured_environment is not None
+                else captured_lexical_environment(environment)
+            ),
+            (
+                dict(defaults)
+                if defaults is not None
+                else evaluated_default_values(definition.args, environment)
+            ),
+            tuple(implicit_positional),
+            declaring_class_identity,
+        )
+        return f"{known_lambda_prefix}{identity}>"
+
+    def method_kind(
+        definition: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> str:
+        if not definition.decorator_list:
+            return "instance"
+        decorator_names = [
+            (
+                decorator.id
+                if isinstance(decorator, ast.Name)
+                else (
+                    decorator.attr
+                    if isinstance(decorator, ast.Attribute)
+                    else ""
+                )
+            )
+            for decorator in definition.decorator_list
+        ]
+        if decorator_names == ["staticmethod"]:
+            return "static"
+        if decorator_names == ["classmethod"]:
+            return "class"
+        return "unsupported"
+
+    def class_alternatives(value: cli_value | None) -> list[int]:
+        alternatives = stored_alternatives(value)
+        if alternatives is not None:
+            return [
+                identity
+                for alternative in alternatives
+                for identity in class_alternatives(alternative)
+            ]
+        identity = stored_class_identity(value)
+        return [identity] if identity is not None else []
+
+    def store_class_values(
+        definition_identity: int,
+        environment: Mapping[str, cli_value],
+    ) -> cli_value:
+        definition = class_definitions[definition_identity]
+        base_states: list[tuple[int, ...]] = [()]
+        bases_supported = True
+        for base_node in definition.bases:
+            base_identities = class_alternatives(
+                evaluate(base_node, environment)
+            )
+            if not base_identities:
+                bases_supported = False
+                base_states = [()]
+                break
+            base_states = [
+                (*state, base_identity)
+                for state in base_states
+                for base_identity in base_identities
+            ]
+            if len(base_states) > max_environment_states:
+                mark_limited("environment_states")
+                base_states = base_states[:max_environment_states]
+                break
+
+        values: list[cli_value] = []
+        for bases in base_states:
+            class_identity = runtime_identity()
+            class_value_definitions[class_identity] = definition_identity
+            class_value_bases[class_identity] = (
+                bases if bases_supported else None
+            )
+            methods: dict[str, tuple[cli_value, str]] = {}
+            for statement in definition.body:
+                if not isinstance(
+                    statement,
+                    (ast.FunctionDef, ast.AsyncFunctionDef),
+                ):
+                    continue
+                function_identity = id(statement)
+                methods[statement.name] = (
+                    store_function_reference(
+                        function_identity,
+                        environment,
+                        declaring_class_identity=class_identity,
+                    ),
+                    method_kind(statement),
+                )
+            class_value_methods[class_identity] = methods
+            values.append(class_token(class_identity))
+        return store_alternatives(values)
+
+    def class_mro(
+        class_identity: int,
+        active: frozenset[int] = frozenset(),
+    ) -> tuple[int, ...] | None:
+        if class_identity in active:
+            return None
+        bases = class_value_bases.get(class_identity)
+        if bases is None:
+            return None
+        if not bases:
+            return (class_identity,)
+        sequences: list[list[int]] = []
+        for base_identity in bases:
+            base_mro = class_mro(
+                base_identity,
+                active | {class_identity},
+            )
+            if base_mro is None:
+                return None
+            sequences.append(list(base_mro))
+        sequences.append(list(bases))
+        merged: list[int] = []
+        while any(sequences):
+            sequences = [sequence for sequence in sequences if sequence]
+            candidate = next(
+                (
+                    sequence[0]
+                    for sequence in sequences
+                    if all(
+                        sequence[0] not in other[1:]
+                        for other in sequences
+                    )
+                ),
+                None,
+            )
+            if candidate is None:
+                return None
+            merged.append(candidate)
+            for sequence in sequences:
+                if sequence and sequence[0] == candidate:
+                    sequence.pop(0)
+        return (class_identity, *merged)
+
+    def bind_callable_value(
+        value: cli_value,
+        implicit_positional: Sequence[cli_value],
+    ) -> cli_value:
+        alternatives = stored_alternatives(value)
+        if alternatives is not None:
+            return store_alternatives(
+                [
+                    bind_callable_value(alternative, implicit_positional)
+                    for alternative in alternatives
+                ]
+            )
+        if not isinstance(value, str):
+            return value
+        cache_key = (
+            value,
+            tuple(implicit_positional),
+            None,
+        )
+        if cache_key in bound_callable_cache:
+            return bound_callable_cache[cache_key]
+        function_identity = stored_identity(value, known_function_prefix)
+        if function_identity in function_references:
+            (
+                definition_identity,
+                captured_environment,
+                defaults,
+                existing_implicit,
+                declaring_class_identity,
+            ) = function_references[function_identity]
+            bound = store_function_reference(
+                definition_identity,
+                captured_environment,
+                implicit_positional=(
+                    *implicit_positional,
+                    *existing_implicit,
+                ),
+                declaring_class_identity=declaring_class_identity,
+                defaults=defaults,
+                captured_environment=captured_environment,
+            )
+            bound_callable_cache[cache_key] = bound
+            return bound
+        lambda_identity = stored_identity(value, known_lambda_prefix)
+        if lambda_identity in lambda_references:
+            (
+                definition_identity,
+                captured_environment,
+                defaults,
+                existing_implicit,
+                declaring_class_identity,
+            ) = lambda_references[lambda_identity]
+            bound = store_lambda_reference(
+                definition_identity,
+                captured_environment,
+                implicit_positional=(
+                    *implicit_positional,
+                    *existing_implicit,
+                ),
+                declaring_class_identity=declaring_class_identity,
+                defaults=defaults,
+                captured_environment=captured_environment,
+            )
+            bound_callable_cache[cache_key] = bound
+            return bound
+        return value
+
+    def descriptor_value(
+        value: cli_value,
+        *,
+        receiver: cli_value,
+        owner_class_identity: int,
+        kind: str,
+    ) -> cli_value | None:
+        if kind == "unsupported":
+            mark_limited("dispatch")
+            return None
+        if kind == "static":
+            return value
+        if kind == "class":
+            return bind_callable_value(
+                value,
+                (class_token(owner_class_identity),),
+            )
+        if stored_object(receiver) is not None:
+            return bind_callable_value(value, (receiver,))
+        return value
+
+    def resolve_class_attribute(
+        class_identity: int,
+        attribute: str,
+        receiver: cli_value,
+        environment: Mapping[str, cli_value],
+        *,
+        start_after: int | None = None,
+    ) -> cli_value | None:
+        mro = class_mro(class_identity)
+        if mro is None:
+            mark_limited("dispatch")
+            return None
+        search_mro = list(mro)
+        if start_after is not None:
+            if start_after not in search_mro:
+                mark_limited("dispatch")
+                return None
+            search_mro = search_mro[search_mro.index(start_after) + 1:]
+        for candidate in search_mro:
+            monkeypatch_key = f"{class_token(candidate)}.{attribute}"
+            if monkeypatch_key in environment:
+                monkeypatch = environment[monkeypatch_key]
+                return descriptor_value(
+                    monkeypatch,
+                    receiver=receiver,
+                    owner_class_identity=class_identity,
+                    kind="instance",
+                )
+            method = class_value_methods.get(candidate, {}).get(attribute)
+            if method is None:
+                continue
+            method_value, kind = method
+            return descriptor_value(
+                method_value,
+                receiver=receiver,
+                owner_class_identity=class_identity,
+                kind=kind,
+            )
+        return None
+
+    def resolve_attribute_value(
+        node: ast.Attribute,
+        environment: Mapping[str, cli_value],
+    ) -> cli_value | None:
+        owner_value = evaluate(node.value, environment)
+        owner_alternatives = (
+            stored_alternatives(owner_value)
+            or ((owner_value,) if owner_value is not None else ())
+        )
+        results: list[cli_value] = []
+        for owner in owner_alternatives:
+            if not isinstance(owner, str):
+                continue
+            direct_key = f"{owner}.{node.attr}"
+            if direct_key in environment:
+                results.append(environment[direct_key])
+                continue
+            object_identity = stored_object_identity(owner)
+            if object_identity is not None:
+                class_identity = object_class_identities.get(object_identity)
+                if class_identity is not None:
+                    resolved = resolve_class_attribute(
+                        class_identity,
+                        node.attr,
+                        owner,
+                        environment,
+                    )
+                    if resolved is not None:
+                        results.append(resolved)
+                continue
+            class_identity = stored_class_identity(owner)
+            if class_identity is not None:
+                resolved = resolve_class_attribute(
+                    class_identity,
+                    node.attr,
+                    owner,
+                    environment,
+                )
+                if resolved is not None:
+                    results.append(resolved)
+                continue
+            super_value = stored_super(owner)
+            if super_value is not None:
+                declaring_class_identity, receiver = super_value
+                receiver_class_identity = stored_class_identity(receiver)
+                if receiver_class_identity is None:
+                    receiver_object_identity = stored_object_identity(receiver)
+                    if receiver_object_identity is not None:
+                        receiver_class_identity = (
+                            object_class_identities.get(
+                                receiver_object_identity
+                            )
+                        )
+                if receiver_class_identity is None:
+                    mark_limited("dispatch")
+                    continue
+                resolved = resolve_class_attribute(
+                    receiver_class_identity,
+                    node.attr,
+                    receiver,
+                    environment,
+                    start_after=declaring_class_identity,
+                )
+                if resolved is not None:
+                    results.append(resolved)
+        return merge_values(results) if results else None
+
+    def evaluate_super_call(
+        call: ast.Call,
+        environment: Mapping[str, cli_value],
+    ) -> cli_value | None:
+        if call.keywords:
+            mark_limited("dispatch")
+            return None
+        if not call.args:
+            declaring = stored_class_identity(
+                environment.get("__python_cli_declaring_class__")
+            )
+            receiver = environment.get("__python_cli_method_receiver__")
+        elif len(call.args) == 2:
+            declaring = stored_class_identity(
+                evaluate(call.args[0], environment)
+            )
+            receiver = evaluate(call.args[1], environment)
+        else:
+            mark_limited("dispatch")
+            return None
+        if declaring is None or receiver is None:
+            mark_limited("dispatch")
+            return None
+        return store_super(declaring, receiver)
+
+    def callable_reference_records(
+        value: cli_value | None,
+    ) -> list[
+        tuple[
+            str,
+            int,
+            tuple[
+                int,
+                cli_environment,
+                dict[str, cli_value],
+                tuple[cli_value, ...],
+                int | None,
+            ],
+        ]
+    ]:
+        alternatives = stored_alternatives(value)
+        if alternatives is not None:
+            return [
+                record
+                for alternative in alternatives
+                for record in callable_reference_records(alternative)
+            ]
+        if not isinstance(value, str):
+            return []
+        function_identity = stored_identity(value, known_function_prefix)
+        if function_identity in function_references:
+            return [
+                (
+                    "function",
+                    function_identity,
+                    function_references[function_identity],
+                )
+            ]
+        lambda_identity = stored_identity(value, known_lambda_prefix)
+        if lambda_identity in lambda_references:
+            return [
+                (
+                    "lambda",
+                    lambda_identity,
+                    lambda_references[lambda_identity],
+                )
+            ]
+        return []
+
+    def invoke_callable_value(
+        value: cli_value | None,
+        call: ast.Call | None,
+        environment: Mapping[str, cli_value],
+        *,
+        collect_return: bool,
+    ) -> cli_value | None:
+        nonlocal active_call_depth
+        returned_values: list[cli_value] = []
+        observed: set[tuple[str, int]] = set()
+        for kind, reference_identity, reference in (
+            callable_reference_records(value)
+        ):
+            reference_key = (kind, reference_identity)
+            if reference_key in observed:
+                continue
+            observed.add(reference_key)
+            (
+                definition_identity,
+                captured_environment,
+                defaults,
+                implicit_positional,
+                declaring_class_identity,
+            ) = reference
+            active_calls = (
+                active_function_calls
+                if kind == "function"
+                else active_lambda_calls
+            )
+            if reference_identity in active_calls:
+                continue
+            if active_call_depth >= max_call_depth:
+                mark_limited("call_depth")
+                continue
+            definition = (
+                function_definitions.get(definition_identity)
+                if kind == "function"
+                else lambda_definitions.get(definition_identity)
+            )
+            if definition is None:
+                mark_limited("dispatch")
+                continue
+            invocation_environment = dict(environment)
+            invocation_environment.update(captured_environment)
+            if declaring_class_identity is not None:
+                invocation_environment[
+                    "__python_cli_declaring_class__"
+                ] = class_token(declaring_class_identity)
+                if implicit_positional:
+                    invocation_environment[
+                        "__python_cli_method_receiver__"
+                    ] = implicit_positional[0]
+            bound_states = bound_arguments_environments(
+                definition.args,
+                invocation_environment,
+                call,
+                implicit_positional,
+                defaults,
+            )
+            lexical_names = tuple(
+                sorted(
+                    {
+                        *function_local_names(definition),
+                        *captured_environment,
+                    }
+                )
+            )
+            for bound_state in bound_states:
+                bound_state[lexical_names_key] = lexical_names
+            active_calls.add(reference_identity)
+            active_call_depth += 1
+            try:
+                if kind == "lambda":
+                    assert isinstance(definition, ast.Lambda)
+                    for bound_environment in bound_states:
+                        record_expression(
+                            definition.body,
+                            bound_environment,
+                        )
+                        result = evaluate(
+                            definition.body,
+                            bound_environment,
+                        )
+                        if result is not None:
+                            returned_values.append(result)
+                else:
+                    assert isinstance(
+                        definition,
+                        (ast.FunctionDef, ast.AsyncFunctionDef),
+                    )
+                    function_returns: list[cli_value] = []
+                    process_scope(
+                        definition.body,
+                        bound_states,
+                        return_values=function_returns,
+                    )
+                    returned_values.extend(function_returns)
+            finally:
+                active_call_depth -= 1
+                active_calls.remove(reference_identity)
+        if not collect_return or not returned_values:
+            return None
+        return merge_values(returned_values)
 
     def value_contains_sensitive_cli_component(
         value: cli_value | None,
@@ -2248,6 +3071,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
         statements: Sequence[ast.stmt],
         inherited_states: Sequence[Mapping[str, cli_value]],
         shadowed: Iterable[str] = (),
+        return_values: list[cli_value] | None = None,
     ) -> list[cli_environment]:
         states = []
         for inherited in inherited_states:
@@ -2260,236 +3084,6 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             ast.Try,
             getattr(ast, "TryStar", ast.Try),
         )
-
-        def callable_references(
-            value: cli_value | None,
-        ) -> list[tuple[int | None, int | None, cli_value | None]]:
-            alternatives = stored_alternatives(value)
-            if alternatives is not None:
-                return [
-                    reference
-                    for alternative in alternatives
-                    for reference in callable_references(alternative)
-                ]
-            if not isinstance(value, str):
-                return []
-            if (
-                value.startswith(known_function_prefix)
-                and value.endswith(">")
-            ):
-                identity = stored_identity(value, known_function_prefix)
-                if identity in function_definitions:
-                    return [(identity, None, None)]
-            lambda_identity = stored_identity(
-                value,
-                known_lambda_prefix,
-            )
-            if lambda_identity is not None:
-                return [(None, lambda_identity, None)]
-            return []
-
-        def callable_targets(
-            node: ast.AST,
-            environment: Mapping[str, cli_value],
-        ) -> list[tuple[int | None, int | None, cli_value | None]]:
-            if isinstance(node, ast.Lambda):
-                reference = evaluate(node, environment)
-                return callable_references(reference)
-            if isinstance(node, ast.IfExp):
-                return [
-                    target
-                    for branch in (node.body, node.orelse)
-                    for target in callable_targets(branch, environment)
-                ]
-            if isinstance(node, ast.NamedExpr):
-                reference = evaluate(node.value, environment)
-                if isinstance(environment, dict):
-                    bind(environment, node.target, reference)
-                targets = callable_references(reference)
-                return (
-                    targets
-                    if targets
-                    else callable_targets(node.value, environment)
-                )
-            if isinstance(node, (ast.Name, ast.Attribute)):
-                key = attribute_key(node, environment)
-                reference = (
-                    environment.get(key)
-                    if key is not None
-                    else None
-                )
-                targets = callable_references(reference)
-                if targets:
-                    return targets
-                if isinstance(node, ast.Attribute):
-                    owner_value = evaluate(node.value, environment)
-                    object_identity = stored_object_identity(owner_value)
-                    if object_identity is not None:
-                        class_identity = object_class_identities.get(
-                            object_identity
-                        )
-                        method_identity = class_method_definitions.get(
-                            class_identity or -1,
-                            {},
-                        ).get(node.attr)
-                        if method_identity in function_definitions:
-                            return [
-                                (
-                                    method_identity,
-                                    None,
-                                    owner_value,
-                                )
-                            ]
-                    class_identity = stored_identity(
-                        owner_value or "",
-                        known_class_prefix,
-                    )
-                    method_identity = class_method_definitions.get(
-                        class_identity or -1,
-                        {},
-                    ).get(node.attr)
-                    if method_identity in function_definitions:
-                        return [(method_identity, None, None)]
-                return []
-            return callable_references(evaluate(node, environment))
-
-        def value_contains_myproxy(value: cli_value | None) -> bool:
-            alternatives = stored_alternatives(value)
-            if alternatives is not None:
-                return any(
-                    value_contains_myproxy(alternative)
-                    for alternative in alternatives
-                )
-            sequence = stored_sequence(value)
-            if sequence is not None:
-                return any(value_contains_myproxy(item) for item in sequence)
-            mapping = stored_mapping(value)
-            if mapping is not None:
-                return any(
-                    value_contains_myproxy(item)
-                    for item in mapping.values()
-                )
-            return (
-                isinstance(value, str)
-                and re.fullmatch(
-                    _MYPROXY_PROVIDER_PATTERN,
-                    value.strip(),
-                    re.IGNORECASE,
-                )
-                is not None
-            )
-
-        def call_contains_myproxy(
-            call: ast.Call,
-            environment: Mapping[str, cli_value],
-        ) -> bool:
-            return any(
-                value_contains_myproxy(evaluate(argument, environment))
-                for argument in (
-                    *call.args,
-                    *(keyword.value for keyword in call.keywords),
-                )
-            )
-
-        def invoke_known_functions(
-            node: ast.AST,
-            environment: Mapping[str, cli_value],
-        ) -> None:
-            nonlocal active_call_depth
-            for candidate in ast.walk(node):
-                if not isinstance(candidate, ast.Call):
-                    continue
-                observed_targets: set[
-                    tuple[int | None, int | None, cli_value | None]
-                ] = set()
-                for (
-                    function_identity,
-                    lambda_identity,
-                    bound_self,
-                ) in callable_targets(
-                    candidate.func,
-                    environment,
-                ):
-                    target = (
-                        function_identity,
-                        lambda_identity,
-                        bound_self,
-                    )
-                    if target in observed_targets:
-                        continue
-                    observed_targets.add(target)
-                    if lambda_identity is not None:
-                        definition = lambda_definitions.get(lambda_identity)
-                        if (
-                            definition is not None
-                            and lambda_identity not in active_lambda_calls
-                        ):
-                            if active_call_depth >= max_call_depth:
-                                mark_limited("call_depth")
-                                continue
-                            active_lambda_calls.add(lambda_identity)
-                            active_call_depth += 1
-                            try:
-                                bound_environment = (
-                                    bound_arguments_environment(
-                                        definition.args,
-                                        environment,
-                                        candidate,
-                                    )
-                                )
-                                record_expression(
-                                    definition.body,
-                                    bound_environment,
-                                )
-                                invoke_known_functions(
-                                    definition.body,
-                                    bound_environment,
-                                )
-                            finally:
-                                active_call_depth -= 1
-                                active_lambda_calls.remove(lambda_identity)
-                    if function_identity is not None:
-                        definition = function_definitions.get(
-                            function_identity
-                        )
-                    else:
-                        definition = None
-                    if definition is not None:
-                        if (
-                            function_identity not in relevant_function_ids
-                            and not call_contains_myproxy(
-                                candidate,
-                                environment,
-                            )
-                        ):
-                            continue
-                        identity = id(definition)
-                        if identity in active_function_calls:
-                            continue
-                        if active_call_depth >= max_call_depth:
-                            mark_limited("call_depth")
-                            continue
-                        active_function_calls.add(identity)
-                        active_call_depth += 1
-                        try:
-                            process_scope(
-                                definition.body,
-                                (
-                                    bound_arguments_environment(
-                                        definition.args,
-                                        environment,
-                                        candidate,
-                                        (
-                                            (bound_self,)
-                                            if bound_self is not None
-                                            else ()
-                                        ),
-                                    ),
-                                ),
-                            )
-                        finally:
-                            active_call_depth -= 1
-                            active_function_calls.remove(identity)
 
         def apply_simple(
             statement: ast.stmt,
@@ -2569,7 +3163,6 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                 for target in statement.targets:
                     bind(result, target, None)
             record_expression(statement, result)
-            invoke_known_functions(statement, result)
             return result
 
         def process_block(
@@ -2580,73 +3173,95 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             for statement in block:
                 if not step(len(result_states)):
                     return result_states
+                if isinstance(statement, ast.Return):
+                    for state in result_states:
+                        if statement.value is None:
+                            continue
+                        returned = evaluate(statement.value, state)
+                        record(returned)
+                        if return_values is not None and returned is not None:
+                            return_values.append(returned)
+                    return []
                 if isinstance(
                     statement,
                     (ast.FunctionDef, ast.AsyncFunctionDef),
                 ):
                     identity = id(statement)
                     function_definitions[identity] = statement
+                    references: list[tuple[cli_environment, cli_value]] = []
                     for state in result_states:
+                        reference = store_function_reference(
+                            identity,
+                            state,
+                        )
                         bind(
                             state,
                             ast.Name(id=statement.name),
-                            (
-                                f"{known_function_prefix}"
-                                f"{identity}>"
-                            ),
+                            reference,
                         )
+                        references.append((state, reference))
                     if identity in direct_provider_function_ids:
-                        if identity not in active_function_calls:
-                            active_function_calls.add(identity)
-                            try:
-                                process_scope(
-                                    statement.body,
-                                    tuple(
-                                        bound_arguments_environment(
-                                            statement.args,
-                                            state,
-                                            None,
-                                        )
-                                        for state in result_states
-                                    ),
-                                )
-                            finally:
-                                active_function_calls.remove(identity)
+                        for state, reference in references:
+                            invoke_callable_value(
+                                reference,
+                                None,
+                                state,
+                                collect_return=False,
+                            )
                     continue
                 if isinstance(statement, ast.ClassDef):
-                    class_identity = id(statement)
-                    class_definitions[class_identity] = statement
+                    definition_identity = id(statement)
+                    class_definitions[definition_identity] = statement
+                    class_values: list[
+                        tuple[cli_environment, cli_value]
+                    ] = []
                     for state in result_states:
+                        value = store_class_values(
+                            definition_identity,
+                            state,
+                        )
                         bind(
                             state,
                             ast.Name(id=statement.name),
-                            f"{known_class_prefix}{class_identity}>",
+                            value,
                         )
-                    for method_identity in class_method_definitions.get(
-                        class_identity,
-                        {},
-                    ).values():
-                        if method_identity not in direct_provider_function_ids:
-                            continue
-                        method = function_definitions[method_identity]
-                        if method_identity in active_function_calls:
-                            continue
-                        active_function_calls.add(method_identity)
-                        try:
-                            process_scope(
-                                method.body,
-                                tuple(
-                                    bound_arguments_environment(
-                                        method.args,
-                                        state,
-                                        None,
-                                        (store_object(class_identity),),
-                                    )
-                                    for state in result_states
-                                ),
-                            )
-                        finally:
-                            active_function_calls.remove(method_identity)
+                        class_values.append((state, value))
+                    for state, value in class_values:
+                        for class_identity in class_alternatives(value):
+                            for method_value, kind in (
+                                class_value_methods.get(
+                                    class_identity,
+                                    {},
+                                ).values()
+                            ):
+                                records = callable_reference_records(
+                                    method_value
+                                )
+                                if not records:
+                                    continue
+                                method_definition_identity = records[0][2][0]
+                                if (
+                                    method_definition_identity
+                                    not in direct_provider_function_ids
+                                ):
+                                    continue
+                                receiver = (
+                                    class_token(class_identity)
+                                    if kind == "class"
+                                    else store_object(class_identity)
+                                )
+                                bound_method = descriptor_value(
+                                    method_value,
+                                    receiver=receiver,
+                                    owner_class_identity=class_identity,
+                                    kind=kind,
+                                )
+                                invoke_callable_value(
+                                    bound_method,
+                                    None,
+                                    state,
+                                    collect_return=False,
+                                )
                     continue
                 if isinstance(statement, ast.If):
                     next_states = process_block(
