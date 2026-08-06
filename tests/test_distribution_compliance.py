@@ -1512,6 +1512,241 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                     {str(item["rule_id"]) for item in findings},
                 )
 
+    def test_python_cli_reconstruction_follows_zero_argument_wrappers(
+        self,
+    ) -> None:
+        command = (
+            'run(["c", "--provider", provider, "--base-url", '
+            '"https://x." + "private.example/v1", "--model", '
+            '"private-" + "m"])'
+        )
+        payloads = {
+            "local": (
+                "def wrapper():\n"
+                '    provider = "my" + "proxy"\n'
+                f"    {command}\n"
+                "wrapper()\n"
+            ),
+            "global": (
+                'provider = "my" + "proxy"\n'
+                "def wrapper():\n"
+                f"    {command}\n"
+                "wrapper()\n"
+            ),
+            "closure": (
+                "def outer():\n"
+                '    provider = "my" + "proxy"\n'
+                "    def wrapper():\n"
+                f"        {command}\n"
+                "    wrapper()\n"
+                "outer()\n"
+            ),
+            "forwarded-local": (
+                "def launch(provider):\n"
+                f"    {command}\n"
+                "def wrapper():\n"
+                '    provider = "my" + "proxy"\n'
+                "    launch(provider)\n"
+                "wrapper()\n"
+            ),
+        }
+
+        for name, payload in payloads.items():
+            with self.subTest(name=name):
+                reconstructed, failure = (
+                    compliance_module._python_cli_argument_text(
+                        "launcher.py",
+                        payload,
+                    )
+                )
+                findings = scan_payload(
+                    "launcher.py",
+                    payload.encode(),
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertEqual("", failure)
+                self.assertIn("myproxy", reconstructed)
+                self.assertEqual(
+                    {"private_endpoint", "private_model_override"},
+                    {str(item["rule_id"]) for item in findings},
+                )
+
+    def test_python_cli_reconstruction_binds_instance_methods(self) -> None:
+        payload = (
+            "class Client:\n"
+            "    def execute(self, provider):\n"
+            "        run([\n"
+            '            "c", "--provider", provider,\n'
+            '            "--base-url", '
+            '"https://x." + "private.example/v1",\n'
+            '            "--model", "private-" + "m",\n'
+            "        ])\n"
+            "client = Client()\n"
+            'client.execute("my" + "proxy")\n'
+        )
+
+        reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "launcher.py",
+                payload,
+            )
+        )
+        findings = scan_payload(
+            "launcher.py",
+            payload.encode(),
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual("", failure)
+        self.assertIn("myproxy", reconstructed)
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
+            {str(item["rule_id"]) for item in findings},
+        )
+
+    def test_python_cli_reconstruction_keeps_lexical_callables_distinct(
+        self,
+    ) -> None:
+        payload = (
+            "def safe():\n"
+            "    pass\n"
+            "def container():\n"
+            "    def safe():\n"
+            "        run([\n"
+            '            "c", "--provider", "my" + "proxy",\n'
+            '            "--base-url", '
+            '"https://x." + "private.example/v1",\n'
+            '            "--model", "private-" + "m",\n'
+            "        ])\n"
+            "safe()\n"
+        )
+
+        reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "launcher.py",
+                payload,
+            )
+        )
+        findings = scan_payload(
+            "launcher.py",
+            payload.encode(),
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual("", failure)
+        self.assertEqual("", reconstructed)
+        self.assertEqual([], findings)
+
+    def test_python_cli_reconstruction_keeps_class_methods_distinct(
+        self,
+    ) -> None:
+        payload = (
+            'prefix = "--"\n'
+            'option_name = "provider"\n'
+            "private_option = prefix + option_name\n"
+            'private_endpoint = "https://x." + "private.example/v1"\n'
+            'private_model = "private-" + "m"\n'
+            "class PrivateClient:\n"
+            "    def execute(provider):\n"
+            "        run([\n"
+            '            "c", private_option, provider,\n'
+            '            "--base-url", private_endpoint,\n'
+            '            "--model", private_model,\n'
+            "        ])\n"
+            "class PublicClient:\n"
+            "    def execute(provider):\n"
+            '        run(["c", "--provider", provider, "status"])\n'
+            'PublicClient.execute("my" + "proxy")\n'
+        )
+
+        reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "launcher.py",
+                payload,
+            )
+        )
+        findings = scan_payload(
+            "launcher.py",
+            payload.encode(),
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual("", failure)
+        self.assertIn("myproxy", reconstructed)
+        self.assertEqual([], findings)
+
+    def test_python_cli_reconstruction_detects_assembled_provider_option(
+        self,
+    ) -> None:
+        payload = (
+            "def launch():\n"
+            '    prefix = "--"\n'
+            '    option = "provider"\n'
+            "    provider_option = prefix + option\n"
+            "    run([\n"
+            '        "c", provider_option, "my" + "proxy",\n'
+            '        "--base-url", "https://x." + "private.example/v1",\n'
+            '        "--model", "private-" + "m",\n'
+            "    ])\n"
+            "launch()\n"
+        )
+
+        reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "launcher.py",
+                payload,
+            )
+        )
+        findings = scan_payload(
+            "launcher.py",
+            payload.encode(),
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual("", failure)
+        self.assertIn("--provider myproxy", reconstructed)
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
+            {str(item["rule_id"]) for item in findings},
+        )
+
+    def test_python_cli_reconstruction_preserves_ten_correlated_states(
+        self,
+    ) -> None:
+        branches = []
+        for index in range(10):
+            branches.append(
+                ("if" if index == 0 else "elif")
+                + f" choice == {index}:\n"
+                + f'    provider = "public-{index}"\n'
+                + f'    endpoint = "https://api{index}.example.com/v1"\n'
+                + f'    model = "public-model-{index}"\n'
+            )
+        payload = (
+            "".join(branches)
+            + "run([\n"
+            + '    "c", "--provider", provider,\n'
+            + '    "--base-url", endpoint, "--model", model,\n'
+            + "])\n"
+        )
+
+        reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "launcher.py",
+                payload,
+            )
+        )
+        findings = scan_payload(
+            "launcher.py",
+            payload.encode(),
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual("", failure)
+        self.assertEqual(11, len(reconstructed.splitlines()))
+        self.assertEqual([], findings)
+
     def test_python_cli_reconstruction_keeps_independent_commands_separate(
         self,
     ) -> None:
@@ -2205,6 +2440,29 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
 
 class DerivedVerdictTest(unittest.TestCase):
     @staticmethod
+    def _rebind_report_projection(report: dict[str, object]) -> None:
+        payloads = compliance_module._distribution_report_scan_payloads(
+            report
+        )
+        secret_scan = report["secret_scan"]
+        assert isinstance(secret_scan, dict)
+        manifest = secret_scan["input_manifest"]
+        assert isinstance(manifest, list)
+        for name, payload in payloads.items():
+            entry = next(
+                item
+                for item in manifest
+                if item["path"] == f"report/{name}"
+            )
+            entry["size"] = len(payload)
+            entry["sha256"] = compliance_module.sha256_bytes(payload)
+        secret_scan["input_manifest_sha256"] = (
+            compliance_module.sha256_bytes(
+                compliance_module.canonical_json_text(manifest).encode()
+            )
+        )
+
+    @staticmethod
     def _secret_scan_evidence(
         report: dict[str, object],
     ) -> dict[str, object]:
@@ -2661,9 +2919,50 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
         )
         trusted_artifact_patcher.start()
         self.addCleanup(trusted_artifact_patcher.stop)
+        self.report = compliance_module._with_derived_verdict(self.report)
 
-    def test_accepts_complete_raw_evidence(self) -> None:
+    def test_accepts_complete_derived_evidence(self) -> None:
         self.assertEqual([], distribution_report_blockers(self.report))
+
+    def test_rejects_missing_derived_verdict(self) -> None:
+        report = copy.deepcopy(self.report)
+        for field in ("blockers", "ok", "status"):
+            report.pop(field)
+
+        codes = {
+            str(item["code"]) for item in distribution_report_blockers(report)
+        }
+
+        self.assertIn("invalid_distribution_compliance_verdict", codes)
+
+    def test_rejects_secret_in_nested_report_projection_after_hash_rebind(
+        self,
+    ) -> None:
+        mutations = (
+            ("artifacts", "wheel"),
+            ("repository", "before"),
+            ("metadata", None),
+        )
+        for section, child in mutations:
+            with self.subTest(section=section, child=child):
+                report = copy.deepcopy(self.report)
+                target = report[section]
+                assert isinstance(target, dict)
+                if child is not None:
+                    target = target[child]
+                    assert isinstance(target, dict)
+                target["X_" + "API_KEY"] = "abcdefghijkl!" + "mnopqrst"
+                self._rebind_report_projection(report)
+
+                codes = {
+                    str(item["code"])
+                    for item in distribution_report_blockers(report)
+                }
+
+                self.assertIn(
+                    "secret_or_private_config_detected",
+                    codes,
+                )
 
     def test_rejects_missing_or_unknown_schema_after_projection_rebind(
         self,

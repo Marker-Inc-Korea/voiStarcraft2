@@ -1093,7 +1093,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
     dynamic_argument = "<dynamic-argument>"
     max_arguments = 96
     max_commands = 128
-    max_environment_states = 8
+    max_environment_states = max_commands
     max_environment_values = 256
     max_literal_characters = 256
     max_analysis_steps = 1_000_000
@@ -1101,21 +1101,25 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
     analysis_limited = False
     analysis_limit_reason = ""
     known_function_prefix = "<known-function:"
+    known_class_prefix = "<known-class:"
     known_lambda_prefix = "<known-lambda:"
     known_sequence_prefix = "<known-sequence:"
     known_mapping_prefix = "<known-mapping:"
     known_alternatives_prefix = "<known-alternatives:"
     known_object_prefix = "<known-object:"
     function_definitions: dict[
-        str,
-        list[ast.FunctionDef | ast.AsyncFunctionDef],
+        int,
+        ast.FunctionDef | ast.AsyncFunctionDef,
     ] = {}
-    class_definitions: set[str] = set()
+    function_definition_ids_by_name: dict[str, set[int]] = {}
+    class_definitions: dict[int, ast.ClassDef] = {}
+    class_method_definitions: dict[int, dict[str, int]] = {}
     lambda_definitions: dict[int, ast.Lambda] = {}
     sequence_values: dict[int, tuple[str, ...]] = {}
     mapping_values: dict[int, dict[str, cli_value]] = {}
     alternative_values: dict[int, tuple[cli_value, ...]] = {}
     object_values: dict[int, dict[str, cli_value]] = {}
+    object_class_identities: dict[int, int | None] = {}
     active_function_calls: set[int] = set()
     active_lambda_calls: set[int] = set()
     active_call_depth = 0
@@ -1199,7 +1203,12 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
     ) -> tuple[str, ...]:
         return bounded_sequence((*left, *right))
 
-    def stored_identity(value: str, prefix: str) -> int | None:
+    def stored_identity(
+        value: cli_value | None,
+        prefix: str,
+    ) -> int | None:
+        if not isinstance(value, str):
+            return None
         if not value.startswith(prefix) or not value.endswith(">"):
             return None
         try:
@@ -1237,16 +1246,20 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             return None
         return mapping_values.get(identity)
 
-    def store_object() -> str:
+    def store_object(class_identity: int | None = None) -> str:
         values: dict[str, cli_value] = {}
         identity = id(values)
         object_values[identity] = values
+        object_class_identities[identity] = class_identity
         return f"{known_object_prefix}{identity}>"
 
-    def stored_object(value: cli_value | None) -> dict[str, cli_value] | None:
+    def stored_object_identity(value: cli_value | None) -> int | None:
         if not isinstance(value, str):
             return None
-        identity = stored_identity(value, known_object_prefix)
+        return stored_identity(value, known_object_prefix)
+
+    def stored_object(value: cli_value | None) -> dict[str, cli_value] | None:
+        identity = stored_object_identity(value)
         if identity is None:
             return None
         return object_values.get(identity)
@@ -1402,6 +1415,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                         value.startswith(known_function_prefix)
                         and value.endswith(">")
                     )
+                    or stored_identity(value, known_class_prefix) is not None
                     or stored_identity(value, known_lambda_prefix) is not None
                 )
             )
@@ -1542,12 +1556,13 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             sequence = flatten_sequence(value)
             if sequence is not None:
                 return sequence
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id in class_definitions
-        ):
-            return store_object()
+        if isinstance(node, ast.Call):
+            class_identity = stored_identity(
+                evaluate(node.func, environment) or "",
+                known_class_prefix,
+            )
+            if class_identity in class_definitions:
+                return store_object(class_identity)
         return None
 
     def record(value: cli_value | None) -> None:
@@ -1691,79 +1706,159 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             pending.extend(ast.iter_child_nodes(candidate))
         return False
 
+    def contains_provider_fragments(node: ast.AST) -> bool:
+        literals: list[str] = []
+        pending = list(ast.iter_child_nodes(node))
+        while pending:
+            candidate = pending.pop()
+            if isinstance(
+                candidate,
+                (
+                    ast.FunctionDef,
+                    ast.AsyncFunctionDef,
+                    ast.ClassDef,
+                    ast.Lambda,
+                ),
+            ):
+                continue
+            value = _constant_string_expression(candidate)
+            if value is not None:
+                literals.append(value.strip().lower())
+            pending.extend(ast.iter_child_nodes(candidate))
+        return "--" in literals and "provider" in literals
+
+    def contains_myproxy_literal(node: ast.AST) -> bool:
+        pending = list(ast.iter_child_nodes(node))
+        while pending:
+            candidate = pending.pop()
+            if isinstance(
+                candidate,
+                (
+                    ast.FunctionDef,
+                    ast.AsyncFunctionDef,
+                    ast.ClassDef,
+                    ast.Lambda,
+                ),
+            ):
+                continue
+            value = _constant_string_expression(candidate)
+            if (
+                value is not None
+                and re.fullmatch(
+                    _MYPROXY_PROVIDER_PATTERN,
+                    value.strip(),
+                    re.IGNORECASE,
+                )
+                is not None
+            ):
+                return True
+            pending.extend(ast.iter_child_nodes(candidate))
+        return False
+
     for candidate in ast.walk(tree):
-        if not isinstance(
+        if isinstance(
             candidate,
             (ast.FunctionDef, ast.AsyncFunctionDef),
         ):
-            continue
-        definitions = function_definitions.setdefault(candidate.name, [])
-        if candidate not in definitions:
-            definitions.append(candidate)
-
-    direct_provider_functions = {
-        name
-        for name, definitions in function_definitions.items()
-        if any(contains_cli_provider(definition) for definition in definitions)
-    }
-    function_calls: dict[str, set[str]] = {}
-    for name, definitions in function_definitions.items():
-        called: set[str] = set()
-        for definition in definitions:
-            parameter_names = set(shadowed_arguments(definition.args))
-            pending = list(ast.iter_child_nodes(definition))
-            while pending:
-                candidate = pending.pop()
+            identity = id(candidate)
+            function_definitions[identity] = candidate
+            function_definition_ids_by_name.setdefault(
+                candidate.name,
+                set(),
+            ).add(identity)
+        elif isinstance(candidate, ast.ClassDef):
+            class_identity = id(candidate)
+            class_definitions[class_identity] = candidate
+            class_method_definitions[class_identity] = {
+                method.name: id(method)
+                for method in candidate.body
                 if isinstance(
-                    candidate,
+                    method,
+                    (ast.FunctionDef, ast.AsyncFunctionDef),
+                )
+            }
+
+    direct_provider_function_ids = {
+        identity
+        for identity, definition in function_definitions.items()
+        if (
+            contains_cli_provider(definition)
+            or contains_provider_fragments(definition)
+        )
+    }
+    function_calls: dict[int, set[str]] = {}
+    relevant_function_ids = {
+        identity
+        for identity, definition in function_definitions.items()
+        if (
+            identity in direct_provider_function_ids
+            or contains_myproxy_literal(definition)
+        )
+    }
+    for identity, definition in function_definitions.items():
+        called: set[str] = set()
+        parameter_names = set(shadowed_arguments(definition.args))
+        pending = list(ast.iter_child_nodes(definition))
+        while pending:
+            candidate = pending.pop()
+            if isinstance(
+                candidate,
+                (
+                    ast.FunctionDef,
+                    ast.AsyncFunctionDef,
+                    ast.ClassDef,
+                    ast.Lambda,
+                ),
+            ):
+                continue
+            if isinstance(candidate, ast.Call):
+                forwarded_nodes = [
+                    *candidate.args,
+                    *(keyword.value for keyword in candidate.keywords),
+                ]
+                forwards_parameter_or_literal = any(
                     (
-                        ast.FunctionDef,
-                        ast.AsyncFunctionDef,
-                        ast.ClassDef,
-                        ast.Lambda,
-                    ),
-                ):
-                    continue
-                if isinstance(candidate, ast.Call):
-                    forwarded_nodes = [
-                        *candidate.args,
-                        *(keyword.value for keyword in candidate.keywords),
-                    ]
-                    forwards_parameter_or_literal = any(
-                        (
-                            _constant_string_expression(argument)
-                            is not None
-                        )
-                        or any(
-                            isinstance(child, ast.Name)
-                            and child.id in parameter_names
-                            for child in ast.walk(argument)
-                        )
-                        for argument in forwarded_nodes
+                        _constant_string_expression(argument)
+                        is not None
                     )
-                    if forwards_parameter_or_literal:
-                        if isinstance(candidate.func, ast.Name):
-                            called.add(candidate.func.id)
-                        elif isinstance(candidate.func, ast.Attribute):
-                            called.add(candidate.func.attr)
-                pending.extend(ast.iter_child_nodes(candidate))
-        function_calls[name] = called
-    relevant_function_names = set(direct_provider_functions)
+                    or any(
+                        isinstance(child, ast.Name)
+                        and child.id in parameter_names
+                        for child in ast.walk(argument)
+                    )
+                    for argument in forwarded_nodes
+                )
+                if not forwarded_nodes or forwards_parameter_or_literal:
+                    if isinstance(candidate.func, ast.Name):
+                        called.add(candidate.func.id)
+                    elif isinstance(candidate.func, ast.Attribute):
+                        called.add(candidate.func.attr)
+            pending.extend(ast.iter_child_nodes(candidate))
+        function_calls[identity] = called
     while True:
+        relevant_function_names = {
+            function_definitions[identity].name
+            for identity in relevant_function_ids
+        }
         expanded = {
-            name
-            for name, called in function_calls.items()
+            identity
+            for identity, called in function_calls.items()
             if called & relevant_function_names
         }
-        if expanded <= relevant_function_names:
+        if expanded <= relevant_function_ids:
             break
-        relevant_function_names.update(expanded)
+        relevant_function_ids.update(expanded)
 
     if (
-        not relevant_function_names
+        not relevant_function_ids
         and not contains_cli_provider(tree)
+        and not contains_provider_fragments(tree)
         and not any(
-            contains_cli_provider(candidate)
+            (
+                contains_cli_provider(candidate)
+                or contains_provider_fragments(candidate)
+                or contains_myproxy_literal(candidate)
+            )
             for candidate in ast.walk(tree)
             if isinstance(candidate, ast.Lambda)
         )
@@ -1796,6 +1891,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
         arguments: ast.arguments,
         environment: Mapping[str, cli_value],
         call: ast.Call | None,
+        implicit_positional: Sequence[cli_value] = (),
     ) -> cli_environment:
         result = dict(environment)
         for name in shadowed_arguments(arguments):
@@ -1821,7 +1917,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             if default is not None
         }
 
-        positional_values: list[cli_value] = []
+        positional_values: list[cli_value] = list(implicit_positional)
         keyword_values: dict[str, cli_value] = {}
         unknown_keywords = False
         if call is not None:
@@ -1967,23 +2063,48 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             return unique[0]
         return store_alternatives(unique)
 
-    def merge_environments(
-        states: Sequence[cli_environment],
-    ) -> cli_environment:
-        merged: cli_environment = {}
-        names = {
-            name
-            for environment in states
-            for name in environment
-        }
-        for name in sorted(names):
-            values: list[cli_value] = []
-            for environment in states:
-                values.append(
-                    environment.get(name, dynamic_argument)
-                )
-            merged[name] = merge_values(values)
-        return merged
+    def value_contains_sensitive_cli_component(
+        value: cli_value | None,
+    ) -> bool:
+        alternatives = stored_alternatives(value)
+        if alternatives is not None:
+            return any(
+                value_contains_sensitive_cli_component(alternative)
+                for alternative in alternatives
+            )
+        sequence = stored_sequence(value)
+        if sequence is not None:
+            return any(
+                value_contains_sensitive_cli_component(item)
+                for item in sequence
+            )
+        mapping = stored_mapping(value)
+        if mapping is not None:
+            return any(
+                value_contains_sensitive_cli_component(item)
+                for item in mapping.values()
+            )
+        if not isinstance(value, str) or has_stored_reference(value):
+            return False
+        provider_option = "--" + "provider"
+        endpoint_option = "--base" + "-url"
+        model_option = "--" + "model"
+        endpoint_probe = " ".join(
+            (provider_option, "myproxy", endpoint_option, value)
+        )
+        model_probe = " ".join(
+            (provider_option, "myproxy", model_option, value)
+        )
+        return (
+            re.fullmatch(
+                _MYPROXY_PROVIDER_PATTERN,
+                value.strip(),
+                re.IGNORECASE,
+            )
+            is not None
+            or _MYPROXY_CLI_ENDPOINT_RE.search(endpoint_probe) is not None
+            or _MYPROXY_CLI_MODEL_RE.search(model_probe) is not None
+        )
 
     def deduplicate_states(
         states: Iterable[cli_environment],
@@ -1998,9 +2119,30 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             result.append(environment)
         if len(result) <= max_environment_states:
             return result
-        # Preserve every branch as a bounded synthetic union instead of
-        # discarding paths or allowing combinatorial state growth.
-        return [merge_environments(result)]
+        sensitive = [
+            environment
+            for environment in result
+            if any(
+                value_contains_sensitive_cli_component(value)
+                for value in environment.values()
+            )
+        ]
+        if len(sensitive) > max_environment_states:
+            mark_limited("environment_states")
+            return sensitive[:max_environment_states]
+        sensitive_keys = {
+            environment_key(environment)
+            for environment in sensitive
+        }
+        remaining = [
+            environment
+            for environment in result
+            if environment_key(environment) not in sensitive_keys
+        ]
+        return [
+            *sensitive,
+            *remaining[: max_environment_states - len(sensitive)],
+        ]
 
     def iterable_values(
         node: ast.AST,
@@ -2121,7 +2263,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
 
         def callable_references(
             value: cli_value | None,
-        ) -> list[tuple[str, int | None]]:
+        ) -> list[tuple[int | None, int | None, cli_value | None]]:
             alternatives = stored_alternatives(value)
             if alternatives is not None:
                 return [
@@ -2135,24 +2277,21 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                 value.startswith(known_function_prefix)
                 and value.endswith(">")
             ):
-                return [
-                    (
-                        value[len(known_function_prefix):-1],
-                        None,
-                    )
-                ]
+                identity = stored_identity(value, known_function_prefix)
+                if identity in function_definitions:
+                    return [(identity, None, None)]
             lambda_identity = stored_identity(
                 value,
                 known_lambda_prefix,
             )
             if lambda_identity is not None:
-                return [("", lambda_identity)]
+                return [(None, lambda_identity, None)]
             return []
 
         def callable_targets(
             node: ast.AST,
             environment: Mapping[str, cli_value],
-        ) -> list[tuple[str, int | None]]:
+        ) -> list[tuple[int | None, int | None, cli_value | None]]:
             if isinstance(node, ast.Lambda):
                 reference = evaluate(node, environment)
                 return callable_references(reference)
@@ -2182,9 +2321,36 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                 targets = callable_references(reference)
                 if targets:
                     return targets
-                if isinstance(node, ast.Name):
-                    return [(node.id, None)]
-                return [(node.attr, None)]
+                if isinstance(node, ast.Attribute):
+                    owner_value = evaluate(node.value, environment)
+                    object_identity = stored_object_identity(owner_value)
+                    if object_identity is not None:
+                        class_identity = object_class_identities.get(
+                            object_identity
+                        )
+                        method_identity = class_method_definitions.get(
+                            class_identity or -1,
+                            {},
+                        ).get(node.attr)
+                        if method_identity in function_definitions:
+                            return [
+                                (
+                                    method_identity,
+                                    None,
+                                    owner_value,
+                                )
+                            ]
+                    class_identity = stored_identity(
+                        owner_value or "",
+                        known_class_prefix,
+                    )
+                    method_identity = class_method_definitions.get(
+                        class_identity or -1,
+                        {},
+                    ).get(node.attr)
+                    if method_identity in function_definitions:
+                        return [(method_identity, None, None)]
+                return []
             return callable_references(evaluate(node, environment))
 
         def value_contains_myproxy(value: cli_value | None) -> bool:
@@ -2233,12 +2399,22 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             for candidate in ast.walk(node):
                 if not isinstance(candidate, ast.Call):
                     continue
-                observed_targets: set[tuple[str, int | None]] = set()
-                for function_name, lambda_identity in callable_targets(
+                observed_targets: set[
+                    tuple[int | None, int | None, cli_value | None]
+                ] = set()
+                for (
+                    function_identity,
+                    lambda_identity,
+                    bound_self,
+                ) in callable_targets(
                     candidate.func,
                     environment,
                 ):
-                    target = (function_name, lambda_identity)
+                    target = (
+                        function_identity,
+                        lambda_identity,
+                        bound_self,
+                    )
                     if target in observed_targets:
                         continue
                     observed_targets.add(target)
@@ -2272,12 +2448,15 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                             finally:
                                 active_call_depth -= 1
                                 active_lambda_calls.remove(lambda_identity)
-                    for definition in function_definitions.get(
-                        function_name,
-                        (),
-                    ):
+                    if function_identity is not None:
+                        definition = function_definitions.get(
+                            function_identity
+                        )
+                    else:
+                        definition = None
+                    if definition is not None:
                         if (
-                            function_name not in relevant_function_names
+                            function_identity not in relevant_function_ids
                             and not call_contains_myproxy(
                                 candidate,
                                 environment,
@@ -2300,6 +2479,11 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                                         definition.args,
                                         environment,
                                         candidate,
+                                        (
+                                            (bound_self,)
+                                            if bound_self is not None
+                                            else ()
+                                        ),
                                     ),
                                 ),
                             )
@@ -2400,23 +2584,18 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                     statement,
                     (ast.FunctionDef, ast.AsyncFunctionDef),
                 ):
-                    definitions = function_definitions.setdefault(
-                        statement.name,
-                        [],
-                    )
-                    if statement not in definitions:
-                        definitions.append(statement)
+                    identity = id(statement)
+                    function_definitions[identity] = statement
                     for state in result_states:
                         bind(
                             state,
                             ast.Name(id=statement.name),
                             (
                                 f"{known_function_prefix}"
-                                f"{statement.name}>"
+                                f"{identity}>"
                             ),
                         )
-                    if contains_cli_provider(statement):
-                        identity = id(statement)
+                    if identity in direct_provider_function_ids:
                         if identity not in active_function_calls:
                             active_function_calls.add(identity)
                             try:
@@ -2435,8 +2614,39 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                                 active_function_calls.remove(identity)
                     continue
                 if isinstance(statement, ast.ClassDef):
-                    class_definitions.add(statement.name)
-                    process_scope(statement.body, result_states)
+                    class_identity = id(statement)
+                    class_definitions[class_identity] = statement
+                    for state in result_states:
+                        bind(
+                            state,
+                            ast.Name(id=statement.name),
+                            f"{known_class_prefix}{class_identity}>",
+                        )
+                    for method_identity in class_method_definitions.get(
+                        class_identity,
+                        {},
+                    ).values():
+                        if method_identity not in direct_provider_function_ids:
+                            continue
+                        method = function_definitions[method_identity]
+                        if method_identity in active_function_calls:
+                            continue
+                        active_function_calls.add(method_identity)
+                        try:
+                            process_scope(
+                                method.body,
+                                tuple(
+                                    bound_arguments_environment(
+                                        method.args,
+                                        state,
+                                        None,
+                                        (store_object(class_identity),),
+                                    )
+                                    for state in result_states
+                                ),
+                            )
+                        finally:
+                            active_function_calls.remove(method_identity)
                     continue
                 if isinstance(statement, ast.If):
                     next_states = process_block(
@@ -3379,6 +3589,8 @@ def build_distribution_report(
 
 def distribution_report_blockers(
     report: Mapping[str, object],
+    *,
+    require_derived_verdict: bool = True,
 ) -> list[dict[str, object]]:
     """Derive the verdict from raw evidence, never caller-provided booleans."""
 
@@ -3927,6 +4139,23 @@ def distribution_report_blockers(
             )
     if valid_manifest:
         expected_report_payloads = _distribution_report_scan_payloads(report)
+        projection_findings = [
+            finding
+            for name, payload in expected_report_payloads.items()
+            for finding in scan_payload(
+                f"report/{name}",
+                payload,
+                allow_safe_fixtures=False,
+            )
+        ]
+        if projection_findings:
+            blockers.append(
+                {
+                    "code": "secret_or_private_config_detected",
+                    "finding_count": len(projection_findings),
+                    "source": "report_projection",
+                }
+            )
         expected_report_paths = {
             f"report/{name}" for name in expected_report_payloads
         }
@@ -4017,7 +4246,7 @@ def distribution_report_blockers(
         for field in ("blockers", "ok", "status")
         if field in report
     }
-    if derived_fields:
+    if require_derived_verdict:
         expected_status = (
             "blocked" if derived_blockers else "passed"
         )
@@ -6591,7 +6820,10 @@ def _runtime_data_evidence(
 
 def _with_derived_verdict(report: Mapping[str, object]) -> dict[str, object]:
     derived = dict(report)
-    blockers = distribution_report_blockers(derived)
+    blockers = distribution_report_blockers(
+        derived,
+        require_derived_verdict=False,
+    )
     derived["blockers"] = blockers
     derived["ok"] = not blockers
     derived["status"] = "passed" if not blockers else "blocked"
