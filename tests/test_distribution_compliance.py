@@ -957,6 +957,80 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             {str(item["rule_id"]) for item in findings},
         )
 
+    def test_detects_composed_myproxy_python_argument_lists(self) -> None:
+        alias = "my" + "proxy"
+        endpoint = "https://proxy." + "corp.example/v1"
+        model = "private-" + "deployment"
+        payloads = {
+            "starred": (
+                f'provider_args = ["--provider", "{alias}"]\n'
+                "args = [\n"
+                '    "commander",\n'
+                "    *provider_args,\n"
+                '    "--openai-base-url",\n'
+                f'    "{endpoint}",\n'
+                '    "--model",\n'
+                f'    "{model}",\n'
+                "]\n"
+            ),
+            "augmented": (
+                'args = ["commander"]\n'
+                f'args += ["--provider", "{alias}"]\n'
+                "args += [\n"
+                '    "--openai-base-url",\n'
+                f'    "{endpoint}",\n'
+                '    "--model",\n'
+                f'    "{model}",\n'
+                "]\n"
+            ),
+            "extended": (
+                'args = ["commander"]\n'
+                f'args.extend(["--provider", "{alias}"])\n'
+                "args.extend([\n"
+                '    "--openai-base-url",\n'
+                f'    "{endpoint}",\n'
+                '    "--model",\n'
+                f'    "{model}",\n'
+                "])\n"
+            ),
+            "constant-provider": (
+                f'provider = "{alias}"\n'
+                "args = [\n"
+                '    "commander",\n'
+                '    "--provider",\n'
+                "    provider,\n"
+                '    "--openai-base-url",\n'
+                f'    "{endpoint}",\n'
+                '    "--model",\n'
+                f'    "{model}",\n'
+                "]\n"
+            ),
+            "compound-statement": (
+                'args = ["commander"]\n'
+                "if enabled:\n"
+                f'    args += ["--provider", "{alias}"]\n'
+                "args.extend([\n"
+                '    "--openai-base-url",\n'
+                f'    "{endpoint}",\n'
+                '    "--model",\n'
+                f'    "{model}",\n'
+                "])\n"
+            ),
+        }
+
+        for name, payload in payloads.items():
+            with self.subTest(name=name):
+                findings = scan_payload(
+                    "launcher.py",
+                    payload.encode(),
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertEqual(
+                    {"private_endpoint", "private_model_override"},
+                    {str(item["rule_id"]) for item in findings},
+                )
+
     def test_detects_short_generic_api_key_names_and_punctuation(
         self,
     ) -> None:
@@ -1731,6 +1805,9 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
         )
         sdist_directories = [sdist_root, sdist_egg_info]
         self.report = {
+            "schema_version": (
+                compliance_module.DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION
+            ),
             "repository": {
                 phase: {
                     "ok": True,
@@ -1890,6 +1967,48 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
 
     def test_accepts_complete_raw_evidence(self) -> None:
         self.assertEqual([], distribution_report_blockers(self.report))
+
+    def test_rejects_missing_or_unknown_schema_after_projection_rebind(
+        self,
+    ) -> None:
+        for schema_version in (None, 999):
+            with self.subTest(schema_version=schema_version):
+                report = copy.deepcopy(self.report)
+                if schema_version is None:
+                    report.pop("schema_version")
+                else:
+                    report["schema_version"] = schema_version
+                payloads = (
+                    compliance_module._distribution_report_scan_payloads(
+                        report
+                    )
+                )
+                manifest = report["secret_scan"]["input_manifest"]
+                for name, payload in payloads.items():
+                    entry = next(
+                        item
+                        for item in manifest
+                        if item["path"] == f"report/{name}"
+                    )
+                    entry["size"] = len(payload)
+                    entry["sha256"] = compliance_module.sha256_bytes(payload)
+                report["secret_scan"]["input_manifest_sha256"] = (
+                    compliance_module.sha256_bytes(
+                        compliance_module.canonical_json_text(
+                            manifest
+                        ).encode()
+                    )
+                )
+
+                codes = {
+                    str(item["code"])
+                    for item in distribution_report_blockers(report)
+                }
+
+                self.assertIn(
+                    "unsupported_distribution_compliance_schema",
+                    codes,
+                )
 
     def test_rejects_build_backend_identity_drift(self) -> None:
         mutations = (

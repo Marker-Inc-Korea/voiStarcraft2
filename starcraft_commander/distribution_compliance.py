@@ -1076,19 +1076,237 @@ def _python_cli_argument_text(path: str, text: str) -> str:
         tree = ast.parse(text)
     except (SyntaxError, ValueError):
         return ""
+
     commands: list[str] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.List, ast.Tuple)):
-            continue
-        values: list[str] = []
-        for element in node.elts:
-            value = _constant_string_expression(element)
+    abstract_value = str | tuple[str, ...]
+    dynamic_argument = "<dynamic-argument>"
+
+    def evaluate(
+        node: ast.AST,
+        environment: Mapping[str, abstract_value],
+    ) -> abstract_value | None:
+        value = _constant_string_expression(node)
+        if value is not None:
+            return value
+        if isinstance(node, ast.Name):
+            return environment.get(node.id)
+        if isinstance(node, (ast.List, ast.Tuple)):
+            values: list[str] = []
+            for element in node.elts:
+                if isinstance(element, ast.Starred):
+                    expanded = evaluate(element.value, environment)
+                    if isinstance(expanded, tuple):
+                        values.extend(expanded)
+                    else:
+                        values.append(dynamic_argument)
+                    continue
+                item = evaluate(element, environment)
+                values.append(item if isinstance(item, str) else dynamic_argument)
+            return tuple(values)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = evaluate(node.left, environment)
+            right = evaluate(node.right, environment)
+            if isinstance(left, str) and isinstance(right, str):
+                return left + right
+            if isinstance(left, tuple) and isinstance(right, tuple):
+                return left + right
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"list", "tuple"}
+            and len(node.args) == 1
+            and not node.keywords
+        ):
+            value = evaluate(node.args[0], environment)
+            if isinstance(value, tuple):
+                return value
+        return None
+
+    def record(value: abstract_value | None) -> None:
+        if not isinstance(value, tuple):
+            return
+        if not any("--provider" in item for item in value):
+            return
+        command = " ".join(value)
+        if command not in commands:
+            commands.append(command)
+
+    def assigned_names(target: ast.AST) -> tuple[str, ...]:
+        if isinstance(target, ast.Name):
+            return (target.id,)
+        if isinstance(target, (ast.List, ast.Tuple)):
+            return tuple(
+                name
+                for element in target.elts
+                for name in assigned_names(element)
+            )
+        return ()
+
+    def bind(
+        environment: dict[str, abstract_value],
+        target: ast.AST,
+        value: abstract_value | None,
+    ) -> None:
+        for name in assigned_names(target):
             if value is None:
-                values.append("<dynamic-argument>")
+                environment.pop(name, None)
             else:
-                values.append(value)
-        if values and any("--provider" in value for value in values):
-            commands.append(" ".join(values))
+                environment[name] = value
+
+    def record_expressions(
+        statement: ast.stmt,
+        environment: Mapping[str, abstract_value],
+    ) -> None:
+        class Recorder(ast.NodeVisitor):
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                return
+
+            def visit_AsyncFunctionDef(
+                self,
+                node: ast.AsyncFunctionDef,
+            ) -> None:
+                return
+
+            def visit_ClassDef(self, node: ast.ClassDef) -> None:
+                return
+
+            def visit_Lambda(self, node: ast.Lambda) -> None:
+                return
+
+            def generic_visit(self, node: ast.AST) -> None:
+                record(evaluate(node, environment))
+                super().generic_visit(node)
+
+        Recorder().visit(statement)
+
+    def process_scope(
+        statements: Sequence[ast.stmt],
+        inherited: Mapping[str, abstract_value],
+        shadowed: Iterable[str] = (),
+    ) -> None:
+        environment = dict(inherited)
+        for name in shadowed:
+            environment.pop(name, None)
+        nested_scopes: list[
+            tuple[Sequence[ast.stmt], tuple[str, ...]]
+        ] = []
+        try_statement_types = (
+            ast.Try,
+            getattr(ast, "TryStar", ast.Try),
+        )
+
+        def statement_blocks(
+            statement: ast.stmt,
+        ) -> tuple[Sequence[ast.stmt], ...]:
+            if isinstance(statement, (ast.If, ast.For, ast.AsyncFor, ast.While)):
+                return (statement.body, statement.orelse)
+            if isinstance(statement, (ast.With, ast.AsyncWith)):
+                return (statement.body,)
+            if isinstance(statement, try_statement_types):
+                return (
+                    statement.body,
+                    *(handler.body for handler in statement.handlers),
+                    statement.orelse,
+                    statement.finalbody,
+                )
+            if isinstance(statement, ast.Match):
+                return tuple(case.body for case in statement.cases)
+            return ()
+
+        def process_statements(block: Sequence[ast.stmt]) -> None:
+            for statement in block:
+                if isinstance(
+                    statement,
+                    (ast.FunctionDef, ast.AsyncFunctionDef),
+                ):
+                    arguments = (
+                        *statement.args.posonlyargs,
+                        *statement.args.args,
+                        *statement.args.kwonlyargs,
+                    )
+                    if statement.args.vararg is not None:
+                        arguments = (*arguments, statement.args.vararg)
+                    if statement.args.kwarg is not None:
+                        arguments = (*arguments, statement.args.kwarg)
+                    nested_scopes.append(
+                        (
+                            statement.body,
+                            tuple(argument.arg for argument in arguments),
+                        )
+                    )
+                    continue
+                if isinstance(statement, ast.ClassDef):
+                    nested_scopes.append((statement.body, ()))
+                    continue
+
+                if isinstance(statement, ast.Assign):
+                    value = evaluate(statement.value, environment)
+                    for target in statement.targets:
+                        bind(environment, target, value)
+                elif isinstance(statement, ast.AnnAssign):
+                    value = (
+                        evaluate(statement.value, environment)
+                        if statement.value is not None
+                        else None
+                    )
+                    bind(environment, statement.target, value)
+                elif (
+                    isinstance(statement, ast.AugAssign)
+                    and isinstance(statement.target, ast.Name)
+                    and isinstance(statement.op, ast.Add)
+                ):
+                    current = environment.get(statement.target.id)
+                    addition = evaluate(statement.value, environment)
+                    if isinstance(current, str) and isinstance(addition, str):
+                        environment[statement.target.id] = current + addition
+                    elif (
+                        isinstance(current, tuple)
+                        and isinstance(addition, tuple)
+                    ):
+                        environment[statement.target.id] = current + addition
+                    else:
+                        environment.pop(statement.target.id, None)
+                elif (
+                    isinstance(statement, ast.Expr)
+                    and isinstance(statement.value, ast.Call)
+                    and isinstance(statement.value.func, ast.Attribute)
+                    and isinstance(statement.value.func.value, ast.Name)
+                ):
+                    call = statement.value
+                    target_name = call.func.value.id
+                    current = environment.get(target_name)
+                    if isinstance(current, tuple) and len(call.args) == 1:
+                        addition = evaluate(call.args[0], environment)
+                        if call.func.attr == "append":
+                            environment[target_name] = current + (
+                                addition
+                                if isinstance(addition, str)
+                                else dynamic_argument,
+                            )
+                        elif call.func.attr == "extend":
+                            environment[target_name] = current + (
+                                addition
+                                if isinstance(addition, tuple)
+                                else (dynamic_argument,)
+                            )
+                elif isinstance(statement, ast.Delete):
+                    for target in statement.targets:
+                        bind(environment, target, None)
+
+                record_expressions(statement, environment)
+                for child_block in statement_blocks(statement):
+                    process_statements(child_block)
+
+        process_statements(statements)
+
+        for nested_statements, nested_shadowed in nested_scopes:
+            process_scope(
+                nested_statements,
+                environment,
+                nested_shadowed,
+            )
+
+    process_scope(tree.body, {})
     return "\n".join(commands)
 
 
@@ -1892,6 +2110,17 @@ def distribution_report_blockers(
     """Derive the verdict from raw evidence, never caller-provided booleans."""
 
     blockers: list[dict[str, object]] = []
+    if (
+        report.get("schema_version")
+        != DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION
+    ):
+        blockers.append(
+            {
+                "code": "unsupported_distribution_compliance_schema",
+                "expected": DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION,
+                "observed": report.get("schema_version"),
+            }
+        )
     repository = _mapping(report.get("repository"))
     repository_states: dict[str, Mapping[str, object]] = {}
     for phase in ("before", "after"):
