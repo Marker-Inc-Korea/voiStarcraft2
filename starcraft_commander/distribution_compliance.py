@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover - Python 3.10 uses the dev dependency.
         _toml = None
 
 
-DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION: Final[int] = 3
+DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION: Final[int] = 4
 EXPECTED_LICENSE_EXPRESSION: Final[str] = (
     "AGPL-3.0-or-later OR LicenseRef-Commercial"
 )
@@ -270,20 +270,20 @@ _CLI_OPTION_VALUE_SEPARATOR: Final[str] = (
     r"(?:[ \t]*=[ \t]*|[ \t]+|[\"'][ \t]*,[ \t]*[\"']?)"
 )
 _MYPROXY_CLI_MODEL_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?im)^(?=[^\n]{0,4096}--provider"
+    r"(?im)^(?=[^\n]*--provider"
     + _CLI_OPTION_VALUE_SEPARATOR
     + r"[\"']?"
     + _MYPROXY_PROVIDER_PATTERN
-    + r"\b)[^\n]{0,4096}?--model"
+    + r"\b)[^\n]*?--model"
     + _CLI_OPTION_VALUE_SEPARATOR
     + r"[\"']?([^\"'\s,\\\])}]+)"
 )
 _MYPROXY_CLI_ENDPOINT_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?im)^(?=[^\n]{0,4096}--provider"
+    r"(?im)^(?=[^\n]*--provider"
     + _CLI_OPTION_VALUE_SEPARATOR
     + r"[\"']?"
     + _MYPROXY_PROVIDER_PATTERN
-    + r"\b)[^\n]{0,4096}?--(?:base-url|openai-base-url)"
+    + r"\b)[^\n]*?--(?:base-url|openai-base-url)"
     + _CLI_OPTION_VALUE_SEPARATOR
     + r"[\"']?([^\"'\s,\\\])}]+)"
 )
@@ -373,6 +373,16 @@ _ENV_KEY_CALL_RE: Final[re.Pattern[str]] = re.compile(
     r"[\"']"
     + _ENV_API_KEY_NAME_PATTERN
     + r"[\"']\s*,\s*"
+    + _ENV_API_KEY_VALUE_PATTERN
+)
+_ENV_KEY_DOCKER_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?im)^[ \t]*(?i:ENV|ARG)[ \t]+(?:"
+    + _ENV_API_KEY_NAME_PATTERN
+    + _CONFIG_ASSIGNMENT_KEY_SUFFIX
+    + r"[ \t]+|[^\n]*?[ \t]+"
+    + _ENV_API_KEY_NAME_PATTERN
+    + _CONFIG_ASSIGNMENT_KEY_SUFFIX
+    + r"[ \t]*=[ \t]*)"
     + _ENV_API_KEY_VALUE_PATTERN
 )
 _CREDENTIAL_PATH_RE: Final[re.Pattern[str]] = re.compile(
@@ -917,6 +927,7 @@ def scan_payload(
         ("private_key", _PRIVATE_KEY_RE),
         ("api_key_assignment", _ENV_KEY_ASSIGNMENT_RE),
         ("api_key_assignment", _ENV_KEY_CALL_RE),
+        ("api_key_assignment", _ENV_KEY_DOCKER_RE),
         ("private_endpoint", _PRIVATE_ENDPOINT_RE),
         ("private_endpoint", _PRIVATE_ENDPOINT_DOCKER_RE),
         ("private_endpoint", _PRIVATE_ENDPOINT_ENV_CALL_RE),
@@ -944,6 +955,7 @@ def scan_payload(
                 else _shell_continuation_text(candidate)
             ),
             _python_cli_argument_text(normalized_path, candidate),
+            _python_sensitive_call_text(normalized_path, candidate),
         ):
             if normalized and normalized not in scan_texts:
                 scan_texts = (*scan_texts, normalized)
@@ -1070,16 +1082,84 @@ def _python_cli_argument_text(path: str, text: str) -> str:
             continue
         values: list[str] = []
         for element in node.elts:
-            if not (
-                isinstance(element, ast.Constant)
-                and isinstance(element.value, str)
-            ):
+            value = _constant_string_expression(element)
+            if value is None:
                 values = []
                 break
-            values.append(element.value)
+            values.append(value)
         if values and any("--provider" in value for value in values):
             commands.append(" ".join(values))
     return "\n".join(commands)
+
+
+def _python_sensitive_call_text(path: str, text: str) -> str:
+    if PurePosixPath(path).suffix.lower() != ".py":
+        return ""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return ""
+    calls: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or len(node.args) < 2:
+            continue
+        function = node.func
+        is_putenv = (
+            (
+                isinstance(function, ast.Name)
+                and function.id == "putenv"
+            )
+            or (
+                isinstance(function, ast.Attribute)
+                and function.attr == "putenv"
+            )
+        )
+        is_setdefault = (
+            isinstance(function, ast.Attribute)
+            and function.attr == "setdefault"
+            and (
+                (
+                    isinstance(function.value, ast.Name)
+                    and function.value.id == "environ"
+                )
+                or (
+                    isinstance(function.value, ast.Attribute)
+                    and function.value.attr == "environ"
+                )
+            )
+        )
+        if not (is_putenv or is_setdefault):
+            continue
+        key = _constant_string_expression(node.args[0])
+        value = _constant_string_expression(node.args[1])
+        if key is None or value is None:
+            continue
+        function_name = "os.putenv" if is_putenv else "os.environ.setdefault"
+        calls.append(
+            f"{function_name}({json.dumps(key)}, {json.dumps(value)})"
+        )
+    return "\n".join(calls)
+
+
+def _constant_string_expression(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _constant_string_expression(node.left)
+        right = _constant_string_expression(node.right)
+        if left is not None and right is not None:
+            return left + right
+    if isinstance(node, ast.JoinedStr):
+        parts: list[str] = []
+        for value in node.values:
+            if not (
+                isinstance(value, ast.Constant)
+                and isinstance(value.value, str)
+            ):
+                return None
+            parts.append(value.value)
+        return "".join(parts)
+    return None
 
 
 def _dockerfile_logical_text(path: str, text: str) -> str:
@@ -1375,8 +1455,10 @@ def scan_git_and_artifacts(
     findings: list[dict[str, object]] = []
     input_manifest: list[dict[str, object]] = []
     input_paths: set[str] = set()
+    tracked_source_manifest: list[dict[str, object]] = []
 
     def scan_input(
+        kind: str,
         path: str,
         payload: bytes,
         *,
@@ -1388,6 +1470,7 @@ def scan_git_and_artifacts(
         input_paths.add(normalized_path)
         input_manifest.append(
             {
+                "kind": kind,
                 "path": normalized_path,
                 "size": len(payload),
                 "sha256": sha256_bytes(payload),
@@ -1410,15 +1493,30 @@ def scan_git_and_artifacts(
         fields = metadata.split()
         if not separator or len(fields) != 3 or fields[2] != b"0":
             raise RuntimeError("Git index contains an unsupported tracked entry")
+        mode = fields[0].decode("ascii", errors="strict")
+        oid = fields[1].decode("ascii", errors="strict")
+        if mode not in {"100644", "100755", "120000"}:
+            raise RuntimeError(f"Unsupported tracked file mode: {mode}")
+        if re.fullmatch(r"[0-9a-f]{40}", oid) is None:
+            raise RuntimeError("Unsupported Git object format")
         relative = raw_path.decode("utf-8", errors="strict")
         if relative in tracked_paths:
             raise RuntimeError("Git index contains a duplicate tracked path")
         tracked_paths.add(relative)
         payload = _git_output(
             repository_root,
-            ["cat-file", "blob", fields[1].decode("ascii", errors="strict")],
+            ["cat-file", "blob", oid],
         )
-        scan_input(relative, payload, allow_safe_fixtures=True)
+        tracked_source_manifest.append(
+            {
+                "path": relative,
+                "mode": mode,
+                "oid": oid,
+                "size": len(payload),
+                "sha256": sha256_bytes(payload),
+            }
+        )
+        scan_input("tracked", relative, payload, allow_safe_fixtures=True)
     untracked = _git_output(
         repository_root,
         ["ls-files", "--others", "--exclude-standard", "-z"],
@@ -1430,12 +1528,14 @@ def scan_git_and_artifacts(
         candidate = repository_root / relative
         if candidate.is_symlink():
             scan_input(
+                "untracked",
                 relative,
                 os.readlink(candidate).encode("utf-8"),
                 allow_safe_fixtures=True,
             )
         elif candidate.is_file():
             scan_input(
+                "untracked",
                 relative,
                 candidate.read_bytes(),
                 allow_safe_fixtures=True,
@@ -1445,6 +1545,7 @@ def scan_git_and_artifacts(
         ["diff", "--no-ext-diff", "--binary", "HEAD", "--"],
     )
     scan_input(
+        "diff",
         "<git-diff>",
         _added_diff_payload(diff),
         allow_safe_fixtures=False,
@@ -1452,17 +1553,20 @@ def scan_git_and_artifacts(
     for snapshot in snapshots:
         for entry, payload in snapshot.files.items():
             scan_input(
+                snapshot.kind,
                 f"{snapshot.kind}/{entry}",
                 payload,
                 allow_safe_fixtures=False,
             )
     for name, payload in sorted((generated_payloads or {}).items()):
         scan_input(
+            "report",
             f"report/{name}",
             payload,
             allow_safe_fixtures=False,
         )
     input_manifest.sort(key=lambda item: str(item["path"]))
+    tracked_source_manifest.sort(key=lambda item: str(item["path"]))
     findings.sort(
         key=lambda item: (
             str(item.get("path", "")),
@@ -1477,6 +1581,10 @@ def scan_git_and_artifacts(
             canonical_json_text(input_manifest).encode("utf-8")
         ),
         "input_manifest": input_manifest,
+        "tracked_source_manifest_sha256": sha256_bytes(
+            canonical_json_text(tracked_source_manifest).encode("utf-8")
+        ),
+        "tracked_source_manifest": tracked_source_manifest,
         "finding_count": len(findings),
         "findings": findings,
     }
@@ -1519,6 +1627,69 @@ def _distribution_report_scan_payloads(
         _REPORT_SCAN_JSON_NAME: json_text.encode("utf-8"),
         _REPORT_SCAN_MARKDOWN_NAME: markdown_text.encode("utf-8"),
     }
+
+
+def _git_blob_oid(payload: bytes) -> str:
+    header = f"blob {len(payload)}\0".encode("ascii")
+    return hashlib.sha1(header + payload).hexdigest()
+
+
+def _git_tree_oid_from_manifest(
+    manifest: Sequence[Mapping[str, object]],
+) -> str:
+    root: dict[str, object] = {}
+    for raw_entry in manifest:
+        entry = _mapping(raw_entry)
+        path = entry.get("path")
+        mode = entry.get("mode")
+        oid = entry.get("oid")
+        if (
+            not isinstance(path, str)
+            or not path
+            or path.startswith("/")
+            or "\\" in path
+            or not isinstance(mode, str)
+            or mode not in {"100644", "100755", "120000"}
+            or not isinstance(oid, str)
+            or re.fullmatch(r"[0-9a-f]{40}", oid) is None
+        ):
+            raise ValueError("Invalid tracked source manifest entry")
+        parts = PurePosixPath(path).parts
+        if not parts or any(part in {"", ".", ".."} for part in parts):
+            raise ValueError("Invalid tracked source path")
+        node = root
+        for part in parts[:-1]:
+            child = node.setdefault(part, {})
+            if not isinstance(child, dict):
+                raise ValueError("Tracked source path collision")
+            node = child
+        if parts[-1] in node:
+            raise ValueError("Duplicate tracked source path")
+        node[parts[-1]] = (mode, oid)
+
+    def tree_oid(node: Mapping[str, object]) -> str:
+        records: list[tuple[bytes, bytes]] = []
+        for name, value in node.items():
+            name_bytes = name.encode("utf-8")
+            if isinstance(value, dict):
+                mode = "40000"
+                oid = tree_oid(value)
+                sort_key = name_bytes + b"/"
+            else:
+                mode, oid = value
+                sort_key = name_bytes + b"\0"
+            record = (
+                f"{mode} ".encode("ascii")
+                + name_bytes
+                + b"\0"
+                + bytes.fromhex(oid)
+            )
+            records.append((sort_key, record))
+        payload = b"".join(record for _, record in sorted(records))
+        header = f"tree {len(payload)}\0".encode("ascii")
+        return hashlib.sha1(header + payload).hexdigest()
+
+    return tree_oid(root)
 
 
 def build_distribution_report(
@@ -2139,16 +2310,29 @@ def distribution_report_blockers(
     scanned_file_count = secret_scan.get("scanned_file_count")
     input_manifest_value = secret_scan.get("input_manifest")
     input_manifest_sha256 = secret_scan.get("input_manifest_sha256")
+    tracked_manifest_value = secret_scan.get("tracked_source_manifest")
+    tracked_manifest_sha256 = secret_scan.get(
+        "tracked_source_manifest_sha256"
+    )
     valid_manifest = isinstance(input_manifest_value, list)
     manifest_by_path: dict[str, Mapping[str, object]] = {}
     if valid_manifest:
         for raw_entry in input_manifest_value:
             entry = _mapping(raw_entry)
+            kind = entry.get("kind")
             path = entry.get("path")
             size = entry.get("size")
             digest = entry.get("sha256")
             if (
-                set(entry) != {"path", "size", "sha256"}
+                set(entry) != {"kind", "path", "size", "sha256"}
+                or kind not in {
+                    "tracked",
+                    "untracked",
+                    "diff",
+                    "wheel",
+                    "sdist",
+                    "report",
+                }
                 or not isinstance(path, str)
                 or not path
                 or "\\" in path
@@ -2166,16 +2350,86 @@ def distribution_report_blockers(
         expected_manifest_digest = sha256_bytes(
             canonical_json_text(input_manifest_value).encode("utf-8")
         )
+        diff_paths = {
+            path
+            for path, entry in manifest_by_path.items()
+            if entry.get("kind") == "diff"
+        }
         valid_manifest = (
             input_manifest_sha256 == expected_manifest_digest
             and scanned_file_count == len(input_manifest_value)
-            and "<git-diff>" in manifest_by_path
+            and diff_paths == {"<git-diff>"}
         )
         diff_entry = manifest_by_path.get("<git-diff>", {})
         valid_manifest = valid_manifest and (
-            diff_entry.get("size") == 0
+            diff_entry.get("kind") == "diff"
+            and diff_entry.get("size") == 0
             and diff_entry.get("sha256") == sha256_bytes(b"")
         )
+    valid_tracked_manifest = isinstance(tracked_manifest_value, list)
+    tracked_by_path: dict[str, Mapping[str, object]] = {}
+    if valid_tracked_manifest:
+        for raw_entry in tracked_manifest_value:
+            entry = _mapping(raw_entry)
+            path = entry.get("path")
+            mode = entry.get("mode")
+            oid = entry.get("oid")
+            size = entry.get("size")
+            digest = entry.get("sha256")
+            input_entry = manifest_by_path.get(str(path), {})
+            if (
+                set(entry) != {"path", "mode", "oid", "size", "sha256"}
+                or not isinstance(path, str)
+                or not path
+                or "\\" in path
+                or path.startswith(("/", "./"))
+                or path in tracked_by_path
+                or mode not in {"100644", "100755", "120000"}
+                or not isinstance(oid, str)
+                or re.fullmatch(r"[0-9a-f]{40}", oid) is None
+                or type(size) is not int
+                or size < 0
+                or not isinstance(digest, str)
+                or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                or input_entry.get("kind") != "tracked"
+                or input_entry.get("size") != size
+                or input_entry.get("sha256") != digest
+            ):
+                valid_tracked_manifest = False
+                break
+            tracked_by_path[path] = entry
+    if valid_tracked_manifest:
+        expected_tracked_digest = sha256_bytes(
+            canonical_json_text(tracked_manifest_value).encode("utf-8")
+        )
+        tracked_input_paths = {
+            path
+            for path, entry in manifest_by_path.items()
+            if entry.get("kind") == "tracked"
+        }
+        untracked_input_paths = {
+            path
+            for path, entry in manifest_by_path.items()
+            if entry.get("kind") == "untracked"
+        }
+        valid_tracked_manifest = (
+            tracked_manifest_sha256 == expected_tracked_digest
+            and tracked_input_paths == set(tracked_by_path)
+            and not untracked_input_paths
+        )
+    if valid_tracked_manifest:
+        try:
+            tracked_tree = _git_tree_oid_from_manifest(
+                tracked_manifest_value
+            )
+        except ValueError:
+            valid_tracked_manifest = False
+        else:
+            valid_tracked_manifest = all(
+                state.get("tree") == tracked_tree
+                for state in repository_states.values()
+            )
+    valid_manifest = valid_manifest and valid_tracked_manifest
     if valid_manifest:
         expected_report_payloads = _distribution_report_scan_payloads(report)
         expected_report_paths = {
@@ -2183,14 +2437,15 @@ def distribution_report_blockers(
         }
         observed_report_paths = {
             path
-            for path in manifest_by_path
-            if path.startswith("report/")
+            for path, entry in manifest_by_path.items()
+            if entry.get("kind") == "report"
         }
         valid_manifest = observed_report_paths == expected_report_paths
         for name, payload in expected_report_payloads.items():
             entry = manifest_by_path.get(f"report/{name}", {})
             if (
-                entry.get("size") != len(payload)
+                entry.get("kind") != "report"
+                or entry.get("size") != len(payload)
                 or entry.get("sha256") != sha256_bytes(payload)
             ):
                 valid_manifest = False
@@ -2203,8 +2458,8 @@ def distribution_report_blockers(
             expected_paths = {f"{kind}/{entry}" for entry in file_manifest}
             observed_paths = {
                 path
-                for path in manifest_by_path
-                if path.startswith(f"{kind}/")
+                for path, entry in manifest_by_path.items()
+                if entry.get("kind") == kind
             }
             if observed_paths != expected_paths:
                 valid_manifest = False
@@ -2212,7 +2467,8 @@ def distribution_report_blockers(
             for archive_entry, digest in file_manifest.items():
                 entry = manifest_by_path.get(f"{kind}/{archive_entry}", {})
                 if (
-                    entry.get("sha256") != digest
+                    entry.get("kind") != kind
+                    or entry.get("sha256") != digest
                     or entry.get("size") != file_sizes.get(archive_entry)
                 ):
                     valid_manifest = False
@@ -2227,6 +2483,7 @@ def distribution_report_blockers(
                 set(finding) != {"path", "line", "rule_id", "fingerprint"}
                 or not isinstance(finding.get("path"), str)
                 or not finding.get("path")
+                or finding.get("path") not in manifest_by_path
                 or type(finding.get("line")) is not int
                 or int(finding.get("line", -1)) < 0
                 or not isinstance(finding.get("rule_id"), str)
