@@ -1100,6 +1100,11 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
     analysis_steps = 0
     analysis_limited = False
     analysis_limit_reason = ""
+    function_definitions: dict[
+        str,
+        list[ast.FunctionDef | ast.AsyncFunctionDef],
+    ] = {}
+    active_function_calls: set[int] = set()
 
     def mark_limited(reason: str) -> None:
         nonlocal analysis_limited, analysis_limit_reason
@@ -1124,6 +1129,14 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
     def bounded_sequence(values: Sequence[str]) -> tuple[str, ...]:
         if len(values) <= max_arguments:
             return tuple(values)
+        full_text = " ".join(values)
+        if re.search(
+            r"(?i)--provider[ \t]+"
+            + _MYPROXY_PROVIDER_PATTERN
+            + r"\b",
+            full_text,
+        ):
+            mark_limited("arguments")
         keep = set(range(max_arguments // 4))
         keep.update(
             range(
@@ -1291,6 +1304,108 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             result.append(arguments.kwarg.arg)
         return tuple(result)
 
+    def contains_cli_provider(node: ast.AST) -> bool:
+        for candidate in ast.walk(node):
+            value = _constant_string_expression(candidate)
+            if value is not None and "--provider" in value:
+                return True
+        return False
+
+    def bound_function_environment(
+        definition: ast.FunctionDef | ast.AsyncFunctionDef,
+        environment: Mapping[str, cli_value],
+        call: ast.Call | None,
+    ) -> cli_environment:
+        result = dict(environment)
+        arguments = definition.args
+        for name in shadowed_arguments(arguments):
+            result.pop(name, None)
+
+        positional_parameters = (
+            *arguments.posonlyargs,
+            *arguments.args,
+        )
+        default_offset = len(positional_parameters) - len(arguments.defaults)
+        positional_defaults = {
+            positional_parameters[index].arg: arguments.defaults[
+                index - default_offset
+            ]
+            for index in range(default_offset, len(positional_parameters))
+        }
+        keyword_defaults = {
+            parameter.arg: default
+            for parameter, default in zip(
+                arguments.kwonlyargs,
+                arguments.kw_defaults,
+            )
+            if default is not None
+        }
+
+        positional_values: list[cli_value] = []
+        keyword_values: dict[str, cli_value] = {}
+        unknown_keywords = False
+        if call is not None:
+            for item in call.args:
+                if isinstance(item, ast.Starred):
+                    expanded = evaluate(item.value, environment)
+                    if isinstance(expanded, tuple):
+                        positional_values.extend(expanded)
+                    else:
+                        positional_values.append(dynamic_argument)
+                    continue
+                positional_values.append(
+                    evaluate(item, environment) or dynamic_argument
+                )
+            for keyword in call.keywords:
+                if keyword.arg is None:
+                    unknown_keywords = True
+                    continue
+                keyword_values[keyword.arg] = (
+                    evaluate(keyword.value, environment) or dynamic_argument
+                )
+
+        for index, parameter in enumerate(positional_parameters):
+            if index < len(positional_values):
+                value = positional_values[index]
+            elif parameter.arg in keyword_values:
+                value = keyword_values[parameter.arg]
+            elif parameter.arg in positional_defaults:
+                value = (
+                    evaluate(positional_defaults[parameter.arg], environment)
+                    or dynamic_argument
+                )
+            else:
+                value = dynamic_argument
+            bind(result, ast.Name(id=parameter.arg), value)
+
+        extra_positional = positional_values[len(positional_parameters):]
+        if arguments.vararg is not None:
+            bind(
+                result,
+                ast.Name(id=arguments.vararg.arg),
+                tuple(extra_positional),
+            )
+
+        for parameter in arguments.kwonlyargs:
+            if parameter.arg in keyword_values:
+                value = keyword_values[parameter.arg]
+            elif parameter.arg in keyword_defaults:
+                value = (
+                    evaluate(keyword_defaults[parameter.arg], environment)
+                    or dynamic_argument
+                )
+            else:
+                value = dynamic_argument
+            bind(result, ast.Name(id=parameter.arg), value)
+
+        if arguments.kwarg is not None:
+            bind(
+                result,
+                ast.Name(id=arguments.kwarg.arg),
+                dynamic_argument if unknown_keywords else (),
+            )
+        return result
+
     def record_expression(
         node: ast.AST,
         environment: Mapping[str, cli_value],
@@ -1403,6 +1518,44 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             getattr(ast, "TryStar", ast.Try),
         )
 
+        def invoke_known_functions(
+            node: ast.AST,
+            environment: Mapping[str, cli_value],
+        ) -> None:
+            for candidate in ast.walk(node):
+                if not isinstance(candidate, ast.Call):
+                    continue
+                function_name = (
+                    candidate.func.id
+                    if isinstance(candidate.func, ast.Name)
+                    else (
+                        candidate.func.attr
+                        if isinstance(candidate.func, ast.Attribute)
+                        else ""
+                    )
+                )
+                for definition in function_definitions.get(
+                    function_name,
+                    (),
+                ):
+                    identity = id(definition)
+                    if identity in active_function_calls:
+                        continue
+                    active_function_calls.add(identity)
+                    try:
+                        process_scope(
+                            definition.body,
+                            (
+                                bound_function_environment(
+                                    definition,
+                                    environment,
+                                    candidate,
+                                ),
+                            ),
+                        )
+                    finally:
+                        active_function_calls.remove(identity)
+
         def apply_simple(
             statement: ast.stmt,
             environment: Mapping[str, cli_value],
@@ -1481,6 +1634,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                 for target in statement.targets:
                     bind(result, target, None)
             record_expression(statement, result)
+            invoke_known_functions(statement, result)
             return result
 
         def process_block(
@@ -1496,11 +1650,36 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                     (ast.FunctionDef, ast.AsyncFunctionDef),
                 ):
                     nested_shadowed = shadowed_arguments(statement.args)
-                    process_scope(
-                        statement.body,
-                        result_states,
-                        nested_shadowed,
-                    )
+                    if contains_cli_provider(statement):
+                        definitions = function_definitions.setdefault(
+                            statement.name,
+                            [],
+                        )
+                        if statement not in definitions:
+                            definitions.append(statement)
+                        identity = id(statement)
+                        if identity not in active_function_calls:
+                            active_function_calls.add(identity)
+                            try:
+                                process_scope(
+                                    statement.body,
+                                    tuple(
+                                        bound_function_environment(
+                                            statement,
+                                            state,
+                                            None,
+                                        )
+                                        for state in result_states
+                                    ),
+                                )
+                            finally:
+                                active_function_calls.remove(identity)
+                    else:
+                        process_scope(
+                            statement.body,
+                            result_states,
+                            nested_shadowed,
+                        )
                     deferred_scopes.append(
                         (statement.body, nested_shadowed)
                     )
@@ -1558,15 +1737,34 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                     zero_iteration = [
                         dict(state) for state in result_states
                     ]
-                    one_iteration = [
-                        dict(state) for state in result_states
-                    ]
+                    one_iteration: list[cli_environment] = []
                     if isinstance(statement, (ast.For, ast.AsyncFor)):
-                        for state in one_iteration:
-                            bind(state, statement.target, None)
+                        for state in result_states:
+                            iterable = evaluate(statement.iter, state)
+                            if isinstance(iterable, tuple):
+                                for item in iterable:
+                                    iteration = dict(state)
+                                    bind(
+                                        iteration,
+                                        statement.target,
+                                        item,
+                                    )
+                                    one_iteration.append(iteration)
+                            else:
+                                iteration = dict(state)
+                                bind(
+                                    iteration,
+                                    statement.target,
+                                    dynamic_argument,
+                                )
+                                one_iteration.append(iteration)
+                    else:
+                        one_iteration = [
+                            dict(state) for state in result_states
+                        ]
                     one_iteration = process_block(
                         statement.body,
-                        one_iteration,
+                        deduplicate_states(one_iteration),
                     )
                     loop_states = deduplicate_states(
                         (*zero_iteration, *one_iteration)

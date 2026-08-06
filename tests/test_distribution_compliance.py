@@ -1111,12 +1111,130 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             allow_safe_fixtures=False,
         )
 
-        self.assertEqual("", failure)
+        self.assertEqual(
+            "python_cli_analysis_limit_exceeded:arguments",
+            failure,
+        )
         self.assertLess(len(reconstructed), 30_000)
         self.assertEqual(
-            {"private_model_override"},
+            {
+                "private_model_override",
+                "python_cli_analysis_limit_exceeded",
+            },
             {str(item["rule_id"]) for item in findings},
         )
+
+    def test_python_cli_argument_truncation_fails_closed(self) -> None:
+        arguments = ['"commander"']
+        for index in range(20):
+            if index == 4:
+                arguments.extend(
+                    (
+                        '"--provider"',
+                        '"my" + "proxy"',
+                        '"--openai-base-url"',
+                        '"https://proxy." + "corp.example/v1"',
+                        '"--model"',
+                        '"private-" + "deployment"',
+                    )
+                )
+            else:
+                arguments.extend(
+                    (
+                        '"--provider"',
+                        '"openai"',
+                        '"--openai-base-url"',
+                        '"https://api.openai.com/v1"',
+                        '"--model"',
+                        '"public-model"',
+                    )
+                )
+        payload = (
+            "args = [" + ", ".join(arguments) + "]\n"
+            "run(args)\n"
+        )
+
+        reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "launcher.py",
+                payload,
+            )
+        )
+        findings = scan_payload(
+            "launcher.py",
+            payload.encode(),
+            allow_safe_fixtures=False,
+        )
+
+        self.assertNotIn("myproxy", reconstructed)
+        self.assertEqual(
+            "python_cli_analysis_limit_exceeded:arguments",
+            failure,
+        )
+        self.assertIn(
+            "python_cli_analysis_limit_exceeded",
+            {str(item["rule_id"]) for item in findings},
+        )
+
+    def test_python_cli_reconstruction_binds_defaults_calls_and_loops(
+        self,
+    ) -> None:
+        endpoint = '"https://proxy." + "corp.example/v1"'
+        model = '"private-" + "deployment"'
+        payloads = {
+            "function-default": (
+                'def launch(provider="my" + "proxy"):\n'
+                "    run([\n"
+                '        "commander", "--provider", provider,\n'
+                f'        "--openai-base-url", {endpoint},\n'
+                f'        "--model", {model},\n'
+                "    ])\n"
+                "launch()\n"
+            ),
+            "call-binding": (
+                "def launch(provider):\n"
+                "    run([\n"
+                '        "commander", "--provider", provider,\n'
+                f'        "--openai-base-url", {endpoint},\n'
+                f'        "--model", {model},\n'
+                "    ])\n"
+                'launch("my" + "proxy")\n'
+            ),
+            "loop-binding": (
+                f"endpoint = {endpoint}\n"
+                f"model = {model}\n"
+                'for provider in ("my" + "proxy",):\n'
+                "    run([\n"
+                '        "commander", "--provider", provider,\n'
+                '        "--openai-base-url", endpoint,\n'
+                '        "--model", model,\n'
+                "    ])\n"
+            ),
+        }
+
+        for name, payload in payloads.items():
+            with self.subTest(name=name):
+                reconstructed, failure = (
+                    compliance_module._python_cli_argument_text(
+                        "launcher.py",
+                        payload,
+                    )
+                )
+                findings = scan_payload(
+                    "launcher.py",
+                    payload.encode(),
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertEqual("", failure)
+                self.assertIn("myproxy", reconstructed)
+                self.assertEqual(
+                    {
+                        "private_endpoint",
+                        "private_model_override",
+                    },
+                    {str(item["rule_id"]) for item in findings},
+                )
 
     def test_detects_short_generic_api_key_names_and_punctuation(
         self,
