@@ -65,8 +65,16 @@ jobs:
             --output-dir distribution-compliance-evidence
       - name: Verify release source remained clean
         run: test -z "$(git status --porcelain=v1 --untracked-files=all)"
+      - name: Upload failed distribution compliance evidence
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: distribution-compliance-failed-evidence
+          path: distribution-compliance-evidence/
+          if-no-files-found: warn
+          retention-days: 30
       - name: Upload qualified release artifacts and compliance evidence
-        if: always()
+        if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: distribution-compliance-qualified-release

@@ -1208,6 +1208,37 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                 f"    {command}\n"
                 'launch(**{"provider": "my" + "proxy"})\n'
             ),
+            "immediate-lambda-call": (
+                f"(lambda provider: {command})"
+                '("my" + "proxy")\n'
+            ),
+            "conditional-callee": (
+                "def launch(provider):\n"
+                f"    {command}\n"
+                "def noop(provider):\n"
+                "    pass\n"
+                '(launch if True else noop)("my" + "proxy")\n'
+            ),
+            "walrus-callee": (
+                "def launch(provider):\n"
+                f"    {command}\n"
+                '(runner := launch)("my" + "proxy")\n'
+            ),
+            "variable-expanded-keyword": (
+                "def launch(provider):\n"
+                f"    {command}\n"
+                'kwargs = {"provider": "my" + "proxy"}\n'
+                "launch(**kwargs)\n"
+            ),
+            "attribute-function-alias": (
+                "class Holder:\n"
+                "    pass\n"
+                "holder = Holder()\n"
+                "def launch(provider):\n"
+                f"    {command}\n"
+                "holder.execute = launch\n"
+                'holder.execute("my" + "proxy")\n'
+            ),
         }
 
         for name, payload in payloads.items():
@@ -1233,6 +1264,112 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                     },
                     {str(item["rule_id"]) for item in findings},
                 )
+
+    def test_python_cli_reconstruction_preserves_callable_when_states_bound(
+        self,
+    ) -> None:
+        payload = (
+            "def launch(provider):\n"
+            "    run([\n"
+            '        "commander", "--provider", provider,\n'
+            '        "--openai-base-url", '
+            '"https://proxy." + "corp.example/v1",\n'
+            '        "--model", "private-" + "deployment",\n'
+            "    ])\n"
+            "def noop(provider):\n"
+            "    pass\n"
+            "if True:\n"
+            "    runner = launch\n"
+            "else:\n"
+            "    runner = noop\n"
+            "if True:\n"
+            '    a = "0"\n'
+            "else:\n"
+            '    a = "1"\n'
+            "if True:\n"
+            '    b = "0"\n'
+            "else:\n"
+            '    b = "1"\n'
+            "if True:\n"
+            '    c = "0"\n'
+            "else:\n"
+            '    c = "1"\n'
+            'runner("my" + "proxy")\n'
+        )
+
+        reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "launcher.py",
+                payload,
+            )
+        )
+        findings = scan_payload(
+            "launcher.py",
+            payload.encode(),
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual("", failure)
+        self.assertIn("myproxy", reconstructed)
+        self.assertEqual(
+            {
+                "private_endpoint",
+                "private_model_override",
+            },
+            {str(item["rule_id"]) for item in findings},
+        )
+
+    def test_python_cli_reconstruction_preserves_kwargs_when_states_bound(
+        self,
+    ) -> None:
+        payload = (
+            "def launch(provider):\n"
+            "    run([\n"
+            '        "commander", "--provider", provider,\n'
+            '        "--openai-base-url", '
+            '"https://proxy." + "corp.example/v1",\n'
+            '        "--model", "private-" + "deployment",\n'
+            "    ])\n"
+            "if True:\n"
+            '    kwargs = {"provider": "my" + "proxy"}\n'
+            "else:\n"
+            "    kwargs = resolve_kwargs()\n"
+            "if True:\n"
+            '    a = "0"\n'
+            "else:\n"
+            '    a = "1"\n'
+            "if True:\n"
+            '    b = "0"\n'
+            "else:\n"
+            '    b = "1"\n'
+            "if True:\n"
+            '    c = "0"\n'
+            "else:\n"
+            '    c = "1"\n'
+            "launch(**kwargs)\n"
+        )
+
+        reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "launcher.py",
+                payload,
+            )
+        )
+        findings = scan_payload(
+            "launcher.py",
+            payload.encode(),
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual("", failure)
+        self.assertIn("myproxy", reconstructed)
+        self.assertEqual(
+            {
+                "private_endpoint",
+                "private_model_override",
+            },
+            {str(item["rule_id"]) for item in findings},
+        )
 
     def test_python_cli_reconstruction_binds_iterable_forms(self) -> None:
         endpoint = '"https://proxy." + "corp.example/v1"'
@@ -1269,6 +1406,30 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                 f'        "--openai-base-url", {endpoint},\n'
                 f'        "--model", {model},\n'
                 "    ])\n"
+            ),
+            "nested-list-comprehension": (
+                "commands = [[\n"
+                '    "commander", "--provider", provider,\n'
+                f'    "--openai-base-url", {endpoint},\n'
+                f'    "--model", {model},\n'
+                '] for provider in ("my" + "proxy",)]\n'
+            ),
+            "nested-list-comprehension-loop": (
+                "for args in [[\n"
+                '    "commander", "--provider", provider,\n'
+                f'    "--openai-base-url", {endpoint},\n'
+                f'    "--model", {model},\n'
+                '] for provider in ("my" + "proxy",)]:\n'
+                "    run(args)\n"
+            ),
+            "nested-chunk-flattening": (
+                "chunks = [\n"
+                '    ["commander", "--provider", "my" + "proxy"],\n'
+                '    ["--openai-base-url", '
+                '"https://proxy." + "corp.example/v1"],\n'
+                '    ["--model", "private-" + "deployment"],\n'
+                "]\n"
+                "run([item for chunk in chunks for item in chunk])\n"
             ),
         }
 
@@ -2334,6 +2495,39 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
                     "unsupported_distribution_compliance_schema",
                     codes,
                 )
+
+    def test_rejects_unknown_top_level_field_after_projection_rebind(
+        self,
+    ) -> None:
+        report = copy.deepcopy(self.report)
+        report["publication_authorized"] = True
+        payloads = compliance_module._distribution_report_scan_payloads(
+            report
+        )
+        manifest = report["secret_scan"]["input_manifest"]
+        for name, payload in payloads.items():
+            entry = next(
+                item
+                for item in manifest
+                if item["path"] == f"report/{name}"
+            )
+            entry["size"] = len(payload)
+            entry["sha256"] = compliance_module.sha256_bytes(payload)
+        report["secret_scan"]["input_manifest_sha256"] = (
+            compliance_module.sha256_bytes(
+                compliance_module.canonical_json_text(manifest).encode()
+            )
+        )
+
+        blockers = distribution_report_blockers(report)
+
+        self.assertIn(
+            {
+                "code": "unexpected_distribution_compliance_fields",
+                "fields": ["publication_authorized"],
+            },
+            blockers,
+        )
 
     def test_rejects_build_backend_identity_drift(self) -> None:
         mutations = (
