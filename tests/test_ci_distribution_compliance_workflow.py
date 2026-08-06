@@ -12,12 +12,18 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
     def test_failed_evidence_and_qualified_release_uploads_are_separate(self) -> None:
         workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
         steps = workflow["jobs"]["distribution-compliance"]["steps"]
-        upload_steps = {
-            step["with"]["name"]: (index, step)
+        uploads = [
+            (index, step)
             for index, step in enumerate(steps)
             if str(step.get("uses", "")).startswith("actions/upload-artifact@")
+        ]
+        upload_steps = {
+            step["with"]["name"]: (index, step)
+            for index, step in uploads
         }
 
+        self.assertEqual(2, len(uploads))
+        self.assertEqual(2, len(upload_steps))
         self.assertEqual(
             {
                 "distribution-compliance-failed-evidence",

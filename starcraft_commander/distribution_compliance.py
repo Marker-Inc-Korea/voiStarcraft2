@@ -1105,16 +1105,21 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
     known_sequence_prefix = "<known-sequence:"
     known_mapping_prefix = "<known-mapping:"
     known_alternatives_prefix = "<known-alternatives:"
+    known_object_prefix = "<known-object:"
     function_definitions: dict[
         str,
         list[ast.FunctionDef | ast.AsyncFunctionDef],
     ] = {}
+    class_definitions: set[str] = set()
     lambda_definitions: dict[int, ast.Lambda] = {}
     sequence_values: dict[int, tuple[str, ...]] = {}
     mapping_values: dict[int, dict[str, cli_value]] = {}
     alternative_values: dict[int, tuple[cli_value, ...]] = {}
+    object_values: dict[int, dict[str, cli_value]] = {}
     active_function_calls: set[int] = set()
     active_lambda_calls: set[int] = set()
+    active_call_depth = 0
+    max_call_depth = 48
 
     def mark_limited(reason: str) -> None:
         nonlocal analysis_limited, analysis_limit_reason
@@ -1232,6 +1237,20 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             return None
         return mapping_values.get(identity)
 
+    def store_object() -> str:
+        values: dict[str, cli_value] = {}
+        identity = id(values)
+        object_values[identity] = values
+        return f"{known_object_prefix}{identity}>"
+
+    def stored_object(value: cli_value | None) -> dict[str, cli_value] | None:
+        if not isinstance(value, str):
+            return None
+        identity = stored_identity(value, known_object_prefix)
+        if identity is None:
+            return None
+        return object_values.get(identity)
+
     def mapping_alternatives(
         value: cli_value | None,
     ) -> list[dict[str, cli_value]]:
@@ -1272,13 +1291,19 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
         alternative_values[identity] = stored
         return f"{known_alternatives_prefix}{identity}>"
 
-    def attribute_key(node: ast.AST) -> str | None:
+    def attribute_key(
+        node: ast.AST,
+        environment: Mapping[str, cli_value],
+    ) -> str | None:
         if isinstance(node, ast.Name):
             return node.id
         if isinstance(node, ast.Attribute):
-            owner = attribute_key(node.value)
-            if owner is not None:
-                return f"{owner}.{node.attr}"
+            owner_value = evaluate(node.value, environment)
+            if stored_object(owner_value) is not None:
+                return f"{owner_value}.{node.attr}"
+            owner_key = attribute_key(node.value, environment)
+            if owner_key is not None:
+                return f"{owner_key}.{node.attr}"
         return None
 
     def flatten_sequence(value: cli_value | None) -> tuple[str, ...] | None:
@@ -1308,8 +1333,56 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                 for alternative in alternatives
                 for sequence in sequence_alternatives(alternative)
             ]
-        flattened = flatten_sequence(value)
-        return [flattened] if flattened is not None else []
+        sequence = stored_sequence(value)
+        if sequence is None:
+            return []
+        nested = [
+            item
+            for item in sequence
+            if sequence_alternatives(item)
+        ]
+        if nested:
+            return [
+                candidate
+                for item in nested
+                for candidate in sequence_alternatives(item)
+            ]
+        states: list[tuple[str, ...]] = [()]
+        for item in sequence:
+            item_alternatives = stored_alternatives(item)
+            scalar_values = (
+                [
+                    candidate
+                    for alternative in item_alternatives
+                    for candidate in scalar_alternatives(alternative)
+                ]
+                if item_alternatives is not None
+                else scalar_alternatives(item)
+            )
+            if not scalar_values:
+                scalar_values = [dynamic_argument]
+            states = [
+                combine(state, (candidate,))
+                for state in states
+                for candidate in scalar_values
+            ]
+            if len(states) > max_commands:
+                mark_limited("commands")
+                states = states[:max_commands]
+                break
+        return states
+
+    def scalar_alternatives(value: cli_value | None) -> list[str]:
+        alternatives = stored_alternatives(value)
+        if alternatives is not None:
+            return [
+                candidate
+                for alternative in alternatives
+                for candidate in scalar_alternatives(alternative)
+            ]
+        if isinstance(value, str) and not has_stored_reference(value):
+            return [value]
+        return []
 
     def has_stored_reference(value: cli_value) -> bool:
         alternatives = stored_alternatives(value)
@@ -1321,6 +1394,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
         return (
             stored_sequence(value) is not None
             or stored_mapping(value) is not None
+            or stored_object(value) is not None
             or (
                 isinstance(value, str)
                 and (
@@ -1347,33 +1421,41 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
         if isinstance(node, ast.Name):
             return environment.get(node.id)
         if isinstance(node, ast.Attribute):
-            key = attribute_key(node)
+            key = attribute_key(node, environment)
             return environment.get(key) if key is not None else None
         if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
-            values: tuple[str, ...] = ()
+            states: list[tuple[str, ...]] = [()]
             for element in node.elts:
                 if isinstance(element, ast.Starred):
                     expanded = evaluate(element.value, environment)
-                    flattened = flatten_sequence(expanded)
-                    if flattened is not None:
-                        values = combine(values, flattened)
-                    else:
-                        values = combine(values, (dynamic_argument,))
+                    expansions = sequence_alternatives(expanded)
+                    if not expansions:
+                        expansions = [(dynamic_argument,)]
+                    states = [
+                        combine(state, expansion)
+                        for state in states
+                        for expansion in expansions
+                    ]
                     continue
                 item = evaluate(element, environment)
-                values = combine(
-                    values,
-                    (
-                        item
-                        if isinstance(item, str)
-                        else (
-                            store_sequence(item)
-                            if isinstance(item, tuple)
-                            else dynamic_argument
-                        ),
-                    ),
+                stored_item = (
+                    item
+                    if isinstance(item, str)
+                    else (
+                        store_sequence(item)
+                        if isinstance(item, tuple)
+                        else dynamic_argument
+                    )
                 )
-            return values
+                states = [
+                    combine(state, (stored_item,))
+                    for state in states
+                ]
+            return (
+                states[0]
+                if len(states) == 1
+                else store_alternatives(states)
+            )
         if isinstance(node, ast.Dict):
             result: dict[str, cli_value] = {}
             for key_node, value_node in zip(node.keys, node.values):
@@ -1402,7 +1484,17 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                 environment,
             )
         if isinstance(node, ast.Subscript):
-            sequence = stored_sequence(evaluate(node.value, environment))
+            container = evaluate(node.value, environment)
+            key = _constant_string_expression(node.slice)
+            if key is not None:
+                mapping_values_for_key = [
+                    mapping[key]
+                    for mapping in mapping_alternatives(container)
+                    if key in mapping
+                ]
+                if mapping_values_for_key:
+                    return merge_values(mapping_values_for_key)
+            sequence = stored_sequence(container)
             index = (
                 node.slice.value
                 if isinstance(node.slice, ast.Constant)
@@ -1450,6 +1542,12 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             sequence = flatten_sequence(value)
             if sequence is not None:
                 return sequence
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in class_definitions
+        ):
+            return store_object()
         return None
 
     def record(value: cli_value | None) -> None:
@@ -1494,7 +1592,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             environment[target.id] = value
             return
         if isinstance(target, ast.Attribute):
-            key = attribute_key(target)
+            key = attribute_key(target, environment)
             if key is None:
                 return
             if value is None:
@@ -1510,16 +1608,44 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             return
         if isinstance(target, (ast.List, ast.Tuple)):
             sequence = stored_sequence(value)
+            starred_indexes = [
+                index
+                for index, element in enumerate(target.elts)
+                if isinstance(element, ast.Starred)
+            ]
             if (
                 sequence is not None
                 and len(target.elts) == len(sequence)
-                and not any(
-                    isinstance(element, ast.Starred)
-                    for element in target.elts
-                )
+                and not starred_indexes
             ):
                 for element, item in zip(target.elts, sequence):
                     bind(environment, element, item)
+            elif (
+                sequence is not None
+                and len(starred_indexes) == 1
+                and len(sequence) >= len(target.elts) - 1
+            ):
+                star_index = starred_indexes[0]
+                suffix_count = len(target.elts) - star_index - 1
+                for element, item in zip(
+                    target.elts[:star_index],
+                    sequence[:star_index],
+                ):
+                    bind(environment, element, item)
+                starred_target = target.elts[star_index]
+                assert isinstance(starred_target, ast.Starred)
+                middle_end = len(sequence) - suffix_count
+                bind(
+                    environment,
+                    starred_target.value,
+                    tuple(sequence[star_index:middle_end]),
+                )
+                if suffix_count:
+                    for element, item in zip(
+                        target.elts[star_index + 1:],
+                        sequence[middle_end:],
+                    ):
+                        bind(environment, element, item)
             else:
                 for name in assigned_names(target):
                     environment.pop(name, None)
@@ -1604,10 +1730,24 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             for item in call.args:
                 if isinstance(item, ast.Starred):
                     expanded = evaluate(item.value, environment)
-                    if isinstance(expanded, tuple):
-                        positional_values.extend(expanded)
-                    else:
+                    expansions = sequence_alternatives(expanded)
+                    if not expansions:
                         positional_values.append(dynamic_argument)
+                    else:
+                        width = max(len(expansion) for expansion in expansions)
+                        positional_values.extend(
+                            merge_values(
+                                [
+                                    (
+                                        expansion[index]
+                                        if index < len(expansion)
+                                        else dynamic_argument
+                                    )
+                                    for expansion in expansions
+                                ]
+                            )
+                            for index in range(width)
+                        )
                     continue
                 positional_values.append(
                     evaluate(item, environment) or dynamic_argument
@@ -1662,10 +1802,26 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             bind(result, ast.Name(id=parameter.arg), value)
 
         if arguments.kwarg is not None:
+            consumed_keywords = {
+                parameter.arg
+                for parameter in (
+                    *positional_parameters,
+                    *arguments.kwonlyargs,
+                )
+            }
+            extra_keywords = {
+                key: value
+                for key, value in keyword_values.items()
+                if key not in consumed_keywords
+            }
             bind(
                 result,
                 ast.Name(id=arguments.kwarg.arg),
-                dynamic_argument if unknown_keywords else (),
+                (
+                    dynamic_argument
+                    if unknown_keywords
+                    else store_mapping(extra_keywords)
+                ),
             )
         return result
 
@@ -1711,24 +1867,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                 unique.append(value)
         if len(unique) == 1:
             return unique[0]
-        if any(has_stored_reference(value) for value in unique):
-            return store_alternatives(unique)
-        if all(isinstance(value, str) for value in unique):
-            return bounded_string(
-                f" {dynamic_argument} ".join(
-                    value
-                    for value in unique
-                    if isinstance(value, str)
-                )
-            )
-        merged: tuple[str, ...] = ()
-        for value in unique:
-            sequence = value if isinstance(value, tuple) else (value,)
-            merged = combine(
-                merged,
-                (*sequence, dynamic_argument),
-            )
-        return merged
+        return store_alternatives(unique)
 
     def merge_environments(
         states: Sequence[cli_environment],
@@ -1939,7 +2078,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                     else callable_targets(node.value, environment)
                 )
             if isinstance(node, (ast.Name, ast.Attribute)):
-                key = attribute_key(node)
+                key = attribute_key(node, environment)
                 reference = (
                     environment.get(key)
                     if key is not None
@@ -1957,6 +2096,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             node: ast.AST,
             environment: Mapping[str, cli_value],
         ) -> None:
+            nonlocal active_call_depth
             for candidate in ast.walk(node):
                 if not isinstance(candidate, ast.Call):
                     continue
@@ -1975,7 +2115,11 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                             definition is not None
                             and lambda_identity not in active_lambda_calls
                         ):
+                            if active_call_depth >= max_call_depth:
+                                mark_limited("call_depth")
+                                continue
                             active_lambda_calls.add(lambda_identity)
+                            active_call_depth += 1
                             try:
                                 bound_environment = (
                                     bound_arguments_environment(
@@ -1993,6 +2137,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                                     bound_environment,
                                 )
                             finally:
+                                active_call_depth -= 1
                                 active_lambda_calls.remove(lambda_identity)
                     for definition in function_definitions.get(
                         function_name,
@@ -2001,7 +2146,11 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                         identity = id(definition)
                         if identity in active_function_calls:
                             continue
+                        if active_call_depth >= max_call_depth:
+                            mark_limited("call_depth")
+                            continue
                         active_function_calls.add(identity)
+                        active_call_depth += 1
                         try:
                             process_scope(
                                 definition.body,
@@ -2014,6 +2163,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                                 ),
                             )
                         finally:
+                            active_call_depth -= 1
                             active_function_calls.remove(identity)
 
         def apply_simple(
@@ -2110,22 +2260,22 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                     (ast.FunctionDef, ast.AsyncFunctionDef),
                 ):
                     nested_shadowed = shadowed_arguments(statement.args)
-                    if contains_cli_provider(statement):
-                        definitions = function_definitions.setdefault(
-                            statement.name,
-                            [],
+                    definitions = function_definitions.setdefault(
+                        statement.name,
+                        [],
+                    )
+                    if statement not in definitions:
+                        definitions.append(statement)
+                    for state in result_states:
+                        bind(
+                            state,
+                            ast.Name(id=statement.name),
+                            (
+                                f"{known_function_prefix}"
+                                f"{statement.name}>"
+                            ),
                         )
-                        if statement not in definitions:
-                            definitions.append(statement)
-                        for state in result_states:
-                            bind(
-                                state,
-                                ast.Name(id=statement.name),
-                                (
-                                    f"{known_function_prefix}"
-                                    f"{statement.name}>"
-                                ),
-                            )
+                    if contains_cli_provider(statement):
                         identity = id(statement)
                         if identity not in active_function_calls:
                             active_function_calls.add(identity)
@@ -2154,6 +2304,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                     )
                     continue
                 if isinstance(statement, ast.ClassDef):
+                    class_definitions.add(statement.name)
                     process_scope(statement.body, result_states)
                     deferred_scopes.append((statement.body, ()))
                     continue
@@ -2272,7 +2423,10 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             )
         return final_states
 
-    process_scope(tree.body, ({},))
+    try:
+        process_scope(tree.body, ({},))
+    except RecursionError:
+        mark_limited("recursion_depth")
     return (
         "\n".join(commands),
         (
@@ -3540,7 +3694,17 @@ def distribution_report_blockers(
     scanned_file_count = secret_scan.get("scanned_file_count")
     input_manifest_value = secret_scan.get("input_manifest")
     input_manifest_sha256 = secret_scan.get("input_manifest_sha256")
-    valid_manifest = isinstance(input_manifest_value, list)
+    valid_manifest = (
+        isinstance(input_manifest_value, list)
+        and set(secret_scan)
+        == {
+            "scanned_file_count",
+            "input_manifest_sha256",
+            "input_manifest",
+            "finding_count",
+            "findings",
+        }
+    )
     manifest_by_path: dict[str, Mapping[str, object]] = {}
     if valid_manifest:
         for raw_entry in input_manifest_value:
@@ -3724,7 +3888,26 @@ def distribution_report_blockers(
         or not valid_manifest
     ):
         blockers.append({"code": "invalid_secret_scan_evidence"})
-    return _deduplicate_blockers(blockers)
+    derived_blockers = _deduplicate_blockers(blockers)
+    derived_fields = {
+        field
+        for field in ("blockers", "ok", "status")
+        if field in report
+    }
+    if derived_fields:
+        expected_status = (
+            "blocked" if derived_blockers else "passed"
+        )
+        if (
+            derived_fields != {"blockers", "ok", "status"}
+            or report.get("blockers") != derived_blockers
+            or report.get("ok") is not (not derived_blockers)
+            or report.get("status") != expected_status
+        ):
+            derived_blockers.append(
+                {"code": "invalid_distribution_compliance_verdict"}
+            )
+    return _deduplicate_blockers(derived_blockers)
 
 
 def render_distribution_markdown(report: Mapping[str, object]) -> str:

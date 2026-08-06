@@ -1371,6 +1371,209 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             {str(item["rule_id"]) for item in findings},
         )
 
+    def test_python_cli_reconstruction_preserves_stored_provider_values(
+        self,
+    ) -> None:
+        endpoint = '"https://x." + "private.example/v1"'
+        model = '"private-" + "m"'
+        command = (
+            'run(["c", "--provider", provider, "--base-url", '
+            f"{endpoint}, \"--model\", {model}])"
+        )
+        payloads = {
+            "mapping-subscript": (
+                'config = {"provider": "my" + "proxy"}\n'
+                f"provider = config[\"provider\"]\n{command}\n"
+            ),
+            "starred-conditional": (
+                "def launch(provider):\n"
+                f"    {command}\n"
+                'launch(*(["my" + "proxy"] if True else ["openai"]))\n'
+            ),
+            "kwargs-subscript": (
+                "def launch(**kw):\n"
+                '    provider = kw["provider"]\n'
+                f"    {command}\n"
+                'launch(**{"provider": "my" + "proxy"})\n'
+            ),
+        }
+
+        for name, payload in payloads.items():
+            with self.subTest(name=name):
+                reconstructed, failure = (
+                    compliance_module._python_cli_argument_text(
+                        "launcher.py",
+                        payload,
+                    )
+                )
+                findings = scan_payload(
+                    "launcher.py",
+                    payload.encode(),
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertEqual("", failure)
+                self.assertIn("myproxy", reconstructed)
+                self.assertEqual(
+                    {"private_endpoint", "private_model_override"},
+                    {str(item["rule_id"]) for item in findings},
+                )
+
+    def test_python_cli_reconstruction_preserves_aliases_and_forwarding(
+        self,
+    ) -> None:
+        command = (
+            'run(["c", "--provider", provider, "--base-url", '
+            '"https://x." + "private.example/v1", "--model", '
+            '"private-" + "m"])'
+        )
+        provider_branches = "".join(
+            (
+                ("if" if index == 0 else "elif")
+                + f" choice == {index}:\n"
+                + (
+                    '    provider = "my" + "proxy"\n'
+                    if index == 4
+                    else (
+                        '    provider = "public-provider-'
+                        + str(index)
+                        + "-"
+                        + ("x" * 80)
+                        + '"\n'
+                    )
+                )
+            )
+            for index in range(9)
+        )
+        provider_branches += (
+            "else:\n"
+            '    provider = "public-provider-fallback-'
+            + ("x" * 80)
+            + '"\n'
+        )
+        payloads = {
+            "attribute-object-alias": (
+                "class Holder:\n"
+                "    pass\n"
+                "h = Holder()\n"
+                "def launch(provider):\n"
+                f"    {command}\n"
+                "h.go = launch\n"
+                "alias = h\n"
+                'alias.go("my" + "proxy")\n'
+            ),
+            "forwarding-wrapper": (
+                "def launch(provider):\n"
+                f"    {command}\n"
+                "def wrapper(provider):\n"
+                "    launch(provider)\n"
+                'wrapper("my" + "proxy")\n'
+            ),
+            "bounded-provider-state": (
+                "def launch(provider):\n"
+                f"    {command}\n"
+                + provider_branches
+                + "launch(provider)\n"
+            ),
+            "starred-destructuring": (
+                "def launch(provider):\n"
+                f"    {command}\n"
+                'for *_, provider in (("ignored", "my" + "proxy"),):\n'
+                "    launch(provider)\n"
+            ),
+        }
+
+        for name, payload in payloads.items():
+            with self.subTest(name=name):
+                reconstructed, failure = (
+                    compliance_module._python_cli_argument_text(
+                        "launcher.py",
+                        payload,
+                    )
+                )
+                findings = scan_payload(
+                    "launcher.py",
+                    payload.encode(),
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertEqual("", failure)
+                self.assertIn("myproxy", reconstructed)
+                self.assertEqual(
+                    {"private_endpoint", "private_model_override"},
+                    {str(item["rule_id"]) for item in findings},
+                )
+
+    def test_python_cli_reconstruction_keeps_independent_commands_separate(
+        self,
+    ) -> None:
+        payload = (
+            "commands = [\n"
+            '    ["c", "--provider", "my" + "proxy", "status"],\n'
+            '    ["c", "--provider", "openai", "--base-url",\n'
+            '     "https://x." + "private.example/v1", "--model",\n'
+            '     "private-" + "m"],\n'
+            "]\n"
+            "for args in commands:\n"
+            "    run(args)\n"
+        )
+
+        reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "launcher.py",
+                payload,
+            )
+        )
+        findings = scan_payload(
+            "launcher.py",
+            payload.encode(),
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual("", failure)
+        self.assertIn("myproxy", reconstructed)
+        self.assertEqual([], findings)
+
+    def test_python_cli_forwarding_depth_fails_closed_without_crashing(
+        self,
+    ) -> None:
+        definitions = [
+            (
+                f"def forward_{index}(provider):\n"
+                f"    forward_{index + 1}(provider)\n"
+            )
+            for index in range(200)
+        ]
+        definitions.append(
+            "def forward_200(provider):\n"
+            '    run(["c", "--provider", provider])\n'
+        )
+        payload = "".join(definitions) + 'forward_0("my" + "proxy")\n'
+
+        _reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "launcher.py",
+                payload,
+            )
+        )
+        findings = scan_payload(
+            "launcher.py",
+            payload.encode(),
+            allow_safe_fixtures=False,
+        )
+
+        self.assertIn(
+            failure,
+            {
+                "python_cli_analysis_limit_exceeded:call_depth",
+                "python_cli_analysis_limit_exceeded:recursion_depth",
+            },
+        )
+        self.assertIn(
+            "python_cli_analysis_limit_exceeded",
+            {str(item["rule_id"]) for item in findings},
+        )
+
     def test_python_cli_reconstruction_binds_iterable_forms(self) -> None:
         endpoint = '"https://proxy." + "corp.example/v1"'
         model = '"private-" + "deployment"'
@@ -2528,6 +2731,38 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
             },
             blockers,
         )
+
+    def test_rejects_unscanned_secret_scan_fields_and_forged_verdict(
+        self,
+    ) -> None:
+        report = copy.deepcopy(self.report)
+        report["secret_scan"]["X_API_KEY"] = "private-secret-value"
+
+        codes = {
+            str(item["code"])
+            for item in distribution_report_blockers(report)
+        }
+
+        self.assertIn("invalid_secret_scan_evidence", codes)
+
+        report = compliance_module._with_derived_verdict(
+            copy.deepcopy(self.report)
+        )
+        report["blockers"].append(
+            {
+                "code": "attacker",
+                "X_API_KEY": "private-secret-value",
+            }
+        )
+        report["ok"] = True
+        report["status"] = "passed"
+
+        codes = {
+            str(item["code"])
+            for item in distribution_report_blockers(report)
+        }
+
+        self.assertIn("invalid_distribution_compliance_verdict", codes)
 
     def test_rejects_build_backend_identity_drift(self) -> None:
         mutations = (
