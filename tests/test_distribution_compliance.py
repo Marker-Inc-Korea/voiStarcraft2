@@ -1009,7 +1009,66 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                 'args = ["commander"]\n'
                 "if enabled:\n"
                 f'    args += ["--provider", "{alias}"]\n'
+                "else:\n"
+                "    args = make_args()\n"
                 "args.extend([\n"
+                '    "--openai-base-url",\n'
+                f'    "{endpoint}",\n'
+                '    "--model",\n'
+                f'    "{model}",\n'
+                "])\n"
+            ),
+            "try-except": (
+                'args = ["commander"]\n'
+                "try:\n"
+                f'    args += ["--provider", "{alias}"]\n'
+                "except Exception:\n"
+                "    args = make_args()\n"
+                "args += [\n"
+                '    "--openai-base-url",\n'
+                f'    "{endpoint}",\n'
+                '    "--model",\n'
+                f'    "{model}",\n'
+                "]\n"
+            ),
+            "call-before-rebind": (
+                f'provider = "{alias}"\n'
+                "\n"
+                "def launch():\n"
+                "    args = [\n"
+                '        "commander",\n'
+                '        "--provider",\n'
+                "        provider,\n"
+                '        "--openai-base-url",\n'
+                f'        "{endpoint}",\n'
+                '        "--model",\n'
+                f'        "{model}",\n'
+                "    ]\n"
+                "\n"
+                "launch()\n"
+                "provider = resolve_provider()\n"
+            ),
+            "destructured-constant": (
+                "provider, endpoint, model = (\n"
+                f'    "{alias}",\n'
+                f'    "{endpoint}",\n'
+                f'    "{model}",\n'
+                ")\n"
+                "args = [\n"
+                '    "commander",\n'
+                '    "--provider",\n'
+                "    provider,\n"
+                '    "--openai-base-url",\n'
+                "    endpoint,\n"
+                '    "--model",\n'
+                "    model,\n"
+                "]\n"
+            ),
+            "multiline-lambda": (
+                "launch = lambda: run([\n"
+                '    "commander",\n'
+                '    "--provider",\n'
+                f'    "{alias}",\n'
                 '    "--openai-base-url",\n'
                 f'    "{endpoint}",\n'
                 '    "--model",\n'
@@ -1030,6 +1089,34 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                     {"private_endpoint", "private_model_override"},
                     {str(item["rule_id"]) for item in findings},
                 )
+
+    def test_python_cli_reconstruction_is_bounded(self) -> None:
+        alias = "my" + "proxy"
+        model = "private-" + "deployment"
+        payload = (
+            f'args = ["commander", "--provider", "{alias}", '
+            f'"--model", "{model}"]\n'
+            + "args += args\n" * 18
+        )
+
+        reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "launcher.py",
+                payload,
+            )
+        )
+        findings = scan_payload(
+            "launcher.py",
+            payload.encode(),
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual("", failure)
+        self.assertLess(len(reconstructed), 30_000)
+        self.assertEqual(
+            {"private_model_override"},
+            {str(item["rule_id"]) for item in findings},
+        )
 
     def test_detects_short_generic_api_key_names_and_punctuation(
         self,
@@ -1516,7 +1603,7 @@ class DerivedVerdictTest(unittest.TestCase):
         source_oid = hashlib.sha1(source_header + source_payload).hexdigest()
         tracked_entry = {
             "kind": "tracked",
-            "path": "README.md",
+            "path": "tests/test_distribution_compliance.py",
             "mode": "100644",
             "oid": source_oid,
         }
@@ -2725,6 +2812,43 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
         }
 
         self.assertIn("invalid_secret_scan_evidence", codes)
+
+    def test_rejects_noncanonical_tracked_source_paths(self) -> None:
+        aliases = (
+            "tests//test_distribution_compliance.py",
+            "tests/./test_distribution_compliance.py",
+        )
+        for alias in aliases:
+            with self.subTest(alias=alias):
+                report = copy.deepcopy(self.report)
+                secret_scan = report["secret_scan"]
+                entry = next(
+                    item
+                    for item in secret_scan["input_manifest"]
+                    if item["path"]
+                    == "tests/test_distribution_compliance.py"
+                )
+                entry["path"] = alias
+                secret_scan["input_manifest"].sort(
+                    key=lambda item: str(item["path"])
+                )
+                secret_scan["scanned_file_count"] = len(
+                    secret_scan["input_manifest"]
+                )
+                secret_scan["input_manifest_sha256"] = (
+                    compliance_module.sha256_bytes(
+                        compliance_module.canonical_json_text(
+                            secret_scan["input_manifest"]
+                        ).encode()
+                    )
+                )
+
+                codes = {
+                    str(item["code"])
+                    for item in distribution_report_blockers(report)
+                }
+
+                self.assertIn("invalid_secret_scan_evidence", codes)
 
     def test_rejects_forged_tracked_source_size_and_digest(self) -> None:
         report = copy.deepcopy(self.report)

@@ -947,14 +947,23 @@ def scan_payload(
     dockerfile_text = _dockerfile_logical_text(normalized_path, text)
     if dockerfile_text not in scan_texts:
         scan_texts = (*scan_texts, dockerfile_text)
+    structural_failures = list(configuration_failures)
     for candidate in tuple(scan_texts):
+        python_cli_text, python_cli_failure = _python_cli_argument_text(
+            normalized_path,
+            candidate,
+        )
+        if python_cli_failure:
+            structural_failures.append(
+                python_cli_failure.split(":", 1)[0]
+            )
         for normalized in (
             (
                 candidate
                 if _is_dockerfile_path(normalized_path)
                 else _shell_continuation_text(candidate)
             ),
-            _python_cli_argument_text(normalized_path, candidate),
+            python_cli_text,
             _python_sensitive_call_text(normalized_path, candidate),
         ):
             if normalized and normalized not in scan_texts:
@@ -965,7 +974,7 @@ def scan_payload(
             scan_texts = (*scan_texts, joined_literals)
     findings.extend(
         _path_finding(normalized_path, rule_id)
-        for rule_id in configuration_failures
+        for rule_id in dict.fromkeys(structural_failures)
     )
     prior_match_counts: dict[tuple[str, str], int] = {}
     for scan_index, scan_text in enumerate(scan_texts):
@@ -1069,47 +1078,135 @@ def _shell_continuation_text(text: str) -> str:
     return re.sub(r"\\\r?\n[ \t]*", " ", text)
 
 
-def _python_cli_argument_text(path: str, text: str) -> str:
+def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
     if PurePosixPath(path).suffix.lower() != ".py":
-        return ""
+        return "", ""
     try:
         tree = ast.parse(text)
     except (SyntaxError, ValueError):
-        return ""
+        return "", ""
 
     commands: list[str] = []
-    abstract_value = str | tuple[str, ...]
+    command_set: set[str] = set()
+    cli_value = str | tuple[str, ...]
+    cli_environment = dict[str, cli_value]
     dynamic_argument = "<dynamic-argument>"
+    max_arguments = 96
+    max_commands = 128
+    max_environment_states = 8
+    max_environment_values = 256
+    max_literal_characters = 256
+    max_analysis_steps = 1_000_000
+    analysis_steps = 0
+    analysis_limited = False
+    analysis_limit_reason = ""
+
+    def mark_limited(reason: str) -> None:
+        nonlocal analysis_limited, analysis_limit_reason
+        analysis_limited = True
+        if not analysis_limit_reason:
+            analysis_limit_reason = reason
+
+    def step(amount: int = 1) -> bool:
+        nonlocal analysis_steps
+        analysis_steps += amount
+        if analysis_steps > max_analysis_steps:
+            mark_limited("steps")
+            return False
+        return True
+
+    def bounded_string(value: str) -> str:
+        if len(value) <= max_literal_characters:
+            return value
+        half = max_literal_characters // 2
+        return value[:half] + dynamic_argument + value[-half:]
+
+    def bounded_sequence(values: Sequence[str]) -> tuple[str, ...]:
+        if len(values) <= max_arguments:
+            return tuple(values)
+        keep = set(range(max_arguments // 4))
+        keep.update(
+            range(
+                max(0, len(values) - (max_arguments // 4)),
+                len(values),
+            )
+        )
+        markers = (
+            "--provider",
+            "--model",
+            "--base-url",
+            "--openai-base-url",
+        )
+        first_last: dict[str, list[int]] = {
+            marker: [] for marker in markers
+        }
+        for index, value in enumerate(values):
+            for marker in markers:
+                if marker in value:
+                    indexes = first_last[marker]
+                    if not indexes:
+                        indexes.append(index)
+                    elif len(indexes) == 1:
+                        indexes.append(index)
+                    else:
+                        indexes[-1] = index
+        for indexes in first_last.values():
+            for index in indexes:
+                keep.update(
+                    range(
+                        max(0, index - 1),
+                        min(len(values), index + 2),
+                    )
+                )
+        selected = [
+            values[index]
+            for index in sorted(keep)[: max_arguments - 1]
+        ]
+        selected.append(dynamic_argument)
+        return tuple(selected)
+
+    def combine(
+        left: tuple[str, ...],
+        right: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        return bounded_sequence((*left, *right))
 
     def evaluate(
         node: ast.AST,
-        environment: Mapping[str, abstract_value],
-    ) -> abstract_value | None:
+        environment: Mapping[str, cli_value],
+    ) -> cli_value | None:
         value = _constant_string_expression(node)
         if value is not None:
-            return value
+            return bounded_string(value)
         if isinstance(node, ast.Name):
             return environment.get(node.id)
         if isinstance(node, (ast.List, ast.Tuple)):
-            values: list[str] = []
+            values: tuple[str, ...] = ()
             for element in node.elts:
                 if isinstance(element, ast.Starred):
                     expanded = evaluate(element.value, environment)
                     if isinstance(expanded, tuple):
-                        values.extend(expanded)
+                        values = combine(values, expanded)
                     else:
-                        values.append(dynamic_argument)
+                        values = combine(values, (dynamic_argument,))
                     continue
                 item = evaluate(element, environment)
-                values.append(item if isinstance(item, str) else dynamic_argument)
-            return tuple(values)
+                values = combine(
+                    values,
+                    (
+                        item
+                        if isinstance(item, str)
+                        else dynamic_argument,
+                    ),
+                )
+            return values
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             left = evaluate(node.left, environment)
             right = evaluate(node.right, environment)
             if isinstance(left, str) and isinstance(right, str):
-                return left + right
+                return bounded_string(left + right)
             if isinstance(left, tuple) and isinstance(right, tuple):
-                return left + right
+                return combine(left, right)
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
@@ -1122,14 +1219,19 @@ def _python_cli_argument_text(path: str, text: str) -> str:
                 return value
         return None
 
-    def record(value: abstract_value | None) -> None:
+    def record(value: cli_value | None) -> None:
         if not isinstance(value, tuple):
             return
         if not any("--provider" in item for item in value):
             return
         command = " ".join(value)
-        if command not in commands:
-            commands.append(command)
+        if command in command_set:
+            return
+        if len(commands) >= max_commands:
+            mark_limited("commands")
+            return
+        command_set.add(command)
+        commands.append(command)
 
     def assigned_names(target: ast.AST) -> tuple[str, ...]:
         if isinstance(target, ast.Name):
@@ -1143,51 +1245,157 @@ def _python_cli_argument_text(path: str, text: str) -> str:
         return ()
 
     def bind(
-        environment: dict[str, abstract_value],
+        environment: cli_environment,
         target: ast.AST,
-        value: abstract_value | None,
+        value: cli_value | None,
     ) -> None:
-        for name in assigned_names(target):
+        if isinstance(target, ast.Name):
             if value is None:
-                environment.pop(name, None)
+                environment.pop(target.id, None)
+                return
+            if (
+                target.id not in environment
+                and len(environment) >= max_environment_values
+            ):
+                mark_limited("environment_values")
+                return
+            environment[target.id] = value
+            return
+        if isinstance(target, (ast.List, ast.Tuple)):
+            if (
+                isinstance(value, tuple)
+                and len(target.elts) == len(value)
+                and not any(
+                    isinstance(element, ast.Starred)
+                    for element in target.elts
+                )
+            ):
+                for element, item in zip(target.elts, value):
+                    bind(environment, element, item)
             else:
-                environment[name] = value
+                for name in assigned_names(target):
+                    environment.pop(name, None)
 
-    def record_expressions(
-        statement: ast.stmt,
-        environment: Mapping[str, abstract_value],
+    def shadowed_arguments(arguments: ast.arguments) -> tuple[str, ...]:
+        result = [
+            argument.arg
+            for argument in (
+                *arguments.posonlyargs,
+                *arguments.args,
+                *arguments.kwonlyargs,
+            )
+        ]
+        if arguments.vararg is not None:
+            result.append(arguments.vararg.arg)
+        if arguments.kwarg is not None:
+            result.append(arguments.kwarg.arg)
+        return tuple(result)
+
+    def record_expression(
+        node: ast.AST,
+        environment: Mapping[str, cli_value],
     ) -> None:
-        class Recorder(ast.NodeVisitor):
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                return
+        if not step():
+            return
+        record(evaluate(node, environment))
+        if isinstance(node, ast.Lambda):
+            nested_environment = dict(environment)
+            for name in shadowed_arguments(node.args):
+                nested_environment.pop(name, None)
+            record_expression(node.body, nested_environment)
+            return
+        for child in ast.iter_child_nodes(node):
+            if isinstance(
+                child,
+                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+            ):
+                continue
+            record_expression(child, environment)
 
-            def visit_AsyncFunctionDef(
-                self,
-                node: ast.AsyncFunctionDef,
-            ) -> None:
-                return
+    def environment_key(
+        environment: Mapping[str, cli_value],
+    ) -> tuple[tuple[str, str, cli_value], ...]:
+        return tuple(
+            (
+                name,
+                "sequence" if isinstance(value, tuple) else "string",
+                value,
+            )
+            for name, value in sorted(environment.items())
+        )
 
-            def visit_ClassDef(self, node: ast.ClassDef) -> None:
-                return
+    def merge_values(values: Sequence[cli_value]) -> cli_value:
+        unique: list[cli_value] = []
+        for value in values:
+            if value not in unique:
+                unique.append(value)
+        if len(unique) == 1:
+            return unique[0]
+        if all(isinstance(value, str) for value in unique):
+            return bounded_string(
+                f" {dynamic_argument} ".join(
+                    value
+                    for value in unique
+                    if isinstance(value, str)
+                )
+            )
+        merged: tuple[str, ...] = ()
+        for value in unique:
+            sequence = value if isinstance(value, tuple) else (value,)
+            merged = combine(
+                merged,
+                (*sequence, dynamic_argument),
+            )
+        return merged
 
-            def visit_Lambda(self, node: ast.Lambda) -> None:
-                return
+    def merge_environments(
+        states: Sequence[cli_environment],
+    ) -> cli_environment:
+        merged: cli_environment = {}
+        names = {
+            name
+            for environment in states
+            for name in environment
+        }
+        for name in sorted(names):
+            values: list[cli_value] = []
+            for environment in states:
+                values.append(
+                    environment.get(name, dynamic_argument)
+                )
+            merged[name] = merge_values(values)
+        return merged
 
-            def generic_visit(self, node: ast.AST) -> None:
-                record(evaluate(node, environment))
-                super().generic_visit(node)
-
-        Recorder().visit(statement)
+    def deduplicate_states(
+        states: Iterable[cli_environment],
+    ) -> list[cli_environment]:
+        result: list[cli_environment] = []
+        observed: set[tuple[tuple[str, str, cli_value], ...]] = set()
+        for environment in states:
+            key = environment_key(environment)
+            if key in observed:
+                continue
+            observed.add(key)
+            result.append(environment)
+        if len(result) <= max_environment_states:
+            return result
+        # Preserve every branch as a bounded synthetic union instead of
+        # discarding paths or allowing combinatorial state growth.
+        return [merge_environments(result)]
 
     def process_scope(
         statements: Sequence[ast.stmt],
-        inherited: Mapping[str, abstract_value],
+        inherited_states: Sequence[Mapping[str, cli_value]],
         shadowed: Iterable[str] = (),
-    ) -> None:
-        environment = dict(inherited)
-        for name in shadowed:
-            environment.pop(name, None)
-        nested_scopes: list[
+    ) -> list[cli_environment]:
+        states = []
+        for inherited in inherited_states:
+            environment = dict(inherited)
+            for name in shadowed:
+                environment.pop(name, None)
+            states.append(environment)
+        states = deduplicate_states(states)
+        deferred_scopes: list[
             tuple[Sequence[ast.stmt], tuple[str, ...]]
         ] = []
         try_statement_types = (
@@ -1195,119 +1403,225 @@ def _python_cli_argument_text(path: str, text: str) -> str:
             getattr(ast, "TryStar", ast.Try),
         )
 
-        def statement_blocks(
+        def apply_simple(
             statement: ast.stmt,
-        ) -> tuple[Sequence[ast.stmt], ...]:
-            if isinstance(statement, (ast.If, ast.For, ast.AsyncFor, ast.While)):
-                return (statement.body, statement.orelse)
-            if isinstance(statement, (ast.With, ast.AsyncWith)):
-                return (statement.body,)
-            if isinstance(statement, try_statement_types):
-                return (
-                    statement.body,
-                    *(handler.body for handler in statement.handlers),
-                    statement.orelse,
-                    statement.finalbody,
+            environment: Mapping[str, cli_value],
+        ) -> cli_environment:
+            result = dict(environment)
+            if isinstance(statement, ast.Assign):
+                value = evaluate(statement.value, result)
+                for target in statement.targets:
+                    bind(result, target, value)
+            elif isinstance(statement, ast.AnnAssign):
+                value = (
+                    evaluate(statement.value, result)
+                    if statement.value is not None
+                    else None
                 )
-            if isinstance(statement, ast.Match):
-                return tuple(case.body for case in statement.cases)
-            return ()
+                bind(result, statement.target, value)
+            elif (
+                isinstance(statement, ast.AugAssign)
+                and isinstance(statement.target, ast.Name)
+                and isinstance(statement.op, ast.Add)
+            ):
+                current = result.get(statement.target.id)
+                addition = evaluate(statement.value, result)
+                if isinstance(current, str) and isinstance(addition, str):
+                    bind(
+                        result,
+                        statement.target,
+                        bounded_string(current + addition),
+                    )
+                elif isinstance(current, tuple) and isinstance(addition, tuple):
+                    bind(
+                        result,
+                        statement.target,
+                        combine(current, addition),
+                    )
+                else:
+                    bind(result, statement.target, None)
+            elif (
+                isinstance(statement, ast.Expr)
+                and isinstance(statement.value, ast.Call)
+                and isinstance(statement.value.func, ast.Attribute)
+                and isinstance(statement.value.func.value, ast.Name)
+            ):
+                call = statement.value
+                target = call.func.value
+                current = result.get(target.id)
+                if isinstance(current, tuple) and len(call.args) == 1:
+                    addition = evaluate(call.args[0], result)
+                    if call.func.attr == "append":
+                        bind(
+                            result,
+                            target,
+                            combine(
+                                current,
+                                (
+                                    addition
+                                    if isinstance(addition, str)
+                                    else dynamic_argument,
+                                ),
+                            ),
+                        )
+                    elif call.func.attr == "extend":
+                        bind(
+                            result,
+                            target,
+                            combine(
+                                current,
+                                (
+                                    addition
+                                    if isinstance(addition, tuple)
+                                    else (dynamic_argument,)
+                                ),
+                            ),
+                        )
+            elif isinstance(statement, ast.Delete):
+                for target in statement.targets:
+                    bind(result, target, None)
+            record_expression(statement, result)
+            return result
 
-        def process_statements(block: Sequence[ast.stmt]) -> None:
+        def process_block(
+            block: Sequence[ast.stmt],
+            current_states: Sequence[cli_environment],
+        ) -> list[cli_environment]:
+            result_states = list(current_states)
             for statement in block:
+                if not step(len(result_states)):
+                    return result_states
                 if isinstance(
                     statement,
                     (ast.FunctionDef, ast.AsyncFunctionDef),
                 ):
-                    arguments = (
-                        *statement.args.posonlyargs,
-                        *statement.args.args,
-                        *statement.args.kwonlyargs,
+                    nested_shadowed = shadowed_arguments(statement.args)
+                    process_scope(
+                        statement.body,
+                        result_states,
+                        nested_shadowed,
                     )
-                    if statement.args.vararg is not None:
-                        arguments = (*arguments, statement.args.vararg)
-                    if statement.args.kwarg is not None:
-                        arguments = (*arguments, statement.args.kwarg)
-                    nested_scopes.append(
-                        (
-                            statement.body,
-                            tuple(argument.arg for argument in arguments),
-                        )
+                    deferred_scopes.append(
+                        (statement.body, nested_shadowed)
                     )
                     continue
                 if isinstance(statement, ast.ClassDef):
-                    nested_scopes.append((statement.body, ()))
+                    process_scope(statement.body, result_states)
+                    deferred_scopes.append((statement.body, ()))
                     continue
-
-                if isinstance(statement, ast.Assign):
-                    value = evaluate(statement.value, environment)
-                    for target in statement.targets:
-                        bind(environment, target, value)
-                elif isinstance(statement, ast.AnnAssign):
-                    value = (
-                        evaluate(statement.value, environment)
-                        if statement.value is not None
-                        else None
+                if isinstance(statement, ast.If):
+                    next_states = process_block(
+                        statement.body,
+                        [dict(state) for state in result_states],
                     )
-                    bind(environment, statement.target, value)
-                elif (
-                    isinstance(statement, ast.AugAssign)
-                    and isinstance(statement.target, ast.Name)
-                    and isinstance(statement.op, ast.Add)
-                ):
-                    current = environment.get(statement.target.id)
-                    addition = evaluate(statement.value, environment)
-                    if isinstance(current, str) and isinstance(addition, str):
-                        environment[statement.target.id] = current + addition
-                    elif (
-                        isinstance(current, tuple)
-                        and isinstance(addition, tuple)
-                    ):
-                        environment[statement.target.id] = current + addition
-                    else:
-                        environment.pop(statement.target.id, None)
-                elif (
-                    isinstance(statement, ast.Expr)
-                    and isinstance(statement.value, ast.Call)
-                    and isinstance(statement.value.func, ast.Attribute)
-                    and isinstance(statement.value.func.value, ast.Name)
-                ):
-                    call = statement.value
-                    target_name = call.func.value.id
-                    current = environment.get(target_name)
-                    if isinstance(current, tuple) and len(call.args) == 1:
-                        addition = evaluate(call.args[0], environment)
-                        if call.func.attr == "append":
-                            environment[target_name] = current + (
-                                addition
-                                if isinstance(addition, str)
-                                else dynamic_argument,
+                    next_states.extend(
+                        process_block(
+                            statement.orelse,
+                            [dict(state) for state in result_states],
+                        )
+                        if statement.orelse
+                        else [dict(state) for state in result_states]
+                    )
+                    result_states = deduplicate_states(next_states)
+                    continue
+                if isinstance(statement, try_statement_types):
+                    next_states: list[cli_environment] = []
+                    successful = process_block(
+                        statement.body,
+                        [dict(state) for state in result_states],
+                    )
+                    if statement.orelse:
+                        successful = process_block(
+                            statement.orelse,
+                            successful,
+                        )
+                    next_states.extend(successful)
+                    for handler in statement.handlers:
+                        next_states.extend(
+                            process_block(
+                                handler.body,
+                                [dict(state) for state in result_states],
                             )
-                        elif call.func.attr == "extend":
-                            environment[target_name] = current + (
-                                addition
-                                if isinstance(addition, tuple)
-                                else (dynamic_argument,)
+                        )
+                    next_states = deduplicate_states(next_states)
+                    if statement.finalbody:
+                        next_states = process_block(
+                            statement.finalbody,
+                            next_states,
+                        )
+                    result_states = deduplicate_states(next_states)
+                    continue
+                if isinstance(
+                    statement,
+                    (ast.For, ast.AsyncFor, ast.While),
+                ):
+                    zero_iteration = [
+                        dict(state) for state in result_states
+                    ]
+                    one_iteration = [
+                        dict(state) for state in result_states
+                    ]
+                    if isinstance(statement, (ast.For, ast.AsyncFor)):
+                        for state in one_iteration:
+                            bind(state, statement.target, None)
+                    one_iteration = process_block(
+                        statement.body,
+                        one_iteration,
+                    )
+                    loop_states = deduplicate_states(
+                        (*zero_iteration, *one_iteration)
+                    )
+                    if statement.orelse:
+                        loop_states = process_block(
+                            statement.orelse,
+                            loop_states,
+                        )
+                    result_states = deduplicate_states(loop_states)
+                    continue
+                if isinstance(statement, (ast.With, ast.AsyncWith)):
+                    result_states = process_block(
+                        statement.body,
+                        [dict(state) for state in result_states],
+                    )
+                    continue
+                if isinstance(statement, ast.Match):
+                    next_states = [
+                        dict(state) for state in result_states
+                    ]
+                    for case in statement.cases:
+                        next_states.extend(
+                            process_block(
+                                case.body,
+                                [dict(state) for state in result_states],
                             )
-                elif isinstance(statement, ast.Delete):
-                    for target in statement.targets:
-                        bind(environment, target, None)
+                        )
+                    result_states = deduplicate_states(next_states)
+                    continue
+                result_states = deduplicate_states(
+                    apply_simple(statement, state)
+                    for state in result_states
+                )
+            return result_states
 
-                record_expressions(statement, environment)
-                for child_block in statement_blocks(statement):
-                    process_statements(child_block)
-
-        process_statements(statements)
-
-        for nested_statements, nested_shadowed in nested_scopes:
+        final_states = process_block(statements, states)
+        for nested_statements, nested_shadowed in deferred_scopes:
             process_scope(
                 nested_statements,
-                environment,
+                final_states,
                 nested_shadowed,
             )
+        return final_states
 
-    process_scope(tree.body, {})
-    return "\n".join(commands)
+    process_scope(tree.body, ({},))
+    return (
+        "\n".join(commands),
+        (
+            "python_cli_analysis_limit_exceeded:"
+            + analysis_limit_reason
+            if analysis_limited
+            else ""
+        ),
+    )
 
 
 def _python_sensitive_call_text(path: str, text: str) -> str:
@@ -1859,6 +2173,8 @@ def _git_tree_oid_from_manifest(
             or not path
             or path.startswith("/")
             or "\\" in path
+            or path.endswith("/")
+            or any(part in {"", ".", ".."} for part in path.split("/"))
             or not isinstance(mode, str)
             or mode not in {"100644", "100755", "120000"}
             or not isinstance(oid, str)
@@ -2553,6 +2869,12 @@ def distribution_report_blockers(
                 or not path
                 or "\\" in path
                 or path.startswith("./")
+                or path.startswith("/")
+                or path.endswith("/")
+                or any(
+                    part in {"", ".", ".."}
+                    for part in path.split("/")
+                )
                 or path in manifest_by_path
             )
             if kind == "tracked":
