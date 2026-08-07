@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import copy
+import gzip
 import hashlib
 import io
 import os
 from pathlib import Path
 import re
 import stat
+import struct
 import subprocess
 import tarfile
 import tempfile
 import unittest
 from unittest import mock
 import zipfile
+import zlib
 
 from starcraft_commander import distribution_compliance as compliance_module
 from starcraft_commander.distribution_compliance import (
@@ -321,6 +324,95 @@ class DistributionBuildBoundaryTest(unittest.TestCase):
 
 
 class ArchivePolicyTest(unittest.TestCase):
+    @staticmethod
+    def _gzip_with_header_metadata(
+        payload: bytes,
+        *,
+        extra: bytes = b"",
+        comment: bytes = b"",
+    ) -> bytes:
+        flags = (0x04 if extra else 0) | (0x10 if comment else 0)
+        header = struct.pack(
+            "<2sBBIBB",
+            b"\x1f\x8b",
+            8,
+            flags,
+            0,
+            0,
+            255,
+        )
+        if extra:
+            header += len(extra).to_bytes(2, "little") + extra
+        if comment:
+            header += comment + b"\0"
+        compressor = zlib.compressobj(wbits=-zlib.MAX_WBITS)
+        compressed = compressor.compress(payload) + compressor.flush()
+        trailer = struct.pack(
+            "<II",
+            zlib.crc32(payload) & 0xFFFFFFFF,
+            len(payload) & 0xFFFFFFFF,
+        )
+        return header + compressed + trailer
+
+    @staticmethod
+    def _write_zip_with_local_only_extra(
+        path: Path,
+        *,
+        filename: str,
+        payload: bytes,
+        extra: bytes,
+    ) -> None:
+        filename_bytes = filename.encode("utf-8")
+        crc = zlib.crc32(payload) & 0xFFFFFFFF
+        local_header = struct.pack(
+            "<4s5H3I2H",
+            b"PK\x03\x04",
+            20,
+            0x800,
+            0,
+            0,
+            0,
+            crc,
+            len(payload),
+            len(payload),
+            len(filename_bytes),
+            len(extra),
+        )
+        local_record = local_header + filename_bytes + extra + payload
+        central_header = struct.pack(
+            "<4s6H3I5H2I",
+            b"PK\x01\x02",
+            20,
+            20,
+            0x800,
+            0,
+            0,
+            0,
+            crc,
+            len(payload),
+            len(payload),
+            len(filename_bytes),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+        central_record = central_header + filename_bytes
+        end_record = struct.pack(
+            "<4s4H2IH",
+            b"PK\x05\x06",
+            0,
+            0,
+            1,
+            1,
+            len(central_record),
+            len(local_record),
+            0,
+        )
+        path.write_bytes(local_record + central_record + end_record)
+
     def test_wheel_allowlist_rejects_tests_docs_and_local_configuration(
         self,
     ) -> None:
@@ -433,6 +525,39 @@ class ArchivePolicyTest(unittest.TestCase):
         ]
         self.assertEqual(["api_key"], [item["rule_id"] for item in findings])
 
+    def test_wheel_rejects_and_scans_local_header_only_extra(self) -> None:
+        secret = ("sk-" + "liveabcdefghijklmnop").encode()
+        extra = (
+            b"\xfe\xca"
+            + len(secret).to_bytes(2, "little")
+            + secret
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            wheel_path = Path(temporary) / "candidate.whl"
+            self._write_zip_with_local_only_extra(
+                wheel_path,
+                filename="starcraft_commander/runtime_data.py",
+                payload=b"safe",
+                extra=extra,
+            )
+
+            snapshot = inspect_wheel(wheel_path)
+
+        self.assertIn(
+            "archive_header_mismatch",
+            {str(item["code"]) for item in snapshot.blockers},
+        )
+        findings = [
+            finding
+            for name, metadata_payload in snapshot.metadata.items()
+            for finding in scan_payload(
+                f"wheel/{name}",
+                metadata_payload,
+                allow_safe_fixtures=False,
+            )
+        ]
+        self.assertEqual(["api_key"], [item["rule_id"] for item in findings])
+
     def test_sdist_rejects_and_scans_noncanonical_pax_metadata(self) -> None:
         secret = "sk-" + "liveabcdefghijklmnop"
         with tempfile.TemporaryDirectory() as temporary:
@@ -467,6 +592,122 @@ class ArchivePolicyTest(unittest.TestCase):
             )
         ]
         self.assertEqual(["api_key"], [item["rule_id"] for item in findings])
+
+    def test_sdist_scans_tar_owner_and_group_metadata(self) -> None:
+        secret = "sk-" + "liveabcdefghijklmnop"
+        with tempfile.TemporaryDirectory() as temporary:
+            sdist_path = Path(temporary) / "voistarcraft2-0.1.0.tar.gz"
+            payload = b"safe"
+            info = tarfile.TarInfo(
+                "voistarcraft2-0.1.0/"
+                "starcraft_commander/runtime_data.py"
+            )
+            info.size = len(payload)
+            info.uname = secret
+            info.gname = "wheel"
+            with tarfile.open(sdist_path, "w:gz") as archive:
+                archive.addfile(info, io.BytesIO(payload))
+
+            snapshot = compliance_module.inspect_sdist(sdist_path)
+
+        findings = [
+            finding
+            for name, metadata_payload in snapshot.metadata.items()
+            for finding in scan_payload(
+                f"sdist/{name}",
+                metadata_payload,
+                allow_safe_fixtures=False,
+            )
+        ]
+        self.assertEqual(["api_key"], [item["rule_id"] for item in findings])
+
+    def test_sdist_rejects_and_scans_noncanonical_gzip_filename(self) -> None:
+        secret = "sk-" + "liveabcdefghijklmnop"
+        tar_payload = io.BytesIO()
+        member_payload = b"safe"
+        member = tarfile.TarInfo(
+            "voistarcraft2-0.1.0/"
+            "starcraft_commander/runtime_data.py"
+        )
+        member.size = len(member_payload)
+        with tarfile.open(fileobj=tar_payload, mode="w") as archive:
+            archive.addfile(member, io.BytesIO(member_payload))
+        compressed = io.BytesIO()
+        with gzip.GzipFile(
+            fileobj=compressed,
+            mode="wb",
+            filename=secret,
+        ) as archive:
+            archive.write(tar_payload.getvalue())
+
+        with tempfile.TemporaryDirectory() as temporary:
+            sdist_path = Path(temporary) / "voistarcraft2-0.1.0.tar.gz"
+            sdist_path.write_bytes(compressed.getvalue())
+
+            snapshot = compliance_module.inspect_sdist(sdist_path)
+
+        self.assertIn(
+            "unexpected_archive_metadata",
+            {str(item["code"]) for item in snapshot.blockers},
+        )
+        findings = [
+            finding
+            for name, metadata_payload in snapshot.metadata.items()
+            for finding in scan_payload(
+                f"sdist/{name}",
+                metadata_payload,
+                allow_safe_fixtures=False,
+            )
+        ]
+        self.assertEqual(["api_key"], [item["rule_id"] for item in findings])
+
+    def test_sdist_rejects_and_scans_gzip_extra_and_comment(self) -> None:
+        extra_secret = ("sk-" + "liveabcdefghijklmnop").encode()
+        comment_secret = ("sk-" + "testabcdefghijklmnop").encode()
+        tar_payload = io.BytesIO()
+        member_payload = b"safe"
+        member = tarfile.TarInfo(
+            "voistarcraft2-0.1.0/"
+            "starcraft_commander/runtime_data.py"
+        )
+        member.size = len(member_payload)
+        with tarfile.open(fileobj=tar_payload, mode="w") as archive:
+            archive.addfile(member, io.BytesIO(member_payload))
+
+        with tempfile.TemporaryDirectory() as temporary:
+            sdist_path = Path(temporary) / "voistarcraft2-0.1.0.tar.gz"
+            sdist_path.write_bytes(
+                self._gzip_with_header_metadata(
+                    tar_payload.getvalue(),
+                    extra=extra_secret,
+                    comment=comment_secret,
+                )
+            )
+
+            snapshot = compliance_module.inspect_sdist(sdist_path)
+
+        metadata_blockers = {
+            str(item.get("metadata", ""))
+            for item in snapshot.blockers
+            if item.get("code") == "unexpected_archive_metadata"
+        }
+        self.assertEqual(
+            {"gzip_comment", "gzip_extra"},
+            metadata_blockers,
+        )
+        findings = [
+            finding
+            for name, metadata_payload in snapshot.metadata.items()
+            for finding in scan_payload(
+                f"sdist/{name}",
+                metadata_payload,
+                allow_safe_fixtures=False,
+            )
+        ]
+        self.assertEqual(
+            ["api_key", "api_key"],
+            sorted(str(item["rule_id"]) for item in findings),
+        )
 
     def test_wheel_inspection_rejects_canonical_duplicate_entries(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
