@@ -7439,6 +7439,17 @@ def _build_distributions(source_root: Path, dist_dir: Path) -> None:
             "distribution build failed: "
             + result.stderr[-4000:].replace("\n", " ")
         )
+    uv_gitignore = dist_dir / ".gitignore"
+    if uv_gitignore.exists():
+        if (
+            uv_gitignore.is_symlink()
+            or not uv_gitignore.is_file()
+            or uv_gitignore.read_bytes() != b"*"
+        ):
+            raise RuntimeError(
+                "distribution build produced an invalid uv output marker"
+            )
+        uv_gitignore.unlink()
     wheel_paths = sorted(dist_dir.glob("*.whl"))
     sdist_paths = sorted(dist_dir.glob("*.tar.gz"))
     output_entries = sorted(dist_dir.iterdir())

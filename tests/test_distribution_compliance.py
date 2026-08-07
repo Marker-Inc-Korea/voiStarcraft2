@@ -181,6 +181,78 @@ class DistributionBuildBoundaryTest(unittest.TestCase):
                     dist_dir,
                 )
 
+    def test_build_removes_only_the_exact_uv_output_marker(self) -> None:
+        source_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temporary:
+            dist_dir = Path(temporary)
+
+            def build(*_args: object, **_kwargs: object) -> mock.Mock:
+                (dist_dir / "voistarcraft2-0.1.0-py3-none-any.whl").write_bytes(
+                    b"wheel"
+                )
+                (dist_dir / "voistarcraft2-0.1.0.tar.gz").write_bytes(b"sdist")
+                (dist_dir / ".gitignore").write_bytes(b"*")
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            with (
+                mock.patch.object(
+                    compliance_module.shutil,
+                    "which",
+                    return_value="/usr/bin/uv",
+                ),
+                mock.patch.object(
+                    compliance_module.subprocess,
+                    "run",
+                    side_effect=build,
+                ),
+            ):
+                compliance_module._build_distributions(
+                    source_root,
+                    dist_dir,
+                )
+
+            self.assertEqual(
+                {
+                    "voistarcraft2-0.1.0-py3-none-any.whl",
+                    "voistarcraft2-0.1.0.tar.gz",
+                },
+                {path.name for path in dist_dir.iterdir()},
+            )
+
+    def test_build_rejects_a_modified_uv_output_marker(self) -> None:
+        source_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temporary:
+            dist_dir = Path(temporary)
+
+            def build(*_args: object, **_kwargs: object) -> mock.Mock:
+                (dist_dir / "voistarcraft2-0.1.0-py3-none-any.whl").write_bytes(
+                    b"wheel"
+                )
+                (dist_dir / "voistarcraft2-0.1.0.tar.gz").write_bytes(b"sdist")
+                (dist_dir / ".gitignore").write_bytes(b"*\nattacker")
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            with (
+                mock.patch.object(
+                    compliance_module.shutil,
+                    "which",
+                    return_value="/usr/bin/uv",
+                ),
+                mock.patch.object(
+                    compliance_module.subprocess,
+                    "run",
+                    side_effect=build,
+                ),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "invalid uv output marker",
+                ),
+            ):
+                compliance_module._build_distributions(
+                    source_root,
+                    dist_dir,
+                )
+
 
 class ArchivePolicyTest(unittest.TestCase):
     def test_wheel_allowlist_rejects_tests_docs_and_local_configuration(
