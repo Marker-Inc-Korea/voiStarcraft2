@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import os
 from pathlib import Path
 import re
 import stat
 import subprocess
+import tarfile
 import tempfile
 import unittest
 from unittest import mock
@@ -128,6 +130,70 @@ class IsolatedInstallTest(unittest.TestCase):
 
 
 class DistributionBuildBoundaryTest(unittest.TestCase):
+    def test_build_rejects_untrusted_backend_configuration_before_uv(
+        self,
+    ) -> None:
+        source_root = Path(__file__).resolve().parents[1]
+        original = (source_root / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
+        variants = {
+            "custom_backend": original.replace(
+                'build-backend = "setuptools.build_meta"',
+                'build-backend = "local_backend"',
+                1,
+            ),
+            "missing_backend": original.replace(
+                'build-backend = "setuptools.build_meta"\n',
+                "",
+                1,
+            ),
+            "backend_path": original.replace(
+                'build-backend = "setuptools.build_meta"',
+                'build-backend = "setuptools.build_meta"\nbackend-path = ["."]',
+                1,
+            ),
+            "extra_requirement": original.replace(
+                'requires = ["setuptools==82.0.1"]',
+                'requires = ["setuptools==82.0.1", "build>=1.2"]',
+                1,
+            ),
+        }
+        for name, pyproject in variants.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                temporary_root = Path(temporary)
+                candidate_source = temporary_root / "source"
+                candidate_source.mkdir()
+                (candidate_source / "pyproject.toml").write_text(
+                    pyproject,
+                    encoding="utf-8",
+                )
+                (candidate_source / "uv.lock").write_bytes(
+                    (source_root / "uv.lock").read_bytes()
+                )
+                dist_dir = temporary_root / "dist"
+                dist_dir.mkdir()
+                with (
+                    mock.patch.object(
+                        compliance_module.shutil,
+                        "which",
+                        return_value="/usr/bin/uv",
+                    ),
+                    mock.patch.object(
+                        compliance_module.subprocess,
+                        "run",
+                    ) as run,
+                    self.assertRaisesRegex(
+                        RuntimeError,
+                        "build backend is not bound",
+                    ),
+                ):
+                    compliance_module._build_distributions(
+                        candidate_source,
+                        dist_dir,
+                    )
+                run.assert_not_called()
+
     def test_build_requires_an_empty_output_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             dist_dir = Path(temporary)
@@ -311,6 +377,96 @@ class ArchivePolicyTest(unittest.TestCase):
             snapshot = inspect_wheel(wheel_path)
 
         self.assertEqual("unsafe_archive_entry", snapshot.blockers[0]["code"])
+
+    def test_wheel_inspection_rejects_and_scans_global_comments(self) -> None:
+        secret = ("sk-" + "liveabcdefghijklmnop").encode()
+        with tempfile.TemporaryDirectory() as temporary:
+            wheel_path = Path(temporary) / "candidate.whl"
+            with zipfile.ZipFile(wheel_path, "w") as archive:
+                archive.writestr("starcraft_commander/runtime_data.py", "safe")
+                archive.comment = secret
+
+            snapshot = inspect_wheel(wheel_path)
+
+        self.assertIn(
+            "unexpected_archive_metadata",
+            {str(item["code"]) for item in snapshot.blockers},
+        )
+        findings = [
+            finding
+            for name, payload in snapshot.metadata.items()
+            for finding in scan_payload(
+                f"wheel/{name}",
+                payload,
+                allow_safe_fixtures=False,
+            )
+        ]
+        self.assertEqual(["api_key"], [item["rule_id"] for item in findings])
+
+    def test_wheel_inspection_rejects_and_scans_entry_extras(self) -> None:
+        secret = ("sk-" + "liveabcdefghijklmnop").encode()
+        info = zipfile.ZipInfo("starcraft_commander/runtime_data.py")
+        info.extra = (
+            b"\xfe\xca"
+            + len(secret).to_bytes(2, "little")
+            + secret
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            wheel_path = Path(temporary) / "candidate.whl"
+            with zipfile.ZipFile(wheel_path, "w") as archive:
+                archive.writestr(info, "safe")
+
+            snapshot = inspect_wheel(wheel_path)
+
+        self.assertIn(
+            "unexpected_archive_metadata",
+            {str(item["code"]) for item in snapshot.blockers},
+        )
+        findings = [
+            finding
+            for name, payload in snapshot.metadata.items()
+            for finding in scan_payload(
+                f"wheel/{name}",
+                payload,
+                allow_safe_fixtures=False,
+            )
+        ]
+        self.assertEqual(["api_key"], [item["rule_id"] for item in findings])
+
+    def test_sdist_rejects_and_scans_noncanonical_pax_metadata(self) -> None:
+        secret = "sk-" + "liveabcdefghijklmnop"
+        with tempfile.TemporaryDirectory() as temporary:
+            sdist_path = Path(temporary) / "voistarcraft2-0.1.0.tar.gz"
+            payload = b"safe"
+            info = tarfile.TarInfo(
+                "voistarcraft2-0.1.0/"
+                "starcraft_commander/runtime_data.py"
+            )
+            info.size = len(payload)
+            info.pax_headers = {"comment": secret}
+            with tarfile.open(
+                sdist_path,
+                "w:gz",
+                format=tarfile.PAX_FORMAT,
+            ) as archive:
+                archive.addfile(info, io.BytesIO(payload))
+
+            snapshot = compliance_module.inspect_sdist(sdist_path)
+
+        self.assertIn(
+            "unexpected_archive_metadata",
+            {str(item["code"]) for item in snapshot.blockers},
+        )
+        findings = [
+            finding
+            for name, metadata_payload in snapshot.metadata.items()
+            for finding in scan_payload(
+                f"sdist/{name}",
+                metadata_payload,
+                allow_safe_fixtures=False,
+            )
+        ]
+        self.assertEqual(["api_key"], [item["rule_id"] for item in findings])
 
     def test_wheel_inspection_rejects_canonical_duplicate_entries(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -3105,9 +3261,98 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
 
         self.assertEqual([], scan_payload("scanner.py", scanner_documentation))
 
+    def test_secret_detector_scans_normalized_path_text(self) -> None:
+        secret = "sk-" + "liveabcdefghijklmnop"
+
+        findings = scan_payload(
+            f"safe/{secret}.txt",
+            b"safe payload\n",
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual(1, len(findings))
+        self.assertEqual(0, findings[0]["line"])
+        self.assertEqual("api_key", findings[0]["rule_id"])
+
+    def test_repository_scan_binds_committed_review_diff(self) -> None:
+        tracked_blob = "a" * 40
+        base_commit = "b" * 40
+        head_commit = "c" * 40
+        merge_base = "d" * 40
+        diff = b"diff --git a/safe.txt b/safe.txt\n+review delta\n"
+
+        def git_output(
+            _repository_root: Path,
+            arguments: list[str],
+        ) -> bytes:
+            if arguments == ["ls-files", "--stage", "-z"]:
+                return f"100644 {tracked_blob} 0\tsafe.txt\0".encode()
+            if arguments == ["cat-file", "blob", tracked_blob]:
+                return b"safe\n"
+            if arguments == [
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "-z",
+            ]:
+                return b""
+            if arguments == [
+                "rev-parse",
+                "--verify",
+                f"{base_commit}^{{commit}}",
+            ]:
+                return f"{base_commit}\n".encode()
+            if arguments == ["rev-parse", "HEAD"]:
+                return f"{head_commit}\n".encode()
+            if arguments == [
+                "merge-base",
+                base_commit,
+                head_commit,
+            ]:
+                return f"{merge_base}\n".encode()
+            if arguments == [
+                "diff",
+                "--no-ext-diff",
+                "--binary",
+                f"{base_commit}...{head_commit}",
+                "--",
+            ]:
+                return diff
+            raise AssertionError(arguments)
+
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            mock.patch.object(
+                compliance_module,
+                "_git_output",
+                side_effect=git_output,
+            ),
+        ):
+            report = scan_git_and_artifacts(
+                Path(temporary),
+                (),
+                base_commit=base_commit,
+            )
+
+        diff_entry = next(
+            entry
+            for entry in report["input_manifest"]
+            if entry["kind"] == "diff"
+        )
+        self.assertGreater(diff_entry["size"], 0)
+        self.assertEqual(base_commit, diff_entry["base_commit"])
+        self.assertEqual(head_commit, diff_entry["head_commit"])
+        self.assertEqual(merge_base, diff_entry["merge_base"])
+
+    def test_review_diff_rejects_non_exact_base_commit(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "exact Git commit"):
+            compliance_module._review_range_evidence(Path.cwd(), "main")
+
     def test_repository_scan_includes_untracked_nonignored_files(self) -> None:
         secret = "sk-" + "liveabcdefghijklmnop"
         tracked_blob = "a" * 40
+        base_commit = "b" * 40
+        head_commit = "c" * 40
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "tracked.py").write_text("safe = True\n", encoding="utf-8")
@@ -3135,6 +3380,20 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                     return b"candidate.py\0"
                 if arguments[:2] == ["diff", "--no-ext-diff"]:
                     return b""
+                if arguments == [
+                    "rev-parse",
+                    "--verify",
+                    f"{base_commit}^{{commit}}",
+                ]:
+                    return f"{base_commit}\n".encode()
+                if arguments == ["rev-parse", "HEAD"]:
+                    return f"{head_commit}\n".encode()
+                if arguments == [
+                    "merge-base",
+                    base_commit,
+                    head_commit,
+                ]:
+                    return f"{base_commit}\n".encode()
                 raise AssertionError(arguments)
 
             with mock.patch.object(
@@ -3142,7 +3401,11 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                 "_git_output",
                 side_effect=git_output,
             ):
-                report = scan_git_and_artifacts(root, ())
+                report = scan_git_and_artifacts(
+                    root,
+                    (),
+                    base_commit=base_commit,
+                )
 
         self.assertEqual(1, report["finding_count"])
         self.assertEqual("candidate.py", report["findings"][0]["path"])
@@ -3150,6 +3413,8 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
     def test_repository_scan_reads_tracked_dangling_symlink_blob(self) -> None:
         tracked_blob = "b" * 40
         bearer = "Bearer " + "opaqueabcdefghijklmnop"
+        base_commit = "c" * 40
+        head_commit = "d" * 40
 
         def git_output(
             _repository_root: Path,
@@ -3170,6 +3435,20 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                 return b""
             if arguments[:2] == ["diff", "--no-ext-diff"]:
                 return b""
+            if arguments == [
+                "rev-parse",
+                "--verify",
+                f"{base_commit}^{{commit}}",
+            ]:
+                return f"{base_commit}\n".encode()
+            if arguments == ["rev-parse", "HEAD"]:
+                return f"{head_commit}\n".encode()
+            if arguments == [
+                "merge-base",
+                base_commit,
+                head_commit,
+            ]:
+                return f"{base_commit}\n".encode()
             raise AssertionError(arguments)
 
         with (
@@ -3180,7 +3459,11 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                 side_effect=git_output,
             ),
         ):
-            report = scan_git_and_artifacts(Path(temporary), ())
+            report = scan_git_and_artifacts(
+                Path(temporary),
+                (),
+                base_commit=base_commit,
+            )
 
         self.assertEqual(1, report["finding_count"])
         self.assertEqual("bearer_token", report["findings"][0]["rule_id"])
@@ -3232,16 +3515,22 @@ class DerivedVerdictTest(unittest.TestCase):
         )
         repository = report["repository"]
         assert isinstance(repository, dict)
-        for state in repository.values():
+        for phase in ("before", "after"):
+            state = repository[phase]
             assert isinstance(state, dict)
             state["tree"] = source_tree
+        repository["head_commit"] = repository["before"]["head"]
+        review_diff = b"+synthetic review delta\n"
         manifest = [
             tracked_entry,
             {
                 "kind": "diff",
                 "path": "<git-diff>",
-                "size": 0,
-                "sha256": compliance_module.sha256_bytes(b""),
+                "size": len(review_diff),
+                "sha256": compliance_module.sha256_bytes(review_diff),
+                "base_commit": repository["base_commit"],
+                "head_commit": repository["head_commit"],
+                "merge_base": repository["merge_base"],
             },
         ]
         artifacts = report["artifacts"]
@@ -3251,14 +3540,27 @@ class DerivedVerdictTest(unittest.TestCase):
             assert isinstance(artifact, dict)
             file_manifest = artifact["file_manifest"]
             file_sizes = artifact["file_sizes"]
+            metadata_manifest = artifact["metadata_manifest"]
+            metadata_sizes = artifact["metadata_sizes"]
             assert isinstance(file_manifest, dict)
             assert isinstance(file_sizes, dict)
+            assert isinstance(metadata_manifest, dict)
+            assert isinstance(metadata_sizes, dict)
             for path, digest in file_manifest.items():
                 manifest.append(
                     {
                         "kind": kind,
                         "path": f"{kind}/{path}",
                         "size": file_sizes[path],
+                        "sha256": digest,
+                    }
+                )
+            for path, digest in metadata_manifest.items():
+                manifest.append(
+                    {
+                        "kind": kind,
+                        "path": f"{kind}/{path}",
+                        "size": metadata_sizes[path],
                         "sha256": digest,
                     }
                 )
@@ -3290,7 +3592,11 @@ class DerivedVerdictTest(unittest.TestCase):
         wheel_root = "voistarcraft2-0.1.0.dist-info"
         metadata_entry = f"{wheel_root}/METADATA"
         source_readme_raw = "# Synthetic fixture\n"
-        source_pyproject_raw = """[project]
+        source_pyproject_raw = """[build-system]
+requires = ["setuptools==82.0.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
 name = "voiStarcraft2"
 version = "0.1.0"
 description = "Synthetic distribution compliance fixture."
@@ -3516,17 +3822,22 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
                 compliance_module.DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION
             ),
             "repository": {
-                phase: {
-                    "ok": True,
-                    "head": digest[:40],
-                    "tree": digest[:40],
-                    "dirty_entries": [],
-                    "replacement_refs": [],
-                    "source_root_matches": True,
-                    "repository_root": "/release",
-                    "source_root": "/release",
-                }
-                for phase in ("before", "after")
+                "base_commit": "1" * 40,
+                "head_commit": digest[:40],
+                "merge_base": "1" * 40,
+                **{
+                    phase: {
+                        "ok": True,
+                        "head": digest[:40],
+                        "tree": digest[:40],
+                        "dirty_entries": [],
+                        "replacement_refs": [],
+                        "source_root_matches": True,
+                        "repository_root": "/release",
+                        "source_root": "/release",
+                    }
+                    for phase in ("before", "after")
+                },
             },
             "artifacts": {
                 "wheel": {
@@ -3538,6 +3849,8 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
                     "file_manifest": wheel_file_manifest,
                     "file_sizes": wheel_file_sizes,
                     "directory_entries": [],
+                    "metadata_manifest": {},
+                    "metadata_sizes": {},
                 },
                 "sdist": {
                     "path": "/release/dist/voistarcraft2-0.1.0.tar.gz",
@@ -3553,6 +3866,8 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
                     "file_manifest": sdist_file_manifest,
                     "file_sizes": sdist_file_sizes,
                     "directory_entries": sdist_directories,
+                    "metadata_manifest": {},
+                    "metadata_sizes": {},
                 },
             },
             "archive_blockers": [],
@@ -4450,10 +4765,7 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
 
     def test_rejects_dirty_repository_and_skipped_install_smoke(self) -> None:
         report = dict(self.report)
-        repository = {
-            phase: dict(value)
-            for phase, value in self.report["repository"].items()
-        }
+        repository = copy.deepcopy(self.report["repository"])
         repository["before"]["ok"] = False
         repository["before"]["dirty_entries"] = [" M README.md"]
         report["repository"] = repository
@@ -4470,10 +4782,7 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
         self,
     ) -> None:
         report = dict(self.report)
-        repository = {
-            phase: dict(value)
-            for phase, value in self.report["repository"].items()
-        }
+        repository = copy.deepcopy(self.report["repository"])
         repository["before"]["dirty_entries"] = [" M pyproject.toml"]
         repository["before"]["ok"] = True
         repository["after"]["head"] = "e" * 40
@@ -4546,7 +4855,7 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
                         }
                     )
                 else:
-                    manifest[0]["sha256"] = "e" * 64
+                    manifest[0]["sha256"] = "not-a-digest"
                 secret_scan["scanned_file_count"] = len(manifest)
                 secret_scan["input_manifest_sha256"] = (
                     compliance_module.sha256_bytes(
@@ -4808,13 +5117,6 @@ class DistributionEvidenceWritingTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as temporary:
             output_dir = Path(temporary)
-            (output_dir / "installed.METADATA").write_text(
-                secret,
-                encoding="utf-8",
-            )
-            stale_dir = output_dir / "stale"
-            stale_dir.mkdir()
-            (stale_dir / "raw.txt").write_text(secret, encoding="utf-8")
 
             compliance_module.write_distribution_evidence(report, output_dir)
 
@@ -4835,6 +5137,81 @@ class DistributionEvidenceWritingTest(unittest.TestCase):
             public = compliance_module._external_distribution_report(report)
             self.assertTrue(public["evidence_redacted"])
             self.assertEqual("blocked", public["status"])
+
+    def test_output_directory_symlink_is_rejected_without_deleting_target(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "target"
+            target.mkdir()
+            sentinel = target / "sentinel.txt"
+            sentinel.write_text("survives\n", encoding="utf-8")
+            output_dir = root / "distribution-compliance-evidence"
+            output_dir.symlink_to(target, target_is_directory=True)
+
+            with self.assertRaisesRegex(RuntimeError, "real directory"):
+                compliance_module.write_distribution_evidence(
+                    {"ok": False, "status": "blocked"},
+                    output_dir,
+                )
+
+            self.assertEqual("survives\n", sentinel.read_text())
+
+    def test_nonempty_output_directory_is_rejected_without_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output_dir = Path(temporary)
+            sentinel = output_dir / "sentinel.txt"
+            sentinel.write_text("survives\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "must be empty"):
+                compliance_module.write_distribution_evidence(
+                    {"ok": False, "status": "blocked"},
+                    output_dir,
+                )
+
+            self.assertEqual("survives\n", sentinel.read_text())
+
+    def test_main_exits_nonzero_when_public_report_is_redacted(self) -> None:
+        secret = "sk-" + "liveabcdefghijklmnop"
+        internal_report = {
+            "ok": True,
+            "status": "passed",
+            "blockers": [],
+            "secret_scan": {
+                "finding_count": 0,
+                "findings": [],
+            },
+            "artifact_path": f"/tmp/{secret}.whl",
+        }
+        with (
+            mock.patch.object(
+                compliance_module,
+                "build_distribution_report",
+                return_value=internal_report,
+            ),
+            mock.patch.object(
+                compliance_module,
+                "write_distribution_evidence",
+            ) as write,
+        ):
+            result = compliance_module.main(
+                [
+                    "--repository",
+                    ".",
+                    "--base-commit",
+                    "a" * 40,
+                    "--dist-dir",
+                    "dist",
+                    "--output-dir",
+                    "evidence",
+                ]
+            )
+
+        self.assertEqual(1, result)
+        public_report = write.call_args.kwargs["public_report"]
+        self.assertFalse(public_report["ok"])
+        self.assertEqual("blocked", public_report["status"])
 
 
 if __name__ == "__main__":

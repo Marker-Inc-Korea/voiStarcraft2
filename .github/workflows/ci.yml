@@ -72,10 +72,15 @@ jobs:
       - name: Verify clean release source
         run: test -z "$(git status --porcelain=v1 --untracked-files=all)"
       - name: Build and verify release artifacts
+        env:
+          EXPECTED_RELEASE_BASE_COMMIT: >-
+            ${{ github.event_name == 'pull_request' &&
+            github.event.pull_request.base.sha || github.event.before }}
         run: |
           uv run --python 3.12 python -m \
             starcraft_commander.distribution_compliance \
             --repository . \
+            --base-commit "${EXPECTED_RELEASE_BASE_COMMIT}" \
             --source-root . \
             --dist-dir dist \
             --output-dir distribution-compliance-evidence

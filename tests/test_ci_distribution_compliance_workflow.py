@@ -57,6 +57,17 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
         self.assertIn("git rev-parse HEAD", verification["run"])
         self.assertIn("EXPECTED_RELEASE_COMMIT", verification["run"])
 
+        build = next(
+            step
+            for step in steps
+            if step.get("name") == "Build and verify release artifacts"
+        )
+        expected_base = build["env"]["EXPECTED_RELEASE_BASE_COMMIT"]
+        self.assertIn("github.event.pull_request.base.sha", expected_base)
+        self.assertIn("github.event.before", expected_base)
+        self.assertIn("--base-commit", build["run"])
+        self.assertIn("EXPECTED_RELEASE_BASE_COMMIT", build["run"])
+
     def test_failed_evidence_and_qualified_release_uploads_are_separate(self) -> None:
         workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
         steps = workflow["jobs"]["distribution-compliance"]["steps"]

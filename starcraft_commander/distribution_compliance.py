@@ -21,7 +21,7 @@ import unicodedata
 import venv
 import zipfile
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from email.parser import BytesParser
 from pathlib import Path, PurePosixPath
 from typing import Final
@@ -462,6 +462,7 @@ class ArchiveSnapshot:
     files: Mapping[str, bytes]
     blockers: tuple[Mapping[str, object], ...]
     directories: tuple[str, ...] = ()
+    metadata: Mapping[str, bytes] = dataclass_field(default_factory=dict)
 
 
 def canonical_json_text(value: object) -> str:
@@ -494,9 +495,19 @@ def inspect_wheel(path: Path) -> ArchiveSnapshot:
     blockers: list[dict[str, object]] = []
     files: dict[str, bytes] = {}
     directories: list[str] = []
+    metadata: dict[str, bytes] = {}
     entries: list[str] = []
     total_bytes = 0
     with zipfile.ZipFile(path) as archive:
+        if archive.comment:
+            metadata["__archive_metadata__/global-comment"] = archive.comment
+            blockers.append(
+                {
+                    "code": "unexpected_archive_metadata",
+                    "kind": "wheel",
+                    "metadata": "global_comment",
+                }
+            )
         infos = archive.infolist()
         if len(infos) > MAX_ARCHIVE_ENTRIES:
             blockers.append(
@@ -508,9 +519,33 @@ def inspect_wheel(path: Path) -> ArchiveSnapshot:
                 }
             )
         seen: set[str] = set()
-        for info in infos[: MAX_ARCHIVE_ENTRIES + 1]:
+        for index, info in enumerate(infos[: MAX_ARCHIVE_ENTRIES + 1]):
             name = info.filename
             entries.append(name)
+            if info.comment:
+                metadata[
+                    f"__archive_metadata__/entry/{index:04d}/comment"
+                ] = info.comment
+                blockers.append(
+                    {
+                        "code": "unexpected_archive_metadata",
+                        "kind": "wheel",
+                        "entry": name,
+                        "metadata": "comment",
+                    }
+                )
+            if info.extra:
+                metadata[
+                    f"__archive_metadata__/entry/{index:04d}/extra"
+                ] = info.extra
+                blockers.append(
+                    {
+                        "code": "unexpected_archive_metadata",
+                        "kind": "wheel",
+                        "entry": name,
+                        "metadata": "extra",
+                    }
+                )
             path_error = _archive_path_error(name)
             if path_error:
                 blockers.append(
@@ -615,6 +650,7 @@ def inspect_wheel(path: Path) -> ArchiveSnapshot:
         files=files,
         blockers=tuple(blockers),
         directories=tuple(sorted(directories)),
+        metadata=dict(sorted(metadata.items())),
     )
 
 
@@ -624,6 +660,7 @@ def inspect_sdist(path: Path) -> ArchiveSnapshot:
     blockers: list[dict[str, object]] = []
     files: dict[str, bytes] = {}
     directories: list[str] = []
+    metadata: dict[str, bytes] = {}
     entries: list[str] = []
     total_bytes = 0
     expected_root = _expected_sdist_root(path)
@@ -636,6 +673,21 @@ def inspect_sdist(path: Path) -> ArchiveSnapshot:
             }
         )
     with tarfile.open(path, "r:gz") as archive:
+        for index, (key, value) in enumerate(
+            sorted(archive.pax_headers.items())
+        ):
+            metadata[
+                f"__archive_metadata__/global-pax/{index:04d}"
+            ] = canonical_json_text(
+                {"key": key, "value": value}
+            ).encode("utf-8")
+            blockers.append(
+                {
+                    "code": "unexpected_archive_metadata",
+                    "kind": "sdist",
+                    "metadata": "global_pax",
+                }
+            )
         members = archive.getmembers()
         if len(members) > MAX_ARCHIVE_ENTRIES:
             blockers.append(
@@ -647,9 +699,35 @@ def inspect_sdist(path: Path) -> ArchiveSnapshot:
                 }
             )
         seen: set[str] = set()
-        for member in members[: MAX_ARCHIVE_ENTRIES + 1]:
+        for member_index, member in enumerate(
+            members[: MAX_ARCHIVE_ENTRIES + 1]
+        ):
             name = member.name
             entries.append(name)
+            for pax_index, (key, value) in enumerate(
+                sorted(member.pax_headers.items())
+            ):
+                metadata[
+                    "__archive_metadata__/"
+                    f"entry/{member_index:04d}/pax/{pax_index:04d}"
+                ] = canonical_json_text(
+                    {"key": key, "value": value}
+                ).encode("utf-8")
+                valid_path = key == "path" and value == name
+                valid_mtime = (
+                    key == "mtime"
+                    and re.fullmatch(r"-?\d+(?:\.\d+)?", value) is not None
+                    and float(value) == float(member.mtime)
+                )
+                if not valid_path and not valid_mtime:
+                    blockers.append(
+                        {
+                            "code": "unexpected_archive_metadata",
+                            "kind": "sdist",
+                            "entry": name,
+                            "metadata": "pax",
+                        }
+                    )
             path_error = _archive_path_error(name)
             if path_error:
                 blockers.append(
@@ -750,6 +828,7 @@ def inspect_sdist(path: Path) -> ArchiveSnapshot:
         files=files,
         blockers=tuple(blockers),
         directories=tuple(sorted(directories)),
+        metadata=dict(sorted(metadata.items())),
     )
 
 
@@ -940,6 +1019,28 @@ def scan_payload(
         ("private_model_override", _PRIVATE_MODEL_KUBERNETES_RE),
         ("credential_path", _CREDENTIAL_PATH_RE),
     )
+    for rule_id, pattern in rules:
+        for match in pattern.finditer(normalized_path):
+            matched = match.group(0)
+            if (
+                allow_safe_fixtures
+                and _safe_fixture_match(
+                    normalized_path,
+                    rule_id,
+                    matched,
+                )
+            ):
+                continue
+            findings.append(
+                {
+                    "path": normalized_path,
+                    "line": 0,
+                    "rule_id": rule_id,
+                    "fingerprint": sha256_bytes(
+                        f"{rule_id}\0{matched}".encode("utf-8")
+                    ),
+                }
+            )
     scan_texts, configuration_failures = _configuration_scan_texts(
         normalized_path,
         text,
@@ -3940,8 +4041,10 @@ def scan_git_and_artifacts(
     repository_root: Path,
     snapshots: Sequence[ArchiveSnapshot],
     generated_payloads: Mapping[str, bytes] | None = None,
+    *,
+    base_commit: str,
 ) -> dict[str, object]:
-    """Scan tracked files, the current diff, archives, and generated reports."""
+    """Scan tracked files, the review diff, archives, and generated reports."""
 
     findings: list[dict[str, object]] = []
     input_manifest: list[dict[str, object]] = []
@@ -4034,18 +4137,34 @@ def scan_git_and_artifacts(
                 candidate.read_bytes(),
                 allow_safe_fixtures=True,
             )
+    review_range = _review_range_evidence(repository_root, base_commit)
     diff = _git_output(
         repository_root,
-        ["diff", "--no-ext-diff", "--binary", "HEAD", "--"],
+        [
+            "diff",
+            "--no-ext-diff",
+            "--binary",
+            f"{review_range['base_commit']}...{review_range['head_commit']}",
+            "--",
+        ],
     )
+    added_diff = _added_diff_payload(diff)
     scan_input(
         "diff",
         "<git-diff>",
-        _added_diff_payload(diff),
+        added_diff,
         allow_safe_fixtures=False,
     )
+    input_manifest[-1].update(review_range)
     for snapshot in snapshots:
         for entry, payload in snapshot.files.items():
+            scan_input(
+                snapshot.kind,
+                f"{snapshot.kind}/{entry}",
+                payload,
+                allow_safe_fixtures=False,
+            )
+        for entry, payload in snapshot.metadata.items():
             scan_input(
                 snapshot.kind,
                 f"{snapshot.kind}/{entry}",
@@ -4201,6 +4320,7 @@ def _git_tree_oid_from_manifest(
 def build_distribution_report(
     repository_root: Path,
     *,
+    base_commit: str,
     source_root: Path | None = None,
     dist_dir: Path | None = None,
     run_install_smoke: bool = True,
@@ -4222,6 +4342,10 @@ def build_distribution_report(
             repository_root,
             source_root,
         )
+        review_range = _review_range_evidence(
+            repository_root,
+            base_commit,
+        )
         _build_distributions(source_root, dist_dir)
         repository_after = repository_state_evidence(
             repository_root,
@@ -4235,6 +4359,7 @@ def build_distribution_report(
                 "repository": {
                     "before": repository_before,
                     "after": repository_after,
+                    **review_range,
                 },
                 "artifacts": {
                     "wheel_count": len(wheel_paths),
@@ -4328,6 +4453,7 @@ def build_distribution_report(
             "repository": {
                 "before": repository_before,
                 "after": repository_after,
+                **review_range,
             },
             "artifacts": {
                 "wheel": _artifact_evidence(wheel),
@@ -4392,6 +4518,7 @@ def build_distribution_report(
             repository_root,
             (wheel, sdist),
             _distribution_report_scan_payloads(report),
+            base_commit=review_range["base_commit"],
         )
         return _with_derived_verdict(report)
     finally:
@@ -4468,6 +4595,25 @@ def distribution_report_blockers(
             )
     before_state = repository_states["before"]
     after_state = repository_states["after"]
+    review_range = {
+        key: repository.get(key)
+        for key in ("base_commit", "head_commit", "merge_base")
+    }
+    if (
+        any(
+            not isinstance(value, str)
+            or re.fullmatch(r"[0-9a-f]{40}", value) is None
+            for value in review_range.values()
+        )
+        or review_range["head_commit"] != before_state.get("head")
+        or review_range["head_commit"] != after_state.get("head")
+    ):
+        blockers.append(
+            {
+                "code": "invalid_review_range_evidence",
+                **review_range,
+            }
+        )
     for identity in ("head", "tree"):
         before_identity = before_state.get(identity)
         after_identity = after_state.get(identity)
@@ -4557,6 +4703,8 @@ def distribution_report_blockers(
                 "file_manifest",
                 "file_sizes",
                 "directory_entries",
+                "metadata_manifest",
+                "metadata_sizes",
             ):
                 if artifact.get(field) != trusted_artifact.get(field):
                     blockers.append(
@@ -4619,12 +4767,22 @@ def distribution_report_blockers(
                 )
         file_manifest = _sha256_manifest(artifact.get("file_manifest"))
         file_sizes = _size_manifest(artifact.get("file_sizes"))
+        metadata_manifest = _sha256_manifest(
+            artifact.get("metadata_manifest"),
+            allow_empty=True,
+        )
+        metadata_sizes = _size_manifest(
+            artifact.get("metadata_sizes"),
+            allow_empty=True,
+        )
         directory_entries = artifact.get("directory_entries")
         if (
             not isinstance(filename, str)
             or not filename
             or file_manifest is None
             or file_sizes is None
+            or metadata_manifest is None
+            or metadata_sizes is None
             or not isinstance(directory_entries, list)
             or any(not isinstance(entry, str) for entry in directory_entries)
         ):
@@ -4635,6 +4793,20 @@ def distribution_report_blockers(
         if set(file_sizes) != set(file_manifest):
             blockers.append(
                 {"code": "artifact_file_size_manifest_mismatch", "kind": kind}
+            )
+        if set(metadata_sizes) != set(metadata_manifest):
+            blockers.append(
+                {
+                    "code": "artifact_metadata_size_manifest_mismatch",
+                    "kind": kind,
+                }
+            )
+        if set(file_manifest) & set(metadata_manifest):
+            blockers.append(
+                {
+                    "code": "artifact_metadata_path_collision",
+                    "kind": kind,
+                }
             )
         entry_names = (
             [entry for entry in entries if isinstance(entry, str)]
@@ -4708,6 +4880,13 @@ def distribution_report_blockers(
             _mapping(report.get("dependencies")),
         )
     )
+    source_pyproject = _mapping(report.get("source_pyproject"))
+    source_pyproject_raw = source_pyproject.get("raw")
+    if (
+        not isinstance(source_pyproject_raw, str)
+        or not _is_expected_build_system(source_pyproject_raw)
+    ):
+        blockers.append({"code": "invalid_build_system_configuration"})
     expressions = metadata.get("license_expressions")
     if expressions != [EXPECTED_LICENSE_EXPRESSION]:
         blockers.append(
@@ -4898,6 +5077,33 @@ def distribution_report_blockers(
                     )
                     is None
                 )
+            elif kind == "diff":
+                size = entry.get("size")
+                digest = entry.get("sha256")
+                invalid_identity = (
+                    set(entry)
+                    != {
+                        "kind",
+                        "path",
+                        "size",
+                        "sha256",
+                        "base_commit",
+                        "head_commit",
+                        "merge_base",
+                    }
+                    or type(size) is not int
+                    or size < 0
+                    or not isinstance(digest, str)
+                    or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                    or any(
+                        entry.get(key) != review_range.get(key)
+                        for key in (
+                            "base_commit",
+                            "head_commit",
+                            "merge_base",
+                        )
+                    )
+                )
             else:
                 size = entry.get("size")
                 digest = entry.get("sha256")
@@ -4929,8 +5135,9 @@ def distribution_report_blockers(
         diff_entry = manifest_by_path.get("<git-diff>", {})
         valid_manifest = valid_manifest and (
             diff_entry.get("kind") == "diff"
-            and diff_entry.get("size") == 0
-            and diff_entry.get("sha256") == sha256_bytes(b"")
+            and type(diff_entry.get("size")) is int
+            and int(diff_entry.get("size", -1)) >= 0
+            and isinstance(diff_entry.get("sha256"), str)
         )
     if valid_manifest:
         tracked_manifest = [
@@ -4998,7 +5205,12 @@ def distribution_report_blockers(
             artifact = _mapping(_mapping(report.get("artifacts")).get(kind))
             file_manifest = _mapping(artifact.get("file_manifest"))
             file_sizes = _mapping(artifact.get("file_sizes"))
-            expected_paths = {f"{kind}/{entry}" for entry in file_manifest}
+            metadata_manifest = _mapping(artifact.get("metadata_manifest"))
+            metadata_sizes = _mapping(artifact.get("metadata_sizes"))
+            expected_paths = {
+                f"{kind}/{entry}"
+                for entry in (*file_manifest, *metadata_manifest)
+            }
             observed_paths = {
                 path
                 for path, entry in manifest_by_path.items()
@@ -5013,6 +5225,19 @@ def distribution_report_blockers(
                     entry.get("kind") != kind
                     or entry.get("sha256") != digest
                     or entry.get("size") != file_sizes.get(archive_entry)
+                ):
+                    valid_manifest = False
+                    break
+            for metadata_entry, digest in metadata_manifest.items():
+                entry = manifest_by_path.get(
+                    f"{kind}/{metadata_entry}",
+                    {},
+                )
+                if (
+                    entry.get("kind") != kind
+                    or entry.get("sha256") != digest
+                    or entry.get("size")
+                    != metadata_sizes.get(metadata_entry)
                 ):
                     valid_manifest = False
                     break
@@ -5132,16 +5357,13 @@ def render_distribution_markdown(report: Mapping[str, object]) -> str:
 def write_distribution_evidence(
     report: Mapping[str, object],
     output_dir: Path,
+    *,
+    public_report: Mapping[str, object] | None = None,
 ) -> None:
     """Write the canonical report and reviewer evidence files."""
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    for existing in output_dir.iterdir():
-        if existing.is_symlink() or existing.is_file():
-            existing.unlink()
-        elif existing.is_dir():
-            shutil.rmtree(existing)
-    public_report = _external_distribution_report(report)
+    _prepare_distribution_evidence_directory(output_dir)
+    public_report = public_report or _external_distribution_report(report)
     (output_dir / "distribution-compliance.json").write_text(
         canonical_json_text(public_report),
         encoding="utf-8",
@@ -5177,6 +5399,22 @@ def write_distribution_evidence(
         public_report
     ).items():
         (output_dir / name).write_bytes(payload)
+
+
+def _prepare_distribution_evidence_directory(output_dir: Path) -> None:
+    try:
+        output_stat = os.lstat(output_dir)
+    except FileNotFoundError:
+        output_dir.mkdir(parents=True, exist_ok=False)
+        output_stat = os.lstat(output_dir)
+    if not stat.S_ISDIR(output_stat.st_mode):
+        raise RuntimeError(
+            "distribution evidence output must be a real directory"
+        )
+    if any(output_dir.iterdir()):
+        raise RuntimeError(
+            "distribution evidence output directory must be empty"
+        )
 
 
 def _external_distribution_report(
@@ -5571,31 +5809,44 @@ def build_dependencies_from_pyproject(text: str) -> frozenset[str]:
 def build_requirements_from_pyproject(text: str) -> tuple[str, ...]:
     """Extract exact direct build backend requirements from project TOML."""
 
-    sanitized = "\n".join(
-        _strip_toml_line_comment(line) for line in text.splitlines()
-    )
-    match = re.search(
-        r"(?ms)^\[build-system\]\s*$"
-        r"(.*?)(?=^\[[^\n]+\]\s*$|\Z)",
-        sanitized,
-    )
-    if match is None:
+    build_system = _build_system_configuration(text)
+    if build_system is None:
         return ()
-    requires = re.search(
-        r"(?ms)^\s*requires\s*=\s*\[(.*?)\]",
-        match.group(1),
-    )
-    if requires is None:
+    requires = build_system.get("requires")
+    if not isinstance(requires, list) or any(
+        not isinstance(requirement, str) for requirement in requires
+    ):
         return ()
     return tuple(
         sorted(
             requirement
-            for requirement in re.findall(
-                r"[\"']([^\"']+)[\"']",
-                requires.group(1),
-            )
+            for requirement in requires
             if normalized_dependency_name(requirement)
         )
+    )
+
+
+def _build_system_configuration(
+    text: str,
+) -> Mapping[str, object] | None:
+    if _toml is None:
+        return None
+    try:
+        document = _toml.loads(text)
+    except (TypeError, ValueError):
+        return None
+    build_system = document.get("build-system")
+    return build_system if isinstance(build_system, Mapping) else None
+
+
+def _is_expected_build_system(text: str) -> bool:
+    build_system = _build_system_configuration(text)
+    return (
+        build_system is not None
+        and set(build_system) == {"requires", "build-backend"}
+        and build_system.get("requires")
+        == [EXPECTED_BUILD_BACKEND_REQUIREMENT]
+        and build_system.get("build-backend") == "setuptools.build_meta"
     )
 
 
@@ -5758,6 +6009,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         description="Build and verify release distribution compliance."
     )
     parser.add_argument("--repository", type=Path, default=Path.cwd())
+    parser.add_argument("--base-commit", required=True)
     parser.add_argument("--source-root", type=Path)
     parser.add_argument("--dist-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -5769,13 +6021,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_argument_parser().parse_args(argv)
     report = build_distribution_report(
         args.repository,
+        base_commit=args.base_commit,
         source_root=args.source_root,
         dist_dir=args.dist_dir,
         run_install_smoke=not args.skip_install_smoke,
     )
-    write_distribution_evidence(report, args.output_dir)
-    print(canonical_json_text(_external_distribution_report(report)), end="")
-    return 0 if report.get("ok") is True else 1
+    public_report = _external_distribution_report(report)
+    write_distribution_evidence(
+        report,
+        args.output_dir,
+        public_report=public_report,
+    )
+    print(canonical_json_text(public_report), end="")
+    return 0 if public_report.get("ok") is True else 1
 
 
 def _archive_path_error(name: str) -> str:
@@ -6291,8 +6549,12 @@ def _required_generated_metadata_files(
     )
 
 
-def _sha256_manifest(value: object) -> dict[str, str] | None:
-    if not isinstance(value, Mapping) or not value:
+def _sha256_manifest(
+    value: object,
+    *,
+    allow_empty: bool = False,
+) -> dict[str, str] | None:
+    if not isinstance(value, Mapping) or (not value and not allow_empty):
         return None
     manifest: dict[str, str] = {}
     for raw_path, raw_digest in value.items():
@@ -6307,8 +6569,12 @@ def _sha256_manifest(value: object) -> dict[str, str] | None:
     return manifest
 
 
-def _size_manifest(value: object) -> dict[str, int] | None:
-    if not isinstance(value, Mapping) or not value:
+def _size_manifest(
+    value: object,
+    *,
+    allow_empty: bool = False,
+) -> dict[str, int] | None:
+    if not isinstance(value, Mapping) or (not value and not allow_empty):
         return None
     manifest: dict[str, int] = {}
     for raw_path, raw_size in value.items():
@@ -7353,6 +7619,47 @@ def _git_output(repository_root: Path, arguments: Sequence[str]) -> bytes:
     return result.stdout
 
 
+def _review_range_evidence(
+    repository_root: Path,
+    base_commit: str,
+) -> dict[str, str]:
+    """Return one exact, repository-owned review range."""
+
+    if re.fullmatch(r"[0-9a-f]{40}", base_commit) is None:
+        raise RuntimeError("review base must be an exact Git commit")
+    resolved_base = (
+        _git_output(
+            repository_root,
+            ["rev-parse", "--verify", f"{base_commit}^{{commit}}"],
+        )
+        .decode("ascii", errors="strict")
+        .strip()
+    )
+    head_commit = (
+        _git_output(repository_root, ["rev-parse", "HEAD"])
+        .decode("ascii", errors="strict")
+        .strip()
+    )
+    merge_base = (
+        _git_output(
+            repository_root,
+            ["merge-base", resolved_base, head_commit],
+        )
+        .decode("ascii", errors="strict")
+        .strip()
+    )
+    for value in (resolved_base, head_commit, merge_base):
+        if re.fullmatch(r"[0-9a-f]{40}", value) is None:
+            raise RuntimeError("review range contains an invalid Git commit")
+    if resolved_base != base_commit:
+        raise RuntimeError("review base did not resolve to the requested commit")
+    return {
+        "base_commit": resolved_base,
+        "head_commit": head_commit,
+        "merge_base": merge_base,
+    }
+
+
 def _git_replacement_refs(repository_root: Path) -> list[str]:
     return (
         _git_output(
@@ -7481,7 +7788,12 @@ def _trusted_secret_scan_evidence(
     before = _mapping(repository.get("before"))
     after = _mapping(repository.get("after"))
     root_value = before.get("repository_root")
-    if not isinstance(root_value, str) or before != after:
+    base_commit = repository.get("base_commit")
+    if (
+        not isinstance(root_value, str)
+        or not isinstance(base_commit, str)
+        or before != after
+    ):
         return None
     repository_root = Path(root_value)
     snapshots = _trusted_artifact_snapshots(report)
@@ -7494,10 +7806,17 @@ def _trusted_secret_scan_evidence(
         )
         if current != before:
             return None
+        if _review_range_evidence(repository_root, base_commit) != {
+            "base_commit": repository.get("base_commit"),
+            "head_commit": repository.get("head_commit"),
+            "merge_base": repository.get("merge_base"),
+        }:
+            return None
         return scan_git_and_artifacts(
             repository_root,
             snapshots,
             _distribution_report_scan_payloads(report),
+            base_commit=base_commit,
         )
     except (
         OSError,
@@ -7597,6 +7916,8 @@ def _build_distributions(source_root: Path, dist_dir: Path) -> None:
         "setuptools",
     )
     if (
+        not _is_expected_build_system(pyproject_text)
+        or
         build_requirements != (EXPECTED_BUILD_BACKEND_REQUIREMENT,)
         or locked_versions
         != {"setuptools": EXPECTED_BUILD_BACKEND_VERSION}
@@ -7687,6 +8008,14 @@ def _artifact_evidence(snapshot: ArchiveSnapshot) -> dict[str, object]:
             for entry, payload in sorted(snapshot.files.items())
         },
         "directory_entries": list(snapshot.directories),
+        "metadata_manifest": {
+            entry: sha256_bytes(payload)
+            for entry, payload in sorted(snapshot.metadata.items())
+        },
+        "metadata_sizes": {
+            entry: len(payload)
+            for entry, payload in sorted(snapshot.metadata.items())
+        },
     }
 
 
