@@ -1091,9 +1091,10 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
     cli_value = str | tuple[str, ...]
     cli_environment = dict[str, cli_value]
     dynamic_argument = "<dynamic-argument>"
+    dynamic_f_string_argument = "<dynamic-f-string>"
     max_arguments = 96
     max_commands = 128
-    max_environment_states = max_commands
+    max_environment_states = 512
     max_environment_values = 256
     max_literal_characters = 256
     max_analysis_steps = 1_000_000
@@ -1524,38 +1525,37 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                         for prefix in states
                     ]
                     continue
-                if not isinstance(component, ast.FormattedValue):
-                    mark_limited("f_string")
-                    return None
-                formatted = scalar_alternatives(
-                    evaluate(component.value, environment)
-                )
-                if not formatted:
-                    mark_limited("f_string")
-                    return None
-                format_spec = ""
-                if component.format_spec is not None:
-                    format_values = scalar_alternatives(
-                        evaluate(component.format_spec, environment)
+                converted = [dynamic_f_string_argument]
+                if isinstance(component, ast.FormattedValue):
+                    formatted = scalar_alternatives(
+                        evaluate(component.value, environment)
                     )
-                    if len(format_values) != 1:
-                        mark_limited("f_string")
-                        return None
-                    format_spec = format_values[0]
-                converted: list[str] = []
-                for candidate in formatted:
-                    if component.conversion == ord("r"):
-                        candidate = repr(candidate)
-                    elif component.conversion == ord("a"):
-                        candidate = ascii(candidate)
-                    elif component.conversion not in {-1, ord("s")}:
-                        mark_limited("f_string")
-                        return None
-                    try:
-                        converted.append(format(candidate, format_spec))
-                    except (TypeError, ValueError):
-                        mark_limited("f_string")
-                        return None
+                    format_spec = ""
+                    if component.format_spec is not None:
+                        format_values = scalar_alternatives(
+                            evaluate(component.format_spec, environment)
+                        )
+                        if len(format_values) == 1:
+                            format_spec = format_values[0]
+                        else:
+                            formatted = []
+                    if formatted:
+                        converted = []
+                        for candidate in formatted:
+                            if component.conversion == ord("r"):
+                                candidate = repr(candidate)
+                            elif component.conversion == ord("a"):
+                                candidate = ascii(candidate)
+                            elif component.conversion not in {-1, ord("s")}:
+                                converted = [dynamic_f_string_argument]
+                                break
+                            try:
+                                converted.append(
+                                    format(candidate, format_spec)
+                                )
+                            except (TypeError, ValueError):
+                                converted = [dynamic_f_string_argument]
+                                break
                 states = [
                     bounded_string(prefix + suffix)
                     for prefix in states
@@ -1687,7 +1687,15 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
         if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name) and node.func.id == "super":
                 return evaluate_super_call(node, environment)
-            function_value = evaluate(node.func, environment)
+            function_value = (
+                resolve_attribute_value(
+                    node.func,
+                    environment,
+                    strict_dispatch=True,
+                )
+                if isinstance(node.func, ast.Attribute)
+                else evaluate(node.func, environment)
+            )
             class_identities = [
                 identity
                 for alternative in (
@@ -1712,8 +1720,46 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
 
     def record(value: cli_value | None) -> None:
         for sequence in sequence_alternatives(value):
-            if not any("--provider" in item for item in sequence):
+            provider_values: list[str] = []
+            for index, item in enumerate(sequence):
+                if item == "--provider":
+                    provider_values.append(
+                        (
+                            sequence[index + 1]
+                            if index + 1 < len(sequence)
+                            else dynamic_argument
+                        )
+                    )
+                elif item.startswith("--provider="):
+                    provider_values.append(item.split("=", 1)[1])
+            myproxy_literal = any(
+                re.fullmatch(
+                    _MYPROXY_PROVIDER_PATTERN,
+                    item.strip(),
+                    re.IGNORECASE,
+                )
+                is not None
+                for item in sequence
+            )
+            has_dynamic_f_string = any(
+                dynamic_f_string_argument in item for item in sequence
+            )
+            if not provider_values:
+                if myproxy_literal and has_dynamic_f_string:
+                    mark_limited("f_string")
                 continue
+            sensitive_provider = any(
+                dynamic_argument in provider
+                or re.fullmatch(
+                    _MYPROXY_PROVIDER_PATTERN,
+                    provider.strip(),
+                    re.IGNORECASE,
+                )
+                is not None
+                for provider in provider_values
+            )
+            if sensitive_provider and has_dynamic_f_string:
+                mark_limited("f_string")
             command = " ".join(sequence)
             if command in command_set:
                 continue
@@ -1900,6 +1946,55 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             pending.extend(ast.iter_child_nodes(candidate))
         return False
 
+    def contains_cli_execution_call(node: ast.AST) -> bool:
+        pending = list(ast.iter_child_nodes(node))
+        execution_names = {
+            "Popen",
+            "check_call",
+            "check_output",
+            "execv",
+            "execve",
+            "execvp",
+            "execvpe",
+            "run",
+            "spawnl",
+            "spawnle",
+            "spawnlp",
+            "spawnlpe",
+            "spawnv",
+            "spawnve",
+            "spawnvp",
+            "spawnvpe",
+            "system",
+        }
+        while pending:
+            candidate = pending.pop()
+            if isinstance(
+                candidate,
+                (
+                    ast.FunctionDef,
+                    ast.AsyncFunctionDef,
+                    ast.ClassDef,
+                    ast.Lambda,
+                ),
+            ):
+                continue
+            if isinstance(candidate, ast.Call):
+                function = candidate.func
+                name = (
+                    function.id
+                    if isinstance(function, ast.Name)
+                    else (
+                        function.attr
+                        if isinstance(function, ast.Attribute)
+                        else ""
+                    )
+                )
+                if name in execution_names:
+                    return True
+            pending.extend(ast.iter_child_nodes(candidate))
+        return False
+
     for candidate in ast.walk(tree):
         if isinstance(
             candidate,
@@ -1923,13 +2018,18 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                 )
             }
 
-    direct_provider_function_ids = {
+    provider_fragment_function_ids = {
         identity
         for identity, definition in function_definitions.items()
         if (
             contains_cli_provider(definition)
             or contains_provider_fragments(definition)
         )
+    }
+    direct_provider_function_ids = {
+        identity
+        for identity in provider_fragment_function_ids
+        if contains_cli_execution_call(function_definitions[identity])
     }
     function_calls: dict[int, set[str]] = {}
     relevant_function_ids = {
@@ -1996,6 +2096,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
 
     if (
         not relevant_function_ids
+        and not provider_fragment_function_ids
         and not contains_cli_provider(tree)
         and not contains_provider_fragments(tree)
         and not any(
@@ -2410,6 +2511,8 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             return "static"
         if decorator_names == ["classmethod"]:
             return "class"
+        if decorator_names == ["property"]:
+            return "property"
         return "unsupported"
 
     def class_alternatives(value: cli_value | None) -> list[int]:
@@ -2518,6 +2621,33 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                     sequence.pop(0)
         return (class_identity, *merged)
 
+    def is_external_testcase_helper(
+        class_identity: int,
+        attribute: str,
+    ) -> bool:
+        if not (
+            attribute.startswith("assert")
+            or attribute in {"addCleanup", "fail", "skipTest", "subTest"}
+        ):
+            return False
+        definition_identity = class_value_definitions.get(class_identity)
+        definition = class_definitions.get(definition_identity or -1)
+        if definition is None:
+            return False
+        return any(
+            (
+                isinstance(base, ast.Name)
+                and base.id == "TestCase"
+            )
+            or (
+                isinstance(base, ast.Attribute)
+                and isinstance(base.value, ast.Name)
+                and base.value.id == "unittest"
+                and base.attr == "TestCase"
+            )
+            for base in definition.bases
+        )
+
     def bind_callable_value(
         value: cli_value,
         implicit_positional: Sequence[cli_value],
@@ -2591,6 +2721,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
         receiver: cli_value,
         owner_class_identity: int,
         kind: str,
+        environment: Mapping[str, cli_value],
     ) -> cli_value | None:
         if kind == "unsupported":
             mark_limited("dispatch")
@@ -2601,6 +2732,13 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             return bind_callable_value(
                 value,
                 (class_token(owner_class_identity),),
+            )
+        if kind == "property":
+            return invoke_callable_value(
+                bind_callable_value(value, (receiver,)),
+                None,
+                environment,
+                collect_return=True,
             )
         if stored_object(receiver) is not None:
             return bind_callable_value(value, (receiver,))
@@ -2613,12 +2751,13 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
         environment: Mapping[str, cli_value],
         *,
         start_after: int | None = None,
+        strict_dispatch: bool = False,
     ) -> cli_value | None:
         mro = class_mro(class_identity)
         if mro is None:
-            mark_limited("dispatch")
-            return None
-        search_mro = list(mro)
+            search_mro = [class_identity]
+        else:
+            search_mro = list(mro)
         if start_after is not None:
             if start_after not in search_mro:
                 mark_limited("dispatch")
@@ -2633,6 +2772,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                     receiver=receiver,
                     owner_class_identity=class_identity,
                     kind="instance",
+                    environment=environment,
                 )
             method = class_value_methods.get(candidate, {}).get(attribute)
             if method is None:
@@ -2643,12 +2783,21 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                 receiver=receiver,
                 owner_class_identity=class_identity,
                 kind=kind,
+                environment=environment,
             )
+        if (
+            mro is None
+            and strict_dispatch
+            and not is_external_testcase_helper(class_identity, attribute)
+        ):
+            mark_limited("dispatch")
         return None
 
     def resolve_attribute_value(
         node: ast.Attribute,
         environment: Mapping[str, cli_value],
+        *,
+        strict_dispatch: bool = False,
     ) -> cli_value | None:
         owner_value = evaluate(node.value, environment)
         owner_alternatives = (
@@ -2672,6 +2821,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                         node.attr,
                         owner,
                         environment,
+                        strict_dispatch=strict_dispatch,
                     )
                     if resolved is not None:
                         results.append(resolved)
@@ -2683,6 +2833,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                     node.attr,
                     owner,
                     environment,
+                    strict_dispatch=strict_dispatch,
                 )
                 if resolved is not None:
                     results.append(resolved)
@@ -2708,6 +2859,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                     receiver,
                     environment,
                     start_after=declaring_class_identity,
+                    strict_dispatch=strict_dispatch,
                 )
                 if resolved is not None:
                     results.append(resolved)
@@ -2782,6 +2934,36 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             ]
         return []
 
+    def value_supplies_provider_seed(value: cli_value | None) -> bool:
+        return any(
+            re.fullmatch(
+                _MYPROXY_PROVIDER_PATTERN,
+                candidate.strip(),
+                re.IGNORECASE,
+            )
+            is not None
+            for candidate in scalar_alternatives(value)
+        ) or any(
+            any(
+                item == "--provider"
+                or item.startswith("--provider=")
+                for item in sequence
+            )
+            for sequence in sequence_alternatives(value)
+        )
+
+    def call_supplies_provider_seed(
+        call: ast.Call | None,
+        environment: Mapping[str, cli_value],
+    ) -> bool:
+        return call is not None and any(
+            value_supplies_provider_seed(evaluate(node, environment))
+            for node in (
+                *call.args,
+                *(keyword.value for keyword in call.keywords),
+            )
+        )
+
     def invoke_callable_value(
         value: cli_value | None,
         call: ast.Call | None,
@@ -2821,6 +3003,20 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                 if kind == "function"
                 else lambda_definitions.get(definition_identity)
             )
+            if (
+                kind == "function"
+                and not active_function_calls
+                and not active_lambda_calls
+                and definition_identity not in relevant_function_ids
+                and not contains_cli_provider(definition)
+                and not contains_provider_fragments(definition)
+                and not call_supplies_provider_seed(call, environment)
+                and not any(
+                    value_supplies_provider_seed(captured)
+                    for captured in captured_environment.values()
+                )
+            ):
+                continue
             if definition is None:
                 mark_limited("dispatch")
                 continue
@@ -3200,7 +3396,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                             reference,
                         )
                         references.append((state, reference))
-                    if identity in direct_provider_function_ids:
+                    if identity in relevant_function_ids:
                         for state, reference in references:
                             invoke_callable_value(
                                 reference,
@@ -3255,6 +3451,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                                     receiver=receiver,
                                     owner_class_identity=class_identity,
                                     kind=kind,
+                                    environment=state,
                                 )
                                 invoke_callable_value(
                                     bound_method,

@@ -1918,6 +1918,39 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             {str(item["rule_id"]) for item in findings},
         )
 
+    def test_python_cli_unknown_f_strings_fail_closed_only_in_cli_flow(
+        self,
+    ) -> None:
+        payloads = {
+            "unrelated": (
+                "message = f'operation {operation_id}: {status!r}'\n"
+                "render(message)\n"
+            ),
+            "sensitive-cli": (
+                'provider = "my" + "proxy"\n'
+                "endpoint = f'https://{runtime_host}/v1'\n"
+                'run(["c", "--provider", provider, '
+                '"--base-url", endpoint])\n'
+            ),
+        }
+
+        for name, payload in payloads.items():
+            with self.subTest(name=name):
+                _reconstructed, failure = (
+                    compliance_module._python_cli_argument_text(
+                        "launcher.py",
+                        payload,
+                    )
+                )
+
+                if name == "unrelated":
+                    self.assertEqual("", failure)
+                else:
+                    self.assertEqual(
+                        "python_cli_analysis_limit_exceeded:f_string",
+                        failure,
+                    )
+
     def test_python_cli_reconstruction_binds_instance_methods(self) -> None:
         payload = (
             "class Client:\n"
@@ -2090,6 +2123,180 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
         )
         self.assertIn(
             "python_cli_analysis_limit_exceeded",
+            {str(item["rule_id"]) for item in findings},
+        )
+
+    def test_python_cli_unittest_helpers_do_not_create_dispatch_failures(
+        self,
+    ) -> None:
+        payload = (
+            "class ScannerTest(unittest.TestCase):\n"
+            "    def test_fixture(self):\n"
+            '        option_prefix = "--"\n'
+            '        option_name = "provider"\n'
+            "        self.assertEqual(option_prefix, option_name)\n"
+        )
+
+        reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "test_scanner.py",
+                payload,
+            )
+        )
+
+        self.assertEqual("", failure)
+        self.assertEqual("", reconstructed)
+
+    def test_python_cli_external_base_data_attributes_are_not_dispatch(
+        self,
+    ) -> None:
+        payload = (
+            "class Client(ExternalBase):\n"
+            "    def launch(self):\n"
+            "        enabled = self.enabled\n"
+            '        run(["c", "--provider", "openai", str(enabled)])\n'
+            "Client().launch()\n"
+        )
+
+        reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "launcher.py",
+                payload,
+            )
+        )
+
+        self.assertEqual("", failure)
+        self.assertIn("--provider openai", reconstructed)
+
+    def test_python_cli_external_base_method_calls_fail_closed(self) -> None:
+        payload = (
+            "class Client(ExternalBase):\n"
+            "    pass\n"
+            "client = Client()\n"
+            'client.execute(["c", "--provider", "my" + "proxy"])\n'
+        )
+
+        _reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "launcher.py",
+                payload,
+            )
+        )
+
+        self.assertEqual(
+            "python_cli_analysis_limit_exceeded:dispatch",
+            failure,
+        )
+
+    def test_python_cli_property_values_flow_into_commands(self) -> None:
+        payload = (
+            "class Client:\n"
+            "    @property\n"
+            "    def provider(self):\n"
+            '        return "my" + "proxy"\n'
+            "client = Client()\n"
+            "run([\n"
+            '    "c", "--provider", client.provider,\n'
+            '    "--base-url", "https://x." + "private.example/v1",\n'
+            '    "--model", "private-" + "m",\n'
+            "])\n"
+        )
+
+        reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "launcher.py",
+                payload,
+            )
+        )
+
+        self.assertEqual("", failure)
+        self.assertIn("--provider myproxy", reconstructed)
+
+    def test_python_cli_irrelevant_entrypoint_is_not_symbolically_run(
+        self,
+    ) -> None:
+        branches = "".join(
+            f"    if flag_{index}:\n        value = {index!r}\n"
+            for index in range(12)
+        )
+        payload = (
+            "def launch():\n"
+            "    run([\n"
+            '        "c", "--provider", "my" + "proxy",\n'
+            '        "--base-url", "https://x." + "private.example/v1",\n'
+            '        "--model", "private-" + "m",\n'
+            "    ])\n"
+            "def unrelated_main():\n"
+            "    value = 0\n"
+            f"{branches}"
+            "    return value\n"
+            "unrelated_main()\n"
+        )
+
+        reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "launcher.py",
+                payload,
+            )
+        )
+
+        self.assertEqual("", failure)
+        self.assertIn("--provider myproxy", reconstructed)
+
+    def test_python_cli_called_argument_builder_uses_pre_rebind_global(
+        self,
+    ) -> None:
+        payload = (
+            'provider = "my" + "proxy"\n'
+            "def launch():\n"
+            "    args = [\n"
+            '        "c", "--provider", provider,\n'
+            '        "--base-url", "https://x." + "private.example/v1",\n'
+            '        "--model", "private-" + "m",\n'
+            "    ]\n"
+            "launch()\n"
+            "provider = resolve_provider()\n"
+        )
+
+        reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "launcher.py",
+                payload,
+            )
+        )
+
+        self.assertEqual("", failure)
+        self.assertIn("--provider myproxy", reconstructed)
+
+    def test_python_cli_uninvoked_execution_function_is_still_scanned(
+        self,
+    ) -> None:
+        payload = (
+            "def launch():\n"
+            "    run([\n"
+            '        "c", "--provider", "my" + "proxy",\n'
+            '        "--base-url", '
+            '"https://x." + "private.example/v1",\n'
+            '        "--model", "private-" + "m",\n'
+            "    ])\n"
+        )
+
+        reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "launcher.py",
+                payload,
+            )
+        )
+        findings = scan_payload(
+            "launcher.py",
+            payload.encode(),
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual("", failure)
+        self.assertIn("myproxy", reconstructed)
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
             {str(item["rule_id"]) for item in findings},
         )
 
