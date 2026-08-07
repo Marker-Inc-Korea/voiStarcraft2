@@ -709,6 +709,41 @@ class ArchivePolicyTest(unittest.TestCase):
             sorted(str(item["rule_id"]) for item in findings),
         )
 
+    def test_sdist_rejects_and_scans_concatenated_gzip_metadata(self) -> None:
+        secret = ("sk-" + "liveabcdefghijklmnop").encode()
+        tar_payload = io.BytesIO()
+        member_payload = b"safe"
+        member = tarfile.TarInfo(
+            "voistarcraft2-0.1.0/"
+            "starcraft_commander/runtime_data.py"
+        )
+        member.size = len(member_payload)
+        with tarfile.open(fileobj=tar_payload, mode="w") as archive:
+            archive.addfile(member, io.BytesIO(member_payload))
+
+        with tempfile.TemporaryDirectory() as temporary:
+            sdist_path = Path(temporary) / "voistarcraft2-0.1.0.tar.gz"
+            sdist_path.write_bytes(
+                self._gzip_with_header_metadata(tar_payload.getvalue())
+                + self._gzip_with_header_metadata(b"", comment=secret)
+            )
+
+            snapshot = compliance_module.inspect_sdist(sdist_path)
+
+        blocker_codes = {str(item["code"]) for item in snapshot.blockers}
+        self.assertIn("unexpected_gzip_member", blocker_codes)
+        self.assertIn("unexpected_archive_metadata", blocker_codes)
+        findings = [
+            finding
+            for name, metadata_payload in snapshot.metadata.items()
+            for finding in scan_payload(
+                f"sdist/{name}",
+                metadata_payload,
+                allow_safe_fixtures=False,
+            )
+        ]
+        self.assertEqual(["api_key"], [item["rule_id"] for item in findings])
+
     def test_wheel_inspection_rejects_canonical_duplicate_entries(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             wheel_path = Path(temporary) / "candidate.whl"

@@ -21,6 +21,7 @@ import tempfile
 import unicodedata
 import venv
 import zipfile
+import zlib
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field as dataclass_field
 from email.parser import BytesParser
@@ -117,6 +118,7 @@ EXPECTED_NOTICE_LICENSES: Final[Mapping[str, str]] = {
 MAX_ARCHIVE_ENTRIES: Final[int] = 4096
 MAX_ARCHIVE_MEMBER_BYTES: Final[int] = 64 * 1024 * 1024
 MAX_ARCHIVE_TOTAL_BYTES: Final[int] = 256 * 1024 * 1024
+MAX_ARCHIVE_STREAM_BYTES: Final[int] = 512 * 1024 * 1024
 MAX_ARCHIVE_METADATA_BYTES: Final[int] = 8 * 1024 * 1024
 MAX_ARCHIVE_HEADER_FIELD_BYTES: Final[int] = 1024 * 1024
 MAX_SCAN_FILE_BYTES: Final[int] = 64 * 1024 * 1024
@@ -154,6 +156,7 @@ _DIST_INFO_FILES: Final[frozenset[str]] = frozenset(
 _ZIP_LOCAL_HEADER: Final[struct.Struct] = struct.Struct("<4s5H3I2H")
 _ZIP_LOCAL_HEADER_SIGNATURE: Final[bytes] = b"PK\x03\x04"
 _GZIP_FIXED_HEADER: Final[struct.Struct] = struct.Struct("<2sBBIBB")
+_GZIP_TRAILER: Final[struct.Struct] = struct.Struct("<II")
 _GZIP_SIGNATURE: Final[bytes] = b"\x1f\x8b"
 
 if _yaml is not None:
@@ -565,22 +568,111 @@ def _read_gzip_c_string(handle: io.BufferedReader) -> bytes:
     raise ValueError("gzip header string exceeds limit")
 
 
+def _gzip_member_end(
+    payload: bytes,
+    *,
+    header_end: int,
+    remaining_uncompressed_bytes: int,
+) -> tuple[int, int]:
+    decompressor = zlib.decompressobj(wbits=-zlib.MAX_WBITS)
+    cursor = header_end
+    checksum = 0
+    uncompressed_size = 0
+    while not decompressor.eof:
+        if cursor >= len(payload):
+            raise ValueError("truncated gzip deflate stream")
+        chunk = payload[cursor : cursor + 64 * 1024]
+        uncompressed = decompressor.decompress(chunk, 1024 * 1024)
+        consumed = (
+            len(chunk)
+            - len(decompressor.unconsumed_tail)
+            - len(decompressor.unused_data)
+        )
+        if consumed <= 0 and not uncompressed:
+            raise ValueError("invalid gzip deflate stream")
+        cursor += consumed
+        checksum = zlib.crc32(uncompressed, checksum)
+        uncompressed_size += len(uncompressed)
+        if uncompressed_size > remaining_uncompressed_bytes:
+            raise OverflowError(uncompressed_size)
+    trailer = payload[cursor : cursor + _GZIP_TRAILER.size]
+    if len(trailer) != _GZIP_TRAILER.size:
+        raise ValueError("truncated gzip trailer")
+    expected_checksum, expected_size = _GZIP_TRAILER.unpack(trailer)
+    if (
+        expected_checksum != checksum & 0xFFFFFFFF
+        or expected_size != uncompressed_size & 0xFFFFFFFF
+    ):
+        raise ValueError("invalid gzip trailer")
+    return cursor + _GZIP_TRAILER.size, uncompressed_size
+
+
 def _gzip_header_metadata(
     path: Path,
 ) -> tuple[dict[str, bytes], list[dict[str, object]]]:
     metadata: dict[str, bytes] = {}
     blockers: list[dict[str, object]] = []
+    archive_size = path.stat().st_size
+    if archive_size > MAX_ARCHIVE_STREAM_BYTES:
+        return metadata, [
+            {
+                "code": "archive_stream_limit_exceeded",
+                "kind": "sdist",
+                "observed": archive_size,
+                "limit": MAX_ARCHIVE_STREAM_BYTES,
+            }
+        ]
     with path.open("rb") as handle:
+        payload = handle.read(MAX_ARCHIVE_STREAM_BYTES + 1)
+    if len(payload) > MAX_ARCHIVE_STREAM_BYTES:
+        return metadata, [
+            {
+                "code": "archive_stream_limit_exceeded",
+                "kind": "sdist",
+                "observed": len(payload),
+                "limit": MAX_ARCHIVE_STREAM_BYTES,
+            }
+        ]
+    offset = 0
+    member_index = 0
+    total_uncompressed_bytes = 0
+    while offset < len(payload):
+        if member_index >= MAX_ARCHIVE_ENTRIES:
+            blockers.append(
+                {
+                    "code": "archive_entry_limit_exceeded",
+                    "kind": "sdist",
+                    "observed": member_index + 1,
+                    "limit": MAX_ARCHIVE_ENTRIES,
+                }
+            )
+            break
+        if member_index:
+            blockers.append(
+                {
+                    "code": "unexpected_gzip_member",
+                    "kind": "sdist",
+                    "member": member_index,
+                }
+            )
+        handle = io.BytesIO(payload)
+        handle.seek(offset)
         fixed = handle.read(_GZIP_FIXED_HEADER.size)
         if len(fixed) != _GZIP_FIXED_HEADER.size:
-            return metadata, [
-                {"code": "invalid_gzip_header", "kind": "sdist"}
-            ]
+            blockers.append({"code": "invalid_gzip_header", "kind": "sdist"})
+            break
         signature, method, flags, _, _, _ = _GZIP_FIXED_HEADER.unpack(fixed)
         if signature != _GZIP_SIGNATURE or method != 8 or flags & 0xE0:
-            return metadata, [
-                {"code": "invalid_gzip_header", "kind": "sdist"}
-            ]
+            blockers.append({"code": "invalid_gzip_header", "kind": "sdist"})
+            break
+        metadata_prefix = (
+            "__archive_metadata__/gzip"
+            if member_index == 0
+            else (
+                "__archive_metadata__/"
+                f"gzip/member/{member_index:04d}"
+            )
+        )
         try:
             if flags & 0x04:
                 raw_length = handle.read(2)
@@ -593,7 +685,7 @@ def _gzip_header_metadata(
                 _record_archive_metadata(
                     metadata,
                     blockers,
-                    key="__archive_metadata__/gzip/extra",
+                    key=f"{metadata_prefix}/extra",
                     payload=extra,
                     kind="sdist",
                 )
@@ -602,6 +694,7 @@ def _gzip_header_metadata(
                         "code": "unexpected_archive_metadata",
                         "kind": "sdist",
                         "metadata": "gzip_extra",
+                        "member": member_index,
                     }
                 )
             if flags & 0x08:
@@ -609,17 +702,18 @@ def _gzip_header_metadata(
                 _record_archive_metadata(
                     metadata,
                     blockers,
-                    key="__archive_metadata__/gzip/filename",
+                    key=f"{metadata_prefix}/filename",
                     payload=filename,
                     kind="sdist",
                 )
                 expected = path.name.removesuffix(".gz").encode("utf-8")
-                if filename != expected:
+                if member_index or filename != expected:
                     blockers.append(
                         {
                             "code": "unexpected_archive_metadata",
                             "kind": "sdist",
                             "metadata": "gzip_filename",
+                            "member": member_index,
                         }
                     )
             if flags & 0x10:
@@ -627,7 +721,7 @@ def _gzip_header_metadata(
                 _record_archive_metadata(
                     metadata,
                     blockers,
-                    key="__archive_metadata__/gzip/comment",
+                    key=f"{metadata_prefix}/comment",
                     payload=comment,
                     kind="sdist",
                 )
@@ -636,12 +730,35 @@ def _gzip_header_metadata(
                         "code": "unexpected_archive_metadata",
                         "kind": "sdist",
                         "metadata": "gzip_comment",
+                        "member": member_index,
                     }
                 )
             if flags & 0x02 and len(handle.read(2)) != 2:
                 raise ValueError("truncated gzip header checksum")
-        except ValueError:
+            next_offset, uncompressed_size = _gzip_member_end(
+                payload,
+                header_end=handle.tell(),
+                remaining_uncompressed_bytes=(
+                    MAX_ARCHIVE_STREAM_BYTES - total_uncompressed_bytes
+                ),
+            )
+        except OverflowError as error:
+            observed = total_uncompressed_bytes + int(error.args[0])
+            blockers.append(
+                {
+                    "code": "archive_stream_limit_exceeded",
+                    "kind": "sdist",
+                    "observed": observed,
+                    "limit": MAX_ARCHIVE_STREAM_BYTES,
+                }
+            )
+            break
+        except (ValueError, zlib.error):
             blockers.append({"code": "invalid_gzip_header", "kind": "sdist"})
+            break
+        total_uncompressed_bytes += uncompressed_size
+        offset = next_offset
+        member_index += 1
     return metadata, blockers
 
 
