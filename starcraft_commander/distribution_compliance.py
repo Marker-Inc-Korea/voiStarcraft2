@@ -1157,6 +1157,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
     active_call_depth = 0
     max_call_depth = 48
     next_runtime_identity = 0
+    lexical_names_key = "__python_cli_lexical_names__"
 
     def runtime_identity() -> int:
         nonlocal next_runtime_identity
@@ -2273,6 +2274,65 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
         )
         return result
 
+    def captured_lexical_environment(
+        environment: Mapping[str, cli_value],
+    ) -> cli_environment:
+        names = environment.get(lexical_names_key)
+        if not isinstance(names, tuple):
+            return {}
+        return {
+            name: environment[name]
+            for name in names
+            if name in environment
+        }
+
+    def function_local_names(
+        definition: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+    ) -> tuple[str, ...]:
+        names = set(shadowed_arguments(definition.args))
+        global_names: set[str] = set()
+        nonlocal_names: set[str] = set()
+        pending = (
+            [definition.body]
+            if isinstance(definition, ast.Lambda)
+            else list(definition.body)
+        )
+        while pending:
+            candidate = pending.pop()
+            if isinstance(candidate, ast.Global):
+                global_names.update(candidate.names)
+                continue
+            if isinstance(candidate, ast.Nonlocal):
+                nonlocal_names.update(candidate.names)
+                continue
+            if isinstance(
+                candidate,
+                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+            ):
+                names.add(candidate.name)
+                continue
+            if isinstance(candidate, ast.Lambda):
+                continue
+            if (
+                isinstance(candidate, ast.Name)
+                and isinstance(candidate.ctx, ast.Store)
+            ):
+                names.add(candidate.id)
+            if isinstance(candidate, (ast.Import, ast.ImportFrom)):
+                names.update(
+                    alias.asname or alias.name.split(".", 1)[0]
+                    for alias in candidate.names
+                )
+            if (
+                isinstance(candidate, ast.ExceptHandler)
+                and isinstance(candidate.name, str)
+            ):
+                names.add(candidate.name)
+            pending.extend(ast.iter_child_nodes(candidate))
+        names.difference_update(global_names)
+        names.difference_update(nonlocal_names)
+        return tuple(sorted(names))
+
     def store_function_reference(
         definition_identity: int,
         environment: Mapping[str, cli_value],
@@ -2280,12 +2340,17 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
         implicit_positional: Sequence[cli_value] = (),
         declaring_class_identity: int | None = None,
         defaults: Mapping[str, cli_value] | None = None,
+        captured_environment: Mapping[str, cli_value] | None = None,
     ) -> str:
         definition = function_definitions[definition_identity]
         identity = runtime_identity()
         function_references[identity] = (
             definition_identity,
-            dict(environment),
+            (
+                dict(captured_environment)
+                if captured_environment is not None
+                else captured_lexical_environment(environment)
+            ),
             (
                 dict(defaults)
                 if defaults is not None
@@ -2303,12 +2368,17 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
         implicit_positional: Sequence[cli_value] = (),
         declaring_class_identity: int | None = None,
         defaults: Mapping[str, cli_value] | None = None,
+        captured_environment: Mapping[str, cli_value] | None = None,
     ) -> str:
         definition = lambda_definitions[definition_identity]
         identity = runtime_identity()
         lambda_references[identity] = (
             definition_identity,
-            dict(environment),
+            (
+                dict(captured_environment)
+                if captured_environment is not None
+                else captured_lexical_environment(environment)
+            ),
             (
                 dict(defaults)
                 if defaults is not None
@@ -2487,6 +2557,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                 ),
                 declaring_class_identity=declaring_class_identity,
                 defaults=defaults,
+                captured_environment=captured_environment,
             )
             bound_callable_cache[cache_key] = bound
             return bound
@@ -2508,6 +2579,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                 ),
                 declaring_class_identity=declaring_class_identity,
                 defaults=defaults,
+                captured_environment=captured_environment,
             )
             bound_callable_cache[cache_key] = bound
             return bound
@@ -2769,6 +2841,16 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                 implicit_positional,
                 defaults,
             )
+            lexical_names = tuple(
+                sorted(
+                    {
+                        *function_local_names(definition),
+                        *captured_environment,
+                    }
+                )
+            )
+            for bound_state in bound_states:
+                bound_state[lexical_names_key] = lexical_names
             active_calls.add(reference_identity)
             active_call_depth += 1
             try:

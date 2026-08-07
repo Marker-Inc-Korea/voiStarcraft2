@@ -1782,6 +1782,38 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             {str(item["rule_id"]) for item in findings},
         )
 
+    def test_python_cli_function_globals_use_call_time_values(self) -> None:
+        payload = (
+            'provider = "openai"\n'
+            "def launch():\n"
+            "    run([\n"
+            '        "c", "--provider", provider,\n'
+            '        "--base-url", "https://x." + "private.example/v1",\n'
+            '        "--model", "private-" + "m",\n'
+            "    ])\n"
+            'provider = "my" + "proxy"\n'
+            "launch()\n"
+        )
+
+        reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "launcher.py",
+                payload,
+            )
+        )
+        findings = scan_payload(
+            "launcher.py",
+            payload.encode(),
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual("", failure)
+        self.assertIn("myproxy", reconstructed)
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
+            {str(item["rule_id"]) for item in findings},
+        )
+
     def test_python_cli_reconstruction_evaluates_f_string_values(self) -> None:
         payload = (
             'option = "provider"\n'
