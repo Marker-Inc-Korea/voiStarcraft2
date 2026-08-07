@@ -687,6 +687,7 @@ source-tree claims:
 ```bash
 python -m starcraft_commander.distribution_compliance \
   --repository . \
+  --base-commit "$(git merge-base HEAD origin/main)" \
   --dist-dir dist \
   --output-dir distribution-compliance-evidence
 ```

@@ -155,9 +155,18 @@ _DIST_INFO_FILES: Final[frozenset[str]] = frozenset(
 )
 _ZIP_LOCAL_HEADER: Final[struct.Struct] = struct.Struct("<4s5H3I2H")
 _ZIP_LOCAL_HEADER_SIGNATURE: Final[bytes] = b"PK\x03\x04"
+_ZIP_CENTRAL_HEADER: Final[struct.Struct] = struct.Struct("<4s6H3I5H2I")
+_ZIP_CENTRAL_HEADER_SIGNATURE: Final[bytes] = b"PK\x01\x02"
+_ZIP_END_RECORD: Final[struct.Struct] = struct.Struct("<4s4H2IH")
+_ZIP_END_RECORD_SIGNATURE: Final[bytes] = b"PK\x05\x06"
+_ZIP_DATA_DESCRIPTOR: Final[struct.Struct] = struct.Struct("<III")
+_ZIP_DATA_DESCRIPTOR_SIGNATURE: Final[bytes] = b"PK\x07\x08"
+_ZIP_MAX_COMMENT_BYTES: Final[int] = (1 << 16) - 1
 _GZIP_FIXED_HEADER: Final[struct.Struct] = struct.Struct("<2sBBIBB")
 _GZIP_TRAILER: Final[struct.Struct] = struct.Struct("<II")
 _GZIP_SIGNATURE: Final[bytes] = b"\x1f\x8b"
+_TAR_BLOCK_BYTES: Final[int] = 512
+_TAR_ZERO_BLOCK: Final[bytes] = b"\0" * _TAR_BLOCK_BYTES
 
 if _yaml is not None:
 
@@ -475,6 +484,31 @@ class ArchiveSnapshot:
     metadata: Mapping[str, bytes] = dataclass_field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class _RawZipEntry:
+    """Central-directory values needed to validate one local ZIP record."""
+
+    index: int
+    name: str
+    raw_name: bytes
+    version_needed: int
+    flag_bits: int
+    compression: int
+    modified_time: int
+    modified_date: int
+    crc32: int
+    compressed_size: int
+    uncompressed_size: int
+    local_offset: int
+    central_extra: bytes
+
+
+class _ArchiveMetadata(dict[str, bytes]):
+    """Metadata map with constant-time bounded-size accounting."""
+
+    total_bytes: int = 0
+
+
 def canonical_json_text(value: object) -> str:
     """Return deterministic, human-readable JSON."""
 
@@ -508,9 +542,11 @@ def _record_archive_metadata(
     kind: str,
     entry: str | None = None,
 ) -> bool:
-    projected_size = sum(len(value) for value in metadata.values()) + len(
-        payload
-    )
+    if isinstance(metadata, _ArchiveMetadata):
+        current_size = metadata.total_bytes - len(metadata.get(key, b""))
+    else:
+        current_size = sum(len(value) for value in metadata.values())
+    projected_size = current_size + len(payload)
     if (
         len(payload) > MAX_ARCHIVE_METADATA_BYTES
         or projected_size > MAX_ARCHIVE_METADATA_BYTES
@@ -526,34 +562,669 @@ def _record_archive_metadata(
         blockers.append(blocker)
         return False
     metadata[key] = payload
+    if isinstance(metadata, _ArchiveMetadata):
+        metadata.total_bytes = projected_size
     return True
 
 
-def _zip_local_header(
-    handle: io.BufferedReader,
-    info: zipfile.ZipInfo,
-) -> tuple[int, int, bytes, bytes]:
-    handle.seek(info.header_offset)
-    fixed = handle.read(_ZIP_LOCAL_HEADER.size)
-    if len(fixed) != _ZIP_LOCAL_HEADER.size:
-        raise ValueError("truncated ZIP local header")
-    fields = _ZIP_LOCAL_HEADER.unpack(fixed)
-    if fields[0] != _ZIP_LOCAL_HEADER_SIGNATURE:
-        raise ValueError("invalid ZIP local header signature")
-    flag_bits = int(fields[2])
-    compression = int(fields[3])
-    filename_length = int(fields[9])
-    extra_length = int(fields[10])
-    filename = handle.read(filename_length)
-    extra = handle.read(extra_length)
-    if len(filename) != filename_length or len(extra) != extra_length:
-        raise ValueError("truncated ZIP local header metadata")
-    return flag_bits, compression, filename, extra
+def _record_unexplained_archive_bytes(
+    metadata: dict[str, bytes],
+    blockers: list[dict[str, object]],
+    *,
+    key: str,
+    payload: bytes,
+    kind: str,
+    location: str,
+) -> None:
+    _record_archive_metadata(
+        metadata,
+        blockers,
+        key=key,
+        payload=payload,
+        kind=kind,
+    )
+    blockers.append(
+        {
+            "code": "unexpected_archive_bytes",
+            "kind": kind,
+            "location": location,
+            "observed": len(payload),
+        }
+    )
 
 
-def _zip_central_filename(info: zipfile.ZipInfo) -> bytes:
-    encoding = "utf-8" if info.flag_bits & 0x800 else "cp437"
-    return info.orig_filename.encode(encoding)
+def _fixed_field_projection(payload: bytes, widths: Sequence[int]) -> bytes:
+    fields: list[bytes] = []
+    cursor = 0
+    for width in widths:
+        fields.append(payload[cursor : cursor + width])
+        cursor += width
+    if cursor != len(payload):
+        raise ValueError("fixed-field widths do not cover payload")
+    return b"\n".join(fields)
+
+
+def _decode_zip_filename(raw_name: bytes, flag_bits: int) -> str:
+    encoding = "utf-8" if flag_bits & 0x800 else "cp437"
+    return raw_name.decode(encoding)
+
+
+def _raw_zip_metadata(
+    path: Path,
+) -> tuple[dict[str, bytes], list[dict[str, object]]]:
+    """Validate and retain every non-payload byte in a bounded ZIP graph."""
+
+    metadata: dict[str, bytes] = _ArchiveMetadata()
+    blockers: list[dict[str, object]] = []
+    archive_size = path.stat().st_size
+    if archive_size > MAX_ARCHIVE_STREAM_BYTES:
+        return metadata, [
+            {
+                "code": "archive_stream_limit_exceeded",
+                "kind": "wheel",
+                "observed": archive_size,
+                "limit": MAX_ARCHIVE_STREAM_BYTES,
+            }
+        ]
+    with path.open("rb") as handle:
+        payload = handle.read(MAX_ARCHIVE_STREAM_BYTES + 1)
+    if len(payload) > MAX_ARCHIVE_STREAM_BYTES:
+        return metadata, [
+            {
+                "code": "archive_stream_limit_exceeded",
+                "kind": "wheel",
+                "observed": len(payload),
+                "limit": MAX_ARCHIVE_STREAM_BYTES,
+            }
+        ]
+
+    search_start = max(
+        0,
+        len(payload) - _ZIP_END_RECORD.size - _ZIP_MAX_COMMENT_BYTES,
+    )
+    candidates: list[tuple[int, tuple[object, ...]]] = []
+    cursor = search_start
+    while True:
+        offset = payload.find(_ZIP_END_RECORD_SIGNATURE, cursor)
+        if offset < 0:
+            break
+        fixed_end = offset + _ZIP_END_RECORD.size
+        if fixed_end <= len(payload):
+            fields = _ZIP_END_RECORD.unpack(payload[offset:fixed_end])
+            comment_length = int(fields[7])
+            if fixed_end + comment_length == len(payload):
+                candidates.append((offset, fields))
+        cursor = offset + 1
+    if len(candidates) != 1:
+        _record_unexplained_archive_bytes(
+            metadata,
+            blockers,
+            key="__archive_metadata__/zip/unparsed",
+            payload=payload,
+            kind="wheel",
+            location="zip_record_graph",
+        )
+        blockers.append(
+            {
+                "code": "invalid_zip_end_record",
+                "kind": "wheel",
+                "observed": len(candidates),
+            }
+        )
+        return metadata, blockers
+
+    end_offset, end_fields = candidates[0]
+    end_record = payload[end_offset:]
+    if not _record_archive_metadata(
+        metadata,
+        blockers,
+        key="__archive_metadata__/zip/end-record",
+        payload=end_record,
+        kind="wheel",
+    ):
+        return metadata, blockers
+    if not _record_archive_metadata(
+        metadata,
+        blockers,
+        key="__archive_metadata__/zip/end-record-fields",
+        payload=_fixed_field_projection(
+            end_record[: _ZIP_END_RECORD.size],
+            (4, 2, 2, 2, 2, 4, 4, 2),
+        ),
+        kind="wheel",
+    ):
+        return metadata, blockers
+    (
+        _,
+        disk_number,
+        central_disk,
+        disk_entries,
+        total_entries,
+        central_size,
+        central_offset,
+        comment_length,
+    ) = end_fields
+    disk_number = int(disk_number)
+    central_disk = int(central_disk)
+    disk_entries = int(disk_entries)
+    total_entries = int(total_entries)
+    central_size = int(central_size)
+    central_offset = int(central_offset)
+    comment_length = int(comment_length)
+    if comment_length:
+        blockers.append(
+            {
+                "code": "unexpected_archive_metadata",
+                "kind": "wheel",
+                "metadata": "global_comment",
+            }
+        )
+    if (
+        disk_number
+        or central_disk
+        or disk_entries != total_entries
+        or total_entries == 0xFFFF
+        or central_size == 0xFFFFFFFF
+        or central_offset == 0xFFFFFFFF
+    ):
+        blockers.append(
+            {
+                "code": "unsupported_zip_structure",
+                "kind": "wheel",
+            }
+        )
+        return metadata, blockers
+    if total_entries > MAX_ARCHIVE_ENTRIES:
+        blockers.append(
+            {
+                "code": "archive_entry_limit_exceeded",
+                "kind": "wheel",
+                "observed": total_entries,
+                "limit": MAX_ARCHIVE_ENTRIES,
+            }
+        )
+        return metadata, blockers
+    if central_size > MAX_ARCHIVE_METADATA_BYTES:
+        blockers.append(
+            {
+                "code": "archive_metadata_limit_exceeded",
+                "kind": "wheel",
+                "observed": central_size,
+                "limit": MAX_ARCHIVE_METADATA_BYTES,
+            }
+        )
+        return metadata, blockers
+    central_end = central_offset + central_size
+    if central_end != end_offset or central_offset > len(payload):
+        if central_end < end_offset and central_offset <= central_end:
+            _record_unexplained_archive_bytes(
+                metadata,
+                blockers,
+                key="__archive_metadata__/zip/central-gap",
+                payload=payload[central_end:end_offset],
+                kind="wheel",
+                location="between_central_directory_and_end_record",
+            )
+        blockers.append(
+            {
+                "code": "invalid_zip_central_directory",
+                "kind": "wheel",
+            }
+        )
+        return metadata, blockers
+
+    central_cursor = central_offset
+    entries: list[_RawZipEntry] = []
+    local_offsets: set[int] = set()
+    for index in range(total_entries):
+        fixed_end = central_cursor + _ZIP_CENTRAL_HEADER.size
+        if fixed_end > central_end:
+            _record_unexplained_archive_bytes(
+                metadata,
+                blockers,
+                key=f"__archive_metadata__/zip/central/{index:04d}/tail",
+                payload=payload[central_cursor:central_end],
+                kind="wheel",
+                location="central_directory",
+            )
+            blockers.append(
+                {
+                    "code": "invalid_zip_central_directory",
+                    "kind": "wheel",
+                    "entry_index": index,
+                }
+            )
+            return metadata, blockers
+        fields = _ZIP_CENTRAL_HEADER.unpack(
+            payload[central_cursor:fixed_end]
+        )
+        if fields[0] != _ZIP_CENTRAL_HEADER_SIGNATURE:
+            _record_unexplained_archive_bytes(
+                metadata,
+                blockers,
+                key=f"__archive_metadata__/zip/central/{index:04d}/tail",
+                payload=payload[central_cursor:central_end],
+                kind="wheel",
+                location="central_directory",
+            )
+            blockers.append(
+                {
+                    "code": "invalid_zip_central_directory",
+                    "kind": "wheel",
+                    "entry_index": index,
+                }
+            )
+            return metadata, blockers
+        name_length = int(fields[10])
+        extra_length = int(fields[11])
+        entry_comment_length = int(fields[12])
+        record_end = (
+            fixed_end
+            + name_length
+            + extra_length
+            + entry_comment_length
+        )
+        if record_end > central_end:
+            _record_unexplained_archive_bytes(
+                metadata,
+                blockers,
+                key=f"__archive_metadata__/zip/central/{index:04d}/tail",
+                payload=payload[central_cursor:central_end],
+                kind="wheel",
+                location="central_directory",
+            )
+            blockers.append(
+                {
+                    "code": "invalid_zip_central_directory",
+                    "kind": "wheel",
+                    "entry_index": index,
+                }
+            )
+            return metadata, blockers
+        raw_name = payload[fixed_end : fixed_end + name_length]
+        central_extra = payload[
+            fixed_end + name_length : fixed_end + name_length + extra_length
+        ]
+        entry_comment = payload[
+            fixed_end + name_length + extra_length : record_end
+        ]
+        if not _record_archive_metadata(
+            metadata,
+            blockers,
+            key=f"__archive_metadata__/zip/central/{index:04d}",
+            payload=payload[central_cursor:record_end],
+            kind="wheel",
+        ):
+            return metadata, blockers
+        if not _record_archive_metadata(
+            metadata,
+            blockers,
+            key=(
+                "__archive_metadata__/zip/central-fields/"
+                f"{index:04d}"
+            ),
+            payload=_fixed_field_projection(
+                payload[central_cursor:fixed_end],
+                (4, 2, 2, 2, 2, 2, 2, 4, 4, 4, 2, 2, 2, 2, 2, 4, 4),
+            ),
+            kind="wheel",
+        ):
+            return metadata, blockers
+        flag_bits = int(fields[3])
+        try:
+            name = _decode_zip_filename(raw_name, flag_bits)
+        except UnicodeDecodeError:
+            name = raw_name.decode("utf-8", errors="surrogateescape")
+            blockers.append(
+                {
+                    "code": "invalid_zip_filename",
+                    "kind": "wheel",
+                    "entry": name,
+                    "reason": "invalid_encoding",
+                }
+            )
+        if b"\0" in raw_name or "\0" in name:
+            blockers.append(
+                {
+                    "code": "invalid_zip_filename",
+                    "kind": "wheel",
+                    "entry": name,
+                    "reason": "embedded_nul",
+                }
+            )
+        if central_extra:
+            blockers.append(
+                {
+                    "code": "unexpected_archive_metadata",
+                    "kind": "wheel",
+                    "entry": name,
+                    "metadata": "extra",
+                }
+            )
+        if entry_comment:
+            blockers.append(
+                {
+                    "code": "unexpected_archive_metadata",
+                    "kind": "wheel",
+                    "entry": name,
+                    "metadata": "comment",
+                }
+            )
+        disk_start = int(fields[13])
+        compressed_size = int(fields[8])
+        uncompressed_size = int(fields[9])
+        local_offset = int(fields[16])
+        if (
+            disk_start
+            or compressed_size == 0xFFFFFFFF
+            or uncompressed_size == 0xFFFFFFFF
+            or local_offset == 0xFFFFFFFF
+        ):
+            blockers.append(
+                {
+                    "code": "unsupported_zip_structure",
+                    "kind": "wheel",
+                    "entry": name,
+                }
+            )
+        if local_offset in local_offsets:
+            blockers.append(
+                {
+                    "code": "duplicate_zip_local_offset",
+                    "kind": "wheel",
+                    "entry": name,
+                }
+            )
+        local_offsets.add(local_offset)
+        entries.append(
+            _RawZipEntry(
+                index=index,
+                name=name,
+                raw_name=raw_name,
+                version_needed=int(fields[2]),
+                flag_bits=flag_bits,
+                compression=int(fields[4]),
+                modified_time=int(fields[5]),
+                modified_date=int(fields[6]),
+                crc32=int(fields[7]),
+                compressed_size=compressed_size,
+                uncompressed_size=uncompressed_size,
+                local_offset=local_offset,
+                central_extra=central_extra,
+            )
+        )
+        central_cursor = record_end
+    if central_cursor != central_end:
+        _record_unexplained_archive_bytes(
+            metadata,
+            blockers,
+            key="__archive_metadata__/zip/central/trailing",
+            payload=payload[central_cursor:central_end],
+            kind="wheel",
+            location="central_directory",
+        )
+        blockers.append(
+            {
+                "code": "invalid_zip_central_directory",
+                "kind": "wheel",
+            }
+        )
+        return metadata, blockers
+
+    local_cursor = 0
+    for entry in sorted(entries, key=lambda item: item.local_offset):
+        if entry.local_offset != local_cursor:
+            if local_cursor < entry.local_offset <= central_offset:
+                _record_unexplained_archive_bytes(
+                    metadata,
+                    blockers,
+                    key=(
+                        "__archive_metadata__/zip/local/"
+                        f"{entry.index:04d}/preamble-or-gap"
+                    ),
+                    payload=payload[local_cursor : entry.local_offset],
+                    kind="wheel",
+                    location="local_record_graph",
+                )
+            else:
+                blockers.append(
+                    {
+                        "code": "overlapping_zip_records",
+                        "kind": "wheel",
+                        "entry": entry.name,
+                    }
+                )
+                return metadata, blockers
+        fixed_end = entry.local_offset + _ZIP_LOCAL_HEADER.size
+        if fixed_end > central_offset:
+            blockers.append(
+                {
+                    "code": "invalid_zip_local_header",
+                    "kind": "wheel",
+                    "entry": entry.name,
+                }
+            )
+            return metadata, blockers
+        fields = _ZIP_LOCAL_HEADER.unpack(
+            payload[entry.local_offset:fixed_end]
+        )
+        if fields[0] != _ZIP_LOCAL_HEADER_SIGNATURE:
+            blockers.append(
+                {
+                    "code": "invalid_zip_local_header",
+                    "kind": "wheel",
+                    "entry": entry.name,
+                }
+            )
+            return metadata, blockers
+        name_length = int(fields[9])
+        extra_length = int(fields[10])
+        header_end = fixed_end + name_length + extra_length
+        if header_end > central_offset:
+            blockers.append(
+                {
+                    "code": "invalid_zip_local_header",
+                    "kind": "wheel",
+                    "entry": entry.name,
+                }
+            )
+            return metadata, blockers
+        raw_name = payload[fixed_end : fixed_end + name_length]
+        local_extra = payload[fixed_end + name_length : header_end]
+        if not _record_archive_metadata(
+            metadata,
+            blockers,
+            key=f"__archive_metadata__/zip/local/{entry.index:04d}",
+            payload=payload[entry.local_offset:header_end],
+            kind="wheel",
+            entry=entry.name,
+        ):
+            return metadata, blockers
+        if not _record_archive_metadata(
+            metadata,
+            blockers,
+            key=(
+                "__archive_metadata__/zip/local-fields/"
+                f"{entry.index:04d}"
+            ),
+            payload=_fixed_field_projection(
+                payload[entry.local_offset:fixed_end],
+                (4, 2, 2, 2, 2, 2, 4, 4, 4, 2, 2),
+            ),
+            kind="wheel",
+            entry=entry.name,
+        ):
+            return metadata, blockers
+        try:
+            local_name = _decode_zip_filename(raw_name, int(fields[2]))
+        except UnicodeDecodeError:
+            local_name = raw_name.decode("utf-8", errors="surrogateescape")
+            blockers.append(
+                {
+                    "code": "invalid_zip_filename",
+                    "kind": "wheel",
+                    "entry": local_name,
+                    "reason": "invalid_encoding",
+                }
+            )
+        if b"\0" in raw_name or "\0" in local_name:
+            blockers.append(
+                {
+                    "code": "invalid_zip_filename",
+                    "kind": "wheel",
+                    "entry": local_name,
+                    "reason": "embedded_nul",
+                }
+            )
+        local_values = (
+            int(fields[1]),
+            int(fields[2]),
+            int(fields[3]),
+            int(fields[4]),
+            int(fields[5]),
+        )
+        central_values = (
+            entry.version_needed,
+            entry.flag_bits,
+            entry.compression,
+            entry.modified_time,
+            entry.modified_date,
+        )
+        if (
+            raw_name != entry.raw_name
+            or local_values != central_values
+            or local_extra != entry.central_extra
+        ):
+            blockers.append(
+                {
+                    "code": "archive_header_mismatch",
+                    "kind": "wheel",
+                    "entry": entry.name,
+                    "metadata": "local_and_central_headers",
+                }
+            )
+        data_end = header_end + entry.compressed_size
+        if data_end > central_offset:
+            blockers.append(
+                {
+                    "code": "invalid_zip_local_header",
+                    "kind": "wheel",
+                    "entry": entry.name,
+                }
+            )
+            return metadata, blockers
+        local_crc = int(fields[6])
+        local_compressed_size = int(fields[7])
+        local_uncompressed_size = int(fields[8])
+        record_end = data_end
+        if entry.flag_bits & 0x08:
+            descriptor_offset = data_end
+            if (
+                payload[
+                    descriptor_offset : descriptor_offset + 4
+                ]
+                == _ZIP_DATA_DESCRIPTOR_SIGNATURE
+            ):
+                descriptor_offset += 4
+            descriptor_end = descriptor_offset + _ZIP_DATA_DESCRIPTOR.size
+            if descriptor_end > central_offset:
+                blockers.append(
+                    {
+                        "code": "invalid_zip_data_descriptor",
+                        "kind": "wheel",
+                        "entry": entry.name,
+                    }
+                )
+                return metadata, blockers
+            descriptor = _ZIP_DATA_DESCRIPTOR.unpack(
+                payload[descriptor_offset:descriptor_end]
+            )
+            record_end = descriptor_end
+            if not _record_archive_metadata(
+                metadata,
+                blockers,
+                key=(
+                    "__archive_metadata__/zip/descriptor/"
+                    f"{entry.index:04d}"
+                ),
+                payload=payload[data_end:descriptor_end],
+                kind="wheel",
+                entry=entry.name,
+            ):
+                return metadata, blockers
+            if not _record_archive_metadata(
+                metadata,
+                blockers,
+                key=(
+                    "__archive_metadata__/zip/descriptor-fields/"
+                    f"{entry.index:04d}"
+                ),
+                payload=_fixed_field_projection(
+                    payload[descriptor_offset:descriptor_end],
+                    (4, 4, 4),
+                ),
+                kind="wheel",
+                entry=entry.name,
+            ):
+                return metadata, blockers
+            if tuple(int(value) for value in descriptor) != (
+                entry.crc32,
+                entry.compressed_size,
+                entry.uncompressed_size,
+            ):
+                blockers.append(
+                    {
+                        "code": "invalid_zip_data_descriptor",
+                        "kind": "wheel",
+                        "entry": entry.name,
+                    }
+                )
+            if (
+                local_crc not in {0, entry.crc32}
+                or local_compressed_size not in {0, entry.compressed_size}
+                or local_uncompressed_size
+                not in {0, entry.uncompressed_size}
+            ):
+                blockers.append(
+                    {
+                        "code": "archive_header_mismatch",
+                        "kind": "wheel",
+                        "entry": entry.name,
+                        "metadata": "data_descriptor_sizes",
+                    }
+                )
+        elif (
+            local_crc != entry.crc32
+            or local_compressed_size != entry.compressed_size
+            or local_uncompressed_size != entry.uncompressed_size
+        ):
+            blockers.append(
+                {
+                    "code": "archive_header_mismatch",
+                    "kind": "wheel",
+                    "entry": entry.name,
+                    "metadata": "crc_or_sizes",
+                }
+            )
+        local_cursor = record_end
+    if local_cursor != central_offset:
+        if local_cursor < central_offset:
+            _record_unexplained_archive_bytes(
+                metadata,
+                blockers,
+                key="__archive_metadata__/zip/local/trailing",
+                payload=payload[local_cursor:central_offset],
+                kind="wheel",
+                location="local_record_graph",
+            )
+        else:
+            blockers.append(
+                {
+                    "code": "overlapping_zip_records",
+                    "kind": "wheel",
+                }
+            )
+    return metadata, blockers
 
 
 def _read_gzip_c_string(handle: io.BufferedReader) -> bytes:
@@ -573,11 +1244,11 @@ def _gzip_member_end(
     *,
     header_end: int,
     remaining_uncompressed_bytes: int,
-) -> tuple[int, int]:
+) -> tuple[int, bytes]:
     decompressor = zlib.decompressobj(wbits=-zlib.MAX_WBITS)
     cursor = header_end
     checksum = 0
-    uncompressed_size = 0
+    uncompressed_payload = bytearray()
     while not decompressor.eof:
         if cursor >= len(payload):
             raise ValueError("truncated gzip deflate stream")
@@ -592,50 +1263,63 @@ def _gzip_member_end(
             raise ValueError("invalid gzip deflate stream")
         cursor += consumed
         checksum = zlib.crc32(uncompressed, checksum)
-        uncompressed_size += len(uncompressed)
-        if uncompressed_size > remaining_uncompressed_bytes:
-            raise OverflowError(uncompressed_size)
+        uncompressed_payload.extend(uncompressed)
+        if len(uncompressed_payload) > remaining_uncompressed_bytes:
+            raise OverflowError(len(uncompressed_payload))
     trailer = payload[cursor : cursor + _GZIP_TRAILER.size]
     if len(trailer) != _GZIP_TRAILER.size:
         raise ValueError("truncated gzip trailer")
     expected_checksum, expected_size = _GZIP_TRAILER.unpack(trailer)
     if (
         expected_checksum != checksum & 0xFFFFFFFF
-        or expected_size != uncompressed_size & 0xFFFFFFFF
+        or expected_size != len(uncompressed_payload) & 0xFFFFFFFF
     ):
         raise ValueError("invalid gzip trailer")
-    return cursor + _GZIP_TRAILER.size, uncompressed_size
+    return cursor + _GZIP_TRAILER.size, bytes(uncompressed_payload)
 
 
 def _gzip_header_metadata(
     path: Path,
-) -> tuple[dict[str, bytes], list[dict[str, object]]]:
-    metadata: dict[str, bytes] = {}
+) -> tuple[
+    dict[str, bytes],
+    list[dict[str, object]],
+    bytes | None,
+]:
+    metadata: dict[str, bytes] = _ArchiveMetadata()
     blockers: list[dict[str, object]] = []
     archive_size = path.stat().st_size
     if archive_size > MAX_ARCHIVE_STREAM_BYTES:
-        return metadata, [
-            {
-                "code": "archive_stream_limit_exceeded",
-                "kind": "sdist",
-                "observed": archive_size,
-                "limit": MAX_ARCHIVE_STREAM_BYTES,
-            }
-        ]
+        return (
+            metadata,
+            [
+                {
+                    "code": "archive_stream_limit_exceeded",
+                    "kind": "sdist",
+                    "observed": archive_size,
+                    "limit": MAX_ARCHIVE_STREAM_BYTES,
+                }
+            ],
+            None,
+        )
     with path.open("rb") as handle:
         payload = handle.read(MAX_ARCHIVE_STREAM_BYTES + 1)
     if len(payload) > MAX_ARCHIVE_STREAM_BYTES:
-        return metadata, [
-            {
-                "code": "archive_stream_limit_exceeded",
-                "kind": "sdist",
-                "observed": len(payload),
-                "limit": MAX_ARCHIVE_STREAM_BYTES,
-            }
-        ]
+        return (
+            metadata,
+            [
+                {
+                    "code": "archive_stream_limit_exceeded",
+                    "kind": "sdist",
+                    "observed": len(payload),
+                    "limit": MAX_ARCHIVE_STREAM_BYTES,
+                }
+            ],
+            None,
+        )
     offset = 0
     member_index = 0
     total_uncompressed_bytes = 0
+    first_member_payload: bytes | None = None
     while offset < len(payload):
         if member_index >= MAX_ARCHIVE_ENTRIES:
             blockers.append(
@@ -733,9 +1417,47 @@ def _gzip_header_metadata(
                         "member": member_index,
                     }
                 )
-            if flags & 0x02 and len(handle.read(2)) != 2:
-                raise ValueError("truncated gzip header checksum")
-            next_offset, uncompressed_size = _gzip_member_end(
+            if flags & 0x02:
+                header_checksum_end = handle.tell()
+                raw_checksum = handle.read(2)
+                if len(raw_checksum) != 2:
+                    raise ValueError("truncated gzip header checksum")
+                expected_header_checksum = int.from_bytes(
+                    raw_checksum,
+                    "little",
+                )
+                observed_header_checksum = (
+                    zlib.crc32(payload[offset:header_checksum_end]) & 0xFFFF
+                )
+                if expected_header_checksum != observed_header_checksum:
+                    blockers.append(
+                        {
+                            "code": "invalid_gzip_header_checksum",
+                            "kind": "sdist",
+                            "member": member_index,
+                        }
+                    )
+                    break
+            if not _record_archive_metadata(
+                metadata,
+                blockers,
+                key=f"{metadata_prefix}/raw-header",
+                payload=payload[offset : handle.tell()],
+                kind="sdist",
+            ):
+                break
+            if not _record_archive_metadata(
+                metadata,
+                blockers,
+                key=f"{metadata_prefix}/fixed-header-fields",
+                payload=_fixed_field_projection(
+                    fixed,
+                    (2, 1, 1, 4, 1, 1),
+                ),
+                kind="sdist",
+            ):
+                break
+            next_offset, uncompressed_payload = _gzip_member_end(
                 payload,
                 header_end=handle.tell(),
                 remaining_uncompressed_bytes=(
@@ -756,37 +1478,429 @@ def _gzip_header_metadata(
         except (ValueError, zlib.error):
             blockers.append({"code": "invalid_gzip_header", "kind": "sdist"})
             break
-        total_uncompressed_bytes += uncompressed_size
+        if member_index == 0:
+            first_member_payload = uncompressed_payload
+        total_uncompressed_bytes += len(uncompressed_payload)
         offset = next_offset
         member_index += 1
-    return metadata, blockers
+    return metadata, blockers, first_member_payload
+
+
+def _parse_tar_octal(field: bytes) -> int:
+    if field and field[0] & 0x80:
+        raise ValueError("base-256 TAR number is not canonical")
+    value = field.rstrip(b"\0 ").lstrip(b" ")
+    if not value:
+        return 0
+    if any(character not in b"01234567" for character in value):
+        raise ValueError("invalid TAR octal number")
+    return int(value, 8)
+
+
+def _parse_pax_records(payload: bytes) -> list[tuple[bytes, bytes]]:
+    records: list[tuple[bytes, bytes]] = []
+    cursor = 0
+    while cursor < len(payload):
+        separator = payload.find(b" ", cursor)
+        if separator <= cursor:
+            raise ValueError("invalid PAX record length")
+        raw_length = payload[cursor:separator]
+        if not raw_length.isdigit() or raw_length.startswith(b"0"):
+            raise ValueError("noncanonical PAX record length")
+        record_length = int(raw_length)
+        record_end = cursor + record_length
+        if record_end > len(payload) or record_length <= len(raw_length) + 3:
+            raise ValueError("truncated PAX record")
+        record = payload[cursor:record_end]
+        if not record.endswith(b"\n"):
+            raise ValueError("unterminated PAX record")
+        body = record[len(raw_length) + 1 : -1]
+        assignment = body.find(b"=")
+        if assignment <= 0:
+            raise ValueError("invalid PAX assignment")
+        records.append((body[:assignment], body[assignment + 1 :]))
+        cursor = record_end
+    return records
+
+
+def _raw_tar_metadata(
+    payload: bytes,
+    metadata: dict[str, bytes],
+    blockers: list[dict[str, object]],
+) -> None:
+    """Validate raw TAR headers, extension records, padding, and terminator."""
+
+    if len(payload) > MAX_ARCHIVE_STREAM_BYTES:
+        blockers.append(
+            {
+                "code": "archive_stream_limit_exceeded",
+                "kind": "sdist",
+                "observed": len(payload),
+                "limit": MAX_ARCHIVE_STREAM_BYTES,
+            }
+        )
+        return
+    cursor = 0
+    physical_entries = 0
+    total_member_bytes = 0
+    pending_pax_keys: set[bytes] = set()
+    while cursor < len(payload):
+        block_end = cursor + _TAR_BLOCK_BYTES
+        if block_end > len(payload):
+            _record_unexplained_archive_bytes(
+                metadata,
+                blockers,
+                key="__archive_metadata__/tar/truncated-tail",
+                payload=payload[cursor:],
+                kind="sdist",
+                location="tar_record_graph",
+            )
+            blockers.append({"code": "invalid_tar_structure", "kind": "sdist"})
+            return
+        block = payload[cursor:block_end]
+        if block == _TAR_ZERO_BLOCK:
+            second_end = block_end + _TAR_BLOCK_BYTES
+            if (
+                second_end > len(payload)
+                or payload[block_end:second_end] != _TAR_ZERO_BLOCK
+            ):
+                blockers.append(
+                    {
+                        "code": "invalid_tar_end_markers",
+                        "kind": "sdist",
+                    }
+                )
+                return
+            trailing = payload[second_end:]
+            if len(trailing) % _TAR_BLOCK_BYTES:
+                blockers.append(
+                    {
+                        "code": "noncanonical_tar_trailing_padding",
+                        "kind": "sdist",
+                        "observed": len(trailing),
+                    }
+                )
+            if any(trailing):
+                _record_unexplained_archive_bytes(
+                    metadata,
+                    blockers,
+                    key="__archive_metadata__/tar/trailing",
+                    payload=trailing,
+                    kind="sdist",
+                    location="after_tar_end_markers",
+                )
+                blockers.append(
+                    {
+                        "code": "invalid_tar_trailing_data",
+                        "kind": "sdist",
+                    }
+                )
+            if pending_pax_keys:
+                blockers.append(
+                    {
+                        "code": "invalid_tar_extension_chain",
+                        "kind": "sdist",
+                    }
+                )
+            return
+
+        if physical_entries >= MAX_ARCHIVE_ENTRIES:
+            blockers.append(
+                {
+                    "code": "archive_entry_limit_exceeded",
+                    "kind": "sdist",
+                    "observed": physical_entries + 1,
+                    "limit": MAX_ARCHIVE_ENTRIES,
+                }
+            )
+            return
+        entry_index = physical_entries
+        physical_entries += 1
+        if not _record_archive_metadata(
+            metadata,
+            blockers,
+            key=f"__archive_metadata__/tar/header/{entry_index:04d}",
+            payload=block,
+            kind="sdist",
+        ):
+            return
+        if not _record_archive_metadata(
+            metadata,
+            blockers,
+            key=(
+                "__archive_metadata__/tar/header-fields/"
+                f"{entry_index:04d}"
+            ),
+            payload=_fixed_field_projection(
+                block,
+                (
+                    100,
+                    8,
+                    8,
+                    8,
+                    12,
+                    12,
+                    8,
+                    1,
+                    100,
+                    6,
+                    2,
+                    32,
+                    32,
+                    8,
+                    8,
+                    155,
+                    12,
+                ),
+            ),
+            kind="sdist",
+        ):
+            return
+        try:
+            expected_checksum = _parse_tar_octal(block[148:156])
+            member_size = _parse_tar_octal(block[124:136])
+        except ValueError:
+            blockers.append(
+                {
+                    "code": "invalid_tar_header",
+                    "kind": "sdist",
+                    "entry_index": entry_index,
+                }
+            )
+            return
+        checksum_block = block[:148] + (b" " * 8) + block[156:]
+        if expected_checksum != sum(checksum_block):
+            blockers.append(
+                {
+                    "code": "invalid_tar_header_checksum",
+                    "kind": "sdist",
+                    "entry_index": entry_index,
+                }
+            )
+            return
+        for field_name, field in (
+            ("name", block[0:100]),
+            ("linkname", block[157:257]),
+            ("uname", block[265:297]),
+            ("gname", block[297:329]),
+            ("prefix", block[345:500]),
+        ):
+            terminator = field.find(b"\0")
+            if terminator >= 0 and any(field[terminator + 1 :]):
+                blockers.append(
+                    {
+                        "code": "noncanonical_tar_header_padding",
+                        "kind": "sdist",
+                        "entry_index": entry_index,
+                        "field": field_name,
+                    }
+                )
+        if any(block[500:512]):
+            blockers.append(
+                {
+                    "code": "noncanonical_tar_header_padding",
+                    "kind": "sdist",
+                    "entry_index": entry_index,
+                    "field": "header_padding",
+                }
+            )
+        data_offset = block_end
+        data_end = data_offset + member_size
+        padded_end = (
+            data_end + _TAR_BLOCK_BYTES - 1
+        ) // _TAR_BLOCK_BYTES * _TAR_BLOCK_BYTES
+        if data_end > len(payload) or padded_end > len(payload):
+            blockers.append(
+                {
+                    "code": "invalid_tar_structure",
+                    "kind": "sdist",
+                    "entry_index": entry_index,
+                }
+            )
+            return
+        type_flag = block[156:157]
+        member_payload = payload[data_offset:data_end]
+        padding = payload[data_end:padded_end]
+        if any(padding):
+            _record_unexplained_archive_bytes(
+                metadata,
+                blockers,
+                key=f"__archive_metadata__/tar/padding/{entry_index:04d}",
+                payload=padding,
+                kind="sdist",
+                location="tar_member_padding",
+            )
+            blockers.append(
+                {
+                    "code": "noncanonical_tar_member_padding",
+                    "kind": "sdist",
+                    "entry_index": entry_index,
+                }
+            )
+        if type_flag in {tarfile.XHDTYPE, tarfile.XGLTYPE}:
+            if not _record_archive_metadata(
+                metadata,
+                blockers,
+                key=f"__archive_metadata__/tar/pax/{entry_index:04d}",
+                payload=member_payload,
+                kind="sdist",
+            ):
+                return
+            try:
+                records = _parse_pax_records(member_payload)
+            except ValueError:
+                blockers.append(
+                    {
+                        "code": "invalid_pax_metadata",
+                        "kind": "sdist",
+                        "entry_index": entry_index,
+                    }
+                )
+                return
+            observed_keys: set[bytes] = set()
+            for key, value in records:
+                if key in observed_keys or (
+                    type_flag == tarfile.XHDTYPE and key in pending_pax_keys
+                ):
+                    blockers.append(
+                        {
+                            "code": "duplicate_pax_key",
+                            "kind": "sdist",
+                            "entry_index": entry_index,
+                            "key": key.decode("ascii", errors="backslashreplace"),
+                        }
+                    )
+                observed_keys.add(key)
+                if b"\0" in key or b"\0" in value:
+                    blockers.append(
+                        {
+                            "code": "invalid_pax_metadata",
+                            "kind": "sdist",
+                            "entry_index": entry_index,
+                        }
+                    )
+                if type_flag == tarfile.XGLTYPE:
+                    continue
+                if key == b"path":
+                    try:
+                        value.decode("utf-8")
+                    except UnicodeDecodeError:
+                        blockers.append(
+                            {
+                                "code": "invalid_pax_metadata",
+                                "kind": "sdist",
+                                "entry_index": entry_index,
+                                "key": "path",
+                            }
+                        )
+                elif key == b"mtime":
+                    if re.fullmatch(rb"-?\d+(?:\.\d+)?", value) is None:
+                        blockers.append(
+                            {
+                                "code": "invalid_pax_metadata",
+                                "kind": "sdist",
+                                "entry_index": entry_index,
+                                "key": "mtime",
+                            }
+                        )
+                else:
+                    blockers.append(
+                        {
+                            "code": "unexpected_archive_metadata",
+                            "kind": "sdist",
+                            "metadata": "pax",
+                            "key": key.decode(
+                                "ascii",
+                                errors="backslashreplace",
+                            ),
+                        }
+                    )
+            if type_flag == tarfile.XGLTYPE:
+                blockers.append(
+                    {
+                        "code": "unexpected_archive_metadata",
+                        "kind": "sdist",
+                        "metadata": "global_pax",
+                    }
+                )
+            else:
+                pending_pax_keys.update(observed_keys)
+        elif type_flag in {tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK}:
+            if not _record_archive_metadata(
+                metadata,
+                blockers,
+                key=f"__archive_metadata__/tar/gnu/{entry_index:04d}",
+                payload=member_payload,
+                kind="sdist",
+            ):
+                return
+            terminator = member_payload.find(b"\0")
+            if terminator < 0 or any(member_payload[terminator + 1 :]):
+                blockers.append(
+                    {
+                        "code": "invalid_gnu_tar_metadata",
+                        "kind": "sdist",
+                        "entry_index": entry_index,
+                    }
+                )
+            blockers.append(
+                {
+                    "code": "unexpected_archive_metadata",
+                    "kind": "sdist",
+                    "metadata": "gnu_long_name",
+                }
+            )
+        else:
+            pending_pax_keys.clear()
+            if member_size > MAX_ARCHIVE_MEMBER_BYTES:
+                blockers.append(
+                    {
+                        "code": "archive_member_limit_exceeded",
+                        "kind": "sdist",
+                        "entry_index": entry_index,
+                        "observed": member_size,
+                        "limit": MAX_ARCHIVE_MEMBER_BYTES,
+                    }
+                )
+                return
+            total_member_bytes += member_size
+            if total_member_bytes > MAX_ARCHIVE_TOTAL_BYTES:
+                blockers.append(
+                    {
+                        "code": "archive_total_limit_exceeded",
+                        "kind": "sdist",
+                        "observed": total_member_bytes,
+                        "limit": MAX_ARCHIVE_TOTAL_BYTES,
+                    }
+                )
+                return
+        cursor = padded_end
+    blockers.append({"code": "invalid_tar_end_markers", "kind": "sdist"})
 
 
 def inspect_wheel(path: Path) -> ArchiveSnapshot:
     """Read one wheel with traversal, duplicate, link, and size checks."""
 
-    blockers: list[dict[str, object]] = []
+    metadata, blockers = _raw_zip_metadata(path)
     files: dict[str, bytes] = {}
     directories: list[str] = []
-    metadata: dict[str, bytes] = {}
     entries: list[str] = []
     total_bytes = 0
-    with path.open("rb") as local_headers, zipfile.ZipFile(path) as archive:
-        if archive.comment:
-            _record_archive_metadata(
-                metadata,
-                blockers,
-                key="__archive_metadata__/global-comment",
-                payload=archive.comment,
-                kind="wheel",
-            )
-            blockers.append(
-                {
-                    "code": "unexpected_archive_metadata",
-                    "kind": "wheel",
-                    "metadata": "global_comment",
-                }
-            )
+    if any(
+        blocker.get("code") != "unexpected_archive_metadata"
+        for blocker in blockers
+    ):
+        return ArchiveSnapshot(
+            kind="wheel",
+            path=path,
+            digest=sha256_file(path),
+            entries=(),
+            files={},
+            blockers=tuple(blockers),
+            directories=(),
+            metadata=dict(sorted(metadata.items())),
+        )
+    with zipfile.ZipFile(path) as archive:
         infos = archive.infolist()
         if len(infos) > MAX_ARCHIVE_ENTRIES:
             blockers.append(
@@ -801,116 +1915,16 @@ def inspect_wheel(path: Path) -> ArchiveSnapshot:
         for index, info in enumerate(infos[: MAX_ARCHIVE_ENTRIES + 1]):
             name = info.filename
             entries.append(name)
-            if info.comment:
-                _record_archive_metadata(
-                    metadata,
-                    blockers,
-                    key=(
-                        "__archive_metadata__/"
-                        f"entry/{index:04d}/comment"
-                    ),
-                    payload=info.comment,
-                    kind="wheel",
-                    entry=name,
-                )
+            if info.orig_filename != info.filename or "\0" in info.orig_filename:
                 blockers.append(
                     {
-                        "code": "unexpected_archive_metadata",
+                        "code": "invalid_zip_filename",
                         "kind": "wheel",
                         "entry": name,
-                        "metadata": "comment",
-                    }
-                )
-            if info.extra:
-                _record_archive_metadata(
-                    metadata,
-                    blockers,
-                    key=(
-                        "__archive_metadata__/"
-                        f"entry/{index:04d}/extra"
-                    ),
-                    payload=info.extra,
-                    kind="wheel",
-                    entry=name,
-                )
-                blockers.append(
-                    {
-                        "code": "unexpected_archive_metadata",
-                        "kind": "wheel",
-                        "entry": name,
-                        "metadata": "extra",
-                    }
-                )
-            try:
-                (
-                    local_flags,
-                    local_compression,
-                    local_filename,
-                    local_extra,
-                ) = _zip_local_header(local_headers, info)
-            except (OSError, ValueError):
-                blockers.append(
-                    {
-                        "code": "invalid_zip_local_header",
-                        "kind": "wheel",
-                        "entry": name,
+                        "reason": "normalized_filename_divergence",
                     }
                 )
                 continue
-            expected_filename = _zip_central_filename(info)
-            if local_filename != expected_filename:
-                _record_archive_metadata(
-                    metadata,
-                    blockers,
-                    key=(
-                        "__archive_metadata__/"
-                        f"entry/{index:04d}/local-filename"
-                    ),
-                    payload=local_filename,
-                    kind="wheel",
-                    entry=name,
-                )
-                blockers.append(
-                    {
-                        "code": "archive_header_mismatch",
-                        "kind": "wheel",
-                        "entry": name,
-                        "metadata": "filename",
-                    }
-                )
-            if (
-                local_flags != info.flag_bits
-                or local_compression != info.compress_type
-            ):
-                blockers.append(
-                    {
-                        "code": "archive_header_mismatch",
-                        "kind": "wheel",
-                        "entry": name,
-                        "metadata": "flags_or_compression",
-                    }
-                )
-            if local_extra != info.extra:
-                if local_extra:
-                    _record_archive_metadata(
-                        metadata,
-                        blockers,
-                        key=(
-                            "__archive_metadata__/"
-                            f"entry/{index:04d}/local-extra"
-                        ),
-                        payload=local_extra,
-                        kind="wheel",
-                        entry=name,
-                    )
-                blockers.append(
-                    {
-                        "code": "archive_header_mismatch",
-                        "kind": "wheel",
-                        "entry": name,
-                        "metadata": "extra",
-                    }
-                )
             path_error = _archive_path_error(name)
             if path_error:
                 blockers.append(
@@ -1006,7 +2020,18 @@ def inspect_wheel(path: Path) -> ArchiveSnapshot:
                     }
                 )
                 break
-            files[name] = archive.read(info)
+            with archive.open(info) as member:
+                member_payload = member.read(MAX_ARCHIVE_MEMBER_BYTES + 1)
+            if len(member_payload) != info.file_size:
+                blockers.append(
+                    {
+                        "code": "archive_member_size_mismatch",
+                        "kind": "wheel",
+                        "entry": name,
+                    }
+                )
+                continue
+            files[name] = member_payload
     return ArchiveSnapshot(
         kind="wheel",
         path=path,
@@ -1022,13 +2047,16 @@ def inspect_wheel(path: Path) -> ArchiveSnapshot:
 def inspect_sdist(path: Path) -> ArchiveSnapshot:
     """Read one source distribution with strict regular-file semantics."""
 
-    blockers: list[dict[str, object]] = []
     files: dict[str, bytes] = {}
     directories: list[str] = []
-    metadata, blockers = _gzip_header_metadata(path)
+    metadata, blockers, tar_payload = _gzip_header_metadata(path)
     entries: list[str] = []
     total_bytes = 0
     expected_root = _expected_sdist_root(path)
+    if tar_payload is None:
+        blockers.append({"code": "invalid_tar_stream", "kind": "sdist"})
+    else:
+        _raw_tar_metadata(tar_payload, metadata, blockers)
     if not expected_root:
         blockers.append(
             {
@@ -1037,78 +2065,44 @@ def inspect_sdist(path: Path) -> ArchiveSnapshot:
                 "filename": path.name,
             }
         )
-    with tarfile.open(path, "r:gz") as archive:
-        for index, (key, value) in enumerate(
-            sorted(archive.pax_headers.items())
-        ):
-            _record_archive_metadata(
-                metadata,
-                blockers,
-                key=f"__archive_metadata__/global-pax/{index:04d}",
-                payload=canonical_json_text(
-                    {"key": key, "value": value}
-                ).encode("utf-8"),
-                kind="sdist",
-            )
-            blockers.append(
-                {
-                    "code": "unexpected_archive_metadata",
-                    "kind": "sdist",
-                    "metadata": "global_pax",
-                }
-            )
-        members = archive.getmembers()
-        if len(members) > MAX_ARCHIVE_ENTRIES:
-            blockers.append(
-                {
-                    "code": "archive_entry_limit_exceeded",
-                    "kind": "sdist",
-                    "observed": len(members),
-                    "limit": MAX_ARCHIVE_ENTRIES,
-                }
-            )
+    nonfatal_codes = {
+        "invalid_sdist_filename",
+        "unexpected_archive_metadata",
+        "unexpected_gzip_member",
+    }
+    if (
+        tar_payload is None
+        or any(
+            blocker.get("code") not in nonfatal_codes
+            for blocker in blockers
+        )
+    ):
+        return ArchiveSnapshot(
+            kind="sdist",
+            path=path,
+            digest=sha256_file(path),
+            entries=(),
+            files={},
+            blockers=tuple(blockers),
+            directories=(),
+            metadata=dict(sorted(metadata.items())),
+        )
+    with tarfile.open(fileobj=io.BytesIO(tar_payload), mode="r:") as archive:
         seen: set[str] = set()
-        for member_index, member in enumerate(
-            members[: MAX_ARCHIVE_ENTRIES + 1]
-        ):
+        for member_index, member in enumerate(archive):
+            if member_index >= MAX_ARCHIVE_ENTRIES:
+                blockers.append(
+                    {
+                        "code": "archive_entry_limit_exceeded",
+                        "kind": "sdist",
+                        "observed": member_index + 1,
+                        "limit": MAX_ARCHIVE_ENTRIES,
+                    }
+                )
+                break
             name = member.name
             entries.append(name)
-            for header_name, header_value in (
-                ("uname", member.uname),
-                ("gname", member.gname),
-                ("linkname", member.linkname),
-            ):
-                if header_value:
-                    _record_archive_metadata(
-                        metadata,
-                        blockers,
-                        key=(
-                            "__archive_metadata__/"
-                            f"entry/{member_index:04d}/{header_name}"
-                        ),
-                        payload=header_value.encode(
-                            "utf-8",
-                            errors="surrogateescape",
-                        ),
-                        kind="sdist",
-                        entry=name,
-                    )
-            for pax_index, (key, value) in enumerate(
-                sorted(member.pax_headers.items())
-            ):
-                _record_archive_metadata(
-                    metadata,
-                    blockers,
-                    key=(
-                        "__archive_metadata__/"
-                        f"entry/{member_index:04d}/pax/{pax_index:04d}"
-                    ),
-                    payload=canonical_json_text(
-                        {"key": key, "value": value}
-                    ).encode("utf-8"),
-                    kind="sdist",
-                    entry=name,
-                )
+            for key, value in sorted(member.pax_headers.items()):
                 valid_path = key == "path" and value == name
                 valid_mtime = (
                     key == "mtime"
@@ -1215,7 +2209,17 @@ def inspect_sdist(path: Path) -> ArchiveSnapshot:
                     }
                 )
                 continue
-            files[name] = extracted.read()
+            member_payload = extracted.read(MAX_ARCHIVE_MEMBER_BYTES + 1)
+            if len(member_payload) != member.size:
+                blockers.append(
+                    {
+                        "code": "archive_member_size_mismatch",
+                        "kind": "sdist",
+                        "entry": name,
+                    }
+                )
+                continue
+            files[name] = member_payload
     return ArchiveSnapshot(
         kind="sdist",
         path=path,
