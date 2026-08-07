@@ -42,10 +42,20 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Check out exact pull request head
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Check out exact main push
+        if: github.event_name == 'push'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
         with:
           enable-cache: true
@@ -53,6 +63,12 @@ jobs:
         run: uv python install 3.12
       - name: Install build dependencies
         run: uv sync --locked --python 3.12 --extra dev
+      - name: Verify exact release source
+        env:
+          EXPECTED_RELEASE_COMMIT: >-
+            ${{ github.event_name == 'pull_request' &&
+            github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "${EXPECTED_RELEASE_COMMIT}"
       - name: Verify clean release source
         run: test -z "$(git status --porcelain=v1 --untracked-files=all)"
       - name: Build and verify release artifacts
@@ -79,7 +95,8 @@ jobs:
         with:
           name: distribution-compliance-qualified-release
           path: |
-            dist/
+            dist/*.whl
+            dist/*.tar.gz
             distribution-compliance-evidence/
           if-no-files-found: error
           retention-days: 30
