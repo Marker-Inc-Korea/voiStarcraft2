@@ -657,7 +657,7 @@ class ArchivePolicyTest(unittest.TestCase):
         self.assertEqual(1, len({item["fingerprint"] for item in findings}))
 
     def test_wheel_metadata_blocker_does_not_suppress_payload_scan(self) -> None:
-        secret = b"sk-liveabcdefghijklmnop"
+        secret = ("sk-" + "liveabcdefghijklmnop").encode()
         entry = "starcraft_commander/runtime_data.py"
         with tempfile.TemporaryDirectory() as temporary:
             wheel_path = Path(temporary) / "candidate.whl"
@@ -861,7 +861,7 @@ class ArchivePolicyTest(unittest.TestCase):
         )
 
     def test_sdist_metadata_blocker_does_not_suppress_payload_scan(self) -> None:
-        secret = b"sk-liveabcdefghijklmnop"
+        secret = ("sk-" + "liveabcdefghijklmnop").encode()
         entry = (
             "voistarcraft2-0.1.0/"
             "starcraft_commander/runtime_data.py"
@@ -924,7 +924,7 @@ class ArchivePolicyTest(unittest.TestCase):
         self.assertEqual(1, len({item["fingerprint"] for item in findings}))
 
     def test_wheel_scans_data_descriptor_local_fixed_fields(self) -> None:
-        secret = b"sk-abcdefghijkl"
+        secret = ("sk-" + "abcdefghijkl").encode()
         with tempfile.TemporaryDirectory() as temporary:
             wheel_path = Path(temporary) / "candidate.whl"
             self._write_raw_zip(
@@ -945,7 +945,7 @@ class ArchivePolicyTest(unittest.TestCase):
         self.assertEqual(1, len({item["fingerprint"] for item in findings}))
 
     def test_wheel_rejects_and_scans_unexplained_outer_bytes(self) -> None:
-        secret = b"sk-liveabcdefghijklmnop"
+        secret = ("sk-" + "liveabcdefghijklmnop").encode()
         variants = {
             "preamble": {"preamble": secret},
             "post_eocd": {"trailing": secret},
@@ -977,7 +977,7 @@ class ArchivePolicyTest(unittest.TestCase):
 
     def test_wheel_rejects_nul_in_local_and_central_names(self) -> None:
         safe = b"starcraft_commander/runtime_data.py"
-        secret = b"sk-liveabcdefghijklmnop"
+        secret = ("sk-" + "liveabcdefghijklmnop").encode()
         hidden = safe + b"\0" + secret
         variants = {
             "identical": (hidden, hidden),
@@ -1123,7 +1123,7 @@ class ArchivePolicyTest(unittest.TestCase):
                 )
 
     def test_sdist_rejects_and_scans_tar_bytes_after_uname_nul(self) -> None:
-        secret = b"sk-liveabcdefghijklmnop"
+        secret = ("sk-" + "liveabcdefghijklmnop").encode()
         tar_payload = bytearray(
             self._tar_payload(
                 (
@@ -1154,7 +1154,7 @@ class ArchivePolicyTest(unittest.TestCase):
         self.assertEqual(1, len({item["fingerprint"] for item in findings}))
 
     def test_sdist_rejects_duplicate_pax_keys_without_normalizing(self) -> None:
-        secret = b"sk-liveabcdefghijklmnop"
+        secret = ("sk-" + "liveabcdefghijklmnop").encode()
         safe_path = (
             b"voistarcraft2-0.1.0/"
             b"starcraft_commander/runtime_data.py"
@@ -1185,7 +1185,7 @@ class ArchivePolicyTest(unittest.TestCase):
         self.assertEqual(1, len({item["fingerprint"] for item in findings}))
 
     def test_sdist_rejects_and_scans_gnu_long_name_records(self) -> None:
-        secret = b"sk-liveabcdefghijklmnop"
+        secret = ("sk-" + "liveabcdefghijklmnop").encode()
         tar_payload = self._tar_with_extension(
             extension_type=tarfile.GNUTYPE_LONGNAME,
             extension_payload=secret + b"\0",
@@ -1211,7 +1211,7 @@ class ArchivePolicyTest(unittest.TestCase):
         self.assertEqual(1, len({item["fingerprint"] for item in findings}))
 
     def test_sdist_rejects_and_scans_nonzero_member_padding(self) -> None:
-        secret = b"sk-liveabcdefghijklmnop"
+        secret = ("sk-" + "liveabcdefghijklmnop").encode()
         tar_payload = bytearray(
             self._tar_payload(
                 (
@@ -1239,7 +1239,7 @@ class ArchivePolicyTest(unittest.TestCase):
         self.assertEqual(1, len({item["fingerprint"] for item in findings}))
 
     def test_sdist_rejects_and_scans_data_after_tar_end_markers(self) -> None:
-        secret = b"sk-liveabcdefghijklmnop"
+        secret = ("sk-" + "liveabcdefghijklmnop").encode()
         tar_payload = bytearray(
             self._tar_payload(
                 (
