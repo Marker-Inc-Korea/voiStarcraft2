@@ -609,6 +609,199 @@ def _decode_zip_filename(raw_name: bytes, flag_bits: int) -> str:
     return raw_name.decode(encoding)
 
 
+def _validate_raw_zip_payload(
+    compressed_payload: memoryview,
+    entry: _RawZipEntry,
+    metadata: dict[str, bytes],
+    blockers: list[dict[str, object]],
+) -> None:
+    """Validate exact ZIP stream consumption without trusting ``zipfile``."""
+
+    directory_entry = entry.name.endswith("/")
+    if directory_entry and (
+        entry.compressed_size != 0 or entry.uncompressed_size != 0
+    ):
+        blockers.append(
+            {
+                "code": "archive_directory_payload",
+                "kind": "wheel",
+                "entry": entry.name,
+                "compressed_size": entry.compressed_size,
+                "uncompressed_size": entry.uncompressed_size,
+            }
+        )
+    if entry.compression not in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}:
+        _record_unexplained_archive_bytes(
+            metadata,
+            blockers,
+            key=(
+                "__archive_metadata__/zip/unsupported-payload/"
+                f"{entry.index:04d}"
+            ),
+            payload=bytes(compressed_payload),
+            kind="wheel",
+            location="unsupported_zip_compression",
+        )
+        blockers.append(
+            {
+                "code": "unsupported_zip_compression",
+                "kind": "wheel",
+                "entry": entry.name,
+                "compression": entry.compression,
+            }
+        )
+        return
+
+    if entry.compression == zipfile.ZIP_STORED:
+        if entry.compressed_size != entry.uncompressed_size:
+            blockers.append(
+                {
+                    "code": "invalid_zip_compressed_payload",
+                    "kind": "wheel",
+                    "entry": entry.name,
+                    "reason": "stored_size_mismatch",
+                }
+            )
+            if entry.compressed_size > entry.uncompressed_size:
+                _record_unexplained_archive_bytes(
+                    metadata,
+                    blockers,
+                    key=(
+                        "__archive_metadata__/zip/compression-slack/"
+                        f"{entry.index:04d}"
+                    ),
+                    payload=bytes(
+                        compressed_payload[entry.uncompressed_size :]
+                    ),
+                    kind="wheel",
+                    location="zip_compression_stream_slack",
+                )
+        observed_payload = compressed_payload[: entry.uncompressed_size]
+        observed_size = len(observed_payload)
+        observed_crc = zlib.crc32(observed_payload) & 0xFFFFFFFF
+        if directory_entry and observed_payload:
+            _record_archive_metadata(
+                metadata,
+                blockers,
+                key=(
+                    "__archive_metadata__/zip/directory-payload/"
+                    f"{entry.index:04d}"
+                ),
+                payload=bytes(observed_payload),
+                kind="wheel",
+                entry=entry.name,
+            )
+    else:
+        decompressor = zlib.decompressobj(wbits=-zlib.MAX_WBITS)
+        cursor = 0
+        observed_size = 0
+        observed_crc = 0
+        directory_payload = bytearray()
+        output_limit = (
+            MAX_ARCHIVE_METADATA_BYTES
+            if directory_entry
+            else entry.uncompressed_size + 1
+        )
+        try:
+            while cursor < len(compressed_payload) and not decompressor.eof:
+                chunk = compressed_payload[
+                    cursor : min(cursor + 64 * 1024, len(compressed_payload))
+                ]
+                remaining = max(1, output_limit - observed_size + 1)
+                uncompressed = decompressor.decompress(chunk, remaining)
+                consumed = (
+                    len(chunk)
+                    - len(decompressor.unconsumed_tail)
+                    - len(decompressor.unused_data)
+                )
+                if consumed <= 0 and not uncompressed:
+                    raise ValueError("invalid ZIP deflate stream")
+                cursor += consumed
+                observed_size += len(uncompressed)
+                observed_crc = zlib.crc32(uncompressed, observed_crc)
+                if directory_entry:
+                    directory_payload.extend(uncompressed)
+                if observed_size > output_limit:
+                    raise OverflowError(observed_size)
+        except (OverflowError, ValueError, zlib.error):
+            blockers.append(
+                {
+                    "code": "invalid_zip_compressed_payload",
+                    "kind": "wheel",
+                    "entry": entry.name,
+                    "reason": "invalid_deflate_stream",
+                }
+            )
+            if directory_payload:
+                _record_archive_metadata(
+                    metadata,
+                    blockers,
+                    key=(
+                        "__archive_metadata__/zip/directory-payload/"
+                        f"{entry.index:04d}"
+                    ),
+                    payload=bytes(directory_payload),
+                    kind="wheel",
+                    entry=entry.name,
+                )
+            return
+        observed_crc &= 0xFFFFFFFF
+        if not decompressor.eof:
+            blockers.append(
+                {
+                    "code": "invalid_zip_compressed_payload",
+                    "kind": "wheel",
+                    "entry": entry.name,
+                    "reason": "truncated_deflate_stream",
+                }
+            )
+        if cursor < len(compressed_payload):
+            _record_unexplained_archive_bytes(
+                metadata,
+                blockers,
+                key=(
+                    "__archive_metadata__/zip/compression-slack/"
+                    f"{entry.index:04d}"
+                ),
+                payload=bytes(compressed_payload[cursor:]),
+                kind="wheel",
+                location="zip_compression_stream_slack",
+            )
+            blockers.append(
+                {
+                    "code": "invalid_zip_compressed_payload",
+                    "kind": "wheel",
+                    "entry": entry.name,
+                    "reason": "deflate_stream_slack",
+                }
+            )
+        if directory_entry and directory_payload:
+            _record_archive_metadata(
+                metadata,
+                blockers,
+                key=(
+                    "__archive_metadata__/zip/directory-payload/"
+                    f"{entry.index:04d}"
+                ),
+                payload=bytes(directory_payload),
+                kind="wheel",
+                entry=entry.name,
+            )
+
+    if (
+        observed_size != entry.uncompressed_size
+        or observed_crc != entry.crc32
+    ):
+        blockers.append(
+            {
+                "code": "invalid_zip_compressed_payload",
+                "kind": "wheel",
+                "entry": entry.name,
+                "reason": "size_or_crc_mismatch",
+            }
+        )
+
+
 def _raw_zip_metadata(
     path: Path,
 ) -> tuple[dict[str, bytes], list[dict[str, object]]]:
@@ -776,6 +969,7 @@ def _raw_zip_metadata(
     central_cursor = central_offset
     entries: list[_RawZipEntry] = []
     local_offsets: set[int] = set()
+    total_uncompressed_bytes = 0
     for index in range(total_entries):
         fixed_end = central_cursor + _ZIP_CENTRAL_HEADER.size
         if fixed_end > central_end:
@@ -927,6 +1121,31 @@ def _raw_zip_metadata(
                     "entry": name,
                 }
             )
+        if (
+            compressed_size > MAX_ARCHIVE_MEMBER_BYTES
+            or uncompressed_size > MAX_ARCHIVE_MEMBER_BYTES
+        ):
+            blockers.append(
+                {
+                    "code": "archive_member_limit_exceeded",
+                    "kind": "wheel",
+                    "entry": name,
+                    "observed": max(compressed_size, uncompressed_size),
+                    "limit": MAX_ARCHIVE_MEMBER_BYTES,
+                }
+            )
+            return metadata, blockers
+        total_uncompressed_bytes += uncompressed_size
+        if total_uncompressed_bytes > MAX_ARCHIVE_TOTAL_BYTES:
+            blockers.append(
+                {
+                    "code": "archive_total_limit_exceeded",
+                    "kind": "wheel",
+                    "observed": total_uncompressed_bytes,
+                    "limit": MAX_ARCHIVE_TOTAL_BYTES,
+                }
+            )
+            return metadata, blockers
         if local_offset in local_offsets:
             blockers.append(
                 {
@@ -1113,6 +1332,12 @@ def _raw_zip_metadata(
                 }
             )
             return metadata, blockers
+        _validate_raw_zip_payload(
+            memoryview(payload)[header_end:data_end],
+            entry,
+            metadata,
+            blockers,
+        )
         local_crc = int(fields[6])
         local_compressed_size = int(fields[7])
         local_uncompressed_size = int(fields[8])
@@ -1278,6 +1503,29 @@ def _gzip_member_end(
     return cursor + _GZIP_TRAILER.size, bytes(uncompressed_payload)
 
 
+def _record_invalid_gzip_remainder(
+    metadata: dict[str, bytes],
+    blockers: list[dict[str, object]],
+    payload: bytes,
+    *,
+    offset: int,
+    member_index: int,
+) -> None:
+    if offset >= len(payload):
+        return
+    _record_unexplained_archive_bytes(
+        metadata,
+        blockers,
+        key=(
+            "__archive_metadata__/gzip/unparsed/"
+            f"{member_index:04d}"
+        ),
+        payload=payload[offset:],
+        kind="sdist",
+        location="invalid_gzip_remainder",
+    )
+
+
 def _gzip_header_metadata(
     path: Path,
 ) -> tuple[
@@ -1330,6 +1578,13 @@ def _gzip_header_metadata(
                     "limit": MAX_ARCHIVE_ENTRIES,
                 }
             )
+            _record_invalid_gzip_remainder(
+                metadata,
+                blockers,
+                payload,
+                offset=offset,
+                member_index=member_index,
+            )
             break
         if member_index:
             blockers.append(
@@ -1344,10 +1599,24 @@ def _gzip_header_metadata(
         fixed = handle.read(_GZIP_FIXED_HEADER.size)
         if len(fixed) != _GZIP_FIXED_HEADER.size:
             blockers.append({"code": "invalid_gzip_header", "kind": "sdist"})
+            _record_invalid_gzip_remainder(
+                metadata,
+                blockers,
+                payload,
+                offset=offset,
+                member_index=member_index,
+            )
             break
         signature, method, flags, _, _, _ = _GZIP_FIXED_HEADER.unpack(fixed)
         if signature != _GZIP_SIGNATURE or method != 8 or flags & 0xE0:
             blockers.append({"code": "invalid_gzip_header", "kind": "sdist"})
+            _record_invalid_gzip_remainder(
+                metadata,
+                blockers,
+                payload,
+                offset=offset,
+                member_index=member_index,
+            )
             break
         metadata_prefix = (
             "__archive_metadata__/gzip"
@@ -1437,6 +1706,13 @@ def _gzip_header_metadata(
                             "member": member_index,
                         }
                     )
+                    _record_invalid_gzip_remainder(
+                        metadata,
+                        blockers,
+                        payload,
+                        offset=offset,
+                        member_index=member_index,
+                    )
                     break
             if not _record_archive_metadata(
                 metadata,
@@ -1477,6 +1753,13 @@ def _gzip_header_metadata(
             break
         except (ValueError, zlib.error):
             blockers.append({"code": "invalid_gzip_header", "kind": "sdist"})
+            _record_invalid_gzip_remainder(
+                metadata,
+                blockers,
+                payload,
+                offset=offset,
+                member_index=member_index,
+            )
             break
         if member_index == 0:
             first_member_payload = uncompressed_payload
@@ -1719,7 +2002,77 @@ def _raw_tar_metadata(
             )
             return
         type_flag = block[156:157]
-        member_payload = payload[data_offset:data_end]
+        extension_type = type_flag in {
+            tarfile.XHDTYPE,
+            tarfile.XGLTYPE,
+            tarfile.GNUTYPE_LONGNAME,
+            tarfile.GNUTYPE_LONGLINK,
+        }
+        if extension_type and member_size > MAX_ARCHIVE_METADATA_BYTES:
+            blockers.append(
+                {
+                    "code": "archive_metadata_limit_exceeded",
+                    "kind": "sdist",
+                    "entry_index": entry_index,
+                    "observed": member_size,
+                    "limit": MAX_ARCHIVE_METADATA_BYTES,
+                }
+            )
+            return
+        if type_flag == tarfile.DIRTYPE and member_size:
+            blockers.append(
+                {
+                    "code": "archive_directory_payload",
+                    "kind": "sdist",
+                    "entry_index": entry_index,
+                    "observed": member_size,
+                }
+            )
+            if member_size > MAX_ARCHIVE_METADATA_BYTES:
+                blockers.append(
+                    {
+                        "code": "archive_metadata_limit_exceeded",
+                        "kind": "sdist",
+                        "entry_index": entry_index,
+                        "observed": member_size,
+                        "limit": MAX_ARCHIVE_METADATA_BYTES,
+                    }
+                )
+                return
+            if not _record_archive_metadata(
+                metadata,
+                blockers,
+                key=(
+                    "__archive_metadata__/tar/directory-payload/"
+                    f"{entry_index:04d}"
+                ),
+                payload=payload[data_offset:data_end],
+                kind="sdist",
+            ):
+                return
+        elif not extension_type:
+            if member_size > MAX_ARCHIVE_MEMBER_BYTES:
+                blockers.append(
+                    {
+                        "code": "archive_member_limit_exceeded",
+                        "kind": "sdist",
+                        "entry_index": entry_index,
+                        "observed": member_size,
+                        "limit": MAX_ARCHIVE_MEMBER_BYTES,
+                    }
+                )
+                return
+            total_member_bytes += member_size
+            if total_member_bytes > MAX_ARCHIVE_TOTAL_BYTES:
+                blockers.append(
+                    {
+                        "code": "archive_total_limit_exceeded",
+                        "kind": "sdist",
+                        "observed": total_member_bytes,
+                        "limit": MAX_ARCHIVE_TOTAL_BYTES,
+                    }
+                )
+                return
         padding = payload[data_end:padded_end]
         if any(padding):
             _record_unexplained_archive_bytes(
@@ -1738,6 +2091,7 @@ def _raw_tar_metadata(
                 }
             )
         if type_flag in {tarfile.XHDTYPE, tarfile.XGLTYPE}:
+            member_payload = payload[data_offset:data_end]
             if not _record_archive_metadata(
                 metadata,
                 blockers,
@@ -1826,6 +2180,7 @@ def _raw_tar_metadata(
             else:
                 pending_pax_keys.update(observed_keys)
         elif type_flag in {tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK}:
+            member_payload = payload[data_offset:data_end]
             if not _record_archive_metadata(
                 metadata,
                 blockers,
@@ -1852,28 +2207,6 @@ def _raw_tar_metadata(
             )
         else:
             pending_pax_keys.clear()
-            if member_size > MAX_ARCHIVE_MEMBER_BYTES:
-                blockers.append(
-                    {
-                        "code": "archive_member_limit_exceeded",
-                        "kind": "sdist",
-                        "entry_index": entry_index,
-                        "observed": member_size,
-                        "limit": MAX_ARCHIVE_MEMBER_BYTES,
-                    }
-                )
-                return
-            total_member_bytes += member_size
-            if total_member_bytes > MAX_ARCHIVE_TOTAL_BYTES:
-                blockers.append(
-                    {
-                        "code": "archive_total_limit_exceeded",
-                        "kind": "sdist",
-                        "observed": total_member_bytes,
-                        "limit": MAX_ARCHIVE_TOTAL_BYTES,
-                    }
-                )
-                return
         cursor = padded_end
     blockers.append({"code": "invalid_tar_end_markers", "kind": "sdist"})
 
@@ -1886,8 +2219,12 @@ def inspect_wheel(path: Path) -> ArchiveSnapshot:
     directories: list[str] = []
     entries: list[str] = []
     total_bytes = 0
+    nonfatal_codes = {
+        "archive_directory_payload",
+        "unexpected_archive_metadata",
+    }
     if any(
-        blocker.get("code") != "unexpected_archive_metadata"
+        blocker.get("code") not in nonfatal_codes
         for blocker in blockers
     ):
         return ArchiveSnapshot(
@@ -2157,6 +2494,16 @@ def inspect_sdist(path: Path) -> ArchiveSnapshot:
                 continue
             seen.add(portable_key)
             if member.isdir():
+                if member.size:
+                    blockers.append(
+                        {
+                            "code": "archive_directory_payload",
+                            "kind": "sdist",
+                            "entry": name,
+                            "observed": member.size,
+                        }
+                    )
+                    continue
                 directories.append(name)
                 continue
             if member.issym() or member.islnk():
@@ -2529,6 +2876,31 @@ def scan_payload(
     return findings
 
 
+def _bomless_utf16_encoding(payload: bytes) -> str:
+    """Detect long aligned ASCII runs encoded as BOM-less UTF-16."""
+
+    sample = payload[: min(len(payload), 64 * 1024)]
+    if len(sample) < 16:
+        return ""
+    sample = sample[: len(sample) - (len(sample) % 2)]
+    le_streak = 0
+    be_streak = 0
+    longest_le = 0
+    longest_be = 0
+    for first, second in zip(sample[0::2], sample[1::2], strict=True):
+        first_text = first in {9, 10, 13} or 32 <= first <= 126
+        second_text = second in {9, 10, 13} or 32 <= second <= 126
+        le_streak = le_streak + 1 if first_text and second == 0 else 0
+        be_streak = be_streak + 1 if first == 0 and second_text else 0
+        longest_le = max(longest_le, le_streak)
+        longest_be = max(longest_be, be_streak)
+    if longest_le >= 8 and longest_be < 8:
+        return "utf-16-le"
+    if longest_be >= 8 and longest_le < 8:
+        return "utf-16-be"
+    return ""
+
+
 def _decode_scan_payload(path: str, payload: bytes) -> tuple[str, str]:
     suffix = PurePosixPath(path).suffix.lower()
     is_configuration = suffix in {".json", ".toml", ".yaml", ".yml"}
@@ -2537,23 +2909,24 @@ def _decode_scan_payload(path: str, payload: bytes) -> tuple[str, str]:
         encoding = "utf-8-sig"
     elif payload.startswith((b"\xff\xfe", b"\xfe\xff")):
         encoding = "utf-16"
-    elif is_configuration and len(payload) >= 4 and len(payload) % 2 == 0:
-        sample = payload[: min(len(payload), 128)]
-        even_nuls = sample[0::2].count(0)
-        odd_nuls = sample[1::2].count(0)
-        if odd_nuls > len(sample[1::2]) // 3 and not even_nuls:
-            encoding = "utf-16-le"
-        elif even_nuls > len(sample[0::2]) // 3 and not odd_nuls:
-            encoding = "utf-16-be"
+    else:
+        encoding = _bomless_utf16_encoding(payload) or encoding
     try:
         return payload.decode(
             encoding,
-            errors="strict" if is_configuration else "replace",
+            errors=(
+                "strict"
+                if is_configuration or encoding.startswith("utf-16")
+                else "replace"
+            ),
         ), ""
     except UnicodeError:
-        return payload.decode("utf-8", errors="replace"), (
+        failure = (
             "configuration_decode_failed"
+            if is_configuration
+            else "payload_decode_failed"
         )
+        return payload.decode("utf-8", errors="replace"), failure
 
 
 def _joined_quoted_literal_text(text: str) -> str:
@@ -6762,59 +7135,129 @@ def write_distribution_evidence(
 ) -> None:
     """Write the canonical report and reviewer evidence files."""
 
-    _prepare_distribution_evidence_directory(output_dir)
-    public_report = public_report or _external_distribution_report(report)
-    (output_dir / "distribution-compliance.json").write_text(
-        canonical_json_text(public_report),
-        encoding="utf-8",
-    )
-    (output_dir / "distribution-compliance.md").write_text(
-        render_distribution_markdown(public_report),
-        encoding="utf-8",
-    )
-    public_secret_scan = _mapping(public_report.get("secret_scan"))
-    (output_dir / "secret-scan.json").write_text(
-        canonical_json_text(public_secret_scan),
-        encoding="utf-8",
-    )
-    if public_report is not report:
-        return
-    artifacts = _mapping(public_report.get("artifacts"))
-    for kind in ("wheel", "sdist"):
-        entries = _string_list(_mapping(artifacts.get(kind)).get("entries"))
-        (output_dir / f"{kind}.entries.txt").write_text(
-            "".join(f"{entry}\n" for entry in entries),
-            encoding="utf-8",
-        )
-    metadata_text = str(_mapping(public_report.get("metadata")).get("raw", ""))
-    (output_dir / "installed.METADATA").write_text(
-        metadata_text,
-        encoding="utf-8",
-    )
-    (output_dir / "dependency-notices.json").write_text(
-        canonical_json_text(_mapping(public_report.get("dependencies"))),
-        encoding="utf-8",
-    )
-    for name, payload in _distribution_report_scan_payloads(
-        public_report
-    ).items():
-        (output_dir / name).write_bytes(payload)
-
-
-def _prepare_distribution_evidence_directory(output_dir: Path) -> None:
+    directory_fd = _prepare_distribution_evidence_directory(output_dir)
     try:
-        output_stat = os.lstat(output_dir)
-    except FileNotFoundError:
+        public_report = public_report or _external_distribution_report(report)
+        _write_evidence_bytes(
+            directory_fd,
+            "distribution-compliance.json",
+            canonical_json_text(public_report).encode("utf-8"),
+        )
+        _write_evidence_bytes(
+            directory_fd,
+            "distribution-compliance.md",
+            render_distribution_markdown(public_report).encode("utf-8"),
+        )
+        public_secret_scan = _mapping(public_report.get("secret_scan"))
+        _write_evidence_bytes(
+            directory_fd,
+            "secret-scan.json",
+            canonical_json_text(public_secret_scan).encode("utf-8"),
+        )
+        if public_report is not report:
+            return
+        artifacts = _mapping(public_report.get("artifacts"))
+        for kind in ("wheel", "sdist"):
+            entries = _string_list(_mapping(artifacts.get(kind)).get("entries"))
+            _write_evidence_bytes(
+                directory_fd,
+                f"{kind}.entries.txt",
+                "".join(f"{entry}\n" for entry in entries).encode("utf-8"),
+            )
+        metadata_text = str(
+            _mapping(public_report.get("metadata")).get("raw", "")
+        )
+        _write_evidence_bytes(
+            directory_fd,
+            "installed.METADATA",
+            metadata_text.encode("utf-8"),
+        )
+        _write_evidence_bytes(
+            directory_fd,
+            "dependency-notices.json",
+            canonical_json_text(
+                _mapping(public_report.get("dependencies"))
+            ).encode("utf-8"),
+        )
+        for name, payload in _distribution_report_scan_payloads(
+            public_report
+        ).items():
+            _write_evidence_bytes(directory_fd, name, payload)
+    finally:
+        os.close(directory_fd)
+
+
+def _write_evidence_bytes(
+    directory_fd: int,
+    filename: str,
+    payload: bytes,
+) -> None:
+    if (
+        not filename
+        or filename != PurePosixPath(filename).name
+        or "/" in filename
+        or "\\" in filename
+    ):
+        raise RuntimeError("invalid distribution evidence filename")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow:
+        raise RuntimeError("secure evidence writes require O_NOFOLLOW")
+    flags |= nofollow
+    try:
+        file_fd = os.open(
+            filename,
+            flags,
+            0o600,
+            dir_fd=directory_fd,
+        )
+    except OSError as error:
+        raise RuntimeError(
+            f"failed to create distribution evidence file: {filename}"
+        ) from error
+    try:
+        with os.fdopen(file_fd, "wb", closefd=False) as handle:
+            handle.write(payload)
+            handle.flush()
+    finally:
+        os.close(file_fd)
+
+
+def _prepare_distribution_evidence_directory(output_dir: Path) -> int:
+    try:
         output_dir.mkdir(parents=True, exist_ok=False)
-        output_stat = os.lstat(output_dir)
-    if not stat.S_ISDIR(output_stat.st_mode):
+    except FileExistsError:
+        pass
+    directory_flags = os.O_RDONLY
+    directory_flags |= getattr(os, "O_CLOEXEC", 0)
+    directory_flags |= getattr(os, "O_DIRECTORY", 0)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow or not getattr(os, "O_DIRECTORY", 0):
+        raise RuntimeError(
+            "secure evidence writes require O_DIRECTORY and O_NOFOLLOW"
+        )
+    directory_flags |= nofollow
+    try:
+        directory_fd = os.open(output_dir, directory_flags)
+    except OSError as error:
         raise RuntimeError(
             "distribution evidence output must be a real directory"
-        )
-    if any(output_dir.iterdir()):
-        raise RuntimeError(
-            "distribution evidence output directory must be empty"
-        )
+        ) from error
+    try:
+        output_stat = os.fstat(directory_fd)
+        if not stat.S_ISDIR(output_stat.st_mode):
+            raise RuntimeError(
+                "distribution evidence output must be a real directory"
+            )
+        if os.listdir(directory_fd):
+            raise RuntimeError(
+                "distribution evidence output directory must be empty"
+            )
+    except Exception:
+        os.close(directory_fd)
+        raise
+    return directory_fd
 
 
 def _external_distribution_report(

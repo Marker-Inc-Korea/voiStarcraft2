@@ -435,6 +435,8 @@ class ArchivePolicyTest(unittest.TestCase):
         local_name: bytes,
         central_name: bytes | None = None,
         payload: bytes = b"safe",
+        compression: int = zipfile.ZIP_STORED,
+        compression_slack: bytes = b"",
         preamble: bytes = b"",
         trailing: bytes = b"",
         data_descriptor: bool = False,
@@ -443,6 +445,18 @@ class ArchivePolicyTest(unittest.TestCase):
         central_name = central_name if central_name is not None else local_name
         flags = 0x800 | (0x08 if data_descriptor else 0)
         crc = zlib.crc32(payload) & 0xFFFFFFFF
+        if compression == zipfile.ZIP_STORED:
+            encoded_payload = payload
+        elif compression == zipfile.ZIP_DEFLATED:
+            compressor = zlib.compressobj(wbits=-zlib.MAX_WBITS)
+            encoded_payload = (
+                compressor.compress(payload) + compressor.flush()
+            )
+        else:
+            encoded_payload = payload
+        encoded_payload += compression_slack
+        compressed_size = len(encoded_payload)
+        uncompressed_size = len(payload)
         if concealed_local_fixed:
             if len(concealed_local_fixed) != 16:
                 raise ValueError("concealed local fields must be 16 bytes")
@@ -457,14 +471,18 @@ class ArchivePolicyTest(unittest.TestCase):
             local_time = 0
             local_date = 0
             local_crc = 0 if data_descriptor else crc
-            local_compressed_size = 0 if data_descriptor else len(payload)
-            local_uncompressed_size = 0 if data_descriptor else len(payload)
+            local_compressed_size = (
+                0 if data_descriptor else compressed_size
+            )
+            local_uncompressed_size = (
+                0 if data_descriptor else uncompressed_size
+            )
         local_header = struct.pack(
             "<4s5H3I2H",
             b"PK\x03\x04",
             20,
             flags,
-            0,
+            compression,
             local_time,
             local_date,
             local_crc,
@@ -474,23 +492,31 @@ class ArchivePolicyTest(unittest.TestCase):
             0,
         )
         descriptor = (
-            b"PK\x07\x08" + struct.pack("<III", crc, len(payload), len(payload))
+            b"PK\x07\x08"
+            + struct.pack(
+                "<III",
+                crc,
+                compressed_size,
+                uncompressed_size,
+            )
             if data_descriptor
             else b""
         )
-        local_record = local_header + local_name + payload + descriptor
+        local_record = (
+            local_header + local_name + encoded_payload + descriptor
+        )
         central_header = struct.pack(
             "<4s6H3I5H2I",
             b"PK\x01\x02",
             20,
             20,
             flags,
-            0,
+            compression,
             0,
             0,
             crc,
-            len(payload),
-            len(payload),
+            compressed_size,
+            uncompressed_size,
             len(central_name),
             0,
             0,
@@ -923,6 +949,29 @@ class ArchivePolicyTest(unittest.TestCase):
         self.assertEqual({"api_key"}, {item["rule_id"] for item in findings})
         self.assertEqual(1, len({item["fingerprint"] for item in findings}))
 
+    def test_sdist_rejects_and_scans_invalid_trailing_gzip_bytes(self) -> None:
+        secret = ("sk-" + "liveabcdefghijklmnop").encode()
+        tar_payload = self._tar_payload(
+            (
+                "voistarcraft2-0.1.0/"
+                "starcraft_commander/runtime_data.py",
+                b"safe",
+            )
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            sdist_path = Path(temporary) / "voistarcraft2-0.1.0.tar.gz"
+            sdist_path.write_bytes(
+                self._gzip_with_header_metadata(tar_payload) + secret
+            )
+
+            snapshot = compliance_module.inspect_sdist(sdist_path)
+
+        blocker_codes = {str(item["code"]) for item in snapshot.blockers}
+        self.assertIn("invalid_gzip_header", blocker_codes)
+        self.assertIn("unexpected_archive_bytes", blocker_codes)
+        findings = self._metadata_findings(snapshot)
+        self.assertEqual({"api_key"}, {item["rule_id"] for item in findings})
+
     def test_wheel_scans_data_descriptor_local_fixed_fields(self) -> None:
         secret = ("sk-" + "abcdefghijkl").encode()
         with tempfile.TemporaryDirectory() as temporary:
@@ -975,6 +1024,60 @@ class ArchivePolicyTest(unittest.TestCase):
                 len({item["fingerprint"] for item in findings}),
             )
 
+    def test_wheel_rejects_and_scans_compression_stream_slack(self) -> None:
+        secret = ("sk-" + "liveabcdefghijklmnop").encode()
+        for compression in (
+            zipfile.ZIP_STORED,
+            zipfile.ZIP_DEFLATED,
+        ):
+            with (
+                self.subTest(compression=compression),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                wheel_path = Path(temporary) / "candidate.whl"
+                self._write_raw_zip(
+                    wheel_path,
+                    local_name=b"starcraft_commander/runtime_data.py",
+                    compression=compression,
+                    compression_slack=secret,
+                )
+
+                snapshot = inspect_wheel(wheel_path)
+
+            blocker_codes = {
+                str(item["code"]) for item in snapshot.blockers
+            }
+            self.assertIn("invalid_zip_compressed_payload", blocker_codes)
+            self.assertIn("unexpected_archive_bytes", blocker_codes)
+            findings = self._metadata_findings(snapshot)
+            self.assertEqual(
+                {"api_key"},
+                {item["rule_id"] for item in findings},
+            )
+            self.assertEqual(
+                1,
+                len({item["fingerprint"] for item in findings}),
+            )
+
+    def test_wheel_rejects_and_scans_directory_payload(self) -> None:
+        secret = ("sk-" + "liveabcdefghijklmnop").encode()
+        with tempfile.TemporaryDirectory() as temporary:
+            wheel_path = Path(temporary) / "candidate.whl"
+            self._write_raw_zip(
+                wheel_path,
+                local_name=b"starcraft_commander/",
+                payload=secret,
+            )
+
+            snapshot = inspect_wheel(wheel_path)
+
+        self.assertIn(
+            "archive_directory_payload",
+            {str(item["code"]) for item in snapshot.blockers},
+        )
+        findings = self._metadata_findings(snapshot)
+        self.assertEqual({"api_key"}, {item["rule_id"] for item in findings})
+
     def test_wheel_rejects_nul_in_local_and_central_names(self) -> None:
         safe = b"starcraft_commander/runtime_data.py"
         secret = ("sk-" + "liveabcdefghijklmnop").encode()
@@ -1008,6 +1111,91 @@ class ArchivePolicyTest(unittest.TestCase):
                 1,
                 len({item["fingerprint"] for item in findings}),
             )
+
+    def test_sdist_rejects_and_scans_tar_directory_payload(self) -> None:
+        secret = ("sk-" + "liveabcdefghijklmnop").encode()
+        directory = tarfile.TarInfo("voistarcraft2-0.1.0/starcraft_commander/")
+        directory.type = tarfile.DIRTYPE
+        directory.size = len(secret)
+        tar_payload = (
+            directory.tobuf(format=tarfile.USTAR_FORMAT)
+            + self._tar_padding(secret)
+            + (b"\0" * 1024)
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            sdist_path = Path(temporary) / "voistarcraft2-0.1.0.tar.gz"
+            sdist_path.write_bytes(
+                self._gzip_with_header_metadata(tar_payload)
+            )
+
+            snapshot = compliance_module.inspect_sdist(sdist_path)
+
+        self.assertIn(
+            "archive_directory_payload",
+            {str(item["code"]) for item in snapshot.blockers},
+        )
+        findings = self._metadata_findings(snapshot)
+        self.assertEqual({"api_key"}, {item["rule_id"] for item in findings})
+
+    def test_tar_limits_precede_regular_and_extension_payload_slices(
+        self,
+    ) -> None:
+        class GuardedTarBytes(bytes):
+            guarded_start = 512
+
+            def __getitem__(self, key: object) -> object:
+                if isinstance(key, slice):
+                    start = 0 if key.start is None else key.start
+                    stop = len(self) if key.stop is None else key.stop
+                    if start == self.guarded_start and stop - start > 512:
+                        raise AssertionError(
+                            "oversized TAR payload was materialized"
+                        )
+                return super().__getitem__(key)
+
+        cases = (
+            ("regular", tarfile.REGTYPE, 1024, "member"),
+            ("pax", tarfile.XHDTYPE, 8192, "metadata"),
+            ("gnu", tarfile.GNUTYPE_LONGNAME, 8192, "metadata"),
+        )
+        for name, type_flag, size, expected_limit in cases:
+            with self.subTest(name=name):
+                info = tarfile.TarInfo("oversized")
+                info.type = type_flag
+                info.size = size
+                raw = GuardedTarBytes(
+                    info.tobuf(format=tarfile.USTAR_FORMAT)
+                    + (b"x" * size)
+                    + (b"\0" * 1024)
+                )
+                metadata: dict[str, bytes] = (
+                    compliance_module._ArchiveMetadata()
+                )
+                blockers: list[dict[str, object]] = []
+                patches = (
+                    mock.patch.object(
+                        compliance_module,
+                        "MAX_ARCHIVE_MEMBER_BYTES",
+                        512,
+                    )
+                    if expected_limit == "member"
+                    else mock.patch.object(
+                        compliance_module,
+                        "MAX_ARCHIVE_METADATA_BYTES",
+                        4096,
+                    )
+                )
+                with patches:
+                    compliance_module._raw_tar_metadata(
+                        raw,
+                        metadata,
+                        blockers,
+                    )
+
+                self.assertIn(
+                    f"archive_{expected_limit}_limit_exceeded",
+                    {str(item["code"]) for item in blockers},
+                )
 
     def test_wheel_limits_stop_before_zipfile_parsing(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1948,6 +2136,32 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             {"private_endpoint", "private_model_override"},
             {str(item["rule_id"]) for item in toml_findings},
         )
+
+    def test_detects_bomless_utf16_in_all_scanned_source_types(self) -> None:
+        host_key = "VOI_MYPROXY_" + "HOST"
+        model_key = "VOI_MYPROXY_" + "MODEL"
+        source = (
+            f'{host_key} = "10.20.30.40"\n'
+            f'{model_key} = "private-model"\n'
+        )
+        cases = (
+            ("module.py", "utf-16-le"),
+            ("script.sh", "utf-16-be"),
+            ("header.hpp", "utf-16-le"),
+            ("change.patch", "utf-16-be"),
+        )
+        for path, encoding in cases:
+            with self.subTest(path=path, encoding=encoding):
+                findings = scan_payload(
+                    path,
+                    source.encode(encoding),
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertEqual(
+                    {"private_endpoint", "private_model_override"},
+                    {str(item["rule_id"]) for item in findings},
+                )
 
     def test_json_and_toml_parser_failures_are_blocking_findings(self) -> None:
         json_findings = scan_payload(
@@ -4285,6 +4499,89 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
         self.assertEqual(1, report["finding_count"])
         self.assertEqual("candidate.py", report["findings"][0]["path"])
 
+    def test_artifact_scan_detects_bomless_utf16_le_and_be(self) -> None:
+        host_key = "VOI_MYPROXY_" + "HOST"
+        model_key = "VOI_MYPROXY_" + "MODEL"
+        source = (
+            f'{host_key} = "10.20.30.40"\n'
+            f'{model_key} = "private-model"\n'
+        )
+        snapshot = ArchiveSnapshot(
+            kind="wheel",
+            path=Path("candidate.whl"),
+            digest="a" * 64,
+            entries=(
+                "starcraft_commander/le.py",
+                "starcraft_commander/be.py",
+            ),
+            files={
+                "starcraft_commander/le.py": source.encode("utf-16-le"),
+                "starcraft_commander/be.py": source.encode("utf-16-be"),
+            },
+            blockers=(),
+        )
+        base_commit = "b" * 40
+        head_commit = "c" * 40
+
+        def git_output(
+            _repository_root: Path,
+            arguments: list[str],
+        ) -> bytes:
+            if arguments == ["ls-files", "--stage", "-z"]:
+                return b""
+            if arguments == [
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "-z",
+            ]:
+                return b""
+            if arguments[:2] == ["diff", "--no-ext-diff"]:
+                return b""
+            if arguments == [
+                "rev-parse",
+                "--verify",
+                f"{base_commit}^{{commit}}",
+            ]:
+                return f"{base_commit}\n".encode()
+            if arguments == ["rev-parse", "HEAD"]:
+                return f"{head_commit}\n".encode()
+            if arguments == [
+                "merge-base",
+                base_commit,
+                head_commit,
+            ]:
+                return f"{base_commit}\n".encode()
+            raise AssertionError(arguments)
+
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            mock.patch.object(
+                compliance_module,
+                "_git_output",
+                side_effect=git_output,
+            ),
+        ):
+            report = scan_git_and_artifacts(
+                Path(temporary),
+                (snapshot,),
+                base_commit=base_commit,
+            )
+
+        findings = report["findings"]
+        self.assertEqual(4, len(findings))
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
+            {str(item["rule_id"]) for item in findings},
+        )
+        self.assertEqual(
+            {
+                "wheel/starcraft_commander/le.py",
+                "wheel/starcraft_commander/be.py",
+            },
+            {str(item["path"]) for item in findings},
+        )
+
     def test_repository_scan_reads_tracked_dangling_symlink_blob(self) -> None:
         tracked_blob = "b" * 40
         bearer = "Bearer " + "opaqueabcdefghijklmnop"
@@ -6032,6 +6329,91 @@ class DistributionEvidenceWritingTest(unittest.TestCase):
                 )
 
             self.assertEqual("survives\n", sentinel.read_text())
+
+    def test_output_directory_replacement_cannot_redirect_writes(self) -> None:
+        report = {"ok": False, "status": "blocked"}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output_dir = root / "distribution-compliance-evidence"
+            target = root / "target"
+            target.mkdir()
+            detached = root / "detached-evidence"
+            original_write = compliance_module._write_evidence_bytes
+            replaced = False
+
+            def replace_then_write(
+                directory_fd: int,
+                filename: str,
+                payload: bytes,
+            ) -> None:
+                nonlocal replaced
+                if not replaced:
+                    output_dir.rename(detached)
+                    output_dir.symlink_to(target, target_is_directory=True)
+                    replaced = True
+                original_write(directory_fd, filename, payload)
+
+            with mock.patch.object(
+                compliance_module,
+                "_write_evidence_bytes",
+                side_effect=replace_then_write,
+            ):
+                compliance_module.write_distribution_evidence(
+                    report,
+                    output_dir,
+                )
+
+            self.assertEqual([], list(target.iterdir()))
+            self.assertTrue(
+                (detached / "distribution-compliance.json").is_file()
+            )
+
+    def test_output_leaf_replacement_is_rejected_without_following_symlink(
+        self,
+    ) -> None:
+        report = {"ok": False, "status": "blocked"}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output_dir = root / "distribution-compliance-evidence"
+            target = root / "target.txt"
+            target.write_text("survives\n", encoding="utf-8")
+            original_open = os.open
+            injected = False
+
+            def replace_leaf(
+                path: object,
+                flags: int,
+                mode: int = 0o777,
+                *,
+                dir_fd: int | None = None,
+            ) -> int:
+                nonlocal injected
+                if (
+                    not injected
+                    and dir_fd is not None
+                    and path == "distribution-compliance.json"
+                ):
+                    (output_dir / str(path)).symlink_to(target)
+                    injected = True
+                return original_open(path, flags, mode, dir_fd=dir_fd)
+
+            with (
+                mock.patch.object(
+                    compliance_module.os,
+                    "open",
+                    side_effect=replace_leaf,
+                ),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "failed to create distribution evidence file",
+                ),
+            ):
+                compliance_module.write_distribution_evidence(
+                    report,
+                    output_dir,
+                )
+
+            self.assertEqual("survives\n", target.read_text())
 
     def test_nonempty_output_directory_is_rejected_without_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
