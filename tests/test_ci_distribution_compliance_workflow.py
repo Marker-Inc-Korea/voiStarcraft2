@@ -326,7 +326,14 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
             "os.chmod(dist_dir, 0o555)",
             "os.chmod(evidence_dir, 0o555)",
             "verifier_input_root.mkdir(mode=0o700, exist_ok=False)",
+            'verifier_source_dir = verifier_input_root / "source"',
+            'verifier_dist_dir = verifier_input_root / "dist"',
             "verifier_evidence_dir.mkdir(mode=0o700, exist_ok=False)",
+            '"--no-local"',
+            '"--no-hardlinks"',
+            '"--no-checkout"',
+            "harden_root_owned_tree(verifier_source_dir)",
+            "os.chmod(verifier_dist_dir, 0o555)",
             "os.chmod(verifier_evidence_dir, 0o555)",
             "os.chmod(verifier_input_root, 0o555)",
         ):
@@ -556,6 +563,34 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
         )
         self.assertIn(
             'VERIFIER_MODULE="${VERIFIER_MODULE}"',
+            verifier_run,
+        )
+        self.assertIn(
+            'VERIFIER_SOURCE_DIR="${VERIFIER_SOURCE_DIR}"',
+            verifier_run,
+        )
+        self.assertIn(
+            'VERIFIER_DIST_DIR="${VERIFIER_DIST_DIR}"',
+            verifier_run,
+        )
+        self.assertIn(
+            'GIT_CONFIG_KEY_0="safe.directory"',
+            verifier_run,
+        )
+        self.assertIn(
+            'GIT_CONFIG_VALUE_0="${VERIFIER_SOURCE_DIR}"',
+            verifier_run,
+        )
+        self.assertIn(
+            "trusted_repository_root=verifier_source_dir",
+            verifier_run,
+        )
+        self.assertIn(
+            "trusted_artifact_paths=trusted_artifact_paths",
+            verifier_run,
+        )
+        self.assertIn(
+            "require_root_owned=True",
             verifier_run,
         )
         self.assertIn(

@@ -1339,6 +1339,7 @@ jobs:
           from pathlib import Path, PurePosixPath
           import re
           import stat
+          import subprocess
           import tarfile
 
           MAX_HANDOFF_BYTES = 512 * 1024 * 1024
@@ -1404,6 +1405,69 @@ jobs:
               ):
                   raise SystemExit(f"invalid {label}")
               return value
+
+          def git_output(arguments, *, cwd=None):
+              environment = {
+                  "GIT_CONFIG_GLOBAL": "/dev/null",
+                  "GIT_CONFIG_NOSYSTEM": "1",
+                  "GIT_OPTIONAL_LOCKS": "0",
+                  "GIT_TERMINAL_PROMPT": "0",
+                  "HOME": "/root",
+                  "PATH": "/usr/bin:/bin",
+              }
+              result = subprocess.run(
+                  ["git", *arguments],
+                  cwd=cwd,
+                  env=environment,
+                  check=False,
+                  capture_output=True,
+              )
+              if result.returncode != 0:
+                  raise SystemExit(
+                      "trusted source materialization failed: "
+                      + result.stderr.decode(
+                          "utf-8",
+                          errors="replace",
+                      ).strip()
+                  )
+              return result.stdout.decode(
+                  "utf-8",
+                  errors="strict",
+              ).strip()
+
+          def harden_root_owned_tree(root):
+              for directory, child_directories, filenames in os.walk(
+                  root,
+                  topdown=False,
+                  followlinks=False,
+              ):
+                  directory_path = Path(directory)
+                  for name in filenames:
+                      path = directory_path / name
+                      item_stat = path.lstat()
+                      if (
+                          path.is_symlink()
+                          or not stat.S_ISREG(item_stat.st_mode)
+                      ):
+                          raise SystemExit(
+                              f"unsupported trusted source entry: {path}"
+                          )
+                      os.chown(path, 0, 0)
+                      os.chmod(path, 0o444)
+                  for name in child_directories:
+                      path = directory_path / name
+                      item_stat = path.lstat()
+                      if (
+                          path.is_symlink()
+                          or not stat.S_ISDIR(item_stat.st_mode)
+                      ):
+                          raise SystemExit(
+                              f"unsupported trusted source entry: {path}"
+                          )
+                      os.chown(path, 0, 0)
+                      os.chmod(path, 0o555)
+              os.chown(root, 0, 0)
+              os.chmod(root, 0o555)
 
           def write_regular(path, payload):
               nofollow = getattr(os, "O_NOFOLLOW", 0)
@@ -1682,17 +1746,108 @@ jobs:
           ):
               raise SystemExit("invalid verifier input root")
           verifier_input_root.mkdir(mode=0o700, exist_ok=False)
+          verifier_source_dir = verifier_input_root / "source"
+          verifier_dist_dir = verifier_input_root / "dist"
           verifier_evidence_dir = (
               verifier_input_root / "distribution-compliance-evidence"
           )
+          verifier_template_dir = verifier_input_root / "git-template"
+          verifier_template_dir.mkdir(mode=0o700, exist_ok=False)
+          git_output(
+              [
+                  "clone",
+                  "--no-local",
+                  "--no-hardlinks",
+                  "--no-checkout",
+                  f"--template={verifier_template_dir}",
+                  str(workspace),
+                  str(verifier_source_dir),
+              ]
+          )
+          verifier_template_dir.rmdir()
+          git_output(
+              [
+                  "-c",
+                  "core.hooksPath=/dev/null",
+                  "-C",
+                  str(verifier_source_dir),
+                  "checkout",
+                  "--detach",
+                  expected_event["head_commit"],
+              ]
+          )
+          git_output(
+              [
+                  "-C",
+                  str(verifier_source_dir),
+                  "remote",
+                  "remove",
+                  "origin",
+              ]
+          )
+          if (
+              git_output(
+                  ["-C", str(verifier_source_dir), "rev-parse", "HEAD"]
+              )
+              != expected_event["head_commit"]
+              or git_output(
+                  [
+                      "-C",
+                      str(verifier_source_dir),
+                      "rev-parse",
+                      "--verify",
+                      f"{expected_event['base_commit']}^{{commit}}",
+                  ]
+              )
+              != expected_event["base_commit"]
+              or git_output(
+                  [
+                      "-C",
+                      str(verifier_source_dir),
+                      "merge-base",
+                      expected_event["base_commit"],
+                      expected_event["head_commit"],
+                  ]
+              )
+              != expected_event["merge_base"]
+              or git_output(
+                  [
+                      "-C",
+                      str(verifier_source_dir),
+                      "status",
+                      "--porcelain=v1",
+                      "--untracked-files=all",
+                  ]
+              )
+              or git_output(
+                  [
+                      "-C",
+                      str(verifier_source_dir),
+                      "for-each-ref",
+                      "--format=%(refname)",
+                      "refs/replace/",
+                  ]
+              )
+          ):
+              raise SystemExit(
+                  "root-owned verifier source identity mismatch"
+              )
+          verifier_dist_dir.mkdir(mode=0o700, exist_ok=False)
           verifier_evidence_dir.mkdir(mode=0o700, exist_ok=False)
+          for name in sorted(artifact_names):
+              write_regular(
+                  verifier_dist_dir / name,
+                  payloads[f"dist/{name}"],
+              )
           for name in sorted(evidence_names):
               write_regular(
                   verifier_evidence_dir / name,
                   payloads[f"distribution-compliance-evidence/{name}"],
               )
+          harden_root_owned_tree(verifier_source_dir)
           os.chmod(dist_dir, 0o555)
           os.chmod(evidence_dir, 0o555)
+          os.chmod(verifier_dist_dir, 0o555)
           os.chmod(verifier_evidence_dir, 0o555)
           os.chmod(verifier_input_root, 0o555)
           os.chown(handoff_path, 0, 0)
@@ -1719,10 +1874,14 @@ jobs:
         env:
           VERIFIER_EVIDENCE_DIR: >-
             ${{ env.VERIFIER_RUNTIME_ROOT }}/inputs/distribution-compliance-evidence
+          VERIFIER_DIST_DIR: >-
+            ${{ env.VERIFIER_RUNTIME_ROOT }}/inputs/dist
           VERIFIER_MODULE: >-
             ${{ env.VERIFIER_RUNTIME_ROOT }}/verifier/distribution_compliance.py
           VERIFIER_PYTHON: ${{ env.VERIFIER_RUNTIME_ROOT }}/venv/bin/python
           VERIFIER_HOME: ${{ env.VERIFIER_RUNTIME_ROOT }}/home
+          VERIFIER_SOURCE_DIR: >-
+            ${{ env.VERIFIER_RUNTIME_ROOT }}/inputs/source
           VERIFIER_TMP: ${{ env.VERIFIER_RUNTIME_ROOT }}/tmp
         run: |
           set +e
@@ -1730,14 +1889,23 @@ jobs:
             HOME="${VERIFIER_HOME}" \
             TMPDIR="${VERIFIER_TMP}" \
             PATH="/usr/bin:/bin" \
+            GIT_CONFIG_COUNT="1" \
+            GIT_CONFIG_GLOBAL="/dev/null" \
+            GIT_CONFIG_KEY_0="safe.directory" \
+            GIT_CONFIG_NOSYSTEM="1" \
+            GIT_CONFIG_VALUE_0="${VERIFIER_SOURCE_DIR}" \
+            GIT_OPTIONAL_LOCKS="0" \
+            GIT_TERMINAL_PROMPT="0" \
             PYTHONHASHSEED="0" \
             PYTHONDONTWRITEBYTECODE="1" \
             EXPECTED_RELEASE_EVENT_NAME="${EXPECTED_RELEASE_EVENT_NAME}" \
             EXPECTED_RELEASE_COMMIT="${EXPECTED_RELEASE_COMMIT}" \
             EXPECTED_RELEASE_BASE_COMMIT="${EXPECTED_RELEASE_BASE_COMMIT}" \
+            VERIFIER_DIST_DIR="${VERIFIER_DIST_DIR}" \
             VERIFIER_EVIDENCE_DIR="${VERIFIER_EVIDENCE_DIR}" \
             VERIFIER_MODULE="${VERIFIER_MODULE}" \
             VERIFIER_RUNTIME_ROOT="${VERIFIER_RUNTIME_ROOT}" \
+            VERIFIER_SOURCE_DIR="${VERIFIER_SOURCE_DIR}" \
             "${VERIFIER_PYTHON}" -I -B - <<'PY'
           import importlib.util
           import json
@@ -1785,7 +1953,7 @@ jobs:
               }
           )
 
-          def read_regular(path):
+          def read_regular(path, *, require_root_owned=False):
               nofollow = getattr(os, "O_NOFOLLOW", 0)
               if not nofollow:
                   raise SystemExit("O_NOFOLLOW is required")
@@ -1797,6 +1965,13 @@ jobs:
                   before = os.fstat(fd)
                   if not stat.S_ISREG(before.st_mode):
                       raise SystemExit(f"not a regular file: {path}")
+                  if require_root_owned and (
+                      before.st_uid != 0
+                      or stat.S_IMODE(before.st_mode) != 0o444
+                  ):
+                      raise SystemExit(
+                          f"untrusted verifier input file: {path}"
+                      )
                   chunks = []
                   while True:
                       chunk = os.read(fd, 1024 * 1024)
@@ -1817,11 +1992,23 @@ jobs:
               finally:
                   os.close(fd)
 
-          def read_exact_files(directory, expected_names):
+          def read_exact_files(
+              directory,
+              expected_names,
+              *,
+              require_root_owned=False,
+          ):
               directory_stat = directory.lstat()
               if (
                   not stat.S_ISDIR(directory_stat.st_mode)
                   or directory.is_symlink()
+                  or (
+                      require_root_owned
+                      and (
+                          directory_stat.st_uid != 0
+                          or stat.S_IMODE(directory_stat.st_mode) != 0o555
+                      )
+                  )
               ):
                   raise SystemExit(f"not a real directory: {directory}")
               observed_names = {entry.name for entry in directory.iterdir()}
@@ -1831,25 +2018,90 @@ jobs:
                       f"{sorted(observed_names)}"
                   )
               return {
-                  name: read_regular(directory / name)
+                  name: read_regular(
+                      directory / name,
+                      require_root_owned=require_root_owned,
+                  )
                   for name in sorted(expected_names)
               }
 
           evidence_dir = Path(os.environ["VERIFIER_EVIDENCE_DIR"])
+          verifier_input_root = verifier_runtime_root / "inputs"
           if (
               evidence_dir.parent.parent.resolve(strict=True)
               != verifier_runtime_root
           ):
               raise SystemExit("verifier evidence escaped trusted runtime")
-          evidence = read_exact_files(evidence_dir, evidence_names)
+          evidence = read_exact_files(
+              evidence_dir,
+              evidence_names,
+              require_root_owned=True,
+          )
           canonical_report = json.loads(
               evidence["distribution-compliance.json"].decode("utf-8")
           )
           if not isinstance(canonical_report, dict):
               raise SystemExit("canonical compliance report is not an object")
+          verifier_source_dir = Path(
+              os.environ["VERIFIER_SOURCE_DIR"]
+          ).resolve(strict=True)
+          verifier_dist_dir = Path(
+              os.environ["VERIFIER_DIST_DIR"]
+          ).resolve(strict=True)
+          for directory in (
+              verifier_source_dir,
+              verifier_dist_dir,
+          ):
+              directory_stat = directory.lstat()
+              if (
+                  directory.parent != verifier_input_root
+                  or directory.is_symlink()
+                  or not stat.S_ISDIR(directory_stat.st_mode)
+                  or directory_stat.st_uid != 0
+                  or stat.S_IMODE(directory_stat.st_mode) != 0o555
+              ):
+                  raise SystemExit(
+                      f"untrusted verifier input directory: {directory}"
+                  )
+          artifacts = canonical_report.get("artifacts")
+          if not isinstance(artifacts, dict) or set(artifacts) != {
+              "wheel",
+              "sdist",
+          }:
+              raise SystemExit("invalid verifier artifact projection")
+          trusted_artifact_paths = {}
+          for kind in ("wheel", "sdist"):
+              artifact = artifacts.get(kind)
+              filename = (
+                  artifact.get("filename")
+                  if isinstance(artifact, dict)
+                  else None
+              )
+              if (
+                  not isinstance(filename, str)
+                  or "/" in filename
+                  or "\\" in filename
+              ):
+                  raise SystemExit(
+                      f"invalid verifier {kind} artifact filename"
+                  )
+              path = verifier_dist_dir / filename
+              path_stat = path.lstat()
+              if (
+                  path.is_symlink()
+                  or not stat.S_ISREG(path_stat.st_mode)
+                  or path_stat.st_uid != 0
+                  or stat.S_IMODE(path_stat.st_mode) != 0o444
+              ):
+                  raise SystemExit(
+                      f"untrusted verifier {kind} artifact"
+                  )
+              trusted_artifact_paths[kind] = path
           semantic_blockers = (
               distribution_compliance.distribution_report_blockers(
-                  canonical_report
+                  canonical_report,
+                  trusted_repository_root=verifier_source_dir,
+                  trusted_artifact_paths=trusted_artifact_paths,
               )
           )
           if semantic_blockers:

@@ -8923,6 +8923,8 @@ def distribution_report_blockers(
     report: Mapping[str, object],
     *,
     require_derived_verdict: bool = True,
+    trusted_repository_root: Path | None = None,
+    trusted_artifact_paths: Mapping[str, Path] | None = None,
 ) -> list[dict[str, object]]:
     """Derive the verdict from raw evidence, never caller-provided booleans."""
 
@@ -9019,7 +9021,10 @@ def distribution_report_blockers(
                     "after": after_identity,
                 }
             )
-    trusted_archive_evidence = _trusted_archive_evidence(report)
+    trusted_archive_evidence = _trusted_archive_evidence(
+        report,
+        repository_root_override=trusted_repository_root,
+    )
     if trusted_archive_evidence is None:
         blockers.append({"code": "unverified_exact_sha_provenance"})
         trusted_archive_manifests: Mapping[str, Mapping[str, str]] = {}
@@ -9056,7 +9061,10 @@ def distribution_report_blockers(
     artifacts = _mapping(report.get("artifacts"))
     if set(artifacts) != {"wheel", "sdist"}:
         blockers.append({"code": "invalid_artifact_evidence"})
-    trusted_artifacts = _trusted_artifact_evidence(report)
+    trusted_artifacts = _trusted_artifact_evidence(
+        report,
+        artifact_path_overrides=trusted_artifact_paths,
+    )
     if trusted_artifacts is None:
         blockers.append({"code": "unverified_artifact_provenance"})
         trusted_artifacts = {}
@@ -9422,7 +9430,11 @@ def distribution_report_blockers(
         if payload.get("target_packaged_defaults_loaded") is not True:
             blockers.append({"code": "target_install_packaged_defaults_failed"})
     secret_scan = _mapping(report.get("secret_scan"))
-    trusted_secret_scan = _trusted_secret_scan_evidence(report)
+    trusted_secret_scan = _trusted_secret_scan_evidence(
+        report,
+        repository_root_override=trusted_repository_root,
+        artifact_path_overrides=trusted_artifact_paths,
+    )
     if trusted_secret_scan is None:
         blockers.append({"code": "unverified_secret_scan_provenance"})
     elif secret_scan != trusted_secret_scan:
@@ -12435,6 +12447,8 @@ def _git_replacement_refs(repository_root: Path) -> list[str]:
 
 def _trusted_archive_evidence(
     report: Mapping[str, object],
+    *,
+    repository_root_override: Path | None = None,
 ) -> tuple[
     dict[str, dict[str, str]],
     dict[str, dict[str, int]],
@@ -12450,7 +12464,11 @@ def _trusted_archive_evidence(
         or not isinstance(tree, str)
     ):
         return None
-    repository_root = Path(root_value)
+    repository_root = (
+        repository_root_override.resolve()
+        if repository_root_override is not None
+        else Path(root_value)
+    )
     try:
         actual_root = Path(
             _git_output(
@@ -12485,13 +12503,26 @@ def _trusted_archive_evidence(
 
 def _trusted_artifact_evidence(
     report: Mapping[str, object],
+    *,
+    artifact_path_overrides: Mapping[str, Path] | None = None,
 ) -> dict[str, dict[str, object]] | None:
-    snapshots = _trusted_artifact_snapshots(report)
+    snapshots = _trusted_artifact_snapshots(
+        report,
+        artifact_path_overrides=artifact_path_overrides,
+    )
     if snapshots is None:
         return None
+    artifacts = _mapping(report.get("artifacts"))
     trusted: dict[str, dict[str, object]] = {}
     for snapshot in snapshots:
         evidence = _artifact_evidence(snapshot)
+        if artifact_path_overrides is not None:
+            logical_path = _mapping(
+                artifacts.get(snapshot.kind)
+            ).get("path")
+            if not isinstance(logical_path, str):
+                return None
+            evidence["path"] = logical_path
         evidence["archive_blockers"] = [
             dict(item) for item in snapshot.blockers
         ]
@@ -12501,9 +12532,16 @@ def _trusted_artifact_evidence(
 
 def _trusted_artifact_snapshots(
     report: Mapping[str, object],
+    *,
+    artifact_path_overrides: Mapping[str, Path] | None = None,
 ) -> tuple[ArchiveSnapshot, ArchiveSnapshot] | None:
     artifacts = _mapping(report.get("artifacts"))
     if set(artifacts) != {"wheel", "sdist"}:
+        return None
+    if (
+        artifact_path_overrides is not None
+        and set(artifact_path_overrides) != {"wheel", "sdist"}
+    ):
         return None
     snapshots: list[ArchiveSnapshot] = []
     for kind, inspector in (
@@ -12519,13 +12557,23 @@ def _trusted_artifact_snapshots(
             or not Path(path_value).is_absolute()
         ):
             return None
-        candidate = Path(path_value)
+        override = (
+            artifact_path_overrides.get(kind)
+            if artifact_path_overrides is not None
+            else None
+        )
+        if override is not None and not isinstance(override, Path):
+            return None
+        candidate = override if override is not None else Path(path_value)
         try:
             if candidate.is_symlink():
                 return None
             resolved = candidate.resolve(strict=True)
             if (
-                str(resolved) != path_value
+                (
+                    artifact_path_overrides is None
+                    and str(resolved) != path_value
+                )
                 or resolved.name != filename
                 or not resolved.is_file()
             ):
@@ -12545,6 +12593,9 @@ def _trusted_artifact_snapshots(
 
 def _trusted_secret_scan_evidence(
     report: Mapping[str, object],
+    *,
+    repository_root_override: Path | None = None,
+    artifact_path_overrides: Mapping[str, Path] | None = None,
 ) -> dict[str, object] | None:
     repository = _mapping(report.get("repository"))
     before = _mapping(repository.get("before"))
@@ -12557,8 +12608,15 @@ def _trusted_secret_scan_evidence(
         or before != after
     ):
         return None
-    repository_root = Path(root_value)
-    snapshots = _trusted_artifact_snapshots(report)
+    repository_root = (
+        repository_root_override.resolve()
+        if repository_root_override is not None
+        else Path(root_value)
+    )
+    snapshots = _trusted_artifact_snapshots(
+        report,
+        artifact_path_overrides=artifact_path_overrides,
+    )
     if snapshots is None:
         return None
     try:
@@ -12566,7 +12624,11 @@ def _trusted_secret_scan_evidence(
             repository_root,
             repository_root,
         )
-        if current != before:
+        expected_current = dict(before)
+        if repository_root_override is not None:
+            expected_current["repository_root"] = str(repository_root)
+            expected_current["source_root"] = str(repository_root)
+        if current != expected_current:
             return None
         if _review_range_evidence(repository_root, base_commit) != {
             "base_commit": repository.get("base_commit"),

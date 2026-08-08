@@ -413,6 +413,143 @@ class DistributionBuildBoundaryTest(unittest.TestCase):
                 )
 
 
+class TrustedProvenanceOverrideTest(unittest.TestCase):
+    def test_recomputes_provenance_from_relocated_trusted_inputs(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repository = root / "source"
+            repository.mkdir()
+            self._git(repository, "init", "-q")
+            self._git(
+                repository,
+                "config",
+                "user.email",
+                "ci@example.invalid",
+            )
+            self._git(
+                repository,
+                "config",
+                "user.name",
+                "CI Fixture",
+            )
+            source_file = repository / "starcraft_commander" / "runtime_data.py"
+            source_file.parent.mkdir()
+            source_file.write_text("VALUE = 'base'\n", encoding="utf-8")
+            self._git(repository, "add", ".")
+            self._git(repository, "commit", "-q", "-m", "base")
+            base_commit = self._git(repository, "rev-parse", "HEAD")
+            source_file.write_text("VALUE = 'head'\n", encoding="utf-8")
+            self._git(repository, "add", ".")
+            self._git(repository, "commit", "-q", "-m", "head")
+            head_commit = self._git(repository, "rev-parse", "HEAD")
+            state = compliance_module.repository_state_evidence(
+                repository,
+                repository,
+            )
+            logical_root = "/build-runner/work/voiStarcraft2"
+            logical_state = {
+                **state,
+                "repository_root": logical_root,
+                "source_root": logical_root,
+            }
+
+            dist = root / "dist"
+            dist.mkdir()
+            wheel = dist / "voistarcraft2-0.1.0-py3-none-any.whl"
+            with zipfile.ZipFile(wheel, "w") as archive:
+                archive.writestr(
+                    "starcraft_commander/runtime_data.py",
+                    b"VALUE = 'head'\n",
+                )
+            sdist = dist / "voistarcraft2-0.1.0.tar.gz"
+            with tarfile.open(sdist, "w:gz") as archive:
+                payload = b"VALUE = 'head'\n"
+                member = tarfile.TarInfo(
+                    "voistarcraft2-0.1.0/"
+                    "starcraft_commander/runtime_data.py"
+                )
+                member.size = len(payload)
+                archive.addfile(member, io.BytesIO(payload))
+
+            report = {
+                "schema_version": (
+                    compliance_module.DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION
+                ),
+                "repository": {
+                    "before": dict(logical_state),
+                    "after": dict(logical_state),
+                    "base_commit": base_commit,
+                    "head_commit": head_commit,
+                    "merge_base": base_commit,
+                },
+                "artifacts": {
+                    "wheel": {
+                        "filename": wheel.name,
+                        "path": f"{logical_root}/dist/{wheel.name}",
+                    },
+                    "sdist": {
+                        "filename": sdist.name,
+                        "path": f"{logical_root}/dist/{sdist.name}",
+                    },
+                },
+            }
+            artifact_paths = {
+                "wheel": wheel,
+                "sdist": sdist,
+            }
+
+            archive_evidence = (
+                compliance_module._trusted_archive_evidence(
+                    report,
+                    repository_root_override=repository,
+                )
+            )
+            self.assertIsNotNone(archive_evidence)
+            self.assertIsNone(
+                compliance_module._trusted_archive_evidence(report)
+            )
+
+            artifact_evidence = (
+                compliance_module._trusted_artifact_evidence(
+                    report,
+                    artifact_path_overrides=artifact_paths,
+                )
+            )
+            self.assertIsNotNone(artifact_evidence)
+            assert artifact_evidence is not None
+            self.assertEqual(
+                report["artifacts"]["wheel"]["path"],
+                artifact_evidence["wheel"]["path"],
+            )
+            self.assertEqual(
+                report["artifacts"]["sdist"]["path"],
+                artifact_evidence["sdist"]["path"],
+            )
+            self.assertIsNone(
+                compliance_module._trusted_artifact_evidence(report)
+            )
+
+            secret_scan = compliance_module._trusted_secret_scan_evidence(
+                report,
+                repository_root_override=repository,
+                artifact_path_overrides=artifact_paths,
+            )
+            self.assertIsNotNone(secret_scan)
+            self.assertIsNone(
+                compliance_module._trusted_secret_scan_evidence(report)
+            )
+
+    @staticmethod
+    def _git(repository: Path, *arguments: str) -> str:
+        return subprocess.check_output(
+            ["git", *arguments],
+            cwd=repository,
+            text=True,
+        ).strip()
+
+
 class ArchivePolicyTest(unittest.TestCase):
     @staticmethod
     def _gzip_with_header_metadata(
