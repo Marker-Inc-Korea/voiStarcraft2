@@ -2597,6 +2597,243 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                     {str(item["rule_id"]) for item in findings},
                 )
 
+    def test_detects_shell_multi_assignment_and_declaration_indirection(
+        self,
+    ) -> None:
+        endpoint = "https://10.0." + "0.8:7443/v1"
+        model = "secret-" + "model-140"
+        command = (
+            'commander --provider "$provider" --model "$model" '
+            '--base-url "$base_url"\n'
+        )
+        payloads = {
+            "multi-export.sh": (
+                "export provider=myproxy "
+                f"model={model} base_url={endpoint}\n"
+                + command
+            ),
+            "semicolon.zsh": (
+                f"provider=myproxy; model={model}; base_url={endpoint}; "
+                + command
+            ),
+            "declare.bash": (
+                "declare -x provider=myproxy "
+                f"model={model} base_url={endpoint}\n"
+                + command
+            ),
+            "typeset.zsh": (
+                "typeset -gx provider=myproxy "
+                f"model={model} base_url={endpoint}\n"
+                + command
+            ),
+        }
+
+        for path, payload in payloads.items():
+            with self.subTest(path=path):
+                findings = scan_payload(
+                    path,
+                    payload.encode(),
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertEqual(
+                    {
+                        "private_endpoint",
+                        "private_model_override",
+                    },
+                    {str(item["rule_id"]) for item in findings},
+                )
+
+    def test_public_shell_multi_assignment_and_declarations_stay_clean(
+        self,
+    ) -> None:
+        command = (
+            'commander --provider "$provider" --model "$model" '
+            '--base-url "$base_url"\n'
+        )
+        public_values = (
+            "provider=openai model=gpt-public "
+            "base_url=https://api.openai.com/v1"
+        )
+        payloads = {
+            "multi-export.sh": f"export {public_values}\n{command}",
+            "semicolon.zsh": (
+                "provider=openai; model=gpt-public; "
+                "base_url=https://api.openai.com/v1; "
+                + command
+            ),
+            "declare.bash": f"declare -x {public_values}\n{command}",
+            "typeset.zsh": f"typeset -gx {public_values}\n{command}",
+        }
+
+        for path, payload in payloads.items():
+            with self.subTest(path=path):
+                self.assertEqual(
+                    [],
+                    scan_payload(
+                        path,
+                        payload.encode(),
+                        allow_safe_fixtures=False,
+                    ),
+                )
+
+    def test_docker_semantic_snapshots_preserve_private_overrides(
+        self,
+    ) -> None:
+        endpoint = "https://10.0." + "0.8:7443/v1"
+        model = "secret-" + "model-140"
+        payloads = {
+            "same-stage": (
+                "FROM scratch\n"
+                f"ENV provider=myproxy model={model} base_url={endpoint}\n"
+                "ENV provider=openai model=gpt-public "
+                "base_url=https://api.openai.com/v1\n"
+            ),
+            "multi-stage": (
+                "FROM scratch AS private-stage\n"
+                f"ARG provider=myproxy model={model} base_url={endpoint}\n"
+                "FROM scratch AS public-stage\n"
+                "ARG provider=openai model=gpt-public "
+                "base_url=https://api.openai.com/v1\n"
+            ),
+        }
+
+        for name, payload in payloads.items():
+            with self.subTest(name=name):
+                findings = scan_payload(
+                    "Dockerfile",
+                    payload.encode(),
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertEqual(
+                    {
+                        "private_endpoint",
+                        "private_model_override",
+                    },
+                    {str(item["rule_id"]) for item in findings},
+                )
+
+    def test_configuration_expansion_budgets_fail_closed(self) -> None:
+        shell_lines = ["v0=x"]
+        docker_lines = ["ENV v0=x"]
+        for index in range(1, 21):
+            shell_lines.append(
+                f"v{index}=$v{index - 1}$v{index - 1}"
+            )
+            docker_lines.append(
+                f"ENV v{index}=$v{index - 1}$v{index - 1}"
+            )
+        amplification_cases = (
+            (
+                "amplify.sh",
+                "\n".join(shell_lines) + "\n",
+                "shell_configuration_limit_exceeded",
+            ),
+            (
+                "Dockerfile",
+                "\n".join(docker_lines) + "\n",
+                "docker_configuration_limit_exceeded",
+            ),
+        )
+        for path, payload, expected_rule in amplification_cases:
+            with self.subTest(path=path):
+                self.assertLess(len(payload), 1024)
+                findings = scan_payload(
+                    path,
+                    payload.encode(),
+                    allow_safe_fixtures=False,
+                )
+                self.assertIn(
+                    expected_rule,
+                    {str(item["rule_id"]) for item in findings},
+                )
+
+        substitution_payload = (
+            "seed=x\nvalue="
+            + "$seed"
+            * (compliance_module.MAX_CONFIGURATION_EXPANSION_SUBSTITUTIONS + 1)
+            + "\n"
+        )
+        substitution_findings = scan_payload(
+            "substitutions.sh",
+            substitution_payload.encode(),
+            allow_safe_fixtures=False,
+        )
+        self.assertIn(
+            "shell_configuration_limit_exceeded",
+            {
+                str(item["rule_id"])
+                for item in substitution_findings
+            },
+        )
+
+        with mock.patch.object(
+            compliance_module,
+            "MAX_CONFIGURATION_EXPANSION_WORK",
+            32,
+        ):
+            work_findings = scan_payload(
+                "work.sh",
+                b'value=safe\nprintf "$value"\nprintf "$value"\n',
+                allow_safe_fixtures=False,
+            )
+        self.assertIn(
+            "shell_configuration_limit_exceeded",
+            {str(item["rule_id"]) for item in work_findings},
+        )
+
+    def test_configuration_binding_and_snapshot_caps_fail_closed(
+        self,
+    ) -> None:
+        shell_bindings = "\n".join(
+            f"value_{index}=safe"
+            for index in range(
+                compliance_module.MAX_CONFIGURATION_BINDINGS + 1
+            )
+        )
+        docker_bindings = "\n".join(
+            f"ENV value_{index}=safe"
+            for index in range(
+                compliance_module.MAX_CONFIGURATION_BINDINGS + 1
+            )
+        )
+        docker_snapshots = "\n".join(
+            f"ENV provider=openai-{index}"
+            for index in range(
+                compliance_module.MAX_CONFIGURATION_SNAPSHOTS + 1
+            )
+        )
+        cases = (
+            (
+                "bindings.sh",
+                shell_bindings,
+                "shell_configuration_limit_exceeded",
+            ),
+            (
+                "Dockerfile",
+                docker_bindings,
+                "docker_configuration_limit_exceeded",
+            ),
+            (
+                "service.Dockerfile",
+                docker_snapshots,
+                "docker_configuration_limit_exceeded",
+            ),
+        )
+
+        for path, payload, expected_rule in cases:
+            with self.subTest(path=path, expected_rule=expected_rule):
+                findings = scan_payload(
+                    path,
+                    payload.encode(),
+                    allow_safe_fixtures=False,
+                )
+                self.assertIn(
+                    expected_rule,
+                    {str(item["rule_id"]) for item in findings},
+                )
+
     def test_shell_expansion_preserves_unknown_variables(self) -> None:
         endpoint = "https://10.0." + "0.8:7443/v1"
         model = "secret-" + "model-140"

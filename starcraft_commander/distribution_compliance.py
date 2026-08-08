@@ -126,6 +126,12 @@ MAX_ARCHIVE_HEADER_FIELD_BYTES: Final[int] = 1024 * 1024
 MAX_SCAN_FILE_BYTES: Final[int] = 64 * 1024 * 1024
 MAX_SCAN_FINDINGS: Final[int] = 4096
 MAX_CONFIGURATION_BYTES: Final[int] = 8 * 1024 * 1024
+MAX_CONFIGURATION_BINDINGS: Final[int] = 512
+MAX_CONFIGURATION_SNAPSHOTS: Final[int] = 1024
+MAX_CONFIGURATION_EXPANDED_CHARACTERS: Final[int] = 256 * 1024
+MAX_CONFIGURATION_EXPANSION_SUBSTITUTIONS: Final[int] = 8192
+MAX_CONFIGURATION_EXPANSION_WORK: Final[int] = 4 * MAX_CONFIGURATION_BYTES
+MAX_CONFIGURATION_STORED_CHARACTERS: Final[int] = MAX_CONFIGURATION_BYTES
 MIN_PYTHON_SENSITIVE_ANALYSIS_STEPS: Final[int] = 100_000
 MAX_PYTHON_SENSITIVE_ANALYSIS_STEPS: Final[int] = 1_000_000
 PYTHON_SENSITIVE_ANALYSIS_STEPS_PER_NODE: Final[int] = 16
@@ -6427,16 +6433,83 @@ def _is_dockerfile_path(path: str) -> bool:
     )
 
 
+@dataclass
+class _ConfigurationExpansionBudget:
+    substitutions: int = 0
+    work: int = 0
+
+
+_SHELL_VARIABLE_RE: Final[re.Pattern[str]] = re.compile(
+    r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|"
+    r"([A-Za-z_][A-Za-z0-9_]*))"
+)
+_SHELL_ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(
+    r"([A-Za-z_][A-Za-z0-9_]*)=(.*)",
+    re.DOTALL,
+)
+_SHELL_ASSIGNMENT_BUILTINS: Final[frozenset[str]] = frozenset(
+    {"declare", "export", "local", "readonly", "typeset"}
+)
+_SEMANTIC_CONFIGURATION_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "base_url",
+        "endpoint",
+        "host",
+        "llm_base_url",
+        "llm_endpoint",
+        "llm_host",
+        "llm_model",
+        "llm_openai_base_url",
+        "llm_port",
+        "llm_provider",
+        "model",
+        "model_provider",
+        "openai_base_url",
+        "port",
+        "provider",
+    }
+)
+
+
 def _expand_known_shell_variables(
     text: str,
     bindings: Mapping[str, str],
+    budget: _ConfigurationExpansionBudget,
 ) -> str | None:
-    variable_pattern = re.compile(
-        r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|"
-        r"([A-Za-z_][A-Za-z0-9_]*))"
-    )
+    if len(text) > MAX_CONFIGURATION_EXPANDED_CHARACTERS:
+        return None
     expanded = text
     for _ in range(16):
+        projected_length = len(expanded)
+        substitution_count = 0
+        changed = False
+
+        for match in _SHELL_VARIABLE_RE.finditer(expanded):
+            name = match.group(1) or match.group(2)
+            value = bindings.get(name)
+            if value is None or value == match.group(0):
+                continue
+            projected_length += len(value) - len(match.group(0))
+            substitution_count += 1
+            changed = True
+            if (
+                projected_length > MAX_CONFIGURATION_EXPANDED_CHARACTERS
+                or budget.substitutions + substitution_count
+                > MAX_CONFIGURATION_EXPANSION_SUBSTITUTIONS
+            ):
+                return None
+
+        projected_work = len(expanded) + (
+            projected_length if changed else 0
+        )
+        if budget.work + projected_work > MAX_CONFIGURATION_EXPANSION_WORK:
+            return None
+        budget.work += projected_work
+        if not changed:
+            return expanded
+
+        budget.substitutions += substitution_count
+
         def replace(match: re.Match[str]) -> str:
             name = match.group(1) or match.group(2)
             value = bindings.get(name)
@@ -6444,11 +6517,127 @@ def _expand_known_shell_variables(
                 return match.group(0)
             return value
 
-        updated = variable_pattern.sub(replace, expanded)
+        updated = _SHELL_VARIABLE_RE.sub(replace, expanded)
         if updated == expanded:
             return updated
         expanded = updated
     return None
+
+
+def _store_configuration_binding(
+    bindings: dict[str, str],
+    name: str,
+    value: str,
+    stored_character_count: int,
+) -> int | None:
+    if name not in bindings and len(bindings) >= MAX_CONFIGURATION_BINDINGS:
+        return None
+    previous_size = (
+        len(name) + len(bindings[name])
+        if name in bindings
+        else 0
+    )
+    updated_character_count = (
+        stored_character_count
+        - previous_size
+        + len(name)
+        + len(value)
+    )
+    if updated_character_count > MAX_CONFIGURATION_STORED_CHARACTERS:
+        return None
+    bindings[name] = value
+    return updated_character_count
+
+
+def _normalized_configuration_key(name: str) -> str:
+    return re.sub(
+        r"[^a-z0-9]+",
+        "_",
+        name.strip().casefold(),
+    ).strip("_")
+
+
+def _bounded_shlex_tokens(
+    text: str,
+    *,
+    punctuation_chars: str = "",
+) -> tuple[tuple[str, ...], str]:
+    try:
+        lexer = shlex.shlex(
+            text,
+            posix=True,
+            punctuation_chars=punctuation_chars,
+        )
+        lexer.whitespace_split = True
+        lexer.commenters = "#"
+        tokens: list[str] = []
+        for token in lexer:
+            if len(tokens) >= MAX_CONFIGURATION_NODES:
+                return (), "limit"
+            tokens.append(token)
+    except ValueError:
+        return (), "parse"
+    return tuple(tokens), ""
+
+
+def _shell_statement_tokens(
+    raw_line: str,
+) -> tuple[tuple[tuple[str, ...], ...], str]:
+    tokens, failure = _bounded_shlex_tokens(
+        raw_line,
+        punctuation_chars=";",
+    )
+    if failure:
+        return (), failure
+
+    statements: list[tuple[str, ...]] = []
+    current: list[str] = []
+    for token in tokens:
+        if token and set(token) == {";"}:
+            if current:
+                statements.append(tuple(current))
+                current = []
+            continue
+        current.append(token)
+    if current:
+        statements.append(tuple(current))
+    if len(statements) > MAX_CONFIGURATION_SNAPSHOTS:
+        return (), "limit"
+    return tuple(statements), ""
+
+
+def _shell_assignment_token(token: str) -> tuple[str, str] | None:
+    match = _SHELL_ASSIGNMENT_RE.fullmatch(token)
+    if match is None:
+        return None
+    return match.group(1), match.group(2)
+
+
+def _shell_statement_parts(
+    tokens: Sequence[str],
+) -> tuple[tuple[tuple[str, str], ...], tuple[str, ...]]:
+    if not tokens:
+        return (), ()
+    if tokens[0] in _SHELL_ASSIGNMENT_BUILTINS:
+        assignments: list[tuple[str, str]] = []
+        for token in tokens[1:]:
+            if token.startswith("-") and "=" not in token:
+                continue
+            assignment = _shell_assignment_token(token)
+            if assignment is not None:
+                assignments.append(assignment)
+        return tuple(assignments), ()
+
+    assignments = []
+    command_index = 0
+    for command_index, token in enumerate(tokens):
+        assignment = _shell_assignment_token(token)
+        if assignment is None:
+            break
+        assignments.append(assignment)
+    else:
+        return tuple(assignments), ()
+    return tuple(assignments), tuple(tokens[command_index:])
 
 
 def _shell_expanded_scan_text(path: str, text: str) -> tuple[str, str]:
@@ -6460,55 +6649,103 @@ def _shell_expanded_scan_text(path: str, text: str) -> tuple[str, str]:
     }:
         return "", ""
     bindings: dict[str, str] = {}
+    budget = _ConfigurationExpansionBudget()
     expanded_lines: list[str] = []
     expanded_character_count = 0
-    assignment_pattern = re.compile(
-        r"^[ \t]*(?:(?:export|local|readonly)[ \t]+)?"
-        r"([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*(.*?)[ \t]*$"
-    )
+    stored_character_count = 0
+    statement_count = 0
     for raw_line in _shell_continuation_text(text).splitlines():
-        assignment = assignment_pattern.fullmatch(raw_line)
-        if assignment is not None:
-            name, raw_value = assignment.groups()
-            expanded_value = _expand_known_shell_variables(
-                raw_value,
-                bindings,
-            )
-            if expanded_value is None:
-                bindings.pop(name, None)
-                continue
-            try:
-                tokens = shlex.split(
-                    expanded_value,
-                    comments=True,
-                    posix=True,
-                )
-            except ValueError:
-                bindings.pop(name, None)
-                if re.search(
-                    r"(?i)(?:myproxy|provider|model|base[_-]?url|endpoint)",
-                    raw_line,
-                ):
-                    return "", "shell_configuration_parse_failed"
-                continue
-            if len(tokens) != 1:
-                bindings.pop(name, None)
-                continue
-            if len(bindings) >= 512 and name not in bindings:
-                return "", "shell_configuration_limit_exceeded"
-            bindings[name] = tokens[0]
-            continue
-        expanded = _expand_known_shell_variables(raw_line, bindings)
-        if expanded is not None and expanded != raw_line:
-            expanded_lines.append(expanded)
-            expanded_character_count += len(expanded) + 1
-        if expanded_character_count > MAX_CONFIGURATION_BYTES:
+        statements, token_failure = _shell_statement_tokens(raw_line)
+        if token_failure == "limit":
             return "", "shell_configuration_limit_exceeded"
+        if token_failure:
+            if re.search(
+                r"(?i)(?:myproxy|provider|model|base[_-]?url|endpoint)",
+                raw_line,
+            ):
+                return "", "shell_configuration_parse_failed"
+            continue
+        statement_count += len(statements)
+        if statement_count > MAX_CONFIGURATION_NODES:
+            return "", "shell_configuration_limit_exceeded"
+        for statement in statements:
+            assignments, command_tokens = _shell_statement_parts(statement)
+            for name, raw_value in assignments:
+                expanded_value = _expand_known_shell_variables(
+                    raw_value,
+                    bindings,
+                    budget,
+                )
+                if expanded_value is None:
+                    return "", "shell_configuration_limit_exceeded"
+                updated_character_count = _store_configuration_binding(
+                    bindings,
+                    name,
+                    expanded_value,
+                    stored_character_count,
+                )
+                if updated_character_count is None:
+                    return "", "shell_configuration_limit_exceeded"
+                stored_character_count = updated_character_count
+            if not command_tokens:
+                continue
+            command_text = " ".join(command_tokens)
+            expanded = _expand_known_shell_variables(
+                command_text,
+                bindings,
+                budget,
+            )
+            if expanded is None:
+                return "", "shell_configuration_limit_exceeded"
+            if expanded == command_text:
+                continue
+            if len(expanded_lines) >= MAX_CONFIGURATION_SNAPSHOTS:
+                return "", "shell_configuration_limit_exceeded"
+            projected_character_count = (
+                expanded_character_count + len(expanded) + 1
+            )
+            if projected_character_count > MAX_CONFIGURATION_BYTES:
+                return "", "shell_configuration_limit_exceeded"
+            expanded_lines.append(expanded)
+            expanded_character_count = projected_character_count
     return "\n".join(expanded_lines), ""
 
 
 def _dockerfile_semantic_scan_text(text: str) -> tuple[str, str]:
     bindings: dict[str, str] = {}
+    budget = _ConfigurationExpansionBudget()
+    snapshots: list[dict[str, str]] = []
+    snapshot_character_count = 0
+    snapshot_node_count = 0
+    stored_character_count = 0
+
+    def capture_snapshot() -> bool:
+        nonlocal snapshot_character_count, snapshot_node_count
+        snapshot = {
+            name: value
+            for name, value in bindings.items()
+            if _normalized_configuration_key(name)
+            in _SEMANTIC_CONFIGURATION_KEYS
+        }
+        if not snapshot or (snapshots and snapshots[-1] == snapshot):
+            return True
+        snapshot_characters = sum(
+            len(name) + len(value)
+            for name, value in snapshot.items()
+        )
+        if (
+            len(snapshots) >= MAX_CONFIGURATION_SNAPSHOTS
+            or snapshot_node_count + len(snapshot) + 1
+            > MAX_CONFIGURATION_NODES
+            or snapshot_character_count + snapshot_characters
+            > MAX_CONFIGURATION_BYTES
+        ):
+            return False
+        snapshots.append(snapshot)
+        snapshot_node_count += len(snapshot) + 1
+        snapshot_character_count += snapshot_characters
+        return True
+
     for raw_line in _dockerfile_logical_text("Dockerfile", text).splitlines():
         directive = re.match(
             r"^[ \t]*(?:ENV|ARG)[ \t]+(.+?)?[ \t]*$",
@@ -6518,9 +6755,10 @@ def _dockerfile_semantic_scan_text(text: str) -> tuple[str, str]:
         if directive is None or not directive.group(1):
             continue
         body = directive.group(1)
-        try:
-            tokens = shlex.split(body, comments=True, posix=True)
-        except ValueError:
+        tokens, token_failure = _bounded_shlex_tokens(body)
+        if token_failure == "limit":
+            return "", "docker_configuration_limit_exceeded"
+        if token_failure:
             if re.search(
                 r"(?i)(?:myproxy|provider|model|base[_-]?url|endpoint)",
                 body,
@@ -6539,15 +6777,30 @@ def _dockerfile_semantic_scan_text(text: str) -> tuple[str, str]:
         for name, raw_value in assignments:
             if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None:
                 continue
-            expanded = _expand_known_shell_variables(raw_value, bindings)
+            expanded = _expand_known_shell_variables(
+                raw_value,
+                bindings,
+                budget,
+            )
             if expanded is None:
-                bindings.pop(name, None)
-                continue
-            if len(bindings) >= 512 and name not in bindings:
                 return "", "docker_configuration_limit_exceeded"
-            bindings[name] = expanded
+            updated_character_count = _store_configuration_binding(
+                bindings,
+                name,
+                expanded,
+                stored_character_count,
+            )
+            if updated_character_count is None:
+                return "", "docker_configuration_limit_exceeded"
+            stored_character_count = updated_character_count
+            if (
+                _normalized_configuration_key(name)
+                in _SEMANTIC_CONFIGURATION_KEYS
+                and not capture_snapshot()
+            ):
+                return "", "docker_configuration_limit_exceeded"
     try:
-        return _semantic_mapping_scan_text((bindings,)), ""
+        return _semantic_mapping_scan_text(tuple(snapshots)), ""
     except (RecursionError, TypeError, ValueError):
         return "", "docker_configuration_limit_exceeded"
 
