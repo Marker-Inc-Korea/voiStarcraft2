@@ -3,6 +3,7 @@ import importlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -356,6 +357,113 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
                         uses,
                         r"^[^@\s]+@[0-9a-f]{40}$",
                     )
+
+    def test_all_root_python_stdin_invocations_are_isolated(self) -> None:
+        invocations = self._root_python_stdin_invocations()
+        self.assertEqual(
+            {
+                (
+                    BUILD_JOB,
+                    "Disabled same-runner qualified sealer",
+                ),
+                (
+                    SEAL_JOB,
+                    "Materialize bounded root-owned verifier inputs",
+                ),
+                (
+                    SEAL_JOB,
+                    "Create sealed qualified upload bundle",
+                ),
+                (
+                    SEAL_JOB,
+                    "Verify exact sealed bytes before upload",
+                ),
+            },
+            set(invocations),
+        )
+        for step, commands in invocations.items():
+            with self.subTest(job=step[0], step=step[1]):
+                self.assertEqual(
+                    ["python3 -I -B - <<'PY'"],
+                    commands,
+                )
+
+    def test_isolated_root_python_ignores_checkout_shadow_modules(
+        self,
+    ) -> None:
+        invocations = self._root_python_stdin_invocations()
+        shadow_payload = (
+            "import os\n"
+            "with open(\n"
+            "    os.environ['SHADOW_SENTINEL'],\n"
+            "    'w',\n"
+            "    encoding='utf-8',\n"
+            ") as output:\n"
+            "    output.write(__file__)\n"
+            "os._exit(91)\n"
+        )
+        probe = (
+            "import base64\n"
+            "import hashlib\n"
+            "import sys\n"
+            "from pathlib import Path\n"
+            "root = Path.cwd().resolve()\n"
+            "if sys.flags.isolated != 1:\n"
+            "    raise SystemExit('Python isolated mode is disabled')\n"
+            "if not sys.dont_write_bytecode:\n"
+            "    raise SystemExit('Python bytecode writes are enabled')\n"
+            "for module in (base64, hashlib):\n"
+            "    if Path(module.__file__).resolve().parent == root:\n"
+            "        raise SystemExit(f'shadow module imported: {module}')\n"
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout = Path(temporary)
+            sentinel = checkout / "shadow-imported"
+            for name in ("base64.py", "hashlib.py", "sitecustomize.py"):
+                (checkout / name).write_text(
+                    shadow_payload,
+                    encoding="utf-8",
+                )
+            env = {
+                key: value
+                for key, value in os.environ.items()
+                if key not in {"PYTHONPATH", "PYTHONSAFEPATH"}
+            }
+            env["SHADOW_SENTINEL"] = str(sentinel)
+
+            vulnerable = subprocess.run(
+                [sys.executable, "-B", "-"],
+                cwd=checkout,
+                env=env,
+                input=probe,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(91, vulnerable.returncode)
+            self.assertTrue(sentinel.is_file())
+
+            for step, commands in invocations.items():
+                with self.subTest(job=step[0], step=step[1]):
+                    sentinel.unlink(missing_ok=True)
+                    command = commands[0].removesuffix(" <<'PY'")
+                    argv = command.split()[1:]
+                    isolated = subprocess.run(
+                        [sys.executable, *argv],
+                        cwd=checkout,
+                        env=env,
+                        input=probe,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(
+                        0,
+                        isolated.returncode,
+                        isolated.stderr,
+                    )
+                    self.assertFalse(sentinel.exists())
 
     def test_candidate_verifier_has_no_credentials_or_sudo_capability(
         self,
@@ -1075,9 +1183,43 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
             if line.strip()
         ]
 
+    @classmethod
+    def _root_python_stdin_invocations(
+        cls,
+    ) -> dict[tuple[str, str], list[str]]:
+        workflow = cls._workflow()
+        invocations = {}
+        for job_name, job in workflow["jobs"].items():
+            for step in job["steps"]:
+                run = str(step.get("run", ""))
+                lines = run.splitlines()
+                commands = []
+                for index, line in enumerate(lines):
+                    if "<<'PY'" not in line:
+                        continue
+                    start = index
+                    while start > 0 and lines[start - 1].rstrip().endswith("\\"):
+                        start -= 1
+                    command_start = lines[start].strip()
+                    if not command_start.startswith("sudo "):
+                        continue
+                    if re.match(
+                        r"sudo\s+-u\s+voi-verifier\b",
+                        command_start,
+                    ):
+                        continue
+                    commands.append(line.strip())
+                if commands:
+                    invocations[(job_name, str(step["name"]))] = commands
+        return invocations
+
     @staticmethod
     def _heredoc_python(run: str) -> str:
-        markers = ("python - <<'PY'\n", "python3 - <<'PY'\n")
+        markers = (
+            "python3 -I -B - <<'PY'\n",
+            "python - <<'PY'\n",
+            "python3 - <<'PY'\n",
+        )
         marker = next((item for item in markers if item in run), None)
         if marker is None:
             raise AssertionError("Python heredoc not found")
