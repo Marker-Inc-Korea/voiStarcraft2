@@ -82,6 +82,7 @@ from starcraft_commander.micromachine_pre_live_provenance import (
 )
 from starcraft_commander.micromachine_pre_live_artifact import (
     GITHUB_ARTIFACT_BUNDLE_MEMBER_NAME,
+    PRE_LIVE_ARTIFACT_SCHEMA_VERSION,
     PRE_LIVE_CTEST_EVIDENCE_SCHEMA_VERSION,
     PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID,
     PreLiveArtifactMetadata,
@@ -5357,6 +5358,144 @@ class GitHubActionsBundleEmissionTest(unittest.TestCase):
 
 
 class LocalProducerTest(unittest.TestCase):
+    def test_deterministic_runtime_manifest_includes_resource_packages(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "repository"
+            module_path = (
+                repository
+                / provenance_module.DETERMINISTIC_JOURNEY_MODULE_RELATIVE_PATH
+            )
+            manifest_path = (
+                repository
+                / provenance_module.DETERMINISTIC_JOURNEY_MANIFEST_RELATIVE_PATH
+            )
+            module_path.parent.mkdir(parents=True)
+            manifest_path.parent.mkdir(parents=True)
+            module_path.write_text("VALUE = 1\n")
+            manifest_path.write_text("{}\n")
+            for relative in (
+                provenance_module.DETERMINISTIC_JOURNEY_PACKAGE_SOURCES
+            ):
+                package_path = repository / relative
+                package_path.parent.mkdir(parents=True, exist_ok=True)
+                package_path.write_text("")
+            commit = init_git_repo(repository)
+
+            result = provenance_module._attest_committed_python_sources(
+                provenance_module.DETERMINISTIC_JOURNEY_MODULE_RELATIVE_PATH,
+                repository_root=repository,
+                expected_commit=commit,
+                git_runner=subprocess.run,
+            )
+
+        self.assertTrue(result["ok"], result)
+        relative_paths = {
+            item["relative_path"] for item in result["files"]
+        }
+        self.assertTrue(
+            {
+                "integrations/__init__.py",
+                "integrations/micromachine/__init__.py",
+                "integrations/micromachine/PRE_LIVE_JOURNEYS.json",
+            }.issubset(relative_paths),
+            relative_paths,
+        )
+
+    def test_authenticated_bootstrap_loads_adjacent_runtime_resources(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state_dir = root / "state"
+            state_dir.mkdir()
+            sources: dict[str, bytes] = {}
+            for relative in (
+                Path("starcraft_commander/runtime_data.py"),
+                Path("starcraft_commander/micromachine_build_identity.py"),
+                Path("starcraft_commander/micromachine_pre_live_artifact.py"),
+                Path("integrations/__init__.py"),
+                Path("integrations/micromachine/__init__.py"),
+            ):
+                payload = (BUILD_IDENTITY_REPO_ROOT / relative).read_bytes()
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(payload)
+                sources[relative.as_posix()] = payload
+            package_init = root / "starcraft_commander" / "__init__.py"
+            package_init.write_bytes(b"")
+            sources["starcraft_commander/__init__.py"] = b""
+            manifest_relative = Path(
+                "integrations/micromachine/PRE_LIVE_JOURNEYS.json"
+            )
+            manifest_payload = (
+                BUILD_IDENTITY_REPO_ROOT / manifest_relative
+            ).read_bytes()
+            manifest_path = root / manifest_relative
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            manifest_path.write_bytes(manifest_payload)
+            sources[manifest_relative.as_posix()] = manifest_payload
+            output = root / "native-adapter-stage.json"
+            main_relative = "authenticated_probe.py"
+            main_source = (
+                "import json\n"
+                "from pathlib import Path\n"
+                "import sys\n"
+                "from starcraft_commander.micromachine_pre_live_artifact "
+                "import PRE_LIVE_ARTIFACT_SCHEMA_VERSION\n"
+                "from starcraft_commander.runtime_data import "
+                "micromachine_data_path\n"
+                "manifest = micromachine_data_path("
+                "'PRE_LIVE_JOURNEYS.json')\n"
+                "Path(sys.argv[1]).write_text(json.dumps({"
+                "'artifact_schema': PRE_LIVE_ARTIFACT_SCHEMA_VERSION, "
+                "'manifest_exists': manifest.is_file(), "
+                "'stage': 'native_adapter'}))\n"
+            ).encode()
+            (root / main_relative).write_bytes(main_source)
+            sources[main_relative] = main_source
+            executable_path = Path(sys.executable).resolve()
+            executable_payload = executable_path.read_bytes()
+            argv = (
+                str(executable_path),
+                "-I",
+                "-B",
+                "-S",
+                "-c",
+                ISOLATED_PYTHON_BOOTSTRAP,
+                str(root),
+                main_relative,
+                str(output),
+            )
+
+            completed = provenance_module._run_pinned_command(
+                subprocess.run,
+                argv,
+                executable_payload=executable_payload,
+                executable_snapshot=(
+                    0,
+                    0,
+                    len(executable_payload),
+                    0,
+                    hashlib.sha256(executable_payload).hexdigest(),
+                ),
+                authenticated_python_sources=sources,
+                state_dir=state_dir,
+                cwd=str(root),
+                timeout=15.0,
+            )
+
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            self.assertEqual(
+                {
+                    "artifact_schema": PRE_LIVE_ARTIFACT_SCHEMA_VERSION,
+                    "manifest_exists": True,
+                    "stage": "native_adapter",
+                },
+                json.loads(output.read_bytes()),
+            )
+
     def dedicated_producer_uid(self) -> tuple[int, int]:
         if os.geteuid() != 0:
             self.skipTest("dedicated producer UID tests require a root verifier")

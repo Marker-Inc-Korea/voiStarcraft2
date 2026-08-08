@@ -1,5 +1,6 @@
 """Tests for source-checkout and installed runtime-data resolution."""
 
+import builtins
 import json
 import os
 import shutil
@@ -154,6 +155,54 @@ class RuntimeDataTest(unittest.TestCase):
     def test_real_source_checkout_is_detected(self) -> None:
         self.assertEqual(REPOSITORY_ROOT, source_repository_root())
         self.assertTrue(micromachine_data_path("HOOK_MANIFEST.json").is_file())
+
+    def test_resource_lookup_does_not_import_integrations_package(self) -> None:
+        real_import = builtins.__import__
+
+        def guarded_import(
+            name: str,
+            globals: object = None,
+            locals: object = None,
+            fromlist: object = (),
+            level: int = 0,
+        ) -> object:
+            if name == "integrations" or name.startswith("integrations."):
+                raise AssertionError("runtime data performed a package import")
+            return real_import(name, globals, locals, fromlist, level)
+
+        with mock.patch.object(
+            builtins,
+            "__import__",
+            side_effect=guarded_import,
+        ):
+            observed = runtime_data.micromachine_data_root()
+
+        self.assertEqual(
+            REPOSITORY_ROOT / "integrations" / "micromachine",
+            observed,
+        )
+
+    def test_symlinked_resource_directory_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            install_root = Path(directory) / "site-packages"
+            resource_parent = install_root / "integrations"
+            resource_parent.mkdir(parents=True)
+            target = Path(directory) / "attacker-resources"
+            target.mkdir()
+            (resource_parent / "micromachine").symlink_to(
+                target,
+                target_is_directory=True,
+            )
+
+            with (
+                mock.patch.object(
+                    runtime_data,
+                    "_SOURCE_REPOSITORY_ROOT",
+                    install_root,
+                ),
+                self.assertRaisesRegex(RuntimeError, "without symlinks"),
+            ):
+                runtime_data.micromachine_data_root()
 
     def test_committed_superficial_clone_with_canonical_remote_is_not_source(
         self,

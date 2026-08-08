@@ -9,7 +9,6 @@ import stat
 import subprocess
 import sys
 import time
-from importlib.resources import files
 from pathlib import Path
 from typing import Final
 
@@ -18,7 +17,6 @@ _SOURCE_MODULE_LOCATION: Final[Path] = Path(__file__)
 _SOURCE_MODULE_PATH: Final[Path] = _SOURCE_MODULE_LOCATION.resolve()
 _SOURCE_REPOSITORY_ROOT: Final[Path] = _SOURCE_MODULE_PATH.parents[1]
 _MICROMACHINE_RELATIVE_ROOT: Final[Path] = Path("integrations/micromachine")
-_MICROMACHINE_RESOURCE_PACKAGE: Final[str] = "integrations.micromachine"
 _SOURCE_MODULE_RELATIVE_PATH: Final[Path] = Path(
     "starcraft_commander/runtime_data.py"
 )
@@ -318,16 +316,41 @@ def source_repository_root() -> Path | None:
     return _SOURCE_REPOSITORY_ROOT
 
 
+def _path_has_symlink_component(path: Path) -> bool:
+    current = path.absolute()
+    while True:
+        try:
+            if stat.S_ISLNK(os.lstat(current).st_mode):
+                return True
+        except OSError:
+            return True
+        parent = current.parent
+        if parent == current:
+            return False
+        current = parent
+
+
 def micromachine_data_root() -> Path:
     """Return the packaged MicroMachine asset root for this installation."""
 
-    resource_root = files(_MICROMACHINE_RESOURCE_PACKAGE)
+    resource_root = _SOURCE_REPOSITORY_ROOT / _MICROMACHINE_RELATIVE_ROOT
     try:
-        return Path(os.fspath(resource_root))
-    except TypeError as error:
+        root_stat = os.lstat(resource_root)
+        resolved_root = resource_root.resolve(strict=True)
+    except OSError as error:
         raise RuntimeError(
-            "MicroMachine resources require an unpacked wheel installation."
+            "MicroMachine resource directory is unavailable."
         ) from error
+    if (
+        not stat.S_ISDIR(root_stat.st_mode)
+        or resolved_root != resource_root
+        or _path_has_symlink_component(resource_root)
+    ):
+        raise RuntimeError(
+            "MicroMachine resources require an unpacked directory "
+            "without symlinks."
+        )
+    return resource_root
 
 
 def micromachine_data_path(relative_path: Path | str) -> Path:
