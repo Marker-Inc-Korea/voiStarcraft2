@@ -1,4 +1,5 @@
 import hashlib
+import importlib
 import json
 import os
 from pathlib import Path
@@ -10,8 +11,11 @@ import unittest
 
 import yaml
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPOSITORY_ROOT))
+compliance_module = importlib.import_module(
+    "starcraft_commander.distribution_compliance"
+)
 WORKFLOW_PATH = REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml"
 EXPECTED_EVIDENCE_FILES = {
     "dependency-notices.json",
@@ -24,6 +28,28 @@ EXPECTED_EVIDENCE_FILES = {
     "secret-scan.json",
     "wheel.entries.txt",
 }
+ALLOW_SYNTHETIC_SEMANTIC_REPORT = """
+from starcraft_commander import distribution_compliance as _compliance
+_compliance.distribution_report_blockers = lambda report: []
+"""
+VALIDATE_SYNTHETIC_LICENSE = """
+from starcraft_commander import distribution_compliance as _compliance
+
+def _synthetic_license_blockers(report):
+    metadata = report.get("metadata", {})
+    expected = _compliance.EXPECTED_LICENSE_EXPRESSION
+    if (
+        metadata.get("license_expressions") != [expected]
+        or f"License-Expression: {expected}" not in metadata.get(
+            "installed_raw",
+            "",
+        )
+    ):
+        return [{"code": "invalid_license_evidence"}]
+    return []
+
+_compliance.distribution_report_blockers = _synthetic_license_blockers
+"""
 
 
 class DistributionComplianceWorkflowContractTests(unittest.TestCase):
@@ -227,6 +253,13 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
             self.assertIn('("wheel", ".whl")', script)
             self.assertIn('("sdist", ".tar.gz")', script)
 
+        self.assertIn("distribution_report_blockers", capture_run)
+        self.assertIn("write_distribution_evidence", capture_run)
+        self.assertIn(
+            "canonical compliance report has semantic blockers",
+            capture_run,
+        )
+        self.assertIn("derived evidence mismatch", capture_run)
         self.assertIn("sudo env", seal_run)
         self.assertIn("SEALED_UPLOAD_PARENT", seal_run)
         self.assertIn("tarfile.USTAR_FORMAT", seal_run)
@@ -294,14 +327,92 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
                 capture_script,
                 root,
                 {**os.environ, "GITHUB_OUTPUT": str(github_output)},
+                prelude=ALLOW_SYNTHETIC_SEMANTIC_REPORT,
             )
 
             self.assertNotEqual(0, forged.returncode)
             self.assertIn(
-                "final projection does not match canonical report",
+                (
+                    "derived evidence mismatch: "
+                    "distribution-compliance.final-projection.json"
+                ),
                 forged.stderr,
             )
             self.assertEqual(canonical_before, canonical_path.read_bytes())
+
+    def test_capture_rejects_coordinated_canonical_mit_forgery(self) -> None:
+        workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
+        steps = workflow["jobs"]["distribution-compliance"]["steps"]
+        capture = next(
+            step
+            for step in steps
+            if step.get("name") == "Capture verified upload integrity"
+        )
+        capture_script = self._heredoc_python(capture["run"])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_valid_fixture(root)
+            evidence = root / "distribution-compliance-evidence"
+            canonical_path = evidence / "distribution-compliance.json"
+            report = json.loads(canonical_path.read_text())
+            report["metadata"]["license_expressions"] = ["MIT"]
+            report["metadata"]["installed_raw"] = (
+                "Metadata-Version: 2.4\n"
+                "License-Expression: MIT\n"
+            )
+            self._rewrite_evidence(evidence, report)
+
+            github_output = root / "forged-capture-output"
+            forged = self._run_python(
+                capture_script,
+                root,
+                {**os.environ, "GITHUB_OUTPUT": str(github_output)},
+                prelude=VALIDATE_SYNTHETIC_LICENSE,
+            )
+
+            self.assertNotEqual(0, forged.returncode)
+            self.assertIn(
+                "canonical compliance report has semantic blockers: "
+                "invalid_license_evidence",
+                forged.stderr,
+            )
+            self.assertFalse(github_output.exists())
+
+    def test_capture_rejects_each_derived_evidence_mutation(self) -> None:
+        workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
+        steps = workflow["jobs"]["distribution-compliance"]["steps"]
+        capture = next(
+            step
+            for step in steps
+            if step.get("name") == "Capture verified upload integrity"
+        )
+        capture_script = self._heredoc_python(capture["run"])
+        derived_names = EXPECTED_EVIDENCE_FILES - {
+            "distribution-compliance.json"
+        }
+
+        for name in sorted(derived_names):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                self._write_valid_fixture(root)
+                evidence_path = root / "distribution-compliance-evidence" / name
+                evidence_path.write_bytes(evidence_path.read_bytes() + b" ")
+                github_output = root / "forged-capture-output"
+
+                forged = self._run_python(
+                    capture_script,
+                    root,
+                    {**os.environ, "GITHUB_OUTPUT": str(github_output)},
+                    prelude=ALLOW_SYNTHETIC_SEMANTIC_REPORT,
+                )
+
+                self.assertNotEqual(0, forged.returncode)
+                self.assertIn(
+                    f"derived evidence mismatch: {name}",
+                    forged.stderr,
+                )
+                self.assertFalse(github_output.exists())
 
     def test_retained_source_fd_cannot_mutate_sealed_upload_bundle(
         self,
@@ -329,6 +440,7 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
                 capture_script,
                 root,
                 {**os.environ, "GITHUB_OUTPUT": str(capture_output)},
+                prelude=ALLOW_SYNTHETIC_SEMANTIC_REPORT,
             )
             self.assertEqual(0, captured.returncode, captured.stderr)
             snapshot = capture_output.read_text().strip().split("=", 1)[1]
@@ -403,7 +515,9 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
         wheel.write_bytes(wheel_payload)
         sdist.write_bytes(sdist_payload)
         projection = {
-            "schema_version": 6,
+            "schema_version": (
+                compliance_module.DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION
+            ),
             "artifacts": {
                 "wheel": {
                     "filename": wheel.name,
@@ -416,59 +530,78 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
                     "sha256": hashlib.sha256(sdist_payload).hexdigest(),
                 },
             },
+            "dependencies": {},
+            "licenses": [],
+            "metadata": {
+                "installed_raw": (
+                    "Metadata-Version: 2.4\n"
+                    "License-Expression: "
+                    f"{compliance_module.EXPECTED_LICENSE_EXPRESSION}\n"
+                ),
+                "license_expressions": [
+                    compliance_module.EXPECTED_LICENSE_EXPRESSION
+                ],
+            },
         }
-        projection_json = json.dumps(
-            projection,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-        projection_markdown = cls._projection_markdown(projection_json)
-        input_manifest = [
-            {
-                "kind": "report",
-                "path": ("report/distribution-compliance.final-projection.json"),
-                "sha256": hashlib.sha256(projection_json).hexdigest(),
-                "size": len(projection_json),
-            },
-            {
-                "kind": "report",
-                "path": ("report/distribution-compliance.final-projection.md"),
-                "sha256": hashlib.sha256(projection_markdown).hexdigest(),
-                "size": len(projection_markdown),
-            },
-        ]
         canonical_report = {
             **projection,
             "blockers": [],
             "ok": True,
-            "secret_scan": {"input_manifest": input_manifest},
+            "secret_scan": {
+                "finding_count": 0,
+                "findings": [],
+                "input_manifest": [],
+            },
             "status": "passed",
         }
-        evidence_payloads = {
-            name: f"{name}\n".encode() for name in EXPECTED_EVIDENCE_FILES
-        }
-        evidence_payloads["distribution-compliance.json"] = json.dumps(
+        cls._rebind_projection(canonical_report)
+        compliance_module.write_distribution_evidence(
             canonical_report,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-        evidence_payloads["distribution-compliance.final-projection.json"] = (
-            projection_json
+            evidence,
+            public_report=canonical_report,
         )
-        evidence_payloads["distribution-compliance.final-projection.md"] = (
-            projection_markdown
-        )
-        evidence_payloads["secret-scan.json"] = json.dumps(
-            canonical_report["secret_scan"],
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-        for name, payload in evidence_payloads.items():
-            (evidence / name).write_bytes(payload)
         return {
             "wheel": wheel,
             "wheel_payload": wheel_payload,
         }
+
+    @staticmethod
+    def _rebind_projection(report: dict[str, object]) -> None:
+        payloads = compliance_module._distribution_report_scan_payloads(
+            report
+        )
+        secret_scan = report["secret_scan"]
+        manifest = [
+            {
+                "kind": "report",
+                "path": f"report/{name}",
+                "sha256": compliance_module.sha256_bytes(payload),
+                "size": len(payload),
+            }
+            for name, payload in sorted(payloads.items())
+        ]
+        secret_scan["input_manifest"] = manifest
+        secret_scan["input_manifest_sha256"] = (
+            compliance_module.sha256_bytes(
+                compliance_module.canonical_json_text(manifest).encode()
+            )
+        )
+        secret_scan["scanned_file_count"] = len(manifest)
+
+    @classmethod
+    def _rewrite_evidence(
+        cls,
+        evidence: Path,
+        report: dict[str, object],
+    ) -> None:
+        cls._rebind_projection(report)
+        for path in evidence.iterdir():
+            path.unlink()
+        compliance_module.write_distribution_evidence(
+            report,
+            evidence,
+            public_report=report,
+        )
 
     @staticmethod
     def _projection_markdown(projection_json: bytes) -> bytes:
@@ -500,11 +633,23 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
         script: str,
         cwd: Path,
         env: dict[str, str],
+        *,
+        prelude: str = "",
     ) -> subprocess.CompletedProcess[str]:
+        run_env = dict(env)
+        existing_pythonpath = run_env.get("PYTHONPATH")
+        run_env["PYTHONPATH"] = os.pathsep.join(
+            part
+            for part in (
+                str(REPOSITORY_ROOT),
+                existing_pythonpath,
+            )
+            if part
+        )
         return subprocess.run(
-            [sys.executable, "-c", script],
+            [sys.executable, "-c", f"{prelude}\n{script}"],
             cwd=cwd,
-            env=env,
+            env=run_env,
             check=False,
             capture_output=True,
             text=True,

@@ -96,6 +96,9 @@ jobs:
           from pathlib import Path
           import re
           import stat
+          import tempfile
+
+          from starcraft_commander import distribution_compliance
 
           evidence_names = frozenset(
               {
@@ -168,14 +171,49 @@ jobs:
           canonical_report = json.loads(
               evidence["distribution-compliance.json"].decode("utf-8")
           )
+          if not isinstance(canonical_report, dict):
+              raise SystemExit("canonical compliance report is not an object")
+          semantic_blockers = (
+              distribution_compliance.distribution_report_blockers(
+                  canonical_report
+              )
+          )
+          if semantic_blockers:
+              blocker_codes = sorted(
+                  {
+                      str(item.get("code", "unknown"))
+                      for item in semantic_blockers
+                      if isinstance(item, dict)
+                  }
+              )
+              raise SystemExit(
+                  "canonical compliance report has semantic blockers: "
+                  + ",".join(blocker_codes[:16])
+              )
+          with tempfile.TemporaryDirectory(
+              prefix="voi-expected-distribution-evidence-"
+          ) as temporary:
+              expected_dir = Path(temporary) / "evidence"
+              distribution_compliance.write_distribution_evidence(
+                  canonical_report,
+                  expected_dir,
+                  public_report=canonical_report,
+              )
+              expected_evidence = read_exact_files(
+                  expected_dir,
+                  evidence_names,
+              )
+          for name, expected_payload in expected_evidence.items():
+              if evidence[name] != expected_payload:
+                  raise SystemExit(f"derived evidence mismatch: {name}")
+
           projection = json.loads(
               evidence[
                   "distribution-compliance.final-projection.json"
               ].decode("utf-8")
           )
           if (
-              not isinstance(canonical_report, dict)
-              or canonical_report.get("ok") is not True
+              canonical_report.get("ok") is not True
               or canonical_report.get("status") != "passed"
               or canonical_report.get("blockers") != []
           ):
