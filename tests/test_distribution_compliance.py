@@ -3029,6 +3029,179 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             {str(item["rule_id"]) for item in findings},
         )
 
+    def test_distribution_compliance_module_self_scan_is_clean(
+        self,
+    ) -> None:
+        path = Path("starcraft_commander/distribution_compliance.py")
+
+        self.assertEqual(
+            [],
+            scan_payload(
+                path.as_posix(),
+                path.read_bytes(),
+                allow_safe_fixtures=False,
+            ),
+        )
+
+    def test_current_tracked_tree_secret_scan_is_clean(self) -> None:
+        root = Path.cwd()
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        report = scan_git_and_artifacts(
+            root,
+            (),
+            base_commit=head,
+        )
+
+        self.assertEqual(0, report["finding_count"])
+        self.assertEqual([], report["findings"])
+
+    def test_python_semantic_tracks_reviewer_static_mapping_forms(
+        self,
+    ) -> None:
+        endpoint = "https://proxy." + "corp.example/v1"
+        model = "private-" + "deployment"
+        payloads = {
+            "static-key": (
+                'key = "provider"\n'
+                "settings = {}\n"
+                'settings[key] = "my" + "proxy"\n'
+                f'settings["base_url"] = "{endpoint}"\n'
+                f'settings["model"] = "{model}"\n'
+            ),
+            "dict-comprehension": (
+                "pairs = [\n"
+                '    ("provider", "my" + "proxy"),\n'
+                f'    ("base_url", "{endpoint}"),\n'
+                f'    ("model", "{model}"),\n'
+                "]\n"
+                "settings = {key: value for key, value in pairs}\n"
+            ),
+            "dict-zip": (
+                'keys = ["provider", "base_url", "model"]\n'
+                f'values = ["my" + "proxy", "{endpoint}", "{model}"]\n'
+                "settings = dict(zip(keys, values))\n"
+            ),
+        }
+
+        for name, payload in payloads.items():
+            with self.subTest(name=name):
+                findings = scan_payload(
+                    f"starcraft_commander/{name}.py",
+                    payload.encode(),
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertEqual(
+                    {"private_endpoint", "private_model_override"},
+                    {str(item["rule_id"]) for item in findings},
+                )
+
+    def test_python_semantic_dynamic_mapping_forms_stay_clean(
+        self,
+    ) -> None:
+        payloads = {
+            "dynamic-key": (
+                'key = "provider" if runtime else "base_url"\n'
+                "settings = {}\n"
+                'settings[key] = "my" + "proxy"\n'
+                'settings["base_url"] = "https://api.openai.com/v1"\n'
+                'settings["model"] = "gpt-public"\n'
+            ),
+            "dynamic-comprehension": (
+                'provider = "my" + "proxy"\n'
+                "pairs = load_pairs()\n"
+                "settings = {key: value for key, value in pairs}\n"
+                "Client(provider=provider, **settings)\n"
+            ),
+            "dynamic-zip": (
+                'provider = "my" + "proxy"\n'
+                "settings = dict(zip(load_keys(), load_values()))\n"
+                "Client(provider=provider, **settings)\n"
+            ),
+            "public-static": (
+                'key = "provider"\n'
+                "settings = {}\n"
+                'settings[key] = "openai"\n'
+                'settings["base_url"] = "https://api.openai.com/v1"\n'
+                'settings["model"] = "gpt-public"\n'
+            ),
+        }
+
+        for name, payload in payloads.items():
+            with self.subTest(name=name):
+                self.assertEqual(
+                    [],
+                    scan_payload(
+                        f"starcraft_commander/{name}.py",
+                        payload.encode(),
+                        allow_safe_fixtures=False,
+                    ),
+                )
+
+    def test_python_semantic_static_mapping_amplification_fails_closed(
+        self,
+    ) -> None:
+        pairs = [
+            '("provider", "my" + "proxy")',
+            *[
+                f'("option_{index}", "value_{index}")'
+                for index in range(128)
+            ],
+        ]
+        payloads = {
+            "dict-comprehension": (
+                "pairs = ["
+                + ", ".join(pairs)
+                + "]\nsettings = {key: value for key, value in pairs}\n"
+            ),
+            "dict-zip": (
+                "keys = ["
+                + ", ".join(
+                    ['"provider"', *[
+                        f'"option_{index}"' for index in range(128)
+                    ]]
+                )
+                + "]\nvalues = ["
+                + ", ".join(
+                    ['"my" + "proxy"', *[
+                        f'"value_{index}"' for index in range(128)
+                    ]]
+                )
+                + "]\nsettings = dict(zip(keys, values))\n"
+            ),
+        }
+
+        for name, payload in payloads.items():
+            with self.subTest(name=name):
+                _reconstructed, failure = (
+                    compliance_module._python_cli_argument_text(
+                        f"starcraft_commander/amplified_{name}.py",
+                        payload,
+                        include_semantic_mappings=True,
+                    )
+                )
+                findings = scan_payload(
+                    f"starcraft_commander/amplified_{name}.py",
+                    payload.encode(),
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertEqual(
+                    "python_cli_analysis_limit_exceeded:arguments",
+                    failure,
+                )
+                self.assertIn(
+                    "python_cli_analysis_limit_exceeded",
+                    {str(item["rule_id"]) for item in findings},
+                )
+
     def test_detects_ini_indirect_shell_and_generic_docker_myproxy(
         self,
     ) -> None:

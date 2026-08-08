@@ -3332,6 +3332,7 @@ def _python_cli_argument_text(
         dict[str, tuple[cli_value, str]],
     ] = {}
     sequence_values: dict[int, tuple[str, ...]] = {}
+    truncated_sequence_ids: set[int] = set()
     mapping_values: dict[int, dict[str, cli_value]] = {}
     alternative_values: dict[int, tuple[cli_value, ...]] = {}
     object_values: dict[int, dict[str, cli_value]] = {}
@@ -3423,13 +3424,21 @@ def _python_cli_argument_text(
             for index in sorted(keep)[: max_arguments - 1]
         ]
         selected.append(dynamic_argument)
-        return tuple(selected)
+        bounded = tuple(selected)
+        truncated_sequence_ids.add(id(bounded))
+        return bounded
 
     def combine(
         left: tuple[str, ...],
         right: tuple[str, ...],
     ) -> tuple[str, ...]:
-        return bounded_sequence((*left, *right))
+        combined = bounded_sequence((*left, *right))
+        if (
+            id(left) in truncated_sequence_ids
+            or id(right) in truncated_sequence_ids
+        ):
+            truncated_sequence_ids.add(id(combined))
+        return combined
 
     def stored_identity(
         value: cli_value | None,
@@ -3672,6 +3681,39 @@ def _python_cli_argument_text(
         if isinstance(value, str) and not has_stored_reference(value):
             return [value]
         return []
+
+    def static_mapping_key(
+        node: ast.AST,
+        environment: Mapping[str, cli_value],
+    ) -> str | None:
+        literal = _constant_string_expression(node)
+        if literal is not None:
+            return literal
+        candidates = scalar_alternatives(evaluate(node, environment))
+        if (
+            len(candidates) == 1
+            and (
+                _normalized_configuration_key(candidates[0])
+                in _SEMANTIC_CONFIGURATION_KEYS
+            )
+            and dynamic_argument not in candidates[0]
+            and dynamic_f_string_argument not in candidates[0]
+        ):
+            return candidates[0]
+        return None
+
+    def sequence_was_truncated(value: cli_value | None) -> bool:
+        alternatives = stored_alternatives(value)
+        if alternatives is not None:
+            return any(
+                sequence_was_truncated(alternative)
+                for alternative in alternatives
+            )
+        sequence = stored_sequence(value)
+        return (
+            sequence is not None
+            and id(sequence) in truncated_sequence_ids
+        )
 
     def has_stored_reference(value: cli_value) -> bool:
         alternatives = stored_alternatives(value)
@@ -3964,6 +4006,55 @@ def _python_cli_argument_text(
                 results.append(state)
         return results
 
+    def zip_mapping_alternatives(
+        call: ast.Call,
+        environment: Mapping[str, cli_value],
+    ) -> list[dict[str, cli_value]]:
+        if (
+            not isinstance(call.func, ast.Name)
+            or call.func.id != "zip"
+            or len(call.args) != 2
+            or call.keywords
+        ):
+            return []
+        if any(
+            isinstance(argument, (ast.List, ast.Tuple, ast.Set))
+            and len(argument.elts) > max_arguments
+            for argument in call.args
+        ):
+            mark_limited("arguments")
+            return []
+        key_value = evaluate(call.args[0], environment)
+        value_value = evaluate(call.args[1], environment)
+        if (
+            sequence_was_truncated(key_value)
+            or sequence_was_truncated(value_value)
+        ):
+            mark_limited("arguments")
+            return []
+        key_sequences = sequence_alternatives(key_value)
+        value_sequences = sequence_alternatives(value_value)
+        mappings: list[dict[str, cli_value]] = []
+        for keys in key_sequences:
+            for values in value_sequences:
+                mapping: dict[str, cli_value] = {}
+                valid = True
+                for key, value in zip(keys, values):
+                    if (
+                        dynamic_argument in key
+                        or dynamic_f_string_argument in key
+                    ):
+                        valid = False
+                        break
+                    mapping[key] = value
+                if not valid:
+                    continue
+                if len(mappings) >= max_environment_states:
+                    mark_limited("environment_states")
+                    return mappings
+                mappings.append(mapping)
+        return mappings
+
     def evaluate(
         node: ast.AST,
         environment: Mapping[str, cli_value],
@@ -4085,6 +4176,8 @@ def _python_cli_argument_text(
                     evaluate(value_node, environment) or dynamic_argument
                 )
             return store_mapping(result)
+        if isinstance(node, ast.DictComp):
+            return evaluate_mapping_comprehension(node, environment)
         if isinstance(
             node,
             (ast.ListComp, ast.SetComp, ast.GeneratorExp),
@@ -4096,7 +4189,7 @@ def _python_cli_argument_text(
             )
         if isinstance(node, ast.Subscript):
             container = evaluate(node.value, environment)
-            key = _constant_string_expression(node.slice)
+            key = static_mapping_key(node.slice, environment)
             if key is not None:
                 mapping_values_for_key = [
                     mapping[key]
@@ -4177,12 +4270,19 @@ def _python_cli_argument_text(
             if len(node.args) > 1:
                 return None
             if node.args:
-                argument_value = evaluate(node.args[0], environment)
-                mappings = mapping_alternatives(argument_value)
+                argument = node.args[0]
+                mappings = (
+                    zip_mapping_alternatives(argument, environment)
+                    if isinstance(argument, ast.Call)
+                    else []
+                )
                 if not mappings:
-                    mappings = iterable_pair_mapping_alternatives(
-                        argument_value
-                    )
+                    argument_value = evaluate(argument, environment)
+                    mappings = mapping_alternatives(argument_value)
+                    if not mappings:
+                        mappings = iterable_pair_mapping_alternatives(
+                            argument_value
+                        )
                 if not mappings:
                     return None
                 states = [dict(mapping) for mapping in mappings]
@@ -4212,7 +4312,10 @@ def _python_cli_argument_text(
                 resolve_attribute_value(
                     node.func,
                     environment,
-                    strict_dispatch=True,
+                    strict_dispatch=call_supplies_provider_seed(
+                        node,
+                        environment,
+                    ),
                 )
                 if isinstance(node.func, ast.Attribute)
                 else evaluate(node.func, environment)
@@ -4336,7 +4439,7 @@ def _python_cli_argument_text(
             environment[key] = value
             return
         if isinstance(target, ast.Subscript):
-            key = _constant_string_expression(target.slice)
+            key = static_mapping_key(target.slice, environment)
             if key is None:
                 return
             mappings = mapping_alternatives(
@@ -4462,10 +4565,10 @@ def _python_cli_argument_text(
         return "--" in literals and "provider" in literals
 
     def contains_myproxy_literal(node: ast.AST) -> bool:
-        pending = list(ast.iter_child_nodes(node))
+        pending = [node]
         while pending:
             candidate = pending.pop()
-            if isinstance(
+            if candidate is not node and isinstance(
                 candidate,
                 (
                     ast.FunctionDef,
@@ -4475,15 +4578,40 @@ def _python_cli_argument_text(
                 ),
             ):
                 continue
-            value = _constant_string_expression(candidate)
-            if (
-                value is not None
-                and re.fullmatch(
-                    _MYPROXY_PROVIDER_PATTERN,
-                    value.strip(),
-                    re.IGNORECASE,
+            values: Sequence[ast.AST] = ()
+            if isinstance(candidate, ast.Assign):
+                values = (candidate.value,)
+            elif isinstance(candidate, ast.AnnAssign):
+                values = (
+                    (candidate.value,)
+                    if candidate.value is not None
+                    else ()
                 )
-                is not None
+            elif isinstance(candidate, ast.NamedExpr):
+                values = (candidate.value,)
+            elif isinstance(candidate, ast.Return):
+                values = (
+                    (candidate.value,)
+                    if candidate.value is not None
+                    else ()
+                )
+            elif isinstance(candidate, ast.Call):
+                values = (
+                    *candidate.args,
+                    *(keyword.value for keyword in candidate.keywords),
+                )
+            if any(
+                (
+                    (value := _constant_string_expression(value_node))
+                    is not None
+                    and re.fullmatch(
+                        _MYPROXY_PROVIDER_PATTERN,
+                        value.strip(),
+                        re.IGNORECASE,
+                    )
+                    is not None
+                )
+                for value_node in values
             ):
                 return True
             pending.extend(ast.iter_child_nodes(candidate))
@@ -4642,10 +4770,6 @@ def _python_cli_argument_text(
         if (
             identity in direct_provider_function_ids
             or contains_myproxy_literal(definition)
-            or (
-                semantic_mapping_enabled
-                and contains_semantic_configuration(definition)
-            )
         )
     }
     for identity, definition in function_definitions.items():
@@ -4716,10 +4840,6 @@ def _python_cli_argument_text(
                 contains_cli_provider(candidate)
                 or contains_provider_fragments(candidate)
                 or contains_myproxy_literal(candidate)
-                or (
-                    semantic_mapping_enabled
-                    and contains_semantic_configuration(candidate)
-                )
             )
             for candidate in ast.walk(tree)
             if isinstance(candidate, ast.Lambda)
@@ -5851,15 +5971,33 @@ def _python_cli_argument_text(
             return list(sequence)
         return [dynamic_argument]
 
-    def evaluate_comprehension(
-        element: ast.AST,
+    def comprehension_environments(
         generators: Sequence[ast.comprehension],
         environment: Mapping[str, cli_value],
-    ) -> tuple[str, ...]:
+        *,
+        strict_literal_bound: bool = False,
+    ) -> list[cli_environment]:
         states = [dict(environment)]
         for generator in generators:
+            if (
+                strict_literal_bound
+                and isinstance(
+                    generator.iter,
+                    (ast.List, ast.Tuple, ast.Set),
+                )
+                and len(generator.iter.elts) > max_arguments
+            ):
+                mark_limited("arguments")
+                return []
             next_states: list[cli_environment] = []
             for state in states:
+                iterable_value = evaluate(generator.iter, state)
+                if (
+                    strict_literal_bound
+                    and sequence_was_truncated(iterable_value)
+                ):
+                    mark_limited("arguments")
+                    return []
                 for item in iterable_values(generator.iter, state):
                     iteration = dict(state)
                     bind(iteration, generator.target, item)
@@ -5869,6 +6007,38 @@ def _python_cli_argument_text(
             states = deduplicate_states(next_states)
             if not states:
                 break
+        return states
+
+    def evaluate_mapping_comprehension(
+        node: ast.DictComp,
+        environment: Mapping[str, cli_value],
+    ) -> cli_value | None:
+        iteration_states = comprehension_environments(
+            node.generators,
+            environment,
+            strict_literal_bound=True,
+        )
+        mapping_states: list[dict[str, cli_value]] = [{}]
+        for state in iteration_states:
+            key = static_mapping_key(node.key, state)
+            value = evaluate(node.value, state)
+            if key is None or value is None:
+                return None
+            alternatives = stored_alternatives(value) or (value,)
+            mapping_states = merge_mapping_states(
+                mapping_states,
+                [{key: candidate} for candidate in alternatives],
+            )
+        return store_alternatives(
+            [store_mapping(mapping) for mapping in mapping_states]
+        )
+
+    def evaluate_comprehension(
+        element: ast.AST,
+        generators: Sequence[ast.comprehension],
+        environment: Mapping[str, cli_value],
+    ) -> tuple[str, ...]:
+        states = comprehension_environments(generators, environment)
         result: tuple[str, ...] = ()
         for state in states:
             value = evaluate(element, state)
