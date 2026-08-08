@@ -123,6 +123,9 @@ MAX_ARCHIVE_METADATA_BYTES: Final[int] = 8 * 1024 * 1024
 MAX_ARCHIVE_HEADER_FIELD_BYTES: Final[int] = 1024 * 1024
 MAX_SCAN_FILE_BYTES: Final[int] = 64 * 1024 * 1024
 MAX_CONFIGURATION_BYTES: Final[int] = 8 * 1024 * 1024
+MIN_PYTHON_SENSITIVE_ANALYSIS_STEPS: Final[int] = 100_000
+MAX_PYTHON_SENSITIVE_ANALYSIS_STEPS: Final[int] = 1_000_000
+PYTHON_SENSITIVE_ANALYSIS_STEPS_PER_NODE: Final[int] = 16
 MAX_CONFIGURATION_DEPTH: Final[int] = 64
 MAX_CONFIGURATION_NODES: Final[int] = 16384
 MAX_GIT_OUTPUT_BYTES: Final[int] = 128 * 1024 * 1024
@@ -5737,7 +5740,14 @@ def _python_sensitive_call_text(path: str, text: str) -> tuple[str, str]:
     analysis_limited = False
     analysis_limit_reason = ""
     analysis_steps = 0
-    max_analysis_steps = 100_000
+    ast_node_count = sum(1 for _ in ast.walk(tree))
+    max_analysis_steps = min(
+        MAX_PYTHON_SENSITIVE_ANALYSIS_STEPS,
+        max(
+            MIN_PYTHON_SENSITIVE_ANALYSIS_STEPS,
+            ast_node_count * PYTHON_SENSITIVE_ANALYSIS_STEPS_PER_NODE,
+        ),
+    )
     max_bindings = 512
 
     def mark_limited(reason: str) -> None:

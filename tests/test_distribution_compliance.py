@@ -2819,7 +2819,21 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             f'name_{index} = "value_{index}"'
             for index in range(600)
         )
-        for payload in (deep_expression, excessive_bindings):
+        state_explosion = "\n".join(
+            line
+            for index in range(11)
+            for line in (
+                f"if condition_{index}:",
+                f'    value_{index} = "left_{index}"',
+                "else:",
+                f'    value_{index} = "right_{index}"',
+            )
+        )
+        for payload in (
+            deep_expression,
+            excessive_bindings,
+            state_explosion,
+        ):
             with self.subTest(payload_size=len(payload)):
                 findings = scan_payload(
                     "bounded.py",
@@ -2854,6 +2868,27 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                 allow_safe_fixtures=False,
             ),
         )
+
+    def test_large_product_python_files_stay_within_analysis_budget(
+        self,
+    ) -> None:
+        source_root = Path(__file__).resolve().parents[1]
+        for relative_path in (
+            "starcraft_commander/llm_interpreter.py",
+            "starcraft_commander/micromachine_pre_live_provenance.py",
+            "starcraft_commander/web_gui.py",
+        ):
+            with self.subTest(path=relative_path):
+                findings = scan_payload(
+                    relative_path,
+                    (source_root / relative_path).read_bytes(),
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertNotIn(
+                    "python_sensitive_analysis_limit_exceeded",
+                    {str(item["rule_id"]) for item in findings},
+                )
 
     def test_detects_python_environment_key_composition_and_escapes(
         self,
