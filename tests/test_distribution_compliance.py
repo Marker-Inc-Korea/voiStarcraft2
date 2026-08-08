@@ -2560,6 +2560,152 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                     {str(item["rule_id"]) for item in findings},
                 )
 
+    def test_detects_python_semantic_mapping_forms(self) -> None:
+        endpoint = "https://proxy." + "corp.example/v1"
+        model = "private-" + "deployment"
+        payloads = {
+            "direct-dict": (
+                f'endpoint = "{endpoint}"\n'
+                f'model = "{model}"\n'
+                'settings = {"provider": "my" + "proxy", '
+                '"base_url": endpoint, "model": model}\n'
+            ),
+            "typed-mapping": (
+                "from typing import Mapping\n"
+                'selected = "my" + "proxy"\n'
+                "settings: Mapping[str, str] = dict(\n"
+                "    provider=selected,\n"
+                f'    base_url="{endpoint}",\n'
+                f'    model="{model}",\n'
+                ")\n"
+            ),
+            "scalar-assignments": (
+                'provider = "my" + "proxy"\n'
+                f'base_url = "{endpoint}"\n'
+                f'model = "{model}"\n'
+            ),
+            "call-keywords": (
+                "Client(\n"
+                '    provider="my" + "proxy",\n'
+                f'    openai_base_url="{endpoint}",\n'
+                f'    model="{model}",\n'
+                ")\n"
+            ),
+        }
+
+        for name, payload in payloads.items():
+            with self.subTest(name=name):
+                findings = scan_payload(
+                    "starcraft_commander/private_config.py",
+                    payload.encode(),
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertEqual(
+                    {"private_endpoint", "private_model_override"},
+                    {str(item["rule_id"]) for item in findings},
+                )
+
+    def test_detects_indirect_python_mapping_calls_and_aliases(self) -> None:
+        endpoint = "https://proxy." + "corp.example/v1"
+        model = "private-" + "deployment"
+        payloads = {
+            "function-alias": (
+                f'endpoint = "{endpoint}"\n'
+                f'model = "{model}"\n'
+                "def assemble(provider, endpoint, model):\n"
+                '    return {"provider": provider, "settings": {\n'
+                '        "base_url": endpoint, "model": model}}\n'
+                "builder = assemble\n"
+                'config = builder("my" + "proxy", endpoint, model)\n'
+                "submit(config)\n"
+            ),
+            "mapping-alias": (
+                'settings = {"provider": "my" + "proxy", '
+                f'"base_url": "{endpoint}"}}\n'
+                "alias = settings\n"
+                f'alias.update(model="{model}")\n'
+            ),
+            "keyword-forwarding": (
+                "def configure(*, provider, endpoint, deployment):\n"
+                "    Client(provider=provider, base_url=endpoint, "
+                "model=deployment)\n"
+                "runner = configure\n"
+                "runner(\n"
+                '    provider="my" + "proxy",\n'
+                f'    endpoint="{endpoint}",\n'
+                f'    deployment="{model}",\n'
+                ")\n"
+            ),
+        }
+
+        for name, payload in payloads.items():
+            with self.subTest(name=name):
+                findings = scan_payload(
+                    "starcraft_commander/private_factory.py",
+                    payload.encode(),
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertEqual(
+                    {"private_endpoint", "private_model_override"},
+                    {str(item["rule_id"]) for item in findings},
+                )
+
+    def test_python_semantic_mapping_large_inputs_are_bounded(self) -> None:
+        endpoint = "https://proxy." + "corp.example/v1"
+        model = "private-" + "deployment"
+        payload = (
+            ("# safe padding\n" * 32_000)
+            + 'provider = "my" + "proxy"\n'
+            + f'base_url = "{endpoint}"\n'
+            + f'model = "{model}"\n'
+        ).encode()
+
+        findings = scan_payload(
+            "starcraft_commander/large_config.py",
+            payload,
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
+            {str(item["rule_id"]) for item in findings},
+        )
+        with mock.patch.object(
+            compliance_module,
+            "MAX_CONFIGURATION_BYTES",
+            128,
+        ):
+            limited = scan_payload(
+                "starcraft_commander/oversized_config.py",
+                payload[:256],
+                allow_safe_fixtures=False,
+            )
+        self.assertIn(
+            "configuration_limit_exceeded",
+            {str(item["rule_id"]) for item in limited},
+        )
+
+    def test_public_python_semantic_mappings_stay_clean(self) -> None:
+        payload = (
+            'provider = "openai"\n'
+            'base_url = "https://api.openai.com/v1"\n'
+            'model = "gpt-public"\n'
+            'settings = {"provider": provider, '
+            '"base_url": base_url, "model": model}\n'
+            "Client(**settings)\n"
+        ).encode()
+
+        self.assertEqual(
+            [],
+            scan_payload(
+                "starcraft_commander/public_config.py",
+                payload,
+                allow_safe_fixtures=False,
+            ),
+        )
+
     def test_detects_ini_indirect_shell_and_generic_docker_myproxy(
         self,
     ) -> None:

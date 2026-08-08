@@ -2943,6 +2943,7 @@ def scan_payload(
             python_cli_text, python_cli_failure = _python_cli_argument_text(
                 normalized_path,
                 candidate,
+                include_semantic_mappings=True,
             )
         except RecursionError:
             python_cli_text = ""
@@ -3256,7 +3257,12 @@ def _shell_continuation_text(text: str) -> str:
     return re.sub(r"\\\r?\n[ \t]*", " ", text)
 
 
-def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
+def _python_cli_argument_text(
+    path: str,
+    text: str,
+    *,
+    include_semantic_mappings: bool = False,
+) -> tuple[str, str]:
     if PurePosixPath(path).suffix.lower() != ".py":
         return "", ""
     try:
@@ -3266,6 +3272,16 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
 
     commands: list[str] = []
     command_set: set[str] = set()
+    semantic_fragments: list[str] = []
+    semantic_fragment_set: set[str] = set()
+    semantic_character_count = 0
+    semantic_mapping_enabled = (
+        include_semantic_mappings
+        and not any(
+            part.casefold() == "tests"
+            for part in PurePosixPath(path).parts
+        )
+    )
     cli_value = str | tuple[str, ...]
     cli_environment = dict[str, cli_value]
     dynamic_argument = "<dynamic-argument>"
@@ -3452,6 +3468,8 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
     def store_mapping(values: dict[str, cli_value]) -> str:
         identity = id(values)
         mapping_values[identity] = values
+        if semantic_mapping_enabled:
+            record_semantic_mapping(values)
         return f"{known_mapping_prefix}{identity}>"
 
     def stored_mapping(
@@ -3673,6 +3691,216 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             )
         )
 
+    def semantic_value_alternatives(
+        value: cli_value | None,
+        depth: int = 0,
+        active: frozenset[int] = frozenset(),
+    ) -> list[object]:
+        if depth > MAX_CONFIGURATION_DEPTH:
+            mark_limited("semantic_depth")
+            return []
+        alternatives = stored_alternatives(value)
+        if alternatives is not None:
+            return [
+                candidate
+                for alternative in alternatives
+                for candidate in semantic_value_alternatives(
+                    alternative,
+                    depth,
+                    active,
+                )
+            ][:max_environment_states]
+        mapping = stored_mapping(value)
+        if mapping is not None:
+            identity = id(mapping)
+            if identity in active:
+                return []
+            return semantic_mapping_alternatives(
+                mapping,
+                depth + 1,
+                active | {identity},
+            )
+        sequence = stored_sequence(value)
+        if sequence is not None:
+            states: list[tuple[object, ...]] = [()]
+            for item in sequence:
+                candidates = semantic_value_alternatives(
+                    item,
+                    depth + 1,
+                    active,
+                ) or [None]
+                states = [
+                    (*state, candidate)
+                    for state in states
+                    for candidate in candidates
+                ]
+                if len(states) > max_environment_states:
+                    mark_limited("semantic_states")
+                    states = states[:max_environment_states]
+            return list(states)
+        if (
+            isinstance(value, str)
+            and not has_stored_reference(value)
+            and dynamic_argument not in value
+            and dynamic_f_string_argument not in value
+        ):
+            return [value]
+        return []
+
+    def semantic_mapping_alternatives(
+        mapping: Mapping[str, cli_value],
+        depth: int = 0,
+        active: frozenset[int] = frozenset(),
+    ) -> list[dict[str, object]]:
+        states: list[dict[str, object]] = [{}]
+        for key, value in mapping.items():
+            candidates = semantic_value_alternatives(
+                value,
+                depth + 1,
+                active,
+            ) or [None]
+            states = [
+                {**state, key: candidate}
+                for state in states
+                for candidate in candidates
+            ]
+            if len(states) > max_environment_states:
+                mark_limited("semantic_states")
+                states = states[:max_environment_states]
+        return states
+
+    def semantic_value_is_relevant(
+        value: object,
+        depth: int = 0,
+    ) -> bool:
+        if depth > MAX_CONFIGURATION_DEPTH:
+            mark_limited("semantic_depth")
+            return False
+        if isinstance(value, Mapping):
+            return any(
+                (
+                    _normalized_configuration_key(str(key))
+                    in _SEMANTIC_CONFIGURATION_KEYS
+                    or "myproxy"
+                    in _normalized_configuration_key(str(key))
+                    or semantic_value_is_relevant(nested, depth + 1)
+                )
+                for key, nested in value.items()
+            )
+        if isinstance(value, Sequence) and not isinstance(
+            value,
+            (str, bytes, bytearray),
+        ):
+            return any(
+                semantic_value_is_relevant(nested, depth + 1)
+                for nested in value
+            )
+        scalar = _configuration_scalar_text(value)
+        return scalar is not None and (
+            "myproxy" in scalar.casefold()
+            or re.fullmatch(
+                _MYPROXY_PROVIDER_PATTERN,
+                scalar.strip(),
+                re.IGNORECASE,
+            )
+            is not None
+        )
+
+    def record_semantic_mapping(
+        mapping: Mapping[str, cli_value],
+    ) -> None:
+        nonlocal semantic_character_count
+        if not semantic_mapping_enabled or analysis_limited:
+            return
+        for candidate in semantic_mapping_alternatives(mapping):
+            if not semantic_value_is_relevant(candidate):
+                continue
+            try:
+                semantic_text = _semantic_mapping_scan_text((candidate,))
+            except (RecursionError, TypeError, ValueError):
+                mark_limited("semantic_mapping")
+                return
+            if (
+                not semantic_text
+                or semantic_text in semantic_fragment_set
+            ):
+                continue
+            if (
+                len(semantic_fragments) >= MAX_CONFIGURATION_SNAPSHOTS
+                or semantic_character_count + len(semantic_text)
+                > MAX_CONFIGURATION_BYTES
+            ):
+                mark_limited("semantic_snapshots")
+                return
+            semantic_fragment_set.add(semantic_text)
+            semantic_fragments.append(semantic_text)
+            semantic_character_count += len(semantic_text)
+
+    def record_semantic_binding(
+        environment: Mapping[str, cli_value],
+        name: str,
+    ) -> None:
+        normalized = _normalized_configuration_key(name)
+        value = environment.get(name)
+        if value is None:
+            return
+        if "myproxy" in normalized:
+            record_semantic_mapping({name: value})
+            return
+        provider_keys = {"provider", "llm_provider", "model_provider"}
+        if normalized not in _SEMANTIC_CONFIGURATION_KEYS:
+            return
+        mapping = {
+            candidate_name: candidate_value
+            for candidate_name, candidate_value in environment.items()
+            if (
+                _normalized_configuration_key(candidate_name)
+                in provider_keys
+            )
+        }
+        if normalized in provider_keys:
+            mapping[name] = value
+            mapping.update(
+                {
+                    candidate_name: candidate_value
+                    for candidate_name, candidate_value in environment.items()
+                    if (
+                        _normalized_configuration_key(candidate_name)
+                        in _SEMANTIC_CONFIGURATION_KEYS - provider_keys
+                    )
+                }
+            )
+        else:
+            mapping[name] = value
+        if mapping:
+            record_semantic_mapping(mapping)
+
+    def record_call_semantic_mapping(
+        call: ast.Call,
+        environment: Mapping[str, cli_value],
+    ) -> None:
+        mapping: dict[str, cli_value] = {}
+        for argument in call.args:
+            value = evaluate(
+                (
+                    argument.value
+                    if isinstance(argument, ast.Starred)
+                    else argument
+                ),
+                environment,
+            )
+            for nested in mapping_alternatives(value):
+                record_semantic_mapping(nested)
+        for keyword in call.keywords:
+            value = evaluate(keyword.value, environment)
+            if keyword.arg is None:
+                for nested in mapping_alternatives(value):
+                    record_semantic_mapping(nested)
+            elif value is not None:
+                mapping[keyword.arg] = value
+        if mapping:
+            record_semantic_mapping(mapping)
+
     def evaluate(
         node: ast.AST,
         environment: Mapping[str, cli_value],
@@ -3836,6 +4064,21 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             right_sequence = flatten_sequence(right)
             if left_sequence is not None and right_sequence is not None:
                 return combine(left_sequence, right_sequence)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            left_mappings = mapping_alternatives(
+                evaluate(node.left, environment)
+            )
+            right_mappings = mapping_alternatives(
+                evaluate(node.right, environment)
+            )
+            if left_mappings and right_mappings:
+                return store_alternatives(
+                    [
+                        store_mapping({**left, **right})
+                        for left in left_mappings
+                        for right in right_mappings
+                    ]
+                )
         if isinstance(node, ast.IfExp):
             alternatives = [
                 value
@@ -3862,7 +4105,48 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             sequence = flatten_sequence(value)
             if sequence is not None:
                 return sequence
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "dict"
+        ):
+            states: list[dict[str, cli_value]] = [{}]
+            if len(node.args) > 1:
+                return None
+            if node.args:
+                mappings = mapping_alternatives(
+                    evaluate(node.args[0], environment)
+                )
+                if not mappings:
+                    return None
+                states = [dict(mapping) for mapping in mappings]
+            for keyword in node.keywords:
+                value = evaluate(keyword.value, environment)
+                if keyword.arg is None:
+                    mappings = mapping_alternatives(value)
+                    if not mappings:
+                        return None
+                    states = [
+                        {**state, **mapping}
+                        for state in states
+                        for mapping in mappings
+                    ]
+                else:
+                    states = [
+                        {
+                            **state,
+                            keyword.arg: value or dynamic_argument,
+                        }
+                        for state in states
+                    ]
+                if len(states) > max_environment_states:
+                    mark_limited("environment_states")
+                    states = states[:max_environment_states]
+            return store_alternatives(
+                [store_mapping(state) for state in states]
+            )
         if isinstance(node, ast.Call):
+            record_call_semantic_mapping(node, environment)
             if isinstance(node.func, ast.Name) and node.func.id == "super":
                 return evaluate_super_call(node, environment)
             function_value = (
@@ -3974,6 +4258,8 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                 mark_limited("environment_values")
                 return
             environment[target.id] = value
+            if semantic_mapping_enabled:
+                record_semantic_binding(environment, target.id)
             return
         if isinstance(target, ast.Attribute):
             key = attribute_key(target, environment)
@@ -4124,6 +4410,67 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             pending.extend(ast.iter_child_nodes(candidate))
         return False
 
+    def contains_semantic_configuration(node: ast.AST) -> bool:
+        semantic_key = False
+        private_context = False
+        pending = [node]
+        while pending:
+            candidate = pending.pop()
+            if candidate is not node and isinstance(
+                candidate,
+                (
+                    ast.FunctionDef,
+                    ast.AsyncFunctionDef,
+                    ast.ClassDef,
+                    ast.Lambda,
+                ),
+            ):
+                continue
+            names = []
+            if isinstance(candidate, ast.keyword) and candidate.arg is not None:
+                names.append(candidate.arg)
+            elif isinstance(candidate, ast.Name):
+                names.append(candidate.id)
+            elif isinstance(candidate, ast.Dict):
+                names.extend(
+                    key
+                    for key_node in candidate.keys
+                    if key_node is not None
+                    and (
+                        key := _constant_string_expression(key_node)
+                    )
+                    is not None
+                )
+            for name in names:
+                normalized = _normalized_configuration_key(name)
+                semantic_key = semantic_key or (
+                    normalized in _SEMANTIC_CONFIGURATION_KEYS
+                    or "myproxy" in normalized
+                )
+                private_context = (
+                    private_context or "myproxy" in normalized
+                )
+            literal = _constant_string_expression(candidate)
+            if literal is not None:
+                normalized = _normalized_configuration_key(literal)
+                semantic_key = semantic_key or (
+                    normalized in _SEMANTIC_CONFIGURATION_KEYS
+                    or "myproxy" in normalized
+                )
+                private_context = private_context or (
+                    "myproxy" in normalized
+                    or re.fullmatch(
+                        _MYPROXY_PROVIDER_PATTERN,
+                        literal.strip(),
+                        re.IGNORECASE,
+                    )
+                    is not None
+                )
+            if semantic_key and private_context:
+                return True
+            pending.extend(ast.iter_child_nodes(candidate))
+        return False
+
     def contains_cli_execution_call(node: ast.AST) -> bool:
         pending = list(ast.iter_child_nodes(node))
         execution_names = {
@@ -4216,6 +4563,10 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
         if (
             identity in direct_provider_function_ids
             or contains_myproxy_literal(definition)
+            or (
+                semantic_mapping_enabled
+                and contains_semantic_configuration(definition)
+            )
         )
     }
     for identity, definition in function_definitions.items():
@@ -4277,11 +4628,19 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
         and not provider_fragment_function_ids
         and not contains_cli_provider(tree)
         and not contains_provider_fragments(tree)
+        and not (
+            semantic_mapping_enabled
+            and contains_semantic_configuration(tree)
+        )
         and not any(
             (
                 contains_cli_provider(candidate)
                 or contains_provider_fragments(candidate)
                 or contains_myproxy_literal(candidate)
+                or (
+                    semantic_mapping_enabled
+                    and contains_semantic_configuration(candidate)
+                )
             )
             for candidate in ast.walk(tree)
             if isinstance(candidate, ast.Lambda)
@@ -5113,7 +5472,7 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
         return []
 
     def value_supplies_provider_seed(value: cli_value | None) -> bool:
-        return any(
+        scalar_seed = any(
             re.fullmatch(
                 _MYPROXY_PROVIDER_PATTERN,
                 candidate.strip(),
@@ -5121,7 +5480,8 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             )
             is not None
             for candidate in scalar_alternatives(value)
-        ) or any(
+        )
+        sequence_seed = any(
             any(
                 item == "--provider"
                 or item.startswith("--provider=")
@@ -5129,6 +5489,12 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             )
             for sequence in sequence_alternatives(value)
         )
+        mapping_seed = any(
+            value_supplies_provider_seed(nested)
+            for mapping in mapping_alternatives(value)
+            for nested in mapping.values()
+        )
+        return scalar_seed or sequence_seed or mapping_seed
 
     def call_supplies_provider_seed(
         call: ast.Call | None,
@@ -5478,17 +5844,41 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
             elif (
                 isinstance(statement, ast.AugAssign)
                 and isinstance(statement.target, ast.Name)
-                and isinstance(statement.op, ast.Add)
             ):
                 current = result.get(statement.target.id)
                 addition = evaluate(statement.value, result)
-                if isinstance(current, str) and isinstance(addition, str):
+                current_mappings = mapping_alternatives(current)
+                addition_mappings = mapping_alternatives(addition)
+                if (
+                    isinstance(statement.op, ast.BitOr)
+                    and current_mappings
+                    and addition_mappings
+                ):
+                    merged_values = [
+                        store_mapping({**current, **updates})
+                        for current in current_mappings
+                        for updates in addition_mappings
+                    ]
+                    bind(
+                        result,
+                        statement.target,
+                        store_alternatives(merged_values),
+                    )
+                elif (
+                    isinstance(statement.op, ast.Add)
+                    and isinstance(current, str)
+                    and isinstance(addition, str)
+                ):
                     bind(
                         result,
                         statement.target,
                         bounded_string(current + addition),
                     )
-                elif isinstance(current, tuple) and isinstance(addition, tuple):
+                elif (
+                    isinstance(statement.op, ast.Add)
+                    and isinstance(current, tuple)
+                    and isinstance(addition, tuple)
+                ):
                     bind(
                         result,
                         statement.target,
@@ -5505,7 +5895,58 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
                 call = statement.value
                 target = call.func.value
                 current = result.get(target.id)
-                if isinstance(current, tuple) and len(call.args) == 1:
+                current_mappings = mapping_alternatives(current)
+                if current_mappings and call.func.attr in {
+                    "setdefault",
+                    "update",
+                }:
+                    updates: list[dict[str, cli_value]] = [{}]
+                    if call.args:
+                        if (
+                            call.func.attr == "setdefault"
+                            and len(call.args) <= 2
+                        ):
+                            keys = scalar_alternatives(
+                                evaluate(call.args[0], result)
+                            )
+                            if len(keys) == 1:
+                                value = (
+                                    evaluate(call.args[1], result)
+                                    if len(call.args) == 2
+                                    else dynamic_argument
+                                )
+                                updates = [
+                                    {keys[0]: value or dynamic_argument}
+                                ]
+                        elif (
+                            call.func.attr == "update"
+                            and len(call.args) == 1
+                        ):
+                            updates = mapping_alternatives(
+                                evaluate(call.args[0], result)
+                            )
+                    if call.func.attr == "update":
+                        keyword_updates = {
+                            keyword.arg: (
+                                evaluate(keyword.value, result)
+                                or dynamic_argument
+                            )
+                            for keyword in call.keywords
+                            if keyword.arg is not None
+                        }
+                        updates = [
+                            {**update, **keyword_updates}
+                            for update in updates
+                        ]
+                    for mapping in current_mappings:
+                        for update in updates:
+                            if call.func.attr == "setdefault":
+                                for key, value in update.items():
+                                    mapping.setdefault(key, value)
+                            else:
+                                mapping.update(update)
+                        record_semantic_mapping(mapping)
+                elif isinstance(current, tuple) and len(call.args) == 1:
                     addition = evaluate(call.args[0], result)
                     if call.func.attr == "append":
                         bind(
@@ -5750,8 +6191,9 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
         process_scope(tree.body, ({},))
     except RecursionError:
         mark_limited("recursion_depth")
+    scan_fragments = [*commands, *semantic_fragments]
     return (
-        "\n".join(commands),
+        "\n".join(scan_fragments),
         (
             "python_cli_analysis_limit_exceeded:"
             + analysis_limit_reason
@@ -7342,6 +7784,7 @@ def _configuration_scan_texts(
     structured_suffixes = {".ini", ".json", ".toml", ".yaml", ".yml"}
     semantic_path = (
         suffix in structured_suffixes
+        or suffix == ".py"
         or suffix in {".bash", ".command", ".sh", ".zsh"}
         or _is_dockerfile_path(path)
     )
