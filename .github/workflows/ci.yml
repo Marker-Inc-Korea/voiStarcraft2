@@ -165,12 +165,78 @@ jobs:
           dist_dir = root / "dist"
           evidence_dir = root / "distribution-compliance-evidence"
           evidence = read_exact_files(evidence_dir, evidence_names)
+          canonical_report = json.loads(
+              evidence["distribution-compliance.json"].decode("utf-8")
+          )
           projection = json.loads(
               evidence[
                   "distribution-compliance.final-projection.json"
               ].decode("utf-8")
           )
-          artifacts = projection.get("artifacts")
+          if (
+              not isinstance(canonical_report, dict)
+              or canonical_report.get("ok") is not True
+              or canonical_report.get("status") != "passed"
+              or canonical_report.get("blockers") != []
+          ):
+              raise SystemExit("canonical compliance report did not pass")
+          expected_projection = {
+              key: value
+              for key, value in canonical_report.items()
+              if key not in {"blockers", "ok", "secret_scan", "status"}
+          }
+          if projection != expected_projection:
+              raise SystemExit(
+                  "final projection does not match canonical report"
+              )
+          projection_json = evidence[
+              "distribution-compliance.final-projection.json"
+          ]
+          expected_projection_markdown = (
+              b"# Distribution Compliance Final Projection\n\n"
+              b"The canonical self-reference-free report payload follows."
+              b"\n\n```json\n"
+              + projection_json
+              + b"```\n"
+          )
+          if (
+              evidence["distribution-compliance.final-projection.md"]
+              != expected_projection_markdown
+          ):
+              raise SystemExit(
+                  "final projection markdown does not match JSON"
+              )
+          secret_scan = canonical_report.get("secret_scan")
+          input_manifest = (
+              secret_scan.get("input_manifest")
+              if isinstance(secret_scan, dict)
+              else None
+          )
+          if not isinstance(input_manifest, list):
+              raise SystemExit("canonical secret-scan manifest is missing")
+          for filename in (
+              "distribution-compliance.final-projection.json",
+              "distribution-compliance.final-projection.md",
+          ):
+              matches = [
+                  entry
+                  for entry in input_manifest
+                  if isinstance(entry, dict)
+                  and entry.get("path") == f"report/{filename}"
+              ]
+              payload = evidence[filename]
+              if (
+                  len(matches) != 1
+                  or matches[0].get("kind") != "report"
+                  or matches[0].get("size") != len(payload)
+                  or matches[0].get("sha256")
+                  != hashlib.sha256(payload).hexdigest()
+              ):
+                  raise SystemExit(
+                      f"canonical report does not bind {filename}"
+                  )
+
+          artifacts = canonical_report.get("artifacts")
           if not isinstance(artifacts, dict) or set(artifacts) != {
               "wheel",
               "sdist",
@@ -247,25 +313,33 @@ jobs:
           PY
       - name: Verify release source remained clean
         run: test -z "$(git status --porcelain=v1 --untracked-files=all)"
-      - name: Seal qualified upload inputs
-        if: success()
-        run: |
-          sudo chown -R root:root dist distribution-compliance-evidence
-          sudo chmod -R a-w,u+rX,go+rX dist distribution-compliance-evidence
-      - name: Verify qualified upload integrity
+      - name: Create sealed qualified upload bundle
+        id: seal-qualified-upload
         if: success()
         env:
           EXPECTED_UPLOAD_INTEGRITY: >-
             ${{ steps.capture-upload-integrity.outputs.manifest }}
+          SEALED_UPLOAD_PARENT: /opt/voi-distribution-upload
+          SEALED_UPLOAD_DIR: >-
+            /opt/voi-distribution-upload/${{ github.run_id }}-${{
+            github.run_attempt }}
         run: |
-          uv run --python 3.12 python - <<'PY'
+          sudo env \
+            EXPECTED_UPLOAD_INTEGRITY="${EXPECTED_UPLOAD_INTEGRITY}" \
+            GITHUB_OUTPUT="${GITHUB_OUTPUT}" \
+            GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
+            SEALED_UPLOAD_PARENT="${SEALED_UPLOAD_PARENT}" \
+            SEALED_UPLOAD_DIR="${SEALED_UPLOAD_DIR}" \
+            python3 - <<'PY'
           import base64
           import hashlib
+          import io
           import json
           import os
           from pathlib import Path
           import re
           import stat
+          import tarfile
 
           evidence_names = frozenset(
               {
@@ -356,7 +430,7 @@ jobs:
           ):
               raise SystemExit("invalid evidence integrity snapshot")
 
-          root = Path.cwd()
+          root = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
           dist_dir = root / "dist"
           evidence_dir = root / "distribution-compliance-evidence"
           evidence = read_exact_files(evidence_dir, evidence_names)
@@ -367,12 +441,78 @@ jobs:
           if observed_evidence != snapshot["evidence"]:
               raise SystemExit("distribution evidence digest mismatch")
 
+          canonical_report = json.loads(
+              evidence["distribution-compliance.json"].decode("utf-8")
+          )
           projection = json.loads(
               evidence[
                   "distribution-compliance.final-projection.json"
               ].decode("utf-8")
           )
-          artifacts = projection.get("artifacts")
+          if (
+              not isinstance(canonical_report, dict)
+              or canonical_report.get("ok") is not True
+              or canonical_report.get("status") != "passed"
+              or canonical_report.get("blockers") != []
+          ):
+              raise SystemExit("canonical compliance report did not pass")
+          expected_projection = {
+              key: value
+              for key, value in canonical_report.items()
+              if key not in {"blockers", "ok", "secret_scan", "status"}
+          }
+          if projection != expected_projection:
+              raise SystemExit(
+                  "final projection does not match canonical report"
+              )
+          projection_json = evidence[
+              "distribution-compliance.final-projection.json"
+          ]
+          expected_projection_markdown = (
+              b"# Distribution Compliance Final Projection\n\n"
+              b"The canonical self-reference-free report payload follows."
+              b"\n\n```json\n"
+              + projection_json
+              + b"```\n"
+          )
+          if (
+              evidence["distribution-compliance.final-projection.md"]
+              != expected_projection_markdown
+          ):
+              raise SystemExit(
+                  "final projection markdown does not match JSON"
+              )
+          secret_scan = canonical_report.get("secret_scan")
+          input_manifest = (
+              secret_scan.get("input_manifest")
+              if isinstance(secret_scan, dict)
+              else None
+          )
+          if not isinstance(input_manifest, list):
+              raise SystemExit("canonical secret-scan manifest is missing")
+          for filename in (
+              "distribution-compliance.final-projection.json",
+              "distribution-compliance.final-projection.md",
+          ):
+              matches = [
+                  entry
+                  for entry in input_manifest
+                  if isinstance(entry, dict)
+                  and entry.get("path") == f"report/{filename}"
+              ]
+              payload = evidence[filename]
+              if (
+                  len(matches) != 1
+                  or matches[0].get("kind") != "report"
+                  or matches[0].get("size") != len(payload)
+                  or matches[0].get("sha256")
+                  != hashlib.sha256(payload).hexdigest()
+              ):
+                  raise SystemExit(
+                      f"canonical report does not bind {filename}"
+                  )
+
+          artifacts = canonical_report.get("artifacts")
           if not isinstance(artifacts, dict) or set(artifacts) != {
               "wheel",
               "sdist",
@@ -432,16 +572,140 @@ jobs:
               ).hexdigest()
               if observed_digest != item["sha256"]:
                   raise SystemExit(f"{kind} artifact digest mismatch")
+
+          bundle_files = {
+              f"dist/{name}": payload
+              for name, payload in artifact_payloads.items()
+          }
+          bundle_files.update(
+              {
+                  f"distribution-compliance-evidence/{name}": payload
+                  for name, payload in evidence.items()
+              }
+          )
+          sealed_manifest = {
+              "schema_version": 1,
+              "artifacts": snapshot["artifacts"],
+              "files": {
+                  path: {
+                      "sha256": hashlib.sha256(payload).hexdigest(),
+                      "size": len(payload),
+                  }
+                  for path, payload in sorted(bundle_files.items())
+              },
+          }
+          bundle_files["SEALED-UPLOAD-MANIFEST.json"] = (
+              json.dumps(
+                  sealed_manifest,
+                  indent=2,
+                  sort_keys=True,
+              ).encode("utf-8")
+              + b"\n"
+          )
+
+          archive_buffer = io.BytesIO()
+          with tarfile.open(
+              fileobj=archive_buffer,
+              mode="w",
+              format=tarfile.USTAR_FORMAT,
+          ) as archive:
+              for path, payload in sorted(bundle_files.items()):
+                  member = tarfile.TarInfo(path)
+                  member.size = len(payload)
+                  member.mode = 0o444
+                  member.mtime = 0
+                  member.uid = 0
+                  member.gid = 0
+                  member.uname = "root"
+                  member.gname = "root"
+                  archive.addfile(member, io.BytesIO(payload))
+          bundle_bytes = archive_buffer.getvalue()
+          bundle_digest = hashlib.sha256(bundle_bytes).hexdigest()
+
+          seal_parent = Path(os.environ["SEALED_UPLOAD_PARENT"])
+          seal_dir = Path(os.environ["SEALED_UPLOAD_DIR"])
+          if (
+              not seal_parent.is_absolute()
+              or not seal_dir.is_absolute()
+              or seal_dir.parent != seal_parent
+          ):
+              raise SystemExit("invalid sealed upload destination")
+          try:
+              seal_parent.mkdir(mode=0o755)
+              os.chmod(seal_parent, 0o755)
+          except FileExistsError:
+              pass
+          parent_stat = seal_parent.lstat()
+          if (
+              not stat.S_ISDIR(parent_stat.st_mode)
+              or seal_parent.is_symlink()
+              or parent_stat.st_uid != os.geteuid()
+              or stat.S_IMODE(parent_stat.st_mode) != 0o755
+          ):
+              raise SystemExit("sealed upload parent is not trusted")
+          seal_dir.mkdir(mode=0o700, exist_ok=False)
+          seal_stat = seal_dir.lstat()
+          if (
+              not stat.S_ISDIR(seal_stat.st_mode)
+              or seal_dir.is_symlink()
+              or seal_stat.st_uid != os.geteuid()
+              or stat.S_IMODE(seal_stat.st_mode) != 0o700
+          ):
+              raise SystemExit("sealed upload directory is not private")
+
+          bundle_path = seal_dir / "qualified-release.tar"
+          nofollow = getattr(os, "O_NOFOLLOW", 0)
+          if not nofollow:
+              raise SystemExit("O_NOFOLLOW is required")
+          bundle_fd = os.open(
+              bundle_path,
+              os.O_WRONLY
+              | os.O_CREAT
+              | os.O_EXCL
+              | nofollow
+              | getattr(os, "O_CLOEXEC", 0),
+              0o400,
+          )
+          try:
+              remaining = memoryview(bundle_bytes)
+              while remaining:
+                  written = os.write(bundle_fd, remaining)
+                  if written <= 0:
+                      raise SystemExit("failed to write sealed upload bundle")
+                  remaining = remaining[written:]
+              os.fsync(bundle_fd)
+          finally:
+              os.close(bundle_fd)
+
+          if read_regular(bundle_path) != bundle_bytes:
+              raise SystemExit("sealed upload bundle verification failed")
+          os.chmod(bundle_path, 0o444)
+          os.chmod(seal_dir, 0o555)
+          bundle_stat = bundle_path.lstat()
+          sealed_dir_stat = seal_dir.lstat()
+          if (
+              not stat.S_ISREG(bundle_stat.st_mode)
+              or bundle_stat.st_uid != os.geteuid()
+              or stat.S_IMODE(bundle_stat.st_mode) != 0o444
+              or not stat.S_ISDIR(sealed_dir_stat.st_mode)
+              or sealed_dir_stat.st_uid != os.geteuid()
+              or stat.S_IMODE(sealed_dir_stat.st_mode) != 0o555
+          ):
+              raise SystemExit("sealed upload permissions are invalid")
+          with Path(os.environ["GITHUB_OUTPUT"]).open(
+              "a",
+              encoding="utf-8",
+          ) as output:
+              output.write(f"bundle_sha256={bundle_digest}\n")
           PY
       - name: Upload qualified release artifacts and compliance evidence
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: distribution-compliance-qualified-release
-          path: |
-            dist/*.whl
-            dist/*.tar.gz
-            distribution-compliance-evidence/
+          path: >-
+            /opt/voi-distribution-upload/${{ github.run_id }}-${{
+            github.run_attempt }}/qualified-release.tar
           if-no-files-found: error
           retention-days: 30
       - name: Upload failed distribution compliance evidence

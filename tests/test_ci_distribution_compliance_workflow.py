@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 
@@ -75,9 +76,7 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
             self.assertIs(False, checkout["with"]["persist-credentials"])
 
         verification = next(
-            step
-            for step in steps
-            if step.get("name") == "Verify exact release source"
+            step for step in steps if step.get("name") == "Verify exact release source"
         )
         expected_commit = verification["env"]["EXPECTED_RELEASE_COMMIT"]
         self.assertIn("github.event.pull_request.head.sha", expected_commit)
@@ -120,10 +119,7 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
             for index, step in enumerate(steps)
             if str(step.get("uses", "")).startswith("actions/upload-artifact@")
         ]
-        upload_steps = {
-            step["with"]["name"]: (index, step)
-            for index, step in uploads
-        }
+        upload_steps = {step["with"]["name"]: (index, step) for index, step in uploads}
 
         self.assertEqual(2, len(uploads))
         self.assertEqual(2, len(upload_steps))
@@ -160,13 +156,16 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
         self.assertEqual("success()", qualified_upload["if"])
         self.assertEqual(
             [
-                "dist/*.whl",
-                "dist/*.tar.gz",
-                "distribution-compliance-evidence/",
+                "/opt/voi-distribution-upload/${{ github.run_id }}-${{ "
+                "github.run_attempt }}/qualified-release.tar",
             ],
             self._artifact_paths(qualified_upload),
         )
-        self.assertNotIn("dist/", self._artifact_paths(qualified_upload))
+        self.assertNotIn("dist/*.whl", self._artifact_paths(qualified_upload))
+        self.assertNotIn(
+            "distribution-compliance-evidence/",
+            self._artifact_paths(qualified_upload),
+        )
         self.assertEqual(
             "error",
             qualified_upload["with"]["if-no-files-found"],
@@ -180,7 +179,7 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
             {step.get("if") for _, step in upload_steps.values()},
         )
 
-    def test_qualified_upload_has_immediate_fail_closed_integrity_gate(
+    def test_qualified_upload_is_created_by_final_root_private_sealer(
         self,
     ) -> None:
         workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
@@ -192,60 +191,60 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
         }
         build_index, _ = by_name["Build and verify release artifacts"]
         capture_index, capture = by_name["Capture verified upload integrity"]
-        seal_index, seal = by_name["Seal qualified upload inputs"]
-        gate_index, gate = by_name["Verify qualified upload integrity"]
+        clean_index, _ = by_name["Verify release source remained clean"]
+        seal_index, seal = by_name["Create sealed qualified upload bundle"]
         qualified_index, qualified = by_name[
             "Upload qualified release artifacts and compliance evidence"
         ]
 
         self.assertEqual(build_index + 1, capture_index)
-        self.assertEqual(seal_index + 1, gate_index)
-        self.assertEqual(gate_index + 1, qualified_index)
+        self.assertEqual(capture_index + 1, clean_index)
+        self.assertEqual(clean_index + 1, seal_index)
+        self.assertEqual(seal_index + 1, qualified_index)
         self.assertEqual("capture-upload-integrity", capture["id"])
+        self.assertEqual("seal-qualified-upload", seal["id"])
         self.assertEqual("success()", seal["if"])
-        self.assertEqual("success()", gate["if"])
         self.assertEqual("success()", qualified["if"])
         self.assertIn(
             "steps.capture-upload-integrity.outputs.manifest",
-            gate["env"]["EXPECTED_UPLOAD_INTEGRITY"],
+            seal["env"]["EXPECTED_UPLOAD_INTEGRITY"],
         )
 
         capture_run = capture["run"]
-        gate_run = gate["run"]
-        for filename in EXPECTED_EVIDENCE_FILES:
-            self.assertIn(filename, capture_run)
-            self.assertIn(filename, gate_run)
-        for script in (capture_run, gate_run):
-            self.assertIn("O_NOFOLLOW", script)
-            self.assertIn("stat.S_ISREG", script)
-            self.assertIn("observed_names != expected_names", script)
+        seal_run = seal["run"]
+        for script in (capture_run, seal_run):
+            self.assertIn("distribution-compliance.json", script)
             self.assertIn(
-                "distribution-compliance.final-projection.json",
+                "final projection does not match canonical report",
                 script,
             )
+            self.assertIn(
+                "canonical report does not bind",
+                script,
+            )
+            self.assertIn("O_NOFOLLOW", script)
+            self.assertIn("stat.S_ISREG", script)
             self.assertIn('("wheel", ".whl")', script)
             self.assertIn('("sdist", ".tar.gz")', script)
-            self.assertIn("artifact digest mismatch", script)
 
-        self.assertIn("GITHUB_OUTPUT", capture_run)
-        self.assertIn("hashlib.sha256(payload)", capture_run)
-        self.assertIn("base64.b64decode", gate_run)
-        self.assertIn("observed_evidence != snapshot", gate_run)
-        self.assertIn(
-            "snapshot_artifacts != expected_snapshot_artifacts",
-            gate_run,
-        )
-        self.assertIn(
-            "sudo chown -R root:root dist distribution-compliance-evidence",
-            seal["run"],
-        )
-        self.assertIn(
-            "sudo chmod -R a-w,u+rX,go+rX "
-            "dist distribution-compliance-evidence",
-            seal["run"],
+        self.assertIn("sudo env", seal_run)
+        self.assertIn("SEALED_UPLOAD_PARENT", seal_run)
+        self.assertIn("tarfile.USTAR_FORMAT", seal_run)
+        self.assertIn("archive.addfile", seal_run)
+        self.assertIn("os.O_EXCL", seal_run)
+        self.assertIn("read_regular(bundle_path) != bundle_bytes", seal_run)
+        self.assertIn("os.chmod(bundle_path, 0o444)", seal_run)
+        self.assertIn("os.chmod(seal_dir, 0o555)", seal_run)
+        self.assertNotIn("chown -R", seal_run)
+        self.assertEqual(
+            [
+                "/opt/voi-distribution-upload/${{ github.run_id }}-${{ "
+                "github.run_attempt }}/qualified-release.tar",
+            ],
+            self._artifact_paths(qualified),
         )
 
-    def test_integrity_gate_rejects_artifact_evidence_and_file_set_changes(
+    def test_capture_rejects_coordinated_projection_and_artifact_forgery(
         self,
     ) -> None:
         workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
@@ -255,102 +254,229 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
             for step in steps
             if step.get("name") == "Capture verified upload integrity"
         )
-        gate = next(
-            step
-            for step in steps
-            if step.get("name") == "Verify qualified upload integrity"
-        )
         capture_script = self._heredoc_python(capture["run"])
-        gate_script = self._heredoc_python(gate["run"])
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            dist = root / "dist"
-            evidence = root / "distribution-compliance-evidence"
-            dist.mkdir()
-            evidence.mkdir()
-            wheel = dist / "package-1.0-py3-none-any.whl"
-            sdist = dist / "package-1.0.tar.gz"
-            wheel_payload = b"verified wheel bytes\n"
-            sdist_payload = b"verified sdist bytes\n"
-            wheel.write_bytes(wheel_payload)
-            sdist.write_bytes(sdist_payload)
-            projection = {
-                "artifacts": {
-                    "wheel": {
-                        "filename": wheel.name,
-                        "path": str(wheel),
-                        "sha256": hashlib.sha256(wheel_payload).hexdigest(),
-                    },
-                    "sdist": {
-                        "filename": sdist.name,
-                        "path": str(sdist),
-                        "sha256": hashlib.sha256(sdist_payload).hexdigest(),
-                    },
-                }
-            }
-            evidence_payloads = {
-                name: f"{name}\n".encode() for name in EXPECTED_EVIDENCE_FILES
-            }
-            evidence_payloads["distribution-compliance.final-projection.json"] = (
-                json.dumps(projection, sort_keys=True).encode()
+            fixture = self._write_valid_fixture(root)
+            canonical_path = (
+                root
+                / "distribution-compliance-evidence"
+                / "distribution-compliance.json"
             )
-            for name, payload in evidence_payloads.items():
-                (evidence / name).write_bytes(payload)
+            canonical_before = canonical_path.read_bytes()
 
-            github_output = root / "github-output"
-            capture_env = {**os.environ, "GITHUB_OUTPUT": str(github_output)}
+            forged_wheel = b"coordinated forged wheel bytes\n"
+            fixture["wheel"].write_bytes(forged_wheel)
+            projection_path = (
+                root
+                / "distribution-compliance-evidence"
+                / "distribution-compliance.final-projection.json"
+            )
+            projection = json.loads(projection_path.read_text())
+            projection["artifacts"]["wheel"]["sha256"] = hashlib.sha256(
+                forged_wheel
+            ).hexdigest()
+            projection_json = json.dumps(
+                projection,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+            projection_path.write_bytes(projection_json)
+            (
+                root
+                / "distribution-compliance-evidence"
+                / "distribution-compliance.final-projection.md"
+            ).write_bytes(self._projection_markdown(projection_json))
+
+            github_output = root / "forged-capture-output"
+            forged = self._run_python(
+                capture_script,
+                root,
+                {**os.environ, "GITHUB_OUTPUT": str(github_output)},
+            )
+
+            self.assertNotEqual(0, forged.returncode)
+            self.assertIn(
+                "final projection does not match canonical report",
+                forged.stderr,
+            )
+            self.assertEqual(canonical_before, canonical_path.read_bytes())
+
+    def test_retained_source_fd_cannot_mutate_sealed_upload_bundle(
+        self,
+    ) -> None:
+        workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
+        steps = workflow["jobs"]["distribution-compliance"]["steps"]
+        capture = next(
+            step
+            for step in steps
+            if step.get("name") == "Capture verified upload integrity"
+        )
+        seal = next(
+            step
+            for step in steps
+            if step.get("name") == "Create sealed qualified upload bundle"
+        )
+        capture_script = self._heredoc_python(capture["run"])
+        seal_script = self._heredoc_python(seal["run"])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = self._write_valid_fixture(root)
+            capture_output = root / "capture-output"
             captured = self._run_python(
                 capture_script,
                 root,
-                capture_env,
+                {**os.environ, "GITHUB_OUTPUT": str(capture_output)},
             )
             self.assertEqual(0, captured.returncode, captured.stderr)
-            manifest = github_output.read_text().strip().split("=", 1)[1]
-            gate_env = {
-                **os.environ,
-                "EXPECTED_UPLOAD_INTEGRITY": manifest,
-            }
+            snapshot = capture_output.read_text().strip().split("=", 1)[1]
 
-            verified = self._run_python(gate_script, root, gate_env)
-            self.assertEqual(0, verified.returncode, verified.stderr)
+            seal_parent = root / "trusted-seals"
+            seal_dir = seal_parent / "run-1"
+            seal_output = root / "seal-output"
+            retained_fd = os.open(fixture["wheel"], os.O_WRONLY)
+            try:
+                sealed = self._run_python(
+                    seal_script,
+                    root,
+                    {
+                        **os.environ,
+                        "EXPECTED_UPLOAD_INTEGRITY": snapshot,
+                        "GITHUB_OUTPUT": str(seal_output),
+                        "GITHUB_WORKSPACE": str(root),
+                        "SEALED_UPLOAD_PARENT": str(seal_parent),
+                        "SEALED_UPLOAD_DIR": str(seal_dir),
+                    },
+                )
+                self.assertEqual(0, sealed.returncode, sealed.stderr)
 
-            wheel.write_bytes(b"mutated wheel bytes\n")
-            artifact_failure = self._run_python(
-                gate_script,
-                root,
-                gate_env,
-            )
-            self.assertNotEqual(0, artifact_failure.returncode)
-            self.assertIn(
-                "artifact digest mismatch",
-                artifact_failure.stderr,
-            )
-            wheel.write_bytes(wheel_payload)
+                forged_wheel = b"retained fd post-gate mutation\n"
+                os.lseek(retained_fd, 0, os.SEEK_SET)
+                os.write(retained_fd, forged_wheel)
+                os.ftruncate(retained_fd, len(forged_wheel))
+            finally:
+                os.close(retained_fd)
 
-            report = evidence / "distribution-compliance.json"
-            report.write_bytes(b"mutated evidence\n")
-            evidence_failure = self._run_python(
-                gate_script,
-                root,
-                gate_env,
+            bundle = seal_dir / "qualified-release.tar"
+            self.assertEqual(forged_wheel, fixture["wheel"].read_bytes())
+            with self.assertRaises(PermissionError):
+                os.open(bundle, os.O_WRONLY)
+            with tarfile.open(bundle, "r") as archive:
+                wheel_member = archive.extractfile(f"dist/{fixture['wheel'].name}")
+                self.assertIsNotNone(wheel_member)
+                self.assertEqual(
+                    fixture["wheel_payload"],
+                    wheel_member.read(),
+                )
+                manifest_member = archive.extractfile("SEALED-UPLOAD-MANIFEST.json")
+                self.assertIsNotNone(manifest_member)
+                sealed_manifest = json.load(manifest_member)
+            wheel_manifest = sealed_manifest["files"][f"dist/{fixture['wheel'].name}"]
+            self.assertEqual(
+                hashlib.sha256(fixture["wheel_payload"]).hexdigest(),
+                wheel_manifest["sha256"],
             )
-            self.assertNotEqual(0, evidence_failure.returncode)
-            self.assertIn(
-                "distribution evidence digest mismatch",
-                evidence_failure.stderr,
+            output_digest = seal_output.read_text().strip().split("=", 1)[1]
+            self.assertEqual(
+                hashlib.sha256(bundle.read_bytes()).hexdigest(),
+                output_digest,
             )
-            report.write_bytes(evidence_payloads["distribution-compliance.json"])
 
-            extra = evidence / "unverified.txt"
-            extra.write_text("not verified\n")
-            file_set_failure = self._run_python(
-                gate_script,
-                root,
-                gate_env,
-            )
-            self.assertNotEqual(0, file_set_failure.returncode)
-            self.assertIn("unexpected files", file_set_failure.stderr)
+            os.chmod(seal_dir, 0o700)
+            os.chmod(bundle, 0o600)
+
+    @classmethod
+    def _write_valid_fixture(
+        cls,
+        root: Path,
+    ) -> dict[str, object]:
+        dist = root / "dist"
+        evidence = root / "distribution-compliance-evidence"
+        dist.mkdir()
+        evidence.mkdir()
+        wheel = dist / "package-1.0-py3-none-any.whl"
+        sdist = dist / "package-1.0.tar.gz"
+        wheel_payload = b"verified wheel bytes\n"
+        sdist_payload = b"verified sdist bytes\n"
+        wheel.write_bytes(wheel_payload)
+        sdist.write_bytes(sdist_payload)
+        projection = {
+            "schema_version": 6,
+            "artifacts": {
+                "wheel": {
+                    "filename": wheel.name,
+                    "path": str(wheel.resolve()),
+                    "sha256": hashlib.sha256(wheel_payload).hexdigest(),
+                },
+                "sdist": {
+                    "filename": sdist.name,
+                    "path": str(sdist.resolve()),
+                    "sha256": hashlib.sha256(sdist_payload).hexdigest(),
+                },
+            },
+        }
+        projection_json = json.dumps(
+            projection,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        projection_markdown = cls._projection_markdown(projection_json)
+        input_manifest = [
+            {
+                "kind": "report",
+                "path": ("report/distribution-compliance.final-projection.json"),
+                "sha256": hashlib.sha256(projection_json).hexdigest(),
+                "size": len(projection_json),
+            },
+            {
+                "kind": "report",
+                "path": ("report/distribution-compliance.final-projection.md"),
+                "sha256": hashlib.sha256(projection_markdown).hexdigest(),
+                "size": len(projection_markdown),
+            },
+        ]
+        canonical_report = {
+            **projection,
+            "blockers": [],
+            "ok": True,
+            "secret_scan": {"input_manifest": input_manifest},
+            "status": "passed",
+        }
+        evidence_payloads = {
+            name: f"{name}\n".encode() for name in EXPECTED_EVIDENCE_FILES
+        }
+        evidence_payloads["distribution-compliance.json"] = json.dumps(
+            canonical_report,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        evidence_payloads["distribution-compliance.final-projection.json"] = (
+            projection_json
+        )
+        evidence_payloads["distribution-compliance.final-projection.md"] = (
+            projection_markdown
+        )
+        evidence_payloads["secret-scan.json"] = json.dumps(
+            canonical_report["secret_scan"],
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        for name, payload in evidence_payloads.items():
+            (evidence / name).write_bytes(payload)
+        return {
+            "wheel": wheel,
+            "wheel_payload": wheel_payload,
+        }
+
+    @staticmethod
+    def _projection_markdown(projection_json: bytes) -> bytes:
+        return (
+            b"# Distribution Compliance Final Projection\n\n"
+            b"The canonical self-reference-free report payload follows."
+            b"\n\n```json\n" + projection_json + b"```\n"
+        )
 
     @staticmethod
     def _artifact_paths(step: dict[str, object]) -> list[str]:
@@ -359,7 +485,10 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
 
     @staticmethod
     def _heredoc_python(run: str) -> str:
-        marker = "python - <<'PY'\n"
+        markers = ("python - <<'PY'\n", "python3 - <<'PY'\n")
+        marker = next((item for item in markers if item in run), None)
+        if marker is None:
+            raise AssertionError("Python heredoc not found")
         _, script = run.split(marker, 1)
         script, terminator = script.rsplit("\nPY", 1)
         if terminator.strip():
