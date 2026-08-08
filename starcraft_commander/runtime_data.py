@@ -169,7 +169,8 @@ def _head_blob_matches_working_file(
 ) -> bool:
     path = repository_root / relative_path
     try:
-        if not stat.S_ISREG(os.lstat(path).st_mode):
+        working_stat = os.lstat(path)
+        if not stat.S_ISREG(working_stat.st_mode):
             return False
     except OSError:
         return False
@@ -188,11 +189,14 @@ def _head_blob_matches_working_file(
     fields = metadata.split()
     if (
         len(fields) != 3
-        or fields[0] != "100644"
+        or fields[0] not in {"100644", "100755"}
         or fields[1] != "blob"
         or not _GIT_OBJECT_PATTERN.fullmatch(fields[2])
         or listed_path != relative
     ):
+        return False
+    expected_mode = 0o755 if fields[0] == "100755" else 0o644
+    if stat.S_IMODE(working_stat.st_mode) != expected_mode:
         return False
 
     working_blob = _git_output(
