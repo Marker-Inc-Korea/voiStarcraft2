@@ -1103,6 +1103,9 @@ jobs:
         ${{ needs.distribution_compliance_build.outputs.handoff_artifact_digest }}
       EXPECTED_HANDOFF_TAR_SHA256: >-
         ${{ needs.distribution_compliance_build.outputs.handoff_tar_sha256 }}
+      VERIFIER_RUNTIME_ROOT: >-
+        /opt/voi-verifier-runtime/${{ github.run_id }}-${{
+        github.run_attempt }}
     steps:
       - name: Check out exact pull request head for fresh sealing
         if: github.event_name == 'pull_request'
@@ -1145,15 +1148,27 @@ jobs:
         run: |
           set -euo pipefail
           uv python install 3.12
-          uv venv --python 3.12 "${RUNNER_TEMP}/voi-verifier-venv"
+          sudo install -d -m 0755 /opt/voi-verifier-runtime
+          sudo install \
+            -d \
+            -o "$(id -u)" \
+            -g "$(id -g)" \
+            -m 0755 \
+            "${VERIFIER_RUNTIME_ROOT}"
+          uv venv --python 3.12 "${VERIFIER_RUNTIME_ROOT}/venv"
           uv pip install \
-            --python "${RUNNER_TEMP}/voi-verifier-venv/bin/python" \
+            --python "${VERIFIER_RUNTIME_ROOT}/venv/bin/python" \
             "PyYAML==6.0.3"
-          chmod -R go-w "${RUNNER_TEMP}/voi-verifier-venv"
+          sudo chown -R root:root \
+            "${VERIFIER_RUNTIME_ROOT}/venv" \
+            "${VERIFIER_RUNTIME_ROOT}"
+          sudo chmod -R a+rX,go-w \
+            "${VERIFIER_RUNTIME_ROOT}/venv"
+          sudo chmod 0755 "${VERIFIER_RUNTIME_ROOT}"
           sudo useradd \
             --system \
             --no-create-home \
-            --home-dir "${RUNNER_TEMP}/voi-verifier-home" \
+            --home-dir "${VERIFIER_RUNTIME_ROOT}/home" \
             --shell /usr/sbin/nologin \
             voi-verifier
           sudo install \
@@ -1161,8 +1176,8 @@ jobs:
             -o voi-verifier \
             -g voi-verifier \
             -m 0700 \
-            "${RUNNER_TEMP}/voi-verifier-home" \
-            "${RUNNER_TEMP}/voi-verifier-tmp"
+            "${VERIFIER_RUNTIME_ROOT}/home" \
+            "${VERIFIER_RUNTIME_ROOT}/tmp"
           if sudo -u voi-verifier sudo -n true 2>/dev/null; then
             echo "voi-verifier unexpectedly has passwordless sudo" >&2
             exit 1
@@ -1593,10 +1608,9 @@ jobs:
           PY
       - name: Verify candidate evidence without privileges
         env:
-          VERIFIER_PYTHON: >-
-            ${{ runner.temp }}/voi-verifier-venv/bin/python
-          VERIFIER_HOME: ${{ runner.temp }}/voi-verifier-home
-          VERIFIER_TMP: ${{ runner.temp }}/voi-verifier-tmp
+          VERIFIER_PYTHON: ${{ env.VERIFIER_RUNTIME_ROOT }}/venv/bin/python
+          VERIFIER_HOME: ${{ env.VERIFIER_RUNTIME_ROOT }}/home
+          VERIFIER_TMP: ${{ env.VERIFIER_RUNTIME_ROOT }}/tmp
         run: |
           set +e
           sudo -u voi-verifier env -i \

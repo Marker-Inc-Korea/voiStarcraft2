@@ -3268,7 +3268,7 @@ def _python_cli_argument_text(
     try:
         tree = ast.parse(text)
     except (SyntaxError, ValueError):
-        return "", ""
+        return "", "python_cli_parse_failed"
 
     commands: list[str] = []
     command_set: set[str] = set()
@@ -6460,7 +6460,7 @@ def _python_sensitive_call_text(path: str, text: str) -> tuple[str, str]:
     except RecursionError:
         return "", "python_sensitive_analysis_limit_exceeded:parse"
     except (SyntaxError, ValueError):
-        return "", ""
+        return "", "python_sensitive_parse_failed"
     calls: list[str] = []
     observed_calls: set[str] = set()
     analysis_limited = False

@@ -481,6 +481,19 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
             "if sudo -u voi-verifier sudo -n true",
             setup["run"],
         )
+        self.assertIn("/opt/voi-verifier-runtime", setup["run"])
+        self.assertNotIn(
+            '${RUNNER_TEMP}/voi-verifier-venv',
+            setup["run"],
+        )
+        self.assertIn(
+            '${VERIFIER_RUNTIME_ROOT}/home',
+            setup["run"],
+        )
+        self.assertIn(
+            '${VERIFIER_RUNTIME_ROOT}/tmp',
+            setup["run"],
+        )
         self.assertIn("sudo -u voi-verifier env -i", verifier_run)
         self.assertIn("pkill -KILL -u", verifier_run)
         self.assertIn("pgrep -u", verifier_run)

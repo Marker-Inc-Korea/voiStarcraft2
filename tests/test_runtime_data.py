@@ -8,7 +8,9 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from starcraft_commander import runtime_data
 from starcraft_commander.runtime_data import (
     micromachine_data_path,
     source_repository_root,
@@ -202,22 +204,24 @@ class RuntimeDataTest(unittest.TestCase):
         self.assertTrue(payload["manifest_exists"])
 
     def test_missing_git_fails_closed(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            completed = _probe(
-                REPOSITORY_ROOT / "starcraft_commander" / "runtime_data.py",
-                cwd=REPOSITORY_ROOT,
-                path=directory,
-            )
+        with mock.patch.object(
+            runtime_data,
+            "_TRUSTED_GIT_EXECUTABLE",
+            "/missing/voi-trusted-git",
+        ):
+            observed = runtime_data.source_repository_root()
 
-        self.assertIsNone(_payload(completed)["source_repository_root"])
+        self.assertIsNone(observed)
 
-    def test_oversized_git_output_fails_closed(self) -> None:
+    def test_inherited_path_cannot_override_trusted_git(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             bin_root = Path(directory)
+            sentinel = bin_root / "fake-git-invoked"
             fake_git = bin_root / "git"
             fake_git.write_text(
                 "#!/bin/sh\n"
-                "/usr/bin/head -c 20000 /dev/zero | /usr/bin/tr '\\0' x\n",
+                f"/usr/bin/touch {sentinel}\n"
+                "exit 1\n",
                 encoding="utf-8",
             )
             fake_git.chmod(0o755)
@@ -226,8 +230,13 @@ class RuntimeDataTest(unittest.TestCase):
                 cwd=REPOSITORY_ROOT,
                 path=os.fspath(bin_root),
             )
+            fake_git_invoked = sentinel.exists()
 
-        self.assertIsNone(_payload(completed)["source_repository_root"])
+        self.assertEqual(
+            REPOSITORY_ROOT,
+            Path(str(_payload(completed)["source_repository_root"])),
+        )
+        self.assertFalse(fake_git_invoked)
 
     def test_symlinked_runtime_module_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -5,9 +5,9 @@ from __future__ import annotations
 import os
 import re
 import selectors
-import shutil
 import stat
 import subprocess
+import sys
 import time
 from importlib.resources import files
 from pathlib import Path
@@ -44,6 +44,11 @@ _SOURCE_REMOTE_PATTERN: Final[re.Pattern[str]] = re.compile(
 _GIT_OBJECT_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{40}$")
 _GIT_OUTPUT_LIMIT: Final[int] = 16 * 1024
 _GIT_TIMEOUT_SECONDS: Final[float] = 5.0
+_TRUSTED_GIT_EXECUTABLE: Final[str] = (
+    "/Applications/Xcode.app/Contents/Developer/usr/bin/git"
+    if sys.platform == "darwin"
+    else "/usr/bin/git"
+)
 
 
 def _stop_process(process: subprocess.Popen[bytes]) -> None:
@@ -59,10 +64,6 @@ def _bounded_git(
     repository_root: Path,
     *arguments: str,
 ) -> tuple[int, str] | None:
-    git_executable = shutil.which("git")
-    if git_executable is None:
-        return None
-
     environment = {
         key: value
         for key, value in os.environ.items()
@@ -77,12 +78,13 @@ def _bounded_git(
             "GIT_TERMINAL_PROMPT": "0",
             "LANG": "C",
             "LC_ALL": "C",
+            "PATH": "/usr/bin:/bin",
         }
     )
     try:
         process = subprocess.Popen(
             [
-                git_executable,
+                _TRUSTED_GIT_EXECUTABLE,
                 "--no-pager",
                 "--no-replace-objects",
                 "-C",

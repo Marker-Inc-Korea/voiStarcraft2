@@ -717,6 +717,148 @@ class ExplodingStateBridge:
 
 
 class MicroMachineLaunchProvenanceTest(unittest.TestCase):
+    def test_launcher_construction_defers_git_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository_root = Path(directory)
+            (repository_root / ".git").mkdir()
+            with (
+                mock.patch.object(
+                    web_gui,
+                    "_REPO_ROOT",
+                    str(repository_root),
+                ),
+                mock.patch.object(
+                    web_gui,
+                    "source_repository_root",
+                    side_effect=AssertionError(
+                        "launcher construction invoked Git provenance"
+                    ),
+                ),
+            ):
+                launcher = web_gui._MicroMachineLaunchManager()
+                snapshot = launcher.snapshot()
+
+            self.assertTrue(snapshot["enabled"])
+            self.assertTrue(
+                snapshot["script_path"].startswith(str(repository_root))
+            )
+
+            with mock.patch.object(
+                web_gui,
+                "source_repository_root",
+                return_value=None,
+            ):
+                started = launcher.start()
+
+        self.assertFalse(started["enabled"])
+        self.assertEqual("blocked", started["status"])
+        self.assertIn("current Git provenance", started["error"])
+
+    def test_launcher_executes_validated_bytes_after_path_replacement(self):
+        class FakeProcess:
+            pid = 12345
+            returncode = None
+            stdout = []
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self):
+                self.returncode = 0
+                return 0
+
+        with tempfile.TemporaryDirectory() as directory:
+            clone_root = Path(directory) / "checkout"
+            subprocess.run(
+                [
+                    "git",
+                    "clone",
+                    "--quiet",
+                    "--no-hardlinks",
+                    str(Path(__file__).resolve().parents[1]),
+                    str(clone_root),
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "remote",
+                    "set-url",
+                    "origin",
+                    "https://github.com/Marker-Inc-Korea/voiStarcraft2.git",
+                ],
+                cwd=clone_root,
+                check=True,
+            )
+            runtime_path = (
+                clone_root / "starcraft_commander" / "runtime_data.py"
+            )
+            launcher_path = (
+                clone_root
+                / "integrations"
+                / "micromachine"
+                / "scripts"
+                / "smoke_macos_local.sh"
+            )
+            admitted_payload = launcher_path.read_bytes()
+            replacement_payload = b"#!/bin/sh\nexit 97\n"
+            observed: dict[str, object] = {}
+
+            def replace_after_validation(
+                arguments,
+                *,
+                env,
+                launcher_input,
+            ):
+                launcher_path.write_bytes(replacement_payload)
+                observed["argv"] = arguments
+                observed["payload"] = launcher_input.read()
+                observed["environment"] = env
+                return FakeProcess()
+
+            with (
+                mock.patch.object(
+                    runtime_data,
+                    "_SOURCE_MODULE_LOCATION",
+                    runtime_path,
+                ),
+                mock.patch.object(
+                    runtime_data,
+                    "_SOURCE_MODULE_PATH",
+                    runtime_path.resolve(),
+                ),
+                mock.patch.object(
+                    runtime_data,
+                    "_SOURCE_REPOSITORY_ROOT",
+                    clone_root.resolve(),
+                ),
+                mock.patch.object(web_gui, "_REPO_ROOT", str(clone_root)),
+            ):
+                launcher = web_gui._MicroMachineLaunchManager()
+                with mock.patch.object(
+                    launcher,
+                    "_spawn_process_unlocked",
+                    side_effect=replace_after_validation,
+                ):
+                    started = launcher.start(
+                        str(Path(directory) / "blackboard")
+                    )
+
+        self.assertTrue(started["enabled"], started)
+        self.assertEqual(admitted_payload, observed["payload"])
+        self.assertNotEqual(replacement_payload, observed["payload"])
+        self.assertEqual(
+            ["/bin/bash", "-s", "--"],
+            list(observed["argv"])[:3],
+        )
+        self.assertEqual(
+            str(clone_root.resolve()),
+            observed["environment"][
+                web_gui._MICROMACHINE_VALIDATED_REPOSITORY_ROOT_ENV
+            ],
+        )
+
     def test_launcher_revalidates_git_provenance_at_start(self):
         with tempfile.TemporaryDirectory() as directory:
             clone_root = Path(directory) / "checkout"

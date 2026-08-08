@@ -2257,6 +2257,8 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                 "credential_path",
                 "private_endpoint",
                 "private_model_override",
+                "python_cli_parse_failed",
+                "python_sensitive_parse_failed",
             },
             {str(item["rule_id"]) for item in findings},
         )
@@ -2275,7 +2277,12 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
         findings = scan_payload("config.py", payload)
 
         self.assertEqual(
-            {"private_endpoint", "private_model_override"},
+            {
+                "private_endpoint",
+                "private_model_override",
+                "python_cli_parse_failed",
+                "python_sensitive_parse_failed",
+            },
             {str(item["rule_id"]) for item in findings},
         )
 
@@ -4129,6 +4136,30 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                 allow_safe_fixtures=False,
             )
         self.assertEqual("toml_parser_unavailable", unavailable[0]["rule_id"])
+
+    def test_python_parser_failures_are_blocking_findings(self) -> None:
+        endpoint = '"https://proxy." + "corp.example/v1"'
+        model = '"private-" + "deployment"'
+        payload = (
+            'provider = "my" + "proxy"\n'
+            f"base_url = {endpoint}\n"
+            f"model = {model}\n"
+            "def broken(:\n"
+        ).encode()
+
+        findings = scan_payload(
+            "starcraft_commander/private_config.py",
+            payload,
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual(
+            {
+                "python_cli_parse_failed",
+                "python_sensitive_parse_failed",
+            },
+            {str(item["rule_id"]) for item in findings},
+        )
 
     def test_detects_executable_and_standard_secret_forms(self) -> None:
         host_key = "VOI_MYPROXY_" + "HOST"
@@ -6511,7 +6542,12 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
         self.assertEqual("credential_file", credential_findings[0]["rule_id"])
         self.assertEqual("credential_file", netrc_findings[0]["rule_id"])
         self.assertEqual(
-            ["credential_path", "credential_path"],
+            [
+                "python_cli_parse_failed",
+                "python_sensitive_parse_failed",
+                "credential_path",
+                "credential_path",
+            ],
             [str(item["rule_id"]) for item in unquoted_findings],
         )
 
@@ -6627,7 +6663,19 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             b".aws/credentials without treating documentation as a configured path."
         )
 
-        self.assertEqual([], scan_payload("scanner.py", scanner_documentation))
+        findings = scan_payload("scanner.py", scanner_documentation)
+
+        self.assertEqual(
+            {
+                "python_cli_parse_failed",
+                "python_sensitive_parse_failed",
+            },
+            {str(item["rule_id"]) for item in findings},
+        )
+        self.assertNotIn(
+            "credential_path",
+            {str(item["rule_id"]) for item in findings},
+        )
 
     def test_secret_detector_scans_normalized_path_text(self) -> None:
         secret = "sk-" + "liveabcdefghijklmnop"
