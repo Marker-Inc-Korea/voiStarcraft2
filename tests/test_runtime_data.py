@@ -441,7 +441,8 @@ class RuntimeDataTest(unittest.TestCase):
         )
         self.assertIsNone(_payload(dirty)["source_repository_root"])
         self.assertIsNone(_payload(dirty_launcher)["source_repository_root"])
-        self.assertIsNone(_payload(symlinked_launcher)["source_repository_root"])
+        self.assertNotEqual(0, symlinked_launcher.returncode)
+        self.assertIn("without symlinks", symlinked_launcher.stderr)
         self.assertIsNone(_payload(replaced)["source_repository_root"])
 
 
