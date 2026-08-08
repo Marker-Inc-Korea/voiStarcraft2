@@ -15,8 +15,10 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Final
 
+from starcraft_commander.runtime_data import micromachine_data_root
 
-REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
+
+REPO_ROOT: Final[Path] = micromachine_data_root().parents[1]
 TRUSTED_GIT_EXECUTABLE: Final[str] = (
     "/Applications/Xcode.app/Contents/Developer/usr/bin/git"
     if sys.platform == "darwin"

@@ -97,6 +97,10 @@ PRODUCER_POLICY_RELATIVE_PATH: Final[Path] = Path(
 DETERMINISTIC_JOURNEY_MANIFEST_RELATIVE_PATH: Final[Path] = Path(
     "integrations/micromachine/PRE_LIVE_JOURNEYS.json"
 )
+DETERMINISTIC_JOURNEY_PACKAGE_SOURCES: Final[tuple[Path, ...]] = (
+    Path("integrations/__init__.py"),
+    Path("integrations/micromachine/__init__.py"),
+)
 DETERMINISTIC_JOURNEY_MODULE_RELATIVE_PATH: Final[Path] = Path(
     "starcraft_commander/micromachine_pre_live_journeys.py"
 )
@@ -3713,6 +3717,17 @@ def run_local_producer(
     except (OSError, TypeError, ValueError) as exc:
         producer_identity = None
         blockers.append(f"producer execution identity is invalid: {exc}")
+    if (
+        normalized_argv
+        and _is_isolated_python_command(normalized_argv)
+        and normalized_argv[7]
+        == DETERMINISTIC_JOURNEY_MODULE_RELATIVE_PATH.as_posix()
+        and producer_identity is None
+    ):
+        blockers.append(
+            "deterministic journey producer requires a dedicated execution "
+            "identity"
+        )
 
     expected_file_digests = dict(authenticated_file_digests or {})
     authenticated_snapshots: dict[
@@ -7777,6 +7792,9 @@ def _attest_committed_python_sources(
     if module_relative == DETERMINISTIC_JOURNEY_MODULE_RELATIVE_PATH:
         relative_paths.add(
             DETERMINISTIC_JOURNEY_MANIFEST_RELATIVE_PATH.as_posix()
+        )
+        relative_paths.update(
+            path.as_posix() for path in DETERMINISTIC_JOURNEY_PACKAGE_SOURCES
         )
     if module_relative.parts and module_relative.parts[0] == "starcraft_commander":
         try:

@@ -65,6 +65,34 @@ MICROMACHINE_BINARY = Path(
 ).resolve()
 
 
+class PreLiveJourneyImportIsolationTest(unittest.TestCase):
+    def test_module_import_does_not_launch_git(self) -> None:
+        program = """
+import os
+import subprocess
+
+real_popen = subprocess.Popen
+
+def reject_git(arguments, *args, **kwargs):
+    command = arguments if isinstance(arguments, (str, bytes)) else arguments[0]
+    if os.path.basename(os.fsdecode(command)) == "git":
+        raise AssertionError("pre-live journey import launched Git")
+    return real_popen(arguments, *args, **kwargs)
+
+subprocess.Popen = reject_git
+import starcraft_commander.micromachine_pre_live_journeys
+"""
+        completed = subprocess.run(
+            [sys.executable, "-c", program],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+
+
 class NativeExecutableLaunchTest(unittest.TestCase):
     def test_unlinked_descriptor_executes_through_one_shot_snapshot(
         self,

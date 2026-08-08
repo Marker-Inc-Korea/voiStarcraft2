@@ -13,10 +13,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from starcraft_commander.runtime_data import micromachine_data_path
 
-REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
 DEFAULT_MAP_POOL_PATH: Final[Path] = (
-    REPO_ROOT / "integrations" / "micromachine" / "MICROMACHINE_MAP_POOL.json"
+    micromachine_data_path("MICROMACHINE_MAP_POOL.json")
 )
 MAP_CLASSIFICATIONS: Final[frozenset[str]] = frozenset(
     {"required", "diagnostic", "excluded"}

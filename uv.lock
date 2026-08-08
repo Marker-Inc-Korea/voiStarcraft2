@@ -2113,6 +2113,8 @@ source = { editable = "." }
 dev = [
     { name = "build" },
     { name = "pytest" },
+    { name = "pyyaml" },
+    { name = "tomli" },
 ]
 llm = [
     { name = "anthropic" },
@@ -2134,7 +2136,9 @@ requires-dist = [
     { name = "faster-whisper", marker = "extra == 'voice'", specifier = ">=1.0" },
     { name = "openai", marker = "extra == 'llm'", specifier = ">=1.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7" },
+    { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0.3" },
     { name = "sounddevice", marker = "extra == 'voice'", specifier = ">=0.4.6" },
+    { name = "tomli", marker = "extra == 'dev'", specifier = ">=2.4.1" },
 ]
 provides-extras = ["sc2", "voice", "llm", "dev"]
 

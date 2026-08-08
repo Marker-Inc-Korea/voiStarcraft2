@@ -32,7 +32,8 @@ from starcraft_commander.llm_interpreter import (
     LLM_UNSUPPORTED_INTENT_NAME,
     LLMCommandInterpreter,
     MYPROXY_API_KEY_ENV_VAR,
-    MYPROXY_OPENAI_BASE_URL,
+    MYPROXY_MODEL_ENV_VAR,
+    MYPROXY_OPENAI_BASE_URL_ENV_VAR,
     OPENAI_API_KEY_ENV_VAR,
     OPENAI_API_KEY_REAL_ENV_VAR,
     build_hybrid_interpreter,
@@ -5026,38 +5027,70 @@ class LLMAvailabilityTest(unittest.TestCase):
 
         interpreter = LLMCommandInterpreter(
             provider="myproxy",
-            model=DEFAULT_MYPROXY_MODEL,
+            model="fixture-responses-model",
             api_key="proxy-test-key",
         )
         with mock.patch(
             "starcraft_commander.llm_interpreter.require_openai",
             return_value=types.SimpleNamespace(OpenAI=build_client),
+        ), mock.patch.dict(
+            os.environ,
+            {MYPROXY_OPENAI_BASE_URL_ENV_VAR: "https://proxy.test.invalid/v1"},
         ):
             client = interpreter._build_client()
 
         self.assertIs(sentinel, client)
         self.assertEqual("proxy-test-key", captured["api_key"])
-        self.assertEqual(MYPROXY_OPENAI_BASE_URL, captured["base_url"])
+        self.assertEqual("https://proxy.test.invalid/v1", captured["base_url"])
         self.assertEqual(0, captured["max_retries"])
 
     def test_local_llm_control_reports_myproxy_alias_model_and_effort(self) -> None:
-        control = LocalLLMControl(provider="myproxy")
         with _fake_openai_module(), mock.patch.dict(
             os.environ,
             {
                 MYPROXY_API_KEY_ENV_VAR: "",
                 "CODEX_MYPROXY_API_KEY": "proxy-alias-key",
+                MYPROXY_MODEL_ENV_VAR: "fixture-responses-model",
+                MYPROXY_OPENAI_BASE_URL_ENV_VAR: "https://proxy.test.invalid/v1",
                 "VOI_LLM_REASONING_EFFORT": "",
             },
+            clear=False,
         ):
+            control = LocalLLMControl(provider="myproxy")
             snapshot = control.snapshot()
 
             self.assertTrue(snapshot["configured"])
             self.assertTrue(snapshot["key_present"])
             self.assertEqual("myproxy", snapshot["provider"])
-            self.assertEqual(DEFAULT_MYPROXY_MODEL, snapshot["model"])
+            self.assertEqual("fixture-responses-model", snapshot["model"])
             self.assertEqual("low", snapshot["reasoning_effort"])
             self.assertTrue(control.is_available())
+
+    def test_myproxy_fails_closed_without_local_model_and_base_url(self) -> None:
+        with _fake_openai_module(), mock.patch.dict(
+            os.environ,
+            {
+                MYPROXY_API_KEY_ENV_VAR: "proxy-test-key",
+                "CODEX_MYPROXY_API_KEY": "",
+                MYPROXY_MODEL_ENV_VAR: "",
+                MYPROXY_OPENAI_BASE_URL_ENV_VAR: "",
+            },
+            clear=False,
+        ):
+            control = LocalLLMControl(provider="myproxy")
+            snapshot = control.snapshot()
+            interpreter = control._build_current_interpreter()
+
+            self.assertFalse(snapshot["configured"])
+            self.assertTrue(snapshot["key_present"])
+            self.assertEqual(DEFAULT_MYPROXY_MODEL, snapshot["model"])
+            self.assertFalse(control.is_available())
+            self.assertFalse(interpreter.is_available())
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "model and base URL must be configured",
+            ):
+                interpreter._build_client()
 
     def test_injected_client_factory_is_always_available(self) -> None:
         interpreter = LLMCommandInterpreter(client_factory=FakeAnthropicClient)

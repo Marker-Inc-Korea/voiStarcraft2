@@ -97,6 +97,8 @@ __all__ = [
     "GEMINI_API_KEY_ENV_VAR",
     "GROK_API_KEY_ENV_VAR",
     "MYPROXY_API_KEY_ENV_VAR",
+    "MYPROXY_MODEL_ENV_VAR",
+    "MYPROXY_OPENAI_BASE_URL_ENV_VAR",
     "OPENAI_API_KEY_ENV_VAR",
     "OPENAI_API_KEY_REAL_ENV_VAR",
     "DEFAULT_ANTHROPIC_MODEL",
@@ -163,8 +165,8 @@ DEFAULT_GEMINI_MODEL: Final[str] = "gemini-3.5-flash"
 DEFAULT_GROK_MODEL: Final[str] = "grok-4.3"
 """Default xAI/Grok OpenAI-compatible model used for command interpretation."""
 
-DEFAULT_MYPROXY_MODEL: Final[str] = "gpt-5.6-sol"
-"""Default low-latency Responses API model for the local game commander."""
+DEFAULT_MYPROXY_MODEL: Final[str] = "configured-locally"
+"""Non-routable placeholder used when local MyProxy model config is absent."""
 
 DEFAULT_OPENAI_MODEL: Final[str] = "gpt-5.5"
 """Default OpenAI GPT model used for one-shot utterance interpretation."""
@@ -207,8 +209,14 @@ GROK_OPENAI_BASE_URL: Final[str] = "https://api.x.ai/v1"
 MYPROXY_API_KEY_ENV_VAR: Final[str] = "MYPROXY_API_KEY"
 """API key used by the local MyProxy Responses API provider."""
 
-MYPROXY_OPENAI_BASE_URL: Final[str] = "https://proxy.nomadamas.org/v1"
-"""OpenAI SDK base URL for the configured MyProxy Responses API."""
+MYPROXY_MODEL_ENV_VAR: Final[str] = "VOI_MYPROXY_MODEL"
+"""Local-only MyProxy model setting; never persisted by the application."""
+
+MYPROXY_OPENAI_BASE_URL_ENV_VAR: Final[str] = "VOI_MYPROXY_OPENAI_BASE_URL"
+"""Local-only MyProxy endpoint setting; never persisted by the application."""
+
+MYPROXY_OPENAI_BASE_URL: Final[str] = ""
+"""Deprecated empty compatibility constant; use the local environment setting."""
 
 LLM_REASONING_EFFORT_ENV_VAR: Final[str] = "VOI_LLM_REASONING_EFFORT"
 """Optional local override for Responses API reasoning effort."""
@@ -1994,7 +2002,11 @@ class LLMCommandInterpreter:
 
         if self.client_factory is not None:
             return True
-        return self._provider_available() and self._resolved_api_key() is not None
+        return (
+            self._provider_available()
+            and self._resolved_api_key() is not None
+            and _provider_configuration_complete(self.provider, self.model)
+        )
 
     def interpret_text(self, command_text: str) -> IntentPayload | None:
         """Return the nearest supported typed Intent DSL payload, if any."""
@@ -2740,6 +2752,11 @@ class LLMCommandInterpreter:
                 "max_retries": 0,
             }
             base_url = _openai_compatible_base_url(self.provider)
+            if not _provider_configuration_complete(self.provider, self.model):
+                raise RuntimeError(
+                    "MyProxy model and base URL must be configured in the local "
+                    "environment."
+                )
             if base_url:
                 kwargs["base_url"] = base_url
             return openai_module.OpenAI(
@@ -2877,20 +2894,29 @@ class LocalLLMControl:
             provider = self._provider
             model = self._model
             reasoning_effort = self._reasoning_effort
-            configured = bool(self._resolved_api_key_unlocked(provider))
+            key_present = bool(self._resolved_api_key_unlocked(provider))
+            configured = key_present and _provider_configuration_complete(
+                provider,
+                model,
+            )
         return {
             "provider": provider,
             "model": model,
             "reasoning_effort": reasoning_effort,
             "configured": configured,
-            "key_present": configured,
+            "key_present": key_present,
         }
 
     def is_available(self) -> bool:
         with self._lock:
             provider = self._provider
+            model = self._model
             has_key = bool(self._resolved_api_key_unlocked(provider))
-        return has_key and _is_provider_available(provider)
+        return (
+            has_key
+            and _provider_configuration_complete(provider, model)
+            and _is_provider_available(provider)
+        )
 
     def set_context_provider(self, provider: Callable[[], object] | None) -> None:
         """Attach a process-local safe runtime context provider for LLM calls."""
@@ -6989,7 +7015,10 @@ def _default_model_for_provider(provider: str) -> str:
     if provider == LLM_PROVIDER_OPENAI:
         return DEFAULT_OPENAI_MODEL
     if provider == LLM_PROVIDER_MYPROXY:
-        return DEFAULT_MYPROXY_MODEL
+        return (
+            os.environ.get(MYPROXY_MODEL_ENV_VAR, "").strip()
+            or DEFAULT_MYPROXY_MODEL
+        )
     if provider == LLM_PROVIDER_GEMINI:
         return DEFAULT_GEMINI_MODEL
     if provider == LLM_PROVIDER_GROK:
@@ -7082,12 +7111,22 @@ def api_key_env_vars_for_provider(provider: str) -> tuple[str, ...]:
 
 def _openai_compatible_base_url(provider: str) -> str:
     if provider == LLM_PROVIDER_MYPROXY:
-        return MYPROXY_OPENAI_BASE_URL
+        return os.environ.get(MYPROXY_OPENAI_BASE_URL_ENV_VAR, "").strip()
     if provider == LLM_PROVIDER_GEMINI:
         return GEMINI_OPENAI_BASE_URL
     if provider == LLM_PROVIDER_GROK:
         return GROK_OPENAI_BASE_URL
     return ""
+
+
+def _provider_configuration_complete(provider: str, model: str) -> bool:
+    if provider != LLM_PROVIDER_MYPROXY:
+        return True
+    return bool(
+        model.strip()
+        and model != DEFAULT_MYPROXY_MODEL
+        and _openai_compatible_base_url(provider)
+    )
 
 
 def _intent_field_names(intent_name: object) -> tuple[str, ...]:

@@ -53,3 +53,50 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+## Declared Python Distributions
+
+The following direct optional, build, and test distributions are declared by
+the project metadata. They are distributed separately under their respective
+upstream licenses; their transitive dependencies retain their own notices and
+license terms.
+
+### Python distribution: `anthropic`
+
+License: MIT
+
+### Python distribution: `build`
+
+License: MIT
+
+### Python distribution: `burnysc2`
+
+License: MIT
+
+### Python distribution: `faster-whisper`
+
+License: MIT
+
+### Python distribution: `openai`
+
+License: Apache-2.0
+
+### Python distribution: `pytest`
+
+License: MIT
+
+### Python distribution: `pyyaml`
+
+License: MIT
+
+### Python distribution: `setuptools`
+
+License: MIT
+
+### Python distribution: `sounddevice`
+
+License: MIT
+
+### Python distribution: `tomli`
+
+License: MIT

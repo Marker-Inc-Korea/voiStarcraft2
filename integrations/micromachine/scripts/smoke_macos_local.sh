@@ -60,7 +60,11 @@ if [[ ! "${SMOKE_ENEMY_DIFFICULTY}" =~ ^([1-9]|10)$ ]]; then
 fi
 export SMOKE_ENEMY_DIFFICULTY
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(
+  cd "${VOI_MICROMACHINE_VALIDATED_SCRIPT_DIR:-$(dirname "${BASH_SOURCE[0]}")}" \
+    && pwd
+)"
+unset VOI_MICROMACHINE_VALIDATED_SCRIPT_DIR
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 MICROMACHINE_DIR="${MICROMACHINE_DIR:-/private/tmp/voi-micromachine-runtime/MicroMachine}"
 ROOT_DIR="${ROOT_DIR:-$(dirname "${MICROMACHINE_DIR}")}"
