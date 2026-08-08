@@ -6,7 +6,9 @@ import copy
 import gzip
 import hashlib
 import io
+import json
 import os
+from collections import Counter
 from pathlib import Path
 import re
 import stat
@@ -88,13 +90,15 @@ class IsolatedInstallTest(unittest.TestCase):
             stdout=(
                 '{"license_expression": "'
                 + EXPECTED_LICENSE_EXPRESSION
-                + '", "runtime_data_loaded": true}'
+                + '", "packaged_defaults_loaded": true, '
+                '"runtime_data_loaded": true, '
+                '"source_repository_root_is_none": true}'
             ),
             stderr="",
         )
         target_result = mock.Mock(
             returncode=0,
-            stdout='{"loaded": true}',
+            stdout='{"defaults": true, "loaded": true}',
             stderr="",
         )
         builder = mock.Mock()
@@ -125,11 +129,22 @@ class IsolatedInstallTest(unittest.TestCase):
 
         self.assertEqual(0, result["returncode"])
         self.assertTrue(result["payload"]["target_runtime_data_loaded"])
+        self.assertTrue(result["payload"]["target_packaged_defaults_loaded"])
         self.assertEqual(4, run.call_count)
         for call in run.call_args_list:
             environment = call.kwargs.get("env")
             self.assertIsNotNone(environment)
             self.assertNotIn("PYTHONPATH", environment)
+        installed_script = run.call_args_list[1].args[0][-1]
+        target_script = run.call_args_list[3].args[0][-2]
+        for script in (installed_script, target_script):
+            self.assertIn("source_repository_root() is None", script)
+            self.assertIn("DEFAULT_BLACKBOARD_HEADER", script)
+            self.assertIn("DEFAULT_HOOK_MANIFEST", script)
+            self.assertIn("name.endswith('_PATCH')", script)
+            self.assertIn("strategy_matrix_macos_local.sh", script)
+            self.assertIn("bool(patch_defaults)", script)
+            self.assertIn("root in candidate.parents", script)
 
 
 class DistributionBuildBoundaryTest(unittest.TestCase):
@@ -605,6 +620,9 @@ class ArchivePolicyTest(unittest.TestCase):
                 payload,
                 allow_safe_fixtures=False,
             )
+        ] + [
+            dict(finding)
+            for finding in snapshot.prescanned_findings
         ]
 
     def test_wheel_allowlist_rejects_tests_docs_and_local_configuration(
@@ -708,6 +726,69 @@ class ArchivePolicyTest(unittest.TestCase):
                     allow_safe_fixtures=False,
                 )
             },
+        )
+
+    def test_wheel_prescans_metadata_cap_overflow_and_keeps_files(self) -> None:
+        metadata_secret = ("sk-" + "centralabcdefghijklmnop").encode()
+        payload_secret = ("sk-" + "payloadabcdefghijklmnop").encode()
+        extra_payload_size = 65_531
+        safe_extra = struct.pack(
+            "<HH",
+            0xCAFE,
+            extra_payload_size,
+        ) + (b"X" * extra_payload_size)
+        secret_extra_payload = (
+            b"X" * (extra_payload_size - len(metadata_secret) - 1)
+        ) + b"\n" + metadata_secret
+        secret_extra = struct.pack(
+            "<HH",
+            0xCAFE,
+            len(secret_extra_payload),
+        ) + secret_extra_payload
+        final_entry = "starcraft_commander/runtime_data.py"
+
+        with tempfile.TemporaryDirectory() as temporary:
+            wheel_path = Path(temporary) / "candidate.whl"
+            with zipfile.ZipFile(wheel_path, "w") as archive:
+                for index in range(128):
+                    info = zipfile.ZipInfo(
+                        f"starcraft_commander/padding/{index:04d}.dat"
+                    )
+                    info.extra = safe_extra
+                    archive.writestr(info, b"safe")
+                info = zipfile.ZipInfo(final_entry)
+                info.extra = secret_extra
+                archive.writestr(info, payload_secret)
+
+            snapshot = inspect_wheel(wheel_path)
+
+        blocker_codes = {str(item["code"]) for item in snapshot.blockers}
+        self.assertIn("archive_metadata_limit_exceeded", blocker_codes)
+        self.assertEqual(payload_secret, snapshot.files[final_entry])
+        metadata_findings = self._metadata_findings(snapshot)
+        self.assertIn(
+            compliance_module.sha256_bytes(
+                f"api_key\0{metadata_secret.decode()}".encode()
+            ),
+            {str(item["fingerprint"]) for item in metadata_findings},
+        )
+        self.assertEqual(
+            {"api_key"},
+            {
+                str(item["rule_id"])
+                for item in scan_payload(
+                    f"wheel/{final_entry}",
+                    snapshot.files[final_entry],
+                    allow_safe_fixtures=False,
+                )
+            },
+        )
+        artifact_evidence = compliance_module._artifact_evidence(snapshot)
+        self.assertTrue(
+            {
+                str(item["path"]).removeprefix("wheel/")
+                for item in snapshot.prescanned_inputs
+            }.issubset(artifact_evidence["metadata_manifest"])
         )
 
     def test_wheel_inspection_rejects_and_scans_entry_extras(self) -> None:
@@ -922,7 +1003,13 @@ class ArchivePolicyTest(unittest.TestCase):
         )
 
     def test_sdist_rejects_and_scans_concatenated_gzip_metadata(self) -> None:
-        secret = ("sk-" + "liveabcdefghijklmnop").encode()
+        comment_secret = ("sk-" + "liveabcdefghijklmnop").encode()
+        payload_secret = ("sk-" + "memberabcdefghijklmnop").encode()
+        large_member_payload = (
+            (b"A" * (compliance_module.MAX_ARCHIVE_METADATA_BYTES + 1))
+            + b"\n"
+            + payload_secret
+        )
         tar_payload = io.BytesIO()
         member_payload = b"safe"
         member = tarfile.TarInfo(
@@ -937,7 +1024,10 @@ class ArchivePolicyTest(unittest.TestCase):
             sdist_path = Path(temporary) / "voistarcraft2-0.1.0.tar.gz"
             sdist_path.write_bytes(
                 self._gzip_with_header_metadata(tar_payload.getvalue())
-                + self._gzip_with_header_metadata(b"", comment=secret)
+                + self._gzip_with_header_metadata(
+                    large_member_payload,
+                    comment=comment_secret,
+                )
             )
 
             snapshot = compliance_module.inspect_sdist(sdist_path)
@@ -945,9 +1035,227 @@ class ArchivePolicyTest(unittest.TestCase):
         blocker_codes = {str(item["code"]) for item in snapshot.blockers}
         self.assertIn("unexpected_gzip_member", blocker_codes)
         self.assertIn("unexpected_archive_metadata", blocker_codes)
+        self.assertIn("archive_metadata_limit_exceeded", blocker_codes)
+        self.assertEqual(1, len(snapshot.prescanned_inputs))
         findings = self._metadata_findings(snapshot)
         self.assertEqual({"api_key"}, {item["rule_id"] for item in findings})
-        self.assertEqual(1, len({item["fingerprint"] for item in findings}))
+        self.assertEqual(2, len({item["fingerprint"] for item in findings}))
+        self.assertTrue(
+            {
+                compliance_module.sha256_bytes(
+                    f"api_key\0{secret.decode()}".encode()
+                )
+                for secret in (comment_secret, payload_secret)
+            }.issubset({item["fingerprint"] for item in findings})
+        )
+
+    def test_sdist_scans_members_after_cumulative_gzip_metadata_exhaustion(
+        self,
+    ) -> None:
+        payload_secret = ("sk-" + "payloadabcdefghijklmnop").encode()
+        header_secret = ("sk-" + "headerabcdefghijklmnop").encode()
+        comment = b"C" * 1_000_000
+        tar_payload = self._tar_payload(
+            (
+                "voistarcraft2-0.1.0/"
+                "starcraft_commander/runtime_data.py",
+                b"safe",
+            )
+        )
+        members = [
+            self._gzip_with_header_metadata(tar_payload, comment=comment),
+            *(
+                self._gzip_with_header_metadata(b"", comment=comment)
+                for _ in range(3)
+            ),
+            self._gzip_with_header_metadata(
+                (b"A" * 400_000) + b"\n" + payload_secret,
+                comment=(b"C" * 500_000) + b"\n" + header_secret,
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            sdist_path = Path(temporary) / "voistarcraft2-0.1.0.tar.gz"
+            sdist_path.write_bytes(b"".join(members))
+
+            snapshot = compliance_module.inspect_sdist(sdist_path)
+
+        blocker_codes = {str(item["code"]) for item in snapshot.blockers}
+        self.assertIn("archive_metadata_limit_exceeded", blocker_codes)
+        prescanned_paths = {
+            str(item["path"]) for item in snapshot.prescanned_inputs
+        }
+        self.assertTrue(
+            any(path.endswith("/comment") for path in prescanned_paths)
+        )
+        self.assertTrue(
+            any(
+                path.endswith("/uncompressed-payload")
+                for path in prescanned_paths
+            )
+        )
+        findings = self._metadata_findings(snapshot)
+        self.assertTrue(
+            {
+                compliance_module.sha256_bytes(
+                    f"api_key\0{secret.decode()}".encode()
+                )
+                for secret in (header_secret, payload_secret)
+            }.issubset({str(item["fingerprint"]) for item in findings})
+        )
+
+    def test_sdist_prescans_oversized_pax_and_keeps_files(self) -> None:
+        metadata_secret = ("sk-" + "paxabcdefghijklmnop").encode()
+        payload_secret = ("sk-" + "payloadabcdefghijklmnop").encode()
+        pax_value = (
+            b"P"
+            * (
+                compliance_module.MAX_ARCHIVE_METADATA_BYTES
+                + 1
+                - len(metadata_secret)
+                - 1
+            )
+        ) + b"\n" + metadata_secret
+        pax_payload = self._pax_record(b"comment", pax_value)
+        entry = (
+            "voistarcraft2-0.1.0/"
+            "starcraft_commander/runtime_data.py"
+        )
+        tar_payload = self._tar_with_extension(
+            extension_type=tarfile.XHDTYPE,
+            extension_payload=pax_payload,
+            member_name=entry,
+            member_payload=payload_secret,
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            sdist_path = Path(temporary) / "voistarcraft2-0.1.0.tar.gz"
+            sdist_path.write_bytes(
+                self._gzip_with_header_metadata(tar_payload)
+            )
+
+            snapshot = compliance_module.inspect_sdist(sdist_path)
+
+        blocker_codes = {str(item["code"]) for item in snapshot.blockers}
+        self.assertIn("archive_metadata_limit_exceeded", blocker_codes)
+        self.assertEqual(payload_secret, snapshot.files[entry])
+        metadata_findings = self._metadata_findings(snapshot)
+        self.assertIn(
+            compliance_module.sha256_bytes(
+                f"api_key\0{metadata_secret.decode()}".encode()
+            ),
+            {str(item["fingerprint"]) for item in metadata_findings},
+        )
+        self.assertEqual(
+            {"api_key"},
+            {
+                str(item["rule_id"])
+                for item in scan_payload(
+                    f"sdist/{entry}",
+                    snapshot.files[entry],
+                    allow_safe_fixtures=False,
+                )
+            },
+        )
+        artifact_evidence = compliance_module._artifact_evidence(snapshot)
+        self.assertTrue(
+            {
+                str(item["path"]).removeprefix("sdist/")
+                for item in snapshot.prescanned_inputs
+            }.issubset(artifact_evidence["metadata_manifest"])
+        )
+
+    def test_sdist_keeps_files_after_oversized_directory_payload(self) -> None:
+        metadata_secret = ("sk-" + "directoryabcdefghijklmnop").encode()
+        payload_secret = ("sk-" + "payloadabcdefghijklmnop").encode()
+        root = "voistarcraft2-0.1.0"
+        directory_payload = (
+            b"D" * compliance_module.MAX_ARCHIVE_METADATA_BYTES
+        ) + b"\n" + metadata_secret
+        directory = tarfile.TarInfo(f"{root}/oversized/")
+        directory.type = tarfile.DIRTYPE
+        directory.size = len(directory_payload)
+        entry = f"{root}/starcraft_commander/runtime_data.py"
+        member = tarfile.TarInfo(entry)
+        member.size = len(payload_secret)
+        tar_payload = (
+            directory.tobuf(format=tarfile.USTAR_FORMAT)
+            + self._tar_padding(directory_payload)
+            + member.tobuf(format=tarfile.USTAR_FORMAT)
+            + self._tar_padding(payload_secret)
+            + (b"\0" * 1024)
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            sdist_path = Path(temporary) / "voistarcraft2-0.1.0.tar.gz"
+            sdist_path.write_bytes(
+                self._gzip_with_header_metadata(tar_payload)
+            )
+
+            snapshot = compliance_module.inspect_sdist(sdist_path)
+
+        blocker_codes = {str(item["code"]) for item in snapshot.blockers}
+        self.assertIn("archive_directory_payload", blocker_codes)
+        self.assertIn("archive_metadata_limit_exceeded", blocker_codes)
+        findings = self._metadata_findings(snapshot)
+        self.assertTrue(
+            {
+                compliance_module.sha256_bytes(
+                    f"api_key\0{secret.decode()}".encode()
+                )
+                for secret in (metadata_secret, payload_secret)
+            }.issubset({str(item["fingerprint"]) for item in findings})
+        )
+
+    def test_sdist_keeps_files_after_metadata_cap_padding_overflow(self) -> None:
+        metadata_secret = ("sk-" + "paddingabcdefghijklmnop").encode()
+        payload_secret = ("sk-" + "payloadabcdefghijklmnop").encode()
+        root = "voistarcraft2-0.1.0"
+        pax_value = b"P" * (
+            compliance_module.MAX_ARCHIVE_METADATA_BYTES - 2_300
+        )
+        pax_payload = self._pax_record(b"comment", pax_value)
+        extension = tarfile.TarInfo("././@PaxHeader")
+        extension.type = tarfile.XHDTYPE
+        extension.size = len(pax_payload)
+        padded_entry = tarfile.TarInfo(f"{root}/padding-source.bin")
+        padded_entry.size = 1
+        padding = metadata_secret + b"\n" + (
+            b"Q" * (510 - len(metadata_secret))
+        )
+        final_entry = f"{root}/starcraft_commander/runtime_data.py"
+        member = tarfile.TarInfo(final_entry)
+        member.size = len(payload_secret)
+        tar_payload = (
+            extension.tobuf(format=tarfile.USTAR_FORMAT)
+            + self._tar_padding(pax_payload)
+            + padded_entry.tobuf(format=tarfile.USTAR_FORMAT)
+            + b"x"
+            + padding
+            + member.tobuf(format=tarfile.USTAR_FORMAT)
+            + self._tar_padding(payload_secret)
+            + (b"\0" * 1024)
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            sdist_path = Path(temporary) / "voistarcraft2-0.1.0.tar.gz"
+            sdist_path.write_bytes(
+                self._gzip_with_header_metadata(tar_payload)
+            )
+
+            snapshot = compliance_module.inspect_sdist(sdist_path)
+
+        blocker_codes = {str(item["code"]) for item in snapshot.blockers}
+        self.assertIn("archive_metadata_limit_exceeded", blocker_codes)
+        self.assertIn("noncanonical_tar_member_padding", blocker_codes)
+        self.assertEqual(payload_secret, snapshot.files[final_entry])
+        findings = self._metadata_findings(snapshot)
+        self.assertIn(
+            compliance_module.sha256_bytes(
+                f"api_key\0{metadata_secret.decode()}".encode()
+            ),
+            {str(item["fingerprint"]) for item in findings},
+        )
 
     def test_sdist_rejects_and_scans_invalid_trailing_gzip_bytes(self) -> None:
         secret = ("sk-" + "liveabcdefghijklmnop").encode()
@@ -971,6 +1279,52 @@ class ArchivePolicyTest(unittest.TestCase):
         self.assertIn("unexpected_archive_bytes", blocker_codes)
         findings = self._metadata_findings(snapshot)
         self.assertEqual({"api_key"}, {item["rule_id"] for item in findings})
+
+    def test_sdist_prescans_invalid_remainder_after_metadata_exhaustion(
+        self,
+    ) -> None:
+        secret = ("sk-" + "remainderabcdefghijklmnop").encode()
+        comment = b"C" * 1_045_000
+        tar_payload = self._tar_payload(
+            (
+                "voistarcraft2-0.1.0/"
+                "starcraft_commander/runtime_data.py",
+                b"safe",
+            )
+        )
+        members = [
+            self._gzip_with_header_metadata(tar_payload, comment=comment),
+            *(
+                self._gzip_with_header_metadata(b"", comment=comment)
+                for _ in range(3)
+            ),
+        ]
+        invalid_remainder = (b"R" * 100_000) + b"\n" + secret
+
+        with tempfile.TemporaryDirectory() as temporary:
+            sdist_path = Path(temporary) / "voistarcraft2-0.1.0.tar.gz"
+            sdist_path.write_bytes(
+                b"".join(members) + invalid_remainder
+            )
+
+            snapshot = compliance_module.inspect_sdist(sdist_path)
+
+        blocker_codes = {str(item["code"]) for item in snapshot.blockers}
+        self.assertIn("archive_metadata_limit_exceeded", blocker_codes)
+        self.assertIn("invalid_gzip_header", blocker_codes)
+        self.assertTrue(
+            any(
+                str(item["path"]).endswith("/unparsed/0004")
+                for item in snapshot.prescanned_inputs
+            )
+        )
+        findings = self._metadata_findings(snapshot)
+        self.assertIn(
+            compliance_module.sha256_bytes(
+                f"api_key\0{secret.decode()}".encode()
+            ),
+            {str(item["fingerprint"]) for item in findings},
+        )
 
     def test_wheel_scans_data_descriptor_local_fixed_fields(self) -> None:
         secret = ("sk-" + "abcdefghijkl").encode()
@@ -2137,6 +2491,115 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             {str(item["rule_id"]) for item in toml_findings},
         )
 
+    def test_detects_semantic_lowercase_myproxy_configuration(self) -> None:
+        endpoint = "https://proxy." + "corp.example/v1"
+        model = "private-" + "deployment"
+        payloads = {
+            "private.json": json.dumps(
+                {
+                    "provider": "my" + "proxy",
+                    "base_url": endpoint,
+                    "model": model,
+                }
+            ).encode(),
+            "private.toml": (
+                'provider = "my' + 'proxy"\n'
+                f'base_url = "{endpoint}"\n'
+                f'model = "{model}"\n'
+            ).encode(),
+            "private.yaml": (
+                "provider: my" + "proxy\n"
+                f"base-url: {endpoint}\n"
+                f"model: {model}\n"
+            ).encode(),
+            "nested.json": json.dumps(
+                {
+                    "provider": "my" + "proxy",
+                    "settings": {
+                        "base_url": endpoint,
+                        "model": model,
+                    },
+                }
+            ).encode(),
+            "nested.toml": (
+                'provider = "my' + 'proxy"\n'
+                "[settings]\n"
+                f'base_url = "{endpoint}"\n'
+                f'model = "{model}"\n'
+            ).encode(),
+            "nested.yaml": (
+                "provider: my" + "proxy\n"
+                "settings:\n"
+                f"  base-url: {endpoint}\n"
+                f"  model: {model}\n"
+            ).encode(),
+        }
+
+        for path, payload in payloads.items():
+            with self.subTest(path=path):
+                findings = scan_payload(
+                    path,
+                    payload,
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertEqual(
+                    {"private_endpoint", "private_model_override"},
+                    {str(item["rule_id"]) for item in findings},
+                )
+
+    def test_nested_provider_overrides_inherited_myproxy_context(self) -> None:
+        payload = (
+            "provider: myproxy\n"
+            "fallback:\n"
+            "  provider: openai\n"
+            "  host: api.openai.com\n"
+            "  port: 443\n"
+            "  model: gpt-public\n"
+        ).encode()
+
+        self.assertEqual(
+            [],
+            scan_payload(
+                "providers.yaml",
+                payload,
+                allow_safe_fixtures=False,
+            ),
+        )
+
+    def test_detects_utf32_and_blocks_opaque_text_payloads(self) -> None:
+        host_key = "VOI_MYPROXY_" + "HOST"
+        model_key = "VOI_MYPROXY_" + "MODEL"
+        source = (
+            f'{host_key} = "10.20.30.40"\n'
+            f'{model_key} = "private-model"\n'
+        )
+        cases = (
+            ("module.py", source.encode("utf-32")),
+            ("script.sh", source.encode("utf-32-be")),
+        )
+        for path, payload in cases:
+            with self.subTest(path=path):
+                findings = scan_payload(
+                    path,
+                    payload,
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertEqual(
+                    {"private_endpoint", "private_model_override"},
+                    {str(item["rule_id"]) for item in findings},
+                )
+        opaque = scan_payload(
+            "opaque.py",
+            b"safe\x00payload\x00with\x00embedded\x00nuls",
+            allow_safe_fixtures=False,
+        )
+        self.assertIn(
+            "opaque_text_payload",
+            {str(item["rule_id"]) for item in opaque},
+        )
+
     def test_detects_bomless_utf16_in_all_scanned_source_types(self) -> None:
         host_key = "VOI_MYPROXY_" + "HOST"
         model_key = "VOI_MYPROXY_" + "MODEL"
@@ -2259,6 +2722,243 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             },
             {str(item["rule_id"]) for item in findings},
         )
+
+    def test_detects_indirect_and_aliased_python_environment_writes(
+        self,
+    ) -> None:
+        host_key = "VOI_MYPROXY_" + "HOST"
+        model_key = "VOI_MYPROXY_" + "MODEL"
+        endpoint = "10.20." + "30.40"
+        model = "private-" + "model"
+        payload = (
+            "import os as operating_system\n"
+            f'key = "{host_key}"\n'
+            f'value = "{endpoint}"\n'
+            "environment = operating_system.environ\n"
+            "environment[key] = value\n"
+            f'model_key = "{model_key}"\n'
+            f'model_value = "{model}"\n'
+            "updates = {model_key: model_value}\n"
+            "environment.update(updates)\n"
+            "from os import environ as imported_environment\n"
+            f'imported_environment.update({{{json.dumps(host_key)}: '
+            f'{json.dumps(endpoint)}}})\n'
+        ).encode()
+
+        findings = scan_payload(
+            "launcher.py",
+            payload,
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
+            {str(item["rule_id"]) for item in findings},
+        )
+
+    def test_python_environment_alias_shadowing_does_not_false_positive(
+        self,
+    ) -> None:
+        payload = (
+            "from os import environ\n"
+            'key = "VOI_MYPROXY_" + "HOST"\n'
+            'value = "10.20." + "30.40"\n'
+            "if True:\n"
+            "    environ = {}\n"
+            "    environ[key] = value\n"
+        ).encode()
+
+        self.assertEqual(
+            [],
+            scan_payload(
+                "benign.py",
+                payload,
+                allow_safe_fixtures=False,
+            ),
+        )
+
+    def test_detects_environment_aliases_across_control_flow(self) -> None:
+        host_payload = (
+            'key = "VOI_MYPROXY_" + "HOST"\n'
+            'value = "10.20." + "30.40"\n'
+            "if enabled:\n"
+            "    import os as operating_system\n"
+            "operating_system.environ[key] = value\n"
+        )
+        model_payload = (
+            'key = "VOI_MYPROXY_" + "MODEL"\n'
+            'value = "private-" + "model"\n'
+            "try:\n"
+            "    from os import environ as environment\n"
+            "except ImportError:\n"
+            "    environment = {}\n"
+            "environment[key] = value\n"
+        )
+
+        for payload, expected in (
+            (host_payload, "private_endpoint"),
+            (model_payload, "private_model_override"),
+        ):
+            with self.subTest(expected=expected):
+                findings = scan_payload(
+                    "launcher.py",
+                    payload.encode(),
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertIn(
+                    expected,
+                    {str(item["rule_id"]) for item in findings},
+                )
+
+    def test_python_sensitive_analysis_limits_fail_closed(self) -> None:
+        deep_expression = "key = " + " + ".join(
+            '"a"' for _ in range(1000)
+        )
+        excessive_bindings = "\n".join(
+            f'name_{index} = "value_{index}"'
+            for index in range(600)
+        )
+        for payload in (deep_expression, excessive_bindings):
+            with self.subTest(payload_size=len(payload)):
+                findings = scan_payload(
+                    "bounded.py",
+                    payload.encode(),
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertIn(
+                    "python_sensitive_analysis_limit_exceeded",
+                    {str(item["rule_id"]) for item in findings},
+                )
+
+    def test_reasonable_python_branching_does_not_hit_analysis_limit(
+        self,
+    ) -> None:
+        payload = "\n".join(
+            line
+            for index in range(9)
+            for line in (
+                f"if condition_{index}:",
+                f'    value_{index} = "left_{index}"',
+                "else:",
+                f'    value_{index} = "right_{index}"',
+            )
+        )
+
+        self.assertEqual(
+            [],
+            scan_payload(
+                "branches.py",
+                payload.encode(),
+                allow_safe_fixtures=False,
+            ),
+        )
+
+    def test_detects_python_environment_key_composition_and_escapes(
+        self,
+    ) -> None:
+        payloads = (
+            (
+                'os.environ["VOI_MYPROXY_" + "HOST"] = '
+                '"10.20." + "30.40"\n'
+            ),
+            (
+                'key = "VOI_MYPROXY_" + "MODEL"\n'
+                'os.environ[key] = "private-" + "model"\n'
+            ),
+            (
+                'os.environ["VOI_MYPROXY_\\x48OST"] = '
+                '"10.20.30.40"\n'
+            ),
+            (
+                'from os import environ\n'
+                'environ |= {"VOI_MYPROXY_" + "PORT": "8443"}\n'
+            ),
+            (
+                'key = "VOI_MYPROXY_" + "HOST"\n'
+                'value = "10.20." + "30.40"\n'
+                "os.environ |= {key: value}\n"
+            ),
+            (
+                'key = "VOI_MYPROXY_" + "MODEL"\n'
+                'value = "private-" + "model"\n'
+                "os.environ.__setitem__(key, value)\n"
+            ),
+            (
+                'key = "VOI_MYPROXY_" + "HOST"\n'
+                'value = "10.20." + "30.40"\n'
+                'getattr(os, "en" + "viron")[key] = value\n'
+            ),
+        )
+        expected = (
+            "private_endpoint",
+            "private_model_override",
+            "private_endpoint",
+            "private_endpoint",
+            "private_endpoint",
+            "private_model_override",
+            "private_endpoint",
+        )
+        for payload, rule_id in zip(payloads, expected, strict=True):
+            with self.subTest(rule_id=rule_id):
+                findings = scan_payload(
+                    "launcher.py",
+                    payload.encode(),
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertIn(
+                    rule_id,
+                    {str(item["rule_id"]) for item in findings},
+                )
+
+    def test_configured_locally_exemption_requires_complete_value(self) -> None:
+        model_key = "DEFAULT_MYPROXY_" + "MODEL"
+        exact_values = (
+            ("defaults.py", f'{model_key} = "configured-locally"\n'),
+            (
+                "defaults.py",
+                f"{model_key} = configured-locally # local override\n",
+            ),
+            (
+                "defaults.yaml",
+                "{"
+                f"{model_key}: configured-locally, "
+                "safe: true}\n",
+            ),
+        )
+        for path, exact in exact_values:
+            with self.subTest(path=path, exact=exact):
+                self.assertEqual(
+                    [],
+                    scan_payload(
+                        path,
+                        exact.encode(),
+                        allow_safe_fixtures=False,
+                    ),
+                )
+
+        suffixed_values = (
+            ("defaults.py", f'{model_key} = "configured-locally" + "-private"\n'),
+            ("defaults.py", f'{model_key} = "configured-locally#secret-model"\n'),
+            ("defaults.py", f'{model_key} = "configured-locally,secret-model"\n'),
+            ("defaults.py", f"{model_key} = configured-locally#secret-model\n"),
+            ("defaults.yaml", f"{model_key}: configured-locally,secret-model\n"),
+        )
+        for path, suffixed in suffixed_values:
+            with self.subTest(path=path, suffixed=suffixed):
+                self.assertIn(
+                    "private_model_override",
+                    {
+                        str(item["rule_id"])
+                        for item in scan_payload(
+                            path,
+                            suffixed.encode(),
+                            allow_safe_fixtures=False,
+                        )
+                    },
+                )
 
     def test_detects_multiline_env_calls_and_all_myproxy_cli_aliases(
         self,
@@ -4300,10 +5000,10 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
         )[0]["fingerprint"]
         allowed = {
             allowed_path: {
-                "api_key": frozenset({str(fake_key_fingerprint)}),
-                "api_key_assignment": frozenset(
-                    {str(fake_assignment_fingerprint)}
-                ),
+                "api_key": {str(fake_key_fingerprint): 1},
+                "api_key_assignment": {
+                    str(fake_assignment_fingerprint): 1
+                },
             }
         }
 
@@ -4341,6 +5041,53 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                     f"value = '{fake_key}changed'".encode(),
                 )
             )
+            duplicate_findings = scan_payload(
+                allowed_path,
+                (
+                    f"first = '{fake_key}'\n"
+                    f"second = '{fake_key}'\n"
+                ).encode(),
+            )
+            self.assertEqual(1, len(duplicate_findings))
+            self.assertEqual("api_key", duplicate_findings[0]["rule_id"])
+            distinct_assignment_findings = scan_payload(
+                allowed_path,
+                (
+                    f'SERVICE_API_KEY: "proxy-alias-key"\n'
+                    f"{fake_assignment}\n"
+                ).encode(),
+            )
+            self.assertEqual(1, len(distinct_assignment_findings))
+            self.assertEqual(
+                "api_key_assignment",
+                distinct_assignment_findings[0]["rule_id"],
+            )
+
+    def test_fixture_allowlist_inventory_and_occurrences_are_exact(self) -> None:
+        inventory = compliance_module._SAFE_FIXTURE_FINGERPRINTS
+
+        for path, rules in inventory.items():
+            with self.subTest(path=path):
+                observed = Counter(
+                    (
+                        str(finding["rule_id"]),
+                        str(finding["fingerprint"]),
+                    )
+                    for finding in scan_payload(
+                        path,
+                        Path(path).read_bytes(),
+                        allow_safe_fixtures=False,
+                    )
+                )
+                expected = Counter(
+                    {
+                        (rule_id, fingerprint): count
+                        for rule_id, occurrences in rules.items()
+                        for fingerprint, count in occurrences.items()
+                    }
+                )
+
+                self.assertEqual(expected, observed)
 
     def test_credential_detector_requires_an_assignment(self) -> None:
         scanner_documentation = (
@@ -5131,7 +5878,10 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
                 "returncode": 0,
                 "payload": {
                     "license_expression": EXPECTED_LICENSE_EXPRESSION,
+                    "packaged_defaults_loaded": True,
                     "runtime_data_loaded": True,
+                    "source_repository_root_is_none": True,
+                    "target_packaged_defaults_loaded": True,
                     "target_runtime_data_loaded": True,
                 },
             },
@@ -5169,6 +5919,95 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
 
     def test_accepts_complete_derived_evidence(self) -> None:
         self.assertEqual([], distribution_report_blockers(self.report))
+
+    def test_accepts_prescanned_archive_metadata_in_secret_scan_manifest(
+        self,
+    ) -> None:
+        comment = b"C" * 900_000
+        tar_payload = ArchivePolicyTest._tar_payload(
+            (
+                "voistarcraft2-0.1.0/"
+                "starcraft_commander/runtime_data.py",
+                b"safe",
+            )
+        )
+        members = [
+            ArchivePolicyTest._gzip_with_header_metadata(
+                tar_payload,
+                comment=comment,
+            ),
+            *(
+                ArchivePolicyTest._gzip_with_header_metadata(
+                    b"",
+                    comment=comment,
+                )
+                for _ in range(3)
+            ),
+            ArchivePolicyTest._gzip_with_header_metadata(
+                b"A" * 400_000,
+                comment=comment,
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            sdist_path = Path(temporary) / "voistarcraft2-0.1.0.tar.gz"
+            sdist_path.write_bytes(b"".join(members))
+            snapshot = compliance_module.inspect_sdist(sdist_path)
+
+        self.assertTrue(snapshot.prescanned_inputs)
+        artifact_evidence = compliance_module._artifact_evidence(snapshot)
+
+        report = copy.deepcopy(self.report)
+        artifact = report["artifacts"]["sdist"]
+        secret_scan = report["secret_scan"]
+        for prescanned in snapshot.prescanned_inputs:
+            prescanned_path = str(prescanned["path"])
+            metadata_path = prescanned_path.removeprefix("sdist/")
+            metadata_digest = artifact_evidence["metadata_manifest"][
+                metadata_path
+            ]
+            metadata_size = artifact_evidence["metadata_sizes"][
+                metadata_path
+            ]
+            artifact["metadata_manifest"][metadata_path] = metadata_digest
+            artifact["metadata_sizes"][metadata_path] = metadata_size
+            secret_scan["input_manifest"].append(
+                {
+                    "kind": "sdist",
+                    "path": prescanned_path,
+                    "size": metadata_size,
+                    "sha256": metadata_digest,
+                }
+            )
+        secret_scan["input_manifest"].sort(
+            key=lambda item: str(item["path"])
+        )
+        secret_scan["scanned_file_count"] = len(
+            secret_scan["input_manifest"]
+        )
+        self._rebind_report_projection(report)
+        trusted_artifacts = copy.deepcopy(report["artifacts"])
+        for trusted_artifact in trusted_artifacts.values():
+            trusted_artifact["archive_blockers"] = []
+
+        with (
+            mock.patch.object(
+                compliance_module,
+                "_trusted_artifact_evidence",
+                return_value=trusted_artifacts,
+            ),
+            mock.patch.object(
+                compliance_module,
+                "_trusted_secret_scan_evidence",
+                return_value=copy.deepcopy(secret_scan),
+            ),
+        ):
+            report = compliance_module._with_derived_verdict(report)
+            codes = {
+                str(item["code"])
+                for item in distribution_report_blockers(report)
+            }
+
+        self.assertNotIn("invalid_secret_scan_evidence", codes)
 
     def test_rejects_missing_derived_verdict(self) -> None:
         report = copy.deepcopy(self.report)
@@ -5949,6 +6788,28 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
 
         self.assertIn("repository_not_clean_commit", codes)
         self.assertIn("isolated_install_not_attempted", codes)
+
+    def test_rejects_incomplete_installed_package_smoke_contract(self) -> None:
+        expected_codes = {
+            "packaged_defaults_loaded": "installed_packaged_defaults_failed",
+            "source_repository_root_is_none": (
+                "installed_source_root_not_isolated"
+            ),
+            "target_packaged_defaults_loaded": (
+                "target_install_packaged_defaults_failed"
+            ),
+        }
+        for field, code in expected_codes.items():
+            with self.subTest(field=field):
+                report = copy.deepcopy(self.report)
+                report["install_smoke"]["payload"][field] = False
+
+                codes = {
+                    str(item["code"])
+                    for item in distribution_report_blockers(report)
+                }
+
+                self.assertIn(code, codes)
 
     def test_rejects_repository_identity_drift_and_inconsistent_raw_state(
         self,

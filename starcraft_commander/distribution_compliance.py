@@ -22,7 +22,7 @@ import unicodedata
 import venv
 import zipfile
 import zlib
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field as dataclass_field
 from email.parser import BytesParser
 from pathlib import Path, PurePosixPath
@@ -42,7 +42,7 @@ except ImportError:  # pragma: no cover - Python 3.10 uses the dev dependency.
         _toml = None
 
 
-DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION: Final[int] = 5
+DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION: Final[int] = 6
 EXPECTED_LICENSE_EXPRESSION: Final[str] = (
     "AGPL-3.0-or-later OR LicenseRef-Commercial"
 )
@@ -424,30 +424,58 @@ _CREDENTIAL_PATH_RE: Final[re.Pattern[str]] = re.compile(
     + r"[A-Za-z0-9_.-]+\.credentials\.json)[^\"'\n]*[\"'])"
 )
 _SAFE_FIXTURE_FINGERPRINTS: Final[
-    Mapping[str, Mapping[str, frozenset[str]]]
+    Mapping[str, Mapping[str, Mapping[str, int]]]
 ] = {
     "tests/test_llm_interpreter.py": {
-        "api_key": frozenset(
-            {"6d7cff6a74f5a16be41aaf6ccc8d51b62357cf1115f4149e6d116b537f96b302"}
-        ),
-        "api_key_assignment": frozenset(
-            {"b8cbb6abbd7c6ba09041bb128a6907bb20f5464febde6f4d54159a3a1fa8b5a5"}
-        ),
+        "api_key": {
+            "6d7cff6a74f5a16be41aaf6ccc8d51b62357cf1115f4149e6d116b537f96b302": 2
+        },
+        "api_key_assignment": {
+            "b8cbb6abbd7c6ba09041bb128a6907bb20f5464febde6f4d54159a3a1fa8b5a5": 1
+        },
     },
     "tests/test_micromachine_pre_live_provenance.py": {
-        "bearer_token": frozenset(
-            {"2a452e8451a18651177c8cfeff71b5c6d1e8fd1d1faab95968b77e83cd7efd09"}
-        )
+        "bearer_token": {
+            "2a452e8451a18651177c8cfeff71b5c6d1e8fd1d1faab95968b77e83cd7efd09": 2
+        }
     },
     "tests/test_web_gui.py": {
-        "api_key": frozenset(
-            {
-                "3ecb7ee0b6df1921344b76307f224695e417e4a63f638471b2428b6f7c54c355",
-                "76bb8593aa73556c30f24f5e7f47d401383e5815b4117c4b0f0430398d93f544",
-            }
-        )
+        "api_key": {
+            "3ecb7ee0b6df1921344b76307f224695e417e4a63f638471b2428b6f7c54c355": 2,
+            "76bb8593aa73556c30f24f5e7f47d401383e5815b4117c4b0f0430398d93f544": 1,
+        }
     },
 }
+_TEXT_SCAN_SUFFIXES: Final[frozenset[str]] = frozenset(
+    {
+        ".c",
+        ".cfg",
+        ".cmake",
+        ".conf",
+        ".cpp",
+        ".css",
+        ".csv",
+        ".diff",
+        ".h",
+        ".hpp",
+        ".html",
+        ".ini",
+        ".js",
+        ".json",
+        ".md",
+        ".patch",
+        ".py",
+        ".rst",
+        ".sh",
+        ".toml",
+        ".ts",
+        ".tsx",
+        ".txt",
+        ".xml",
+        ".yaml",
+        ".yml",
+    }
+)
 _CREDENTIAL_FILENAMES: Final[frozenset[str]] = frozenset(
     {
         ".netrc",
@@ -482,6 +510,8 @@ class ArchiveSnapshot:
     blockers: tuple[Mapping[str, object], ...]
     directories: tuple[str, ...] = ()
     metadata: Mapping[str, bytes] = dataclass_field(default_factory=dict)
+    prescanned_inputs: tuple[Mapping[str, object], ...] = ()
+    prescanned_findings: tuple[Mapping[str, object], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -506,7 +536,38 @@ class _RawZipEntry:
 class _ArchiveMetadata(dict[str, bytes]):
     """Metadata map with constant-time bounded-size accounting."""
 
-    total_bytes: int = 0
+    def __init__(self) -> None:
+        super().__init__()
+        self.total_bytes = 0
+        self.prescanned_inputs: list[dict[str, object]] = []
+        self.prescanned_findings: list[dict[str, object]] = []
+        self._prescanned_paths: set[str] = set()
+
+    def prescan(
+        self,
+        *,
+        kind: str,
+        key: str,
+        payload: bytes | memoryview,
+    ) -> None:
+        scan_path = f"{kind}/{key}"
+        if scan_path in self._prescanned_paths:
+            raise RuntimeError("Duplicate prescanned archive evidence")
+        self._prescanned_paths.add(scan_path)
+        self.prescanned_inputs.append(
+            {
+                "path": scan_path,
+                "size": len(payload),
+                "sha256": sha256_bytes(payload),
+            }
+        )
+        self.prescanned_findings.extend(
+            scan_payload(
+                scan_path,
+                bytes(payload),
+                allow_safe_fixtures=False,
+            )
+        )
 
 
 def canonical_json_text(value: object) -> str:
@@ -538,7 +599,7 @@ def _record_archive_metadata(
     blockers: list[dict[str, object]],
     *,
     key: str,
-    payload: bytes,
+    payload: bytes | memoryview,
     kind: str,
     entry: str | None = None,
 ) -> bool:
@@ -560,8 +621,10 @@ def _record_archive_metadata(
         if entry is not None:
             blocker["entry"] = entry
         blockers.append(blocker)
+        if isinstance(metadata, _ArchiveMetadata):
+            metadata.prescan(kind=kind, key=key, payload=payload)
         return False
-    metadata[key] = payload
+    metadata[key] = bytes(payload)
     if isinstance(metadata, _ArchiveMetadata):
         metadata.total_bytes = projected_size
     return True
@@ -868,15 +931,14 @@ def _raw_zip_metadata(
 
     end_offset, end_fields = candidates[0]
     end_record = payload[end_offset:]
-    if not _record_archive_metadata(
+    _record_archive_metadata(
         metadata,
         blockers,
         key="__archive_metadata__/zip/end-record",
         payload=end_record,
         kind="wheel",
-    ):
-        return metadata, blockers
-    if not _record_archive_metadata(
+    )
+    _record_archive_metadata(
         metadata,
         blockers,
         key="__archive_metadata__/zip/end-record-fields",
@@ -885,8 +947,7 @@ def _raw_zip_metadata(
             (4, 2, 2, 2, 2, 4, 4, 2),
         ),
         kind="wheel",
-    ):
-        return metadata, blockers
+    )
     (
         _,
         disk_number,
@@ -938,15 +999,15 @@ def _raw_zip_metadata(
         )
         return metadata, blockers
     if central_size > MAX_ARCHIVE_METADATA_BYTES:
-        blockers.append(
-            {
-                "code": "archive_metadata_limit_exceeded",
-                "kind": "wheel",
-                "observed": central_size,
-                "limit": MAX_ARCHIVE_METADATA_BYTES,
-            }
+        _record_archive_metadata(
+            metadata,
+            blockers,
+            key="__archive_metadata__/zip/central-directory",
+            payload=memoryview(payload)[
+                central_offset : central_offset + central_size
+            ],
+            kind="wheel",
         )
-        return metadata, blockers
     central_end = central_offset + central_size
     if central_end != end_offset or central_offset > len(payload):
         if central_end < end_offset and central_offset <= central_end:
@@ -1042,15 +1103,14 @@ def _raw_zip_metadata(
         entry_comment = payload[
             fixed_end + name_length + extra_length : record_end
         ]
-        if not _record_archive_metadata(
+        _record_archive_metadata(
             metadata,
             blockers,
             key=f"__archive_metadata__/zip/central/{index:04d}",
             payload=payload[central_cursor:record_end],
             kind="wheel",
-        ):
-            return metadata, blockers
-        if not _record_archive_metadata(
+        )
+        _record_archive_metadata(
             metadata,
             blockers,
             key=(
@@ -1062,8 +1122,7 @@ def _raw_zip_metadata(
                 (4, 2, 2, 2, 2, 2, 2, 4, 4, 4, 2, 2, 2, 2, 2, 4, 4),
             ),
             kind="wheel",
-        ):
-            return metadata, blockers
+        )
         flag_bits = int(fields[3])
         try:
             name = _decode_zip_filename(raw_name, flag_bits)
@@ -1250,16 +1309,15 @@ def _raw_zip_metadata(
             return metadata, blockers
         raw_name = payload[fixed_end : fixed_end + name_length]
         local_extra = payload[fixed_end + name_length : header_end]
-        if not _record_archive_metadata(
+        _record_archive_metadata(
             metadata,
             blockers,
             key=f"__archive_metadata__/zip/local/{entry.index:04d}",
             payload=payload[entry.local_offset:header_end],
             kind="wheel",
             entry=entry.name,
-        ):
-            return metadata, blockers
-        if not _record_archive_metadata(
+        )
+        _record_archive_metadata(
             metadata,
             blockers,
             key=(
@@ -1272,8 +1330,7 @@ def _raw_zip_metadata(
             ),
             kind="wheel",
             entry=entry.name,
-        ):
-            return metadata, blockers
+        )
         try:
             local_name = _decode_zip_filename(raw_name, int(fields[2]))
         except UnicodeDecodeError:
@@ -1365,7 +1422,7 @@ def _raw_zip_metadata(
                 payload[descriptor_offset:descriptor_end]
             )
             record_end = descriptor_end
-            if not _record_archive_metadata(
+            _record_archive_metadata(
                 metadata,
                 blockers,
                 key=(
@@ -1375,9 +1432,8 @@ def _raw_zip_metadata(
                 payload=payload[data_end:descriptor_end],
                 kind="wheel",
                 entry=entry.name,
-            ):
-                return metadata, blockers
-            if not _record_archive_metadata(
+            )
+            _record_archive_metadata(
                 metadata,
                 blockers,
                 key=(
@@ -1390,8 +1446,7 @@ def _raw_zip_metadata(
                 ),
                 kind="wheel",
                 entry=entry.name,
-            ):
-                return metadata, blockers
+            )
             if tuple(int(value) for value in descriptor) != (
                 entry.crc32,
                 entry.compressed_size,
@@ -1478,12 +1533,8 @@ def _gzip_member_end(
         if cursor >= len(payload):
             raise ValueError("truncated gzip deflate stream")
         chunk = payload[cursor : cursor + 64 * 1024]
-        uncompressed = decompressor.decompress(chunk, 1024 * 1024)
-        consumed = (
-            len(chunk)
-            - len(decompressor.unconsumed_tail)
-            - len(decompressor.unused_data)
-        )
+        uncompressed = decompressor.decompress(chunk)
+        consumed = len(chunk) - len(decompressor.unused_data)
         if consumed <= 0 and not uncompressed:
             raise ValueError("invalid gzip deflate stream")
         cursor += consumed
@@ -1510,19 +1561,23 @@ def _record_invalid_gzip_remainder(
     *,
     offset: int,
     member_index: int,
+    record_or_prescan: Callable[[str, bytes], bool],
 ) -> None:
     if offset >= len(payload):
         return
-    _record_unexplained_archive_bytes(
-        metadata,
-        blockers,
-        key=(
-            "__archive_metadata__/gzip/unparsed/"
-            f"{member_index:04d}"
-        ),
-        payload=payload[offset:],
-        kind="sdist",
-        location="invalid_gzip_remainder",
+    remainder = payload[offset:]
+    record_or_prescan(
+        "__archive_metadata__/gzip/unparsed/"
+        f"{member_index:04d}",
+        remainder,
+    )
+    blockers.append(
+        {
+            "code": "unexpected_archive_bytes",
+            "kind": "sdist",
+            "location": "invalid_gzip_remainder",
+            "observed": len(remainder),
+        }
     )
 
 
@@ -1532,9 +1587,23 @@ def _gzip_header_metadata(
     dict[str, bytes],
     list[dict[str, object]],
     bytes | None,
+    list[dict[str, object]],
+    list[dict[str, object]],
 ]:
-    metadata: dict[str, bytes] = _ArchiveMetadata()
+    metadata = _ArchiveMetadata()
     blockers: list[dict[str, object]] = []
+    prescanned_inputs = metadata.prescanned_inputs
+    prescanned_findings = metadata.prescanned_findings
+
+    def record_or_prescan(key: str, member_payload: bytes) -> bool:
+        return _record_archive_metadata(
+            metadata,
+            blockers,
+            key=key,
+            payload=member_payload,
+            kind="sdist",
+        )
+
     archive_size = path.stat().st_size
     if archive_size > MAX_ARCHIVE_STREAM_BYTES:
         return (
@@ -1548,6 +1617,8 @@ def _gzip_header_metadata(
                 }
             ],
             None,
+            prescanned_inputs,
+            prescanned_findings,
         )
     with path.open("rb") as handle:
         payload = handle.read(MAX_ARCHIVE_STREAM_BYTES + 1)
@@ -1563,6 +1634,8 @@ def _gzip_header_metadata(
                 }
             ],
             None,
+            prescanned_inputs,
+            prescanned_findings,
         )
     offset = 0
     member_index = 0
@@ -1584,6 +1657,7 @@ def _gzip_header_metadata(
                 payload,
                 offset=offset,
                 member_index=member_index,
+                record_or_prescan=record_or_prescan,
             )
             break
         if member_index:
@@ -1605,6 +1679,7 @@ def _gzip_header_metadata(
                 payload,
                 offset=offset,
                 member_index=member_index,
+                record_or_prescan=record_or_prescan,
             )
             break
         signature, method, flags, _, _, _ = _GZIP_FIXED_HEADER.unpack(fixed)
@@ -1616,6 +1691,7 @@ def _gzip_header_metadata(
                 payload,
                 offset=offset,
                 member_index=member_index,
+                record_or_prescan=record_or_prescan,
             )
             break
         metadata_prefix = (
@@ -1635,12 +1711,9 @@ def _gzip_header_metadata(
                 extra = handle.read(extra_length)
                 if len(extra) != extra_length:
                     raise ValueError("truncated gzip extra metadata")
-                _record_archive_metadata(
-                    metadata,
-                    blockers,
-                    key=f"{metadata_prefix}/extra",
-                    payload=extra,
-                    kind="sdist",
+                record_or_prescan(
+                    f"{metadata_prefix}/extra",
+                    extra,
                 )
                 blockers.append(
                     {
@@ -1652,12 +1725,9 @@ def _gzip_header_metadata(
                 )
             if flags & 0x08:
                 filename = _read_gzip_c_string(handle)
-                _record_archive_metadata(
-                    metadata,
-                    blockers,
-                    key=f"{metadata_prefix}/filename",
-                    payload=filename,
-                    kind="sdist",
+                record_or_prescan(
+                    f"{metadata_prefix}/filename",
+                    filename,
                 )
                 expected = path.name.removesuffix(".gz").encode("utf-8")
                 if member_index or filename != expected:
@@ -1671,12 +1741,9 @@ def _gzip_header_metadata(
                     )
             if flags & 0x10:
                 comment = _read_gzip_c_string(handle)
-                _record_archive_metadata(
-                    metadata,
-                    blockers,
-                    key=f"{metadata_prefix}/comment",
-                    payload=comment,
-                    kind="sdist",
+                record_or_prescan(
+                    f"{metadata_prefix}/comment",
+                    comment,
                 )
                 blockers.append(
                     {
@@ -1712,27 +1779,20 @@ def _gzip_header_metadata(
                         payload,
                         offset=offset,
                         member_index=member_index,
+                        record_or_prescan=record_or_prescan,
                     )
                     break
-            if not _record_archive_metadata(
-                metadata,
-                blockers,
-                key=f"{metadata_prefix}/raw-header",
-                payload=payload[offset : handle.tell()],
-                kind="sdist",
-            ):
-                break
-            if not _record_archive_metadata(
-                metadata,
-                blockers,
-                key=f"{metadata_prefix}/fixed-header-fields",
-                payload=_fixed_field_projection(
+            record_or_prescan(
+                f"{metadata_prefix}/raw-header",
+                payload[offset : handle.tell()],
+            )
+            record_or_prescan(
+                f"{metadata_prefix}/fixed-header-fields",
+                _fixed_field_projection(
                     fixed,
                     (2, 1, 1, 4, 1, 1),
                 ),
-                kind="sdist",
-            ):
-                break
+            )
             next_offset, uncompressed_payload = _gzip_member_end(
                 payload,
                 header_end=handle.tell(),
@@ -1759,14 +1819,27 @@ def _gzip_header_metadata(
                 payload,
                 offset=offset,
                 member_index=member_index,
+                record_or_prescan=record_or_prescan,
             )
             break
         if member_index == 0:
             first_member_payload = uncompressed_payload
+        else:
+            metadata_key = (
+                "__archive_metadata__/gzip/member/"
+                f"{member_index:04d}/uncompressed-payload"
+            )
+            record_or_prescan(metadata_key, uncompressed_payload)
         total_uncompressed_bytes += len(uncompressed_payload)
         offset = next_offset
         member_index += 1
-    return metadata, blockers, first_member_payload
+    return (
+        metadata,
+        blockers,
+        first_member_payload,
+        prescanned_inputs,
+        prescanned_findings,
+    )
 
 
 def _parse_tar_octal(field: bytes) -> int:
@@ -1827,6 +1900,7 @@ def _raw_tar_metadata(
     physical_entries = 0
     total_member_bytes = 0
     pending_pax_keys: set[bytes] = set()
+    prescan_regular_files = False
     while cursor < len(payload):
         block_end = cursor + _TAR_BLOCK_BYTES
         if block_end > len(payload):
@@ -1899,15 +1973,14 @@ def _raw_tar_metadata(
             return
         entry_index = physical_entries
         physical_entries += 1
-        if not _record_archive_metadata(
+        _record_archive_metadata(
             metadata,
             blockers,
             key=f"__archive_metadata__/tar/header/{entry_index:04d}",
             payload=block,
             kind="sdist",
-        ):
-            return
-        if not _record_archive_metadata(
+        )
+        _record_archive_metadata(
             metadata,
             blockers,
             key=(
@@ -1937,8 +2010,7 @@ def _raw_tar_metadata(
                 ),
             ),
             kind="sdist",
-        ):
-            return
+        )
         try:
             expected_checksum = _parse_tar_octal(block[148:156])
             member_size = _parse_tar_octal(block[124:136])
@@ -2009,17 +2081,25 @@ def _raw_tar_metadata(
             tarfile.GNUTYPE_LONGLINK,
         }
         if extension_type and member_size > MAX_ARCHIVE_METADATA_BYTES:
-            blockers.append(
-                {
-                    "code": "archive_metadata_limit_exceeded",
-                    "kind": "sdist",
-                    "entry_index": entry_index,
-                    "observed": member_size,
-                    "limit": MAX_ARCHIVE_METADATA_BYTES,
-                }
+            metadata_kind = (
+                "pax"
+                if type_flag in {tarfile.XHDTYPE, tarfile.XGLTYPE}
+                else "gnu"
             )
-            return
+            _record_archive_metadata(
+                metadata,
+                blockers,
+                key=(
+                    f"__archive_metadata__/tar/{metadata_kind}/"
+                    f"{entry_index:04d}"
+                ),
+                payload=memoryview(payload)[data_offset:data_end],
+                kind="sdist",
+            )
+            cursor = padded_end
+            continue
         if type_flag == tarfile.DIRTYPE and member_size:
+            prescan_regular_files = True
             blockers.append(
                 {
                     "code": "archive_directory_payload",
@@ -2028,28 +2108,16 @@ def _raw_tar_metadata(
                     "observed": member_size,
                 }
             )
-            if member_size > MAX_ARCHIVE_METADATA_BYTES:
-                blockers.append(
-                    {
-                        "code": "archive_metadata_limit_exceeded",
-                        "kind": "sdist",
-                        "entry_index": entry_index,
-                        "observed": member_size,
-                        "limit": MAX_ARCHIVE_METADATA_BYTES,
-                    }
-                )
-                return
-            if not _record_archive_metadata(
+            _record_archive_metadata(
                 metadata,
                 blockers,
                 key=(
                     "__archive_metadata__/tar/directory-payload/"
                     f"{entry_index:04d}"
                 ),
-                payload=payload[data_offset:data_end],
+                payload=memoryview(payload)[data_offset:data_end],
                 kind="sdist",
-            ):
-                return
+            )
         elif not extension_type:
             if member_size > MAX_ARCHIVE_MEMBER_BYTES:
                 blockers.append(
@@ -2073,8 +2141,23 @@ def _raw_tar_metadata(
                     }
                 )
                 return
+            if (
+                prescan_regular_files
+                and type_flag in {tarfile.REGTYPE, tarfile.AREGTYPE}
+            ):
+                _record_archive_metadata(
+                    metadata,
+                    blockers,
+                    key=(
+                        "__archive_metadata__/tar/untrusted-file/"
+                        f"{entry_index:04d}"
+                    ),
+                    payload=memoryview(payload)[data_offset:data_end],
+                    kind="sdist",
+                )
         padding = payload[data_end:padded_end]
         if any(padding):
+            prescan_regular_files = True
             _record_unexplained_archive_bytes(
                 metadata,
                 blockers,
@@ -2092,14 +2175,13 @@ def _raw_tar_metadata(
             )
         if type_flag in {tarfile.XHDTYPE, tarfile.XGLTYPE}:
             member_payload = payload[data_offset:data_end]
-            if not _record_archive_metadata(
+            _record_archive_metadata(
                 metadata,
                 blockers,
                 key=f"__archive_metadata__/tar/pax/{entry_index:04d}",
                 payload=member_payload,
                 kind="sdist",
-            ):
-                return
+            )
             try:
                 records = _parse_pax_records(member_payload)
             except ValueError:
@@ -2181,14 +2263,13 @@ def _raw_tar_metadata(
                 pending_pax_keys.update(observed_keys)
         elif type_flag in {tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK}:
             member_payload = payload[data_offset:data_end]
-            if not _record_archive_metadata(
+            _record_archive_metadata(
                 metadata,
                 blockers,
                 key=f"__archive_metadata__/tar/gnu/{entry_index:04d}",
                 payload=member_payload,
                 kind="sdist",
-            ):
-                return
+            )
             terminator = member_payload.find(b"\0")
             if terminator < 0 or any(member_payload[terminator + 1 :]):
                 blockers.append(
@@ -2215,11 +2296,22 @@ def inspect_wheel(path: Path) -> ArchiveSnapshot:
     """Read one wheel with traversal, duplicate, link, and size checks."""
 
     metadata, blockers = _raw_zip_metadata(path)
+    prescanned_inputs = (
+        metadata.prescanned_inputs
+        if isinstance(metadata, _ArchiveMetadata)
+        else []
+    )
+    prescanned_findings = (
+        metadata.prescanned_findings
+        if isinstance(metadata, _ArchiveMetadata)
+        else []
+    )
     files: dict[str, bytes] = {}
     directories: list[str] = []
     entries: list[str] = []
     total_bytes = 0
     nonfatal_codes = {
+        "archive_metadata_limit_exceeded",
         "archive_directory_payload",
         "unexpected_archive_metadata",
     }
@@ -2236,6 +2328,8 @@ def inspect_wheel(path: Path) -> ArchiveSnapshot:
             blockers=tuple(blockers),
             directories=(),
             metadata=dict(sorted(metadata.items())),
+            prescanned_inputs=tuple(prescanned_inputs),
+            prescanned_findings=tuple(prescanned_findings),
         )
     with zipfile.ZipFile(path) as archive:
         infos = archive.infolist()
@@ -2378,6 +2472,8 @@ def inspect_wheel(path: Path) -> ArchiveSnapshot:
         blockers=tuple(blockers),
         directories=tuple(sorted(directories)),
         metadata=dict(sorted(metadata.items())),
+        prescanned_inputs=tuple(prescanned_inputs),
+        prescanned_findings=tuple(prescanned_findings),
     )
 
 
@@ -2386,7 +2482,13 @@ def inspect_sdist(path: Path) -> ArchiveSnapshot:
 
     files: dict[str, bytes] = {}
     directories: list[str] = []
-    metadata, blockers, tar_payload = _gzip_header_metadata(path)
+    (
+        metadata,
+        blockers,
+        tar_payload,
+        prescanned_inputs,
+        prescanned_findings,
+    ) = _gzip_header_metadata(path)
     entries: list[str] = []
     total_bytes = 0
     expected_root = _expected_sdist_root(path)
@@ -2403,7 +2505,11 @@ def inspect_sdist(path: Path) -> ArchiveSnapshot:
             }
         )
     nonfatal_codes = {
+        "archive_directory_payload",
+        "archive_metadata_limit_exceeded",
         "invalid_sdist_filename",
+        "noncanonical_tar_member_padding",
+        "unexpected_archive_bytes",
         "unexpected_archive_metadata",
         "unexpected_gzip_member",
     }
@@ -2423,6 +2529,8 @@ def inspect_sdist(path: Path) -> ArchiveSnapshot:
             blockers=tuple(blockers),
             directories=(),
             metadata=dict(sorted(metadata.items())),
+            prescanned_inputs=tuple(prescanned_inputs),
+            prescanned_findings=tuple(prescanned_findings),
         )
     with tarfile.open(fileobj=io.BytesIO(tar_payload), mode="r:") as archive:
         seen: set[str] = set()
@@ -2576,6 +2684,8 @@ def inspect_sdist(path: Path) -> ArchiveSnapshot:
         blockers=tuple(blockers),
         directories=tuple(sorted(directories)),
         metadata=dict(sorted(metadata.items())),
+        prescanned_inputs=tuple(prescanned_inputs),
+        prescanned_findings=tuple(prescanned_findings),
     )
 
 
@@ -2775,6 +2885,7 @@ def scan_payload(
                     normalized_path,
                     rule_id,
                     matched,
+                    occurrence=1,
                 )
             ):
                 continue
@@ -2797,13 +2908,29 @@ def scan_payload(
         scan_texts = (*scan_texts, dockerfile_text)
     structural_failures = list(configuration_failures)
     for candidate in tuple(scan_texts):
-        python_cli_text, python_cli_failure = _python_cli_argument_text(
-            normalized_path,
-            candidate,
+        try:
+            python_cli_text, python_cli_failure = _python_cli_argument_text(
+                normalized_path,
+                candidate,
+            )
+        except RecursionError:
+            python_cli_text = ""
+            python_cli_failure = (
+                "python_cli_analysis_limit_exceeded:recursion_depth"
+            )
+        python_sensitive_text, python_sensitive_failure = (
+            _python_sensitive_call_text(
+                normalized_path,
+                candidate,
+            )
         )
         if python_cli_failure:
             structural_failures.append(
                 python_cli_failure.split(":", 1)[0]
+            )
+        if python_sensitive_failure:
+            structural_failures.append(
+                python_sensitive_failure.split(":", 1)[0]
             )
         for normalized in (
             (
@@ -2812,7 +2939,7 @@ def scan_payload(
                 else _shell_continuation_text(candidate)
             ),
             python_cli_text,
-            _python_sensitive_call_text(normalized_path, candidate),
+            python_sensitive_text,
         ):
             if normalized and normalized not in scan_texts:
                 scan_texts = (*scan_texts, normalized)
@@ -2827,35 +2954,57 @@ def scan_payload(
     prior_match_counts: dict[tuple[str, str], int] = {}
     for scan_index, scan_text in enumerate(scan_texts):
         local_match_counts: dict[tuple[str, str], int] = {}
+        local_fixture_counts: dict[tuple[str, str], int] = {}
         for rule_id, pattern in rules:
             for match in pattern.finditer(scan_text):
                 matched = match.group(0)
-                captured = next(
+                captured_index, captured = next(
                     (
-                        group.strip()
-                        for group in match.groups()
+                        (group_index, group.strip())
+                        for group_index, group in enumerate(
+                            match.groups(),
+                            start=1,
+                        )
                         if group is not None
                     ),
-                    "",
+                    (0, ""),
                 )
                 identity = (rule_id, captured)
                 occurrence = local_match_counts.get(identity, 0) + 1
                 local_match_counts[identity] = occurrence
+                fixture_identity = (rule_id, matched)
+                fixture_occurrence = (
+                    local_fixture_counts.get(fixture_identity, 0) + 1
+                )
+                local_fixture_counts[fixture_identity] = fixture_occurrence
                 line = scan_text.count("\n", 0, match.start()) + 1
                 if (
                     scan_index
                     and occurrence <= prior_match_counts.get(identity, 0)
                 ):
                     continue
-                if (
-                    rule_id == "private_model_override"
-                    and captured == "configured-locally"
+                if _is_configured_locally_placeholder(
+                    rule_id,
+                    captured,
+                    normalized_path,
+                    scan_text,
+                    (
+                        match.start(captured_index)
+                        if captured_index
+                        else match.start()
+                    ),
+                    (
+                        match.end(captured_index)
+                        if captured_index
+                        else match.end()
+                    ),
                 ):
                     continue
                 if allow_safe_fixtures and _safe_fixture_match(
                     normalized_path,
                     rule_id,
                     matched,
+                    occurrence=fixture_occurrence,
                 ):
                     continue
                 findings.append(
@@ -2874,6 +3023,91 @@ def scan_payload(
                 count,
             )
     return findings
+
+
+def _is_configured_locally_placeholder(
+    rule_id: str,
+    captured: str,
+    path: str,
+    text: str,
+    captured_start: int,
+    captured_end: int,
+) -> bool:
+    """Allow only the complete non-routable MyProxy model placeholder."""
+
+    if (
+        rule_id != "private_model_override"
+        or captured != "configured-locally"
+    ):
+        return False
+    quote = text[captured_start - 1] if captured_start else ""
+    quoted = quote in {"\"", "'"}
+    if quoted:
+        if text[captured_end:captured_end + 1] != quote:
+            return False
+        raw_tail = text[captured_end + 1:]
+    else:
+        raw_tail = text[captured_end:]
+    tail = raw_tail.lstrip(" \t")
+    comment = tail.startswith("#") and (
+        quoted or len(raw_tail) != len(tail)
+    )
+    delimiters = ("\r", "\n", ";", "}", "]", ")")
+    if quoted:
+        delimiters = (*delimiters, ",")
+    yaml_flow_mapping_comma = (
+        not quoted
+        and PurePosixPath(path).suffix.lower() in {".yaml", ".yml"}
+        and tail.startswith(",")
+        and text.rfind("{", 0, captured_start)
+        > text.rfind("}", 0, captured_start)
+    )
+    return (
+        not tail
+        or tail.startswith(delimiters)
+        or tail.startswith(("--", "&&", "||"))
+        or comment
+        or yaml_flow_mapping_comma
+    )
+
+
+def _bomless_utf32_encoding(payload: bytes) -> str:
+    """Detect long aligned ASCII runs encoded as BOM-less UTF-32."""
+
+    sample = payload[: min(len(payload), 64 * 1024)]
+    if len(sample) < 32:
+        return ""
+    sample = sample[: len(sample) - (len(sample) % 4)]
+    longest_le = 0
+    longest_be = 0
+    le_streak = 0
+    be_streak = 0
+    for first, second, third, fourth in zip(
+        sample[0::4],
+        sample[1::4],
+        sample[2::4],
+        sample[3::4],
+        strict=True,
+    ):
+        first_text = first in {9, 10, 13} or 32 <= first <= 126
+        fourth_text = fourth in {9, 10, 13} or 32 <= fourth <= 126
+        le_streak = (
+            le_streak + 1
+            if first_text and second == third == fourth == 0
+            else 0
+        )
+        be_streak = (
+            be_streak + 1
+            if first == second == third == 0 and fourth_text
+            else 0
+        )
+        longest_le = max(longest_le, le_streak)
+        longest_be = max(longest_be, be_streak)
+    if longest_le >= 8 and longest_be < 8:
+        return "utf-32-le"
+    if longest_be >= 8 and longest_le < 8:
+        return "utf-32-be"
+    return ""
 
 
 def _bomless_utf16_encoding(payload: bytes) -> str:
@@ -2904,22 +3138,36 @@ def _bomless_utf16_encoding(payload: bytes) -> str:
 def _decode_scan_payload(path: str, payload: bytes) -> tuple[str, str]:
     suffix = PurePosixPath(path).suffix.lower()
     is_configuration = suffix in {".json", ".toml", ".yaml", ".yml"}
+    is_textual = _is_text_scan_path(path)
     encoding = "utf-8"
-    if payload.startswith(b"\xef\xbb\xbf"):
+    if payload.startswith((b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff")):
+        encoding = "utf-32"
+    elif payload.startswith(b"\xef\xbb\xbf"):
         encoding = "utf-8-sig"
     elif payload.startswith((b"\xff\xfe", b"\xfe\xff")):
         encoding = "utf-16"
     else:
-        encoding = _bomless_utf16_encoding(payload) or encoding
+        encoding = (
+            _bomless_utf32_encoding(payload)
+            or _bomless_utf16_encoding(payload)
+            or encoding
+        )
     try:
-        return payload.decode(
+        text = payload.decode(
             encoding,
             errors=(
                 "strict"
-                if is_configuration or encoding.startswith("utf-16")
+                if (
+                    is_configuration
+                    or is_textual
+                    or encoding.startswith(("utf-16", "utf-32"))
+                )
                 else "replace"
             ),
-        ), ""
+        )
+        if is_textual and "\x00" in text:
+            return text, "opaque_text_payload"
+        return text, ""
     except UnicodeError:
         failure = (
             "configuration_decode_failed"
@@ -2927,6 +3175,24 @@ def _decode_scan_payload(path: str, payload: bytes) -> tuple[str, str]:
             else "payload_decode_failed"
         )
         return payload.decode("utf-8", errors="replace"), failure
+
+
+def _is_text_scan_path(path: str) -> bool:
+    candidate = PurePosixPath(path)
+    basename = candidate.name.lower()
+    return (
+        candidate.suffix.lower() in _TEXT_SCAN_SUFFIXES
+        or basename in {
+            "containerfile",
+            "dockerfile",
+            "license",
+            "makefile",
+            "manifest.in",
+        }
+        or basename.startswith(("containerfile.", "dockerfile."))
+        or basename.endswith((".containerfile", ".dockerfile"))
+        or path == "<git-diff>"
+    )
 
 
 def _joined_quoted_literal_text(text: str) -> str:
@@ -5457,72 +5723,609 @@ def _python_cli_argument_text(path: str, text: str) -> tuple[str, str]:
     )
 
 
-def _python_sensitive_call_text(path: str, text: str) -> str:
+def _python_sensitive_call_text(path: str, text: str) -> tuple[str, str]:
     if PurePosixPath(path).suffix.lower() != ".py":
-        return ""
+        return "", ""
     try:
         tree = ast.parse(text)
+    except RecursionError:
+        return "", "python_sensitive_analysis_limit_exceeded:parse"
     except (SyntaxError, ValueError):
-        return ""
+        return "", ""
     calls: list[str] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or len(node.args) < 2:
-            continue
+    observed_calls: set[str] = set()
+    analysis_limited = False
+    analysis_limit_reason = ""
+    analysis_steps = 0
+    max_analysis_steps = 100_000
+    max_bindings = 512
+
+    def mark_limited(reason: str) -> None:
+        nonlocal analysis_limited, analysis_limit_reason
+        analysis_limited = True
+        if not analysis_limit_reason:
+            analysis_limit_reason = reason
+
+    def step(amount: int = 1) -> bool:
+        nonlocal analysis_steps
+        analysis_steps += amount
+        if analysis_steps > max_analysis_steps:
+            mark_limited("steps")
+            return False
+        return True
+
+    def record(key: str | None, value: str | None) -> None:
+        if key is None:
+            return
+        normalized = f"{key}={value if value is not None else '<dynamic-value>'}"
+        if normalized not in observed_calls:
+            observed_calls.add(normalized)
+            calls.append(normalized)
+
+    def is_environment_expression(
+        node: ast.AST,
+        environment_aliases: set[str],
+        os_aliases: set[str],
+    ) -> bool:
+        if isinstance(node, ast.Name):
+            return node.id in environment_aliases
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id in os_aliases
+            and _constant_string_expression(node.args[1]) == "environ"
+        ):
+            return True
+        return (
+            isinstance(node, ast.Attribute)
+            and node.attr == "environ"
+            and isinstance(node.value, ast.Name)
+            and node.value.id in os_aliases
+        )
+
+    def mapping_expression(
+        node: ast.AST,
+        strings: Mapping[str, str],
+        mappings: Mapping[str, Mapping[str, str | None]],
+    ) -> dict[str, str | None] | None:
+        if isinstance(node, ast.Name):
+            value = mappings.get(node.id)
+            return dict(value) if value is not None else None
+        if isinstance(node, ast.Dict):
+            result: dict[str, str | None] = {}
+            for key_node, value_node in zip(
+                node.keys,
+                node.values,
+                strict=True,
+            ):
+                if key_node is None:
+                    nested = mapping_expression(value_node, strings, mappings)
+                    if nested is None:
+                        return None
+                    result.update(nested)
+                    continue
+                key = _constant_string_expression(key_node, strings)
+                if key is None:
+                    return None
+                result[key] = _constant_string_expression(value_node, strings)
+            return result
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "dict"
+        ):
+            result = {}
+            if len(node.args) > 1:
+                return None
+            if node.args:
+                nested = mapping_expression(node.args[0], strings, mappings)
+                if nested is None:
+                    return None
+                result.update(nested)
+            for keyword in node.keywords:
+                if keyword.arg is None:
+                    nested = mapping_expression(
+                        keyword.value,
+                        strings,
+                        mappings,
+                    )
+                    if nested is None:
+                        return None
+                    result.update(nested)
+                else:
+                    result[keyword.arg] = _constant_string_expression(
+                        keyword.value,
+                        strings,
+                    )
+            return result
+        return None
+
+    def record_call(
+        node: ast.Call,
+        strings: Mapping[str, str],
+        mappings: Mapping[str, Mapping[str, str | None]],
+        environment_aliases: set[str],
+        os_aliases: set[str],
+        putenv_aliases: set[str],
+    ) -> None:
         function = node.func
         is_putenv = (
-            (
-                isinstance(function, ast.Name)
-                and function.id == "putenv"
-            )
-            or (
-                isinstance(function, ast.Attribute)
-                and function.attr == "putenv"
-            )
-        )
-        is_setdefault = (
+            isinstance(function, ast.Name)
+            and function.id in putenv_aliases
+        ) or (
             isinstance(function, ast.Attribute)
-            and function.attr == "setdefault"
-            and (
-                (
-                    isinstance(function.value, ast.Name)
-                    and function.value.id == "environ"
-                )
-                or (
-                    isinstance(function.value, ast.Attribute)
-                    and function.value.attr == "environ"
+            and function.attr == "putenv"
+            and isinstance(function.value, ast.Name)
+            and function.value.id in os_aliases
+        )
+        if is_putenv and len(node.args) >= 2:
+            record(
+                _constant_string_expression(node.args[0], strings),
+                _constant_string_expression(node.args[1], strings),
+            )
+            return
+        if not isinstance(function, ast.Attribute) or not (
+            is_environment_expression(
+                function.value,
+                environment_aliases,
+                os_aliases,
+            )
+        ):
+            return
+        if function.attr in {"__setitem__", "setdefault"} and len(node.args) >= 2:
+            record(
+                _constant_string_expression(node.args[0], strings),
+                _constant_string_expression(node.args[1], strings),
+            )
+        elif function.attr == "update":
+            updates: dict[str, str | None] = {}
+            if node.args:
+                if len(node.args) > 1:
+                    return
+                mapping = mapping_expression(node.args[0], strings, mappings)
+                if mapping is None:
+                    return
+                updates.update(mapping)
+            for keyword in node.keywords:
+                if keyword.arg is None:
+                    mapping = mapping_expression(
+                        keyword.value,
+                        strings,
+                        mappings,
+                    )
+                    if mapping is None:
+                        return
+                    updates.update(mapping)
+                else:
+                    updates[keyword.arg] = _constant_string_expression(
+                        keyword.value,
+                        strings,
+                    )
+            for key, value in updates.items():
+                record(key, value)
+
+    def current_statement_nodes(statement: ast.stmt) -> Iterable[ast.AST]:
+        pending: list[ast.AST] = [statement]
+        while pending:
+            if not step():
+                return
+            node = pending.pop()
+            yield node
+            pending.extend(
+                reversed(
+                    tuple(
+                        child
+                        for child in ast.iter_child_nodes(node)
+                        if not isinstance(child, ast.stmt)
+                    )
                 )
             )
+
+    sensitive_state = tuple[
+        dict[str, str],
+        dict[str, dict[str, str | None]],
+        set[str],
+        set[str],
+        set[str],
+    ]
+    max_states = 1024
+    try_statement_types = (
+        ast.Try,
+        getattr(ast, "TryStar", ast.Try),
+    )
+
+    def clone_state(state: sensitive_state) -> sensitive_state:
+        strings, mappings, environment_aliases, os_aliases, putenv_aliases = (
+            state
         )
-        if not (is_putenv or is_setdefault):
-            continue
-        key = _constant_string_expression(node.args[0])
-        value = _constant_string_expression(node.args[1])
-        if key is None or value is None:
-            continue
-        function_name = "os.putenv" if is_putenv else "os.environ.setdefault"
-        calls.append(
-            f"{function_name}({json.dumps(key)}, {json.dumps(value)})"
+        return (
+            dict(strings),
+            {name: dict(value) for name, value in mappings.items()},
+            set(environment_aliases),
+            set(os_aliases),
+            set(putenv_aliases),
         )
-    return "\n".join(calls)
+
+    def state_key(state: sensitive_state) -> tuple[object, ...]:
+        strings, mappings, environment_aliases, os_aliases, putenv_aliases = (
+            state
+        )
+        return (
+            tuple(sorted(strings.items())),
+            tuple(
+                (
+                    name,
+                    tuple(sorted(value.items(), key=lambda item: item[0])),
+                )
+                for name, value in sorted(mappings.items())
+            ),
+            tuple(sorted(environment_aliases)),
+            tuple(sorted(os_aliases)),
+            tuple(sorted(putenv_aliases)),
+        )
+
+    def deduplicate_states(
+        states: Iterable[sensitive_state],
+    ) -> list[sensitive_state]:
+        result: list[sensitive_state] = []
+        observed: set[tuple[object, ...]] = set()
+        for state in states:
+            key = state_key(state)
+            if key in observed:
+                continue
+            observed.add(key)
+            result.append(state)
+            if len(result) > max_states:
+                result.pop()
+                mark_limited("states")
+                break
+        return result
+
+    def process_block(
+        statements: Sequence[ast.stmt],
+        initial_states: Iterable[sensitive_state],
+    ) -> list[sensitive_state]:
+        states = deduplicate_states(
+            clone_state(state) for state in initial_states
+        )
+        for statement in statements:
+            if analysis_limited or not step(len(states)):
+                break
+            next_states: list[sensitive_state] = []
+            for state in states:
+                next_states.extend(process_statement(statement, state))
+            states = deduplicate_states(next_states)
+        return states
+
+    def process_statement(
+        statement: ast.stmt,
+        inherited_state: sensitive_state,
+    ) -> list[sensitive_state]:
+        (
+            strings,
+            mappings,
+            environment_aliases,
+            os_aliases,
+            putenv_aliases,
+        ) = clone_state(inherited_state)
+
+        def current_state() -> sensitive_state:
+            return (
+                strings,
+                mappings,
+                environment_aliases,
+                os_aliases,
+                putenv_aliases,
+            )
+
+        def clear_binding(name: str) -> None:
+            strings.pop(name, None)
+            mappings.pop(name, None)
+            environment_aliases.discard(name)
+            os_aliases.discard(name)
+            putenv_aliases.discard(name)
+
+        def clear_target(target: ast.AST) -> None:
+            if isinstance(target, ast.Name):
+                clear_binding(target.id)
+            elif isinstance(target, (ast.List, ast.Tuple)):
+                for element in target.elts:
+                    clear_target(element)
+
+        def bind_name(name: str, value: ast.AST) -> None:
+            clear_binding(name)
+            if is_environment_expression(
+                value,
+                environment_aliases,
+                os_aliases,
+            ):
+                environment_aliases.add(name)
+                return
+            if isinstance(value, ast.Name):
+                if value.id in os_aliases:
+                    os_aliases.add(name)
+                    return
+                if value.id in putenv_aliases:
+                    putenv_aliases.add(name)
+                    return
+            string_value = _constant_string_expression(value, strings)
+            if string_value is not None:
+                if len(strings) + len(mappings) >= max_bindings:
+                    mark_limited("bindings")
+                    return
+                strings[name] = string_value
+                return
+            mapping_value = mapping_expression(value, strings, mappings)
+            if mapping_value is not None:
+                if len(strings) + len(mappings) >= max_bindings:
+                    mark_limited("bindings")
+                    return
+                mappings[name] = mapping_value
+
+        for node in current_statement_nodes(statement):
+            if isinstance(node, ast.Call):
+                record_call(
+                    node,
+                    strings,
+                    mappings,
+                    environment_aliases,
+                    os_aliases,
+                    putenv_aliases,
+                )
+            elif isinstance(node, ast.Assign):
+                value = _constant_string_expression(node.value, strings)
+                for target in node.targets:
+                    if (
+                        isinstance(target, ast.Subscript)
+                        and is_environment_expression(
+                            target.value,
+                            environment_aliases,
+                            os_aliases,
+                        )
+                    ):
+                        record(
+                            _constant_string_expression(
+                                target.slice,
+                                strings,
+                            ),
+                            value,
+                        )
+            elif (
+                isinstance(node, ast.AnnAssign)
+                and node.value is not None
+                and isinstance(node.target, ast.Subscript)
+                and is_environment_expression(
+                    node.target.value,
+                    environment_aliases,
+                    os_aliases,
+                )
+            ):
+                record(
+                    _constant_string_expression(
+                        node.target.slice,
+                        strings,
+                    ),
+                    _constant_string_expression(node.value, strings),
+                )
+
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            child_state = clone_state(current_state())
+            (
+                child_strings,
+                child_mappings,
+                child_environment_aliases,
+                child_os_aliases,
+                child_putenv_aliases,
+            ) = child_state
+            arguments = (
+                *statement.args.posonlyargs,
+                *statement.args.args,
+                *statement.args.kwonlyargs,
+            )
+            for argument in arguments:
+                child_strings.pop(argument.arg, None)
+                child_mappings.pop(argument.arg, None)
+                child_environment_aliases.discard(argument.arg)
+                child_os_aliases.discard(argument.arg)
+                child_putenv_aliases.discard(argument.arg)
+            if statement.args.vararg is not None:
+                name = statement.args.vararg.arg
+                child_strings.pop(name, None)
+                child_mappings.pop(name, None)
+                child_environment_aliases.discard(name)
+                child_os_aliases.discard(name)
+                child_putenv_aliases.discard(name)
+            if statement.args.kwarg is not None:
+                name = statement.args.kwarg.arg
+                child_strings.pop(name, None)
+                child_mappings.pop(name, None)
+                child_environment_aliases.discard(name)
+                child_os_aliases.discard(name)
+                child_putenv_aliases.discard(name)
+            process_block(statement.body, (child_state,))
+            clear_binding(statement.name)
+            return [current_state()]
+
+        if isinstance(statement, ast.ClassDef):
+            process_block(statement.body, (clone_state(current_state()),))
+            clear_binding(statement.name)
+            return [current_state()]
+
+        if isinstance(statement, ast.Import):
+            for alias in statement.names:
+                name = alias.asname or alias.name.split(".", 1)[0]
+                clear_binding(name)
+                if alias.name == "os":
+                    os_aliases.add(name)
+            return [current_state()]
+
+        if isinstance(statement, ast.ImportFrom):
+            for alias in statement.names:
+                name = alias.asname or alias.name
+                clear_binding(name)
+                if statement.module == "os":
+                    if alias.name == "environ":
+                        environment_aliases.add(name)
+                    elif alias.name == "putenv":
+                        putenv_aliases.add(name)
+            return [current_state()]
+
+        if isinstance(statement, ast.Assign):
+            for target in statement.targets:
+                if isinstance(target, ast.Name):
+                    bind_name(target.id, statement.value)
+                elif isinstance(target, (ast.List, ast.Tuple)):
+                    clear_target(target)
+        elif isinstance(statement, ast.AnnAssign):
+            if isinstance(statement.target, ast.Name):
+                if statement.value is None:
+                    clear_binding(statement.target.id)
+                else:
+                    bind_name(statement.target.id, statement.value)
+            elif isinstance(statement.target, (ast.List, ast.Tuple)):
+                clear_target(statement.target)
+        elif isinstance(statement, ast.AugAssign):
+            if (
+                is_environment_expression(
+                    statement.target,
+                    environment_aliases,
+                    os_aliases,
+                )
+                and isinstance(statement.op, ast.BitOr)
+            ):
+                updates = mapping_expression(
+                    statement.value,
+                    strings,
+                    mappings,
+                )
+                if updates is not None:
+                    for key, value in updates.items():
+                        record(key, value)
+            elif isinstance(statement.target, ast.Name):
+                clear_binding(statement.target.id)
+        elif isinstance(statement, ast.Delete):
+            for target in statement.targets:
+                clear_target(target)
+
+        base_state = clone_state(current_state())
+        if isinstance(statement, ast.If):
+            outcomes = process_block(statement.body, (base_state,))
+            outcomes.extend(
+                process_block(statement.orelse, (base_state,))
+                if statement.orelse
+                else (base_state,)
+            )
+            return outcomes
+
+        if isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
+            iteration_state = clone_state(base_state)
+            if isinstance(statement, (ast.For, ast.AsyncFor)):
+                (
+                    strings,
+                    mappings,
+                    environment_aliases,
+                    os_aliases,
+                    putenv_aliases,
+                ) = iteration_state
+                clear_target(statement.target)
+                iteration_state = clone_state(current_state())
+            outcomes = [base_state]
+            outcomes.extend(process_block(statement.body, (iteration_state,)))
+            if statement.orelse:
+                outcomes = process_block(statement.orelse, outcomes)
+            return outcomes
+
+        if isinstance(statement, (ast.With, ast.AsyncWith)):
+            body_state = clone_state(base_state)
+            (
+                strings,
+                mappings,
+                environment_aliases,
+                os_aliases,
+                putenv_aliases,
+            ) = body_state
+            for item in statement.items:
+                if item.optional_vars is not None:
+                    clear_target(item.optional_vars)
+            return process_block(statement.body, (current_state(),))
+
+        if isinstance(statement, try_statement_types):
+            outcomes = process_block(statement.body, (base_state,))
+            if statement.orelse:
+                outcomes = process_block(statement.orelse, outcomes)
+            for handler in statement.handlers:
+                handler_state = clone_state(base_state)
+                if handler.name:
+                    (
+                        strings,
+                        mappings,
+                        environment_aliases,
+                        os_aliases,
+                        putenv_aliases,
+                    ) = handler_state
+                    clear_binding(handler.name)
+                    handler_state = clone_state(current_state())
+                outcomes.extend(
+                    process_block(handler.body, (handler_state,))
+                )
+            if statement.finalbody:
+                outcomes = process_block(statement.finalbody, outcomes)
+            return outcomes
+
+        if isinstance(statement, ast.Match):
+            outcomes = [base_state]
+            for case in statement.cases:
+                outcomes.extend(process_block(case.body, (base_state,)))
+            return outcomes
+
+        return [current_state()]
+
+    try:
+        process_block(
+            tree.body,
+            (({}, {}, {"environ"}, {"os"}, {"putenv"}),),
+        )
+    except RecursionError:
+        mark_limited("recursion_depth")
+    return (
+        "\n".join(calls),
+        (
+            "python_sensitive_analysis_limit_exceeded:"
+            + analysis_limit_reason
+            if analysis_limited
+            else ""
+        ),
+    )
 
 
-def _constant_string_expression(node: ast.AST) -> str | None:
+def _constant_string_expression(
+    node: ast.AST,
+    bindings: Mapping[str, str] | None = None,
+) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
+    if isinstance(node, ast.Name) and bindings is not None:
+        return bindings.get(node.id)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        left = _constant_string_expression(node.left)
-        right = _constant_string_expression(node.right)
+        left = _constant_string_expression(node.left, bindings)
+        right = _constant_string_expression(node.right, bindings)
         if left is not None and right is not None:
             return left + right
     if isinstance(node, ast.JoinedStr):
         parts: list[str] = []
         for value in node.values:
-            if not (
-                isinstance(value, ast.Constant)
-                and isinstance(value.value, str)
-            ):
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                parts.append(value.value)
+                continue
+            if not isinstance(value, ast.FormattedValue):
                 return None
-            parts.append(value.value)
+            formatted = _constant_string_expression(value.value, bindings)
+            if formatted is None or value.conversion not in {-1, 115}:
+                return None
+            parts.append(formatted)
         return "".join(parts)
     return None
 
@@ -5680,7 +6483,11 @@ def _semantic_mapping_scan_text(values: Sequence[object]) -> str:
     visited: set[int] = set()
     node_count = 0
 
-    def visit(value: object, depth: int) -> None:
+    def visit(
+        value: object,
+        depth: int,
+        inherited_myproxy: bool = False,
+    ) -> None:
         nonlocal node_count
         node_count += 1
         if node_count > MAX_CONFIGURATION_NODES:
@@ -5706,8 +6513,56 @@ def _semantic_mapping_scan_text(values: Sequence[object]) -> str:
                         separators=(",", ":"),
                     )
                 )
+                normalized_entries = {
+                    key.strip().casefold().replace("-", "_"): item
+                    for key, item in scalar_entries.items()
+                }
+                provider = normalized_entries.get("provider", "")
+                provider_declared = "provider" in normalized_entries
+                local_myproxy = (
+                    re.fullmatch(
+                        _MYPROXY_PROVIDER_PATTERN,
+                        provider.strip(),
+                        re.IGNORECASE,
+                    )
+                    is not None
+                )
+                myproxy_context = (
+                    local_myproxy
+                    if provider_declared
+                    else inherited_myproxy
+                )
+                if myproxy_context:
+                    command = [
+                        "commander",
+                        "--provider",
+                        json.dumps(provider or "myproxy"),
+                    ]
+                    endpoint = (
+                        normalized_entries.get("openai_base_url")
+                        or normalized_entries.get("base_url")
+                        or normalized_entries.get("endpoint")
+                    )
+                    model = normalized_entries.get("model")
+                    if endpoint is not None:
+                        command.extend(("--base-url", json.dumps(endpoint)))
+                    if model is not None:
+                        command.extend(("--model", json.dumps(model)))
+                    if endpoint is not None or model is not None:
+                        fragments.append(" ".join(command))
+                    for key, canonical in (
+                        ("host", "VOI_MYPROXY_HOST"),
+                        ("port", "VOI_MYPROXY_PORT"),
+                    ):
+                        configured_value = normalized_entries.get(key)
+                        if configured_value is not None:
+                            fragments.append(
+                                f"{canonical}={json.dumps(configured_value)}"
+                            )
+            else:
+                myproxy_context = inherited_myproxy
             for nested in value.values():
-                visit(nested, depth + 1)
+                visit(nested, depth + 1, myproxy_context)
             return
         if isinstance(value, Sequence) and not isinstance(
             value,
@@ -5718,7 +6573,7 @@ def _semantic_mapping_scan_text(values: Sequence[object]) -> str:
                 return
             visited.add(identity)
             for nested in value:
-                visit(nested, depth + 1)
+                visit(nested, depth + 1, inherited_myproxy)
 
     for value in values:
         visit(value, 0)
@@ -5944,6 +6799,33 @@ def scan_git_and_artifacts(
                 payload,
                 allow_safe_fixtures=False,
             )
+        for raw_entry in snapshot.prescanned_inputs:
+            entry = _mapping(raw_entry)
+            path = entry.get("path")
+            size = entry.get("size")
+            digest = entry.get("sha256")
+            if (
+                not isinstance(path, str)
+                or path in input_paths
+                or type(size) is not int
+                or size < 0
+                or not isinstance(digest, str)
+                or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            ):
+                raise RuntimeError("Invalid prescanned archive evidence")
+            input_paths.add(path)
+            input_manifest.append(
+                {
+                    "kind": snapshot.kind,
+                    "path": path,
+                    "size": size,
+                    "sha256": digest,
+                }
+            )
+        findings.extend(
+            dict(finding)
+            for finding in snapshot.prescanned_findings
+        )
     for name, payload in sorted((generated_payloads or {}).items()):
         scan_input(
             "report",
@@ -6789,6 +7671,12 @@ def distribution_report_blockers(
             blockers.append({"code": "installed_runtime_data_failed"})
         if payload.get("target_runtime_data_loaded") is not True:
             blockers.append({"code": "target_install_runtime_data_failed"})
+        if payload.get("packaged_defaults_loaded") is not True:
+            blockers.append({"code": "installed_packaged_defaults_failed"})
+        if payload.get("source_repository_root_is_none") is not True:
+            blockers.append({"code": "installed_source_root_not_isolated"})
+        if payload.get("target_packaged_defaults_loaded") is not True:
+            blockers.append({"code": "target_install_packaged_defaults_failed"})
     secret_scan = _mapping(report.get("secret_scan"))
     trusted_secret_scan = _trusted_secret_scan_evidence(report)
     if trusted_secret_scan is None:
@@ -7368,20 +8256,48 @@ def isolated_wheel_install_smoke(wheel_path: Path) -> dict[str, object]:
                 }
             script = (
                 "import json\n"
+                "from pathlib import Path\n"
                 "from importlib.metadata import metadata\n"
+                "from starcraft_commander import micromachine_build_identity "
+                "as build_identity\n"
                 "from starcraft_commander.micromachine_map_pool import "
                 "load_micromachine_map_pool\n"
                 "from starcraft_commander.micromachine_pre_live_journeys import "
                 "load_pre_live_journey_manifest\n"
-                "from starcraft_commander.runtime_data import micromachine_data_path\n"
+                "from starcraft_commander.runtime_data import "
+                "micromachine_data_path, micromachine_data_root, "
+                "source_repository_root\n"
                 "pool = load_micromachine_map_pool()\n"
                 "journeys = load_pre_live_journey_manifest()\n"
                 "required = ['HOOK_MANIFEST.json', 'PRE_LIVE_PRODUCERS.json']\n"
                 "loaded = bool(pool.maps) and bool(journeys.get('journeys')) and "
                 "all(micromachine_data_path(name).is_file() for name in required)\n"
+                "root = micromachine_data_root().resolve()\n"
+                "def packaged_file(path):\n"
+                "    candidate = Path(path).resolve()\n"
+                "    return candidate.is_file() and root in candidate.parents\n"
+                "patch_defaults = [value for name, value in "
+                "vars(build_identity).items() if name.startswith('DEFAULT_') "
+                "and name.endswith('_PATCH')]\n"
+                "default_assets = [build_identity.DEFAULT_HOOK_MANIFEST, "
+                "build_identity.DEFAULT_MAP_POOL, "
+                "build_identity.DEFAULT_BLACKBOARD_HEADER, *patch_defaults]\n"
+                "scripts = ['build_macos_local.sh', 'probe_macos_local.sh', "
+                "'smoke_macos_local.sh', 'soak_macos_local.sh', "
+                "'soak_matrix_macos_local.sh', "
+                "'strategy_matrix_macos_local.sh']\n"
+                "packaged_defaults = bool(patch_defaults) and all("
+                "packaged_file(path) for path in default_assets) and all("
+                "packaged_file(root / 'scripts' / name) for name in scripts)\n"
+                "source_isolated = source_repository_root() is None and "
+                "build_identity.SOURCE_REPOSITORY_ROOT is None and "
+                "build_identity.REPO_ROOT == root.parents[1]\n"
                 "print(json.dumps({'license_expression': "
                 "metadata('voiStarcraft2').get('License-Expression'), "
-                "'runtime_data_loaded': loaded}, sort_keys=True))\n"
+                "'runtime_data_loaded': loaded, "
+                "'packaged_defaults_loaded': packaged_defaults, "
+                "'source_repository_root_is_none': source_isolated}, "
+                "sort_keys=True))\n"
             )
             failure_stage = "load_installed_package"
             result = subprocess.run(
@@ -7430,15 +8346,42 @@ def isolated_wheel_install_smoke(wheel_path: Path) -> dict[str, object]:
                     "from pathlib import Path\n"
                     "target = Path(sys.argv[1]).resolve()\n"
                     "sys.path.insert(0, str(target))\n"
+                    "from starcraft_commander import "
+                    "micromachine_build_identity as build_identity\n"
                     "from starcraft_commander.runtime_data import "
-                    "micromachine_data_path, micromachine_data_root\n"
+                    "micromachine_data_path, micromachine_data_root, "
+                    "source_repository_root\n"
                     "required = ['HOOK_MANIFEST.json', "
                     "'MICROMACHINE_MAP_POOL.json', 'PRE_LIVE_JOURNEYS.json', "
                     "'PRE_LIVE_PRODUCERS.json']\n"
                     "root = micromachine_data_root().resolve()\n"
                     "loaded = all(micromachine_data_path(name).is_file() "
                     "for name in required) and target in root.parents\n"
-                    "print(json.dumps({'loaded': loaded}, sort_keys=True))\n"
+                    "def packaged_file(path):\n"
+                    "    candidate = Path(path).resolve()\n"
+                    "    return candidate.is_file() and "
+                    "root in candidate.parents\n"
+                    "patch_defaults = [value for name, value in "
+                    "vars(build_identity).items() if name.startswith('DEFAULT_') "
+                    "and name.endswith('_PATCH')]\n"
+                    "default_assets = [build_identity.DEFAULT_HOOK_MANIFEST, "
+                    "build_identity.DEFAULT_MAP_POOL, "
+                    "build_identity.DEFAULT_BLACKBOARD_HEADER, "
+                    "*patch_defaults]\n"
+                    "scripts = ['build_macos_local.sh', "
+                    "'probe_macos_local.sh', 'smoke_macos_local.sh', "
+                    "'soak_macos_local.sh', "
+                    "'soak_matrix_macos_local.sh', "
+                    "'strategy_matrix_macos_local.sh']\n"
+                    "defaults = bool(patch_defaults) and all("
+                    "packaged_file(path) for path in default_assets) and all("
+                    "packaged_file(root / 'scripts' / name) "
+                    "for name in scripts) and "
+                    "source_repository_root() is None and "
+                    "build_identity.SOURCE_REPOSITORY_ROOT is None and "
+                    "build_identity.REPO_ROOT == root.parents[1]\n"
+                    "print(json.dumps({'loaded': loaded, "
+                    "'defaults': defaults}, sort_keys=True))\n"
                 )
                 target_result = subprocess.run(
                     [
@@ -7464,8 +8407,14 @@ def isolated_wheel_install_smoke(wheel_path: Path) -> dict[str, object]:
                     and isinstance(target_payload, Mapping)
                     and target_payload.get("loaded") is True
                 )
+                normalized_payload["target_packaged_defaults_loaded"] = bool(
+                    target_result.returncode == 0
+                    and isinstance(target_payload, Mapping)
+                    and target_payload.get("defaults") is True
+                )
             else:
                 normalized_payload["target_runtime_data_loaded"] = False
+                normalized_payload["target_packaged_defaults_loaded"] = False
             return {
                 "attempted": True,
                 "returncode": result.returncode,
@@ -8318,10 +9267,16 @@ def _archive_manifest_digest_blockers(
     return blockers
 
 
-def _safe_fixture_match(path: str, rule_id: str, matched: str) -> bool:
-    allowed = _SAFE_FIXTURE_FINGERPRINTS.get(path, {}).get(rule_id, frozenset())
+def _safe_fixture_match(
+    path: str,
+    rule_id: str,
+    matched: str,
+    *,
+    occurrence: int,
+) -> bool:
+    allowed = _SAFE_FIXTURE_FINGERPRINTS.get(path, {}).get(rule_id, {})
     fingerprint = sha256_bytes(f"{rule_id}\0{matched}".encode("utf-8"))
-    return fingerprint in allowed
+    return 0 < occurrence <= allowed.get(fingerprint, 0)
 
 
 def _generated_archive_path(
@@ -9836,6 +10791,38 @@ def _single_file_with_suffix(
 
 
 def _artifact_evidence(snapshot: ArchiveSnapshot) -> dict[str, object]:
+    metadata_manifest = {
+        entry: sha256_bytes(payload)
+        for entry, payload in sorted(snapshot.metadata.items())
+    }
+    metadata_sizes = {
+        entry: len(payload)
+        for entry, payload in sorted(snapshot.metadata.items())
+    }
+    path_prefix = f"{snapshot.kind}/"
+    for raw_entry in snapshot.prescanned_inputs:
+        entry = _mapping(raw_entry)
+        path = entry.get("path")
+        size = entry.get("size")
+        digest = entry.get("sha256")
+        if (
+            not isinstance(path, str)
+            or not path.startswith(path_prefix)
+            or path == path_prefix
+            or type(size) is not int
+            or size < 0
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        ):
+            raise RuntimeError("Invalid prescanned archive evidence")
+        metadata_entry = path.removeprefix(path_prefix)
+        if (
+            metadata_entry in metadata_manifest
+            or metadata_entry in metadata_sizes
+        ):
+            raise RuntimeError("Duplicate prescanned archive evidence")
+        metadata_manifest[metadata_entry] = digest
+        metadata_sizes[metadata_entry] = size
     return {
         "path": str(snapshot.path.resolve()),
         "filename": snapshot.path.name,
@@ -9851,14 +10838,8 @@ def _artifact_evidence(snapshot: ArchiveSnapshot) -> dict[str, object]:
             for entry, payload in sorted(snapshot.files.items())
         },
         "directory_entries": list(snapshot.directories),
-        "metadata_manifest": {
-            entry: sha256_bytes(payload)
-            for entry, payload in sorted(snapshot.metadata.items())
-        },
-        "metadata_sizes": {
-            entry: len(payload)
-            for entry, payload in sorted(snapshot.metadata.items())
-        },
+        "metadata_manifest": dict(sorted(metadata_manifest.items())),
+        "metadata_sizes": dict(sorted(metadata_sizes.items())),
     }
 
 

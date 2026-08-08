@@ -9,6 +9,16 @@ WORKFLOW_PATH = REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml"
 
 
 class DistributionComplianceWorkflowContractTests(unittest.TestCase):
+    def test_distribution_job_has_read_only_permissions_and_unit_gate(
+        self,
+    ) -> None:
+        workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
+        job = workflow["jobs"]["distribution-compliance"]
+
+        self.assertEqual({"contents": "read"}, workflow["permissions"])
+        self.assertEqual({"contents": "read"}, job["permissions"])
+        self.assertEqual(["unit-contracts"], job["needs"])
+
     def test_distribution_job_checks_out_and_verifies_exact_event_sha(self) -> None:
         workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
         steps = workflow["jobs"]["distribution-compliance"]["steps"]
@@ -67,6 +77,22 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
         self.assertIn("github.event.before", expected_base)
         self.assertIn("--base-commit", build["run"])
         self.assertIn("EXPECTED_RELEASE_BASE_COMMIT", build["run"])
+
+        clean_checks = [
+            step
+            for step in steps
+            if step.get("name")
+            in {
+                "Verify clean release source",
+                "Verify release source remained clean",
+            }
+        ]
+        self.assertEqual(2, len(clean_checks))
+        for clean_check in clean_checks:
+            self.assertEqual(
+                'test -z "$(git status --porcelain=v1 --untracked-files=all)"',
+                clean_check["run"],
+            )
 
     def test_failed_evidence_and_qualified_release_uploads_are_separate(self) -> None:
         workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
