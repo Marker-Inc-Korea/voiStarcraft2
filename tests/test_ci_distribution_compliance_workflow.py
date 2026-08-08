@@ -325,8 +325,16 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
             "os.chmod(path, 0o444)",
             "os.chmod(dist_dir, 0o555)",
             "os.chmod(evidence_dir, 0o555)",
+            "verifier_input_root.mkdir(mode=0o700, exist_ok=False)",
+            "verifier_evidence_dir.mkdir(mode=0o700, exist_ok=False)",
+            "os.chmod(verifier_evidence_dir, 0o555)",
+            "os.chmod(verifier_input_root, 0o555)",
         ):
             self.assertIn(required, materialize["run"])
+        self.assertEqual(
+            "${{ env.VERIFIER_RUNTIME_ROOT }}/inputs",
+            materialize["env"]["VERIFIER_INPUT_ROOT"],
+        )
 
         runner_uid = 1001
         ownership = {"checkout": runner_uid}
@@ -504,6 +512,14 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
             setup_run,
         )
         self.assertIn(
+            '"${VERIFIER_RUNTIME_ROOT}/verifier/distribution_compliance.py"',
+            setup_run,
+        )
+        self.assertIn(
+            'install \\\n  -m 0444',
+            setup_run,
+        )
+        self.assertIn(
             '--python "${copied_python}"',
             setup_run,
         )
@@ -527,7 +543,33 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
             'yaml.__version__ != "6.0.3"',
             setup_run,
         )
+        self.assertIn(
+            "importlib.util.spec_from_file_location",
+            setup_run,
+        )
         self.assertIn("sudo -u voi-verifier env -i", verifier_run)
+        self.assertNotIn('GITHUB_WORKSPACE="${GITHUB_WORKSPACE}"', verifier_run)
+        self.assertNotIn("sys.path.insert", verifier_run)
+        self.assertIn(
+            'VERIFIER_EVIDENCE_DIR="${VERIFIER_EVIDENCE_DIR}"',
+            verifier_run,
+        )
+        self.assertIn(
+            'VERIFIER_MODULE="${VERIFIER_MODULE}"',
+            verifier_run,
+        )
+        self.assertIn(
+            "importlib.util.spec_from_file_location",
+            verifier_run,
+        )
+        self.assertIn(
+            'stat.S_IMODE(module_stat.st_mode) != 0o444',
+            verifier_run,
+        )
+        self.assertIn(
+            "verifier evidence escaped trusted runtime",
+            verifier_run,
+        )
         self.assertIn("pkill -KILL -u", verifier_run)
         self.assertIn("pgrep -u", verifier_run)
         self.assertIn(
@@ -919,6 +961,8 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
                 os.close(retained_fd)
             shutil.rmtree(root / "dist")
             shutil.rmtree(root / "distribution-compliance-evidence")
+            verifier_runtime_root = root / "verifier-runtime"
+            verifier_runtime_root.mkdir()
 
             materialize_output = root / "materialize-output"
             materialized = self._run_python(
@@ -932,6 +976,10 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
                     ),
                     "EXPECTED_HANDOFF_TAR_SHA256": handoff_digest,
                     "HANDOFF_PATH": str(uploaded_handoff),
+                    "VERIFIER_INPUT_ROOT": str(
+                        verifier_runtime_root / "inputs"
+                    ),
+                    "VERIFIER_RUNTIME_ROOT": str(verifier_runtime_root),
                 },
                 prelude="import os\nos.chown = lambda *args: None",
             )

@@ -1159,6 +1159,21 @@ jobs:
             -g "$(id -g)" \
             -m 0755 \
             "${VERIFIER_RUNTIME_ROOT}"
+          install \
+            -d \
+            -m 0755 \
+            "${VERIFIER_RUNTIME_ROOT}/verifier"
+          verifier_module_source="$(
+            printf '%s/%s' \
+              "${GITHUB_WORKSPACE}" \
+              "starcraft_commander/distribution_compliance.py"
+          )"
+          test -f "${verifier_module_source}"
+          test ! -L "${verifier_module_source}"
+          install \
+            -m 0444 \
+            "${verifier_module_source}" \
+            "${VERIFIER_RUNTIME_ROOT}/verifier/distribution_compliance.py"
           cp -a \
             "${managed_python_root}" \
             "${VERIFIER_RUNTIME_ROOT}/python"
@@ -1176,10 +1191,12 @@ jobs:
             "PyYAML==6.0.3"
           sudo chown -R root:root \
             "${VERIFIER_RUNTIME_ROOT}/python" \
+            "${VERIFIER_RUNTIME_ROOT}/verifier" \
             "${VERIFIER_RUNTIME_ROOT}/venv" \
             "${VERIFIER_RUNTIME_ROOT}"
           sudo chmod -R a+rX,go-w \
             "${VERIFIER_RUNTIME_ROOT}/python" \
+            "${VERIFIER_RUNTIME_ROOT}/verifier" \
             "${VERIFIER_RUNTIME_ROOT}/venv"
           sudo chmod 0755 "${VERIFIER_RUNTIME_ROOT}"
           sudo useradd \
@@ -1201,7 +1218,13 @@ jobs:
             PATH="/usr/bin:/bin" \
             PYTHONDONTWRITEBYTECODE="1" \
             EXPECTED_VERIFIER_BASE="${VERIFIER_RUNTIME_ROOT}/python" \
+            VERIFIER_MODULE="$(
+              printf '%s/%s' \
+                "${VERIFIER_RUNTIME_ROOT}/verifier" \
+                "distribution_compliance.py"
+            )" \
             "${VERIFIER_RUNTIME_ROOT}/venv/bin/python" -I -B - <<'PY'
+          import importlib.util
           import os
           from pathlib import Path
           import sys
@@ -1221,6 +1244,20 @@ jobs:
               raise SystemExit(
                   f"unexpected PyYAML version: {yaml.__version__}"
               )
+          module_path = Path(
+              os.environ["VERIFIER_MODULE"]
+          ).resolve(strict=True)
+          spec = importlib.util.spec_from_file_location(
+              "voi_distribution_compliance",
+              module_path,
+          )
+          if spec is None or spec.loader is None:
+              raise SystemExit("cannot load trusted verifier module")
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+          if module.DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION != 7:
+              raise SystemExit("unexpected verifier schema version")
           PY
           if sudo -u voi-verifier sudo -n true 2>/dev/null; then
             echo "voi-verifier unexpectedly has passwordless sudo" >&2
@@ -1281,6 +1318,7 @@ jobs:
         env:
           HANDOFF_PATH: >-
             ${{ runner.temp }}/voi-distribution-handoff-download/candidate-handoff.tar
+          VERIFIER_INPUT_ROOT: ${{ env.VERIFIER_RUNTIME_ROOT }}/inputs
         run: |
           sudo env \
             EXPECTED_HANDOFF_TAR_SHA256="${EXPECTED_HANDOFF_TAR_SHA256}" \
@@ -1290,6 +1328,8 @@ jobs:
             GITHUB_OUTPUT="${GITHUB_OUTPUT}" \
             GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
             HANDOFF_PATH="${HANDOFF_PATH}" \
+            VERIFIER_INPUT_ROOT="${VERIFIER_INPUT_ROOT}" \
+            VERIFIER_RUNTIME_ROOT="${VERIFIER_RUNTIME_ROOT}" \
             python3 -I -B - <<'PY'
           import base64
           import hashlib
@@ -1628,8 +1668,33 @@ jobs:
                   evidence_dir / name,
                   payloads[f"distribution-compliance-evidence/{name}"],
               )
+          verifier_runtime_root = Path(
+              os.environ["VERIFIER_RUNTIME_ROOT"]
+          ).resolve(strict=True)
+          verifier_input_root = Path(
+              os.environ["VERIFIER_INPUT_ROOT"]
+          )
+          if (
+              not verifier_input_root.is_absolute()
+              or verifier_input_root.parent.resolve(strict=True)
+              != verifier_runtime_root
+              or verifier_input_root.name != "inputs"
+          ):
+              raise SystemExit("invalid verifier input root")
+          verifier_input_root.mkdir(mode=0o700, exist_ok=False)
+          verifier_evidence_dir = (
+              verifier_input_root / "distribution-compliance-evidence"
+          )
+          verifier_evidence_dir.mkdir(mode=0o700, exist_ok=False)
+          for name in sorted(evidence_names):
+              write_regular(
+                  verifier_evidence_dir / name,
+                  payloads[f"distribution-compliance-evidence/{name}"],
+              )
           os.chmod(dist_dir, 0o555)
           os.chmod(evidence_dir, 0o555)
+          os.chmod(verifier_evidence_dir, 0o555)
+          os.chmod(verifier_input_root, 0o555)
           os.chown(handoff_path, 0, 0)
           os.chmod(handoff_path, 0o444)
 
@@ -1652,6 +1717,10 @@ jobs:
           PY
       - name: Verify candidate evidence without privileges
         env:
+          VERIFIER_EVIDENCE_DIR: >-
+            ${{ env.VERIFIER_RUNTIME_ROOT }}/inputs/distribution-compliance-evidence
+          VERIFIER_MODULE: >-
+            ${{ env.VERIFIER_RUNTIME_ROOT }}/verifier/distribution_compliance.py
           VERIFIER_PYTHON: ${{ env.VERIFIER_RUNTIME_ROOT }}/venv/bin/python
           VERIFIER_HOME: ${{ env.VERIFIER_RUNTIME_ROOT }}/home
           VERIFIER_TMP: ${{ env.VERIFIER_RUNTIME_ROOT }}/tmp
@@ -1663,11 +1732,14 @@ jobs:
             PATH="/usr/bin:/bin" \
             PYTHONHASHSEED="0" \
             PYTHONDONTWRITEBYTECODE="1" \
-            GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
             EXPECTED_RELEASE_EVENT_NAME="${EXPECTED_RELEASE_EVENT_NAME}" \
             EXPECTED_RELEASE_COMMIT="${EXPECTED_RELEASE_COMMIT}" \
             EXPECTED_RELEASE_BASE_COMMIT="${EXPECTED_RELEASE_BASE_COMMIT}" \
+            VERIFIER_EVIDENCE_DIR="${VERIFIER_EVIDENCE_DIR}" \
+            VERIFIER_MODULE="${VERIFIER_MODULE}" \
+            VERIFIER_RUNTIME_ROOT="${VERIFIER_RUNTIME_ROOT}" \
             "${VERIFIER_PYTHON}" -I -B - <<'PY'
+          import importlib.util
           import json
           import os
           from pathlib import Path
@@ -1675,9 +1747,29 @@ jobs:
           import sys
           import tempfile
 
-          root = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
-          sys.path.insert(0, str(root))
-          from starcraft_commander import distribution_compliance
+          verifier_runtime_root = Path(
+              os.environ["VERIFIER_RUNTIME_ROOT"]
+          ).resolve(strict=True)
+          module_path = Path(os.environ["VERIFIER_MODULE"])
+          module_stat = module_path.lstat()
+          if (
+              not stat.S_ISREG(module_stat.st_mode)
+              or module_path.is_symlink()
+              or module_stat.st_uid != 0
+              or stat.S_IMODE(module_stat.st_mode) != 0o444
+              or module_path.parent.resolve(strict=True)
+              != verifier_runtime_root / "verifier"
+          ):
+              raise SystemExit("untrusted verifier module")
+          spec = importlib.util.spec_from_file_location(
+              "voi_distribution_compliance",
+              module_path,
+          )
+          if spec is None or spec.loader is None:
+              raise SystemExit("cannot load trusted verifier module")
+          distribution_compliance = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = distribution_compliance
+          spec.loader.exec_module(distribution_compliance)
 
           evidence_names = frozenset(
               {
@@ -1743,7 +1835,12 @@ jobs:
                   for name in sorted(expected_names)
               }
 
-          evidence_dir = root / "distribution-compliance-evidence"
+          evidence_dir = Path(os.environ["VERIFIER_EVIDENCE_DIR"])
+          if (
+              evidence_dir.parent.parent.resolve(strict=True)
+              != verifier_runtime_root
+          ):
+              raise SystemExit("verifier evidence escaped trusted runtime")
           evidence = read_exact_files(evidence_dir, evidence_names)
           canonical_report = json.loads(
               evidence["distribution-compliance.json"].decode("utf-8")
