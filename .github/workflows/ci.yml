@@ -39,6 +39,7 @@ jobs:
     needs:
       - unit-contracts
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -84,16 +85,349 @@ jobs:
             --source-root . \
             --dist-dir dist \
             --output-dir distribution-compliance-evidence
+      - name: Capture verified upload integrity
+        id: capture-upload-integrity
+        run: |
+          uv run --python 3.12 python - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import stat
+
+          evidence_names = frozenset(
+              {
+                  "dependency-notices.json",
+                  "distribution-compliance.final-projection.json",
+                  "distribution-compliance.final-projection.md",
+                  "distribution-compliance.json",
+                  "distribution-compliance.md",
+                  "installed.METADATA",
+                  "sdist.entries.txt",
+                  "secret-scan.json",
+                  "wheel.entries.txt",
+              }
+          )
+
+          def read_regular(path):
+              nofollow = getattr(os, "O_NOFOLLOW", 0)
+              if not nofollow:
+                  raise SystemExit("O_NOFOLLOW is required")
+              fd = os.open(
+                  path,
+                  os.O_RDONLY | nofollow | getattr(os, "O_CLOEXEC", 0),
+              )
+              try:
+                  before = os.fstat(fd)
+                  if not stat.S_ISREG(before.st_mode):
+                      raise SystemExit(f"not a regular file: {path}")
+                  chunks = []
+                  while True:
+                      chunk = os.read(fd, 1024 * 1024)
+                      if not chunk:
+                          break
+                      chunks.append(chunk)
+                  after = os.fstat(fd)
+                  identity = lambda item: (
+                      item.st_dev,
+                      item.st_ino,
+                      item.st_size,
+                      item.st_mtime_ns,
+                      item.st_ctime_ns,
+                  )
+                  if identity(before) != identity(after):
+                      raise SystemExit(f"file changed while reading: {path}")
+                  return b"".join(chunks)
+              finally:
+                  os.close(fd)
+
+          def read_exact_files(directory, expected_names):
+              directory_stat = directory.lstat()
+              if (
+                  not stat.S_ISDIR(directory_stat.st_mode)
+                  or directory.is_symlink()
+              ):
+                  raise SystemExit(f"not a real directory: {directory}")
+              observed_names = {entry.name for entry in directory.iterdir()}
+              if observed_names != expected_names:
+                  raise SystemExit(
+                      f"unexpected files in {directory}: "
+                      f"{sorted(observed_names)}"
+                  )
+              return {
+                  name: read_regular(directory / name)
+                  for name in sorted(expected_names)
+              }
+
+          root = Path.cwd()
+          dist_dir = root / "dist"
+          evidence_dir = root / "distribution-compliance-evidence"
+          evidence = read_exact_files(evidence_dir, evidence_names)
+          projection = json.loads(
+              evidence[
+                  "distribution-compliance.final-projection.json"
+              ].decode("utf-8")
+          )
+          artifacts = projection.get("artifacts")
+          if not isinstance(artifacts, dict) or set(artifacts) != {
+              "wheel",
+              "sdist",
+          }:
+              raise SystemExit("invalid final artifact projection")
+
+          artifact_specs = {}
+          for kind, suffix in (("wheel", ".whl"), ("sdist", ".tar.gz")):
+              artifact = artifacts.get(kind)
+              if not isinstance(artifact, dict):
+                  raise SystemExit(f"invalid {kind} artifact projection")
+              filename = artifact.get("filename")
+              digest = artifact.get("sha256")
+              reported_path = artifact.get("path")
+              if (
+                  not isinstance(filename, str)
+                  or not filename.endswith(suffix)
+                  or "/" in filename
+                  or "\\" in filename
+                  or not isinstance(digest, str)
+                  or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                  or not isinstance(reported_path, str)
+              ):
+                  raise SystemExit(f"invalid {kind} artifact identity")
+              artifact_specs[kind] = {
+                  "filename": filename,
+                  "sha256": digest,
+                  "path": reported_path,
+              }
+
+          artifact_names = {
+              item["filename"] for item in artifact_specs.values()
+          }
+          if len(artifact_names) != 2:
+              raise SystemExit("artifact filenames must be unique")
+          artifact_payloads = read_exact_files(dist_dir, artifact_names)
+          upload_artifacts = {}
+          for kind, item in artifact_specs.items():
+              artifact_path = dist_dir / item["filename"]
+              if (
+                  not Path(item["path"]).is_absolute()
+                  or Path(item["path"]).resolve() != artifact_path.resolve()
+              ):
+                  raise SystemExit(f"{kind} artifact path mismatch")
+              observed_digest = hashlib.sha256(
+                  artifact_payloads[item["filename"]]
+              ).hexdigest()
+              if observed_digest != item["sha256"]:
+                  raise SystemExit(f"{kind} artifact digest mismatch")
+              upload_artifacts[kind] = {
+                  "filename": item["filename"],
+                  "sha256": item["sha256"],
+              }
+
+          manifest = {
+              "artifacts": upload_artifacts,
+              "evidence": {
+                  name: hashlib.sha256(payload).hexdigest()
+                  for name, payload in sorted(evidence.items())
+              },
+          }
+          encoded = base64.b64encode(
+              json.dumps(
+                  manifest,
+                  sort_keys=True,
+                  separators=(",", ":"),
+              ).encode("utf-8")
+          ).decode("ascii")
+          with Path(os.environ["GITHUB_OUTPUT"]).open(
+              "a",
+              encoding="utf-8",
+          ) as output:
+              output.write(f"manifest={encoded}\n")
+          PY
       - name: Verify release source remained clean
         run: test -z "$(git status --porcelain=v1 --untracked-files=all)"
-      - name: Upload failed distribution compliance evidence
-        if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: distribution-compliance-failed-evidence
-          path: distribution-compliance-evidence/
-          if-no-files-found: warn
-          retention-days: 30
+      - name: Verify qualified upload integrity
+        if: success()
+        env:
+          EXPECTED_UPLOAD_INTEGRITY: >-
+            ${{ steps.capture-upload-integrity.outputs.manifest }}
+        run: |
+          uv run --python 3.12 python - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import stat
+
+          evidence_names = frozenset(
+              {
+                  "dependency-notices.json",
+                  "distribution-compliance.final-projection.json",
+                  "distribution-compliance.final-projection.md",
+                  "distribution-compliance.json",
+                  "distribution-compliance.md",
+                  "installed.METADATA",
+                  "sdist.entries.txt",
+                  "secret-scan.json",
+                  "wheel.entries.txt",
+              }
+          )
+
+          def read_regular(path):
+              nofollow = getattr(os, "O_NOFOLLOW", 0)
+              if not nofollow:
+                  raise SystemExit("O_NOFOLLOW is required")
+              fd = os.open(
+                  path,
+                  os.O_RDONLY | nofollow | getattr(os, "O_CLOEXEC", 0),
+              )
+              try:
+                  before = os.fstat(fd)
+                  if not stat.S_ISREG(before.st_mode):
+                      raise SystemExit(f"not a regular file: {path}")
+                  chunks = []
+                  while True:
+                      chunk = os.read(fd, 1024 * 1024)
+                      if not chunk:
+                          break
+                      chunks.append(chunk)
+                  after = os.fstat(fd)
+                  identity = lambda item: (
+                      item.st_dev,
+                      item.st_ino,
+                      item.st_size,
+                      item.st_mtime_ns,
+                      item.st_ctime_ns,
+                  )
+                  if identity(before) != identity(after):
+                      raise SystemExit(f"file changed while reading: {path}")
+                  return b"".join(chunks)
+              finally:
+                  os.close(fd)
+
+          def read_exact_files(directory, expected_names):
+              directory_stat = directory.lstat()
+              if (
+                  not stat.S_ISDIR(directory_stat.st_mode)
+                  or directory.is_symlink()
+              ):
+                  raise SystemExit(f"not a real directory: {directory}")
+              observed_names = {entry.name for entry in directory.iterdir()}
+              if observed_names != expected_names:
+                  raise SystemExit(
+                      f"unexpected files in {directory}: "
+                      f"{sorted(observed_names)}"
+                  )
+              return {
+                  name: read_regular(directory / name)
+                  for name in sorted(expected_names)
+              }
+
+          try:
+              snapshot = json.loads(
+                  base64.b64decode(
+                      os.environ["EXPECTED_UPLOAD_INTEGRITY"],
+                      validate=True,
+                  ).decode("utf-8")
+              )
+          except Exception as error:
+              raise SystemExit("invalid upload integrity snapshot") from error
+          if not isinstance(snapshot, dict) or set(snapshot) != {
+              "artifacts",
+              "evidence",
+          }:
+              raise SystemExit("invalid upload integrity snapshot shape")
+          if (
+              not isinstance(snapshot["evidence"], dict)
+              or set(snapshot["evidence"]) != evidence_names
+              or any(
+                  not isinstance(digest, str)
+                  or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                  for digest in snapshot["evidence"].values()
+              )
+          ):
+              raise SystemExit("invalid evidence integrity snapshot")
+
+          root = Path.cwd()
+          dist_dir = root / "dist"
+          evidence_dir = root / "distribution-compliance-evidence"
+          evidence = read_exact_files(evidence_dir, evidence_names)
+          observed_evidence = {
+              name: hashlib.sha256(payload).hexdigest()
+              for name, payload in sorted(evidence.items())
+          }
+          if observed_evidence != snapshot["evidence"]:
+              raise SystemExit("distribution evidence digest mismatch")
+
+          projection = json.loads(
+              evidence[
+                  "distribution-compliance.final-projection.json"
+              ].decode("utf-8")
+          )
+          artifacts = projection.get("artifacts")
+          if not isinstance(artifacts, dict) or set(artifacts) != {
+              "wheel",
+              "sdist",
+          }:
+              raise SystemExit("invalid final artifact projection")
+
+          artifact_specs = {}
+          for kind, suffix in (("wheel", ".whl"), ("sdist", ".tar.gz")):
+              artifact = artifacts.get(kind)
+              if not isinstance(artifact, dict):
+                  raise SystemExit(f"invalid {kind} artifact projection")
+              filename = artifact.get("filename")
+              digest = artifact.get("sha256")
+              reported_path = artifact.get("path")
+              if (
+                  not isinstance(filename, str)
+                  or not filename.endswith(suffix)
+                  or "/" in filename
+                  or "\\" in filename
+                  or not isinstance(digest, str)
+                  or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                  or not isinstance(reported_path, str)
+              ):
+                  raise SystemExit(f"invalid {kind} artifact identity")
+              artifact_specs[kind] = {
+                  "filename": filename,
+                  "sha256": digest,
+                  "path": reported_path,
+              }
+
+          snapshot_artifacts = snapshot["artifacts"]
+          expected_snapshot_artifacts = {
+              kind: {
+                  "filename": item["filename"],
+                  "sha256": item["sha256"],
+              }
+              for kind, item in artifact_specs.items()
+          }
+          if snapshot_artifacts != expected_snapshot_artifacts:
+              raise SystemExit("artifact projection changed after verification")
+
+          artifact_names = {
+              item["filename"] for item in artifact_specs.values()
+          }
+          if len(artifact_names) != 2:
+              raise SystemExit("artifact filenames must be unique")
+          artifact_payloads = read_exact_files(dist_dir, artifact_names)
+          for kind, item in artifact_specs.items():
+              artifact_path = dist_dir / item["filename"]
+              if (
+                  not Path(item["path"]).is_absolute()
+                  or Path(item["path"]).resolve() != artifact_path.resolve()
+              ):
+                  raise SystemExit(f"{kind} artifact path mismatch")
+              observed_digest = hashlib.sha256(
+                  artifact_payloads[item["filename"]]
+              ).hexdigest()
+              if observed_digest != item["sha256"]:
+                  raise SystemExit(f"{kind} artifact digest mismatch")
+          PY
       - name: Upload qualified release artifacts and compliance evidence
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -104,6 +438,14 @@ jobs:
             dist/*.tar.gz
             distribution-compliance-evidence/
           if-no-files-found: error
+          retention-days: 30
+      - name: Upload failed distribution compliance evidence
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: distribution-compliance-failed-evidence
+          path: distribution-compliance-evidence/
+          if-no-files-found: warn
           retention-days: 30
 
   pre-live-candidate-qualification:
