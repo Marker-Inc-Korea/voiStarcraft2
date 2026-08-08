@@ -22,11 +22,15 @@ _MICROMACHINE_RESOURCE_PACKAGE: Final[str] = "integrations.micromachine"
 _SOURCE_MODULE_RELATIVE_PATH: Final[Path] = Path(
     "starcraft_commander/runtime_data.py"
 )
+_MICROMACHINE_LAUNCHER_RELATIVE_PATH: Final[Path] = (
+    _MICROMACHINE_RELATIVE_ROOT / "scripts/smoke_macos_local.sh"
+)
 _SOURCE_IDENTITY_PATHS: Final[tuple[Path, ...]] = (
     Path(".github/workflows/ci.yml"),
     Path("MANIFEST.in"),
     Path("integrations/micromachine/HOOK_MANIFEST.json"),
     Path("pyproject.toml"),
+    _MICROMACHINE_LAUNCHER_RELATIVE_PATH,
     _SOURCE_MODULE_RELATIVE_PATH,
 )
 _SOURCE_REPOSITORY_ANCHOR: Final[str] = (

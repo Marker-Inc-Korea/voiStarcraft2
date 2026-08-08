@@ -315,6 +315,42 @@ class RuntimeDataTest(unittest.TestCase):
                 cwd=clone_root,
             )
 
+            launcher_path = (
+                clone_root
+                / "integrations"
+                / "micromachine"
+                / "scripts"
+                / "smoke_macos_local.sh"
+            )
+            launcher_path.write_text(
+                launcher_path.read_text(encoding="utf-8")
+                + "\n# dirty launcher\n",
+                encoding="utf-8",
+            )
+            dirty_launcher = _probe(runtime_path, cwd=clone_root)
+            _run(
+                "git",
+                "checkout",
+                "--quiet",
+                "HEAD",
+                "--",
+                "integrations/micromachine/scripts/smoke_macos_local.sh",
+                cwd=clone_root,
+            )
+
+            launcher_path.unlink()
+            launcher_path.symlink_to(clone_root / "MANIFEST.in")
+            symlinked_launcher = _probe(runtime_path, cwd=clone_root)
+            _run(
+                "git",
+                "checkout",
+                "--quiet",
+                "HEAD",
+                "--",
+                "integrations/micromachine/scripts/smoke_macos_local.sh",
+                cwd=clone_root,
+            )
+
             anchor = "23173dbb8d889d8828ddb6fbdab84b0d5e822476"
             _run("git", "replace", anchor, head, cwd=clone_root)
             replaced = _probe(runtime_path, cwd=clone_root)
@@ -325,6 +361,8 @@ class RuntimeDataTest(unittest.TestCase):
             Path(str(_payload(clean)["source_repository_root"])),
         )
         self.assertIsNone(_payload(dirty)["source_repository_root"])
+        self.assertIsNone(_payload(dirty_launcher)["source_repository_root"])
+        self.assertIsNone(_payload(symlinked_launcher)["source_repository_root"])
         self.assertIsNone(_payload(replaced)["source_repository_root"])
 
 
