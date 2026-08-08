@@ -151,6 +151,7 @@ class IsolatedInstallTest(unittest.TestCase):
         self.assertIn("read_text('METADATA')", installed_script)
         for script in (installed_script, target_script):
             self.assertIn("source_repository_root() is None", script)
+            self.assertNotIn("SOURCE_REPOSITORY_ROOT", script)
             self.assertIn("DEFAULT_BLACKBOARD_HEADER", script)
             self.assertIn("DEFAULT_HOOK_MANIFEST", script)
             self.assertIn("name.endswith('_PATCH')", script)
