@@ -6674,34 +6674,37 @@ def _shell_statement_parts(
     return tuple(assignments), tuple(tokens[command_index:])
 
 
-def _shell_expanded_scan_text(path: str, text: str) -> tuple[str, str]:
-    if PurePosixPath(path).suffix.lower() not in {
-        ".bash",
-        ".command",
-        ".sh",
-        ".zsh",
-    }:
-        return "", ""
-    bindings: dict[str, str] = {}
-    budget = _ConfigurationExpansionBudget()
+def _shell_semantic_scan_text(
+    text: str,
+    initial_bindings: Mapping[str, str],
+    budget: _ConfigurationExpansionBudget,
+) -> tuple[str, str]:
+    if len(initial_bindings) > MAX_CONFIGURATION_BINDINGS:
+        return "", "limit"
+    stored_character_count = sum(
+        len(name) + len(value)
+        for name, value in initial_bindings.items()
+    )
+    if stored_character_count > MAX_CONFIGURATION_STORED_CHARACTERS:
+        return "", "limit"
+    bindings = dict(initial_bindings)
     expanded_lines: list[str] = []
     expanded_character_count = 0
-    stored_character_count = 0
     statement_count = 0
     for raw_line in _shell_continuation_text(text).splitlines():
         statements, token_failure = _shell_statement_tokens(raw_line)
         if token_failure == "limit":
-            return "", "shell_configuration_limit_exceeded"
+            return "", "limit"
         if token_failure:
             if re.search(
                 r"(?i)(?:myproxy|provider|model|base[_-]?url|endpoint)",
                 raw_line,
             ):
-                return "", "shell_configuration_parse_failed"
+                return "", "parse"
             continue
         statement_count += len(statements)
         if statement_count > MAX_CONFIGURATION_NODES:
-            return "", "shell_configuration_limit_exceeded"
+            return "", "limit"
         for statement in statements:
             assignments, command_tokens = _shell_statement_parts(statement)
             for name, raw_value in assignments:
@@ -6711,7 +6714,7 @@ def _shell_expanded_scan_text(path: str, text: str) -> tuple[str, str]:
                     budget,
                 )
                 if expanded_value is None:
-                    return "", "shell_configuration_limit_exceeded"
+                    return "", "limit"
                 updated_character_count = _store_configuration_binding(
                     bindings,
                     name,
@@ -6719,7 +6722,7 @@ def _shell_expanded_scan_text(path: str, text: str) -> tuple[str, str]:
                     stored_character_count,
                 )
                 if updated_character_count is None:
-                    return "", "shell_configuration_limit_exceeded"
+                    return "", "limit"
                 stored_character_count = updated_character_count
             if not command_tokens:
                 continue
@@ -6730,19 +6733,103 @@ def _shell_expanded_scan_text(path: str, text: str) -> tuple[str, str]:
                 budget,
             )
             if expanded is None:
-                return "", "shell_configuration_limit_exceeded"
+                return "", "limit"
             if expanded == command_text:
                 continue
             if len(expanded_lines) >= MAX_CONFIGURATION_SNAPSHOTS:
-                return "", "shell_configuration_limit_exceeded"
+                return "", "limit"
             projected_character_count = (
                 expanded_character_count + len(expanded) + 1
             )
             if projected_character_count > MAX_CONFIGURATION_BYTES:
-                return "", "shell_configuration_limit_exceeded"
+                return "", "limit"
             expanded_lines.append(expanded)
             expanded_character_count = projected_character_count
     return "\n".join(expanded_lines), ""
+
+
+def _shell_expanded_scan_text(path: str, text: str) -> tuple[str, str]:
+    if PurePosixPath(path).suffix.lower() not in {
+        ".bash",
+        ".command",
+        ".sh",
+        ".zsh",
+    }:
+        return "", ""
+    expanded, failure = _shell_semantic_scan_text(
+        text,
+        {},
+        _ConfigurationExpansionBudget(),
+    )
+    if failure == "limit":
+        return "", "shell_configuration_limit_exceeded"
+    if failure:
+        return "", "shell_configuration_parse_failed"
+    return expanded, ""
+
+
+_DOCKER_RUN_OPTION_RE: Final[re.Pattern[str]] = re.compile(
+    r"--[A-Za-z][A-Za-z0-9-]*(?:=[^ \t]+)?[ \t]+"
+)
+_SHELL_EXECUTABLE_NAMES: Final[frozenset[str]] = frozenset(
+    {"ash", "bash", "dash", "ksh", "sh", "zsh"}
+)
+
+
+def _docker_run_command(body: str) -> tuple[str, str]:
+    position = len(body) - len(body.lstrip(" \t"))
+    option_count = 0
+    while True:
+        match = _DOCKER_RUN_OPTION_RE.match(body, position)
+        if match is None:
+            break
+        option_count += 1
+        if option_count > MAX_CONFIGURATION_NODES:
+            return "", "limit"
+        position = match.end()
+    return body[position:], ""
+
+
+def _shell_command_script(tokens: Sequence[str]) -> str:
+    command_index = 0
+    while command_index < len(tokens):
+        assignment = _shell_assignment_token(tokens[command_index])
+        if assignment is None:
+            break
+        command_index += 1
+    if (
+        command_index < len(tokens)
+        and tokens[command_index].casefold() == "exec"
+    ):
+        command_index += 1
+    if (
+        command_index < len(tokens)
+        and PurePosixPath(tokens[command_index]).name.casefold() == "env"
+    ):
+        command_index += 1
+        while command_index < len(tokens):
+            token = tokens[command_index]
+            if token.startswith("-"):
+                command_index += 1
+                continue
+            if _shell_assignment_token(token) is not None:
+                command_index += 1
+                continue
+            break
+    if command_index >= len(tokens):
+        return ""
+    executable = PurePosixPath(tokens[command_index]).name.casefold()
+    if executable not in _SHELL_EXECUTABLE_NAMES:
+        return ""
+    for index in range(command_index + 1, len(tokens) - 1):
+        option = tokens[index]
+        if option == "-c" or (
+            option.startswith("-")
+            and not option.startswith("--")
+            and "c" in option[1:]
+        ):
+            return tokens[index + 1]
+    return ""
 
 
 def _dockerfile_semantic_scan_text(text: str) -> tuple[str, str]:
@@ -6931,17 +7018,74 @@ def _dockerfile_semantic_scan_text(text: str) -> tuple[str, str]:
             continue
 
         if instruction == "run":
-            if not stage_started or not body or body.lstrip().startswith("["):
+            if not stage_started or not body:
                 continue
-            expanded = _expand_known_shell_variables(
-                body,
+            command, command_failure = _docker_run_command(body)
+            if command_failure:
+                return "", "docker_configuration_limit_exceeded"
+            if not command:
+                return "", "docker_configuration_parse_failed"
+
+            parsed_command: object | None = None
+            if command.startswith("["):
+                try:
+                    parsed_command = json.loads(command)
+                except json.JSONDecodeError:
+                    parsed_command = None
+            if parsed_command is not None:
+                if (
+                    not isinstance(parsed_command, list)
+                    or len(parsed_command) > MAX_CONFIGURATION_NODES
+                    or not all(
+                        isinstance(item, str)
+                        for item in parsed_command
+                    )
+                ):
+                    return "", "docker_configuration_parse_failed"
+                nested_script = _shell_command_script(parsed_command)
+                if not nested_script:
+                    continue
+                command = nested_script
+
+            expanded, shell_failure = _shell_semantic_scan_text(
+                command,
                 bindings,
                 budget,
             )
-            if expanded is None:
+            if shell_failure == "limit":
                 return "", "docker_configuration_limit_exceeded"
-            if expanded != body and not capture_run_snapshot(expanded):
+            if shell_failure:
+                return "", "docker_configuration_parse_failed"
+            for expanded_line in expanded.splitlines():
+                if not capture_run_snapshot(expanded_line):
+                    return "", "docker_configuration_limit_exceeded"
+
+            tokens, token_failure = _bounded_shlex_tokens(command)
+            if token_failure == "limit":
                 return "", "docker_configuration_limit_exceeded"
+            if token_failure:
+                if re.search(
+                    r"(?i)(?:myproxy|provider|model|base[_-]?url|endpoint)",
+                    command,
+                ):
+                    return "", "docker_configuration_parse_failed"
+                continue
+            nested_script = _shell_command_script(tokens)
+            if nested_script and nested_script != command:
+                nested_expanded, nested_failure = (
+                    _shell_semantic_scan_text(
+                        nested_script,
+                        bindings,
+                        budget,
+                    )
+                )
+                if nested_failure == "limit":
+                    return "", "docker_configuration_limit_exceeded"
+                if nested_failure:
+                    return "", "docker_configuration_parse_failed"
+                for expanded_line in nested_expanded.splitlines():
+                    if not capture_run_snapshot(expanded_line):
+                        return "", "docker_configuration_limit_exceeded"
             continue
 
         if instruction not in {"arg", "env"} or not body:

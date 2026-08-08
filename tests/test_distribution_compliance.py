@@ -2835,9 +2835,9 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
 
         self.assertEqual("", failure)
         self.assertIn("$HOME/log", expanded)
-        self.assertIn('--provider "myproxy"', expanded)
-        self.assertIn(f'--model "{model}"', expanded)
-        self.assertIn(f'--base-url "{endpoint}"', expanded)
+        self.assertIn("--provider myproxy", expanded)
+        self.assertIn(f"--model {model}", expanded)
+        self.assertIn(f"--base-url {endpoint}", expanded)
         self.assertEqual(
             {"private_endpoint", "private_model_override"},
             {str(item["rule_id"]) for item in findings},
@@ -2902,6 +2902,112 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                 allow_safe_fixtures=False,
             ),
         )
+
+    def test_docker_run_distinguishes_shell_and_json_bracket_forms(
+        self,
+    ) -> None:
+        endpoint = "https://10.0." + "0.8:7443/v1"
+        model = "secret-" + "model-140"
+        shell_form = (
+            "FROM ubuntu:24.04\n"
+            "ENV selected=myproxy "
+            f"deployment={model} gateway={endpoint}\n"
+            'RUN [ -n "$selected" ] && commander '
+            '--provider "$selected" --model "$deployment" '
+            '--base-url "$gateway"\n'
+        )
+        option_prefixed_shell = (
+            "FROM ubuntu:24.04\n"
+            "ENV selected=myproxy "
+            f"deployment={model} gateway={endpoint}\n"
+            "RUN --mount=type=cache,target=/tmp "
+            'commander --provider "$selected" '
+            '--model "$deployment" --base-url "$gateway"\n'
+        )
+        option_prefixed_exec = (
+            "FROM ubuntu:24.04\n"
+            "ENV selected=myproxy "
+            f"deployment={model} gateway={endpoint}\n"
+            "RUN --mount=type=cache,target=/tmp "
+            '["commander", "--provider", "$selected", '
+            '"--model", "$deployment", "--base-url", "$gateway"]\n'
+        )
+
+        for name, payload in {
+            "bracket-shell": shell_form,
+            "option-shell": option_prefixed_shell,
+        }.items():
+            with self.subTest(name=name):
+                self.assertEqual(
+                    {
+                        "private_endpoint",
+                        "private_model_override",
+                    },
+                    {
+                        str(item["rule_id"])
+                        for item in scan_payload(
+                            "Dockerfile",
+                            payload.encode(),
+                            allow_safe_fixtures=False,
+                        )
+                    },
+                )
+
+        self.assertEqual(
+            [],
+            scan_payload(
+                "Dockerfile",
+                option_prefixed_exec.encode(),
+                allow_safe_fixtures=False,
+            ),
+        )
+
+    def test_docker_run_analyzes_local_and_nested_shell_scripts(
+        self,
+    ) -> None:
+        endpoint = "https://10.0." + "0.8:7443/v1"
+        model = "secret-" + "model-140"
+        script = (
+            "a=my; b=proxy; selected=$a$b; key=selected; "
+            f"m={model}; mk=m; "
+            f"e={endpoint}; ek=e; "
+            'commander --provider "${!key}" --model "${!mk}" '
+            '--base-url "${!ek}"'
+        )
+        payloads = {
+            "default-shell": (
+                "FROM ubuntu:24.04\n"
+                'SHELL ["/bin/bash", "-c"]\n'
+                f"RUN {script}\n"
+            ),
+            "explicit-shell": (
+                "FROM ubuntu:24.04\n"
+                f"RUN /bin/bash -c '{script}'\n"
+            ),
+            "json-shell": (
+                "FROM ubuntu:24.04\n"
+                "RUN "
+                + json.dumps(["/bin/bash", "-c", script])
+                + "\n"
+            ),
+        }
+
+        for name, payload in payloads.items():
+            with self.subTest(name=name):
+                self.assertEqual(
+                    {
+                        "private_endpoint",
+                        "private_model_override",
+                    },
+                    {
+                        str(item["rule_id"])
+                        for item in scan_payload(
+                            "Dockerfile",
+                            payload.encode(),
+                            allow_safe_fixtures=False,
+                        )
+                    },
+                )
 
     def test_docker_run_unknowns_and_exec_form_stay_clean(self) -> None:
         payloads = {
