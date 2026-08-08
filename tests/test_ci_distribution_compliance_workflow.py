@@ -56,6 +56,20 @@ _compliance.distribution_report_blockers = _synthetic_license_blockers
 
 
 class DistributionComplianceWorkflowContractTests(unittest.TestCase):
+    def test_unit_contracts_checkout_preserves_runtime_identity_history(
+        self,
+    ) -> None:
+        workflow = self._workflow()
+        unit = workflow["jobs"]["unit-contracts"]
+        checkout = next(
+            step
+            for step in unit["steps"]
+            if str(step.get("uses", "")).startswith("actions/checkout@")
+        )
+
+        self.assertEqual(0, checkout["with"]["fetch-depth"])
+        self.assertFalse(checkout["with"]["persist-credentials"])
+
     def test_fresh_job_is_the_only_enabled_qualified_sealer(self) -> None:
         workflow = self._workflow()
         build = workflow["jobs"][BUILD_JOB]
