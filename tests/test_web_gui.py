@@ -10024,6 +10024,8 @@ class WebGuiServerHTTPTest(unittest.TestCase):
 
         self.assertFalse(snapshot["enabled"])
         self.assertFalse(started["enabled"])
+        self.assertEqual("", snapshot["script_path"])
+        self.assertEqual("", started["script_path"])
         self.assertEqual("blocked", started["status"])
         self.assertIn("source checkout", started["error"])
 
