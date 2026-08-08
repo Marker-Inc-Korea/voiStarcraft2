@@ -323,6 +323,8 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
         for required in (
             "directory.mkdir(mode=0o700, exist_ok=False)",
             "os.chmod(path, 0o444)",
+            "if item_stat.st_mode & 0o111",
+            "os.chmod(path, file_mode)",
             "os.chmod(dist_dir, 0o555)",
             "os.chmod(evidence_dir, 0o555)",
             "verifier_input_root.mkdir(mode=0o700, exist_ok=False)",
@@ -333,6 +335,7 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
             '"--no-hardlinks"',
             '"--no-checkout"',
             "harden_root_owned_tree(verifier_source_dir)",
+            "root-owned verifier source changed during hardening",
             "os.chmod(verifier_dist_dir, 0o555)",
             "os.chmod(verifier_evidence_dir, 0o555)",
             "os.chmod(verifier_input_root, 0o555)",
@@ -947,6 +950,82 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
             )
             self.assertFalse(output.exists())
 
+    def test_materializer_preserves_executable_git_modes(self) -> None:
+        workflow = self._workflow()
+        capture_script = self._capture_script()
+        materialize_script = self._heredoc_python(
+            self._step(
+                workflow["jobs"][SEAL_JOB],
+                "Materialize bounded root-owned verifier inputs",
+            )["run"]
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = self._write_valid_fixture(
+                root,
+                label="executable-mode",
+                with_executable_file=True,
+            )
+            capture_output = root / "capture-output"
+            captured = self._run_python(
+                capture_script,
+                root,
+                self._workflow_env(root, fixture, capture_output),
+                prelude=ALLOW_SYNTHETIC_SEMANTIC_REPORT,
+            )
+            self.assertEqual(0, captured.returncode, captured.stderr)
+            handoff_digest = capture_output.read_text().strip().split(
+                "=",
+                1,
+            )[1]
+            source_handoff = (
+                Path(fixture["runner_temp"])
+                / "voi-distribution-handoff"
+                / "candidate-handoff.tar"
+            )
+            uploaded_handoff = root / "downloaded-candidate-handoff.tar"
+            uploaded_handoff.write_bytes(source_handoff.read_bytes())
+            shutil.rmtree(root / "dist")
+            shutil.rmtree(root / "distribution-compliance-evidence")
+            verifier_runtime_root = root / "verifier-runtime"
+            verifier_runtime_root.mkdir()
+            output = root / "materialize-output"
+
+            materialized = self._run_python(
+                materialize_script,
+                root,
+                {
+                    **self._workflow_env(root, fixture, output),
+                    "EXPECTED_HANDOFF_TAR_SHA256": handoff_digest,
+                    "HANDOFF_PATH": str(uploaded_handoff),
+                    "VERIFIER_INPUT_ROOT": str(
+                        verifier_runtime_root / "inputs"
+                    ),
+                    "VERIFIER_RUNTIME_ROOT": str(verifier_runtime_root),
+                },
+                prelude="import os\nos.chown = lambda *args: None",
+            )
+            self.assertEqual(0, materialized.returncode, materialized.stderr)
+            verifier_source = verifier_runtime_root / "inputs" / "source"
+            self.assertEqual(
+                0o555,
+                (verifier_source / "script.sh").stat().st_mode & 0o777,
+            )
+            self.assertEqual(
+                "",
+                subprocess.check_output(
+                    [
+                        "git",
+                        "status",
+                        "--porcelain=v1",
+                        "--untracked-files=all",
+                    ],
+                    cwd=verifier_source,
+                    text=True,
+                ),
+            )
+
     def test_uploaded_handoff_survives_retained_build_writer(self) -> None:
         workflow = self._workflow()
         capture_script = self._capture_script()
@@ -1097,10 +1176,12 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
         root: Path,
         *,
         label: str,
+        with_executable_file: bool = False,
     ) -> dict[str, object]:
         base_commit, head_commit, merge_base, tree = cls._git_history(
             root,
             label,
+            with_executable_file=with_executable_file,
         )
         dist = root / "dist"
         evidence = root / "distribution-compliance-evidence"
@@ -1192,6 +1273,8 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
     def _git_history(
         root: Path,
         label: str,
+        *,
+        with_executable_file: bool = False,
     ) -> tuple[str, str, str, str]:
         subprocess.run(["git", "init", "-q"], cwd=root, check=True)
         subprocess.run(
@@ -1206,7 +1289,13 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
         )
         marker = root / "fixture.txt"
         marker.write_text(f"base:{label}\n", encoding="utf-8")
-        subprocess.run(["git", "add", "fixture.txt"], cwd=root, check=True)
+        tracked_paths = ["fixture.txt"]
+        if with_executable_file:
+            executable = root / "script.sh"
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o755)
+            tracked_paths.append("script.sh")
+        subprocess.run(["git", "add", *tracked_paths], cwd=root, check=True)
         subprocess.run(
             ["git", "commit", "-q", "-m", f"base {label}"],
             cwd=root,
