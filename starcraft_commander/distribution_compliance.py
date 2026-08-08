@@ -6440,8 +6440,12 @@ class _ConfigurationExpansionBudget:
 
 
 _SHELL_VARIABLE_RE: Final[re.Pattern[str]] = re.compile(
+    r"\$\{!([A-Za-z_][A-Za-z0-9_]*)\}|"
     r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|"
     r"([A-Za-z_][A-Za-z0-9_]*))"
+)
+_SHELL_NAME_RE: Final[re.Pattern[str]] = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]*"
 )
 _SHELL_ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(
     r"([A-Za-z_][A-Za-z0-9_]*)=(.*)",
@@ -6479,45 +6483,75 @@ def _expand_known_shell_variables(
     if len(text) > MAX_CONFIGURATION_EXPANDED_CHARACTERS:
         return None
     expanded = text
-    for _ in range(16):
+    for _ in range(min(16, MAX_CONFIGURATION_DEPTH)):
         projected_length = len(expanded)
-        substitution_count = 0
-        changed = False
+        projected_resolution_work = 0
+        replacements: list[tuple[int, int, str]] = []
 
         for match in _SHELL_VARIABLE_RE.finditer(expanded):
-            name = match.group(1) or match.group(2)
-            value = bindings.get(name)
+            indirect_name = match.group(1)
+            if indirect_name is not None:
+                selected_name = bindings.get(indirect_name)
+                projected_resolution_work += len(indirect_name)
+                if selected_name is None:
+                    continue
+                projected_resolution_work += len(selected_name)
+                if (
+                    budget.work
+                    + len(expanded)
+                    + projected_resolution_work
+                    > MAX_CONFIGURATION_EXPANSION_WORK
+                ):
+                    return None
+                if (
+                    len(selected_name)
+                    > MAX_CONFIGURATION_EXPANDED_CHARACTERS
+                    or _SHELL_NAME_RE.fullmatch(selected_name) is None
+                ):
+                    continue
+                value = bindings.get(selected_name)
+            else:
+                name = match.group(2) or match.group(3)
+                projected_resolution_work += len(name)
+                if (
+                    budget.work
+                    + len(expanded)
+                    + projected_resolution_work
+                    > MAX_CONFIGURATION_EXPANSION_WORK
+                ):
+                    return None
+                value = bindings.get(name)
             if value is None or value == match.group(0):
                 continue
             projected_length += len(value) - len(match.group(0))
-            substitution_count += 1
-            changed = True
+            replacements.append((match.start(), match.end(), value))
             if (
                 projected_length > MAX_CONFIGURATION_EXPANDED_CHARACTERS
-                or budget.substitutions + substitution_count
+                or budget.substitutions + len(replacements)
                 > MAX_CONFIGURATION_EXPANSION_SUBSTITUTIONS
             ):
                 return None
 
-        projected_work = len(expanded) + (
-            projected_length if changed else 0
+        projected_work = (
+            len(expanded)
+            + projected_resolution_work
+            + (projected_length if replacements else 0)
         )
         if budget.work + projected_work > MAX_CONFIGURATION_EXPANSION_WORK:
             return None
         budget.work += projected_work
-        if not changed:
+        if not replacements:
             return expanded
 
-        budget.substitutions += substitution_count
-
-        def replace(match: re.Match[str]) -> str:
-            name = match.group(1) or match.group(2)
-            value = bindings.get(name)
-            if value is None:
-                return match.group(0)
-            return value
-
-        updated = _SHELL_VARIABLE_RE.sub(replace, expanded)
+        budget.substitutions += len(replacements)
+        fragments: list[str] = []
+        cursor = 0
+        for start, end, value in replacements:
+            fragments.append(expanded[cursor:start])
+            fragments.append(value)
+            cursor = end
+        fragments.append(expanded[cursor:])
+        updated = "".join(fragments)
         if updated == expanded:
             return updated
         expanded = updated
@@ -6712,18 +6746,81 @@ def _shell_expanded_scan_text(path: str, text: str) -> tuple[str, str]:
 
 
 def _dockerfile_semantic_scan_text(text: str) -> tuple[str, str]:
+    global_args: dict[str, str] = {}
     bindings: dict[str, str] = {}
     budget = _ConfigurationExpansionBudget()
     snapshots: list[dict[str, str]] = []
+    run_snapshots: list[str] = []
+    stages: dict[str, dict[str, str]] = {}
     snapshot_character_count = 0
     snapshot_node_count = 0
-    stored_character_count = 0
+    retained_binding_count = 0
+    retained_character_count = 0
+    current_stage_name = ""
+    stage_started = False
+    instruction_count = 0
 
-    def capture_snapshot() -> bool:
+    def binding_characters(values: Mapping[str, str]) -> int:
+        return sum(len(name) + len(value) for name, value in values.items())
+
+    def release_bindings(values: Mapping[str, str]) -> None:
+        nonlocal retained_binding_count, retained_character_count
+        retained_binding_count -= len(values)
+        retained_character_count -= binding_characters(values)
+
+    def retain_copy(
+        values: Mapping[str, str],
+    ) -> dict[str, str] | None:
+        nonlocal retained_binding_count, retained_character_count
+        added_characters = binding_characters(values)
+        if (
+            retained_binding_count + len(values)
+            > MAX_CONFIGURATION_BINDINGS
+            or retained_character_count + added_characters
+            > MAX_CONFIGURATION_STORED_CHARACTERS
+        ):
+            return None
+        retained_binding_count += len(values)
+        retained_character_count += added_characters
+        return dict(values)
+
+    def store_binding(
+        values: dict[str, str],
+        name: str,
+        value: str,
+    ) -> bool:
+        nonlocal retained_binding_count, retained_character_count
+        previous = values.get(name)
+        added_bindings = 0 if previous is not None else 1
+        previous_characters = (
+            len(name) + len(previous)
+            if previous is not None
+            else 0
+        )
+        updated_characters = len(name) + len(value)
+        if (
+            retained_binding_count + added_bindings
+            > MAX_CONFIGURATION_BINDINGS
+            or retained_character_count
+            - previous_characters
+            + updated_characters
+            > MAX_CONFIGURATION_STORED_CHARACTERS
+        ):
+            return False
+        retained_binding_count += added_bindings
+        retained_character_count = (
+            retained_character_count
+            - previous_characters
+            + updated_characters
+        )
+        values[name] = value
+        return True
+
+    def capture_snapshot(values: Mapping[str, str]) -> bool:
         nonlocal snapshot_character_count, snapshot_node_count
         snapshot = {
             name: value
-            for name, value in bindings.items()
+            for name, value in values.items()
             if _normalized_configuration_key(name)
             in _SEMANTIC_CONFIGURATION_KEYS
         }
@@ -6734,7 +6831,8 @@ def _dockerfile_semantic_scan_text(text: str) -> tuple[str, str]:
             for name, value in snapshot.items()
         )
         if (
-            len(snapshots) >= MAX_CONFIGURATION_SNAPSHOTS
+            len(snapshots) + len(run_snapshots)
+            >= MAX_CONFIGURATION_SNAPSHOTS
             or snapshot_node_count + len(snapshot) + 1
             > MAX_CONFIGURATION_NODES
             or snapshot_character_count + snapshot_characters
@@ -6746,15 +6844,108 @@ def _dockerfile_semantic_scan_text(text: str) -> tuple[str, str]:
         snapshot_character_count += snapshot_characters
         return True
 
+    def capture_run_snapshot(command: str) -> bool:
+        nonlocal snapshot_character_count, snapshot_node_count
+        if run_snapshots and run_snapshots[-1] == command:
+            return True
+        command_characters = len(command) + 1
+        if (
+            len(snapshots) + len(run_snapshots)
+            >= MAX_CONFIGURATION_SNAPSHOTS
+            or snapshot_node_count + 1 > MAX_CONFIGURATION_NODES
+            or snapshot_character_count + command_characters
+            > MAX_CONFIGURATION_BYTES
+        ):
+            return False
+        run_snapshots.append(command)
+        snapshot_node_count += 1
+        snapshot_character_count += command_characters
+        return True
+
+    def finalize_stage() -> None:
+        nonlocal bindings
+        if current_stage_name:
+            previous = stages.get(current_stage_name)
+            if previous is not None and previous is not bindings:
+                release_bindings(previous)
+            stages[current_stage_name] = bindings
+        else:
+            release_bindings(bindings)
+        bindings = {}
+
     for raw_line in _dockerfile_logical_text("Dockerfile", text).splitlines():
         directive = re.match(
-            r"^[ \t]*(?:ENV|ARG)[ \t]+(.+?)?[ \t]*$",
+            r"^[ \t]*([A-Za-z]+)(?:[ \t]+(.+?))?[ \t]*$",
             raw_line,
-            re.IGNORECASE,
         )
-        if directive is None or not directive.group(1):
+        if directive is None:
             continue
-        body = directive.group(1)
+        instruction = directive.group(1).casefold()
+        body = directive.group(2) or ""
+        instruction_count += 1
+        if instruction_count > MAX_CONFIGURATION_NODES:
+            return "", "docker_configuration_limit_exceeded"
+
+        if instruction == "from":
+            tokens, token_failure = _bounded_shlex_tokens(body)
+            if token_failure == "limit":
+                return "", "docker_configuration_limit_exceeded"
+            if token_failure:
+                return "", "docker_configuration_parse_failed"
+            base_index = 0
+            while (
+                base_index < len(tokens)
+                and tokens[base_index].startswith("--")
+            ):
+                base_index += 1
+            if base_index >= len(tokens):
+                return "", "docker_configuration_parse_failed"
+            expanded_base = _expand_known_shell_variables(
+                tokens[base_index],
+                global_args,
+                budget,
+            )
+            if expanded_base is None:
+                return "", "docker_configuration_limit_exceeded"
+            alias = ""
+            if (
+                base_index + 2 < len(tokens)
+                and tokens[base_index + 1].casefold() == "as"
+                and re.fullmatch(
+                    r"[A-Za-z0-9_.-]+",
+                    tokens[base_index + 2],
+                )
+                is not None
+            ):
+                alias = tokens[base_index + 2].casefold()
+            if stage_started:
+                finalize_stage()
+            stage_started = True
+            current_stage_name = alias
+            inherited = stages.get(expanded_base.casefold())
+            if inherited is not None:
+                copied = retain_copy(inherited)
+                if copied is None:
+                    return "", "docker_configuration_limit_exceeded"
+                bindings = copied
+            continue
+
+        if instruction == "run":
+            if not stage_started or not body or body.lstrip().startswith("["):
+                continue
+            expanded = _expand_known_shell_variables(
+                body,
+                bindings,
+                budget,
+            )
+            if expanded is None:
+                return "", "docker_configuration_limit_exceeded"
+            if expanded != body and not capture_run_snapshot(expanded):
+                return "", "docker_configuration_limit_exceeded"
+            continue
+
+        if instruction not in {"arg", "env"} or not body:
+            continue
         tokens, token_failure = _bounded_shlex_tokens(body)
         if token_failure == "limit":
             return "", "docker_configuration_limit_exceeded"
@@ -6765,42 +6956,66 @@ def _dockerfile_semantic_scan_text(text: str) -> tuple[str, str]:
             ):
                 return "", "docker_configuration_parse_failed"
             continue
-        assignments: list[tuple[str, str]] = []
+        assignments: list[tuple[str, str | None]] = []
         if tokens and all("=" in token for token in tokens):
             assignments.extend(
                 token.split("=", 1) for token in tokens
             )
-        elif len(tokens) >= 2 and "=" not in tokens[0]:
+        elif (
+            instruction == "env"
+            and len(tokens) >= 2
+            and "=" not in tokens[0]
+        ):
             assignments.append((tokens[0], " ".join(tokens[1:])))
         elif tokens and "=" in tokens[0]:
             assignments.append(tokens[0].split("=", 1))
+        elif instruction == "arg" and len(tokens) == 1:
+            assignments.append((tokens[0], None))
+
+        destination = (
+            global_args
+            if instruction == "arg" and not stage_started
+            else bindings
+        )
+        expanded_assignments: list[tuple[str, str]] = []
         for name, raw_value in assignments:
-            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None:
+            if _SHELL_NAME_RE.fullmatch(name) is None:
+                continue
+            if raw_value is None:
+                if name in destination:
+                    continue
+                inherited_value = global_args.get(name)
+                if inherited_value is None:
+                    continue
+                expanded_assignments.append((name, inherited_value))
                 continue
             expanded = _expand_known_shell_variables(
                 raw_value,
-                bindings,
+                destination,
                 budget,
             )
             if expanded is None:
                 return "", "docker_configuration_limit_exceeded"
-            updated_character_count = _store_configuration_binding(
-                bindings,
-                name,
-                expanded,
-                stored_character_count,
-            )
-            if updated_character_count is None:
+            expanded_assignments.append((name, expanded))
+
+        for name, expanded in expanded_assignments:
+            if not store_binding(destination, name, expanded):
                 return "", "docker_configuration_limit_exceeded"
-            stored_character_count = updated_character_count
             if (
                 _normalized_configuration_key(name)
                 in _SEMANTIC_CONFIGURATION_KEYS
-                and not capture_snapshot()
+                and not capture_snapshot(destination)
             ):
                 return "", "docker_configuration_limit_exceeded"
     try:
-        return _semantic_mapping_scan_text(tuple(snapshots)), ""
+        semantic_text = _semantic_mapping_scan_text(tuple(snapshots))
+        fragments = [semantic_text] if semantic_text else []
+        fragments.extend(run_snapshots)
+        projected_characters = sum(len(item) for item in fragments)
+        projected_characters += max(0, len(fragments) - 1)
+        if projected_characters > MAX_CONFIGURATION_BYTES:
+            return "", "docker_configuration_limit_exceeded"
+        return "\n".join(fragments), ""
     except (RecursionError, TypeError, ValueError):
         return "", "docker_configuration_limit_exceeded"
 

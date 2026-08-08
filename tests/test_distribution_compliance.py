@@ -2644,6 +2644,105 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                     {str(item["rule_id"]) for item in findings},
                 )
 
+    def test_detects_composed_shell_parameter_indirection(self) -> None:
+        endpoint = "https://10.0." + "0.8:7443/v1"
+        model = "secret-" + "model-140"
+        payload = (
+            "a=my; b=proxy; selected=$a$b; key=selected\n"
+            f"m={model}; mk=m\n"
+            f"e={endpoint}; ek=e\n"
+            'commander --log "$HOME/log" --provider "${!key}" '
+            '--model "${!mk}" --base-url "${!ek}"\n'
+        )
+
+        findings = scan_payload(
+            "launch.sh",
+            payload.encode(),
+            allow_safe_fixtures=False,
+        )
+        expanded, failure = compliance_module._shell_expanded_scan_text(
+            "launch.sh",
+            payload,
+        )
+
+        self.assertEqual("", failure)
+        self.assertIn("$HOME/log", expanded)
+        self.assertIn("--provider myproxy", expanded)
+        self.assertIn(f"--model {model}", expanded)
+        self.assertIn(f"--base-url {endpoint}", expanded)
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
+            {str(item["rule_id"]) for item in findings},
+        )
+
+    def test_shell_indirection_is_bounded_and_leaves_unknowns_clean(
+        self,
+    ) -> None:
+        payload = (
+            "key=undefined_provider\n"
+            'commander --log "$HOME/log" --provider "${!key}" '
+            '--model "${!undefined_model}" '
+            '--base-url "${!undefined_endpoint}"\n'
+        )
+        self.assertEqual(
+            [],
+            scan_payload(
+                "undefined.sh",
+                payload.encode(),
+                allow_safe_fixtures=False,
+            ),
+        )
+
+        cycle_budget = compliance_module._ConfigurationExpansionBudget()
+        self.assertIsNone(
+            compliance_module._expand_known_shell_variables(
+                "$a",
+                {"a": "$b", "b": "$a"},
+                cycle_budget,
+            )
+        )
+        self.assertLessEqual(
+            cycle_budget.substitutions,
+            compliance_module.MAX_CONFIGURATION_EXPANSION_SUBSTITUTIONS,
+        )
+        self.assertLessEqual(
+            cycle_budget.work,
+            compliance_module.MAX_CONFIGURATION_EXPANSION_WORK,
+        )
+
+        with mock.patch.object(
+            compliance_module,
+            "MAX_CONFIGURATION_DEPTH",
+            2,
+        ):
+            depth_budget = compliance_module._ConfigurationExpansionBudget()
+            self.assertIsNone(
+                compliance_module._expand_known_shell_variables(
+                    "$a",
+                    {"a": "$b", "b": "$c", "c": "done"},
+                    depth_budget,
+                )
+            )
+
+        with mock.patch.object(
+            compliance_module,
+            "MAX_CONFIGURATION_EXPANSION_WORK",
+            48,
+        ):
+            work_findings = scan_payload(
+                "indirect-work.sh",
+                (
+                    "selected=myproxy\n"
+                    "key=selected\n"
+                    'commander --provider "${!key}"\n'
+                ).encode(),
+                allow_safe_fixtures=False,
+            )
+        self.assertIn(
+            "shell_configuration_limit_exceeded",
+            {str(item["rule_id"]) for item in work_findings},
+        )
+
     def test_public_shell_multi_assignment_and_declarations_stay_clean(
         self,
     ) -> None:
@@ -2712,6 +2811,123 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                         "private_model_override",
                     },
                     {str(item["rule_id"]) for item in findings},
+                )
+
+    def test_detects_docker_run_variable_semantics(self) -> None:
+        endpoint = "https://10.0." + "0.8:7443/v1"
+        model = "secret-" + "model-140"
+        payload = (
+            "FROM python:3.12-slim\n"
+            "ENV selected=myproxy "
+            f"deployment={model} gateway={endpoint}\n"
+            'RUN commander --log "$HOME/log" --provider "$selected" '
+            '--model "$deployment" --base-url "$gateway"\n'
+        )
+
+        findings = scan_payload(
+            "Dockerfile",
+            payload.encode(),
+            allow_safe_fixtures=False,
+        )
+        expanded, failure = compliance_module._dockerfile_semantic_scan_text(
+            payload
+        )
+
+        self.assertEqual("", failure)
+        self.assertIn("$HOME/log", expanded)
+        self.assertIn('--provider "myproxy"', expanded)
+        self.assertIn(f'--model "{model}"', expanded)
+        self.assertIn(f'--base-url "{endpoint}"', expanded)
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
+            {str(item["rule_id"]) for item in findings},
+        )
+
+    def test_docker_run_respects_stage_scope_and_snapshots(self) -> None:
+        endpoint = "https://10.0." + "0.8:7443/v1"
+        model = "secret-" + "model-140"
+        command = (
+            'RUN commander --provider "$selected" '
+            '--model "$deployment" --base-url "$gateway"\n'
+        )
+        inherited = (
+            "FROM scratch AS configured\n"
+            "ENV selected=myproxy "
+            f"deployment={model} gateway={endpoint}\n"
+            "FROM configured AS runner\n"
+            + command
+        )
+        later_override = (
+            "FROM scratch\n"
+            "ENV selected=myproxy "
+            f"deployment={model} gateway={endpoint}\n"
+            + command
+            + "ENV selected=openai deployment=gpt-public "
+            "gateway=https://api.openai.com/v1\n"
+            + command
+        )
+        unrelated = (
+            "FROM scratch AS configured\n"
+            "ENV selected=myproxy "
+            f"deployment={model} gateway={endpoint}\n"
+            "FROM scratch AS runner\n"
+            + command
+        )
+
+        for name, payload in {
+            "inherited": inherited,
+            "later-override": later_override,
+        }.items():
+            with self.subTest(name=name):
+                self.assertEqual(
+                    {
+                        "private_endpoint",
+                        "private_model_override",
+                    },
+                    {
+                        str(item["rule_id"])
+                        for item in scan_payload(
+                            "Dockerfile",
+                            payload.encode(),
+                            allow_safe_fixtures=False,
+                        )
+                    },
+                )
+
+        self.assertEqual(
+            [],
+            scan_payload(
+                "Dockerfile",
+                unrelated.encode(),
+                allow_safe_fixtures=False,
+            ),
+        )
+
+    def test_docker_run_unknowns_and_exec_form_stay_clean(self) -> None:
+        payloads = {
+            "undefined": (
+                "FROM scratch\n"
+                'RUN commander --log "$HOME/log" '
+                '--provider "$selected" --model "$deployment" '
+                '--base-url "$gateway"\n'
+            ),
+            "exec-form": (
+                "FROM scratch\n"
+                "ENV selected=myproxy deployment=secret-model-140 "
+                "gateway=https://10.0.0.8:7443/v1\n"
+                'RUN ["commander", "--provider", "$selected", '
+                '"--model", "$deployment", "--base-url", "$gateway"]\n'
+            ),
+        }
+        for name, payload in payloads.items():
+            with self.subTest(name=name):
+                self.assertEqual(
+                    [],
+                    scan_payload(
+                        "Dockerfile",
+                        payload.encode(),
+                        allow_safe_fixtures=False,
+                    ),
                 )
 
     def test_configuration_expansion_budgets_fail_closed(self) -> None:
@@ -2804,6 +3020,12 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                 compliance_module.MAX_CONFIGURATION_SNAPSHOTS + 1
             )
         )
+        docker_run_snapshots = "\n".join(
+            f'RUN printf "$selected" run-{index}'
+            for index in range(
+                compliance_module.MAX_CONFIGURATION_SNAPSHOTS + 1
+            )
+        )
         cases = (
             (
                 "bindings.sh",
@@ -2818,6 +3040,12 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             (
                 "service.Dockerfile",
                 docker_snapshots,
+                "docker_configuration_limit_exceeded",
+            ),
+            (
+                "run.Dockerfile",
+                "FROM scratch\nENV selected=openai\n"
+                + docker_run_snapshots,
                 "docker_configuration_limit_exceeded",
             ),
         )
