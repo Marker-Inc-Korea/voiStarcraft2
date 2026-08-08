@@ -35,13 +35,29 @@ jobs:
           bash -n integrations/micromachine/scripts/soak_macos_local.sh
           bash -n integrations/micromachine/scripts/soak_matrix_macos_local.sh
 
-  distribution-compliance:
+  distribution_compliance_build:
+    name: distribution-compliance-build
     needs:
       - unit-contracts
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       contents: read
+    env:
+      EXPECTED_RELEASE_EVENT_NAME: ${{ github.event_name }}
+      EXPECTED_RELEASE_COMMIT: >-
+        ${{ github.event_name == 'pull_request' &&
+        github.event.pull_request.head.sha || github.sha }}
+      EXPECTED_RELEASE_BASE_COMMIT: >-
+        ${{ github.event_name == 'pull_request' &&
+        github.event.pull_request.base.sha || github.event.before }}
+    outputs:
+      handoff_artifact_id: >-
+        ${{ steps.upload-distribution-handoff.outputs.artifact-id }}
+      handoff_artifact_digest: >-
+        ${{ steps.upload-distribution-handoff.outputs.artifact-digest }}
+      handoff_tar_sha256: >-
+        ${{ steps.capture-upload-integrity.outputs.handoff_tar_sha256 }}
     steps:
       - name: Check out exact pull request head
         if: github.event_name == 'pull_request'
@@ -65,18 +81,17 @@ jobs:
       - name: Install build dependencies
         run: uv sync --locked --python 3.12 --extra dev
       - name: Verify exact release source
-        env:
-          EXPECTED_RELEASE_COMMIT: >-
-            ${{ github.event_name == 'pull_request' &&
-            github.event.pull_request.head.sha || github.sha }}
-        run: test "$(git rev-parse HEAD)" = "${EXPECTED_RELEASE_COMMIT}"
+        run: |
+          test "${EXPECTED_RELEASE_EVENT_NAME}" = "pull_request" \
+            -o "${EXPECTED_RELEASE_EVENT_NAME}" = "push"
+          test "$(git rev-parse HEAD)" = "${EXPECTED_RELEASE_COMMIT}"
+          test "$(
+            git rev-parse --verify \
+              "${EXPECTED_RELEASE_BASE_COMMIT}^{commit}"
+          )" = "${EXPECTED_RELEASE_BASE_COMMIT}"
       - name: Verify clean release source
         run: test -z "$(git status --porcelain=v1 --untracked-files=all)"
       - name: Build and verify release artifacts
-        env:
-          EXPECTED_RELEASE_BASE_COMMIT: >-
-            ${{ github.event_name == 'pull_request' &&
-            github.event.pull_request.base.sha || github.event.before }}
         run: |
           uv run --python 3.12 python -m \
             starcraft_commander.distribution_compliance \
@@ -89,13 +104,15 @@ jobs:
         id: capture-upload-integrity
         run: |
           uv run --python 3.12 python - <<'PY'
-          import base64
           import hashlib
+          import io
           import json
           import os
           from pathlib import Path
           import re
           import stat
+          import subprocess
+          import tarfile
           import tempfile
 
           from starcraft_commander import distribution_compliance
@@ -164,7 +181,124 @@ jobs:
                   for name in sorted(expected_names)
               }
 
-          root = Path.cwd()
+          def git_output(root, *arguments):
+              result = subprocess.run(
+                  ["git", *arguments],
+                  cwd=root,
+                  check=False,
+                  capture_output=True,
+                  text=True,
+              )
+              if result.returncode != 0:
+                  raise SystemExit(
+                      "event-context Git verification failed: "
+                      + result.stderr.strip()
+                  )
+              return result.stdout.strip()
+
+          def exact_commit(value, label):
+              if (
+                  not isinstance(value, str)
+                  or re.fullmatch(r"[0-9a-f]{40}", value) is None
+                  or value == "0" * 40
+              ):
+                  raise SystemExit(f"invalid {label}")
+              return value
+
+          def validate_event_context(report, root):
+              workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+              if root.resolve() != workspace:
+                  raise SystemExit(
+                      "capture root does not match GITHUB_WORKSPACE"
+                  )
+              event_name = os.environ["EXPECTED_RELEASE_EVENT_NAME"]
+              if event_name not in {"pull_request", "push"}:
+                  raise SystemExit("unsupported release event")
+              expected_head = exact_commit(
+                  os.environ["EXPECTED_RELEASE_COMMIT"],
+                  "EXPECTED_RELEASE_COMMIT",
+              )
+              expected_base = exact_commit(
+                  os.environ["EXPECTED_RELEASE_BASE_COMMIT"],
+                  "EXPECTED_RELEASE_BASE_COMMIT",
+              )
+              repository = report.get("repository")
+              if not isinstance(repository, dict):
+                  raise SystemExit("canonical repository evidence is missing")
+              for phase in ("before", "after"):
+                  state = repository.get(phase)
+                  if not isinstance(state, dict):
+                      raise SystemExit(
+                          f"canonical repository {phase} is missing"
+                      )
+                  if (
+                      state.get("repository_root") != str(workspace)
+                      or state.get("source_root") != str(workspace)
+                  ):
+                      raise SystemExit(
+                          "canonical report repository root does not match "
+                          "GITHUB_WORKSPACE"
+                      )
+                  if state.get("head") != expected_head:
+                      raise SystemExit(
+                          f"canonical repository {phase} does not match "
+                          "EXPECTED_RELEASE_COMMIT"
+                      )
+              if repository.get("head_commit") != expected_head:
+                  raise SystemExit(
+                      "canonical head_commit does not match "
+                      "EXPECTED_RELEASE_COMMIT"
+                  )
+              if repository.get("base_commit") != expected_base:
+                  raise SystemExit(
+                      "canonical base_commit does not match "
+                      "EXPECTED_RELEASE_BASE_COMMIT"
+                  )
+              if git_output(root, "rev-parse", "HEAD") != expected_head:
+                  raise SystemExit(
+                      "checked out HEAD does not match release event"
+                  )
+              if (
+                  git_output(
+                      root,
+                      "rev-parse",
+                      "--verify",
+                      f"{expected_base}^{{commit}}",
+                  )
+                  != expected_base
+              ):
+                  raise SystemExit(
+                      "release event base did not resolve exactly"
+                  )
+              observed_merge_base = exact_commit(
+                  git_output(
+                      root,
+                      "merge-base",
+                      expected_base,
+                      expected_head,
+                  ),
+                  "event merge base",
+              )
+              if repository.get("merge_base") != observed_merge_base:
+                  raise SystemExit(
+                      "canonical merge_base does not match event range"
+                  )
+              if (
+                  event_name == "push"
+                  and observed_merge_base != expected_base
+              ):
+                  raise SystemExit(
+                      "push before commit is not an ancestor of release HEAD"
+                  )
+              return {
+                  "event_name": event_name,
+                  "base_commit": expected_base,
+                  "head_commit": expected_head,
+                  "merge_base": observed_merge_base,
+                  "repository_root": str(workspace),
+              }
+
+          root = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
           dist_dir = root / "dist"
           evidence_dir = root / "distribution-compliance-evidence"
           evidence = read_exact_files(evidence_dir, evidence_names)
@@ -173,6 +307,7 @@ jobs:
           )
           if not isinstance(canonical_report, dict):
               raise SystemExit("canonical compliance report is not an object")
+          event_context = validate_event_context(canonical_report, root)
           semantic_blockers = (
               distribution_compliance.distribution_report_blockers(
                   canonical_report
@@ -329,31 +464,114 @@ jobs:
                   "sha256": item["sha256"],
               }
 
+          bundle_files = {
+              f"dist/{name}": payload
+              for name, payload in artifact_payloads.items()
+          }
+          bundle_files.update(
+              {
+                  f"distribution-compliance-evidence/{name}": payload
+                  for name, payload in evidence.items()
+              }
+          )
           manifest = {
+              "schema_version": 1,
+              "event": event_context,
               "artifacts": upload_artifacts,
               "evidence": {
                   name: hashlib.sha256(payload).hexdigest()
                   for name, payload in sorted(evidence.items())
               },
+              "files": {
+                  path: {
+                      "sha256": hashlib.sha256(payload).hexdigest(),
+                      "size": len(payload),
+                  }
+                  for path, payload in sorted(bundle_files.items())
+              },
           }
-          encoded = base64.b64encode(
+          bundle_files["HANDOFF-MANIFEST.json"] = (
               json.dumps(
                   manifest,
+                  indent=2,
                   sort_keys=True,
-                  separators=(",", ":"),
               ).encode("utf-8")
-          ).decode("ascii")
+              + b"\n"
+          )
+          archive_buffer = io.BytesIO()
+          with tarfile.open(
+              fileobj=archive_buffer,
+              mode="w",
+              format=tarfile.USTAR_FORMAT,
+          ) as archive:
+              for path, payload in sorted(bundle_files.items()):
+                  member = tarfile.TarInfo(path)
+                  member.size = len(payload)
+                  member.mode = 0o444
+                  member.mtime = 0
+                  member.uid = 0
+                  member.gid = 0
+                  member.uname = "root"
+                  member.gname = "root"
+                  archive.addfile(member, io.BytesIO(payload))
+          handoff_bytes = archive_buffer.getvalue()
+          handoff_digest = hashlib.sha256(handoff_bytes).hexdigest()
+          handoff_dir = (
+              Path(os.environ["RUNNER_TEMP"])
+              / "voi-distribution-handoff"
+          )
+          handoff_dir.mkdir(mode=0o700, exist_ok=False)
+          handoff_path = handoff_dir / "candidate-handoff.tar"
+          nofollow = getattr(os, "O_NOFOLLOW", 0)
+          if not nofollow:
+              raise SystemExit("O_NOFOLLOW is required")
+          handoff_fd = os.open(
+              handoff_path,
+              os.O_WRONLY
+              | os.O_CREAT
+              | os.O_EXCL
+              | nofollow
+              | getattr(os, "O_CLOEXEC", 0),
+              0o400,
+          )
+          try:
+              remaining = memoryview(handoff_bytes)
+              while remaining:
+                  written = os.write(handoff_fd, remaining)
+                  if written <= 0:
+                      raise SystemExit("failed to write candidate handoff")
+                  remaining = remaining[written:]
+              os.fsync(handoff_fd)
+          finally:
+              os.close(handoff_fd)
+          if read_regular(handoff_path) != handoff_bytes:
+              raise SystemExit("candidate handoff verification failed")
+          os.chmod(handoff_path, 0o444)
+          os.chmod(handoff_dir, 0o555)
           with Path(os.environ["GITHUB_OUTPUT"]).open(
               "a",
               encoding="utf-8",
           ) as output:
-              output.write(f"manifest={encoded}\n")
+              output.write(f"handoff_tar_sha256={handoff_digest}\n")
           PY
       - name: Verify release source remained clean
         run: test -z "$(git status --porcelain=v1 --untracked-files=all)"
-      - name: Create sealed qualified upload bundle
-        id: seal-qualified-upload
+      - name: Upload untrusted distribution handoff
+        id: upload-distribution-handoff
         if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: distribution-compliance-untrusted-handoff
+          path: >-
+            ${{ runner.temp }}/voi-distribution-handoff/candidate-handoff.tar
+          if-no-files-found: error
+          compression-level: 0
+          include-hidden-files: false
+          overwrite: false
+          retention-days: 1
+      - name: Disabled same-runner qualified sealer
+        id: seal-qualified-upload
+        if: ${{ false }}
         env:
           EXPECTED_UPLOAD_INTEGRITY: >-
             ${{ steps.capture-upload-integrity.outputs.manifest }}
@@ -361,9 +579,12 @@ jobs:
           SEALED_UPLOAD_DIR: >-
             /opt/voi-distribution-upload/${{ github.run_id }}-${{
             github.run_attempt }}
-        run: |
+        run: &qualified_release_sealer |
           sudo env \
             EXPECTED_UPLOAD_INTEGRITY="${EXPECTED_UPLOAD_INTEGRITY}" \
+            EXPECTED_RELEASE_EVENT_NAME="${EXPECTED_RELEASE_EVENT_NAME}" \
+            EXPECTED_RELEASE_COMMIT="${EXPECTED_RELEASE_COMMIT}" \
+            EXPECTED_RELEASE_BASE_COMMIT="${EXPECTED_RELEASE_BASE_COMMIT}" \
             GITHUB_OUTPUT="${GITHUB_OUTPUT}" \
             GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
             SEALED_UPLOAD_PARENT="${SEALED_UPLOAD_PARENT}" \
@@ -377,6 +598,7 @@ jobs:
           from pathlib import Path
           import re
           import stat
+          import subprocess
           import tarfile
 
           evidence_names = frozenset(
@@ -443,6 +665,116 @@ jobs:
                   for name in sorted(expected_names)
               }
 
+          def git_output(root, *arguments):
+              result = subprocess.run(
+                  ["git", *arguments],
+                  cwd=root,
+                  check=False,
+                  capture_output=True,
+                  text=True,
+              )
+              if result.returncode != 0:
+                  raise SystemExit(
+                      "sealed event-context Git verification failed: "
+                      + result.stderr.strip()
+                  )
+              return result.stdout.strip()
+
+          def exact_commit(value, label):
+              if (
+                  not isinstance(value, str)
+                  or re.fullmatch(r"[0-9a-f]{40}", value) is None
+                  or value == "0" * 40
+              ):
+                  raise SystemExit(f"invalid {label}")
+              return value
+
+          def validate_event_context(report, root):
+              workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+              if root.resolve() != workspace:
+                  raise SystemExit(
+                      "seal root does not match GITHUB_WORKSPACE"
+                  )
+              event_name = os.environ["EXPECTED_RELEASE_EVENT_NAME"]
+              if event_name not in {"pull_request", "push"}:
+                  raise SystemExit("unsupported release event")
+              expected_head = exact_commit(
+                  os.environ["EXPECTED_RELEASE_COMMIT"],
+                  "EXPECTED_RELEASE_COMMIT",
+              )
+              expected_base = exact_commit(
+                  os.environ["EXPECTED_RELEASE_BASE_COMMIT"],
+                  "EXPECTED_RELEASE_BASE_COMMIT",
+              )
+              repository = report.get("repository")
+              if not isinstance(repository, dict):
+                  raise SystemExit("canonical repository evidence is missing")
+              for phase in ("before", "after"):
+                  state = repository.get(phase)
+                  if not isinstance(state, dict):
+                      raise SystemExit(
+                          f"canonical repository {phase} is missing"
+                      )
+                  if (
+                      state.get("repository_root") != str(workspace)
+                      or state.get("source_root") != str(workspace)
+                  ):
+                      raise SystemExit(
+                          "canonical report repository root does not match "
+                          "GITHUB_WORKSPACE"
+                      )
+                  if state.get("head") != expected_head:
+                      raise SystemExit(
+                          f"canonical repository {phase} does not match "
+                          "EXPECTED_RELEASE_COMMIT"
+                      )
+              if repository.get("head_commit") != expected_head:
+                  raise SystemExit(
+                      "canonical head_commit does not match "
+                      "EXPECTED_RELEASE_COMMIT"
+                  )
+              if repository.get("base_commit") != expected_base:
+                  raise SystemExit(
+                      "canonical base_commit does not match "
+                      "EXPECTED_RELEASE_BASE_COMMIT"
+                  )
+              if git_output(root, "rev-parse", "HEAD") != expected_head:
+                  raise SystemExit(
+                      "checked out HEAD does not match release event"
+                  )
+              if (
+                  git_output(
+                      root,
+                      "rev-parse",
+                      "--verify",
+                      f"{expected_base}^{{commit}}",
+                  )
+                  != expected_base
+              ):
+                  raise SystemExit(
+                      "release event base did not resolve exactly"
+                  )
+              observed_merge_base = exact_commit(
+                  git_output(
+                      root,
+                      "merge-base",
+                      expected_base,
+                      expected_head,
+                  ),
+                  "event merge base",
+              )
+              if repository.get("merge_base") != observed_merge_base:
+                  raise SystemExit(
+                      "canonical merge_base does not match event range"
+                  )
+              if (
+                  event_name == "push"
+                  and observed_merge_base != expected_base
+              ):
+                  raise SystemExit(
+                      "push before commit is not an ancestor of release HEAD"
+                  )
+
           try:
               snapshot = json.loads(
                   base64.b64decode(
@@ -482,6 +814,9 @@ jobs:
           canonical_report = json.loads(
               evidence["distribution-compliance.json"].decode("utf-8")
           )
+          if not isinstance(canonical_report, dict):
+              raise SystemExit("canonical compliance report is not an object")
+          validate_event_context(canonical_report, root)
           projection = json.loads(
               evidence[
                   "distribution-compliance.final-projection.json"
@@ -736,7 +1071,744 @@ jobs:
           ) as output:
               output.write(f"bundle_sha256={bundle_digest}\n")
           PY
+      - name: Upload failed distribution compliance evidence
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: distribution-compliance-failed-evidence
+          path: distribution-compliance-evidence/
+          if-no-files-found: warn
+          retention-days: 30
+
+  distribution-compliance:
+    needs:
+      - distribution_compliance_build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+    env:
+      EXPECTED_RELEASE_EVENT_NAME: ${{ github.event_name }}
+      EXPECTED_RELEASE_COMMIT: >-
+        ${{ github.event_name == 'pull_request' &&
+        github.event.pull_request.head.sha || github.sha }}
+      EXPECTED_RELEASE_BASE_COMMIT: >-
+        ${{ github.event_name == 'pull_request' &&
+        github.event.pull_request.base.sha || github.event.before }}
+      EXPECTED_HANDOFF_ARTIFACT_ID: >-
+        ${{ needs.distribution_compliance_build.outputs.handoff_artifact_id }}
+      EXPECTED_HANDOFF_ARTIFACT_DIGEST: >-
+        ${{ needs.distribution_compliance_build.outputs.handoff_artifact_digest }}
+      EXPECTED_HANDOFF_TAR_SHA256: >-
+        ${{ needs.distribution_compliance_build.outputs.handoff_tar_sha256 }}
+    steps:
+      - name: Check out exact pull request head for fresh sealing
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Check out exact main push for fresh sealing
+        if: github.event_name == 'push'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Verify fresh release source and event range
+        run: |
+          set -euo pipefail
+          test "${EXPECTED_RELEASE_EVENT_NAME}" = "pull_request" \
+            -o "${EXPECTED_RELEASE_EVENT_NAME}" = "push"
+          test "$(git rev-parse HEAD)" = "${EXPECTED_RELEASE_COMMIT}"
+          test "$(
+            git rev-parse --verify \
+              "${EXPECTED_RELEASE_BASE_COMMIT}^{commit}"
+          )" = "${EXPECTED_RELEASE_BASE_COMMIT}"
+          merge_base="$(
+            git merge-base \
+              "${EXPECTED_RELEASE_BASE_COMMIT}" \
+              "${EXPECTED_RELEASE_COMMIT}"
+          )"
+          test "${#merge_base}" -eq 40
+          if test "${EXPECTED_RELEASE_EVENT_NAME}" = "push"; then
+            test "${merge_base}" = "${EXPECTED_RELEASE_BASE_COMMIT}"
+          fi
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
+        with:
+          enable-cache: true
+      - name: Set up trusted verifier runtime
+        run: |
+          set -euo pipefail
+          uv python install 3.12
+          uv venv --python 3.12 "${RUNNER_TEMP}/voi-verifier-venv"
+          uv pip install \
+            --python "${RUNNER_TEMP}/voi-verifier-venv/bin/python" \
+            "PyYAML==6.0.3"
+          chmod -R go-w "${RUNNER_TEMP}/voi-verifier-venv"
+          sudo useradd \
+            --system \
+            --no-create-home \
+            --home-dir "${RUNNER_TEMP}/voi-verifier-home" \
+            --shell /usr/sbin/nologin \
+            voi-verifier
+          sudo install \
+            -d \
+            -o voi-verifier \
+            -g voi-verifier \
+            -m 0700 \
+            "${RUNNER_TEMP}/voi-verifier-home" \
+            "${RUNNER_TEMP}/voi-verifier-tmp"
+          if sudo -u voi-verifier sudo -n true 2>/dev/null; then
+            echo "voi-verifier unexpectedly has passwordless sudo" >&2
+            exit 1
+          fi
+      - name: Verify untrusted handoff artifact provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          case "${EXPECTED_HANDOFF_ARTIFACT_ID}" in
+            ''|*[!0-9]*)
+              echo "invalid handoff artifact id" >&2
+              exit 1
+              ;;
+          esac
+          normalize_digest() {
+            value="${1#sha256:}"
+            case "${value}" in
+              *[!0-9a-f]*)
+                return 1
+                ;;
+            esac
+            test "${#value}" -eq 64
+            printf '%s' "${value}"
+          }
+          expected_digest="$(
+            normalize_digest "${EXPECTED_HANDOFF_ARTIFACT_DIGEST}"
+          )"
+          metadata="$(
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/artifacts/${EXPECTED_HANDOFF_ARTIFACT_ID}"
+          )"
+          test "$(jq -r '.id | tostring' <<<"${metadata}")" = \
+            "${EXPECTED_HANDOFF_ARTIFACT_ID}"
+          test "$(jq -r '.name' <<<"${metadata}")" = \
+            "distribution-compliance-untrusted-handoff"
+          test "$(jq -r '.expired' <<<"${metadata}")" = "false"
+          test "$(jq -r '.workflow_run.id | tostring' <<<"${metadata}")" = \
+            "${GITHUB_RUN_ID}"
+          observed_digest="$(
+            normalize_digest "$(jq -r '.digest' <<<"${metadata}")"
+          )"
+          test "${observed_digest}" = "${expected_digest}"
+      - name: Download exact untrusted distribution handoff
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: >-
+            ${{ needs.distribution_compliance_build.outputs.handoff_artifact_id }}
+          path: ${{ runner.temp }}/voi-distribution-handoff-download
+          merge-multiple: true
+      - name: Materialize bounded root-owned verifier inputs
+        id: materialize-distribution-handoff
+        env:
+          HANDOFF_PATH: >-
+            ${{ runner.temp }}/voi-distribution-handoff-download/candidate-handoff.tar
+        run: |
+          sudo env \
+            EXPECTED_HANDOFF_TAR_SHA256="${EXPECTED_HANDOFF_TAR_SHA256}" \
+            EXPECTED_RELEASE_EVENT_NAME="${EXPECTED_RELEASE_EVENT_NAME}" \
+            EXPECTED_RELEASE_COMMIT="${EXPECTED_RELEASE_COMMIT}" \
+            EXPECTED_RELEASE_BASE_COMMIT="${EXPECTED_RELEASE_BASE_COMMIT}" \
+            GITHUB_OUTPUT="${GITHUB_OUTPUT}" \
+            GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
+            HANDOFF_PATH="${HANDOFF_PATH}" \
+            python3 - <<'PY'
+          import base64
+          import hashlib
+          import io
+          import json
+          import os
+          from pathlib import Path, PurePosixPath
+          import re
+          import stat
+          import tarfile
+
+          MAX_HANDOFF_BYTES = 512 * 1024 * 1024
+          MAX_MEMBER_BYTES = 64 * 1024 * 1024
+          MAX_TOTAL_BYTES = 256 * 1024 * 1024
+          evidence_names = frozenset(
+              {
+                  "dependency-notices.json",
+                  "distribution-compliance.final-projection.json",
+                  "distribution-compliance.final-projection.md",
+                  "distribution-compliance.json",
+                  "distribution-compliance.md",
+                  "installed.METADATA",
+                  "sdist.entries.txt",
+                  "secret-scan.json",
+                  "wheel.entries.txt",
+              }
+          )
+
+          def read_regular(path, limit):
+              nofollow = getattr(os, "O_NOFOLLOW", 0)
+              if not nofollow:
+                  raise SystemExit("O_NOFOLLOW is required")
+              fd = os.open(
+                  path,
+                  os.O_RDONLY | nofollow | getattr(os, "O_CLOEXEC", 0),
+              )
+              try:
+                  before = os.fstat(fd)
+                  if not stat.S_ISREG(before.st_mode):
+                      raise SystemExit(f"not a regular file: {path}")
+                  if before.st_size > limit:
+                      raise SystemExit(f"file exceeds handoff limit: {path}")
+                  chunks = []
+                  remaining = limit + 1
+                  while remaining:
+                      chunk = os.read(fd, min(1024 * 1024, remaining))
+                      if not chunk:
+                          break
+                      chunks.append(chunk)
+                      remaining -= len(chunk)
+                  if remaining == 0 and os.read(fd, 1):
+                      raise SystemExit(f"file exceeds handoff limit: {path}")
+                  after = os.fstat(fd)
+                  identity = lambda item: (
+                      item.st_dev,
+                      item.st_ino,
+                      item.st_size,
+                      item.st_mtime_ns,
+                      item.st_ctime_ns,
+                  )
+                  if identity(before) != identity(after):
+                      raise SystemExit(f"file changed while reading: {path}")
+                  return b"".join(chunks)
+              finally:
+                  os.close(fd)
+
+          def exact_commit(value, label):
+              if (
+                  not isinstance(value, str)
+                  or re.fullmatch(r"[0-9a-f]{40}", value) is None
+                  or value == "0" * 40
+              ):
+                  raise SystemExit(f"invalid {label}")
+              return value
+
+          def write_regular(path, payload):
+              nofollow = getattr(os, "O_NOFOLLOW", 0)
+              fd = os.open(
+                  path,
+                  os.O_WRONLY
+                  | os.O_CREAT
+                  | os.O_EXCL
+                  | nofollow
+                  | getattr(os, "O_CLOEXEC", 0),
+                  0o400,
+              )
+              try:
+                  remaining = memoryview(payload)
+                  while remaining:
+                      written = os.write(fd, remaining)
+                      if written <= 0:
+                          raise SystemExit(
+                              f"failed to materialize handoff file: {path}"
+                          )
+                      remaining = remaining[written:]
+                  os.fsync(fd)
+              finally:
+                  os.close(fd)
+              os.chmod(path, 0o444)
+
+          handoff_path = Path(os.environ["HANDOFF_PATH"])
+          handoff_bytes = read_regular(handoff_path, MAX_HANDOFF_BYTES)
+          expected_handoff_digest = os.environ[
+              "EXPECTED_HANDOFF_TAR_SHA256"
+          ]
+          if (
+              re.fullmatch(r"[0-9a-f]{64}", expected_handoff_digest) is None
+              or hashlib.sha256(handoff_bytes).hexdigest()
+              != expected_handoff_digest
+          ):
+              raise SystemExit("downloaded handoff digest mismatch")
+
+          payloads = {}
+          with tarfile.open(
+              fileobj=io.BytesIO(handoff_bytes),
+              mode="r:",
+          ) as archive:
+              members = archive.getmembers()
+              if not members or len(members) > 16:
+                  raise SystemExit("invalid handoff member count")
+              total_size = 0
+              for member in members:
+                  path = PurePosixPath(member.name)
+                  if (
+                      not member.isfile()
+                      or member.pax_headers
+                      or path.is_absolute()
+                      or ".." in path.parts
+                      or str(path) != member.name
+                      or member.name in payloads
+                      or member.size > MAX_MEMBER_BYTES
+                      or member.mode != 0o444
+                      or member.mtime != 0
+                      or member.uid != 0
+                      or member.gid != 0
+                      or member.uname != "root"
+                      or member.gname != "root"
+                  ):
+                      raise SystemExit(
+                          f"invalid handoff member: {member.name}"
+                      )
+                  total_size += member.size
+                  if total_size > MAX_TOTAL_BYTES:
+                      raise SystemExit("handoff payload limit exceeded")
+                  stream = archive.extractfile(member)
+                  if stream is None:
+                      raise SystemExit(
+                          f"missing handoff payload: {member.name}"
+                      )
+                  payload = stream.read(member.size + 1)
+                  if len(payload) != member.size:
+                      raise SystemExit(
+                          f"handoff member size mismatch: {member.name}"
+                      )
+                  payloads[member.name] = payload
+
+          canonical_archive = io.BytesIO()
+          with tarfile.open(
+              fileobj=canonical_archive,
+              mode="w",
+              format=tarfile.USTAR_FORMAT,
+          ) as archive:
+              for name, payload in sorted(payloads.items()):
+                  member = tarfile.TarInfo(name)
+                  member.size = len(payload)
+                  member.mode = 0o444
+                  member.mtime = 0
+                  member.uid = 0
+                  member.gid = 0
+                  member.uname = "root"
+                  member.gname = "root"
+                  archive.addfile(member, io.BytesIO(payload))
+          if canonical_archive.getvalue() != handoff_bytes:
+              raise SystemExit("handoff tar is not canonical")
+
+          try:
+              manifest = json.loads(
+                  payloads["HANDOFF-MANIFEST.json"].decode("utf-8")
+              )
+              canonical_report = json.loads(
+                  payloads[
+                      "distribution-compliance-evidence/"
+                      "distribution-compliance.json"
+                  ].decode("utf-8")
+              )
+          except (KeyError, UnicodeError, json.JSONDecodeError) as error:
+              raise SystemExit("invalid handoff metadata") from error
+          if (
+              not isinstance(manifest, dict)
+              or set(manifest) != {
+                  "artifacts",
+                  "event",
+                  "evidence",
+                  "files",
+                  "schema_version",
+              }
+              or manifest.get("schema_version") != 1
+              or not isinstance(canonical_report, dict)
+          ):
+              raise SystemExit("invalid handoff manifest shape")
+
+          workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+          expected_event = {
+              "event_name": os.environ["EXPECTED_RELEASE_EVENT_NAME"],
+              "base_commit": exact_commit(
+                  os.environ["EXPECTED_RELEASE_BASE_COMMIT"],
+                  "EXPECTED_RELEASE_BASE_COMMIT",
+              ),
+              "head_commit": exact_commit(
+                  os.environ["EXPECTED_RELEASE_COMMIT"],
+                  "EXPECTED_RELEASE_COMMIT",
+              ),
+              "merge_base": canonical_report.get("repository", {}).get(
+                  "merge_base"
+              ),
+              "repository_root": str(workspace),
+          }
+          exact_commit(expected_event["merge_base"], "handoff merge base")
+          if manifest["event"] != expected_event:
+              raise SystemExit(
+                  "handoff event context does not match workflow event"
+              )
+
+          artifacts = canonical_report.get("artifacts")
+          if not isinstance(artifacts, dict) or set(artifacts) != {
+              "wheel",
+              "sdist",
+          }:
+              raise SystemExit("invalid handoff artifact projection")
+          artifact_specs = {}
+          for kind, suffix in (("wheel", ".whl"), ("sdist", ".tar.gz")):
+              item = artifacts.get(kind)
+              if not isinstance(item, dict):
+                  raise SystemExit(f"invalid {kind} artifact projection")
+              filename = item.get("filename")
+              digest = item.get("sha256")
+              reported_path = item.get("path")
+              expected_path = workspace / "dist" / str(filename)
+              if (
+                  not isinstance(filename, str)
+                  or not filename.endswith(suffix)
+                  or "/" in filename
+                  or "\\" in filename
+                  or not isinstance(digest, str)
+                  or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                  or not isinstance(reported_path, str)
+                  or reported_path != str(expected_path)
+              ):
+                  raise SystemExit(f"invalid {kind} artifact identity")
+              artifact_specs[kind] = {
+                  "filename": filename,
+                  "sha256": digest,
+              }
+          artifact_names = {
+              item["filename"] for item in artifact_specs.values()
+          }
+          if len(artifact_names) != 2:
+              raise SystemExit("artifact filenames must be unique")
+
+          expected_payload_names = {
+              "HANDOFF-MANIFEST.json",
+              *{
+                  f"dist/{name}" for name in artifact_names
+              },
+              *{
+                  f"distribution-compliance-evidence/{name}"
+                  for name in evidence_names
+              },
+          }
+          if set(payloads) != expected_payload_names:
+              raise SystemExit("unexpected handoff files")
+          manifest_files = manifest.get("files")
+          expected_manifest_names = expected_payload_names - {
+              "HANDOFF-MANIFEST.json"
+          }
+          if (
+              not isinstance(manifest_files, dict)
+              or set(manifest_files) != expected_manifest_names
+          ):
+              raise SystemExit("invalid handoff file manifest")
+          for name in sorted(expected_manifest_names):
+              item = manifest_files[name]
+              payload = payloads[name]
+              if (
+                  not isinstance(item, dict)
+                  or set(item) != {"sha256", "size"}
+                  or item.get("size") != len(payload)
+                  or item.get("sha256")
+                  != hashlib.sha256(payload).hexdigest()
+              ):
+                  raise SystemExit(f"handoff file digest mismatch: {name}")
+
+          observed_artifacts = {
+              kind: {
+                  "filename": item["filename"],
+                  "sha256": hashlib.sha256(
+                      payloads[f"dist/{item['filename']}"]
+                  ).hexdigest(),
+              }
+              for kind, item in artifact_specs.items()
+          }
+          if (
+              observed_artifacts != artifact_specs
+              or manifest.get("artifacts") != artifact_specs
+          ):
+              raise SystemExit("handoff artifact digest mismatch")
+          observed_evidence = {
+              name: hashlib.sha256(
+                  payloads[f"distribution-compliance-evidence/{name}"]
+              ).hexdigest()
+              for name in sorted(evidence_names)
+          }
+          if manifest.get("evidence") != observed_evidence:
+              raise SystemExit("handoff evidence digest mismatch")
+
+          dist_dir = workspace / "dist"
+          evidence_dir = workspace / "distribution-compliance-evidence"
+          for directory in (dist_dir, evidence_dir):
+              directory.mkdir(mode=0o700, exist_ok=False)
+              directory_stat = directory.lstat()
+              if (
+                  not stat.S_ISDIR(directory_stat.st_mode)
+                  or directory.is_symlink()
+                  or directory_stat.st_uid != os.geteuid()
+              ):
+                  raise SystemExit(
+                      f"untrusted materialization directory: {directory}"
+                  )
+          for name in sorted(artifact_names):
+              write_regular(
+                  dist_dir / name,
+                  payloads[f"dist/{name}"],
+              )
+          for name in sorted(evidence_names):
+              write_regular(
+                  evidence_dir / name,
+                  payloads[f"distribution-compliance-evidence/{name}"],
+              )
+          os.chmod(dist_dir, 0o555)
+          os.chmod(evidence_dir, 0o555)
+          os.chown(handoff_path, 0, 0)
+          os.chmod(handoff_path, 0o444)
+
+          snapshot = {
+              "artifacts": artifact_specs,
+              "evidence": observed_evidence,
+          }
+          encoded = base64.b64encode(
+              json.dumps(
+                  snapshot,
+                  sort_keys=True,
+                  separators=(",", ":"),
+              ).encode("utf-8")
+          ).decode("ascii")
+          with Path(os.environ["GITHUB_OUTPUT"]).open(
+              "a",
+              encoding="utf-8",
+          ) as output:
+              output.write(f"manifest={encoded}\n")
+          PY
+          chmod -R go-w "${GITHUB_WORKSPACE}"
+      - name: Verify candidate evidence without privileges
+        env:
+          VERIFIER_PYTHON: >-
+            ${{ runner.temp }}/voi-verifier-venv/bin/python
+          VERIFIER_HOME: ${{ runner.temp }}/voi-verifier-home
+          VERIFIER_TMP: ${{ runner.temp }}/voi-verifier-tmp
+        run: |
+          set +e
+          sudo -u voi-verifier env -i \
+            HOME="${VERIFIER_HOME}" \
+            TMPDIR="${VERIFIER_TMP}" \
+            PATH="/usr/bin:/bin" \
+            PYTHONHASHSEED="0" \
+            PYTHONDONTWRITEBYTECODE="1" \
+            GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
+            EXPECTED_RELEASE_EVENT_NAME="${EXPECTED_RELEASE_EVENT_NAME}" \
+            EXPECTED_RELEASE_COMMIT="${EXPECTED_RELEASE_COMMIT}" \
+            EXPECTED_RELEASE_BASE_COMMIT="${EXPECTED_RELEASE_BASE_COMMIT}" \
+            "${VERIFIER_PYTHON}" -I -B - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import stat
+          import sys
+          import tempfile
+
+          root = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+          sys.path.insert(0, str(root))
+          from starcraft_commander import distribution_compliance
+
+          evidence_names = frozenset(
+              {
+                  "dependency-notices.json",
+                  "distribution-compliance.final-projection.json",
+                  "distribution-compliance.final-projection.md",
+                  "distribution-compliance.json",
+                  "distribution-compliance.md",
+                  "installed.METADATA",
+                  "sdist.entries.txt",
+                  "secret-scan.json",
+                  "wheel.entries.txt",
+              }
+          )
+
+          def read_regular(path):
+              nofollow = getattr(os, "O_NOFOLLOW", 0)
+              if not nofollow:
+                  raise SystemExit("O_NOFOLLOW is required")
+              fd = os.open(
+                  path,
+                  os.O_RDONLY | nofollow | getattr(os, "O_CLOEXEC", 0),
+              )
+              try:
+                  before = os.fstat(fd)
+                  if not stat.S_ISREG(before.st_mode):
+                      raise SystemExit(f"not a regular file: {path}")
+                  chunks = []
+                  while True:
+                      chunk = os.read(fd, 1024 * 1024)
+                      if not chunk:
+                          break
+                      chunks.append(chunk)
+                  after = os.fstat(fd)
+                  identity = lambda item: (
+                      item.st_dev,
+                      item.st_ino,
+                      item.st_size,
+                      item.st_mtime_ns,
+                      item.st_ctime_ns,
+                  )
+                  if identity(before) != identity(after):
+                      raise SystemExit(f"file changed while reading: {path}")
+                  return b"".join(chunks)
+              finally:
+                  os.close(fd)
+
+          def read_exact_files(directory, expected_names):
+              directory_stat = directory.lstat()
+              if (
+                  not stat.S_ISDIR(directory_stat.st_mode)
+                  or directory.is_symlink()
+              ):
+                  raise SystemExit(f"not a real directory: {directory}")
+              observed_names = {entry.name for entry in directory.iterdir()}
+              if observed_names != expected_names:
+                  raise SystemExit(
+                      f"unexpected files in {directory}: "
+                      f"{sorted(observed_names)}"
+                  )
+              return {
+                  name: read_regular(directory / name)
+                  for name in sorted(expected_names)
+              }
+
+          evidence_dir = root / "distribution-compliance-evidence"
+          evidence = read_exact_files(evidence_dir, evidence_names)
+          canonical_report = json.loads(
+              evidence["distribution-compliance.json"].decode("utf-8")
+          )
+          if not isinstance(canonical_report, dict):
+              raise SystemExit("canonical compliance report is not an object")
+          semantic_blockers = (
+              distribution_compliance.distribution_report_blockers(
+                  canonical_report
+              )
+          )
+          if semantic_blockers:
+              blocker_codes = sorted(
+                  {
+                      str(item.get("code", "unknown"))
+                      for item in semantic_blockers
+                      if isinstance(item, dict)
+                  }
+              )
+              raise SystemExit(
+                  "canonical compliance report has semantic blockers: "
+                  + ",".join(blocker_codes[:16])
+              )
+          with tempfile.TemporaryDirectory(
+              prefix="voi-fresh-distribution-verifier-"
+          ) as temporary:
+              expected_dir = Path(temporary) / "evidence"
+              distribution_compliance.write_distribution_evidence(
+                  canonical_report,
+                  expected_dir,
+                  public_report=canonical_report,
+              )
+              expected_evidence = read_exact_files(
+                  expected_dir,
+                  evidence_names,
+              )
+          for name, expected_payload in expected_evidence.items():
+              if evidence[name] != expected_payload:
+                  raise SystemExit(f"derived evidence mismatch: {name}")
+          PY
+          verifier_status=$?
+          set -e
+          verifier_uid="$(id -u voi-verifier)"
+          sudo pkill -KILL -u "${verifier_uid}" 2>/dev/null || true
+          for _ in $(seq 1 50); do
+            if ! pgrep -u "${verifier_uid}" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 0.1
+          done
+          if pgrep -u "${verifier_uid}" >/dev/null 2>&1; then
+            echo "candidate verifier process survived cleanup" >&2
+            exit 1
+          fi
+          test "${verifier_status}" -eq 0
+      - name: Create sealed qualified upload bundle
+        id: seal-qualified-upload
+        if: success()
+        env:
+          EXPECTED_UPLOAD_INTEGRITY: >-
+            ${{ steps.materialize-distribution-handoff.outputs.manifest }}
+          SEALED_UPLOAD_PARENT: /opt/voi-distribution-upload
+          SEALED_UPLOAD_DIR: >-
+            /opt/voi-distribution-upload/${{ github.run_id }}-${{
+            github.run_attempt }}
+        run: *qualified_release_sealer
+      - name: Verify exact sealed bytes before upload
+        if: success()
+        env:
+          EXPECTED_BUNDLE_SHA256: >-
+            ${{ steps.seal-qualified-upload.outputs.bundle_sha256 }}
+          SEALED_UPLOAD_PATH: >-
+            /opt/voi-distribution-upload/${{ github.run_id }}-${{
+            github.run_attempt }}/qualified-release.tar
+        run: |
+          sudo env \
+            EXPECTED_BUNDLE_SHA256="${EXPECTED_BUNDLE_SHA256}" \
+            SEALED_UPLOAD_PATH="${SEALED_UPLOAD_PATH}" \
+            python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import re
+          import stat
+
+          expected = os.environ["EXPECTED_BUNDLE_SHA256"]
+          if re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+              raise SystemExit("invalid sealed bundle digest")
+          path = Path(os.environ["SEALED_UPLOAD_PATH"])
+          nofollow = getattr(os, "O_NOFOLLOW", 0)
+          if not nofollow:
+              raise SystemExit("O_NOFOLLOW is required")
+          fd = os.open(
+              path,
+              os.O_RDONLY | nofollow | getattr(os, "O_CLOEXEC", 0),
+          )
+          try:
+              before = os.fstat(fd)
+              if (
+                  not stat.S_ISREG(before.st_mode)
+                  or before.st_uid != 0
+                  or stat.S_IMODE(before.st_mode) != 0o444
+              ):
+                  raise SystemExit("sealed upload identity is invalid")
+              digest = hashlib.sha256()
+              while True:
+                  chunk = os.read(fd, 1024 * 1024)
+                  if not chunk:
+                      break
+                  digest.update(chunk)
+              after = os.fstat(fd)
+              identity = lambda item: (
+                  item.st_dev,
+                  item.st_ino,
+                  item.st_size,
+                  item.st_mtime_ns,
+                  item.st_ctime_ns,
+              )
+              if identity(before) != identity(after):
+                  raise SystemExit("sealed upload changed while hashing")
+          finally:
+              os.close(fd)
+          if digest.hexdigest() != expected:
+              raise SystemExit("sealed upload digest mismatch")
+          PY
       - name: Upload qualified release artifacts and compliance evidence
+        id: upload-qualified-release
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -745,6 +1817,9 @@ jobs:
             /opt/voi-distribution-upload/${{ github.run_id }}-${{
             github.run_attempt }}/qualified-release.tar
           if-no-files-found: error
+          compression-level: 0
+          include-hidden-files: false
+          overwrite: false
           retention-days: 30
       - name: Upload failed distribution compliance evidence
         if: failure()

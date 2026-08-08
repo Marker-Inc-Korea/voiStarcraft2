@@ -3,6 +3,7 @@ import importlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -17,6 +18,8 @@ compliance_module = importlib.import_module(
     "starcraft_commander.distribution_compliance"
 )
 WORKFLOW_PATH = REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml"
+BUILD_JOB = "distribution_compliance_build"
+SEAL_JOB = "distribution-compliance"
 EXPECTED_EVIDENCE_FILES = {
     "dependency-notices.json",
     "distribution-compliance.final-projection.json",
@@ -53,222 +56,283 @@ _compliance.distribution_report_blockers = _synthetic_license_blockers
 
 
 class DistributionComplianceWorkflowContractTests(unittest.TestCase):
-    def test_distribution_job_has_read_only_permissions_and_unit_gate(
-        self,
-    ) -> None:
-        workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
-        job = workflow["jobs"]["distribution-compliance"]
+    def test_fresh_job_is_the_only_enabled_qualified_sealer(self) -> None:
+        workflow = self._workflow()
+        build = workflow["jobs"][BUILD_JOB]
+        seal = workflow["jobs"][SEAL_JOB]
 
         self.assertEqual({"contents": "read"}, workflow["permissions"])
-        self.assertEqual({"contents": "read"}, job["permissions"])
-        self.assertEqual(["unit-contracts"], job["needs"])
-        self.assertEqual(45, job["timeout-minutes"])
-
-    def test_distribution_job_checks_out_and_verifies_exact_event_sha(self) -> None:
-        workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
-        steps = workflow["jobs"]["distribution-compliance"]["steps"]
-        checkout_steps = [
-            step
-            for step in steps
-            if str(step.get("uses", "")).startswith("actions/checkout@")
-        ]
-
-        self.assertEqual(2, len(checkout_steps))
-        checkouts = {step["name"]: step for step in checkout_steps}
+        self.assertEqual(["unit-contracts"], build["needs"])
+        self.assertEqual({"contents": "read"}, build["permissions"])
+        self.assertEqual([BUILD_JOB], seal["needs"])
         self.assertEqual(
-            {
-                "Check out exact pull request head",
-                "Check out exact main push",
-            },
-            set(checkouts),
+            {"actions": "read", "contents": "read"},
+            seal["permissions"],
         )
+        self.assertEqual("ubuntu-latest", build["runs-on"])
+        self.assertEqual("ubuntu-latest", seal["runs-on"])
 
-        pr_checkout = checkouts["Check out exact pull request head"]
-        self.assertEqual(
-            "github.event_name == 'pull_request'",
-            pr_checkout["if"],
+        disabled = self._step(build, "Disabled same-runner qualified sealer")
+        self.assertEqual("${{ false }}", disabled["if"])
+        for step in build["steps"]:
+            if step.get("if") != "${{ false }}":
+                self.assertNotIn(
+                    "/opt/voi-distribution-upload",
+                    str(step.get("run", "")),
+                )
+
+        final_steps = seal["steps"]
+        verifier_index = self._step_index(
+            final_steps,
+            "Verify candidate evidence without privileges",
         )
-        self.assertEqual(
-            "${{ github.event.pull_request.head.sha }}",
-            pr_checkout["with"]["ref"],
+        seal_index = self._step_index(
+            final_steps,
+            "Create sealed qualified upload bundle",
         )
-
-        push_checkout = checkouts["Check out exact main push"]
-        self.assertEqual("github.event_name == 'push'", push_checkout["if"])
-        self.assertEqual("${{ github.sha }}", push_checkout["with"]["ref"])
-
-        for checkout in checkout_steps:
-            self.assertEqual(0, checkout["with"]["fetch-depth"])
-            self.assertIs(False, checkout["with"]["persist-credentials"])
-
-        verification = next(
-            step for step in steps if step.get("name") == "Verify exact release source"
+        digest_index = self._step_index(
+            final_steps,
+            "Verify exact sealed bytes before upload",
         )
-        expected_commit = verification["env"]["EXPECTED_RELEASE_COMMIT"]
-        self.assertIn("github.event.pull_request.head.sha", expected_commit)
-        self.assertIn("github.sha", expected_commit)
-        self.assertIn("git rev-parse HEAD", verification["run"])
-        self.assertIn("EXPECTED_RELEASE_COMMIT", verification["run"])
-
-        build = next(
-            step
-            for step in steps
-            if step.get("name") == "Build and verify release artifacts"
+        upload_index = self._step_index(
+            final_steps,
+            "Upload qualified release artifacts and compliance evidence",
         )
-        expected_base = build["env"]["EXPECTED_RELEASE_BASE_COMMIT"]
-        self.assertIn("github.event.pull_request.base.sha", expected_base)
-        self.assertIn("github.event.before", expected_base)
-        self.assertIn("--base-commit", build["run"])
-        self.assertIn("EXPECTED_RELEASE_BASE_COMMIT", build["run"])
+        self.assertLess(verifier_index, seal_index)
+        self.assertLess(seal_index, digest_index)
+        self.assertLess(digest_index, upload_index)
 
-        clean_checks = [
-            step
-            for step in steps
-            if step.get("name")
-            in {
-                "Verify clean release source",
-                "Verify release source remained clean",
-            }
-        ]
-        self.assertEqual(2, len(clean_checks))
-        for clean_check in clean_checks:
-            self.assertEqual(
-                'test -z "$(git status --porcelain=v1 --untracked-files=all)"',
-                clean_check["run"],
+    def test_both_jobs_bind_pr_and_push_event_context(self) -> None:
+        workflow = self._workflow()
+        for job_name in (BUILD_JOB, SEAL_JOB):
+            with self.subTest(job=job_name):
+                job = workflow["jobs"][job_name]
+                env = job["env"]
+                self.assertIn(
+                    "github.event.pull_request.head.sha",
+                    env["EXPECTED_RELEASE_COMMIT"],
+                )
+                self.assertIn("github.sha", env["EXPECTED_RELEASE_COMMIT"])
+                self.assertIn(
+                    "github.event.pull_request.base.sha",
+                    env["EXPECTED_RELEASE_BASE_COMMIT"],
+                )
+                self.assertIn(
+                    "github.event.before",
+                    env["EXPECTED_RELEASE_BASE_COMMIT"],
+                )
+                self.assertEqual(
+                    "${{ github.event_name }}",
+                    env["EXPECTED_RELEASE_EVENT_NAME"],
+                )
+
+                checkouts = [
+                    step
+                    for step in job["steps"]
+                    if str(step.get("uses", "")).startswith(
+                        "actions/checkout@"
+                    )
+                ]
+                self.assertEqual(2, len(checkouts))
+                refs = {step["with"]["ref"] for step in checkouts}
+                self.assertEqual(
+                    {
+                        "${{ github.event.pull_request.head.sha }}",
+                        "${{ github.sha }}",
+                    },
+                    refs,
+                )
+                for checkout in checkouts:
+                    self.assertEqual(0, checkout["with"]["fetch-depth"])
+                    self.assertFalse(
+                        checkout["with"]["persist-credentials"]
+                    )
+
+        capture_run = self._step(
+            workflow["jobs"][BUILD_JOB],
+            "Capture verified upload integrity",
+        )["run"]
+        seal_run = self._step(
+            workflow["jobs"][SEAL_JOB],
+            "Create sealed qualified upload bundle",
+        )["run"]
+        for script in (capture_run, seal_run):
+            normalized = " ".join(script.split())
+            self.assertIn(
+                "canonical report repository root does not match "
+                '" "GITHUB_WORKSPACE',
+                normalized,
+            )
+            self.assertIn(
+                "canonical head_commit does not match "
+                '" "EXPECTED_RELEASE_COMMIT',
+                normalized,
+            )
+            self.assertIn(
+                "canonical base_commit does not match "
+                '" "EXPECTED_RELEASE_BASE_COMMIT',
+                normalized,
+            )
+            self.assertIn(
+                "canonical merge_base does not match event range",
+                normalized,
+            )
+            self.assertIn(
+                "push before commit is not an ancestor of release HEAD",
+                normalized,
             )
 
-    def test_failed_evidence_and_qualified_release_uploads_are_separate(self) -> None:
-        workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
-        steps = workflow["jobs"]["distribution-compliance"]["steps"]
-        uploads = [
-            (index, step)
-            for index, step in enumerate(steps)
-            if str(step.get("uses", "")).startswith("actions/upload-artifact@")
-        ]
-        upload_steps = {step["with"]["name"]: (index, step) for index, step in uploads}
-
-        self.assertEqual(2, len(uploads))
-        self.assertEqual(2, len(upload_steps))
-        self.assertEqual(
-            {
-                "distribution-compliance-failed-evidence",
-                "distribution-compliance-qualified-release",
-            },
-            set(upload_steps),
+    def test_handoff_is_immutable_provenance_checked_input(self) -> None:
+        workflow = self._workflow()
+        build = workflow["jobs"][BUILD_JOB]
+        seal = workflow["jobs"][SEAL_JOB]
+        handoff = self._step(build, "Upload untrusted distribution handoff")
+        provenance = self._step(
+            seal,
+            "Verify untrusted handoff artifact provenance",
+        )
+        download = self._step(
+            seal,
+            "Download exact untrusted distribution handoff",
+        )
+        materialize = self._step(
+            seal,
+            "Materialize bounded root-owned verifier inputs",
         )
 
-        failed_index, failed_upload = upload_steps[
-            "distribution-compliance-failed-evidence"
-        ]
-        qualified_index, qualified_upload = upload_steps[
-            "distribution-compliance-qualified-release"
-        ]
-        clean_tree_index = next(
-            index
-            for index, step in enumerate(steps)
-            if step.get("name") == "Verify release source remained clean"
-        )
-
-        self.assertEqual("failure()", failed_upload["if"])
-        self.assertEqual(
-            ["distribution-compliance-evidence/"],
-            self._artifact_paths(failed_upload),
+        self.assertEqual("success()", handoff["if"])
+        self.assertRegex(
+            handoff["uses"],
+            r"^actions/upload-artifact@[0-9a-f]{40}$",
         )
         self.assertEqual(
-            "warn",
-            failed_upload["with"]["if-no-files-found"],
+            "distribution-compliance-untrusted-handoff",
+            handoff["with"]["name"],
         )
-
-        self.assertEqual("success()", qualified_upload["if"])
+        self.assertEqual(0, handoff["with"]["compression-level"])
+        self.assertFalse(handoff["with"]["include-hidden-files"])
+        self.assertFalse(handoff["with"]["overwrite"])
+        self.assertEqual(1, handoff["with"]["retention-days"])
         self.assertEqual(
-            [
-                "/opt/voi-distribution-upload/${{ github.run_id }}-${{ "
-                "github.run_attempt }}/qualified-release.tar",
-            ],
-            self._artifact_paths(qualified_upload),
+            ["${{ runner.temp }}/voi-distribution-handoff/"
+             "candidate-handoff.tar"],
+            self._artifact_paths(handoff),
         )
-        self.assertNotIn("dist/*.whl", self._artifact_paths(qualified_upload))
-        self.assertNotIn(
-            "distribution-compliance-evidence/",
-            self._artifact_paths(qualified_upload),
+
+        self.assertRegex(
+            download["uses"],
+            r"^actions/download-artifact@[0-9a-f]{40}$",
         )
+        self.assertIn("artifact-ids", download["with"])
+        self.assertTrue(download["with"]["merge-multiple"])
         self.assertEqual(
-            "error",
-            qualified_upload["with"]["if-no-files-found"],
+            "${{ github.token }}",
+            provenance["env"]["GH_TOKEN"],
         )
+        for required in (
+            "EXPECTED_HANDOFF_ARTIFACT_ID",
+            "EXPECTED_HANDOFF_ARTIFACT_DIGEST",
+            ".workflow_run.id",
+            "GITHUB_RUN_ID",
+            ".digest",
+            ".expired",
+        ):
+            self.assertIn(required, provenance["run"])
 
-        self.assertGreater(failed_index, clean_tree_index)
-        self.assertGreater(qualified_index, clean_tree_index)
-        self.assertGreater(failed_index, qualified_index)
-        self.assertNotIn(
-            "always()",
-            {step.get("if") for _, step in upload_steps.values()},
-        )
+        materialize_run = materialize["run"]
+        for required in (
+            "MAX_HANDOFF_BYTES",
+            "MAX_MEMBER_BYTES",
+            "MAX_TOTAL_BYTES",
+            "O_NOFOLLOW",
+            "member.isfile()",
+            "member.pax_headers",
+            "unexpected handoff files",
+            "handoff file digest mismatch",
+            "handoff tar is not canonical",
+            "downloaded handoff digest mismatch",
+            "os.O_EXCL",
+            "os.chown(handoff_path, 0, 0)",
+        ):
+            self.assertIn(required, materialize_run)
 
-    def test_qualified_upload_is_created_by_final_root_private_sealer(
+    def test_distribution_actions_are_pinned_to_exact_commits(self) -> None:
+        workflow = self._workflow()
+        for job_name in (BUILD_JOB, SEAL_JOB):
+            for step in workflow["jobs"][job_name]["steps"]:
+                uses = step.get("uses")
+                if uses is None:
+                    continue
+                with self.subTest(job=job_name, uses=uses):
+                    self.assertRegex(
+                        uses,
+                        r"^[^@\s]+@[0-9a-f]{40}$",
+                    )
+
+    def test_candidate_verifier_has_no_credentials_or_sudo_capability(
         self,
     ) -> None:
-        workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
-        steps = workflow["jobs"]["distribution-compliance"]["steps"]
-        by_name = {
-            step.get("name"): (index, step)
-            for index, step in enumerate(steps)
-            if step.get("name")
-        }
-        build_index, _ = by_name["Build and verify release artifacts"]
-        capture_index, capture = by_name["Capture verified upload integrity"]
-        clean_index, _ = by_name["Verify release source remained clean"]
-        seal_index, seal = by_name["Create sealed qualified upload bundle"]
-        qualified_index, qualified = by_name[
-            "Upload qualified release artifacts and compliance evidence"
-        ]
+        workflow = self._workflow()
+        seal = workflow["jobs"][SEAL_JOB]
+        setup = self._step(seal, "Set up trusted verifier runtime")
+        verifier = self._step(
+            seal,
+            "Verify candidate evidence without privileges",
+        )
+        verifier_run = verifier["run"]
 
-        self.assertEqual(build_index + 1, capture_index)
-        self.assertEqual(capture_index + 1, clean_index)
-        self.assertEqual(clean_index + 1, seal_index)
-        self.assertEqual(seal_index + 1, qualified_index)
-        self.assertEqual("capture-upload-integrity", capture["id"])
-        self.assertEqual("seal-qualified-upload", seal["id"])
-        self.assertEqual("success()", seal["if"])
+        self.assertIn(
+            "if sudo -u voi-verifier sudo -n true",
+            setup["run"],
+        )
+        self.assertIn("sudo -u voi-verifier env -i", verifier_run)
+        self.assertIn("pkill -KILL -u", verifier_run)
+        self.assertIn("pgrep -u", verifier_run)
+        self.assertIn(
+            "candidate verifier process survived cleanup",
+            verifier_run,
+        )
+        self.assertNotIn("GITHUB_TOKEN", verifier_run)
+        self.assertNotIn("GH_TOKEN", verifier_run)
+        self.assertNotIn("ACTIONS_RUNTIME_TOKEN", verifier_run)
+
+        seal_index = self._step_index(
+            seal["steps"],
+            "Create sealed qualified upload bundle",
+        )
+        for step in seal["steps"][:seal_index]:
+            if step.get("name") != "Disabled same-runner qualified sealer":
+                self.assertNotIn(
+                    "SEALED_UPLOAD_DIR",
+                    str(step.get("run", "")),
+                )
+
+    def test_failed_evidence_and_final_uploads_remain_separate(self) -> None:
+        workflow = self._workflow()
+        build = workflow["jobs"][BUILD_JOB]
+        seal = workflow["jobs"][SEAL_JOB]
+        build_failed = self._step(
+            build,
+            "Upload failed distribution compliance evidence",
+        )
+        seal_failed = self._step(
+            seal,
+            "Upload failed distribution compliance evidence",
+        )
+        qualified = self._step(
+            seal,
+            "Upload qualified release artifacts and compliance evidence",
+        )
+
+        for failed in (build_failed, seal_failed):
+            self.assertEqual("failure()", failed["if"])
+            self.assertEqual(
+                ["distribution-compliance-evidence/"],
+                self._artifact_paths(failed),
+            )
+            self.assertEqual("warn", failed["with"]["if-no-files-found"])
+
         self.assertEqual("success()", qualified["if"])
-        self.assertIn(
-            "steps.capture-upload-integrity.outputs.manifest",
-            seal["env"]["EXPECTED_UPLOAD_INTEGRITY"],
-        )
-
-        capture_run = capture["run"]
-        seal_run = seal["run"]
-        for script in (capture_run, seal_run):
-            self.assertIn("distribution-compliance.json", script)
-            self.assertIn(
-                "final projection does not match canonical report",
-                script,
-            )
-            self.assertIn(
-                "canonical report does not bind",
-                script,
-            )
-            self.assertIn("O_NOFOLLOW", script)
-            self.assertIn("stat.S_ISREG", script)
-            self.assertIn('("wheel", ".whl")', script)
-            self.assertIn('("sdist", ".tar.gz")', script)
-
-        self.assertIn("distribution_report_blockers", capture_run)
-        self.assertIn("write_distribution_evidence", capture_run)
-        self.assertIn(
-            "canonical compliance report has semantic blockers",
-            capture_run,
-        )
-        self.assertIn("derived evidence mismatch", capture_run)
-        self.assertIn("sudo env", seal_run)
-        self.assertIn("SEALED_UPLOAD_PARENT", seal_run)
-        self.assertIn("tarfile.USTAR_FORMAT", seal_run)
-        self.assertIn("archive.addfile", seal_run)
-        self.assertIn("os.O_EXCL", seal_run)
-        self.assertIn("read_regular(bundle_path) != bundle_bytes", seal_run)
-        self.assertIn("os.chmod(bundle_path, 0o444)", seal_run)
-        self.assertIn("os.chmod(seal_dir, 0o555)", seal_run)
-        self.assertNotIn("chown -R", seal_run)
         self.assertEqual(
             [
                 "/opt/voi-distribution-upload/${{ github.run_id }}-${{ "
@@ -276,22 +340,23 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
             ],
             self._artifact_paths(qualified),
         )
+        self.assertEqual("error", qualified["with"]["if-no-files-found"])
+        self.assertEqual(0, qualified["with"]["compression-level"])
+        self.assertFalse(qualified["with"]["overwrite"])
+        self.assertNotIn("dist/*.whl", self._artifact_paths(qualified))
+        self.assertNotIn(
+            "distribution-compliance-evidence/",
+            self._artifact_paths(qualified),
+        )
 
     def test_capture_rejects_coordinated_projection_and_artifact_forgery(
         self,
     ) -> None:
-        workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
-        steps = workflow["jobs"]["distribution-compliance"]["steps"]
-        capture = next(
-            step
-            for step in steps
-            if step.get("name") == "Capture verified upload integrity"
-        )
-        capture_script = self._heredoc_python(capture["run"])
+        capture_script = self._capture_script()
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            fixture = self._write_valid_fixture(root)
+            fixture = self._write_valid_fixture(root, label="projection")
             canonical_path = (
                 root
                 / "distribution-compliance-evidence"
@@ -322,37 +387,28 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
                 / "distribution-compliance.final-projection.md"
             ).write_bytes(self._projection_markdown(projection_json))
 
-            github_output = root / "forged-capture-output"
+            output = root / "forged-capture-output"
             forged = self._run_python(
                 capture_script,
                 root,
-                {**os.environ, "GITHUB_OUTPUT": str(github_output)},
+                self._workflow_env(root, fixture, output),
                 prelude=ALLOW_SYNTHETIC_SEMANTIC_REPORT,
             )
 
             self.assertNotEqual(0, forged.returncode)
             self.assertIn(
-                (
-                    "derived evidence mismatch: "
-                    "distribution-compliance.final-projection.json"
-                ),
+                "derived evidence mismatch: "
+                "distribution-compliance.final-projection.json",
                 forged.stderr,
             )
             self.assertEqual(canonical_before, canonical_path.read_bytes())
 
     def test_capture_rejects_coordinated_canonical_mit_forgery(self) -> None:
-        workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
-        steps = workflow["jobs"]["distribution-compliance"]["steps"]
-        capture = next(
-            step
-            for step in steps
-            if step.get("name") == "Capture verified upload integrity"
-        )
-        capture_script = self._heredoc_python(capture["run"])
+        capture_script = self._capture_script()
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            self._write_valid_fixture(root)
+            fixture = self._write_valid_fixture(root, label="license")
             evidence = root / "distribution-compliance-evidence"
             canonical_path = evidence / "distribution-compliance.json"
             report = json.loads(canonical_path.read_text())
@@ -363,11 +419,11 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
             )
             self._rewrite_evidence(evidence, report)
 
-            github_output = root / "forged-capture-output"
+            output = root / "forged-capture-output"
             forged = self._run_python(
                 capture_script,
                 root,
-                {**os.environ, "GITHUB_OUTPUT": str(github_output)},
+                self._workflow_env(root, fixture, output),
                 prelude=VALIDATE_SYNTHETIC_LICENSE,
             )
 
@@ -377,33 +433,32 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
                 "invalid_license_evidence",
                 forged.stderr,
             )
-            self.assertFalse(github_output.exists())
+            self.assertFalse(output.exists())
 
     def test_capture_rejects_each_derived_evidence_mutation(self) -> None:
-        workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
-        steps = workflow["jobs"]["distribution-compliance"]["steps"]
-        capture = next(
-            step
-            for step in steps
-            if step.get("name") == "Capture verified upload integrity"
-        )
-        capture_script = self._heredoc_python(capture["run"])
+        capture_script = self._capture_script()
         derived_names = EXPECTED_EVIDENCE_FILES - {
             "distribution-compliance.json"
         }
 
         for name in sorted(derived_names):
-            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+            with (
+                self.subTest(name=name),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
                 root = Path(temporary)
-                self._write_valid_fixture(root)
+                fixture = self._write_valid_fixture(
+                    root,
+                    label=f"derived-{name}",
+                )
                 evidence_path = root / "distribution-compliance-evidence" / name
                 evidence_path.write_bytes(evidence_path.read_bytes() + b" ")
-                github_output = root / "forged-capture-output"
+                output = root / "forged-capture-output"
 
                 forged = self._run_python(
                     capture_script,
                     root,
-                    {**os.environ, "GITHUB_OUTPUT": str(github_output)},
+                    self._workflow_env(root, fixture, output),
                     prelude=ALLOW_SYNTHETIC_SEMANTIC_REPORT,
                 )
 
@@ -412,84 +467,267 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
                     f"derived evidence mismatch: {name}",
                     forged.stderr,
                 )
-                self.assertFalse(github_output.exists())
+                self.assertFalse(output.exists())
 
-    def test_retained_source_fd_cannot_mutate_sealed_upload_bundle(
+    def test_capture_rejects_unrelated_rebound_clone(self) -> None:
+        capture_script = self._capture_script()
+
+        with (
+            tempfile.TemporaryDirectory() as event_temporary,
+            tempfile.TemporaryDirectory() as rebound_temporary,
+        ):
+            event_root = Path(event_temporary)
+            rebound_root = Path(rebound_temporary)
+            event_fixture = self._write_valid_fixture(
+                event_root,
+                label="event-source",
+            )
+            rebound_fixture = self._write_valid_fixture(
+                rebound_root,
+                label="unrelated-source",
+            )
+            self.assertNotEqual(
+                event_fixture["head_commit"],
+                rebound_fixture["head_commit"],
+            )
+
+            output = rebound_root / "rebound-output"
+            env = self._workflow_env(
+                rebound_root,
+                event_fixture,
+                output,
+            )
+            rebound = self._run_python(
+                capture_script,
+                rebound_root,
+                env,
+                prelude=ALLOW_SYNTHETIC_SEMANTIC_REPORT,
+            )
+
+            self.assertNotEqual(0, rebound.returncode)
+            self.assertIn(
+                "canonical repository before does not match "
+                "EXPECTED_RELEASE_COMMIT",
+                rebound.stderr,
+            )
+            self.assertFalse(output.exists())
+
+    def test_capture_rejects_rebound_root_base_and_merge_base(self) -> None:
+        capture_script = self._capture_script()
+        mutations = {
+            "root": (
+                lambda report, _fixture: [
+                    state.update(
+                        {
+                            "repository_root": "/unrelated/repository",
+                            "source_root": "/unrelated/repository",
+                        }
+                    )
+                    for state in (
+                        report["repository"]["before"],
+                        report["repository"]["after"],
+                    )
+                ],
+                "canonical report repository root does not match",
+            ),
+            "base": (
+                lambda report, _fixture: report["repository"].update(
+                    {"base_commit": "f" * 40}
+                ),
+                "canonical base_commit does not match "
+                "EXPECTED_RELEASE_BASE_COMMIT",
+            ),
+            "merge-base": (
+                lambda report, fixture: report["repository"].update(
+                    {"merge_base": fixture["head_commit"]}
+                ),
+                "canonical merge_base does not match event range",
+            ),
+        }
+        for label, (mutate, expected_error) in mutations.items():
+            with (
+                self.subTest(label=label),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                fixture = self._write_valid_fixture(
+                    root,
+                    label=f"rebound-{label}",
+                )
+                evidence = root / "distribution-compliance-evidence"
+                canonical_path = evidence / "distribution-compliance.json"
+                report = json.loads(canonical_path.read_text())
+                mutate(report, fixture)
+                self._rewrite_evidence(evidence, report)
+                output = root / "rebound-output"
+
+                rebound = self._run_python(
+                    capture_script,
+                    root,
+                    self._workflow_env(root, fixture, output),
+                    prelude=ALLOW_SYNTHETIC_SEMANTIC_REPORT,
+                )
+
+                self.assertNotEqual(0, rebound.returncode)
+                self.assertIn(expected_error, rebound.stderr)
+                self.assertFalse(output.exists())
+
+    def test_materializer_rejects_coordinated_trailing_handoff_data(
         self,
     ) -> None:
-        workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
-        steps = workflow["jobs"]["distribution-compliance"]["steps"]
-        capture = next(
-            step
-            for step in steps
-            if step.get("name") == "Capture verified upload integrity"
+        workflow = self._workflow()
+        capture_script = self._capture_script()
+        materialize_script = self._heredoc_python(
+            self._step(
+                workflow["jobs"][SEAL_JOB],
+                "Materialize bounded root-owned verifier inputs",
+            )["run"]
         )
-        seal = next(
-            step
-            for step in steps
-            if step.get("name") == "Create sealed qualified upload bundle"
-        )
-        capture_script = self._heredoc_python(capture["run"])
-        seal_script = self._heredoc_python(seal["run"])
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            fixture = self._write_valid_fixture(root)
+            fixture = self._write_valid_fixture(root, label="trailing-data")
             capture_output = root / "capture-output"
             captured = self._run_python(
                 capture_script,
                 root,
-                {**os.environ, "GITHUB_OUTPUT": str(capture_output)},
+                self._workflow_env(root, fixture, capture_output),
                 prelude=ALLOW_SYNTHETIC_SEMANTIC_REPORT,
             )
             self.assertEqual(0, captured.returncode, captured.stderr)
-            snapshot = capture_output.read_text().strip().split("=", 1)[1]
+            source_handoff = (
+                Path(fixture["runner_temp"])
+                / "voi-distribution-handoff"
+                / "candidate-handoff.tar"
+            )
+            forged_handoff = root / "forged-candidate-handoff.tar"
+            forged_payload = source_handoff.read_bytes() + (
+                b"private-config-after-tar-end"
+            )
+            forged_handoff.write_bytes(forged_payload)
+            shutil.rmtree(root / "dist")
+            shutil.rmtree(root / "distribution-compliance-evidence")
+            output = root / "materialize-output"
 
-            seal_parent = root / "trusted-seals"
-            seal_dir = seal_parent / "run-1"
-            seal_output = root / "seal-output"
+            materialized = self._run_python(
+                materialize_script,
+                root,
+                {
+                    **self._workflow_env(root, fixture, output),
+                    "EXPECTED_HANDOFF_TAR_SHA256": hashlib.sha256(
+                        forged_payload
+                    ).hexdigest(),
+                    "HANDOFF_PATH": str(forged_handoff),
+                },
+            )
+
+            self.assertNotEqual(0, materialized.returncode)
+            self.assertIn(
+                "handoff tar is not canonical",
+                materialized.stderr,
+            )
+            self.assertFalse(output.exists())
+
+    def test_uploaded_handoff_survives_retained_build_writer(self) -> None:
+        workflow = self._workflow()
+        capture_script = self._capture_script()
+        materialize_script = self._heredoc_python(
+            self._step(
+                workflow["jobs"][SEAL_JOB],
+                "Materialize bounded root-owned verifier inputs",
+            )["run"]
+        )
+        seal_script = self._heredoc_python(
+            self._step(
+                workflow["jobs"][SEAL_JOB],
+                "Create sealed qualified upload bundle",
+            )["run"]
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = self._write_valid_fixture(root, label="retained-writer")
+            capture_output = root / "capture-output"
+            captured = self._run_python(
+                capture_script,
+                root,
+                self._workflow_env(root, fixture, capture_output),
+                prelude=ALLOW_SYNTHETIC_SEMANTIC_REPORT,
+            )
+            self.assertEqual(0, captured.returncode, captured.stderr)
+            handoff_digest = capture_output.read_text().strip().split(
+                "=",
+                1,
+            )[1]
+            source_handoff = (
+                Path(fixture["runner_temp"])
+                / "voi-distribution-handoff"
+                / "candidate-handoff.tar"
+            )
+            uploaded_handoff = root / "downloaded-candidate-handoff.tar"
+            uploaded_handoff.write_bytes(source_handoff.read_bytes())
+
             retained_fd = os.open(fixture["wheel"], os.O_WRONLY)
             try:
-                sealed = self._run_python(
-                    seal_script,
-                    root,
-                    {
-                        **os.environ,
-                        "EXPECTED_UPLOAD_INTEGRITY": snapshot,
-                        "GITHUB_OUTPUT": str(seal_output),
-                        "GITHUB_WORKSPACE": str(root),
-                        "SEALED_UPLOAD_PARENT": str(seal_parent),
-                        "SEALED_UPLOAD_DIR": str(seal_dir),
-                    },
-                )
-                self.assertEqual(0, sealed.returncode, sealed.stderr)
-
-                forged_wheel = b"retained fd post-gate mutation\n"
+                forged_wheel = b"retained root watcher mutation\n"
                 os.lseek(retained_fd, 0, os.SEEK_SET)
                 os.write(retained_fd, forged_wheel)
                 os.ftruncate(retained_fd, len(forged_wheel))
             finally:
                 os.close(retained_fd)
+            shutil.rmtree(root / "dist")
+            shutil.rmtree(root / "distribution-compliance-evidence")
+
+            materialize_output = root / "materialize-output"
+            materialized = self._run_python(
+                materialize_script,
+                root,
+                {
+                    **self._workflow_env(
+                        root,
+                        fixture,
+                        materialize_output,
+                    ),
+                    "EXPECTED_HANDOFF_TAR_SHA256": handoff_digest,
+                    "HANDOFF_PATH": str(uploaded_handoff),
+                },
+                prelude="import os\nos.chown = lambda *args: None",
+            )
+            self.assertEqual(0, materialized.returncode, materialized.stderr)
+            self.assertEqual(
+                fixture["wheel_payload"],
+                fixture["wheel"].read_bytes(),
+            )
+
+            snapshot = materialize_output.read_text().strip().split(
+                "=",
+                1,
+            )[1]
+            seal_parent = root / "trusted-seals"
+            seal_dir = seal_parent / "run-1"
+            seal_output = root / "seal-output"
+            sealed = self._run_python(
+                seal_script,
+                root,
+                {
+                    **self._workflow_env(root, fixture, seal_output),
+                    "EXPECTED_UPLOAD_INTEGRITY": snapshot,
+                    "SEALED_UPLOAD_PARENT": str(seal_parent),
+                    "SEALED_UPLOAD_DIR": str(seal_dir),
+                },
+            )
+            self.assertEqual(0, sealed.returncode, sealed.stderr)
 
             bundle = seal_dir / "qualified-release.tar"
-            self.assertEqual(forged_wheel, fixture["wheel"].read_bytes())
-            with self.assertRaises(PermissionError):
-                os.open(bundle, os.O_WRONLY)
-            with tarfile.open(bundle, "r") as archive:
-                wheel_member = archive.extractfile(f"dist/{fixture['wheel'].name}")
+            with tarfile.open(bundle, "r:") as archive:
+                wheel_member = archive.extractfile(
+                    f"dist/{fixture['wheel'].name}"
+                )
                 self.assertIsNotNone(wheel_member)
                 self.assertEqual(
                     fixture["wheel_payload"],
                     wheel_member.read(),
                 )
-                manifest_member = archive.extractfile("SEALED-UPLOAD-MANIFEST.json")
-                self.assertIsNotNone(manifest_member)
-                sealed_manifest = json.load(manifest_member)
-            wheel_manifest = sealed_manifest["files"][f"dist/{fixture['wheel'].name}"]
-            self.assertEqual(
-                hashlib.sha256(fixture["wheel_payload"]).hexdigest(),
-                wheel_manifest["sha256"],
-            )
             output_digest = seal_output.read_text().strip().split("=", 1)[1]
             self.assertEqual(
                 hashlib.sha256(bundle.read_bytes()).hexdigest(),
@@ -498,26 +736,80 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
 
             os.chmod(seal_dir, 0o700)
             os.chmod(bundle, 0o600)
+            os.chmod(root / "dist", 0o700)
+            os.chmod(root / "distribution-compliance-evidence", 0o700)
+            os.chmod(source_handoff.parent, 0o700)
+            os.chmod(source_handoff, 0o600)
+
+    @staticmethod
+    def _workflow() -> dict[str, object]:
+        return yaml.safe_load(WORKFLOW_PATH.read_text())
+
+    @classmethod
+    def _capture_script(cls) -> str:
+        workflow = cls._workflow()
+        capture = cls._step(
+            workflow["jobs"][BUILD_JOB],
+            "Capture verified upload integrity",
+        )
+        return cls._heredoc_python(capture["run"])
+
+    @staticmethod
+    def _step(job: dict[str, object], name: str) -> dict[str, object]:
+        return next(step for step in job["steps"] if step.get("name") == name)
+
+    @staticmethod
+    def _step_index(steps: list[dict[str, object]], name: str) -> int:
+        return next(
+            index
+            for index, step in enumerate(steps)
+            if step.get("name") == name
+        )
 
     @classmethod
     def _write_valid_fixture(
         cls,
         root: Path,
+        *,
+        label: str,
     ) -> dict[str, object]:
+        base_commit, head_commit, merge_base, tree = cls._git_history(
+            root,
+            label,
+        )
         dist = root / "dist"
         evidence = root / "distribution-compliance-evidence"
+        runner_temp = root / "runner-temp"
         dist.mkdir()
         evidence.mkdir()
+        runner_temp.mkdir()
         wheel = dist / "package-1.0-py3-none-any.whl"
         sdist = dist / "package-1.0.tar.gz"
         wheel_payload = b"verified wheel bytes\n"
         sdist_payload = b"verified sdist bytes\n"
         wheel.write_bytes(wheel_payload)
         sdist.write_bytes(sdist_payload)
+        repository_state = {
+            "repository_root": str(root.resolve()),
+            "source_root": str(root.resolve()),
+            "source_root_matches": True,
+            "head": head_commit,
+            "tree": tree,
+            "dirty_entries": [],
+            "replacement_refs": [],
+            "ok": True,
+        }
         projection = {
             "schema_version": (
                 compliance_module.DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION
             ),
+            "repository": {
+                "before": dict(repository_state),
+                "after": dict(repository_state),
+                "base_commit": base_commit,
+                "head_commit": head_commit,
+                "merge_base": merge_base,
+            },
             "artifacts": {
                 "wheel": {
                     "filename": wheel.name,
@@ -561,8 +853,83 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
             public_report=canonical_report,
         )
         return {
+            "base_commit": base_commit,
+            "head_commit": head_commit,
+            "merge_base": merge_base,
+            "runner_temp": runner_temp,
+            "sdist": sdist,
+            "sdist_payload": sdist_payload,
             "wheel": wheel,
             "wheel_payload": wheel_payload,
+        }
+
+    @staticmethod
+    def _git_history(
+        root: Path,
+        label: str,
+    ) -> tuple[str, str, str, str]:
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "ci@example.invalid"],
+            cwd=root,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "CI Fixture"],
+            cwd=root,
+            check=True,
+        )
+        marker = root / "fixture.txt"
+        marker.write_text(f"base:{label}\n", encoding="utf-8")
+        subprocess.run(["git", "add", "fixture.txt"], cwd=root, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", f"base {label}"],
+            cwd=root,
+            check=True,
+        )
+        base_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            text=True,
+        ).strip()
+        marker.write_text(f"head:{label}\n", encoding="utf-8")
+        subprocess.run(["git", "add", "fixture.txt"], cwd=root, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", f"head {label}"],
+            cwd=root,
+            check=True,
+        )
+        head_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            text=True,
+        ).strip()
+        merge_base = subprocess.check_output(
+            ["git", "merge-base", base_commit, head_commit],
+            cwd=root,
+            text=True,
+        ).strip()
+        tree = subprocess.check_output(
+            ["git", "rev-parse", "HEAD^{tree}"],
+            cwd=root,
+            text=True,
+        ).strip()
+        return base_commit, head_commit, merge_base, tree
+
+    @staticmethod
+    def _workflow_env(
+        root: Path,
+        fixture: dict[str, object],
+        output: Path,
+    ) -> dict[str, str]:
+        return {
+            **os.environ,
+            "EXPECTED_RELEASE_EVENT_NAME": "pull_request",
+            "EXPECTED_RELEASE_COMMIT": str(fixture["head_commit"]),
+            "EXPECTED_RELEASE_BASE_COMMIT": str(fixture["base_commit"]),
+            "GITHUB_OUTPUT": str(output),
+            "GITHUB_WORKSPACE": str(root.resolve()),
+            "RUNNER_TEMP": str(fixture["runner_temp"]),
         }
 
     @staticmethod
@@ -614,7 +981,11 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
     @staticmethod
     def _artifact_paths(step: dict[str, object]) -> list[str]:
         value = step["with"]["path"]
-        return [line.strip() for line in str(value).splitlines() if line.strip()]
+        return [
+            line.strip()
+            for line in str(value).splitlines()
+            if line.strip()
+        ]
 
     @staticmethod
     def _heredoc_python(run: str) -> str:
@@ -623,9 +994,9 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
         if marker is None:
             raise AssertionError("Python heredoc not found")
         _, script = run.split(marker, 1)
-        script, terminator = script.rsplit("\nPY", 1)
-        if terminator.strip():
-            raise AssertionError("unexpected content after Python heredoc")
+        script, terminator, _ = script.partition("\nPY")
+        if not terminator:
+            raise AssertionError("Python heredoc terminator not found")
         return script
 
     @staticmethod
