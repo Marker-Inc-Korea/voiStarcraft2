@@ -158,6 +158,68 @@ class IsolatedInstallTest(unittest.TestCase):
             self.assertIn("bool(patch_defaults)", script)
             self.assertIn("root in candidate.parents", script)
 
+    def test_smoke_reports_redacted_failure_stage_and_type(self) -> None:
+        successful_result = mock.Mock(returncode=0, stdout="", stderr="")
+        installed_result = mock.Mock(
+            returncode=1,
+            stdout=json.dumps(
+                {
+                    "error_type": "ModuleNotFoundError",
+                    "failure_stage": "import_build_identity",
+                }
+            ),
+            stderr="redacted installed traceback",
+        )
+        target_result = mock.Mock(
+            returncode=1,
+            stdout=json.dumps(
+                {
+                    "error_type": "RuntimeError",
+                    "failure_stage": "load_target_runtime_data",
+                }
+            ),
+            stderr="redacted target traceback",
+        )
+        builder = mock.Mock()
+        with (
+            mock.patch.object(
+                compliance_module,
+                "_isolated_venv_builder",
+                return_value=builder,
+            ),
+            mock.patch.object(
+                compliance_module.subprocess,
+                "run",
+                side_effect=(
+                    successful_result,
+                    installed_result,
+                    successful_result,
+                    target_result,
+                ),
+            ),
+        ):
+            result = compliance_module.isolated_wheel_install_smoke(
+                Path("candidate.whl")
+            )
+
+        self.assertEqual("ModuleNotFoundError", result["payload"]["error_type"])
+        self.assertEqual(
+            "import_build_identity",
+            result["payload"]["failure_stage"],
+        )
+        self.assertEqual(
+            "RuntimeError",
+            result["payload"]["target_error_type"],
+        )
+        self.assertEqual(
+            "load_target_runtime_data",
+            result["payload"]["target_failure_stage"],
+        )
+        self.assertNotIn(
+            "redacted installed traceback",
+            json.dumps(result, sort_keys=True),
+        )
+
 
 class DistributionBuildBoundaryTest(unittest.TestCase):
     def test_build_rejects_untrusted_backend_configuration_before_uv(

@@ -359,4 +359,22 @@ def micromachine_data_path(relative_path: Path | str) -> Path:
     relative = Path(relative_path)
     if relative.is_absolute() or ".." in relative.parts or relative == Path("."):
         raise ValueError("runtime data path must be a safe relative path")
-    return micromachine_data_root() / relative
+    candidate = micromachine_data_root() / relative
+    try:
+        candidate_stat = os.lstat(candidate)
+        resolved_candidate = candidate.resolve(strict=True)
+    except OSError as error:
+        raise RuntimeError("MicroMachine resource path is unavailable.") from error
+    if (
+        not (
+            stat.S_ISREG(candidate_stat.st_mode)
+            or stat.S_ISDIR(candidate_stat.st_mode)
+        )
+        or resolved_candidate != candidate
+        or _path_has_symlink_component(candidate)
+    ):
+        raise RuntimeError(
+            "MicroMachine resource paths must be regular files or directories "
+            "without symlinks."
+        )
+    return candidate

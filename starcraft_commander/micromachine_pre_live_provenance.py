@@ -3717,6 +3717,17 @@ def run_local_producer(
     except (OSError, TypeError, ValueError) as exc:
         producer_identity = None
         blockers.append(f"producer execution identity is invalid: {exc}")
+    if (
+        normalized_argv
+        and _is_isolated_python_command(normalized_argv)
+        and normalized_argv[7]
+        == DETERMINISTIC_JOURNEY_MODULE_RELATIVE_PATH.as_posix()
+        and producer_identity is None
+    ):
+        blockers.append(
+            "deterministic journey producer requires a dedicated execution "
+            "identity"
+        )
 
     expected_file_digests = dict(authenticated_file_digests or {})
     authenticated_snapshots: dict[

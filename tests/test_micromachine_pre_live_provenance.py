@@ -5358,6 +5358,57 @@ class GitHubActionsBundleEmissionTest(unittest.TestCase):
 
 
 class LocalProducerTest(unittest.TestCase):
+    def test_deterministic_producer_requires_dedicated_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "repository"
+            repository.mkdir()
+            module_path = (
+                repository
+                / provenance_module.DETERMINISTIC_JOURNEY_MODULE_RELATIVE_PATH
+            )
+            module_path.parent.mkdir(parents=True)
+            module_path.write_text("raise RuntimeError('must not execute')\n")
+            output = repository / "producer" / "output.zip"
+            output.parent.mkdir()
+            init_git_repo(repository)
+            argv = (
+                str(Path(sys.executable).resolve()),
+                "-I",
+                "-B",
+                "-S",
+                "-c",
+                ISOLATED_PYTHON_BOOTSTRAP,
+                str(repository),
+                provenance_module.DETERMINISTIC_JOURNEY_MODULE_RELATIVE_PATH.as_posix(),
+                "--emit-bundle",
+                str(output),
+            )
+            called = False
+
+            def forbidden_runner(
+                *args: object,
+                **kwargs: object,
+            ) -> subprocess.CompletedProcess[bytes]:
+                nonlocal called
+                called = True
+                return subprocess.CompletedProcess(args[0], 0, b"", b"")
+
+            report = run_local_producer(
+                repository_dir=repository,
+                cwd=repository,
+                argv=argv,
+                allowed_argv=(argv,),
+                output_artifact=output,
+                command_runner=forbidden_runner,
+            )
+
+        self.assertFalse(report["ok"], report)
+        self.assertFalse(called)
+        self.assertIn(
+            "requires a dedicated execution identity",
+            " ".join(report["blockers"]),
+        )
+
     def test_deterministic_runtime_manifest_includes_resource_packages(
         self,
     ) -> None:

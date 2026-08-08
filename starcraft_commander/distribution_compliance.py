@@ -10003,11 +10003,20 @@ def isolated_wheel_install_smoke(wheel_path: Path) -> dict[str, object]:
                     ),
                 }
             script = (
-                "import json\n"
+                "import json,sys\n"
+                "failure_stage = 'bootstrap'\n"
+                "def report_exception(error_type, error, traceback):\n"
+                "    print(json.dumps({'failure_stage': failure_stage, "
+                "'error_type': error_type.__name__}, sort_keys=True))\n"
+                "    sys.__excepthook__(error_type, error, traceback)\n"
+                "sys.excepthook = report_exception\n"
+                "failure_stage = 'import_stdlib'\n"
                 "from pathlib import Path\n"
                 "from importlib.metadata import distribution\n"
+                "failure_stage = 'import_build_identity'\n"
                 "from starcraft_commander import micromachine_build_identity "
                 "as build_identity\n"
+                "failure_stage = 'import_runtime_consumers'\n"
                 "from starcraft_commander.micromachine_map_pool import "
                 "load_micromachine_map_pool\n"
                 "from starcraft_commander.micromachine_pre_live_journeys import "
@@ -10015,11 +10024,13 @@ def isolated_wheel_install_smoke(wheel_path: Path) -> dict[str, object]:
                 "from starcraft_commander.runtime_data import "
                 "micromachine_data_path, micromachine_data_root, "
                 "source_repository_root\n"
+                "failure_stage = 'load_runtime_manifests'\n"
                 "pool = load_micromachine_map_pool()\n"
                 "journeys = load_pre_live_journey_manifest()\n"
                 "required = ['HOOK_MANIFEST.json', 'PRE_LIVE_PRODUCERS.json']\n"
                 "loaded = bool(pool.maps) and bool(journeys.get('journeys')) and "
                 "all(micromachine_data_path(name).is_file() for name in required)\n"
+                "failure_stage = 'inspect_packaged_defaults'\n"
                 "root = micromachine_data_root().resolve()\n"
                 "def packaged_file(path):\n"
                 "    candidate = Path(path).resolve()\n"
@@ -10040,6 +10051,7 @@ def isolated_wheel_install_smoke(wheel_path: Path) -> dict[str, object]:
                 "source_isolated = source_repository_root() is None and "
                 "build_identity.SOURCE_REPOSITORY_ROOT is None and "
                 "build_identity.REPO_ROOT == root.parents[1]\n"
+                "failure_stage = 'inspect_distribution_metadata'\n"
                 "installed_distribution = distribution('voiStarcraft2')\n"
                 "installed_metadata = "
                 "installed_distribution.read_text('METADATA') or ''\n"
@@ -10095,20 +10107,30 @@ def isolated_wheel_install_smoke(wheel_path: Path) -> dict[str, object]:
                 failure_stage = "load_target_package"
                 target_script = (
                     "import json,sys\n"
+                    "failure_stage = 'bootstrap'\n"
+                    "def report_exception(error_type, error, traceback):\n"
+                    "    print(json.dumps({'failure_stage': failure_stage, "
+                    "'error_type': error_type.__name__}, sort_keys=True))\n"
+                    "    sys.__excepthook__(error_type, error, traceback)\n"
+                    "sys.excepthook = report_exception\n"
+                    "failure_stage = 'resolve_target'\n"
                     "from pathlib import Path\n"
                     "target = Path(sys.argv[1]).resolve()\n"
                     "sys.path.insert(0, str(target))\n"
+                    "failure_stage = 'import_target_package'\n"
                     "from starcraft_commander import "
                     "micromachine_build_identity as build_identity\n"
                     "from starcraft_commander.runtime_data import "
                     "micromachine_data_path, micromachine_data_root, "
                     "source_repository_root\n"
+                    "failure_stage = 'load_target_runtime_data'\n"
                     "required = ['HOOK_MANIFEST.json', "
                     "'MICROMACHINE_MAP_POOL.json', 'PRE_LIVE_JOURNEYS.json', "
                     "'PRE_LIVE_PRODUCERS.json']\n"
                     "root = micromachine_data_root().resolve()\n"
                     "loaded = all(micromachine_data_path(name).is_file() "
                     "for name in required) and target in root.parents\n"
+                    "failure_stage = 'inspect_target_defaults'\n"
                     "def packaged_file(path):\n"
                     "    candidate = Path(path).resolve()\n"
                     "    return candidate.is_file() and "
@@ -10154,6 +10176,17 @@ def isolated_wheel_install_smoke(wheel_path: Path) -> dict[str, object]:
                     target_payload = json.loads(target_result.stdout)
                 except json.JSONDecodeError:
                     target_payload = {}
+                if isinstance(target_payload, Mapping):
+                    target_failure_stage = target_payload.get("failure_stage")
+                    target_error_type = target_payload.get("error_type")
+                    if isinstance(target_failure_stage, str):
+                        normalized_payload["target_failure_stage"] = (
+                            target_failure_stage
+                        )
+                    if isinstance(target_error_type, str):
+                        normalized_payload["target_error_type"] = (
+                            target_error_type
+                        )
                 normalized_payload["target_runtime_data_loaded"] = bool(
                     target_result.returncode == 0
                     and isinstance(target_payload, Mapping)

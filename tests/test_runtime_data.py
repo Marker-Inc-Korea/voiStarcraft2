@@ -204,6 +204,27 @@ class RuntimeDataTest(unittest.TestCase):
             ):
                 runtime_data.micromachine_data_root()
 
+    def test_symlinked_resource_file_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            install_root = Path(directory) / "site-packages"
+            resource_root = install_root / "integrations" / "micromachine"
+            resource_root.mkdir(parents=True)
+            target = Path(directory) / "attacker-manifest.json"
+            target.write_text("{}\n")
+            (resource_root / "PRE_LIVE_JOURNEYS.json").symlink_to(target)
+
+            with (
+                mock.patch.object(
+                    runtime_data,
+                    "_SOURCE_REPOSITORY_ROOT",
+                    install_root,
+                ),
+                self.assertRaisesRegex(RuntimeError, "without symlinks"),
+            ):
+                runtime_data.micromachine_data_path(
+                    "PRE_LIVE_JOURNEYS.json"
+                )
+
     def test_committed_superficial_clone_with_canonical_remote_is_not_source(
         self,
     ) -> None:
