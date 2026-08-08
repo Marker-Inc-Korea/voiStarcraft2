@@ -4735,10 +4735,10 @@ _MICROMACHINE_SMOKE_SCRIPT_RELATIVE_PATH: Final[str] = (
 _MICROMACHINE_SMOKE_SCRIPT_MAX_BYTES: Final[int] = 1024 * 1024
 """Maximum source launcher size admitted into the immutable launch snapshot."""
 
-_MICROMACHINE_VALIDATED_REPOSITORY_ROOT_ENV: Final[str] = (
-    "VOI_MICROMACHINE_VALIDATED_REPOSITORY_ROOT"
+_MICROMACHINE_VALIDATED_SCRIPT_DIR_ENV: Final[str] = (
+    "VOI_MICROMACHINE_VALIDATED_SCRIPT_DIR"
 )
-"""Internal root binding used only with a validated stdin launcher snapshot."""
+"""Internal directory binding used only with a validated stdin launcher."""
 
 _MICROMACHINE_UI_SMOKE_MAX_ATTEMPTS_ENV: Final[str] = (
     "VOI_MICROMACHINE_UI_SMOKE_MAX_ATTEMPTS"
@@ -8090,7 +8090,7 @@ class _MicroMachineLaunchManager:
             self._launch_available = False
             return None
         self._launch_available = True
-        return snapshot, os.fspath(repository_root)
+        return snapshot, os.path.dirname(validated_path)
 
     def _spawn_process_unlocked(
         self,
@@ -8145,11 +8145,11 @@ class _MicroMachineLaunchManager:
             self._error = ""
             self._last_line = ""
             validated_launcher: BinaryIO | None = None
-            validated_repository_root = ""
+            validated_script_dir = ""
             if self._requires_source_provenance:
                 validated = self._validated_source_launcher_unlocked()
                 if validated is not None:
-                    validated_launcher, validated_repository_root = validated
+                    validated_launcher, validated_script_dir = validated
             else:
                 self._launch_available = bool(self._script_path)
             if not self._launch_available:
@@ -8170,7 +8170,7 @@ class _MicroMachineLaunchManager:
                 )
                 return self._snapshot_unlocked()
             env = os.environ.copy()
-            env.pop(_MICROMACHINE_VALIDATED_REPOSITORY_ROOT_ENV, None)
+            env.pop(_MICROMACHINE_VALIDATED_SCRIPT_DIR_ENV, None)
             env["BLACKBOARD_DIR"] = root
             env.setdefault("SC2_ROOT", DEFAULT_SC2_INSTALL_PATH)
             env.setdefault("SMOKE_KEEP_RUNNING_AFTER_PASS", "1")
@@ -8192,8 +8192,8 @@ class _MicroMachineLaunchManager:
                 max_attempts,
             ]
             if validated_launcher is not None:
-                env[_MICROMACHINE_VALIDATED_REPOSITORY_ROOT_ENV] = (
-                    validated_repository_root
+                env[_MICROMACHINE_VALIDATED_SCRIPT_DIR_ENV] = (
+                    validated_script_dir
                 )
                 argv = ["/bin/bash", "-s", "--", *launch_arguments]
             else:

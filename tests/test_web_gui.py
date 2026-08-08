@@ -853,9 +853,16 @@ class MicroMachineLaunchProvenanceTest(unittest.TestCase):
             list(observed["argv"])[:3],
         )
         self.assertEqual(
-            str(clone_root.resolve()),
+            str(
+                (
+                    clone_root
+                    / "integrations"
+                    / "micromachine"
+                    / "scripts"
+                ).resolve()
+            ),
             observed["environment"][
-                web_gui._MICROMACHINE_VALIDATED_REPOSITORY_ROOT_ENV
+                web_gui._MICROMACHINE_VALIDATED_SCRIPT_DIR_ENV
             ],
         )
 
