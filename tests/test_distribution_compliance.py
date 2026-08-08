@@ -3009,6 +3009,197 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                     },
                 )
 
+    def test_detects_shell_command_chains_and_local_environments(
+        self,
+    ) -> None:
+        endpoint = "https://10.0." + "0.8:7443/v1"
+        model = "secret-" + "model-140"
+        payloads = {
+            "and-chain.sh": (
+                "a=my && b=proxy && p=$a$b"
+                f" && m={model} && e={endpoint}"
+                ' && commander --provider "$p" --model "$m"'
+                ' --base-url "$e"\n'
+            ),
+            "or-chain.sh": (
+                "false || a=my || b=proxy || p=$a$b"
+                f" || m={model} || e={endpoint}"
+                ' || commander --provider "$p" --model "$m"'
+                ' --base-url "$e"\n'
+            ),
+            "local-environment.sh": (
+                "p=myproxy; "
+                f"m={model}; e={endpoint}; "
+                "LLM_PROVIDER=$p LLM_MODEL=$m LLM_BASE_URL=$e "
+                "commander\n"
+            ),
+            "Dockerfile": (
+                "FROM scratch\n"
+                "RUN a=my && b=proxy && p=$a$b"
+                f" && m={model} && e={endpoint}"
+                ' && LLM_PROVIDER="$p" LLM_MODEL="$m" '
+                'LLM_BASE_URL="$e" commander\n'
+            ),
+        }
+
+        for path, payload in payloads.items():
+            with self.subTest(path=path):
+                findings = scan_payload(
+                    path,
+                    payload.encode(),
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertEqual(
+                    {"private_endpoint", "private_model_override"},
+                    {str(item["rule_id"]) for item in findings},
+                )
+
+    def test_command_local_environment_does_not_persist(self) -> None:
+        payload = (
+            "p=openai; m=gpt-public; e=https://api.openai.com/v1\n"
+            "LLM_PROVIDER=$p LLM_MODEL=$m LLM_BASE_URL=$e commander\n"
+            'commander --provider "$LLM_PROVIDER" '
+            '--model "$LLM_MODEL" --base-url "$LLM_BASE_URL"\n'
+        )
+
+        expanded, failure = compliance_module._shell_expanded_scan_text(
+            "launch.sh",
+            payload,
+        )
+
+        self.assertEqual("", failure)
+        self.assertEqual(1, expanded.count("LLM_PROVIDER=openai"))
+        self.assertIn("$LLM_PROVIDER", payload)
+        self.assertNotIn('$LLM_PROVIDER"', expanded)
+        self.assertEqual(
+            [],
+            scan_payload(
+                "launch.sh",
+                payload.encode(),
+                allow_safe_fixtures=False,
+            ),
+        )
+
+    def test_docker_run_recognizes_command_and_busybox_shell_wrappers(
+        self,
+    ) -> None:
+        endpoint = "https://10.0." + "0.8:7443/v1"
+        model = "secret-" + "model-140"
+        script = (
+            "a=my; b=proxy; p=$a$b; "
+            f"m={model}; e={endpoint}; "
+            'commander --provider "${p}" --model "${m}" '
+            '--base-url "${e}"'
+        )
+        payloads = {
+            "command-shell": (
+                "FROM scratch\n"
+                f"RUN command bash -c {json.dumps(script)}\n"
+            ),
+            "busybox-shell": (
+                "FROM scratch\n"
+                f"RUN busybox sh -c {json.dumps(script)}\n"
+            ),
+            "json-command-shell": (
+                "FROM scratch\n"
+                "RUN "
+                + json.dumps(["command", "bash", "-c", script])
+                + "\n"
+            ),
+            "json-busybox-shell": (
+                "FROM scratch\n"
+                "RUN "
+                + json.dumps(["busybox", "sh", "-c", script])
+                + "\n"
+            ),
+        }
+
+        for name, payload in payloads.items():
+            with self.subTest(name=name):
+                self.assertEqual(
+                    {"private_endpoint", "private_model_override"},
+                    {
+                        str(item["rule_id"])
+                        for item in scan_payload(
+                            "Dockerfile",
+                            payload.encode(),
+                            allow_safe_fixtures=False,
+                        )
+                    },
+                )
+
+    def test_shell_separators_preserve_quotes_and_fail_closed(
+        self,
+    ) -> None:
+        clean_payloads = {
+            "quoted.sh": (
+                "label='left && right || still; literal'\n"
+                'printf "%s" "$label" 2>&1\n'
+            ),
+            "pipeline-scope.sh": (
+                "LLM_PROVIDER=myproxy | cat\n"
+                'commander --provider "$LLM_PROVIDER" '
+                '--model "$LLM_MODEL" --base-url "$LLM_BASE_URL"\n'
+            ),
+            "public-local.sh": (
+                "p=openai; m=gpt-public; "
+                "e=https://api.openai.com/v1; "
+                "LLM_PROVIDER=$p LLM_MODEL=$m LLM_BASE_URL=$e "
+                "commander\n"
+            ),
+        }
+        for path, payload in clean_payloads.items():
+            with self.subTest(path=path):
+                self.assertEqual(
+                    [],
+                    scan_payload(
+                        path,
+                        payload.encode(),
+                        allow_safe_fixtures=False,
+                    ),
+                )
+
+        malformed = (
+            "provider=myproxy && && "
+            'commander --provider "$provider"\n'
+        )
+        self.assertIn(
+            "shell_configuration_parse_failed",
+            {
+                str(item["rule_id"])
+                for item in scan_payload(
+                    "malformed.sh",
+                    malformed.encode(),
+                    allow_safe_fixtures=False,
+                )
+            },
+        )
+
+        _expanded, cycle_failure = (
+            compliance_module._shell_semantic_scan_text(
+                'commander --provider "$a"\n',
+                {"a": "$b", "b": "$a"},
+                compliance_module._ConfigurationExpansionBudget(),
+            )
+        )
+        self.assertEqual("limit", cycle_failure)
+
+        amplification = ["v0=x"]
+        for index in range(1, 21):
+            amplification.append(
+                f"v{index}=$v{index - 1}$v{index - 1}"
+            )
+        amplification_findings = scan_payload(
+            "chain-amplification.sh",
+            (" && ".join(amplification) + "\n").encode(),
+            allow_safe_fixtures=False,
+        )
+        self.assertIn(
+            "shell_configuration_limit_exceeded",
+            {str(item["rule_id"]) for item in amplification_findings},
+        )
+
     def test_docker_run_unknowns_and_exec_form_stay_clean(self) -> None:
         payloads = {
             "undefined": (
@@ -5944,6 +6135,232 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
 
         self.assertEqual(1, report["finding_count"])
         self.assertEqual("candidate.py", report["findings"][0]["path"])
+
+    def test_bounded_regular_file_reader_rejects_unsafe_inputs(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sparse = root / "sparse.bin"
+            with sparse.open("wb") as output:
+                output.truncate(16 * 1024 * 1024)
+            with (
+                mock.patch.object(
+                    compliance_module.os,
+                    "read",
+                    side_effect=AssertionError(
+                        "oversized sparse file was read"
+                    ),
+                ),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "exceeds compliance scan limit",
+                ),
+            ):
+                compliance_module._read_bounded_stable_regular_file(
+                    sparse,
+                    limit=64 * 1024,
+                )
+
+            target = root / "target.txt"
+            target.write_bytes(b"safe\n")
+            link = root / "candidate-link"
+            link.symlink_to(target)
+            with self.assertRaisesRegex(RuntimeError, "regular file"):
+                compliance_module._read_bounded_stable_regular_file(link)
+
+            if hasattr(os, "mkfifo"):
+                fifo = root / "candidate-fifo"
+                os.mkfifo(fifo)
+                with self.assertRaisesRegex(RuntimeError, "regular file"):
+                    compliance_module._read_bounded_stable_regular_file(fifo)
+
+    def test_bounded_regular_file_reader_detects_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            candidate = Path(temporary) / "candidate.txt"
+            candidate.write_bytes(b"stable payload\n")
+            original_fstat = compliance_module.os.fstat
+            call_count = 0
+
+            def changing_fstat(descriptor: int) -> os.stat_result:
+                nonlocal call_count
+                call_count += 1
+                observed = original_fstat(descriptor)
+                if call_count == 1:
+                    return observed
+                fields = list(observed)
+                fields[stat.ST_SIZE] += 1
+                return os.stat_result(fields)
+
+            with (
+                mock.patch.object(
+                    compliance_module.os,
+                    "fstat",
+                    side_effect=changing_fstat,
+                ),
+                self.assertRaisesRegex(RuntimeError, "changed while reading"),
+            ):
+                compliance_module._read_bounded_stable_regular_file(
+                    candidate
+                )
+
+    def test_repository_scan_rejects_sparse_untracked_before_reading(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def git(*arguments: str) -> str:
+                return subprocess.run(
+                    ["git", *arguments],
+                    cwd=root,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+
+            git("init", "-q")
+            git("config", "user.name", "Compliance Test")
+            git("config", "user.email", "compliance@example.invalid")
+            (root / "tracked.txt").write_text(
+                "safe\n",
+                encoding="utf-8",
+            )
+            git("add", "tracked.txt")
+            git("commit", "-q", "-m", "baseline")
+            base = git("rev-parse", "HEAD")
+            sparse = root / "sparse.bin"
+            with sparse.open("wb") as output:
+                output.truncate(16 * 1024 * 1024)
+
+            with (
+                mock.patch.object(
+                    compliance_module,
+                    "MAX_SCAN_FILE_BYTES",
+                    64 * 1024,
+                ),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "exceeds compliance scan limit",
+                ),
+            ):
+                scan_git_and_artifacts(
+                    root,
+                    (),
+                    base_commit=base,
+                )
+
+    def test_git_output_streams_stdout_and_stderr_with_caps(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(
+                ["git", "init", "-q"],
+                cwd=root,
+                check=True,
+            )
+            large_blob = root / "large.txt"
+            large_blob.write_text(
+                "".join(
+                    f"{index:08d} compliance payload\n"
+                    for index in range(8192)
+                ),
+                encoding="utf-8",
+            )
+            object_id = subprocess.run(
+                ["git", "hash-object", "-w", "large.txt"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+            with (
+                mock.patch.object(
+                    compliance_module,
+                    "MAX_GIT_OUTPUT_BYTES",
+                    32 * 1024,
+                ),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "git output exceeds compliance scan limit",
+                ),
+            ):
+                compliance_module._git_output(
+                    root,
+                    ["cat-file", "blob", object_id],
+                )
+
+            with (
+                mock.patch.object(
+                    compliance_module,
+                    "MAX_GIT_STDERR_BYTES",
+                    32,
+                ),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "git error output exceeds compliance scan limit",
+                ),
+            ):
+                compliance_module._git_output(
+                    root,
+                    [
+                        "status",
+                        "--not-a-real-option=" + "x" * 1024,
+                    ],
+                )
+
+    def test_git_output_rejects_oversized_committed_diff(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def git(*arguments: str) -> str:
+                return subprocess.run(
+                    ["git", *arguments],
+                    cwd=root,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+
+            git("init", "-q")
+            git("config", "user.name", "Compliance Test")
+            git("config", "user.email", "compliance@example.invalid")
+            candidate = root / "candidate.txt"
+            candidate.write_text("baseline\n", encoding="utf-8")
+            git("add", "candidate.txt")
+            git("commit", "-q", "-m", "baseline")
+            base = git("rev-parse", "HEAD")
+            candidate.write_text(
+                "".join(
+                    f"+{index:08d} changed compliance line\n"
+                    for index in range(8192)
+                ),
+                encoding="utf-8",
+            )
+            git("add", "candidate.txt")
+            git("commit", "-q", "-m", "large diff")
+
+            with (
+                mock.patch.object(
+                    compliance_module,
+                    "MAX_GIT_OUTPUT_BYTES",
+                    32 * 1024,
+                ),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "git output exceeds compliance scan limit",
+                ),
+            ):
+                compliance_module._git_output(
+                    root,
+                    [
+                        "diff",
+                        "--no-ext-diff",
+                        "--binary",
+                        f"{base}...HEAD",
+                        "--",
+                    ],
+                )
 
     def test_repository_scan_stops_after_global_finding_limit(self) -> None:
         base_commit = "b" * 40

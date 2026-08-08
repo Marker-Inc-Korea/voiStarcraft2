@@ -12,6 +12,7 @@ import io
 import json
 import os
 import re
+import selectors
 import shlex
 import shutil
 import stat
@@ -20,6 +21,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unicodedata
 import venv
 import zipfile
@@ -138,6 +140,9 @@ PYTHON_SENSITIVE_ANALYSIS_STEPS_PER_NODE: Final[int] = 16
 MAX_CONFIGURATION_DEPTH: Final[int] = 64
 MAX_CONFIGURATION_NODES: Final[int] = 16384
 MAX_GIT_OUTPUT_BYTES: Final[int] = 128 * 1024 * 1024
+MAX_GIT_STDERR_BYTES: Final[int] = 1024 * 1024
+GIT_OUTPUT_TIMEOUT_SECONDS: Final[float] = 30.0
+BOUNDED_IO_CHUNK_BYTES: Final[int] = 64 * 1024
 MAX_YAML_ALIASES: Final[int] = 128
 MAX_YAML_DEPTH: Final[int] = 64
 MAX_YAML_DOCUMENTS: Final[int] = 64
@@ -6616,25 +6621,103 @@ def _bounded_shlex_tokens(
 
 def _shell_statement_tokens(
     raw_line: str,
-) -> tuple[tuple[tuple[str, ...], ...], str]:
-    tokens, failure = _bounded_shlex_tokens(
-        raw_line,
-        punctuation_chars=";",
-    )
-    if failure:
-        return (), failure
-
-    statements: list[tuple[str, ...]] = []
+) -> tuple[tuple[tuple[tuple[str, ...], bool], ...], str]:
+    segments: list[tuple[str, str]] = []
     current: list[str] = []
-    for token in tokens:
-        if token and set(token) == {";"}:
-            if current:
-                statements.append(tuple(current))
-                current = []
+    in_single = False
+    in_double = False
+    escaped = False
+    index = 0
+    while index < len(raw_line):
+        char = raw_line[index]
+        if escaped:
+            current.append(char)
+            escaped = False
+            index += 1
             continue
-        current.append(token)
-    if current:
-        statements.append(tuple(current))
+        if char == "\\" and not in_single:
+            current.append(char)
+            escaped = True
+            index += 1
+            continue
+        if char == "'" and not in_double:
+            in_single = not in_single
+            current.append(char)
+            index += 1
+            continue
+        if char == '"' and not in_single:
+            in_double = not in_double
+            current.append(char)
+            index += 1
+            continue
+        if in_single or in_double:
+            current.append(char)
+            index += 1
+            continue
+        if char == "#" and (
+            not current
+            or current[-1].isspace()
+            or current[-1] in ";&|"
+        ):
+            break
+
+        separator = ""
+        following = raw_line[index : index + 2]
+        if following in {"&&", "||", "|&"}:
+            separator = following
+        elif char == ";":
+            if index + 1 < len(raw_line) and raw_line[index + 1] in ";&":
+                return (), "parse"
+            separator = char
+        elif char == "|":
+            separator = char
+        elif char == "&":
+            previous = raw_line[index - 1] if index else ""
+            if previous not in "<>":
+                separator = char
+        if not separator:
+            current.append(char)
+            index += 1
+            continue
+
+        segment = "".join(current).strip()
+        if not segment:
+            return (), "parse"
+        segments.append((segment, separator))
+        if len(segments) > MAX_CONFIGURATION_SNAPSHOTS:
+            return (), "limit"
+        current = []
+        index += len(separator)
+
+    if escaped or in_single or in_double:
+        return (), "parse"
+    final_segment = "".join(current).strip()
+    if final_segment:
+        segments.append((final_segment, ""))
+    elif segments and segments[-1][1] not in {";", "&"}:
+        return (), "parse"
+    if len(segments) > MAX_CONFIGURATION_SNAPSHOTS:
+        return (), "limit"
+
+    statements: list[tuple[tuple[str, ...], bool]] = []
+    previous_separator = ""
+    token_count = 0
+    for segment, following_separator in segments:
+        tokens, failure = _bounded_shlex_tokens(segment)
+        if failure:
+            return (), failure
+        if not tokens:
+            previous_separator = following_separator
+            continue
+        token_count += len(tokens)
+        if token_count > MAX_CONFIGURATION_NODES:
+            return (), "limit"
+        persistent = (
+            following_separator not in {"&", "|", "|&"}
+            and previous_separator not in {"|", "|&"}
+        )
+        statements.append((tokens, persistent))
+        previous_separator = following_separator
     if len(statements) > MAX_CONFIGURATION_SNAPSHOTS:
         return (), "limit"
     return tuple(statements), ""
@@ -6705,45 +6788,67 @@ def _shell_semantic_scan_text(
         statement_count += len(statements)
         if statement_count > MAX_CONFIGURATION_NODES:
             return "", "limit"
-        for statement in statements:
+        for statement, assignments_persist in statements:
             assignments, command_tokens = _shell_statement_parts(statement)
+            target_bindings = (
+                bindings
+                if not command_tokens and assignments_persist
+                else dict(bindings)
+            )
+            target_character_count = stored_character_count
+            expanded_assignments: list[str] = []
+            expanded_assignment_values: dict[str, str] = {}
             for name, raw_value in assignments:
                 expanded_value = _expand_known_shell_variables(
                     raw_value,
-                    bindings,
+                    target_bindings,
                     budget,
                 )
                 if expanded_value is None:
                     return "", "limit"
                 updated_character_count = _store_configuration_binding(
-                    bindings,
+                    target_bindings,
                     name,
                     expanded_value,
-                    stored_character_count,
+                    target_character_count,
                 )
                 if updated_character_count is None:
                     return "", "limit"
-                stored_character_count = updated_character_count
+                target_character_count = updated_character_count
+                expanded_assignments.append(f"{name}={expanded_value}")
+                expanded_assignment_values[name] = expanded_value
             if not command_tokens:
+                if assignments_persist:
+                    stored_character_count = target_character_count
                 continue
             command_text = " ".join(command_tokens)
             expanded = _expand_known_shell_variables(
                 command_text,
-                bindings,
+                target_bindings,
                 budget,
             )
             if expanded is None:
                 return "", "limit"
-            if expanded == command_text:
+            projected_fragments = [
+                " ".join((*expanded_assignments, expanded))
+            ]
+            if expanded_assignment_values:
+                semantic_assignments = _semantic_mapping_scan_text(
+                    (expanded_assignment_values,)
+                )
+                if semantic_assignments:
+                    projected_fragments.append(semantic_assignments)
+            projected = "\n".join(projected_fragments)
+            if not expanded_assignments and expanded == command_text:
                 continue
             if len(expanded_lines) >= MAX_CONFIGURATION_SNAPSHOTS:
                 return "", "limit"
             projected_character_count = (
-                expanded_character_count + len(expanded) + 1
+                expanded_character_count + len(projected) + 1
             )
             if projected_character_count > MAX_CONFIGURATION_BYTES:
                 return "", "limit"
-            expanded_lines.append(expanded)
+            expanded_lines.append(projected)
             expanded_character_count = projected_character_count
     return "\n".join(expanded_lines), ""
 
@@ -6797,25 +6902,55 @@ def _shell_command_script(tokens: Sequence[str]) -> str:
         if assignment is None:
             break
         command_index += 1
-    if (
-        command_index < len(tokens)
-        and tokens[command_index].casefold() == "exec"
-    ):
-        command_index += 1
-    if (
-        command_index < len(tokens)
-        and PurePosixPath(tokens[command_index]).name.casefold() == "env"
-    ):
-        command_index += 1
-        while command_index < len(tokens):
-            token = tokens[command_index]
-            if token.startswith("-"):
+    wrapper_count = 0
+    while command_index < len(tokens):
+        executable = PurePosixPath(tokens[command_index]).name.casefold()
+        if executable == "exec":
+            command_index += 1
+        elif executable == "command":
+            command_index += 1
+            while (
+                command_index < len(tokens)
+                and tokens[command_index].startswith("-")
+            ):
+                option = tokens[command_index]
                 command_index += 1
-                continue
-            if _shell_assignment_token(token) is not None:
+                if option in {"-v", "-V"}:
+                    return ""
+                if option == "--":
+                    break
+        elif executable == "env":
+            command_index += 1
+            while command_index < len(tokens):
+                token = tokens[command_index]
+                if token == "--":
+                    command_index += 1
+                    break
+                if token in {"-u", "--unset", "-C", "--chdir", "-S"}:
+                    command_index += 2
+                    continue
+                if token.startswith("-"):
+                    command_index += 1
+                    continue
+                if _shell_assignment_token(token) is not None:
+                    command_index += 1
+                    continue
+                break
+        elif executable == "busybox":
+            command_index += 1
+            while (
+                command_index < len(tokens)
+                and tokens[command_index].startswith("-")
+            ):
+                if tokens[command_index] == "--":
+                    command_index += 1
+                    break
                 command_index += 1
-                continue
+        else:
             break
+        wrapper_count += 1
+        if wrapper_count > MAX_CONFIGURATION_DEPTH:
+            return ""
     if command_index >= len(tokens):
         return ""
     executable = PurePosixPath(tokens[command_index]).name.casefold()
@@ -7651,19 +7786,24 @@ def scan_git_and_artifacts(
             continue
         relative = raw_path.decode("utf-8", errors="strict")
         candidate = repository_root / relative
-        if candidate.is_symlink():
+        candidate_stat = os.stat(candidate, follow_symlinks=False)
+        if stat.S_ISLNK(candidate_stat.st_mode):
             scan_input(
                 "untracked",
                 relative,
                 os.readlink(candidate).encode("utf-8"),
                 allow_safe_fixtures=True,
             )
-        elif candidate.is_file():
+        elif stat.S_ISREG(candidate_stat.st_mode):
             scan_input(
                 "untracked",
                 relative,
-                candidate.read_bytes(),
+                _read_bounded_stable_regular_file(candidate),
                 allow_safe_fixtures=True,
+            )
+        else:
+            raise RuntimeError(
+                "untracked secret scan input is not a regular file or symlink"
             )
     review_range = _review_range_evidence(repository_root, base_commit)
     diff = _git_output(
@@ -11348,24 +11488,174 @@ def _path_finding(path: str, rule_id: str) -> dict[str, object]:
     }
 
 
+def _stable_file_identity(file_stat: os.stat_result) -> tuple[int, ...]:
+    return (
+        file_stat.st_dev,
+        file_stat.st_ino,
+        file_stat.st_mode,
+        file_stat.st_nlink,
+        file_stat.st_size,
+        file_stat.st_mtime_ns,
+        file_stat.st_ctime_ns,
+    )
+
+
+def _read_bounded_stable_regular_file(
+    path: Path,
+    *,
+    limit: int | None = None,
+) -> bytes:
+    if limit is None:
+        limit = MAX_SCAN_FILE_BYTES
+    if limit < 0:
+        raise ValueError("secret scan input limit must be non-negative")
+    initial = os.stat(path, follow_symlinks=False)
+    if not stat.S_ISREG(initial.st_mode):
+        raise RuntimeError("secret scan input is not a regular file")
+    if initial.st_size > limit:
+        raise RuntimeError("secret scan input exceeds compliance scan limit")
+
+    flags = os.O_RDONLY
+    for optional_flag in ("O_CLOEXEC", "O_NOFOLLOW", "O_NONBLOCK"):
+        flags |= int(getattr(os, optional_flag, 0))
+    descriptor = os.open(path, flags)
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or _stable_file_identity(opened) != _stable_file_identity(initial)
+        ):
+            raise RuntimeError("secret scan input changed before reading")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            remaining = limit - total
+            chunk = os.read(
+                descriptor,
+                min(BOUNDED_IO_CHUNK_BYTES, remaining + 1),
+            )
+            if not chunk:
+                break
+            if len(chunk) > remaining:
+                raise RuntimeError(
+                    "secret scan input exceeds compliance scan limit"
+                )
+            chunks.append(chunk)
+            total += len(chunk)
+        completed = os.fstat(descriptor)
+        current = os.stat(path, follow_symlinks=False)
+        if (
+            _stable_file_identity(completed)
+            != _stable_file_identity(opened)
+            or _stable_file_identity(current)
+            != _stable_file_identity(opened)
+            or total != completed.st_size
+        ):
+            raise RuntimeError("secret scan input changed while reading")
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def _terminate_bounded_process(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=1)
+
+
 def _git_output(repository_root: Path, arguments: Sequence[str]) -> bytes:
     environment = os.environ.copy()
     environment["GIT_NO_REPLACE_OBJECTS"] = "1"
-    result = subprocess.run(
+    process = subprocess.Popen(
         ["git", *arguments],
         cwd=repository_root,
         env=environment,
-        check=False,
-        capture_output=True,
-        timeout=30,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"git {' '.join(arguments)} failed with status {result.returncode}"
+    if process.stdout is None or process.stderr is None:
+        _terminate_bounded_process(process)
+        raise RuntimeError("git output pipes are unavailable")
+
+    output = bytearray()
+    error_output = bytearray()
+    streams = {
+        process.stdout: (output, MAX_GIT_OUTPUT_BYTES, "output"),
+        process.stderr: (error_output, MAX_GIT_STDERR_BYTES, "error output"),
+    }
+    selector = selectors.DefaultSelector()
+    deadline = time.monotonic() + GIT_OUTPUT_TIMEOUT_SECONDS
+    exceeded = ""
+    try:
+        try:
+            for stream in streams:
+                os.set_blocking(stream.fileno(), False)
+                selector.register(stream, selectors.EVENT_READ)
+            while selector.get_map():
+                remaining_time = deadline - time.monotonic()
+                if remaining_time <= 0:
+                    exceeded = "timeout"
+                    break
+                events = selector.select(timeout=min(remaining_time, 0.1))
+                if not events:
+                    continue
+                for key, _mask in events:
+                    stream = key.fileobj
+                    buffer, limit, label = streams[stream]
+                    remaining_bytes = limit - len(buffer)
+                    try:
+                        chunk = os.read(
+                            stream.fileno(),
+                            min(
+                                BOUNDED_IO_CHUNK_BYTES,
+                                remaining_bytes + 1,
+                            ),
+                        )
+                    except BlockingIOError:
+                        continue
+                    if not chunk:
+                        selector.unregister(stream)
+                        continue
+                    if len(chunk) > remaining_bytes:
+                        exceeded = label
+                        break
+                    buffer.extend(chunk)
+                if exceeded:
+                    break
+        except BaseException:
+            _terminate_bounded_process(process)
+            raise
+    finally:
+        selector.close()
+        if exceeded:
+            _terminate_bounded_process(process)
+        for stream in streams:
+            stream.close()
+
+    if exceeded == "timeout":
+        raise RuntimeError("git command exceeded compliance scan timeout")
+    if exceeded:
+        raise RuntimeError(f"git {exceeded} exceeds compliance scan limit")
+    try:
+        returncode = process.wait(
+            timeout=max(0.0, deadline - time.monotonic())
         )
-    if len(result.stdout) > MAX_GIT_OUTPUT_BYTES:
-        raise RuntimeError("git output exceeds compliance scan limit")
-    return result.stdout
+    except subprocess.TimeoutExpired:
+        _terminate_bounded_process(process)
+        raise RuntimeError(
+            "git command exceeded compliance scan timeout"
+        ) from None
+    if returncode != 0:
+        raise RuntimeError(
+            f"git {' '.join(arguments)} failed with status {returncode}"
+        )
+    return bytes(output)
 
 
 def _review_range_evidence(
