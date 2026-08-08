@@ -1148,6 +1148,10 @@ jobs:
         run: |
           set -euo pipefail
           uv python install 3.12
+          managed_python="$(readlink -f "$(uv python find 3.12)")"
+          managed_python_root="$(
+            dirname "$(dirname "${managed_python}")"
+          )"
           sudo install -d -m 0755 /opt/voi-verifier-runtime
           sudo install \
             -d \
@@ -1155,14 +1159,27 @@ jobs:
             -g "$(id -g)" \
             -m 0755 \
             "${VERIFIER_RUNTIME_ROOT}"
-          uv venv --python 3.12 "${VERIFIER_RUNTIME_ROOT}/venv"
+          cp -a \
+            "${managed_python_root}" \
+            "${VERIFIER_RUNTIME_ROOT}/python"
+          copied_python="$(
+            printf '%s/bin/%s' \
+              "${VERIFIER_RUNTIME_ROOT}/python" \
+              "$(basename "${managed_python}")"
+          )"
+          test -x "${copied_python}"
+          uv venv \
+            --python "${copied_python}" \
+            "${VERIFIER_RUNTIME_ROOT}/venv"
           uv pip install \
             --python "${VERIFIER_RUNTIME_ROOT}/venv/bin/python" \
             "PyYAML==6.0.3"
           sudo chown -R root:root \
+            "${VERIFIER_RUNTIME_ROOT}/python" \
             "${VERIFIER_RUNTIME_ROOT}/venv" \
             "${VERIFIER_RUNTIME_ROOT}"
           sudo chmod -R a+rX,go-w \
+            "${VERIFIER_RUNTIME_ROOT}/python" \
             "${VERIFIER_RUNTIME_ROOT}/venv"
           sudo chmod 0755 "${VERIFIER_RUNTIME_ROOT}"
           sudo useradd \
@@ -1178,6 +1195,33 @@ jobs:
             -m 0700 \
             "${VERIFIER_RUNTIME_ROOT}/home" \
             "${VERIFIER_RUNTIME_ROOT}/tmp"
+          sudo -u voi-verifier env -i \
+            HOME="${VERIFIER_RUNTIME_ROOT}/home" \
+            TMPDIR="${VERIFIER_RUNTIME_ROOT}/tmp" \
+            PATH="/usr/bin:/bin" \
+            PYTHONDONTWRITEBYTECODE="1" \
+            EXPECTED_VERIFIER_BASE="${VERIFIER_RUNTIME_ROOT}/python" \
+            "${VERIFIER_RUNTIME_ROOT}/venv/bin/python" -I -B - <<'PY'
+          import os
+          from pathlib import Path
+          import sys
+
+          import yaml
+
+          expected_base = Path(
+              os.environ["EXPECTED_VERIFIER_BASE"]
+          ).resolve(strict=True)
+          observed_base = Path(sys.base_prefix).resolve(strict=True)
+          if observed_base != expected_base:
+              raise SystemExit(
+                  "verifier Python escaped its trusted runtime: "
+                  f"{observed_base}"
+              )
+          if yaml.__version__ != "6.0.3":
+              raise SystemExit(
+                  f"unexpected PyYAML version: {yaml.__version__}"
+              )
+          PY
           if sudo -u voi-verifier sudo -n true 2>/dev/null; then
             echo "voi-verifier unexpectedly has passwordless sudo" >&2
             exit 1

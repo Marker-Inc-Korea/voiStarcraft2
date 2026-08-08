@@ -476,23 +476,56 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
             "Verify candidate evidence without privileges",
         )
         verifier_run = verifier["run"]
+        setup_run = setup["run"]
 
         self.assertIn(
             "if sudo -u voi-verifier sudo -n true",
-            setup["run"],
+            setup_run,
         )
-        self.assertIn("/opt/voi-verifier-runtime", setup["run"])
+        self.assertIn("/opt/voi-verifier-runtime", setup_run)
         self.assertNotIn(
             '${RUNNER_TEMP}/voi-verifier-venv',
-            setup["run"],
+            setup_run,
         )
         self.assertIn(
             '${VERIFIER_RUNTIME_ROOT}/home',
-            setup["run"],
+            setup_run,
         )
         self.assertIn(
             '${VERIFIER_RUNTIME_ROOT}/tmp',
-            setup["run"],
+            setup_run,
+        )
+        self.assertIn(
+            'managed_python="$(readlink -f "$(uv python find 3.12)")"',
+            setup_run,
+        )
+        self.assertIn(
+            '"${VERIFIER_RUNTIME_ROOT}/python"',
+            setup_run,
+        )
+        self.assertIn(
+            '--python "${copied_python}"',
+            setup_run,
+        )
+        self.assertNotIn(
+            'uv venv --python 3.12',
+            setup_run,
+        )
+        self.assertIn(
+            "EXPECTED_VERIFIER_BASE=",
+            setup_run,
+        )
+        self.assertIn(
+            '"${VERIFIER_RUNTIME_ROOT}/venv/bin/python" -I -B -',
+            setup_run,
+        )
+        self.assertIn(
+            "observed_base != expected_base",
+            setup_run,
+        )
+        self.assertIn(
+            'yaml.__version__ != "6.0.3"',
+            setup_run,
         )
         self.assertIn("sudo -u voi-verifier env -i", verifier_run)
         self.assertIn("pkill -KILL -u", verifier_run)
