@@ -14,7 +14,9 @@ import inspect
 import io
 import json
 import os
+from pathlib import Path
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
@@ -31,6 +33,7 @@ from starcraft_commander.micromachine_bridge import (
 from starcraft_commander.micromachine_terran_capabilities import (
     TERRAN_UNIT_FAMILIES,
 )
+from starcraft_commander import runtime_data
 from starcraft_commander import web_gui
 from starcraft_commander.demo_sc2 import build_dry_run_session
 from starcraft_commander.llm_interpreter import LocalLLMControl
@@ -711,6 +714,117 @@ class ExplodingStateBridge:
 
     def configure_llm(self, provider, api_key, model=""):
         return self.llm_settings_snapshot()
+
+
+class MicroMachineLaunchProvenanceTest(unittest.TestCase):
+    def test_launcher_revalidates_git_provenance_at_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            clone_root = Path(directory) / "checkout"
+            subprocess.run(
+                [
+                    "git",
+                    "clone",
+                    "--quiet",
+                    "--no-hardlinks",
+                    str(Path(__file__).resolve().parents[1]),
+                    str(clone_root),
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "remote",
+                    "set-url",
+                    "origin",
+                    "https://github.com/Marker-Inc-Korea/voiStarcraft2.git",
+                ],
+                cwd=clone_root,
+                check=True,
+            )
+            runtime_path = (
+                clone_root / "starcraft_commander" / "runtime_data.py"
+            )
+            launcher_path = (
+                clone_root
+                / "integrations"
+                / "micromachine"
+                / "scripts"
+                / "smoke_macos_local.sh"
+            )
+            original_payload = launcher_path.read_bytes()
+            original_mode = stat.S_IMODE(launcher_path.stat().st_mode)
+            replacement = clone_root / "MANIFEST.in"
+            real_popen = subprocess.Popen
+
+            def reject_launcher_execution(*args, **kwargs):
+                arguments = args[0]
+                if arguments and arguments[0] == "bash":
+                    raise AssertionError(
+                        "mutated launcher reached subprocess execution"
+                    )
+                return real_popen(*args, **kwargs)
+
+            def restore_launcher() -> None:
+                if launcher_path.exists() or launcher_path.is_symlink():
+                    launcher_path.unlink()
+                launcher_path.write_bytes(original_payload)
+                launcher_path.chmod(original_mode)
+
+            mutations = {
+                "content": lambda: launcher_path.write_bytes(
+                    original_payload + b"\n# post-import mutation\n"
+                ),
+                "mode": lambda: launcher_path.chmod(0o644),
+                "symlink": lambda: (
+                    launcher_path.unlink(),
+                    launcher_path.symlink_to(replacement),
+                ),
+            }
+            with (
+                mock.patch.object(
+                    runtime_data,
+                    "_SOURCE_MODULE_LOCATION",
+                    runtime_path,
+                ),
+                mock.patch.object(
+                    runtime_data,
+                    "_SOURCE_MODULE_PATH",
+                    runtime_path.resolve(),
+                ),
+                mock.patch.object(
+                    runtime_data,
+                    "_SOURCE_REPOSITORY_ROOT",
+                    clone_root.resolve(),
+                ),
+                mock.patch.object(web_gui, "_REPO_ROOT", str(clone_root)),
+            ):
+                self.assertEqual(
+                    clone_root.resolve(),
+                    web_gui.source_repository_root(),
+                )
+                for name, mutate in mutations.items():
+                    with self.subTest(name=name):
+                        restore_launcher()
+                        launcher = web_gui._MicroMachineLaunchManager()
+                        mutate()
+                        self.assertIsNone(
+                            web_gui.source_repository_root()
+                        )
+                        with mock.patch.object(
+                            web_gui.subprocess,
+                            "Popen",
+                            side_effect=reject_launcher_execution,
+                        ):
+                            started = launcher.start()
+
+                        self.assertFalse(started["enabled"])
+                        self.assertEqual("blocked", started["status"])
+                        self.assertIn(
+                            "current Git provenance",
+                            started["error"],
+                        )
+                restore_launcher()
 
 
 class WebGuiServerHTTPTest(unittest.TestCase):
@@ -10017,7 +10131,14 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             self.assertFalse(launcher._script_path.startswith(directory))  # noqa: SLF001
 
     def test_installed_wheel_disables_source_provenance_launcher(self):
-        with mock.patch.object(web_gui, "_REPO_ROOT", ""):
+        with (
+            mock.patch.object(web_gui, "_REPO_ROOT", ""),
+            mock.patch.object(
+                web_gui,
+                "source_repository_root",
+                return_value=None,
+            ),
+        ):
             launcher = web_gui._MicroMachineLaunchManager()
             snapshot = launcher.snapshot()
             started = launcher.start()

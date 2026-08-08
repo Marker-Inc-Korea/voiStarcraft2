@@ -7977,6 +7977,7 @@ class _MicroMachineLaunchManager:
         self._runtime_instance_id = ""
         self._cwd = cwd.strip() or _REPO_ROOT or os.getcwd()
         candidate_script = script_path.strip()
+        self._requires_source_provenance = not candidate_script
         if candidate_script and not os.path.isabs(candidate_script):
             candidate_script = os.path.join(self._cwd, candidate_script)
         self._script_path = candidate_script or (
@@ -7988,6 +7989,27 @@ class _MicroMachineLaunchManager:
             else ""
         )
         self._launch_available = bool(self._script_path)
+
+    def _revalidate_launch_path_unlocked(self) -> bool:
+        if not self._requires_source_provenance:
+            self._launch_available = bool(self._script_path)
+            return self._launch_available
+
+        repository_root = source_repository_root()
+        validated_path = (
+            os.path.join(
+                os.fspath(repository_root),
+                _MICROMACHINE_SMOKE_SCRIPT_RELATIVE_PATH,
+            )
+            if repository_root is not None
+            else ""
+        )
+        self._launch_available = bool(
+            validated_path
+            and os.path.abspath(self._script_path)
+            == os.path.abspath(validated_path)
+        )
+        return self._launch_available
 
     def start(
         self,
@@ -8023,11 +8045,11 @@ class _MicroMachineLaunchManager:
             self._status = "starting"
             self._error = ""
             self._last_line = ""
-            if not self._launch_available:
+            if not self._revalidate_launch_path_unlocked():
                 self._status = "blocked"
                 self._error = (
                     "MicroMachine launch is available only from a source "
-                    "checkout with Git provenance."
+                    "checkout with current Git provenance."
                 )
                 return self._snapshot_unlocked()
             if not os.path.isfile(self._script_path):
