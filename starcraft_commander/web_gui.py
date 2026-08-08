@@ -38,6 +38,7 @@ import html
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -50,7 +51,8 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Callable, Final, Protocol, runtime_checkable
+from pathlib import Path
+from typing import BinaryIO, Callable, Final, Protocol, runtime_checkable
 from urllib.parse import parse_qs, urlsplit
 from weakref import WeakValueDictionary
 
@@ -100,6 +102,7 @@ from starcraft_commander.policy_modulation import (
     reject_raw_policy_control_keys,
 )
 from starcraft_commander.runtime_deps import MissingLLMDependencyError
+from starcraft_commander.runtime_data import source_repository_root
 from starcraft_commander.state_resolver import (
     DEFAULT_SC2_STATE_RESOLVER,
     SC2StateResolverInterface,
@@ -118,8 +121,8 @@ WEB_GUI_TOKEN_HEADER: Final[str] = "X-voiStarcraft2-Token"
 DEFAULT_WEB_GUI_PORT: Final[int] = 8350
 """Default web GUI port; ``0`` requests an ephemeral port (used by tests)."""
 
-_REPO_ROOT: Final[str] = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-"""Repository root resolved from this module, independent of process cwd."""
+_REPO_ROOT: Final[str] = str(Path(__file__).resolve().parents[1])
+"""Module installation root used by explicit repo-local tooling."""
 
 
 def _default_sc2_install_path() -> str:
@@ -4729,6 +4732,14 @@ _MICROMACHINE_SMOKE_SCRIPT_RELATIVE_PATH: Final[str] = (
 )
 """Repo-local MicroMachine smoke/live launcher used by the web cockpit."""
 
+_MICROMACHINE_SMOKE_SCRIPT_MAX_BYTES: Final[int] = 1024 * 1024
+"""Maximum source launcher size admitted into the immutable launch snapshot."""
+
+_MICROMACHINE_VALIDATED_SCRIPT_DIR_ENV: Final[str] = (
+    "VOI_MICROMACHINE_VALIDATED_SCRIPT_DIR"
+)
+"""Internal directory binding used only with a validated stdin launcher."""
+
 _MICROMACHINE_UI_SMOKE_MAX_ATTEMPTS_ENV: Final[str] = (
     "VOI_MICROMACHINE_UI_SMOKE_MAX_ATTEMPTS"
 )
@@ -7970,13 +7981,133 @@ class _MicroMachineLaunchManager:
             _MicroMachineTelemetryFileIdentity | None
         ) = None
         self._runtime_instance_id = ""
-        self._cwd = cwd.strip() or _REPO_ROOT
         candidate_script = script_path.strip()
+        self._requires_source_provenance = not candidate_script
+        default_root = (
+            _REPO_ROOT
+            if self._requires_source_provenance
+            and os.path.exists(os.path.join(_REPO_ROOT, ".git"))
+            else ""
+        )
+        self._cwd = cwd.strip() or default_root or os.getcwd()
         if candidate_script and not os.path.isabs(candidate_script):
             candidate_script = os.path.join(self._cwd, candidate_script)
-        self._script_path = candidate_script or os.path.join(
-            _REPO_ROOT,
-            _MICROMACHINE_SMOKE_SCRIPT_RELATIVE_PATH,
+        self._script_path = candidate_script or (
+            os.path.join(
+                default_root,
+                _MICROMACHINE_SMOKE_SCRIPT_RELATIVE_PATH,
+            )
+            if default_root
+            else ""
+        )
+        self._launch_available = bool(self._script_path)
+
+    def _validated_source_launcher_unlocked(
+        self,
+    ) -> tuple[BinaryIO, str] | None:
+        if not self._requires_source_provenance:
+            return None
+
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(self._script_path, flags)
+            with os.fdopen(descriptor, "rb") as source:
+                admitted_stat = os.fstat(source.fileno())
+                if not stat.S_ISREG(admitted_stat.st_mode):
+                    self._launch_available = False
+                    return None
+                admitted_payload = source.read(
+                    _MICROMACHINE_SMOKE_SCRIPT_MAX_BYTES + 1
+                )
+                if (
+                    len(admitted_payload)
+                    > _MICROMACHINE_SMOKE_SCRIPT_MAX_BYTES
+                ):
+                    self._launch_available = False
+                    return None
+
+                repository_root = source_repository_root()
+                validated_path = (
+                    os.path.join(
+                        os.fspath(repository_root),
+                        _MICROMACHINE_SMOKE_SCRIPT_RELATIVE_PATH,
+                    )
+                    if repository_root is not None
+                    else ""
+                )
+                if not (
+                    validated_path
+                    and os.path.realpath(self._script_path)
+                    == os.path.realpath(validated_path)
+                ):
+                    self._launch_available = False
+                    return None
+
+                current_path_stat = os.lstat(self._script_path)
+                current_descriptor_stat = os.fstat(source.fileno())
+                source.seek(0)
+                current_payload = source.read(
+                    _MICROMACHINE_SMOKE_SCRIPT_MAX_BYTES + 1
+                )
+        except OSError:
+            self._launch_available = False
+            return None
+
+        admitted_identity = (
+            admitted_stat.st_dev,
+            admitted_stat.st_ino,
+            stat.S_IMODE(admitted_stat.st_mode),
+            admitted_stat.st_size,
+        )
+        current_path_identity = (
+            current_path_stat.st_dev,
+            current_path_stat.st_ino,
+            stat.S_IMODE(current_path_stat.st_mode),
+            current_path_stat.st_size,
+        )
+        current_descriptor_identity = (
+            current_descriptor_stat.st_dev,
+            current_descriptor_stat.st_ino,
+            stat.S_IMODE(current_descriptor_stat.st_mode),
+            current_descriptor_stat.st_size,
+        )
+        if (
+            admitted_identity != current_path_identity
+            or admitted_identity != current_descriptor_identity
+            or admitted_payload != current_payload
+        ):
+            self._launch_available = False
+            return None
+
+        snapshot = tempfile.TemporaryFile(mode="w+b")
+        try:
+            snapshot.write(admitted_payload)
+            snapshot.flush()
+            snapshot.seek(0)
+        except OSError:
+            snapshot.close()
+            self._launch_available = False
+            return None
+        self._launch_available = True
+        return snapshot, os.path.dirname(validated_path)
+
+    def _spawn_process_unlocked(
+        self,
+        argv: Sequence[str],
+        *,
+        env: Mapping[str, str],
+        launcher_input: BinaryIO | None,
+    ) -> subprocess.Popen[str]:
+        return subprocess.Popen(
+            argv,
+            cwd=self._cwd,
+            env=env,
+            stdin=launcher_input,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
         )
 
     def start(
@@ -8013,7 +8144,25 @@ class _MicroMachineLaunchManager:
             self._status = "starting"
             self._error = ""
             self._last_line = ""
-            if not os.path.isfile(self._script_path):
+            validated_launcher: BinaryIO | None = None
+            validated_script_dir = ""
+            if self._requires_source_provenance:
+                validated = self._validated_source_launcher_unlocked()
+                if validated is not None:
+                    validated_launcher, validated_script_dir = validated
+            else:
+                self._launch_available = bool(self._script_path)
+            if not self._launch_available:
+                self._status = "blocked"
+                self._error = (
+                    "MicroMachine launch is available only from a source "
+                    "checkout with current Git provenance."
+                )
+                return self._snapshot_unlocked()
+            if (
+                validated_launcher is None
+                and not os.path.isfile(self._script_path)
+            ):
                 self._status = "failed"
                 self._error = (
                     "MicroMachine launcher script not found: "
@@ -8021,6 +8170,7 @@ class _MicroMachineLaunchManager:
                 )
                 return self._snapshot_unlocked()
             env = os.environ.copy()
+            env.pop(_MICROMACHINE_VALIDATED_SCRIPT_DIR_ENV, None)
             env["BLACKBOARD_DIR"] = root
             env.setdefault("SC2_ROOT", DEFAULT_SC2_INSTALL_PATH)
             env.setdefault("SMOKE_KEEP_RUNNING_AFTER_PASS", "1")
@@ -8031,9 +8181,7 @@ class _MicroMachineLaunchManager:
             env["VOI_MICROMACHINE_RUNTIME_INSTANCE_ID"] = (
                 self._runtime_instance_id
             )
-            argv = [
-                "bash",
-                self._script_path,
+            launch_arguments = [
                 "--live-hold",
                 "--fresh-live-session",
                 "--blackboard-dir",
@@ -8043,6 +8191,13 @@ class _MicroMachineLaunchManager:
                 "--max-attempts",
                 max_attempts,
             ]
+            if validated_launcher is not None:
+                env[_MICROMACHINE_VALIDATED_SCRIPT_DIR_ENV] = (
+                    validated_script_dir
+                )
+                argv = ["/bin/bash", "-s", "--", *launch_arguments]
+            else:
+                argv = ["bash", self._script_path, *launch_arguments]
             try:
                 telemetry_path = os.path.realpath(
                     os.path.join(root, "latest_telemetry.json")
@@ -8052,14 +8207,10 @@ class _MicroMachineLaunchManager:
                     baseline[1] if baseline is not None else None
                 )
                 self._launch_started_at_ns = time.time_ns()
-                self._process = subprocess.Popen(
+                self._process = self._spawn_process_unlocked(
                     argv,
-                    cwd=self._cwd,
                     env=env,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
+                    launcher_input=validated_launcher,
                 )
             except OSError as error:
                 self._status = "failed"
@@ -8072,6 +8223,9 @@ class _MicroMachineLaunchManager:
                 self._launch_telemetry_baseline = None
                 self._runtime_instance_id = ""
                 return self._snapshot_unlocked()
+            finally:
+                if validated_launcher is not None:
+                    validated_launcher.close()
             threading.Thread(
                 target=self._read_output,
                 args=(self._process,),
@@ -8188,7 +8342,7 @@ class _MicroMachineLaunchManager:
             runtime_attached and telemetry_snapshot.current_for_process
         )
         return {
-            "enabled": True,
+            "enabled": self._launch_available,
             "mode": COMMAND_MODE_MICROMACHINE,
             "status": self._status,
             "pid": process.pid if runtime_attached else None,
@@ -11724,12 +11878,7 @@ var COMMAND_MODE_MICROMACHINE = "__COMMAND_MODE_MICROMACHINE__";
 var COMMAND_MODE_LEGACY_COMMANDER = "__COMMAND_MODE_LEGACY_COMMANDER__";
 var activeCommandMode = COMMAND_MODE_MICROMACHINE;
 var LLM_MODELS = {
-  myproxy: [
-    { value: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
-    { value: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
-    { value: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
-    { value: "gpt-5.5", label: "GPT-5.5" }
-  ],
+  myproxy: [],
   openai: [
     { value: "gpt-5.5", label: "GPT-5.5" },
     { value: "gpt-4.1-mini", label: "GPT-4.1 Mini" },
@@ -16004,12 +16153,12 @@ function selectedLlmChoice() {
   if (!selectedProvider) {
     throw new Error("LLM provider is not selected.");
   }
-  if (!modelSelect || !modelSelect.value) {
+  if (!modelSelect || (!modelSelect.value && selectedProvider.value !== "myproxy")) {
     throw new Error("LLM model is not selected.");
   }
   return {
     provider: selectedProvider.value || "openai",
-    model: modelSelect.value
+    model: modelSelect.value || ""
   };
 }
 
@@ -16039,8 +16188,17 @@ function handleProviderChoiceChange(provider) {
 function renderModelSelect(provider, selectedModel) {
   var modelSelect = document.getElementById("llm-model-select");
   var models = LLM_MODELS[provider] || LLM_MODELS.openai;
-  if (!modelSelect || !models.length) { return; }
+  if (!modelSelect) { return; }
   modelSelect.innerHTML = "";
+  if (!models.length) {
+    var localOption = document.createElement("option");
+    localOption.value = selectedModel || "";
+    localOption.textContent = selectedModel || "Configured by local environment";
+    localOption.disabled = !selectedModel;
+    localOption.selected = true;
+    modelSelect.appendChild(localOption);
+    return;
+  }
   models.forEach(function (model) {
     var option = document.createElement("option");
     option.value = model.value;

@@ -14,7 +14,9 @@ import inspect
 import io
 import json
 import os
+from pathlib import Path
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
@@ -31,6 +33,7 @@ from starcraft_commander.micromachine_bridge import (
 from starcraft_commander.micromachine_terran_capabilities import (
     TERRAN_UNIT_FAMILIES,
 )
+from starcraft_commander import runtime_data
 from starcraft_commander import web_gui
 from starcraft_commander.demo_sc2 import build_dry_run_session
 from starcraft_commander.llm_interpreter import LocalLLMControl
@@ -711,6 +714,266 @@ class ExplodingStateBridge:
 
     def configure_llm(self, provider, api_key, model=""):
         return self.llm_settings_snapshot()
+
+
+class MicroMachineLaunchProvenanceTest(unittest.TestCase):
+    def test_launcher_construction_defers_git_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository_root = Path(directory)
+            (repository_root / ".git").mkdir()
+            with (
+                mock.patch.object(
+                    web_gui,
+                    "_REPO_ROOT",
+                    str(repository_root),
+                ),
+                mock.patch.object(
+                    web_gui,
+                    "source_repository_root",
+                    side_effect=AssertionError(
+                        "launcher construction invoked Git provenance"
+                    ),
+                ),
+            ):
+                launcher = web_gui._MicroMachineLaunchManager()
+                snapshot = launcher.snapshot()
+
+            self.assertTrue(snapshot["enabled"])
+            self.assertTrue(
+                snapshot["script_path"].startswith(str(repository_root))
+            )
+
+            with mock.patch.object(
+                web_gui,
+                "source_repository_root",
+                return_value=None,
+            ):
+                started = launcher.start()
+
+        self.assertFalse(started["enabled"])
+        self.assertEqual("blocked", started["status"])
+        self.assertIn("current Git provenance", started["error"])
+
+    def test_launcher_executes_validated_bytes_after_path_replacement(self):
+        class FakeProcess:
+            pid = 12345
+            returncode = None
+            stdout = []
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self):
+                self.returncode = 0
+                return 0
+
+        with tempfile.TemporaryDirectory() as directory:
+            clone_root = Path(directory) / "checkout"
+            subprocess.run(
+                [
+                    "git",
+                    "clone",
+                    "--quiet",
+                    "--no-hardlinks",
+                    str(Path(__file__).resolve().parents[1]),
+                    str(clone_root),
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "remote",
+                    "set-url",
+                    "origin",
+                    "https://github.com/Marker-Inc-Korea/voiStarcraft2.git",
+                ],
+                cwd=clone_root,
+                check=True,
+            )
+            runtime_path = (
+                clone_root / "starcraft_commander" / "runtime_data.py"
+            )
+            launcher_path = (
+                clone_root
+                / "integrations"
+                / "micromachine"
+                / "scripts"
+                / "smoke_macos_local.sh"
+            )
+            admitted_payload = launcher_path.read_bytes()
+            replacement_payload = b"#!/bin/sh\nexit 97\n"
+            observed: dict[str, object] = {}
+
+            def replace_after_validation(
+                arguments,
+                *,
+                env,
+                launcher_input,
+            ):
+                launcher_path.write_bytes(replacement_payload)
+                observed["argv"] = arguments
+                observed["payload"] = launcher_input.read()
+                observed["environment"] = env
+                return FakeProcess()
+
+            with (
+                mock.patch.object(
+                    runtime_data,
+                    "_SOURCE_MODULE_LOCATION",
+                    runtime_path,
+                ),
+                mock.patch.object(
+                    runtime_data,
+                    "_SOURCE_MODULE_PATH",
+                    runtime_path.resolve(),
+                ),
+                mock.patch.object(
+                    runtime_data,
+                    "_SOURCE_REPOSITORY_ROOT",
+                    clone_root.resolve(),
+                ),
+                mock.patch.object(web_gui, "_REPO_ROOT", str(clone_root)),
+            ):
+                launcher = web_gui._MicroMachineLaunchManager()
+                with mock.patch.object(
+                    launcher,
+                    "_spawn_process_unlocked",
+                    side_effect=replace_after_validation,
+                ):
+                    started = launcher.start(
+                        str(Path(directory) / "blackboard")
+                    )
+
+        self.assertTrue(started["enabled"], started)
+        self.assertEqual(admitted_payload, observed["payload"])
+        self.assertNotEqual(replacement_payload, observed["payload"])
+        self.assertEqual(
+            ["/bin/bash", "-s", "--"],
+            list(observed["argv"])[:3],
+        )
+        self.assertEqual(
+            str(
+                (
+                    clone_root
+                    / "integrations"
+                    / "micromachine"
+                    / "scripts"
+                ).resolve()
+            ),
+            observed["environment"][
+                web_gui._MICROMACHINE_VALIDATED_SCRIPT_DIR_ENV
+            ],
+        )
+
+    def test_launcher_revalidates_git_provenance_at_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            clone_root = Path(directory) / "checkout"
+            subprocess.run(
+                [
+                    "git",
+                    "clone",
+                    "--quiet",
+                    "--no-hardlinks",
+                    str(Path(__file__).resolve().parents[1]),
+                    str(clone_root),
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "remote",
+                    "set-url",
+                    "origin",
+                    "https://github.com/Marker-Inc-Korea/voiStarcraft2.git",
+                ],
+                cwd=clone_root,
+                check=True,
+            )
+            runtime_path = (
+                clone_root / "starcraft_commander" / "runtime_data.py"
+            )
+            launcher_path = (
+                clone_root
+                / "integrations"
+                / "micromachine"
+                / "scripts"
+                / "smoke_macos_local.sh"
+            )
+            original_payload = launcher_path.read_bytes()
+            original_mode = stat.S_IMODE(launcher_path.stat().st_mode)
+            replacement = clone_root / "MANIFEST.in"
+            real_popen = subprocess.Popen
+
+            def reject_launcher_execution(*args, **kwargs):
+                arguments = args[0]
+                if arguments and arguments[0] == "bash":
+                    raise AssertionError(
+                        "mutated launcher reached subprocess execution"
+                    )
+                return real_popen(*args, **kwargs)
+
+            def restore_launcher() -> None:
+                if launcher_path.exists() or launcher_path.is_symlink():
+                    launcher_path.unlink()
+                launcher_path.write_bytes(original_payload)
+                launcher_path.chmod(original_mode)
+
+            mutations = {
+                "content": lambda: launcher_path.write_bytes(
+                    original_payload + b"\n# post-import mutation\n"
+                ),
+                "mode": lambda: launcher_path.chmod(0o644),
+                "symlink": lambda: (
+                    launcher_path.unlink(),
+                    launcher_path.symlink_to(replacement),
+                ),
+            }
+            with (
+                mock.patch.object(
+                    runtime_data,
+                    "_SOURCE_MODULE_LOCATION",
+                    runtime_path,
+                ),
+                mock.patch.object(
+                    runtime_data,
+                    "_SOURCE_MODULE_PATH",
+                    runtime_path.resolve(),
+                ),
+                mock.patch.object(
+                    runtime_data,
+                    "_SOURCE_REPOSITORY_ROOT",
+                    clone_root.resolve(),
+                ),
+                mock.patch.object(web_gui, "_REPO_ROOT", str(clone_root)),
+            ):
+                self.assertEqual(
+                    clone_root.resolve(),
+                    web_gui.source_repository_root(),
+                )
+                for name, mutate in mutations.items():
+                    with self.subTest(name=name):
+                        restore_launcher()
+                        launcher = web_gui._MicroMachineLaunchManager()
+                        mutate()
+                        self.assertIsNone(
+                            web_gui.source_repository_root()
+                        )
+                        with mock.patch.object(
+                            web_gui.subprocess,
+                            "Popen",
+                            side_effect=reject_launcher_execution,
+                        ):
+                            started = launcher.start()
+
+                        self.assertFalse(started["enabled"])
+                        self.assertEqual("blocked", started["status"])
+                        self.assertIn(
+                            "current Git provenance",
+                            started["error"],
+                        )
+                restore_launcher()
 
 
 class WebGuiServerHTTPTest(unittest.TestCase):
@@ -10015,6 +10278,26 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 launcher._script_path.startswith(web_gui._REPO_ROOT)  # noqa: SLF001
             )
             self.assertFalse(launcher._script_path.startswith(directory))  # noqa: SLF001
+
+    def test_installed_wheel_disables_source_provenance_launcher(self):
+        with (
+            mock.patch.object(web_gui, "_REPO_ROOT", ""),
+            mock.patch.object(
+                web_gui,
+                "source_repository_root",
+                return_value=None,
+            ),
+        ):
+            launcher = web_gui._MicroMachineLaunchManager()
+            snapshot = launcher.snapshot()
+            started = launcher.start()
+
+        self.assertFalse(snapshot["enabled"])
+        self.assertFalse(started["enabled"])
+        self.assertEqual("", snapshot["script_path"])
+        self.assertEqual("", started["script_path"])
+        self.assertEqual("blocked", started["status"])
+        self.assertIn("source checkout", started["error"])
 
     def test_micromachine_smoke_cli_rejects_enemy_difficulty_outside_1_to_10(self):
         script = os.path.join(
@@ -27253,6 +27536,7 @@ assert(evidenceText.length <= 1350, "briefing evidence is bounded: " + evidenceT
         harness = r"""
 var radios = [
   { value: "openai", checked: true },
+  { value: "myproxy", checked: false },
   { value: "anthropic", checked: false },
   { value: "gemini", checked: false },
   { value: "grok", checked: false }
@@ -27267,6 +27551,7 @@ var modelSelect = {
   },
   set innerHTML(value) {
     this.children = [];
+    this.value = "";
   },
   get innerHTML() {
     return "";
@@ -27324,6 +27609,10 @@ assert.strictEqual(selectedProviderValue(), "grok");
 assert(modelValues().includes("grok-4.3"));
 assert(!modelValues().includes("gemini-3.5-flash"));
 assert.strictEqual(modelSelect.value, "grok-4.3");
+handleProviderChoiceChange("myproxy");
+assert.strictEqual(selectedProviderValue(), "myproxy");
+assert.deepStrictEqual(modelValues(), [""]);
+assert.deepStrictEqual(selectedLlmChoice(), { provider: "myproxy", model: "" });
 """
         with tempfile.NamedTemporaryFile("w", suffix=".js") as script_file:
             script_file.write(harness)

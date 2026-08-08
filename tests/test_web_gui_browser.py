@@ -158,7 +158,7 @@ def _browser_fixture_page() -> str:
       return response({
         configured: true,
         provider: "myproxy",
-        model: "gpt-5.6-sol",
+        model: "fixture-responses-model",
         reasoning_effort: "low"
       });
     }
