@@ -85,14 +85,21 @@ class IsolatedInstallTest(unittest.TestCase):
 
     def test_smoke_removes_pythonpath_from_all_isolated_processes(self) -> None:
         successful_result = mock.Mock(returncode=0, stdout="", stderr="")
+        installed_metadata = (
+            "Metadata-Version: 2.4\n"
+            "Name: voiStarcraft2\n"
+            f"License-Expression: {EXPECTED_LICENSE_EXPRESSION}\n"
+        )
         installed_result = mock.Mock(
             returncode=0,
-            stdout=(
-                '{"license_expression": "'
-                + EXPECTED_LICENSE_EXPRESSION
-                + '", "packaged_defaults_loaded": true, '
-                '"runtime_data_loaded": true, '
-                '"source_repository_root_is_none": true}'
+            stdout=json.dumps(
+                {
+                    "installed_metadata": installed_metadata,
+                    "license_expression": EXPECTED_LICENSE_EXPRESSION,
+                    "packaged_defaults_loaded": True,
+                    "runtime_data_loaded": True,
+                    "source_repository_root_is_none": True,
+                }
             ),
             stderr="",
         )
@@ -128,6 +135,10 @@ class IsolatedInstallTest(unittest.TestCase):
             )
 
         self.assertEqual(0, result["returncode"])
+        self.assertEqual(
+            installed_metadata,
+            result["payload"]["installed_metadata"],
+        )
         self.assertTrue(result["payload"]["target_runtime_data_loaded"])
         self.assertTrue(result["payload"]["target_packaged_defaults_loaded"])
         self.assertEqual(4, run.call_count)
@@ -137,6 +148,7 @@ class IsolatedInstallTest(unittest.TestCase):
             self.assertNotIn("PYTHONPATH", environment)
         installed_script = run.call_args_list[1].args[0][-1]
         target_script = run.call_args_list[3].args[0][-2]
+        self.assertIn("read_text('METADATA')", installed_script)
         for script in (installed_script, target_script):
             self.assertIn("source_repository_root() is None", script)
             self.assertIn("DEFAULT_BLACKBOARD_HEADER", script)
@@ -2548,6 +2560,66 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                     {str(item["rule_id"]) for item in findings},
                 )
 
+    def test_detects_ini_indirect_shell_and_generic_docker_myproxy(
+        self,
+    ) -> None:
+        endpoint = "https://10.0." + "0.8:7443/v1"
+        model = "secret-" + "model-140"
+        payloads = {
+            "settings.ini": (
+                "provider=myproxy\n"
+                f"model={model}\n"
+                f"base_url={endpoint}\n"
+            ),
+            "launch.sh": (
+                "provider=myproxy\n"
+                f"model={model}\n"
+                f"base_url={endpoint}\n"
+                'commander --provider "$provider" --model "$model" '
+                '--base-url "$base_url"\n'
+            ),
+            "Dockerfile": (
+                "ENV LLM_PROVIDER=myproxy "
+                f"LLM_MODEL={model} LLM_BASE_URL={endpoint}\n"
+            ),
+        }
+
+        for path, payload in payloads.items():
+            with self.subTest(path=path):
+                findings = scan_payload(
+                    path,
+                    payload.encode(),
+                    allow_safe_fixtures=False,
+                )
+
+                self.assertEqual(
+                    {"private_endpoint", "private_model_override"},
+                    {str(item["rule_id"]) for item in findings},
+                )
+
+    def test_shell_expansion_preserves_unknown_variables(self) -> None:
+        endpoint = "https://10.0." + "0.8:7443/v1"
+        model = "secret-" + "model-140"
+        payload = (
+            "selected=myproxy\n"
+            f"deployment={model}\n"
+            f"gateway={endpoint}\n"
+            'commander --log "$HOME/commander.log" '
+            '--provider "$selected" --model "$deployment" '
+            '--base-url "$gateway"\n'
+        ).encode()
+
+        findings = scan_payload(
+            "launch.sh",
+            payload,
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
+            {str(item["rule_id"]) for item in findings},
+        )
+
     def test_nested_provider_overrides_inherited_myproxy_context(self) -> None:
         payload = (
             "provider: myproxy\n"
@@ -2845,6 +2917,27 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
                     "python_sensitive_analysis_limit_exceeded",
                     {str(item["rule_id"]) for item in findings},
                 )
+
+    def test_secret_finding_count_is_bounded(self) -> None:
+        payload = "\n".join(
+            "SERVICE_API_KEY=" + ("a" * 32)
+            for _ in range(compliance_module.MAX_SCAN_FINDINGS + 100)
+        ).encode()
+
+        findings = scan_payload(
+            "bounded.env.txt",
+            payload,
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual(
+            compliance_module.MAX_SCAN_FINDINGS,
+            len(findings),
+        )
+        self.assertEqual(
+            "scan_finding_limit_exceeded",
+            findings[-1]["rule_id"],
+        )
 
     def test_reasonable_python_branching_does_not_hit_analysis_limit(
         self,
@@ -5281,6 +5374,86 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
         self.assertEqual(1, report["finding_count"])
         self.assertEqual("candidate.py", report["findings"][0]["path"])
 
+    def test_repository_scan_stops_after_global_finding_limit(self) -> None:
+        base_commit = "b" * 40
+        head_commit = "c" * 40
+        snapshot = ArchiveSnapshot(
+            kind="wheel",
+            path=Path("candidate.whl"),
+            digest="d" * 64,
+            entries=("starcraft_commander/later.py",),
+            files={"starcraft_commander/later.py": b"safe = True\n"},
+            blockers=(),
+        )
+        synthetic_findings = [
+            {
+                "path": "<git-diff>",
+                "line": index + 1,
+                "rule_id": "api_key_assignment",
+                "fingerprint": f"{index:064x}",
+            }
+            for index in range(compliance_module.MAX_SCAN_FINDINGS)
+        ]
+
+        def git_output(
+            _repository_root: Path,
+            arguments: list[str],
+        ) -> bytes:
+            if arguments in (
+                ["ls-files", "--stage", "-z"],
+                ["ls-files", "--others", "--exclude-standard", "-z"],
+            ):
+                return b""
+            if arguments[:2] == ["diff", "--no-ext-diff"]:
+                return b""
+            if arguments == [
+                "rev-parse",
+                "--verify",
+                f"{base_commit}^{{commit}}",
+            ]:
+                return f"{base_commit}\n".encode()
+            if arguments == ["rev-parse", "HEAD"]:
+                return f"{head_commit}\n".encode()
+            if arguments == [
+                "merge-base",
+                base_commit,
+                head_commit,
+            ]:
+                return f"{base_commit}\n".encode()
+            raise AssertionError(arguments)
+
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            mock.patch.object(
+                compliance_module,
+                "_git_output",
+                side_effect=git_output,
+            ),
+            mock.patch.object(
+                compliance_module,
+                "scan_payload",
+                return_value=synthetic_findings,
+            ) as scan,
+        ):
+            report = scan_git_and_artifacts(
+                Path(temporary),
+                (snapshot,),
+                base_commit=base_commit,
+            )
+
+        self.assertEqual(1, scan.call_count)
+        self.assertEqual(
+            compliance_module.MAX_SCAN_FINDINGS,
+            report["finding_count"],
+        )
+        self.assertEqual(
+            1,
+            sum(
+                item["rule_id"] == "scan_finding_limit_exceeded"
+                for item in report["findings"]
+            ),
+        )
+
     def test_artifact_scan_detects_bomless_utf16_le_and_be(self) -> None:
         host_key = "VOI_MYPROXY_" + "HOST"
         model_key = "VOI_MYPROXY_" + "MODEL"
@@ -5846,6 +6019,7 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
                 "license_expressions": [EXPECTED_LICENSE_EXPRESSION],
                 "requires_dist": metadata_requires_dist,
                 "raw": metadata_raw,
+                "installed_raw": metadata_raw,
                 "sdist": [
                     {"entry": entry, "raw": metadata_raw}
                     for entry in sdist_metadata_entries
@@ -5912,6 +6086,7 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
                 "attempted": True,
                 "returncode": 0,
                 "payload": {
+                    "installed_metadata": metadata_raw,
                     "license_expression": EXPECTED_LICENSE_EXPRESSION,
                     "packaged_defaults_loaded": True,
                     "runtime_data_loaded": True,
@@ -6372,6 +6547,43 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
             str(item["code"]) for item in distribution_report_blockers(report)
         }
         self.assertIn("invalid_source_pyproject_evidence", codes)
+
+    def test_rejects_missing_or_mismatched_installed_metadata(self) -> None:
+        report = copy.deepcopy(self.report)
+        report["metadata"].pop("installed_raw")
+        codes = {
+            str(item["code"]) for item in distribution_report_blockers(report)
+        }
+        self.assertIn("invalid_installed_metadata_evidence", codes)
+
+        report = copy.deepcopy(self.report)
+        report["metadata"]["installed_raw"] = "Metadata-Version: 2.4\n"
+        codes = {
+            str(item["code"]) for item in distribution_report_blockers(report)
+        }
+        self.assertIn("invalid_installed_metadata_evidence", codes)
+
+        for installed_metadata, expected_code in (
+            (None, "installed_metadata_missing"),
+            ("Metadata-Version: 2.4\n", "installed_metadata_mismatch"),
+        ):
+            with self.subTest(expected_code=expected_code):
+                report = copy.deepcopy(self.report)
+                if installed_metadata is None:
+                    report["install_smoke"]["payload"].pop(
+                        "installed_metadata"
+                    )
+                else:
+                    report["install_smoke"]["payload"][
+                        "installed_metadata"
+                    ] = installed_metadata
+
+                codes = {
+                    str(item["code"])
+                    for item in distribution_report_blockers(report)
+                }
+
+                self.assertIn(expected_code, codes)
 
         report = dict(self.report)
         source_pyproject = dict(self.report["source_pyproject"])
@@ -7163,6 +7375,41 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
 
 
 class DistributionEvidenceWritingTest(unittest.TestCase):
+    def test_installed_metadata_evidence_uses_installed_payload(self) -> None:
+        report = {
+            "schema_version": (
+                compliance_module.DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION
+            ),
+            "status": "passed",
+            "ok": True,
+            "metadata": {
+                "raw": "WHEEL-ARCHIVE-METADATA",
+                "installed_raw": "INSTALLED-DISTRIBUTION-METADATA",
+            },
+            "artifacts": {
+                "wheel": {"entries": []},
+                "sdist": {"entries": []},
+            },
+            "dependencies": {},
+            "secret_scan": {
+                "finding_count": 0,
+                "findings": [],
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            output_dir = Path(temporary)
+
+            compliance_module.write_distribution_evidence(
+                report,
+                output_dir,
+                public_report=report,
+            )
+
+            self.assertEqual(
+                "INSTALLED-DISTRIBUTION-METADATA",
+                (output_dir / "installed.METADATA").read_text(),
+            )
+
     def test_sensitive_report_writes_only_minimal_redacted_evidence(self) -> None:
         secret = "sk-" + "liveabcdefghijklmnop"
         report = {

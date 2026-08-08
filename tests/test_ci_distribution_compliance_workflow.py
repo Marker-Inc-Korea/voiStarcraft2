@@ -192,14 +192,17 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
         }
         build_index, _ = by_name["Build and verify release artifacts"]
         capture_index, capture = by_name["Capture verified upload integrity"]
+        seal_index, seal = by_name["Seal qualified upload inputs"]
         gate_index, gate = by_name["Verify qualified upload integrity"]
         qualified_index, qualified = by_name[
             "Upload qualified release artifacts and compliance evidence"
         ]
 
         self.assertEqual(build_index + 1, capture_index)
+        self.assertEqual(seal_index + 1, gate_index)
         self.assertEqual(gate_index + 1, qualified_index)
         self.assertEqual("capture-upload-integrity", capture["id"])
+        self.assertEqual("success()", seal["if"])
         self.assertEqual("success()", gate["if"])
         self.assertEqual("success()", qualified["if"])
         self.assertIn(
@@ -231,6 +234,15 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
         self.assertIn(
             "snapshot_artifacts != expected_snapshot_artifacts",
             gate_run,
+        )
+        self.assertIn(
+            "sudo chown -R root:root dist distribution-compliance-evidence",
+            seal["run"],
+        )
+        self.assertIn(
+            "sudo chmod -R a-w,u+rX,go+rX "
+            "dist distribution-compliance-evidence",
+            seal["run"],
         )
 
     def test_integrity_gate_rejects_artifact_evidence_and_file_set_changes(

@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 import ast
 import base64
+import configparser
 import csv
 import hashlib
 import io
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import struct
@@ -42,7 +44,7 @@ except ImportError:  # pragma: no cover - Python 3.10 uses the dev dependency.
         _toml = None
 
 
-DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION: Final[int] = 6
+DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION: Final[int] = 7
 EXPECTED_LICENSE_EXPRESSION: Final[str] = (
     "AGPL-3.0-or-later OR LicenseRef-Commercial"
 )
@@ -122,6 +124,7 @@ MAX_ARCHIVE_STREAM_BYTES: Final[int] = 512 * 1024 * 1024
 MAX_ARCHIVE_METADATA_BYTES: Final[int] = 8 * 1024 * 1024
 MAX_ARCHIVE_HEADER_FIELD_BYTES: Final[int] = 1024 * 1024
 MAX_SCAN_FILE_BYTES: Final[int] = 64 * 1024 * 1024
+MAX_SCAN_FINDINGS: Final[int] = 4096
 MAX_CONFIGURATION_BYTES: Final[int] = 8 * 1024 * 1024
 MIN_PYTHON_SENSITIVE_ANALYSIS_STEPS: Final[int] = 100_000
 MAX_PYTHON_SENSITIVE_ANALYSIS_STEPS: Final[int] = 1_000_000
@@ -2833,6 +2836,19 @@ def scan_payload(
     if normalized_path.startswith("./"):
         normalized_path = normalized_path[2:]
     findings: list[dict[str, object]] = []
+
+    def add_finding(finding: dict[str, object]) -> bool:
+        if len(findings) >= MAX_SCAN_FINDINGS - 1:
+            findings.append(
+                _path_finding(
+                    normalized_path,
+                    "scan_finding_limit_exceeded",
+                )
+            )
+            return False
+        findings.append(finding)
+        return True
+
     path_parts = PurePosixPath(normalized_path).parts
     lowered_parts = {part.lower() for part in path_parts}
     basename = PurePosixPath(normalized_path).name.lower()
@@ -2840,11 +2856,11 @@ def scan_payload(
         part.lower() == ".env" or part.lower().startswith(".env.")
         for part in path_parts
     ):
-        findings.append(_path_finding(normalized_path, "env_file"))
+        add_finding(_path_finding(normalized_path, "env_file"))
     if _is_credential_path(basename, lowered_parts):
-        findings.append(_path_finding(normalized_path, "credential_file"))
+        add_finding(_path_finding(normalized_path, "credential_file"))
     if len(payload) > MAX_SCAN_FILE_BYTES:
-        findings.append(
+        add_finding(
             {
                 "path": normalized_path,
                 "line": 0,
@@ -2857,7 +2873,7 @@ def scan_payload(
         return findings
     text, decode_failure = _decode_scan_payload(normalized_path, payload)
     if decode_failure:
-        findings.append(_path_finding(normalized_path, decode_failure))
+        add_finding(_path_finding(normalized_path, decode_failure))
     rules: tuple[tuple[str, re.Pattern[str]], ...] = (
         ("api_key", _API_KEY_RE),
         ("aws_access_key_id", _AWS_ACCESS_KEY_ID_RE),
@@ -2892,7 +2908,7 @@ def scan_payload(
                 )
             ):
                 continue
-            findings.append(
+            if not add_finding(
                 {
                     "path": normalized_path,
                     "line": 0,
@@ -2901,7 +2917,8 @@ def scan_payload(
                         f"{rule_id}\0{matched}".encode("utf-8")
                     ),
                 }
-            )
+            ):
+                return findings
     scan_texts, configuration_failures = _configuration_scan_texts(
         normalized_path,
         text,
@@ -2950,16 +2967,23 @@ def scan_payload(
         joined_literals = _joined_quoted_literal_text(candidate)
         if joined_literals not in scan_texts:
             scan_texts = (*scan_texts, joined_literals)
-    findings.extend(
-        _path_finding(normalized_path, rule_id)
-        for rule_id in dict.fromkeys(structural_failures)
-    )
+    for rule_id in dict.fromkeys(structural_failures):
+        if not add_finding(_path_finding(normalized_path, rule_id)):
+            return findings
     prior_match_counts: dict[tuple[str, str], int] = {}
     for scan_index, scan_text in enumerate(scan_texts):
         local_match_counts: dict[tuple[str, str], int] = {}
         local_fixture_counts: dict[tuple[str, str], int] = {}
         for rule_id, pattern in rules:
+            line = 1
+            line_cursor = 0
             for match in pattern.finditer(scan_text):
+                line += scan_text.count(
+                    "\n",
+                    line_cursor,
+                    match.start(),
+                )
+                line_cursor = match.start()
                 matched = match.group(0)
                 captured_index, captured = next(
                     (
@@ -2980,7 +3004,6 @@ def scan_payload(
                     local_fixture_counts.get(fixture_identity, 0) + 1
                 )
                 local_fixture_counts[fixture_identity] = fixture_occurrence
-                line = scan_text.count("\n", 0, match.start()) + 1
                 if (
                     scan_index
                     and occurrence <= prior_match_counts.get(identity, 0)
@@ -3010,7 +3033,7 @@ def scan_payload(
                     occurrence=fixture_occurrence,
                 ):
                     continue
-                findings.append(
+                if not add_finding(
                     {
                         "path": normalized_path,
                         "line": line,
@@ -3019,7 +3042,8 @@ def scan_payload(
                             f"{rule_id}\0{matched}".encode("utf-8")
                         ),
                     }
-                )
+                ):
+                    return findings
         for identity, count in local_match_counts.items():
             prior_match_counts[identity] = max(
                 prior_match_counts.get(identity, 0),
@@ -6403,18 +6427,195 @@ def _is_dockerfile_path(path: str) -> bool:
     )
 
 
+def _expand_known_shell_variables(
+    text: str,
+    bindings: Mapping[str, str],
+) -> str | None:
+    variable_pattern = re.compile(
+        r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|"
+        r"([A-Za-z_][A-Za-z0-9_]*))"
+    )
+    expanded = text
+    for _ in range(16):
+        def replace(match: re.Match[str]) -> str:
+            name = match.group(1) or match.group(2)
+            value = bindings.get(name)
+            if value is None:
+                return match.group(0)
+            return value
+
+        updated = variable_pattern.sub(replace, expanded)
+        if updated == expanded:
+            return updated
+        expanded = updated
+    return None
+
+
+def _shell_expanded_scan_text(path: str, text: str) -> tuple[str, str]:
+    if PurePosixPath(path).suffix.lower() not in {
+        ".bash",
+        ".command",
+        ".sh",
+        ".zsh",
+    }:
+        return "", ""
+    bindings: dict[str, str] = {}
+    expanded_lines: list[str] = []
+    expanded_character_count = 0
+    assignment_pattern = re.compile(
+        r"^[ \t]*(?:(?:export|local|readonly)[ \t]+)?"
+        r"([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*(.*?)[ \t]*$"
+    )
+    for raw_line in _shell_continuation_text(text).splitlines():
+        assignment = assignment_pattern.fullmatch(raw_line)
+        if assignment is not None:
+            name, raw_value = assignment.groups()
+            expanded_value = _expand_known_shell_variables(
+                raw_value,
+                bindings,
+            )
+            if expanded_value is None:
+                bindings.pop(name, None)
+                continue
+            try:
+                tokens = shlex.split(
+                    expanded_value,
+                    comments=True,
+                    posix=True,
+                )
+            except ValueError:
+                bindings.pop(name, None)
+                if re.search(
+                    r"(?i)(?:myproxy|provider|model|base[_-]?url|endpoint)",
+                    raw_line,
+                ):
+                    return "", "shell_configuration_parse_failed"
+                continue
+            if len(tokens) != 1:
+                bindings.pop(name, None)
+                continue
+            if len(bindings) >= 512 and name not in bindings:
+                return "", "shell_configuration_limit_exceeded"
+            bindings[name] = tokens[0]
+            continue
+        expanded = _expand_known_shell_variables(raw_line, bindings)
+        if expanded is not None and expanded != raw_line:
+            expanded_lines.append(expanded)
+            expanded_character_count += len(expanded) + 1
+        if expanded_character_count > MAX_CONFIGURATION_BYTES:
+            return "", "shell_configuration_limit_exceeded"
+    return "\n".join(expanded_lines), ""
+
+
+def _dockerfile_semantic_scan_text(text: str) -> tuple[str, str]:
+    bindings: dict[str, str] = {}
+    for raw_line in _dockerfile_logical_text("Dockerfile", text).splitlines():
+        directive = re.match(
+            r"^[ \t]*(?:ENV|ARG)[ \t]+(.+?)?[ \t]*$",
+            raw_line,
+            re.IGNORECASE,
+        )
+        if directive is None or not directive.group(1):
+            continue
+        body = directive.group(1)
+        try:
+            tokens = shlex.split(body, comments=True, posix=True)
+        except ValueError:
+            if re.search(
+                r"(?i)(?:myproxy|provider|model|base[_-]?url|endpoint)",
+                body,
+            ):
+                return "", "docker_configuration_parse_failed"
+            continue
+        assignments: list[tuple[str, str]] = []
+        if tokens and all("=" in token for token in tokens):
+            assignments.extend(
+                token.split("=", 1) for token in tokens
+            )
+        elif len(tokens) >= 2 and "=" not in tokens[0]:
+            assignments.append((tokens[0], " ".join(tokens[1:])))
+        elif tokens and "=" in tokens[0]:
+            assignments.append(tokens[0].split("=", 1))
+        for name, raw_value in assignments:
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None:
+                continue
+            expanded = _expand_known_shell_variables(raw_value, bindings)
+            if expanded is None:
+                bindings.pop(name, None)
+                continue
+            if len(bindings) >= 512 and name not in bindings:
+                return "", "docker_configuration_limit_exceeded"
+            bindings[name] = expanded
+    try:
+        return _semantic_mapping_scan_text((bindings,)), ""
+    except (RecursionError, TypeError, ValueError):
+        return "", "docker_configuration_limit_exceeded"
+
+
+def _ini_semantic_scan_text(text: str) -> tuple[str, str]:
+    def parse(candidate: str) -> configparser.ConfigParser:
+        parser = configparser.ConfigParser(
+            interpolation=None,
+            strict=True,
+            empty_lines_in_values=False,
+        )
+        parser.optionxform = str
+        parser.read_string(candidate)
+        return parser
+
+    try:
+        try:
+            parser = parse(text)
+        except configparser.MissingSectionHeaderError:
+            parser = parse("[__root__]\n" + text)
+        values: list[Mapping[str, object]] = []
+        if parser.defaults():
+            values.append(dict(parser.defaults()))
+        values.extend(
+            dict(parser.items(section, raw=True))
+            for section in parser.sections()
+        )
+        return _semantic_mapping_scan_text(values), ""
+    except (
+        RecursionError,
+        TypeError,
+        ValueError,
+        configparser.Error,
+    ):
+        return "", "ini_parse_failed"
+
+
 def _configuration_scan_texts(
     path: str,
     text: str,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     suffix = PurePosixPath(path).suffix.lower()
-    if suffix not in {".json", ".toml", ".yaml", ".yml"}:
-        return (text,), ()
-
     variants = [text]
     failures: list[str] = []
-    if len(text.encode("utf-8")) > MAX_CONFIGURATION_BYTES:
+    structured_suffixes = {".ini", ".json", ".toml", ".yaml", ".yml"}
+    semantic_path = (
+        suffix in structured_suffixes
+        or suffix in {".bash", ".command", ".sh", ".zsh"}
+        or _is_dockerfile_path(path)
+    )
+    if (
+        semantic_path
+        and len(text.encode("utf-8")) > MAX_CONFIGURATION_BYTES
+    ):
         return (text,), ("configuration_limit_exceeded",)
+    if _is_dockerfile_path(path):
+        semantic_text, failure = _dockerfile_semantic_scan_text(text)
+        if failure:
+            failures.append(failure)
+        elif semantic_text and semantic_text not in variants:
+            variants.append(semantic_text)
+    shell_text, shell_failure = _shell_expanded_scan_text(path, text)
+    if shell_failure:
+        failures.append(shell_failure)
+    elif shell_text and shell_text not in variants:
+        variants.append(shell_text)
+    if suffix not in structured_suffixes:
+        return tuple(variants), tuple(failures)
     decoded_text = _decoded_configuration_escapes(path, text)
     if decoded_text != text:
         variants.append(decoded_text)
@@ -6447,8 +6648,14 @@ def _configuration_scan_texts(
             normalized = _yaml_double_quoted_line_continuations(candidate)
             if normalized not in variants:
                 variants.append(normalized)
-    else:
+    elif suffix == ".toml":
         semantic_text, failure = _toml_semantic_scan_text(text)
+        if failure:
+            failures.append(failure)
+        elif semantic_text and semantic_text not in variants:
+            variants.append(semantic_text)
+    else:
+        semantic_text, failure = _ini_semantic_scan_text(text)
         if failure:
             failures.append(failure)
         elif semantic_text and semantic_text not in variants:
@@ -6524,18 +6731,44 @@ def _semantic_mapping_scan_text(values: Sequence[object]) -> str:
                     )
                 )
                 normalized_entries = {
-                    key.strip().casefold().replace("-", "_"): item
+                    re.sub(
+                        r"[^a-z0-9]+",
+                        "_",
+                        key.strip().casefold(),
+                    ).strip("_"): item
                     for key, item in scalar_entries.items()
                 }
-                provider = normalized_entries.get("provider", "")
-                provider_declared = "provider" in normalized_entries
-                local_myproxy = (
+                provider_values = [
+                    normalized_entries[key]
+                    for key in (
+                        "provider",
+                        "llm_provider",
+                        "model_provider",
+                    )
+                    if key in normalized_entries
+                ]
+                provider = next(
+                    (
+                        value
+                        for value in provider_values
+                        if re.fullmatch(
+                            _MYPROXY_PROVIDER_PATTERN,
+                            value.strip(),
+                            re.IGNORECASE,
+                        )
+                        is not None
+                    ),
+                    provider_values[0] if provider_values else "",
+                )
+                provider_declared = bool(provider_values)
+                local_myproxy = any(
                     re.fullmatch(
                         _MYPROXY_PROVIDER_PATTERN,
-                        provider.strip(),
+                        value.strip(),
                         re.IGNORECASE,
                     )
                     is not None
+                    for value in provider_values
                 )
                 myproxy_context = (
                     local_myproxy
@@ -6551,20 +6784,33 @@ def _semantic_mapping_scan_text(values: Sequence[object]) -> str:
                     endpoint = (
                         normalized_entries.get("openai_base_url")
                         or normalized_entries.get("base_url")
+                        or normalized_entries.get("llm_base_url")
+                        or normalized_entries.get("llm_openai_base_url")
                         or normalized_entries.get("endpoint")
+                        or normalized_entries.get("llm_endpoint")
                     )
-                    model = normalized_entries.get("model")
+                    model = (
+                        normalized_entries.get("model")
+                        or normalized_entries.get("llm_model")
+                    )
                     if endpoint is not None:
                         command.extend(("--base-url", json.dumps(endpoint)))
                     if model is not None:
                         command.extend(("--model", json.dumps(model)))
                     if endpoint is not None or model is not None:
                         fragments.append(" ".join(command))
-                    for key, canonical in (
-                        ("host", "VOI_MYPROXY_HOST"),
-                        ("port", "VOI_MYPROXY_PORT"),
+                    for keys, canonical in (
+                        (("host", "llm_host"), "VOI_MYPROXY_HOST"),
+                        (("port", "llm_port"), "VOI_MYPROXY_PORT"),
                     ):
-                        configured_value = normalized_entries.get(key)
+                        configured_value = next(
+                            (
+                                normalized_entries[key]
+                                for key in keys
+                                if key in normalized_entries
+                            ),
+                            None,
+                        )
                         if configured_value is not None:
                             fragments.append(
                                 f"{canonical}={json.dumps(configured_value)}"
@@ -6687,6 +6933,36 @@ def scan_git_and_artifacts(
     findings: list[dict[str, object]] = []
     input_manifest: list[dict[str, object]] = []
     input_paths: set[str] = set()
+    finding_limit_reached = False
+
+    def merge_findings(
+        candidates: Iterable[Mapping[str, object]],
+        *,
+        path: str,
+    ) -> None:
+        nonlocal finding_limit_reached
+        if finding_limit_reached:
+            return
+        for raw_finding in candidates:
+            finding = dict(raw_finding)
+            if len(findings) >= MAX_SCAN_FINDINGS - 1:
+                limit_path = finding.get("path")
+                findings.append(
+                    _path_finding(
+                        (
+                            str(limit_path)
+                            if isinstance(limit_path, str) and limit_path
+                            else path
+                        ),
+                        "scan_finding_limit_exceeded",
+                    )
+                )
+                finding_limit_reached = True
+                return
+            findings.append(finding)
+            if finding.get("rule_id") == "scan_finding_limit_exceeded":
+                finding_limit_reached = True
+                return
 
     def scan_input(
         kind: str,
@@ -6714,13 +6990,15 @@ def scan_git_and_artifacts(
         else:
             entry.update(identity)
         input_manifest.append(entry)
-        findings.extend(
-            scan_payload(
-                normalized_path,
-                payload,
-                allow_safe_fixtures=allow_safe_fixtures,
+        if not finding_limit_reached:
+            merge_findings(
+                scan_payload(
+                    normalized_path,
+                    payload,
+                    allow_safe_fixtures=allow_safe_fixtures,
+                ),
+                path=normalized_path,
             )
-        )
 
     tracked_paths: set[str] = set()
     tracked = _git_output(repository_root, ["ls-files", "--stage", "-z"])
@@ -6832,9 +7110,9 @@ def scan_git_and_artifacts(
                     "sha256": digest,
                 }
             )
-        findings.extend(
-            dict(finding)
-            for finding in snapshot.prescanned_findings
+        merge_findings(
+            snapshot.prescanned_findings,
+            path=f"{snapshot.kind}/<archive-prescan>",
         )
     for name, payload in sorted((generated_payloads or {}).items()):
         scan_input(
@@ -7113,6 +7391,11 @@ def build_distribution_report(
             if run_install_smoke
             else {"attempted": False, "returncode": None, "payload": {}}
         )
+        installed_metadata_raw = _mapping(
+            install_smoke.get("payload")
+        ).get("installed_metadata")
+        if not isinstance(installed_metadata_raw, str):
+            installed_metadata_raw = ""
         report = {
             "schema_version": DISTRIBUTION_COMPLIANCE_SCHEMA_VERSION,
             "repository": {
@@ -7154,6 +7437,7 @@ def build_distribution_report(
                     "utf-8",
                     errors="replace",
                 ),
+                "installed_raw": installed_metadata_raw,
                 "sdist": sdist_metadata,
                 "generated": generated_metadata,
             },
@@ -7677,6 +7961,12 @@ def distribution_report_blockers(
                     "observed": payload.get("license_expression"),
                 }
             )
+        installed_metadata = payload.get("installed_metadata")
+        archive_metadata = _mapping(report.get("metadata")).get("raw")
+        if not isinstance(installed_metadata, str) or not installed_metadata:
+            blockers.append({"code": "installed_metadata_missing"})
+        elif installed_metadata != archive_metadata:
+            blockers.append({"code": "installed_metadata_mismatch"})
         if payload.get("runtime_data_loaded") is not True:
             blockers.append({"code": "installed_runtime_data_failed"})
         if payload.get("target_runtime_data_loaded") is not True:
@@ -7940,6 +8230,7 @@ def distribution_report_blockers(
         valid_findings
         and type(finding_count) is int
         and finding_count == len(findings)
+        and len(findings) <= MAX_SCAN_FINDINGS
     )
     if isinstance(findings, list) and findings:
         blockers.append(
@@ -8063,7 +8354,10 @@ def write_distribution_evidence(
                 "".join(f"{entry}\n" for entry in entries).encode("utf-8"),
             )
         metadata_text = str(
-            _mapping(public_report.get("metadata")).get("raw", "")
+            _mapping(public_report.get("metadata")).get(
+                "installed_raw",
+                "",
+            )
         )
         _write_evidence_bytes(
             directory_fd,
@@ -8267,7 +8561,7 @@ def isolated_wheel_install_smoke(wheel_path: Path) -> dict[str, object]:
             script = (
                 "import json\n"
                 "from pathlib import Path\n"
-                "from importlib.metadata import metadata\n"
+                "from importlib.metadata import distribution\n"
                 "from starcraft_commander import micromachine_build_identity "
                 "as build_identity\n"
                 "from starcraft_commander.micromachine_map_pool import "
@@ -8302,8 +8596,12 @@ def isolated_wheel_install_smoke(wheel_path: Path) -> dict[str, object]:
                 "source_isolated = source_repository_root() is None and "
                 "build_identity.SOURCE_REPOSITORY_ROOT is None and "
                 "build_identity.REPO_ROOT == root.parents[1]\n"
+                "installed_distribution = distribution('voiStarcraft2')\n"
+                "installed_metadata = "
+                "installed_distribution.read_text('METADATA') or ''\n"
                 "print(json.dumps({'license_expression': "
-                "metadata('voiStarcraft2').get('License-Expression'), "
+                "installed_distribution.metadata.get('License-Expression'), "
+                "'installed_metadata': installed_metadata, "
                 "'runtime_data_loaded': loaded, "
                 "'packaged_defaults_loaded': packaged_defaults, "
                 "'source_repository_root_is_none': source_isolated}, "
@@ -9657,6 +9955,7 @@ def _metadata_evidence_blockers(
     expected_entry = f"{expected_root}/METADATA" if expected_root else ""
     entry = metadata.get("entry")
     raw = metadata.get("raw")
+    installed_raw = metadata.get("installed_raw")
     reported_expressions = metadata.get("license_expressions")
     reported_requires_dist = metadata.get("requires_dist")
     if entry != expected_entry:
@@ -9710,6 +10009,36 @@ def _metadata_evidence_blockers(
             entry=expected_entry,
         )
     )
+    if not isinstance(installed_raw, str) or not installed_raw:
+        blockers.append(
+            {
+                "code": "invalid_installed_metadata_evidence",
+                "reason": "missing_raw",
+                "entry": "installed.METADATA",
+            }
+        )
+    elif installed_raw != raw:
+        blockers.append(
+            {
+                "code": "invalid_installed_metadata_evidence",
+                "reason": "archive_install_mismatch",
+                "entry": "installed.METADATA",
+            }
+        )
+    else:
+        installed_parsed = BytesParser().parsebytes(
+            installed_raw.encode("utf-8")
+        )
+        blockers.extend(
+            _core_metadata_semantic_blockers(
+                installed_parsed,
+                installed_raw,
+                source_metadata_expectations,
+                source_readme_digest,
+                code="invalid_installed_metadata_evidence",
+                entry="installed.METADATA",
+            )
+        )
     if raw_expressions != reported_expressions:
         blockers.append(
             {
