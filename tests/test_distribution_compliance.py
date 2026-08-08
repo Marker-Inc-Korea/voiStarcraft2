@@ -2706,6 +2706,329 @@ class PrivateConfigurationScannerTest(unittest.TestCase):
             ),
         )
 
+    def test_python_semantic_mappings_are_scanned_in_tests_paths(self) -> None:
+        endpoint = "https://proxy." + "corp.example/v1"
+        model = "private-" + "deployment"
+        payload = (
+            'settings = {"provider": "my" + "proxy", '
+            f'"base_url": "{endpoint}", "model": "{model}"}}\n'
+        ).encode()
+
+        findings = scan_payload(
+            "tests/test_private_configuration.py",
+            payload,
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
+            {str(item["rule_id"]) for item in findings},
+        )
+
+    def test_python_semantic_fixture_allowlist_does_not_overmatch(
+        self,
+    ) -> None:
+        endpoint = "https://proxy." + "corp.example/v1"
+        model = "private-" + "deployment"
+        allowed_path = "tests/test_private_fixture.py"
+        payload = (
+            'settings = {"provider": "my" + "proxy", '
+            f'"base_url": "{endpoint}", "model": "{model}"}}\n'
+        ).encode()
+        baseline = scan_payload(
+            allowed_path,
+            payload,
+            allow_safe_fixtures=False,
+        )
+        allowed = {
+            allowed_path: {
+                str(finding["rule_id"]): {
+                    str(finding["fingerprint"]): 1
+                }
+                for finding in baseline
+            }
+        }
+
+        with mock.patch.object(
+            compliance_module,
+            "_SAFE_FIXTURE_FINGERPRINTS",
+            allowed,
+        ):
+            self.assertEqual([], scan_payload(allowed_path, payload))
+            self.assertTrue(
+                scan_payload(
+                    "tests/test_private_fixture_copy.py",
+                    payload,
+                )
+            )
+            self.assertTrue(
+                scan_payload(
+                    allowed_path,
+                    payload.replace(b"private-deployment", b"private-other"),
+                )
+            )
+
+    def test_python_semantic_call_merges_multiple_kwargs_mappings(
+        self,
+    ) -> None:
+        endpoint = "https://proxy." + "corp.example/v1"
+        model = "private-" + "deployment"
+        payload = (
+            'provider_cfg = {"provider": "my" + "proxy"}\n'
+            f'target_cfg = {{"base_url": "{endpoint}", '
+            f'"model": "{model}"}}\n'
+            "Client(**provider_cfg, **target_cfg)\n"
+        ).encode()
+
+        findings = scan_payload(
+            "starcraft_commander/split_config.py",
+            payload,
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
+            {str(item["rule_id"]) for item in findings},
+        )
+
+    def test_python_semantic_call_merges_cartesian_kwargs_states(
+        self,
+    ) -> None:
+        endpoint = "https://proxy." + "corp.example/v1"
+        model = "private-" + "deployment"
+        payload = (
+            'provider_cfg = ({"provider": "my" + "proxy"} '
+            'if private_provider else {"provider": "openai"})\n'
+            f'target_cfg = ({{"base_url": "{endpoint}", '
+            f'"model": "{model}"}} if private_target else '
+            '{"base_url": "https://api.openai.com/v1", '
+            '"model": "gpt-public"})\n'
+            "Client(**provider_cfg, **target_cfg)\n"
+        ).encode()
+
+        findings = scan_payload(
+            "starcraft_commander/cartesian_config.py",
+            payload,
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
+            {str(item["rule_id"]) for item in findings},
+        )
+
+    def test_python_semantic_later_kwargs_override_stays_public(
+        self,
+    ) -> None:
+        payload = (
+            'private_provider = {"provider": "my" + "proxy"}\n'
+            'public_target = {"provider": "openai", '
+            '"base_url": "https://api.openai.com/v1", '
+            '"model": "gpt-public"}\n'
+            "Client(**private_provider, **public_target)\n"
+        ).encode()
+
+        self.assertEqual(
+            [],
+            scan_payload(
+                "starcraft_commander/overridden_config.py",
+                payload,
+                allow_safe_fixtures=False,
+            ),
+        )
+
+    def test_python_semantic_kwargs_cartesian_limit_fails_closed(
+        self,
+    ) -> None:
+        assignments = [
+            (
+                'cfg_0 = ({"provider": "my" + "proxy"} '
+                'if flag_0 else {"provider": "openai"})'
+            ),
+            *[
+                (
+                    f'cfg_{index} = ({{"option_{index}": "a"}} '
+                    f'if flag_{index} else {{"option_{index}": "b"}})'
+                )
+                for index in range(1, 10)
+            ],
+        ]
+        payload = (
+            "\n".join(assignments)
+            + "\nClient("
+            + ", ".join(f"**cfg_{index}" for index in range(10))
+            + ")\n"
+        )
+
+        reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "starcraft_commander/limited_kwargs.py",
+                payload,
+                include_semantic_mappings=True,
+            )
+        )
+        findings = scan_payload(
+            "starcraft_commander/limited_kwargs.py",
+            payload.encode(),
+            allow_safe_fixtures=False,
+        )
+
+        self.assertLess(len(reconstructed), 30_000)
+        self.assertEqual(
+            "python_cli_analysis_limit_exceeded:environment_states",
+            failure,
+        )
+        self.assertIn(
+            "python_cli_analysis_limit_exceeded",
+            {str(item["rule_id"]) for item in findings},
+        )
+
+    def test_python_semantic_tracks_constant_subscript_mutations(
+        self,
+    ) -> None:
+        endpoint = "https://proxy." + "corp.example/v1"
+        model = "private-" + "deployment"
+        payload = (
+            "settings = {}\n"
+            "alias = settings\n"
+            'settings["provider"] = "my" + "proxy"\n'
+            f'alias["base_url"] = "{endpoint}"\n'
+            f'settings["model"] = "{model}"\n'
+            "Client(**alias)\n"
+        ).encode()
+
+        findings = scan_payload(
+            "starcraft_commander/mutated_config.py",
+            payload,
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
+            {str(item["rule_id"]) for item in findings},
+        )
+
+    def test_python_semantic_dynamic_subscript_mutations_stay_clean(
+        self,
+    ) -> None:
+        payload = (
+            "from os import environ\n"
+            "settings = {}\n"
+            "environ = settings\n"
+            'key = "provider" if runtime else "base_url"\n'
+            'environ[key] = "my" + "proxy"\n'
+            'settings["base_url"] = "https://api.openai.com/v1"\n'
+            'settings["model"] = "gpt-public"\n'
+            "Client(**settings)\n"
+        ).encode()
+
+        self.assertEqual(
+            [],
+            scan_payload(
+                "starcraft_commander/dynamic_mutation.py",
+                payload,
+                allow_safe_fixtures=False,
+            ),
+        )
+
+    def test_python_semantic_supports_dict_iterable_pairs(self) -> None:
+        endpoint = "https://proxy." + "corp.example/v1"
+        model = "private-" + "deployment"
+        payload = (
+            "pairs = [\n"
+            '    ("provider", "my" + "proxy"),\n'
+            f'    ("base_url", "{endpoint}"),\n'
+            f'    ("model", "{model}"),\n'
+            "]\n"
+            "settings = dict(pairs)\n"
+            "Client(**settings)\n"
+        ).encode()
+
+        findings = scan_payload(
+            "starcraft_commander/pair_config.py",
+            payload,
+            allow_safe_fixtures=False,
+        )
+
+        self.assertEqual(
+            {"private_endpoint", "private_model_override"},
+            {str(item["rule_id"]) for item in findings},
+        )
+
+    def test_public_and_dynamic_dict_iterable_pairs_stay_clean(
+        self,
+    ) -> None:
+        payloads = {
+            "public": (
+                'pairs = [("provider", "openai"), '
+                '("base_url", "https://api.openai.com/v1"), '
+                '("model", "gpt-public")]\n'
+                "Client(**dict(pairs))\n"
+            ),
+            "dynamic": (
+                'pairs = [("provider", "openai"), runtime_pair]\n'
+                "Client(**dict(pairs))\n"
+            ),
+        }
+
+        for name, payload in payloads.items():
+            with self.subTest(name=name):
+                self.assertEqual(
+                    [],
+                    scan_payload(
+                        f"starcraft_commander/{name}_pairs.py",
+                        payload.encode(),
+                        allow_safe_fixtures=False,
+                    ),
+                )
+
+    def test_python_semantic_dict_pair_state_limit_fails_closed(
+        self,
+    ) -> None:
+        pairs = [
+            (
+                '"provider"',
+                '"my" + "proxy" if flag_0 else "openai"',
+            ),
+            *[
+                (
+                    f'"option_{index}"',
+                    f'"a" if flag_{index} else "b"',
+                )
+                for index in range(1, 10)
+            ],
+        ]
+        payload = (
+            "pairs = ["
+            + ", ".join(
+                f"({key}, {value})" for key, value in pairs
+            )
+            + "]\nClient(**dict(pairs))\n"
+        )
+
+        reconstructed, failure = (
+            compliance_module._python_cli_argument_text(
+                "starcraft_commander/limited_pairs.py",
+                payload,
+                include_semantic_mappings=True,
+            )
+        )
+        findings = scan_payload(
+            "starcraft_commander/limited_pairs.py",
+            payload.encode(),
+            allow_safe_fixtures=False,
+        )
+
+        self.assertLess(len(reconstructed), 30_000)
+        self.assertEqual(
+            "python_cli_analysis_limit_exceeded:environment_states",
+            failure,
+        )
+        self.assertIn(
+            "python_cli_analysis_limit_exceeded",
+            {str(item["rule_id"]) for item in findings},
+        )
+
     def test_detects_ini_indirect_shell_and_generic_docker_myproxy(
         self,
     ) -> None:

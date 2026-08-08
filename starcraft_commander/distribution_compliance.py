@@ -3275,13 +3275,7 @@ def _python_cli_argument_text(
     semantic_fragments: list[str] = []
     semantic_fragment_set: set[str] = set()
     semantic_character_count = 0
-    semantic_mapping_enabled = (
-        include_semantic_mappings
-        and not any(
-            part.casefold() == "tests"
-            for part in PurePosixPath(path).parts
-        )
-    )
+    semantic_mapping_enabled = include_semantic_mappings
     cli_value = str | tuple[str, ...]
     cli_environment = dict[str, cli_value]
     dynamic_argument = "<dynamic-argument>"
@@ -3541,6 +3535,19 @@ def _python_cli_argument_text(
             ]
         mapping = stored_mapping(value)
         return [mapping] if mapping is not None else []
+
+    def merge_mapping_states(
+        states: Sequence[Mapping[str, cli_value]],
+        mappings: Sequence[Mapping[str, cli_value]],
+    ) -> list[dict[str, cli_value]]:
+        merged: list[dict[str, cli_value]] = []
+        for state in states:
+            for mapping in mappings:
+                if len(merged) >= max_environment_states:
+                    mark_limited("environment_states")
+                    return merged
+                merged.append({**state, **mapping})
+        return merged
 
     def stored_alternatives(
         value: cli_value | None,
@@ -3879,7 +3886,6 @@ def _python_cli_argument_text(
         call: ast.Call,
         environment: Mapping[str, cli_value],
     ) -> None:
-        mapping: dict[str, cli_value] = {}
         for argument in call.args:
             value = evaluate(
                 (
@@ -3891,15 +3897,72 @@ def _python_cli_argument_text(
             )
             for nested in mapping_alternatives(value):
                 record_semantic_mapping(nested)
+        states: list[dict[str, cli_value]] = [{}]
         for keyword in call.keywords:
             value = evaluate(keyword.value, environment)
             if keyword.arg is None:
-                for nested in mapping_alternatives(value):
-                    record_semantic_mapping(nested)
+                mappings = mapping_alternatives(value)
+                if mappings:
+                    states = merge_mapping_states(states, mappings)
             elif value is not None:
-                mapping[keyword.arg] = value
-        if mapping:
-            record_semantic_mapping(mapping)
+                states = [
+                    {**state, keyword.arg: value}
+                    for state in states
+                ]
+        for mapping in states:
+            if mapping:
+                record_semantic_mapping(mapping)
+
+    def iterable_pair_mapping_alternatives(
+        value: cli_value | None,
+    ) -> list[dict[str, cli_value]]:
+        iterable_alternatives = stored_alternatives(value)
+        candidates = (
+            iterable_alternatives
+            if iterable_alternatives is not None
+            else ((value,) if value is not None else ())
+        )
+        results: list[dict[str, cli_value]] = []
+        for candidate in candidates:
+            sequence = stored_sequence(candidate)
+            if sequence is None:
+                continue
+            states: list[dict[str, cli_value]] = [{}]
+            for item in sequence:
+                pair_alternatives = stored_alternatives(item)
+                pair_candidates = (
+                    pair_alternatives
+                    if pair_alternatives is not None
+                    else (item,)
+                )
+                updates: list[dict[str, cli_value]] = []
+                for pair_candidate in pair_candidates:
+                    pair = stored_sequence(pair_candidate)
+                    if pair is None or len(pair) != 2:
+                        continue
+                    keys = scalar_alternatives(pair[0])
+                    value_alternatives = (
+                        stored_alternatives(pair[1]) or (pair[1],)
+                    )
+                    updates.extend(
+                        {key: nested_value}
+                        for key in keys
+                        if (
+                            dynamic_argument not in key
+                            and dynamic_f_string_argument not in key
+                        )
+                        for nested_value in value_alternatives
+                    )
+                if not updates:
+                    states = []
+                    break
+                states = merge_mapping_states(states, updates)
+            for state in states:
+                if len(results) >= max_environment_states:
+                    mark_limited("environment_states")
+                    return results
+                results.append(state)
+        return results
 
     def evaluate(
         node: ast.AST,
@@ -4114,9 +4177,12 @@ def _python_cli_argument_text(
             if len(node.args) > 1:
                 return None
             if node.args:
-                mappings = mapping_alternatives(
-                    evaluate(node.args[0], environment)
-                )
+                argument_value = evaluate(node.args[0], environment)
+                mappings = mapping_alternatives(argument_value)
+                if not mappings:
+                    mappings = iterable_pair_mapping_alternatives(
+                        argument_value
+                    )
                 if not mappings:
                     return None
                 states = [dict(mapping) for mapping in mappings]
@@ -4126,11 +4192,7 @@ def _python_cli_argument_text(
                     mappings = mapping_alternatives(value)
                     if not mappings:
                         return None
-                    states = [
-                        {**state, **mapping}
-                        for state in states
-                        for mapping in mappings
-                    ]
+                    states = merge_mapping_states(states, mappings)
                 else:
                     states = [
                         {
@@ -4139,9 +4201,6 @@ def _python_cli_argument_text(
                         }
                         for state in states
                     ]
-                if len(states) > max_environment_states:
-                    mark_limited("environment_states")
-                    states = states[:max_environment_states]
             return store_alternatives(
                 [store_mapping(state) for state in states]
             )
@@ -4275,6 +4334,26 @@ def _python_cli_argument_text(
                 mark_limited("environment_values")
                 return
             environment[key] = value
+            return
+        if isinstance(target, ast.Subscript):
+            key = _constant_string_expression(target.slice)
+            if key is None:
+                return
+            mappings = mapping_alternatives(
+                evaluate(target.value, environment)
+            )
+            for mapping in mappings:
+                if value is None:
+                    mapping.pop(key, None)
+                    continue
+                if (
+                    key not in mapping
+                    and len(mapping) >= max_environment_values
+                ):
+                    mark_limited("environment_values")
+                    continue
+                mapping[key] = value
+                record_semantic_mapping(mapping)
             return
         if isinstance(target, (ast.List, ast.Tuple)):
             sequence = stored_sequence(value)
