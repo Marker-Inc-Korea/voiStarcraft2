@@ -1212,6 +1212,10 @@ jobs:
             ${{ needs.distribution_compliance_build.outputs.handoff_artifact_id }}
           path: ${{ runner.temp }}/voi-distribution-handoff-download
           merge-multiple: true
+      - name: Harden runner-owned workspace before root materialization
+        run: |
+          set -euo pipefail
+          chmod -R go-w "${GITHUB_WORKSPACE}"
       - name: Materialize bounded root-owned verifier inputs
         id: materialize-distribution-handoff
         env:
@@ -1586,7 +1590,6 @@ jobs:
           ) as output:
               output.write(f"manifest={encoded}\n")
           PY
-          chmod -R go-w "${GITHUB_WORKSPACE}"
       - name: Verify candidate evidence without privileges
         env:
           VERIFIER_PYTHON: >-

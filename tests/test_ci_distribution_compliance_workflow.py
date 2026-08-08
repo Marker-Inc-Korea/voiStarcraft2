@@ -256,6 +256,80 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
         ):
             self.assertIn(required, materialize_run)
 
+    def test_runner_hardens_workspace_before_root_materialization(
+        self,
+    ) -> None:
+        workflow = self._workflow()
+        steps = workflow["jobs"][SEAL_JOB]["steps"]
+        harden_name = (
+            "Harden runner-owned workspace before root materialization"
+        )
+        materialize_name = "Materialize bounded root-owned verifier inputs"
+        verifier_name = "Verify candidate evidence without privileges"
+        sealer_name = "Create sealed qualified upload bundle"
+
+        harden = self._step(workflow["jobs"][SEAL_JOB], harden_name)
+        materialize = self._step(
+            workflow["jobs"][SEAL_JOB],
+            materialize_name,
+        )
+        materialize_index = self._step_index(steps, materialize_name)
+        self.assertLess(
+            self._step_index(steps, harden_name),
+            materialize_index,
+        )
+        self.assertLess(
+            materialize_index,
+            self._step_index(steps, verifier_name),
+        )
+        self.assertLess(
+            self._step_index(steps, verifier_name),
+            self._step_index(steps, sealer_name),
+        )
+        self.assertIn(
+            'chmod -R go-w "${GITHUB_WORKSPACE}"',
+            harden["run"],
+        )
+        self.assertNotIn("sudo", harden["run"])
+        self.assertNotIn("chmod -R", materialize["run"])
+        hardening_command = 'chmod -R go-w "${GITHUB_WORKSPACE}"'
+        self.assertEqual(
+            1,
+            sum(
+                hardening_command in str(step.get("run", ""))
+                for step in steps
+            ),
+        )
+        for step in steps[materialize_index:]:
+            self.assertNotIn(
+                hardening_command,
+                str(step.get("run", "")),
+            )
+        for required in (
+            "directory.mkdir(mode=0o700, exist_ok=False)",
+            "os.chmod(path, 0o444)",
+            "os.chmod(dist_dir, 0o555)",
+            "os.chmod(evidence_dir, 0o555)",
+        ):
+            self.assertIn(required, materialize["run"])
+
+        runner_uid = 1001
+        ownership = {"checkout": runner_uid}
+
+        def runner_recursive_chmod() -> None:
+            if any(owner != runner_uid for owner in ownership.values()):
+                raise PermissionError(
+                    "runner cannot chmod root-owned materialization"
+                )
+
+        runner_recursive_chmod()
+        ownership.update({"dist": 0, "evidence": 0})
+        with self.assertRaisesRegex(
+            PermissionError,
+            "runner cannot chmod root-owned materialization",
+        ):
+            runner_recursive_chmod()
+
     def test_distribution_actions_are_pinned_to_exact_commits(self) -> None:
         workflow = self._workflow()
         for job_name in (BUILD_JOB, SEAL_JOB):
