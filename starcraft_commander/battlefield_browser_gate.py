@@ -1339,6 +1339,10 @@ class _CandidateFixtureProcess:
             Path,
             tuple[str, int, str],
         ] = {}
+        self._staged_fixture_cleanup_started = False
+        self._staged_fixture_cleanup_verification_error: (
+            BaseException | None
+        ) = None
 
     def _command(
         self,
@@ -1571,6 +1575,8 @@ class _CandidateFixtureProcess:
                     os.chmod(staged_root / relative, 0o555)
             self._verify_staged_fixture_tree(staged_root, manifest)
         except BaseException as prepare_error:
+            self._staged_fixture_cleanup_started = True
+            self._staged_fixture_cleanup_verification_error = None
             try:
                 self._discard_staged_fixture_tree(staged_root)
             except BaseException as cleanup_error:
@@ -1630,41 +1636,45 @@ class _CandidateFixtureProcess:
             )
             digest = hashlib.sha256()
             total_bytes = 0
-            with (
-                os.fdopen(source_descriptor, "rb") as source_stream,
-                os.fdopen(destination_descriptor, "wb") as destination_stream,
-            ):
-                source_descriptor = -1
+            source_stream = os.fdopen(source_descriptor, "rb")
+            source_descriptor = -1
+            try:
+                destination_stream = os.fdopen(destination_descriptor, "wb")
                 destination_descriptor = -1
-                while chunk := source_stream.read(
-                    _FIXTURE_STAGING_CHUNK_SIZE
-                ):
-                    total_bytes += len(chunk)
-                    if total_bytes > byte_limit:
+                try:
+                    while chunk := source_stream.read(
+                        _FIXTURE_STAGING_CHUNK_SIZE
+                    ):
+                        total_bytes += len(chunk)
+                        if total_bytes > byte_limit:
+                            raise RuntimeError(
+                                "candidate fixture staging byte limit exceeded"
+                            )
+                        digest.update(chunk)
+                        destination_stream.write(chunk)
+                    after = os.fstat(source_stream.fileno())
+                    if (
+                        before.st_dev,
+                        before.st_ino,
+                        before.st_mode,
+                        before.st_size,
+                        before.st_mtime_ns,
+                    ) != (
+                        after.st_dev,
+                        after.st_ino,
+                        after.st_mode,
+                        after.st_size,
+                        after.st_mtime_ns,
+                    ):
                         raise RuntimeError(
-                            "candidate fixture staging byte limit exceeded"
+                            f"candidate source changed while reading: {source}"
                         )
-                    digest.update(chunk)
-                    destination_stream.write(chunk)
-                after = os.fstat(source_stream.fileno())
-                if (
-                    before.st_dev,
-                    before.st_ino,
-                    before.st_mode,
-                    before.st_size,
-                    before.st_mtime_ns,
-                ) != (
-                    after.st_dev,
-                    after.st_ino,
-                    after.st_mode,
-                    after.st_size,
-                    after.st_mtime_ns,
-                ):
-                    raise RuntimeError(
-                        f"candidate source changed while reading: {source}"
-                    )
-                destination_stream.flush()
-                os.fsync(destination_stream.fileno())
+                    destination_stream.flush()
+                    os.fsync(destination_stream.fileno())
+                finally:
+                    destination_stream.close()
+            finally:
+                source_stream.close()
             os.chmod(destination, 0o444, follow_symlinks=False)
             return total_bytes, digest.hexdigest()
         except BaseException:
@@ -1699,36 +1709,39 @@ class _CandidateFixtureProcess:
                 raise RuntimeError(
                     "candidate fixture staged directory failed integrity checks"
                 )
-            for entry in os.scandir(directory):
-                path = Path(entry.path)
-                relative = path.relative_to(staged_root)
-                snapshot = entry.stat(follow_symlinks=False)
-                if stat.S_ISLNK(snapshot.st_mode):
-                    raise RuntimeError(
-                        "candidate fixture staged tree contains a symlink"
-                    )
-                if stat.S_ISDIR(snapshot.st_mode):
-                    stack.append(path)
-                    continue
-                observed.add(relative)
-                expected = manifest.get(relative)
-                if (
-                    expected is None
-                    or expected[0] != "file"
-                    or not stat.S_ISREG(snapshot.st_mode)
-                    or snapshot.st_uid != os.geteuid()
-                    or stat.S_IMODE(snapshot.st_mode) != 0o444
-                ):
-                    raise RuntimeError(
-                        "candidate fixture staged file failed integrity checks"
-                    )
-                if (
-                    snapshot.st_size != expected[1]
-                    or _sha256_regular_file(path) != expected[2]
-                ):
-                    raise RuntimeError(
-                        "candidate fixture staged bytes failed integrity checks"
-                    )
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    path = Path(entry.path)
+                    relative = path.relative_to(staged_root)
+                    snapshot = entry.stat(follow_symlinks=False)
+                    if stat.S_ISLNK(snapshot.st_mode):
+                        raise RuntimeError(
+                            "candidate fixture staged tree contains a symlink"
+                        )
+                    if stat.S_ISDIR(snapshot.st_mode):
+                        stack.append(path)
+                        continue
+                    observed.add(relative)
+                    expected = manifest.get(relative)
+                    if (
+                        expected is None
+                        or expected[0] != "file"
+                        or not stat.S_ISREG(snapshot.st_mode)
+                        or snapshot.st_uid != os.geteuid()
+                        or stat.S_IMODE(snapshot.st_mode) != 0o444
+                    ):
+                        raise RuntimeError(
+                            "candidate fixture staged file failed integrity "
+                            "checks"
+                        )
+                    if (
+                        snapshot.st_size != expected[1]
+                        or _sha256_regular_file(path) != expected[2]
+                    ):
+                        raise RuntimeError(
+                            "candidate fixture staged bytes failed integrity "
+                            "checks"
+                        )
         if observed != set(manifest):
             raise RuntimeError("candidate fixture staged tree manifest changed")
 
@@ -1764,11 +1777,16 @@ class _CandidateFixtureProcess:
             raise RuntimeError("candidate fixture staging state is incomplete")
         if staged_script != staged_root / "fixture.py":
             raise RuntimeError("candidate fixture staged script path changed")
-        verification_error: BaseException | None = None
-        try:
-            self._verify_staged_fixture_tree(staged_root, manifest)
-        except BaseException as error:
-            verification_error = error
+        verification_error = self._staged_fixture_cleanup_verification_error
+        if not self._staged_fixture_cleanup_started:
+            try:
+                self._verify_staged_fixture_tree(staged_root, manifest)
+            except BaseException as error:
+                verification_error = error
+            self._staged_fixture_cleanup_started = True
+            self._staged_fixture_cleanup_verification_error = (
+                verification_error
+            )
         try:
             self._discard_staged_fixture_tree(staged_root)
         except BaseException as cleanup_error:
@@ -1783,6 +1801,8 @@ class _CandidateFixtureProcess:
         self._staged_candidate_root = None
         self._staged_fixture_script = None
         self._staged_fixture_manifest = {}
+        self._staged_fixture_cleanup_started = False
+        self._staged_fixture_cleanup_verification_error = None
 
     def start(self) -> str:
         if self._process is not None:

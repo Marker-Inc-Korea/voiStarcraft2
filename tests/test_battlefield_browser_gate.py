@@ -495,8 +495,7 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             self.assertIsNotNone(staged_root)
             assert staged_root is not None
             self.assertTrue(staged_root.exists())
-            with self.assertRaisesRegex(RuntimeError, "integrity checks"):
-                fixture._cleanup_fixture_script()
+            fixture._cleanup_fixture_script()
 
             self.assertFalse(staged_root.exists())
             self.assertEqual([], list(staging_root.iterdir()))
@@ -764,6 +763,43 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             self.assertIsNone(fixture._staged_candidate_root)
             self.assertIsNone(fixture._staged_fixture_script)
 
+    def test_candidate_fixture_preserves_fdopen_failure_without_double_close(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.py"
+            destination = root / "destination.py"
+            source.write_text("# source\n", encoding="utf-8")
+            real_fdopen = os.fdopen
+
+            def failing_destination_fdopen(
+                descriptor: int,
+                mode: str,
+            ) -> object:
+                if mode == "wb":
+                    raise OSError("destination fdopen failed")
+                return real_fdopen(descriptor, mode)
+
+            with (
+                mock.patch.object(
+                    browser_gate.os,
+                    "fdopen",
+                    failing_destination_fdopen,
+                ),
+                self.assertRaisesRegex(
+                    OSError,
+                    "destination fdopen failed",
+                ),
+            ):
+                _CandidateFixtureProcess._copy_staged_file(
+                    source,
+                    destination,
+                    byte_limit=1024,
+                )
+
+            self.assertFalse(destination.exists())
+
     def test_candidate_fixture_file_reads_are_chunk_bounded(
         self,
     ) -> None:
@@ -812,6 +848,9 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
 
                 def fileno(self) -> int:
                     return self._stream.fileno()
+
+                def close(self) -> None:
+                    self._stream.close()
 
             def monitored_fdopen(
                 descriptor: int,
@@ -947,6 +986,86 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             self.assertIsNone(fixture._staged_candidate_root)
             self.assertIsNone(fixture._staged_fixture_script)
 
+    def test_candidate_fixture_verification_closes_scandir_on_failure(
+        self,
+    ) -> None:
+        with (
+            tempfile.TemporaryDirectory() as source_directory,
+            tempfile.TemporaryDirectory() as staging_directory,
+        ):
+            source_root = Path(source_directory).resolve()
+            trusted_fixture = source_root / "fixture.py"
+            trusted_fixture.write_text("# ok\n", encoding="utf-8")
+            candidate_root = source_root / "candidate"
+            package_root = candidate_root / "starcraft_commander"
+            package_root.mkdir(parents=True)
+            package_root.joinpath("__init__.py").write_text("", encoding="utf-8")
+            package_root.joinpath("web_gui.py").write_text("", encoding="utf-8")
+            staging_root = Path(staging_directory).resolve()
+            staging_root.chmod(0o755)
+            fixture = _CandidateFixtureProcess(
+                BrowserGateConfig(
+                    repository_sha=REPOSITORY_SHA,
+                    build_identity=BUILD_IDENTITY,
+                    artifact_dir=source_root / "artifacts",
+                    candidate_root=candidate_root,
+                    candidate_uid=65001,
+                    candidate_gid=65001,
+                )
+            )
+
+            with (
+                mock.patch.object(browser_gate, "__file__", str(trusted_fixture)),
+                mock.patch.object(
+                    browser_gate,
+                    "_FIXTURE_STAGING_ROOT",
+                    staging_root,
+                ),
+            ):
+                staged_script = fixture._prepare_fixture_script()
+                staged_script.chmod(0o600)
+                real_scandir = os.scandir
+                scans: list[object] = []
+
+                class RecordingScandir:
+                    def __init__(self, directory: Path) -> None:
+                        self._inner = real_scandir(directory)
+                        self.closed = False
+
+                    def __enter__(self) -> RecordingScandir:
+                        return self
+
+                    def __exit__(self, *args: object) -> object:
+                        self.closed = True
+                        return self._inner.__exit__(*args)
+
+                    def __iter__(self) -> RecordingScandir:
+                        return self
+
+                    def __next__(self) -> os.DirEntry[str]:
+                        return next(self._inner)
+
+                def recording_scandir(directory: Path) -> RecordingScandir:
+                    scan = RecordingScandir(directory)
+                    scans.append(scan)
+                    return scan
+
+                with (
+                    mock.patch.object(
+                        browser_gate.os,
+                        "scandir",
+                        recording_scandir,
+                    ),
+                    self.assertRaisesRegex(
+                        RuntimeError,
+                        "integrity checks",
+                    ),
+                ):
+                    fixture._cleanup_fixture_script()
+
+            self.assertGreaterEqual(len(scans), 1)
+            self.assertTrue(scans[0].closed)
+
     def test_candidate_fixture_cleanup_can_retry_after_delete_failure(
         self,
     ) -> None:
@@ -999,6 +1118,75 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
                 self.assertEqual(staged_root, fixture._staged_candidate_root)
                 fixture._cleanup_fixture_script()
 
+            self.assertFalse(staged_root.exists())
+            self.assertIsNone(fixture._staged_candidate_root)
+            self.assertIsNone(fixture._staged_fixture_script)
+
+    def test_candidate_fixture_cleanup_retry_skips_partial_tree_verification(
+        self,
+    ) -> None:
+        with (
+            tempfile.TemporaryDirectory() as source_directory,
+            tempfile.TemporaryDirectory() as staging_directory,
+        ):
+            source_root = Path(source_directory).resolve()
+            trusted_fixture = source_root / "fixture.py"
+            trusted_fixture.write_text("# ok\n", encoding="utf-8")
+            candidate_root = source_root / "candidate"
+            package_root = candidate_root / "starcraft_commander"
+            package_root.mkdir(parents=True)
+            package_root.joinpath("__init__.py").write_text("", encoding="utf-8")
+            package_root.joinpath("web_gui.py").write_text("", encoding="utf-8")
+            staging_root = Path(staging_directory).resolve()
+            staging_root.chmod(0o755)
+            fixture = _CandidateFixtureProcess(
+                BrowserGateConfig(
+                    repository_sha=REPOSITORY_SHA,
+                    build_identity=BUILD_IDENTITY,
+                    artifact_dir=source_root / "artifacts",
+                    candidate_root=candidate_root,
+                    candidate_uid=65001,
+                    candidate_gid=65001,
+                )
+            )
+
+            with (
+                mock.patch.object(browser_gate, "__file__", str(trusted_fixture)),
+                mock.patch.object(
+                    browser_gate,
+                    "_FIXTURE_STAGING_ROOT",
+                    staging_root,
+                ),
+            ):
+                fixture._prepare_fixture_script()
+                staged_root = fixture._staged_candidate_root
+                assert staged_root is not None
+                real_discard = fixture._discard_staged_fixture_tree
+                discard_attempts = 0
+
+                def partially_failing_discard(root: Path) -> None:
+                    nonlocal discard_attempts
+                    discard_attempts += 1
+                    if discard_attempts == 1:
+                        package = root / "starcraft_commander"
+                        package.chmod(0o700)
+                        package.joinpath("web_gui.py").unlink()
+                        raise OSError("partial delete failed")
+                    real_discard(root)
+
+                with mock.patch.object(
+                    fixture,
+                    "_discard_staged_fixture_tree",
+                    side_effect=partially_failing_discard,
+                ):
+                    with self.assertRaisesRegex(
+                        OSError,
+                        "partial delete failed",
+                    ):
+                        fixture._cleanup_fixture_script()
+                    fixture._cleanup_fixture_script()
+
+            self.assertEqual(2, discard_attempts)
             self.assertFalse(staged_root.exists())
             self.assertIsNone(fixture._staged_candidate_root)
             self.assertIsNone(fixture._staged_fixture_script)
