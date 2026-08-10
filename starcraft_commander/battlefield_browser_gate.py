@@ -50,6 +50,8 @@ _BUILD_RE: Final[re.Pattern[str]] = re.compile(r"^sha256:[0-9a-f]{64}$")
 _FIXTURE_READY_TIMEOUT_SECONDS: Final[float] = 20.0
 _FIXTURE_STOP_TIMEOUT_SECONDS: Final[float] = 10.0
 _FIXTURE_STAGING_ROOT: Final[Path] = Path("/tmp").resolve()
+_FIXTURE_STAGING_FILE_LIMIT: Final[int] = 4096
+_FIXTURE_STAGING_BYTE_LIMIT: Final[int] = 64 * 1024 * 1024
 _FIXTURE_BOOTSTRAP: Final[str] = (
     "import runpy,sys;"
     "root=sys.argv[1];script=sys.argv[2];"
@@ -1255,7 +1257,13 @@ class BrowserGateConfig:
             or candidate_root.resolve() != candidate_root.absolute()
         ):
             raise ValueError("candidate_root must be an absolute regular directory")
-        for relative in ("starcraft_commander/web_gui.py",):
+        package_root = candidate_root / "starcraft_commander"
+        if package_root.is_symlink() or not package_root.is_dir():
+            raise ValueError("candidate package is missing or linked")
+        for relative in (
+            "starcraft_commander/__init__.py",
+            "starcraft_commander/web_gui.py",
+        ):
             candidate = candidate_root / relative
             if candidate.is_symlink() or not candidate.is_file():
                 raise ValueError(f"candidate source is missing or linked: {relative}")
@@ -1312,21 +1320,33 @@ class _CandidateFixtureProcess:
         self._drain_lock = threading.Lock()
         self._drain_threads: list[threading.Thread] = []
         self._staged_fixture_script: Path | None = None
+        self._staged_candidate_root: Path | None = None
+        self._staged_fixture_manifest: dict[
+            Path,
+            tuple[str, int, str],
+        ] = {}
 
-    def _command(self, fixture_script: Path | None = None) -> list[str]:
+    def _command(
+        self,
+        fixture_script: Path | None = None,
+        *,
+        candidate_root: Path | None = None,
+    ) -> list[str]:
         if fixture_script is None:
             if self._config.candidate_uid is not None:
                 raise RuntimeError(
                     "dedicated candidate execution requires staged fixture source"
                 )
             fixture_script = Path(__file__).resolve()
+        if candidate_root is None:
+            candidate_root = self._config.candidate_root
         command = [
             str(self._config.candidate_python),
             "-I",
             "-B",
             "-c",
             _FIXTURE_BOOTSTRAP,
-            str(self._config.candidate_root),
+            str(candidate_root),
             str(fixture_script),
         ]
         if self._config.candidate_uid is None:
@@ -1350,6 +1370,8 @@ class _CandidateFixtureProcess:
             raise RuntimeError("candidate UID must differ from trusted verifier UID")
         if self._staged_fixture_script is not None:
             raise RuntimeError("candidate fixture source is already staged")
+        if self._staged_candidate_root is not None:
+            raise RuntimeError("candidate package source is already staged")
 
         staging_root = _FIXTURE_STAGING_ROOT
         if (
@@ -1360,60 +1382,214 @@ class _CandidateFixtureProcess:
         ):
             raise RuntimeError("candidate fixture staging root is not traversable")
 
-        source_payload = _read_regular_file(Path(__file__).resolve())
-        descriptor, raw_path = tempfile.mkstemp(
-            dir=staging_root,
-            prefix="voi-browser-fixture-",
-            suffix=".py",
+        staged_root = Path(
+            tempfile.mkdtemp(
+                dir=staging_root,
+                prefix="voi-browser-fixture-",
+            )
         )
-        staged = Path(raw_path)
+        manifest: dict[Path, tuple[str, int, str]] = {
+            Path("."): ("directory", 0, ""),
+        }
+        source_payload = _read_regular_file(Path(__file__).resolve())
+        staged_script = staged_root / "fixture.py"
+        total_files = 1
+        total_bytes = len(source_payload)
+        if total_bytes > _FIXTURE_STAGING_BYTE_LIMIT:
+            staged_root.rmdir()
+            raise RuntimeError("candidate fixture staging byte limit exceeded")
+        try:
+            self._write_staged_file(staged_script, source_payload)
+            manifest[Path("fixture.py")] = (
+                "file",
+                len(source_payload),
+                hashlib.sha256(source_payload).hexdigest(),
+            )
+            source_package = self._config.candidate_root / "starcraft_commander"
+            staged_package = staged_root / "starcraft_commander"
+            staged_package.mkdir(mode=0o755)
+            manifest[Path("starcraft_commander")] = ("directory", 0, "")
+
+            stack = [(source_package, staged_package)]
+            while stack:
+                source_directory, staged_directory = stack.pop()
+                entries = sorted(
+                    os.scandir(source_directory),
+                    key=lambda entry: entry.name,
+                )
+                for entry in entries:
+                    source = Path(entry.path)
+                    relative = source.relative_to(self._config.candidate_root)
+                    staged = staged_root / relative
+                    snapshot = entry.stat(follow_symlinks=False)
+                    if stat.S_ISLNK(snapshot.st_mode):
+                        raise ValueError(
+                            f"candidate package contains a symlink: {relative}"
+                        )
+                    if stat.S_ISDIR(snapshot.st_mode):
+                        staged.mkdir(mode=0o755)
+                        manifest[relative] = ("directory", 0, "")
+                        stack.append((source, staged))
+                        continue
+                    if not stat.S_ISREG(snapshot.st_mode):
+                        raise ValueError(
+                            "candidate package contains a non-regular entry: "
+                            f"{relative}"
+                        )
+                    payload = _read_regular_file(source)
+                    total_files += 1
+                    total_bytes += len(payload)
+                    if total_files > _FIXTURE_STAGING_FILE_LIMIT:
+                        raise RuntimeError(
+                            "candidate fixture staging file limit exceeded"
+                        )
+                    if total_bytes > _FIXTURE_STAGING_BYTE_LIMIT:
+                        raise RuntimeError(
+                            "candidate fixture staging byte limit exceeded"
+                        )
+                    self._write_staged_file(staged, payload)
+                    manifest[relative] = (
+                        "file",
+                        len(payload),
+                        hashlib.sha256(payload).hexdigest(),
+                    )
+
+            for relative, (kind, _, _) in sorted(
+                manifest.items(),
+                key=lambda item: len(item[0].parts),
+                reverse=True,
+            ):
+                if kind == "directory":
+                    os.chmod(staged_root / relative, 0o555)
+            self._verify_staged_fixture_tree(staged_root, manifest)
+        except BaseException:
+            self._discard_staged_fixture_tree(staged_root)
+            raise
+
+        self._staged_candidate_root = staged_root
+        self._staged_fixture_script = staged_script
+        self._staged_fixture_manifest = manifest
+        return staged_script
+
+    @staticmethod
+    def _write_staged_file(path: Path, payload: bytes) -> None:
+        descriptor = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
         try:
             with os.fdopen(descriptor, "wb") as stream:
                 descriptor = -1
-                stream.write(source_payload)
+                stream.write(payload)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.chmod(staged, 0o444, follow_symlinks=False)
-            snapshot = staged.lstat()
-            if (
-                staged.is_symlink()
-                or not stat.S_ISREG(snapshot.st_mode)
-                or snapshot.st_uid != os.geteuid()
-                or stat.S_IMODE(snapshot.st_mode) != 0o444
-                or _read_regular_file(staged) != source_payload
-            ):
-                raise RuntimeError(
-                    "candidate fixture staged source failed integrity checks"
-                )
-        except BaseException:
+            os.chmod(path, 0o444, follow_symlinks=False)
+        finally:
             if descriptor >= 0:
                 os.close(descriptor)
-            staged.unlink(missing_ok=True)
-            raise
 
-        self._staged_fixture_script = staged
-        return staged
+    @staticmethod
+    def _verify_staged_fixture_tree(
+        staged_root: Path,
+        manifest: Mapping[Path, tuple[str, int, str]],
+    ) -> None:
+        observed: set[Path] = set()
+        stack = [staged_root]
+        while stack:
+            directory = stack.pop()
+            relative_directory = directory.relative_to(staged_root)
+            if relative_directory == Path("."):
+                relative_directory = Path(".")
+            observed.add(relative_directory)
+            snapshot = directory.lstat()
+            if (
+                directory.is_symlink()
+                or not stat.S_ISDIR(snapshot.st_mode)
+                or snapshot.st_uid != os.geteuid()
+                or stat.S_IMODE(snapshot.st_mode) != 0o555
+            ):
+                raise RuntimeError(
+                    "candidate fixture staged directory failed integrity checks"
+                )
+            for entry in os.scandir(directory):
+                path = Path(entry.path)
+                relative = path.relative_to(staged_root)
+                snapshot = entry.stat(follow_symlinks=False)
+                if stat.S_ISLNK(snapshot.st_mode):
+                    raise RuntimeError(
+                        "candidate fixture staged tree contains a symlink"
+                    )
+                if stat.S_ISDIR(snapshot.st_mode):
+                    stack.append(path)
+                    continue
+                observed.add(relative)
+                expected = manifest.get(relative)
+                if (
+                    expected is None
+                    or expected[0] != "file"
+                    or not stat.S_ISREG(snapshot.st_mode)
+                    or snapshot.st_uid != os.geteuid()
+                    or stat.S_IMODE(snapshot.st_mode) != 0o444
+                ):
+                    raise RuntimeError(
+                        "candidate fixture staged file failed integrity checks"
+                    )
+                payload = _read_regular_file(path)
+                if (
+                    len(payload) != expected[1]
+                    or hashlib.sha256(payload).hexdigest() != expected[2]
+                ):
+                    raise RuntimeError(
+                        "candidate fixture staged bytes failed integrity checks"
+                    )
+        if observed != set(manifest):
+            raise RuntimeError("candidate fixture staged tree manifest changed")
+
+    @staticmethod
+    def _discard_staged_fixture_tree(staged_root: Path) -> None:
+        if staged_root.is_symlink():
+            raise RuntimeError("candidate fixture staging root became a symlink")
+        for directory, subdirectories, files in os.walk(
+            staged_root,
+            topdown=False,
+            followlinks=False,
+        ):
+            root = Path(directory)
+            os.chmod(root, 0o700, follow_symlinks=False)
+            for name in files:
+                path = root / name
+                if path.is_symlink():
+                    raise RuntimeError(
+                        "candidate fixture staged tree contains a symlink"
+                    )
+                os.chmod(path, 0o600, follow_symlinks=False)
+                path.unlink()
+            for name in subdirectories:
+                path = root / name
+                if path.is_symlink():
+                    raise RuntimeError(
+                        "candidate fixture staged tree contains a symlink"
+                    )
+                os.chmod(path, 0o700, follow_symlinks=False)
+                path.rmdir()
+        staged_root.rmdir()
 
     def _cleanup_fixture_script(self) -> None:
-        staged = self._staged_fixture_script
+        staged_root = self._staged_candidate_root
+        staged_script = self._staged_fixture_script
+        manifest = self._staged_fixture_manifest
+        self._staged_candidate_root = None
         self._staged_fixture_script = None
-        if staged is None:
+        self._staged_fixture_manifest = {}
+        if staged_root is None and staged_script is None:
             return
-        try:
-            snapshot = staged.lstat()
-        except FileNotFoundError as error:
-            raise RuntimeError(
-                "candidate fixture staged source disappeared before cleanup"
-            ) from error
-        if (
-            staged.is_symlink()
-            or not stat.S_ISREG(snapshot.st_mode)
-            or snapshot.st_uid != os.geteuid()
-        ):
-            raise RuntimeError(
-                "candidate fixture staged source changed before cleanup"
-            )
-        staged.unlink()
+        if staged_root is None or staged_script is None:
+            raise RuntimeError("candidate fixture staging state is incomplete")
+        if staged_script != staged_root / "fixture.py":
+            raise RuntimeError("candidate fixture staged script path changed")
+        self._verify_staged_fixture_tree(staged_root, manifest)
+        self._discard_staged_fixture_tree(staged_root)
 
     def start(self) -> str:
         if self._process is not None:
@@ -1426,10 +1602,16 @@ class _CandidateFixtureProcess:
             "PYTHONDONTWRITEBYTECODE": "1",
         }
         fixture_script = self._prepare_fixture_script()
+        candidate_root = (
+            self._staged_candidate_root or self._config.candidate_root
+        )
         try:
             process = subprocess.Popen(
-                self._command(fixture_script),
-                cwd=self._config.candidate_root,
+                self._command(
+                    fixture_script,
+                    candidate_root=candidate_root,
+                ),
+                cwd=candidate_root,
                 env=environment,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,

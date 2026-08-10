@@ -125,7 +125,9 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
 
     def test_candidate_fixture_dedicated_identity_uses_numeric_sudo(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            staged = Path(directory) / "fixture.py"
+            staged_root = Path(directory) / "staged"
+            staged_root.mkdir()
+            staged = staged_root / "fixture.py"
             staged.write_text("# staged fixture\n", encoding="utf-8")
             config = BrowserGateConfig(
                 repository_sha=REPOSITORY_SHA,
@@ -135,12 +137,16 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
                 candidate_gid=65001,
             )
 
-            command = _CandidateFixtureProcess(config)._command(staged)
+            command = _CandidateFixtureProcess(config)._command(
+                staged,
+                candidate_root=staged_root,
+            )
 
             self.assertEqual("/usr/bin/sudo", command[0])
             self.assertIn("--user=#65001", command)
             self.assertIn("--group=#65001", command)
             self.assertIn("--", command)
+            self.assertEqual(str(staged_root), command[-2])
             self.assertEqual(str(staged), command[-1])
 
     def test_candidate_fixture_stages_exact_read_only_traversable_source(
@@ -165,7 +171,11 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             ):
                 staged = fixture._prepare_fixture_script()
 
-            self.assertEqual(staging_root, staged.parent)
+            staged_candidate_root = fixture._staged_candidate_root
+            self.assertIsNotNone(staged_candidate_root)
+            assert staged_candidate_root is not None
+            self.assertEqual(staging_root, staged_candidate_root.parent)
+            self.assertEqual(staged_candidate_root, staged.parent)
             self.assertFalse(staged.is_symlink())
             self.assertEqual(
                 Path(browser_gate.__file__).read_bytes(),
@@ -173,12 +183,161 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             )
             self.assertEqual(0o444, stat.S_IMODE(staged.stat().st_mode))
             self.assertEqual(
+                0o555,
+                stat.S_IMODE(staged_candidate_root.stat().st_mode),
+            )
+            self.assertEqual(
                 Path(browser_gate.__file__).stat().st_uid,
                 staged.stat().st_uid,
+            )
+            staged_web_gui = (
+                staged_candidate_root
+                / "starcraft_commander"
+                / "web_gui.py"
+            )
+            self.assertEqual(
+                config.candidate_root.joinpath(
+                    "starcraft_commander",
+                    "web_gui.py",
+                ).read_bytes(),
+                staged_web_gui.read_bytes(),
+            )
+            self.assertEqual(
+                0o444,
+                stat.S_IMODE(staged_web_gui.stat().st_mode),
             )
 
             fixture._cleanup_fixture_script()
             self.assertFalse(staged.exists())
+            self.assertFalse(staged_candidate_root.exists())
+
+    def test_staged_fixture_imports_candidate_package_with_isolated_python(
+        self,
+    ) -> None:
+        with (
+            tempfile.TemporaryDirectory() as source_directory,
+            tempfile.TemporaryDirectory() as staging_directory,
+        ):
+            source_root = Path(source_directory).resolve()
+            candidate_root = source_root / "candidate"
+            package_root = candidate_root / "starcraft_commander"
+            package_root.mkdir(parents=True)
+            package_root.joinpath("__init__.py").write_text(
+                "",
+                encoding="utf-8",
+            )
+            package_root.joinpath("web_gui.py").write_text(
+                "class WebGuiServer:\n"
+                "    pass\n",
+                encoding="utf-8",
+            )
+            staging_root = Path(staging_directory).resolve()
+            staging_root.chmod(0o755)
+            config = BrowserGateConfig(
+                repository_sha=REPOSITORY_SHA,
+                build_identity=BUILD_IDENTITY,
+                artifact_dir=source_root / "artifacts",
+                candidate_root=candidate_root,
+                candidate_uid=65001,
+                candidate_gid=65001,
+            )
+            fixture = _CandidateFixtureProcess(config)
+
+            with mock.patch.object(
+                browser_gate,
+                "_FIXTURE_STAGING_ROOT",
+                staging_root,
+            ):
+                staged_script = fixture._prepare_fixture_script()
+                staged_candidate_root = fixture._staged_candidate_root
+                assert staged_candidate_root is not None
+                sudo_command = fixture._command(
+                    staged_script,
+                    candidate_root=staged_candidate_root,
+                )
+                isolated_command = sudo_command[
+                    sudo_command.index("--") + 1 :
+                ]
+                environment = {
+                    "HOME": "/tmp",
+                    "LANG": "C.UTF-8",
+                    "LC_ALL": "C.UTF-8",
+                    "PATH": "/usr/bin:/bin",
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                }
+
+                result = subprocess.run(
+                    isolated_command,
+                    cwd=staged_candidate_root,
+                    env=environment,
+                    input="",
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+
+                self.assertEqual(1, result.returncode)
+                self.assertIn("-I", isolated_command)
+                self.assertNotIn("PYTHONPATH", environment)
+                self.assertNotIn("No module named", result.stderr)
+                self.assertIn(
+                    "candidate browser fixture failed: Expecting value",
+                    result.stderr,
+                )
+                fixture._cleanup_fixture_script()
+
+            self.assertEqual([], list(staging_root.iterdir()))
+
+    def test_candidate_fixture_rejects_transitive_package_symlink(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as source_directory,
+            tempfile.TemporaryDirectory() as staging_directory,
+        ):
+            source_root = Path(source_directory).resolve()
+            candidate_root = source_root / "candidate"
+            package_root = candidate_root / "starcraft_commander"
+            package_root.mkdir(parents=True)
+            package_root.joinpath("__init__.py").write_text(
+                "",
+                encoding="utf-8",
+            )
+            package_root.joinpath("web_gui.py").write_text(
+                "class WebGuiServer:\n"
+                "    pass\n",
+                encoding="utf-8",
+            )
+            outside = source_root / "outside.py"
+            outside.write_text("ESCAPED = True\n", encoding="utf-8")
+            package_root.joinpath("escaped.py").symlink_to(outside)
+            staging_root = Path(staging_directory).resolve()
+            staging_root.chmod(0o755)
+            fixture = _CandidateFixtureProcess(
+                BrowserGateConfig(
+                    repository_sha=REPOSITORY_SHA,
+                    build_identity=BUILD_IDENTITY,
+                    artifact_dir=source_root / "artifacts",
+                    candidate_root=candidate_root,
+                    candidate_uid=65001,
+                    candidate_gid=65001,
+                )
+            )
+
+            with (
+                mock.patch.object(
+                    browser_gate,
+                    "_FIXTURE_STAGING_ROOT",
+                    staging_root,
+                ),
+                self.assertRaisesRegex(
+                    ValueError,
+                    "candidate package contains a symlink",
+                ),
+            ):
+                fixture._prepare_fixture_script()
+
+            self.assertEqual([], list(staging_root.iterdir()))
+            self.assertIsNone(fixture._staged_candidate_root)
+            self.assertIsNone(fixture._staged_fixture_script)
 
     def test_candidate_fixture_cleans_staged_source_when_spawn_fails(
         self,
