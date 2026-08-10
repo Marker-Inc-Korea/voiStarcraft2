@@ -1320,24 +1320,29 @@ class _CandidateFixtureProcess:
         self._process = None
         if process is None:
             return
-        if process.poll() is None:
-            self._signal_group(signal.SIGTERM)
-            try:
-                process.wait(timeout=_FIXTURE_STOP_TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired:
-                self._signal_group(signal.SIGKILL)
-                process.wait(timeout=_FIXTURE_STOP_TIMEOUT_SECONDS)
-        if process.stdout is not None:
-            process.stdout.close()
-        if process.stderr is not None:
-            process.stderr.close()
-        for thread in self._drain_threads:
-            thread.join(timeout=1)
-        self._cleanup_dedicated_uid()
+        try:
+            if process.poll() is None:
+                self._signal_group(process, signal.SIGTERM)
+                try:
+                    process.wait(timeout=_FIXTURE_STOP_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    self._signal_group(process, signal.SIGKILL)
+                    process.wait(timeout=_FIXTURE_STOP_TIMEOUT_SECONDS)
+        finally:
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+            for thread in self._drain_threads:
+                thread.join(timeout=1)
+            self._cleanup_dedicated_uid()
 
-    def _signal_group(self, requested_signal: signal.Signals) -> None:
-        process = self._process
-        if process is None or process.poll() is not None:
+    def _signal_group(
+        self,
+        process: subprocess.Popen[str],
+        requested_signal: signal.Signals,
+    ) -> None:
+        if process.poll() is not None:
             return
         if self._config.candidate_uid is None:
             try:

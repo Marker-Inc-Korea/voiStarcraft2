@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import signal
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import starcraft_commander.battlefield_browser_gate as browser_gate
 from starcraft_commander.battlefield_browser_gate import (
@@ -103,6 +105,30 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             self.assertIn("--user=#65001", command)
             self.assertIn("--group=#65001", command)
             self.assertIn("--", command)
+
+    def test_candidate_fixture_stop_signals_original_process_group(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = BrowserGateConfig(
+                repository_sha=REPOSITORY_SHA,
+                build_identity=BUILD_IDENTITY,
+                artifact_dir=Path(directory),
+            )
+            fixture = _CandidateFixtureProcess(config)
+            process = mock.Mock(pid=4321, stdout=None, stderr=None)
+            process.poll.return_value = None
+            fixture._process = process
+
+            with (
+                mock.patch.object(fixture, "_signal_group") as signal_group,
+                mock.patch.object(fixture, "_cleanup_dedicated_uid"),
+            ):
+                fixture.stop()
+
+            signal_group.assert_called_once_with(process, signal.SIGTERM)
+            process.wait.assert_called_once_with(
+                timeout=browser_gate._FIXTURE_STOP_TIMEOUT_SECONDS
+            )
+            self.assertIsNone(fixture._process)
 
     def test_release_cli_cannot_update_tracked_baselines(self) -> None:
         parser = browser_gate.build_argument_parser()

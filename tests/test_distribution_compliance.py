@@ -7752,6 +7752,9 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
             "starcraft_commander/runtime_data.py": 1,
         }
         sdist_requires_raw = (
+            "[browser]\n"
+            "axe-playwright-python==0.1.7\n"
+            "playwright==1.62.0\n\n"
             "[dev]\n"
             "build>=1.2\n"
             "pytest>=7\n\n"
