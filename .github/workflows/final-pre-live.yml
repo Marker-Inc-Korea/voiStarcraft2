@@ -130,7 +130,7 @@ jobs:
                   test "${release_pull_base_ref}" = "main"
                   test "${release_pull_base_repository_id}" = \
                     "${EVENT_REPOSITORY_ID}"
-                  mapfile -t qualification_pulls < <(
+                  qualification_pull_payload="$(
                     gh api \
                       --method GET \
                       -H "Accept: application/vnd.github+json" \
@@ -149,7 +149,12 @@ jobs:
                           .base.repo.full_name,
                           (.base.repo.id | tostring)
                         ] | @tsv'
-                  )
+                  )"
+                  qualification_pulls=()
+                  if test -n "${qualification_pull_payload}"; then
+                    mapfile -t qualification_pulls \
+                      <<< "${qualification_pull_payload}"
+                  fi
                   if test "${#qualification_pulls[@]}" -eq 1; then
                     IFS=$'\t' read -r \
                       qualification_pull_number \

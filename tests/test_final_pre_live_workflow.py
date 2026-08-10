@@ -1,5 +1,8 @@
+import os
 from pathlib import Path
 import re
+import subprocess
+import tempfile
 import unittest
 
 import yaml
@@ -232,6 +235,85 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
                     f"needs.{producer}.result == 'success'",
                     seal_condition,
                 )
+
+    def test_admission_fails_closed_when_qualification_lookup_fails(
+        self,
+    ) -> None:
+        boundary = self.step(
+            self.workflow()["jobs"]["event_admission"],
+            "Admit exact same-repository release event before checkout",
+        )["run"]
+        release_sha = "7" * 40
+        base_sha = "2" * 40
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            call_count = root / "gh-call-count"
+            fake_gh = fake_bin / "gh"
+            fake_gh.write_text(
+                "#!/bin/sh\n"
+                f"count_file={call_count}\n"
+                "count=0\n"
+                "if test -f \"$count_file\"; then\n"
+                "  count=\"$(cat \"$count_file\")\"\n"
+                "fi\n"
+                "count=$((count + 1))\n"
+                "printf '%s\\n' \"$count\" > \"$count_file\"\n"
+                "if test \"$count\" -eq 1; then\n"
+                f"  printf 'true\\t{release_sha}\\t"
+                "issue-141-final-prelive-gates\\t1\\tmain\\t1\\n'\n"
+                "  exit 0\n"
+                "fi\n"
+                "echo 'qualification lookup failed' >&2\n"
+                "exit 42\n",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+            output = root / "github-output"
+            environment = {
+                "EVENT_BASE_REPOSITORY": "",
+                "EVENT_BASE_REPOSITORY_ID": "",
+                "EVENT_HEAD_REPOSITORY": "",
+                "EVENT_HEAD_REPOSITORY_ID": "",
+                "EVENT_REPOSITORY_ID": "1",
+                "EXPECTED_RELEASE_BASE_COMMIT": base_sha,
+                "EXPECTED_RELEASE_COMMIT": release_sha,
+                "EXPECTED_WORKFLOW_COMMIT": release_sha,
+                "GH_TOKEN": "fixture-token",
+                "GITHUB_EVENT_NAME": "push",
+                "GITHUB_OUTPUT": str(output),
+                "GITHUB_REF": "refs/heads/main",
+                "GITHUB_REPOSITORY": "owner/repository",
+                "GITHUB_REPOSITORY_OWNER": "owner",
+                "GITHUB_SHA": release_sha,
+                "GITHUB_WORKFLOW_SHA": release_sha,
+                "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+                "QUALIFICATION_HEAD_REF": (
+                    "issue-169-final-prelive-browser-python"
+                ),
+                "QUALIFICATION_ISSUE_NUMBER": "169",
+                "RELEASE_AUTHORITY": "authoritative_exact_main",
+                "RELEASE_HEAD_REF": "issue-141-final-prelive-gates",
+                "RELEASE_MERGE_SHA": release_sha,
+                "RELEASE_MODE": "ready_for_live_qa",
+                "RELEASE_PULL_NUMBER": "168",
+            }
+
+            result = subprocess.run(
+                ["/bin/bash"],
+                input=boundary,
+                cwd=REPOSITORY_ROOT,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(42, result.returncode, result.stderr)
+            self.assertIn("qualification lookup failed", result.stderr)
+            self.assertFalse(output.exists())
 
     def test_candidate_and_trusted_checkouts_are_separated(self) -> None:
         workflow = self.workflow()
