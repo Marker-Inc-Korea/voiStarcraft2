@@ -32,9 +32,9 @@ env:
   RELEASE_PULL_NUMBER: "168"
   RELEASE_HEAD_REF: "issue-141-final-prelive-gates"
   RELEASE_MERGE_SHA: "721726d8da88d1c3a7448e22265af1f817b3f2cd"
-  QUALIFICATION_ISSUE_NUMBER: "173"
-  QUALIFICATION_HEAD_REF: "issue-173-final-prelive-bootstrap-import"
-  QUALIFICATION_BASE_SHA: "ba85658dbfca2731b217b5f977feb1135cdabb73"
+  QUALIFICATION_ISSUE_NUMBER: "175"
+  QUALIFICATION_HEAD_REF: "issue-175-final-prelive-browser-envelope"
+  QUALIFICATION_BASE_SHA: "5f27f4110190970dce04071e65cf1614ec98657f"
   EXPECTED_RELEASE_COMMIT: >-
     ${{ github.event_name == 'pull_request_target' &&
     github.event.pull_request.head.sha || github.sha }}
@@ -1470,13 +1470,27 @@ jobs:
                       )
               elif producer == "browser_accessibility":
                   viewports = child["viewports"]
+                  expected_viewport_evidence = {
+                      "desktop": {
+                          "actions": 20,
+                          "cards": 4,
+                          "lanes": 4,
+                          "stages": 16,
+                      },
+                      "mobile": {
+                          "actions": 50,
+                          "cards": 10,
+                          "lanes": 4,
+                          "stages": 40,
+                      },
+                  }
                   if (
                       not sha256(child["candidate_web_gui_sha256"])
                       or child["visual_diff_threshold"] != 0.01
                       or not isinstance(viewports, list)
                       or len(viewports) != 2
                       or {item.get("name") for item in viewports}
-                      != {"desktop", "mobile"}
+                      != set(expected_viewport_evidence)
                   ):
                       raise SystemExit("browser report is malformed")
                   for viewport in viewports:
@@ -1496,14 +1510,15 @@ jobs:
                           },
                           producer,
                       )
+                      expected = expected_viewport_evidence[viewport["name"]]
                       ratio = viewport["visual_diff_ratio"]
                       if (
-                          viewport["actions"] != 20
+                          viewport["actions"] != expected["actions"]
                           or viewport["all_visible"] is not True
-                          or viewport["cards"] != 4
-                          or viewport["lanes"] != 4
+                          or viewport["cards"] != expected["cards"]
+                          or viewport["lanes"] != expected["lanes"]
                           or viewport["serious_critical_count"] != 0
-                          or viewport["stages"] != 16
+                          or viewport["stages"] != expected["stages"]
                           or not sha256(viewport["actual_sha256"])
                           or not sha256(viewport["baseline_sha256"])
                           or isinstance(ratio, bool)
@@ -1760,7 +1775,7 @@ jobs:
           {
             echo "## Final pre-live"
             echo
-            echo "This event is not the exact issue #173 qualification merge"
+            echo "This event is not the exact issue #175 qualification merge"
             echo "for release PR #168 and closing issue #141."
             echo "The final pre-live release gate is not applicable."
           } >> "${GITHUB_STEP_SUMMARY}"

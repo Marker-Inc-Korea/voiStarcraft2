@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import re
@@ -129,13 +130,13 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
             "721726d8da88d1c3a7448e22265af1f817b3f2cd",
             workflow["env"]["RELEASE_MERGE_SHA"],
         )
-        self.assertEqual("173", workflow["env"]["QUALIFICATION_ISSUE_NUMBER"])
+        self.assertEqual("175", workflow["env"]["QUALIFICATION_ISSUE_NUMBER"])
         self.assertEqual(
-            "issue-173-final-prelive-bootstrap-import",
+            "issue-175-final-prelive-browser-envelope",
             workflow["env"]["QUALIFICATION_HEAD_REF"],
         )
         self.assertEqual(
-            "ba85658dbfca2731b217b5f977feb1135cdabb73",
+            "5f27f4110190970dce04071e65cf1614ec98657f",
             workflow["env"]["QUALIFICATION_BASE_SHA"],
         )
         self.assertIn("pull_request_target)", boundary)
@@ -327,9 +328,9 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
                 "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
                 "QUALIFICATION_BASE_SHA": base_sha,
                 "QUALIFICATION_HEAD_REF": (
-                    "issue-173-final-prelive-bootstrap-import"
+                    "issue-175-final-prelive-browser-envelope"
                 ),
-                "QUALIFICATION_ISSUE_NUMBER": "173",
+                "QUALIFICATION_ISSUE_NUMBER": "175",
                 "RELEASE_AUTHORITY": "authoritative_exact_main",
                 "RELEASE_HEAD_REF": "issue-141-final-prelive-gates",
                 "RELEASE_MERGE_SHA": release_sha,
@@ -407,9 +408,9 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
                 "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
                 "QUALIFICATION_BASE_SHA": base_sha,
                 "QUALIFICATION_HEAD_REF": (
-                    "issue-173-final-prelive-bootstrap-import"
+                    "issue-175-final-prelive-browser-envelope"
                 ),
-                "QUALIFICATION_ISSUE_NUMBER": "173",
+                "QUALIFICATION_ISSUE_NUMBER": "175",
                 "RELEASE_AUTHORITY": "authoritative_exact_main",
                 "RELEASE_HEAD_REF": "issue-141-final-prelive-gates",
                 "RELEASE_MERGE_SHA": release_sha,
@@ -468,18 +469,18 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
                 "  2)\n"
                 "    ;;\n"
                 "  3)\n"
-                "    printf '172\\tclosed\\t2026-08-10T00:00:00Z\\t"
-                f"{'6' * 40}\\tissue-173-final-prelive-bootstrap-import"
+                "    printf '176\\tclosed\\t2026-08-10T00:00:00Z\\t"
+                f"{'6' * 40}\\tissue-175-final-prelive-browser-envelope"
                 "\\towner/repository\\t1\\tmain\\towner/repository\\t1\\n'\n"
                 "    ;;\n"
                 "  4)\n"
-                f"    printf '172\\tclosed\\t2026-08-10T00:00:00Z\\t"
-                f"{release_sha}\\tissue-173-final-prelive-bootstrap-import"
+                f"    printf '176\\tclosed\\t2026-08-10T00:00:00Z\\t"
+                f"{release_sha}\\tissue-175-final-prelive-browser-envelope"
                 "\\towner/repository\\t1\\tmain\\towner/repository\\t1\\n'\n"
                 "    ;;\n"
                 "  5)\n"
-                "    printf '1\\t173\\tfalse\\towner/repository\\t173\\t"
-                "CLOSED\\tCOMPLETED\\t1\\t172\\tfalse\\t"
+                "    printf '1\\t175\\tfalse\\towner/repository\\t175\\t"
+                "CLOSED\\tCOMPLETED\\t1\\t176\\tfalse\\t"
                 "owner/repository\\n'\n"
                 "    ;;\n"
                 "  6)\n"
@@ -517,9 +518,9 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
                 "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
                 "QUALIFICATION_BASE_SHA": base_sha,
                 "QUALIFICATION_HEAD_REF": (
-                    "issue-173-final-prelive-bootstrap-import"
+                    "issue-175-final-prelive-browser-envelope"
                 ),
-                "QUALIFICATION_ISSUE_NUMBER": "173",
+                "QUALIFICATION_ISSUE_NUMBER": "175",
                 "RELEASE_AUTHORITY": "authoritative_exact_main",
                 "RELEASE_HEAD_REF": "issue-141-final-prelive-gates",
                 "RELEASE_MERGE_SHA": release_sha,
@@ -575,8 +576,8 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
                 "issue-141-final-prelive-gates\\t1\\tmain\\t1\\n'\n"
                 "  exit 0\n"
                 "fi\n"
-                "printf '172\\tclosed\\t2026-08-10T00:00:00Z\\t"
-                f"{stale_sha}\\tissue-173-final-prelive-bootstrap-import"
+                "printf '176\\tclosed\\t2026-08-10T00:00:00Z\\t"
+                f"{stale_sha}\\tissue-175-final-prelive-browser-envelope"
                 "\\towner/repository\\t1\\tmain\\towner/repository\\t1\\n'\n",
                 encoding="utf-8",
             )
@@ -605,9 +606,9 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
                 "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
                 "QUALIFICATION_BASE_SHA": base_sha,
                 "QUALIFICATION_HEAD_REF": (
-                    "issue-173-final-prelive-bootstrap-import"
+                    "issue-175-final-prelive-browser-envelope"
                 ),
-                "QUALIFICATION_ISSUE_NUMBER": "173",
+                "QUALIFICATION_ISSUE_NUMBER": "175",
                 "RELEASE_AUTHORITY": "authoritative_exact_main",
                 "RELEASE_HEAD_REF": "issue-141-final-prelive-gates",
                 "RELEASE_MERGE_SHA": release_sha,
@@ -689,9 +690,9 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
                 "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
                 "QUALIFICATION_BASE_SHA": qualification_base_sha,
                 "QUALIFICATION_HEAD_REF": (
-                    "issue-173-final-prelive-bootstrap-import"
+                    "issue-175-final-prelive-browser-envelope"
                 ),
-                "QUALIFICATION_ISSUE_NUMBER": "173",
+                "QUALIFICATION_ISSUE_NUMBER": "175",
                 "RELEASE_AUTHORITY": "authoritative_exact_main",
                 "RELEASE_HEAD_REF": "issue-141-final-prelive-gates",
                 "RELEASE_MERGE_SHA": release_sha,
@@ -957,10 +958,42 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
         ):
             with self.subTest(evidence=evidence):
                 self.assertIn(evidence, source)
-        self.assertIn("viewport[\"actions\"] != 20", source)
+        self.assertIn('"desktop": {', source)
+        self.assertIn('"mobile": {', source)
+        self.assertIn('"actions": 20', source)
+        self.assertIn('"actions": 50', source)
+        self.assertIn('"cards": 10', source)
+        self.assertIn('"stages": 40', source)
+        self.assertIn(
+            'viewport["actions"] != expected["actions"]',
+            source,
+        )
         self.assertIn("viewport[\"all_visible\"] is not True", source)
-        self.assertIn("viewport[\"lanes\"] != 4", source)
-        self.assertIn("viewport[\"stages\"] != 16", source)
+        self.assertIn('viewport["lanes"] != expected["lanes"]', source)
+        self.assertIn('viewport["stages"] != expected["stages"]', source)
+
+    def test_sealer_accepts_exact_desktop_and_mobile_profiles(self) -> None:
+        result = self.run_sealer(self.browser_viewports())
+
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_sealer_rejects_browser_viewport_profile_drift(self) -> None:
+        viewports = self.browser_viewports()
+        viewports[1].update(
+            {
+                "actions": 20,
+                "cards": 4,
+                "stages": 16,
+            }
+        )
+
+        result = self.run_sealer(viewports)
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(
+            "browser viewport evidence is malformed",
+            result.stderr,
+        )
 
     def test_exact_child_ids_and_digests_are_sealed(self) -> None:
         workflow = self.workflow()
@@ -1054,6 +1087,155 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
             for step in job["steps"]
             if str(step.get("uses", "")).startswith("actions/checkout@")
         ]
+
+    @staticmethod
+    def browser_viewports() -> list[dict[str, object]]:
+        common = {
+            "all_visible": True,
+            "actual_sha256": "a" * 64,
+            "baseline_sha256": "b" * 64,
+            "lanes": 4,
+            "serious_critical_count": 0,
+            "visual_diff_ratio": 0.001,
+        }
+        return [
+            {
+                **common,
+                "actions": 20,
+                "cards": 4,
+                "name": "desktop",
+                "stages": 16,
+            },
+            {
+                **common,
+                "actions": 50,
+                "cards": 10,
+                "name": "mobile",
+                "stages": 40,
+            },
+        ]
+
+    @classmethod
+    def run_sealer(
+        cls,
+        viewports: list[dict[str, object]],
+    ) -> subprocess.CompletedProcess[str]:
+        workflow = cls.workflow()
+        source = cls.step(
+            workflow["jobs"]["seal_child_artifacts"],
+            "Create canonical detached-digest envelopes",
+        )["run"]
+        repository_sha = "7" * 40
+        workflow_sha = "8" * 40
+        base_sha = "6" * 40
+        build_identity = f"sha256:{'9' * 64}"
+        binary_sha = "c" * 64
+        common = {
+            "build_identity": build_identity,
+            "manual_live_qa_remaining": True,
+            "ok": True,
+            "repository_sha": repository_sha,
+            "schema_version": 1,
+            "status": "passed",
+            "verifier_sha": workflow_sha,
+        }
+        children = {
+            "browser_accessibility": {
+                **common,
+                "candidate_web_gui_sha256": "d" * 64,
+                "producer": "browser_accessibility",
+                "viewports": viewports,
+                "visual_diff_threshold": 0.01,
+            },
+            "build_identity": {
+                **common,
+                "binary_sha256": binary_sha,
+                "build_report_schema_version": 80,
+                "embedded_build_input_identity": build_identity,
+                "producer": "build_identity",
+            },
+            "deterministic_journeys": {
+                **common,
+                "binary_sha256": binary_sha,
+                "bundle_sha256": "e" * 64,
+                "embedded_build_input_identity": build_identity,
+                "journey_count": 14,
+                "producer": "deterministic_journeys",
+                "suite_id": "micromachine_deterministic_pre_live_v1",
+            },
+            "distribution_compliance": {
+                **common,
+                "base_commit": base_sha,
+                "canonical_report_sha256": "f" * 64,
+                "distribution_schema_version": 7,
+                "producer": "distribution_compliance",
+                "secret_finding_count": 0,
+            },
+            "pre_live_provenance": {
+                **common,
+                "binary_sha256": binary_sha,
+                "build_report_sha256": "1" * 64,
+                "embedded_build_input_identity": build_identity,
+                "privilege_separation": "dedicated_producer_uid_passed",
+                "producer": "pre_live_provenance",
+                "provenance_contracts": "passed",
+            },
+        }
+        environment_names = {
+            "browser_accessibility": "BROWSER",
+            "build_identity": "BUILD_IDENTITY",
+            "deterministic_journeys": "JOURNEYS",
+            "distribution_compliance": "DISTRIBUTION",
+            "pre_live_provenance": "PROVENANCE",
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            downloads = root / "child-downloads"
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "BUILD_IDENTITY": build_identity,
+                    "EXPECTED_RELEASE_BASE_COMMIT": base_sha,
+                    "EXPECTED_RELEASE_COMMIT": repository_sha,
+                    "EXPECTED_WORKFLOW_COMMIT": workflow_sha,
+                    "GITHUB_RUN_ATTEMPT": "1",
+                    "GITHUB_RUN_ID": "123",
+                    "RUNNER_TEMP": str(root),
+                }
+            )
+            for index, (producer, child) in enumerate(
+                children.items(),
+                start=1,
+            ):
+                report = downloads / producer / "report.json"
+                report.parent.mkdir(parents=True)
+                report.write_text(
+                    json.dumps(
+                        child,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                prefix = environment_names[producer]
+                environment[f"{prefix}_ARTIFACT_ID"] = str(index)
+                environment[f"{prefix}_ARTIFACT_DIGEST"] = (
+                    f"{index:x}" * 64
+                )[:64]
+
+            return subprocess.run(
+                ["/bin/bash"],
+                input=source,
+                cwd=REPOSITORY_ROOT,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
 
 
 if __name__ == "__main__":
