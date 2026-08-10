@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -453,7 +455,57 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             self.assertIsNone(fixture._staged_candidate_root)
             self.assertIsNone(fixture._staged_fixture_script)
 
-    def test_candidate_fixture_entry_limit_counts_directories(self) -> None:
+    def test_candidate_fixture_retains_retry_state_when_prepare_cleanup_fails(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            staging_root = Path(directory).resolve()
+            staging_root.chmod(0o755)
+            fixture = _CandidateFixtureProcess(
+                BrowserGateConfig(
+                    repository_sha=REPOSITORY_SHA,
+                    build_identity=BUILD_IDENTITY,
+                    artifact_dir=staging_root,
+                    candidate_uid=65001,
+                    candidate_gid=65001,
+                )
+            )
+
+            with (
+                mock.patch.object(
+                    browser_gate,
+                    "_FIXTURE_STAGING_ROOT",
+                    staging_root,
+                ),
+                mock.patch.object(
+                    fixture,
+                    "_copy_staged_file",
+                    side_effect=OSError("trusted copy failed"),
+                ),
+                mock.patch.object(
+                    fixture,
+                    "_discard_staged_fixture_tree",
+                    side_effect=OSError("delete failed"),
+                ),
+                self.assertRaisesRegex(OSError, "delete failed"),
+            ):
+                fixture._prepare_fixture_script()
+
+            staged_root = fixture._staged_candidate_root
+            self.assertIsNotNone(staged_root)
+            assert staged_root is not None
+            self.assertTrue(staged_root.exists())
+            with self.assertRaisesRegex(RuntimeError, "integrity checks"):
+                fixture._cleanup_fixture_script()
+
+            self.assertFalse(staged_root.exists())
+            self.assertEqual([], list(staging_root.iterdir()))
+            self.assertIsNone(fixture._staged_candidate_root)
+            self.assertIsNone(fixture._staged_fixture_script)
+
+    def test_candidate_fixture_entry_limit_stops_directory_iteration(
+        self,
+    ) -> None:
         with (
             tempfile.TemporaryDirectory() as source_directory,
             tempfile.TemporaryDirectory() as staging_directory,
@@ -466,7 +518,8 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             package_root.mkdir(parents=True)
             package_root.joinpath("__init__.py").write_text("", encoding="utf-8")
             package_root.joinpath("web_gui.py").write_text("", encoding="utf-8")
-            package_root.joinpath("nested").mkdir()
+            for index in range(10):
+                package_root.joinpath(f"nested-{index}").mkdir()
             staging_root = Path(staging_directory).resolve()
             staging_root.chmod(0o755)
             fixture = _CandidateFixtureProcess(
@@ -479,6 +532,41 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
                     candidate_gid=65001,
                 )
             )
+            real_scandir = os.scandir
+            consumed_entries: list[str] = []
+
+            class MonitoredScandir:
+                def __init__(self, directory: Path) -> None:
+                    self._scandir = real_scandir(directory)
+                    self._iterator: object | None = None
+
+                def __enter__(self) -> MonitoredScandir:
+                    self._iterator = self._scandir.__enter__()
+                    return self
+
+                def __exit__(self, *args: object) -> object:
+                    return self._scandir.__exit__(*args)
+
+                def __iter__(self) -> MonitoredScandir:
+                    return self
+
+                def __next__(self) -> os.DirEntry[str]:
+                    assert self._iterator is not None
+                    entry = next(self._iterator)  # type: ignore[arg-type]
+                    consumed_entries.append(entry.name)
+                    if len(consumed_entries) > 1:
+                        raise AssertionError(
+                            "candidate directory was materialized before limit"
+                        )
+                    return entry
+
+            def monitored_scandir(
+                directory: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+            ) -> object:
+                path = Path(directory).resolve()
+                if path == package_root:
+                    return MonitoredScandir(path)
+                return real_scandir(directory)
 
             with (
                 mock.patch.object(browser_gate, "__file__", str(trusted_fixture)),
@@ -490,15 +578,17 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
                 mock.patch.object(
                     browser_gate,
                     "_FIXTURE_STAGING_ENTRY_LIMIT",
-                    4,
+                    2,
                 ),
+                mock.patch.object(browser_gate.os, "scandir", monitored_scandir),
                 self.assertRaisesRegex(RuntimeError, "entry limit exceeded"),
             ):
                 fixture._prepare_fixture_script()
 
+            self.assertEqual(1, len(consumed_entries))
             self.assertEqual([], list(staging_root.iterdir()))
 
-    def test_candidate_fixture_byte_limit_is_enforced_while_copying(
+    def test_candidate_fixture_file_reads_are_chunk_bounded(
         self,
     ) -> None:
         with (
@@ -507,12 +597,12 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
         ):
             source_root = Path(source_directory).resolve()
             trusted_fixture = source_root / "fixture.py"
-            trusted_fixture.write_bytes(b"1234")
+            trusted_fixture.write_bytes(b"0123456789")
             candidate_root = source_root / "candidate"
             package_root = candidate_root / "starcraft_commander"
             package_root.mkdir(parents=True)
-            package_root.joinpath("__init__.py").write_bytes(b"")
-            package_root.joinpath("web_gui.py").write_bytes(b"56789")
+            package_root.joinpath("__init__.py").write_bytes(b"abcdefghij")
+            package_root.joinpath("web_gui.py").write_bytes(b"klmnopqrst")
             staging_root = Path(staging_directory).resolve()
             staging_root.chmod(0o755)
             fixture = _CandidateFixtureProcess(
@@ -525,6 +615,36 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
                     candidate_gid=65001,
                 )
             )
+            real_fdopen = os.fdopen
+            read_sizes: list[int] = []
+
+            class RecordingReader:
+                def __init__(self, stream: object) -> None:
+                    self._stream = stream
+
+                def __enter__(self) -> RecordingReader:
+                    return self
+
+                def __exit__(self, *args: object) -> object:
+                    return self._stream.__exit__(*args)
+
+                def read(self, size: int = -1) -> bytes:
+                    read_sizes.append(size)
+                    if size != 4:
+                        raise AssertionError("candidate file read was unbounded")
+                    return self._stream.read(size)
+
+                def fileno(self) -> int:
+                    return self._stream.fileno()
+
+            def monitored_fdopen(
+                descriptor: int,
+                mode: str,
+            ) -> object:
+                stream = real_fdopen(descriptor, mode)
+                if mode == "rb":
+                    return RecordingReader(stream)
+                return stream
 
             with (
                 mock.patch.object(browser_gate, "__file__", str(trusted_fixture)),
@@ -535,13 +655,23 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
                 ),
                 mock.patch.object(
                     browser_gate,
-                    "_FIXTURE_STAGING_BYTE_LIMIT",
-                    8,
+                    "_FIXTURE_STAGING_CHUNK_SIZE",
+                    4,
                 ),
-                self.assertRaisesRegex(RuntimeError, "byte limit exceeded"),
+                mock.patch.object(browser_gate.os, "fdopen", monitored_fdopen),
+                mock.patch.object(
+                    Path,
+                    "read_bytes",
+                    side_effect=AssertionError(
+                        "candidate source was materialized"
+                    ),
+                ),
             ):
                 fixture._prepare_fixture_script()
+                fixture._cleanup_fixture_script()
 
+            self.assertGreater(len(read_sizes), 3)
+            self.assertEqual({4}, set(read_sizes))
             self.assertEqual([], list(staging_root.iterdir()))
 
     def test_candidate_fixture_removes_tree_after_integrity_failure(
@@ -650,6 +780,47 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             self.assertFalse(staged_root.exists())
             self.assertIsNone(fixture._staged_candidate_root)
             self.assertIsNone(fixture._staged_fixture_script)
+
+    def test_real_linux_sudo_candidate_process_boundary(self) -> None:
+        if os.environ.get("VOI_REQUIRE_LINUX_SUDO_PID_TEST") != "1":
+            self.skipTest("dedicated Linux sudo PID test runs in hosted CI")
+        self.assertEqual("linux", sys.platform)
+        candidate_uid = int(os.environ["VOI_TEST_CANDIDATE_UID"])
+        candidate_gid = int(os.environ["VOI_TEST_CANDIDATE_GID"])
+        candidate_python = Path("/usr/bin/python3").resolve()
+        self.assertTrue(candidate_python.is_file())
+        self.assertFalse(candidate_python.is_symlink())
+
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            staging_root = Path(directory).resolve()
+            staging_root.chmod(0o755)
+            fixture = _CandidateFixtureProcess(
+                BrowserGateConfig(
+                    repository_sha=REPOSITORY_SHA,
+                    build_identity=BUILD_IDENTITY,
+                    artifact_dir=staging_root / "artifacts",
+                    candidate_python=candidate_python,
+                    candidate_uid=candidate_uid,
+                    candidate_gid=candidate_gid,
+                )
+            )
+
+            with mock.patch.object(
+                browser_gate,
+                "_FIXTURE_STAGING_ROOT",
+                staging_root,
+            ):
+                try:
+                    origin = fixture.start()
+                    self.assertRegex(
+                        origin,
+                        r"^http://127[.]0[.]0[.]1:[0-9]+/$",
+                    )
+                    fixture.assert_quiet()
+                finally:
+                    fixture.stop()
+
+            self.assertEqual([], list(staging_root.iterdir()))
 
     def test_candidate_fixture_cleans_staged_source_when_spawn_fails(
         self,

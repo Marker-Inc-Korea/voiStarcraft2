@@ -1403,6 +1403,9 @@ class _CandidateFixtureProcess:
             Path("."): ("directory", 0, ""),
         }
         staged_script = staged_root / "fixture.py"
+        self._staged_candidate_root = staged_root
+        self._staged_fixture_script = staged_script
+        self._staged_fixture_manifest = manifest
         total_entries = 0
         total_bytes = 0
         try:
@@ -1482,13 +1485,14 @@ class _CandidateFixtureProcess:
                 if kind == "directory":
                     os.chmod(staged_root / relative, 0o555)
             self._verify_staged_fixture_tree(staged_root, manifest)
-        except BaseException:
-            self._discard_staged_fixture_tree(staged_root)
+        except BaseException as prepare_error:
+            try:
+                self._discard_staged_fixture_tree(staged_root)
+            except BaseException as cleanup_error:
+                raise cleanup_error from prepare_error
+            self._clear_staged_fixture_state()
             raise
 
-        self._staged_candidate_root = staged_root
-        self._staged_fixture_script = staged_script
-        self._staged_fixture_manifest = manifest
         return staged_script
 
     @staticmethod
@@ -1684,11 +1688,14 @@ class _CandidateFixtureProcess:
             if verification_error is not None:
                 raise cleanup_error from verification_error
             raise
+        self._clear_staged_fixture_state()
+        if verification_error is not None:
+            raise verification_error
+
+    def _clear_staged_fixture_state(self) -> None:
         self._staged_candidate_root = None
         self._staged_fixture_script = None
         self._staged_fixture_manifest = {}
-        if verification_error is not None:
-            raise verification_error
 
     def start(self) -> str:
         if self._process is not None:
