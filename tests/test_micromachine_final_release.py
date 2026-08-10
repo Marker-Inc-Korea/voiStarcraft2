@@ -6,6 +6,10 @@ import contextlib
 import hashlib
 import io
 import json
+import os
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -36,11 +40,10 @@ REPOSITORY_SHA = "a" * 40
 WORKFLOW_SHA = "e" * 40
 BUILD_IDENTITY = "sha256:" + ("b" * 64)
 DEPENDENCY_MERGE_SHA = "c" * 40
-RELEASE_PULL_NUMBER = 1420
-RELEASE_CLOSURE_ISSUES = (141, 142, 128, 124)
-RELEASE_PULL_BODY = "\n".join(
-    f"Closes #{issue_number}" for issue_number in RELEASE_CLOSURE_ISSUES
-)
+RELEASE_PULL_NUMBER = 168
+RELEASE_CLOSING_ISSUE = 141
+RELEASE_COMPLETION_ISSUES = (141, 142, 128, 124)
+RELEASE_PULL_BODY = f"Closes #{RELEASE_CLOSING_ISSUE}"
 RUN_ID = 9001
 RUN_ATTEMPT = 2
 NOW = datetime(2026, 8, 9, 12, 0, 0, tzinfo=timezone.utc)
@@ -81,17 +84,22 @@ class FakeGitHubReleaseAdapter:
                     merge_sha=DEPENDENCY_MERGE_SHA,
                 )
             ]
-        for issue_number in status["release_closure_issues"]:
+        for issue_number in status["release_completion_issues"]:
             self.issues[issue_number] = {
                 "number": issue_number,
                 "state": "closed",
+                "state_reason": "completed",
             }
-            self.closing_pulls[issue_number] = [
-                self.merged_pull(
-                    number=RELEASE_PULL_NUMBER,
-                    merge_sha=REPOSITORY_SHA,
-                )
-            ]
+            self.closing_pulls[issue_number] = (
+                [
+                    self.merged_pull(
+                        number=RELEASE_PULL_NUMBER,
+                        merge_sha=REPOSITORY_SHA,
+                    )
+                ]
+                if issue_number == RELEASE_CLOSING_ISSUE
+                else []
+            )
         self.pull_requests[RELEASE_PULL_NUMBER] = {
             "number": RELEASE_PULL_NUMBER,
             "state": "open" if mode == READY_TO_MERGE else "closed",
@@ -115,6 +123,10 @@ class FakeGitHubReleaseAdapter:
         self.branch = {
             "name": "main",
             "commit": {"sha": REPOSITORY_SHA},
+        }
+        self.comparison = {
+            "status": "identical",
+            "merge_base_sha": REPOSITORY_SHA,
         }
         self.workflow = {
             "id": RUN_ID,
@@ -169,6 +181,20 @@ class FakeGitHubReleaseAdapter:
             raise AssertionError("unexpected branch lookup")
         return json.loads(json.dumps(self.branch))
 
+    def compare_commits(
+        self,
+        repository: str,
+        base: str,
+        head: str,
+    ) -> dict[str, object]:
+        if (
+            repository != REPOSITORY
+            or base != REPOSITORY_SHA
+            or head != self.branch["commit"]["sha"]
+        ):
+            raise AssertionError("unexpected commit comparison")
+        return dict(self.comparison)
+
     def get_pull_request(
         self,
         repository: str,
@@ -206,6 +232,7 @@ class MicroMachineFinalReleaseTest(unittest.TestCase):
     ) -> None:
         result = validate_final_live_qa_runbook()
         manifest = json.loads(DEFAULT_JOURNEY_MANIFEST_PATH.read_text())
+        self.assertIsNotNone(DEFAULT_RUNBOOK_PATH)
         document = DEFAULT_RUNBOOK_PATH.read_text()
 
         self.assertTrue(result["ok"], result["blockers"])
@@ -217,11 +244,16 @@ class MicroMachineFinalReleaseTest(unittest.TestCase):
         )
         self.assertTrue(check_structured_status_markdown(self.status, document))
         self.assertEqual(
-            list(RELEASE_CLOSURE_ISSUES),
-            self.status["release_closure_issues"],
+            list(RELEASE_COMPLETION_ISSUES),
+            self.status["release_completion_issues"],
         )
+        self.assertEqual(
+            RELEASE_CLOSING_ISSUE,
+            self.status["release_closing_issue"],
+        )
+        self.assertEqual(RELEASE_PULL_NUMBER, self.status["release_pull_number"])
         self.assertTrue(
-            set(RELEASE_CLOSURE_ISSUES).isdisjoint(
+            set(RELEASE_COMPLETION_ISSUES).isdisjoint(
                 self.dependency_numbers(self.status)
             )
         )
@@ -246,7 +278,7 @@ class MicroMachineFinalReleaseTest(unittest.TestCase):
             self.assertTrue(report["manual_live_qa_remaining"])
             self.assertFalse(report["live_qualified"])
             self.assertTrue(
-                set(RELEASE_CLOSURE_ISSUES).isdisjoint(adapter.issue_requests)
+                set(RELEASE_COMPLETION_ISSUES).isdisjoint(adapter.issue_requests)
             )
             self.assertEqual(
                 self.dependency_numbers(self.status),
@@ -261,7 +293,7 @@ class MicroMachineFinalReleaseTest(unittest.TestCase):
                 render_final_release_markdown(report),
             )
 
-    def test_ready_for_live_qa_requires_one_exact_pull_to_close_all_four_issues(
+    def test_ready_for_live_qa_separates_pull_closure_from_explicit_completion(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -283,23 +315,53 @@ class MicroMachineFinalReleaseTest(unittest.TestCase):
                     {
                         "issue": issue_number,
                         "state": "closed",
-                        "closing_pull_numbers": [RELEASE_PULL_NUMBER],
+                        "state_reason": "completed",
+                        "closure_kind": (
+                            "release_pull"
+                            if issue_number == RELEASE_CLOSING_ISSUE
+                            else "explicit_completion"
+                        ),
+                        "closing_pull_numbers": (
+                            [RELEASE_PULL_NUMBER]
+                            if issue_number == RELEASE_CLOSING_ISSUE
+                            else []
+                        ),
                     }
-                    for issue_number in RELEASE_CLOSURE_ISSUES
+                    for issue_number in RELEASE_COMPLETION_ISSUES
                 ],
                 report["dependencies"],
             )
             self.assertTrue(report["manual_live_qa_remaining"])
             self.assertFalse(report["live_qualified"])
 
-    def test_ready_to_merge_requires_exact_four_closing_declarations_in_pr_body(
+    def test_ready_for_live_qa_accepts_release_commit_behind_current_main(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            adapter = FakeGitHubReleaseAdapter(READY_FOR_LIVE_QA, self.status)
+            adapter.branch["commit"]["sha"] = "d" * 40
+            adapter.comparison = {
+                "status": "ahead",
+                "merge_base_sha": REPOSITORY_SHA,
+            }
+            envelopes = self.write_green_artifacts(root, adapter)
+
+            report = self.build_report(
+                mode=READY_FOR_LIVE_QA,
+                root=root,
+                envelopes=envelopes,
+                adapter=adapter,
+            )
+
+            self.assertTrue(report["ok"], report["blockers"])
+            self.assertEqual("ready_for_live_qa", report["status"])
+
+    def test_ready_to_merge_requires_exact_single_closing_declaration_in_pr_body(
         self,
     ) -> None:
         bodies = {
-            "missing": "\n".join(
-                f"Closes #{issue_number}"
-                for issue_number in RELEASE_CLOSURE_ISSUES[:-1]
-            ),
+            "missing": "Completes the final release scope.",
             "duplicate": RELEASE_PULL_BODY + "\nCloses #141",
             "unexpected": RELEASE_PULL_BODY + "\nCloses #999",
             "commented": RELEASE_PULL_BODY.replace(
@@ -737,27 +799,40 @@ class MicroMachineFinalReleaseTest(unittest.TestCase):
         self,
     ) -> None:
         mutations = {
-            "open issue": (
+            "open completion issue": (
                 lambda adapter: adapter.issues[128].update({"state": "open"}),
-                "release_closure_issue_not_closed",
+                "release_completion_issue_not_completed",
             ),
-            "unmerged pull": (
-                lambda adapter: adapter.closing_pulls[128][0].update(
+            "wrong completion reason": (
+                lambda adapter: adapter.issues[128].update(
+                    {"state_reason": "not_planned"}
+                ),
+                "release_completion_issue_not_completed",
+            ),
+            "unexpected parent closing pull": (
+                lambda adapter: adapter.closing_pulls[128].append(
+                    adapter.merged_pull(
+                        number=RELEASE_PULL_NUMBER + 1,
+                        merge_sha=REPOSITORY_SHA,
+                    )
+                ),
+                "explicit_completion_has_closing_pull",
+            ),
+            "unmerged release closing pull": (
+                lambda adapter: adapter.closing_pulls[
+                    RELEASE_CLOSING_ISSUE
+                ][0].update(
                     {"merged": False}
                 ),
-                "release_closure_pull_not_exact_main_merge",
+                "release_closing_pull_not_exact_main_merge",
             ),
-            "wrong merge": (
-                lambda adapter: adapter.closing_pulls[128][0].update(
+            "wrong release closing merge": (
+                lambda adapter: adapter.closing_pulls[
+                    RELEASE_CLOSING_ISSUE
+                ][0].update(
                     {"merge_commit_sha": "d" * 40}
                 ),
-                "release_closure_pull_not_exact_main_merge",
-            ),
-            "different pull": (
-                lambda adapter: adapter.closing_pulls[128][0].update(
-                    {"number": RELEASE_PULL_NUMBER + 1}
-                ),
-                "release_closure_not_single_pull",
+                "release_closing_pull_not_exact_main_merge",
             ),
             "pull metadata merge": (
                 lambda adapter: adapter.pull_requests[
@@ -765,11 +840,11 @@ class MicroMachineFinalReleaseTest(unittest.TestCase):
                 ].update({"merge_commit_sha": "d" * 40}),
                 "release_pull_merge_state_mismatch",
             ),
-            "wrong main": (
-                lambda adapter: adapter.branch["commit"].update(
-                    {"sha": "d" * 40}
+            "release commit not on main": (
+                lambda adapter: adapter.comparison.update(
+                    {"status": "diverged"}
                 ),
-                "main_sha_mismatch",
+                "release_commit_not_on_main",
             ),
         }
         for label, (mutate, blocker) in mutations.items():
@@ -846,6 +921,7 @@ class MicroMachineFinalReleaseTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             drifted_runbook = root / "runbook.md"
+            self.assertIsNotNone(DEFAULT_RUNBOOK_PATH)
             document = DEFAULT_RUNBOOK_PATH.read_text()
             start = document.index(
                 "### 14. `voice_readback_callout_identity`"
@@ -859,6 +935,80 @@ class MicroMachineFinalReleaseTest(unittest.TestCase):
             codes = {item["code"] for item in result["blockers"]}
             self.assertIn("runbook_contract_drift", codes)
             self.assertIn("runbook_journey_coverage_mismatch", codes)
+
+    def test_generated_runbook_fallback_supports_installed_defaults(self) -> None:
+        result = validate_final_live_qa_runbook(runbook_path=None)
+
+        self.assertTrue(result["ok"], result["blockers"])
+        self.assertEqual(14, result["journey_count"])
+        self.assertEqual("generated", result["source"])
+
+    def test_installed_layout_bare_check_status_uses_generated_runbook(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            site_packages = root / "site-packages"
+            isolated_cwd = root / "outside-source"
+            package = site_packages / "starcraft_commander"
+            integration = site_packages / "integrations" / "micromachine"
+            package.mkdir(parents=True)
+            integration.mkdir(parents=True)
+            isolated_cwd.mkdir()
+            source_root = Path(__file__).resolve().parents[1]
+            shutil.copy2(
+                source_root / "starcraft_commander" / "__init__.py",
+                package / "__init__.py",
+            )
+            shutil.copy2(
+                source_root
+                / "starcraft_commander"
+                / "micromachine_final_release.py",
+                package / "micromachine_final_release.py",
+            )
+            shutil.copy2(
+                source_root / "integrations" / "__init__.py",
+                site_packages / "integrations" / "__init__.py",
+            )
+            shutil.copy2(
+                source_root / "integrations" / "micromachine" / "__init__.py",
+                integration / "__init__.py",
+            )
+            for name in (
+                "PRE_LIVE_JOURNEYS.json",
+                "PRE_LIVE_RELEASE_STATUS.json",
+            ):
+                shutil.copy2(
+                    source_root / "integrations" / "micromachine" / name,
+                    integration / name,
+                )
+            environment = {
+                key: value
+                for key, value in os.environ.items()
+                if key not in {"PYTHONHOME", "PYTHONPATH"}
+            }
+            environment["PYTHONPATH"] = str(site_packages)
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-B",
+                    "-m",
+                    "starcraft_commander.micromachine_final_release",
+                    "check-status",
+                ],
+                cwd=isolated_cwd,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            result = json.loads(completed.stdout)
+            self.assertTrue(result["ok"], result["blockers"])
+            self.assertEqual("generated", result["source"])
 
     def test_outputs_and_cli_use_allowlisted_projection_and_adapter_seam(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -935,7 +1085,7 @@ class MicroMachineFinalReleaseTest(unittest.TestCase):
         adapter: FakeGitHubReleaseAdapter,
         replay_store: InMemoryReplayStore | None = None,
         status_path: Path = DEFAULT_STATUS_PATH,
-        runbook_path: Path = DEFAULT_RUNBOOK_PATH,
+        runbook_path: Path | None = DEFAULT_RUNBOOK_PATH,
     ) -> dict[str, object]:
         return build_final_release_report(
             FinalReleaseConfig(

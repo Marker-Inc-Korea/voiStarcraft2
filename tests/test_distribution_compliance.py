@@ -96,6 +96,7 @@ class IsolatedInstallTest(unittest.TestCase):
                 {
                     "installed_metadata": installed_metadata,
                     "license_expression": EXPECTED_LICENSE_EXPRESSION,
+                    "bare_check_status_passed": True,
                     "packaged_defaults_loaded": True,
                     "runtime_data_loaded": True,
                     "source_repository_root_is_none": True,
@@ -149,6 +150,8 @@ class IsolatedInstallTest(unittest.TestCase):
         installed_script = run.call_args_list[1].args[0][-1]
         target_script = run.call_args_list[3].args[0][-2]
         self.assertIn("read_text('METADATA')", installed_script)
+        self.assertIn("final_release_main(['check-status'])", installed_script)
+        self.assertIn("check_status.get('source') == 'generated'", installed_script)
         for script in (installed_script, target_script):
             self.assertIn("source_repository_root() is None", script)
             self.assertNotIn("SOURCE_REPOSITORY_ROOT", script)
@@ -8008,6 +8011,7 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
                 "payload": {
                     "installed_metadata": metadata_raw,
                     "license_expression": EXPECTED_LICENSE_EXPRESSION,
+                    "bare_check_status_passed": True,
                     "packaged_defaults_loaded": True,
                     "runtime_data_loaded": True,
                     "source_repository_root_is_none": True,
@@ -8958,6 +8962,7 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
 
     def test_rejects_incomplete_installed_package_smoke_contract(self) -> None:
         expected_codes = {
+            "bare_check_status_passed": "installed_bare_check_status_failed",
             "packaged_defaults_loaded": "installed_packaged_defaults_failed",
             "source_repository_root_is_none": (
                 "installed_source_root_not_isolated"

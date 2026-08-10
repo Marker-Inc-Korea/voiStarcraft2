@@ -34,8 +34,15 @@ VIEWPORTS: Final[tuple[tuple[str, int, int], ...]] = (
     ("desktop", 1440, 1100),
     ("mobile", 390, 844),
 )
-VISUAL_DIFF_THRESHOLD: Final[float] = 0.18
+VISUAL_DIFF_THRESHOLD: Final[float] = 0.01
 PIXEL_CHANNEL_TOLERANCE: Final[int] = 12
+STANDARD_OPERATION_ACTIONS: Final[tuple[str, ...]] = (
+    "view",
+    "revise",
+    "reinforce",
+    "retarget",
+    "cancel",
+)
 _SHA_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{40}$")
 _BUILD_RE: Final[re.Pattern[str]] = re.compile(r"^sha256:[0-9a-f]{64}$")
 _FIXTURE_READY_TIMEOUT_SECONDS: Final[float] = 20.0
@@ -733,24 +740,170 @@ def _voice_journey(page: Any) -> dict[str, object]:
     }
 
 
-def _structural_assertions(page: Any) -> dict[str, object]:
-    lanes = page.locator("[data-operation-lane]").count()
-    if lanes != 4:
-        raise AssertionError(f"expected four operation lanes, got {lanes}")
-    cards = page.locator(".operation-card")
-    if cards.count() < 4:
-        raise AssertionError("expected at least four operation cards")
-    for index in range(cards.count()):
-        card = cards.nth(index)
-        if card.locator(".operation-stage").count() != 4:
-            raise AssertionError("operation card does not have four stages")
-        actions = card.locator(
-            ".operation-card-actions [data-operation-action]"
-        ).evaluate_all(
-            "nodes => nodes.map(node => node.getAttribute('data-operation-action'))"
+def _structure_items(
+    value: object,
+    *,
+    label: str,
+) -> Sequence[object]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise AssertionError(f"{label} visibility snapshot is invalid")
+    return value
+
+
+def _visibility_failure(details: Mapping[str, object]) -> str:
+    if details.get("hidden") is True:
+        return "hidden attribute or hidden ancestor"
+    if details.get("display") == "none":
+        return "display:none"
+    if details.get("visibility") in {"hidden", "collapse"}:
+        return f"visibility:{details['visibility']}"
+    if details.get("content_visibility") == "hidden":
+        return "content-visibility:hidden"
+    if details.get("transparent") is True:
+        return "zero opacity"
+    try:
+        width = float(details.get("width", 0))
+        height = float(details.get("height", 0))
+        client_rects = int(details.get("client_rects", 0))
+    except (TypeError, ValueError):
+        return "invalid rendered size"
+    if width <= 0 or height <= 0 or client_rects <= 0:
+        return (
+            "zero-size rendering "
+            f"(width={width:g}, height={height:g}, client_rects={client_rects})"
         )
-        if actions != ["view", "revise", "reinforce", "retarget", "cancel"]:
-            raise AssertionError(f"operation actions changed: {actions!r}")
+    return ""
+
+
+def _assert_visible_structure(
+    snapshot: Mapping[str, object],
+) -> dict[str, object]:
+    lanes = _structure_items(snapshot.get("lanes"), label="operation lanes")
+    if len(lanes) != 4:
+        raise AssertionError(f"expected four operation lanes, got {len(lanes)}")
+    for index, lane in enumerate(lanes):
+        if not isinstance(lane, Mapping):
+            raise AssertionError(f"operation lane {index} snapshot is invalid")
+        failure = _visibility_failure(lane)
+        if failure:
+            raise AssertionError(f"operation lane {index} is not visible: {failure}")
+
+    cards = _structure_items(snapshot.get("cards"), label="operation cards")
+    if len(cards) < 4:
+        raise AssertionError("expected at least four operation cards")
+    for card_index, card in enumerate(cards):
+        if not isinstance(card, Mapping):
+            raise AssertionError(f"operation card {card_index} snapshot is invalid")
+        card_visibility = card.get("visibility")
+        if not isinstance(card_visibility, Mapping):
+            raise AssertionError(
+                f"operation card {card_index} visibility snapshot is invalid"
+            )
+        failure = _visibility_failure(card_visibility)
+        if failure:
+            raise AssertionError(
+                f"operation card {card_index} is not visible: {failure}"
+            )
+
+        stages = _structure_items(
+            card.get("stages"),
+            label=f"operation card {card_index} stages",
+        )
+        if len(stages) != 4:
+            raise AssertionError(
+                f"operation card {card_index} does not have four stages"
+            )
+        for stage_index, stage in enumerate(stages):
+            if not isinstance(stage, Mapping):
+                raise AssertionError(
+                    f"operation card {card_index} stage {stage_index} "
+                    "snapshot is invalid"
+                )
+            failure = _visibility_failure(stage)
+            if failure:
+                raise AssertionError(
+                    f"operation card {card_index} stage {stage_index} "
+                    f"is not visible: {failure}"
+                )
+
+        actions = _structure_items(
+            card.get("actions"),
+            label=f"operation card {card_index} actions",
+        )
+        action_names = [
+            action.get("name") if isinstance(action, Mapping) else None
+            for action in actions
+        ]
+        if action_names != list(STANDARD_OPERATION_ACTIONS):
+            raise AssertionError(f"operation actions changed: {action_names!r}")
+        for action in actions:
+            if not isinstance(action, Mapping):
+                raise AssertionError(
+                    f"operation card {card_index} action snapshot is invalid"
+                )
+            failure = _visibility_failure(action)
+            if failure:
+                raise AssertionError(
+                    f"operation card {card_index} action "
+                    f"{action.get('name')!r} is not visible: {failure}"
+                )
+    return {
+        "lanes": len(lanes),
+        "cards": len(cards),
+    }
+
+
+def _structural_assertions(page: Any) -> dict[str, object]:
+    visible_structure = page.evaluate(
+        """() => {
+          const visibility = (node) => {
+            const style = getComputedStyle(node);
+            const rect = node.getBoundingClientRect();
+            let transparent = false;
+            for (let current = node; current; current = current.parentElement) {
+              if (parseFloat(getComputedStyle(current).opacity) <= 0) {
+                transparent = true;
+                break;
+              }
+            }
+            return {
+              hidden: node.hidden || Boolean(node.closest("[hidden]")),
+              display: style.display,
+              visibility: style.visibility,
+              content_visibility: style.contentVisibility || "visible",
+              transparent,
+              width: rect.width,
+              height: rect.height,
+              client_rects: node.getClientRects().length
+            };
+          };
+          return {
+            lanes: Array.from(
+              document.querySelectorAll("[data-operation-lane]")
+            ).map(visibility),
+            cards: Array.from(
+              document.querySelectorAll(".operation-card")
+            ).map(card => ({
+              visibility: visibility(card),
+              stages: Array.from(
+                card.querySelectorAll(".operation-stage")
+              ).map(visibility),
+              actions: Array.from(
+                card.querySelectorAll(
+                  ".operation-card-actions [data-operation-action]"
+                )
+              ).map(action => ({
+                name: action.getAttribute("data-operation-action"),
+                ...visibility(action)
+              }))
+            }))
+          };
+        }"""
+    )
+    if not isinstance(visible_structure, Mapping):
+        raise AssertionError("visible structure snapshot is invalid")
+    structural = _assert_visible_structure(visible_structure)
+
     ids = page.locator("[id]").evaluate_all(
         "nodes => nodes.map(node => node.id)"
     )
@@ -784,8 +937,7 @@ def _structural_assertions(page: Any) -> dict[str, object]:
                 f"browser fixture exposed a runtime failure: {runtime_failure}"
             )
     return {
-        "lanes": lanes,
-        "cards": cards.count(),
+        **structural,
         "unique_ids": len(ids),
         "overflow": overflow,
     }

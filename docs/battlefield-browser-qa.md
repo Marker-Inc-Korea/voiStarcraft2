@@ -14,8 +14,9 @@ the server, and renders the production page.
 The gate verifies:
 
 - Chromium desktop `1440x1100` and mobile `390x844`.
-- Exactly four operation lanes, four stages per card, and five standard card
-  actions.
+- Exactly four visible operation lanes, visible operation cards, four visible
+  stages per card, and all five visible standard card actions. Hidden,
+  `display:none`, transparent, and zero-size structural elements fail the gate.
 - `published` is not rendered as executing without action evidence.
 - Keyboard command submission, operation selection, lane navigation, all five
   operation actions, and tactical-radio mute.
@@ -25,7 +26,7 @@ The gate verifies:
 - Two overlapping voice submissions, one aggregate voice/pending surface,
   unique pending identities, and independent operation identities.
 - Tracked screenshots with a per-pixel channel tolerance of `12` and a maximum
-  changed-pixel ratio of `0.18`.
+  changed-pixel ratio of `0.01`.
 
 Actual microphone quality, speaker quality, SC2 client rendering, gameplay
 feel, and human multiplayer are not automated by this gate.

@@ -33,8 +33,11 @@ DEFAULT_STATUS_PATH: Final[Path] = (
 DEFAULT_JOURNEY_MANIFEST_PATH: Final[Path] = (
     REPOSITORY_ROOT / "integrations" / "micromachine" / "PRE_LIVE_JOURNEYS.json"
 )
-DEFAULT_RUNBOOK_PATH: Final[Path] = (
+REPOSITORY_RUNBOOK_PATH: Final[Path] = (
     REPOSITORY_ROOT / "docs" / "micromachine-final-live-qa.md"
+)
+DEFAULT_RUNBOOK_PATH: Final[Path | None] = (
+    REPOSITORY_RUNBOOK_PATH if REPOSITORY_RUNBOOK_PATH.is_file() else None
 )
 READY_TO_MERGE: Final[str] = "ready_to_merge"
 READY_FOR_LIVE_QA: Final[str] = "ready_for_live_qa"
@@ -135,6 +138,14 @@ class GitHubReleaseAdapter(Protocol):
     def get_branch(self, repository: str, branch: str) -> Mapping[str, object]:
         ...
 
+    def compare_commits(
+        self,
+        repository: str,
+        base: str,
+        head: str,
+    ) -> Mapping[str, object]:
+        ...
+
     def get_workflow_run(
         self,
         repository: str,
@@ -173,7 +184,7 @@ class FinalReleaseConfig:
     replay_store: ReplayStore
     status_path: Path = DEFAULT_STATUS_PATH
     journey_manifest_path: Path = DEFAULT_JOURNEY_MANIFEST_PATH
-    runbook_path: Path = DEFAULT_RUNBOOK_PATH
+    runbook_path: Path | None = DEFAULT_RUNBOOK_PATH
     max_artifact_age_seconds: int | None = None
 
 
@@ -338,6 +349,22 @@ class StdlibGitHubReleaseAdapter:
 
     def get_branch(self, repository: str, branch: str) -> Mapping[str, object]:
         return self._rest_json(f"/repos/{repository}/branches/{branch}")
+
+    def compare_commits(
+        self,
+        repository: str,
+        base: str,
+        head: str,
+    ) -> Mapping[str, object]:
+        payload = self._rest_json(
+            f"/repos/{repository}/compare/{base}...{head}"
+        )
+        return {
+            "status": payload.get("status"),
+            "merge_base_sha": _mapping(payload.get("merge_base_commit")).get(
+                "sha"
+            ),
+        }
 
     def get_pull_request(
         self,
@@ -805,7 +832,7 @@ def validate_final_live_qa_runbook(
     *,
     status_path: Path | str = DEFAULT_STATUS_PATH,
     journey_manifest_path: Path | str = DEFAULT_JOURNEY_MANIFEST_PATH,
-    runbook_path: Path | str = DEFAULT_RUNBOOK_PATH,
+    runbook_path: Path | str | None = DEFAULT_RUNBOOK_PATH,
 ) -> dict[str, object]:
     """Validate exact structured status and one-to-one 14-journey coverage."""
 
@@ -813,7 +840,7 @@ def validate_final_live_qa_runbook(
     status = _load_release_status(Path(status_path), blockers)
     manifest = _load_journey_manifest(Path(journey_manifest_path), blockers)
     result = _validate_runbook(
-        Path(runbook_path),
+        Path(runbook_path) if runbook_path is not None else None,
         status=status,
         manifest=manifest,
         blockers=blockers,
@@ -823,6 +850,7 @@ def validate_final_live_qa_runbook(
         "ok": not blockers,
         "status": "passed" if not blockers else "blocked",
         "journey_count": result.get("journey_count", 0),
+        "source": result.get("source"),
         "blockers": blockers,
     }
 
@@ -1277,11 +1305,11 @@ def _verify_ready_to_merge(
     blockers: list[dict[str, object]],
 ) -> list[dict[str, object]]:
     repository = str(status.get("repository", ""))
-    release_closure_issues = _release_closure_issues(status)
+    release_completion_issues = _release_completion_issues(status)
     results: list[dict[str, object]] = []
     for dependency in _mapping_list(status.get("ready_to_merge_dependencies")):
         issue_number = dependency.get("issue")
-        if issue_number in release_closure_issues:
+        if issue_number in release_completion_issues:
             blockers.append({"code": "ready_to_merge_self_closure_cycle"})
             continue
         if type(issue_number) is not int or issue_number <= 0:
@@ -1350,24 +1378,46 @@ def _verify_ready_for_live_qa(
 ) -> list[dict[str, object]]:
     repository = str(status.get("repository", ""))
     main_branch = str(status.get("main_branch", ""))
-    release_closure_issues = _release_closure_issues(status)
+    release_closing_issue = _release_closing_issue(status)
+    release_completion_issues = _release_completion_issues(status)
+    release_pull_number = _release_pull_number(status)
     try:
         branch = config.github_adapter.get_branch(repository, main_branch)
+        branch_sha = _mapping(branch.get("commit")).get("sha")
+        comparison = config.github_adapter.compare_commits(
+            repository,
+            config.expected_repository_sha,
+            str(branch_sha),
+        )
     except Exception:
         blockers.append({"code": "github_main_branch_lookup_failed"})
     else:
-        branch_sha = _mapping(branch.get("commit")).get("sha")
         if (
             branch.get("name") != main_branch
-            or branch_sha != config.expected_repository_sha
+            or not isinstance(branch_sha, str)
+            or SHA40_RE.fullmatch(branch_sha) is None
+            or comparison.get("status") not in {"ahead", "identical"}
+            or comparison.get("merge_base_sha")
+            != config.expected_repository_sha
         ):
-            blockers.append({"code": "main_sha_mismatch"})
-    if len(release_closure_issues) != 4:
-        blockers.append({"code": "invalid_release_closure_issues"})
+            blockers.append({"code": "release_commit_not_on_main"})
+    if (
+        release_closing_issue is None
+        or len(release_completion_issues) != 4
+        or release_closing_issue not in release_completion_issues
+        or release_pull_number is None
+    ):
+        blockers.append({"code": "invalid_release_completion_contract"})
         return []
+    _verify_release_pull_contract(
+        config,
+        status=status,
+        pull_number=release_pull_number,
+        require_merged=True,
+        blockers=blockers,
+    )
     results: list[dict[str, object]] = []
-    exact_pull_numbers: list[int] = []
-    for issue_number in release_closure_issues:
+    for issue_number in release_completion_issues:
         try:
             issue = config.github_adapter.get_issue(repository, issue_number)
             pulls = config.github_adapter.list_issue_closing_pull_requests(
@@ -1383,53 +1433,59 @@ def _verify_ready_for_live_qa(
             )
             continue
         state = str(issue.get("state", "")).lower()
-        if issue.get("number") != issue_number or state != "closed":
+        state_reason = str(issue.get("state_reason", "")).lower()
+        if (
+            issue.get("number") != issue_number
+            or state != "closed"
+            or state_reason != "completed"
+        ):
             blockers.append(
                 {
-                    "code": "release_closure_issue_not_closed",
+                    "code": "release_completion_issue_not_completed",
                     "issue": issue_number,
                 }
             )
-        exact_pulls = [
-            pull
-            for pull in _accepted_merged_pulls(
-                pulls,
-                repository=repository,
-                main_branch=main_branch,
-            )
-            if pull.get("merge_commit_sha") == config.expected_repository_sha
-        ]
-        if len(exact_pulls) != 1:
-            blockers.append(
-                {
-                    "code": "release_closure_pull_not_exact_main_merge",
-                    "issue": issue_number,
-                }
-            )
+        accepted_pulls = _accepted_merged_pulls(
+            pulls,
+            repository=repository,
+            main_branch=main_branch,
+        )
+        if issue_number == release_closing_issue:
+            exact_pulls = [
+                pull
+                for pull in accepted_pulls
+                if pull.get("number") == release_pull_number
+                and pull.get("merge_commit_sha")
+                == config.expected_repository_sha
+            ]
+            if len(exact_pulls) != 1:
+                blockers.append(
+                    {
+                        "code": "release_closing_pull_not_exact_main_merge",
+                        "issue": issue_number,
+                    }
+                )
+            closure_kind = "release_pull"
         else:
-            exact_pull_numbers.append(int(exact_pulls[0]["number"]))
+            exact_pulls = accepted_pulls
+            if exact_pulls:
+                blockers.append(
+                    {
+                        "code": "explicit_completion_has_closing_pull",
+                        "issue": issue_number,
+                    }
+                )
+            closure_kind = "explicit_completion"
         results.append(
             {
                 "issue": issue_number,
                 "state": state,
+                "state_reason": state_reason,
+                "closure_kind": closure_kind,
                 "closing_pull_numbers": [
                     pull["number"] for pull in exact_pulls
                 ],
             }
-        )
-    unique_pull_numbers = set(exact_pull_numbers)
-    if (
-        len(exact_pull_numbers) != len(release_closure_issues)
-        or len(unique_pull_numbers) != 1
-    ):
-        blockers.append({"code": "release_closure_not_single_pull"})
-    else:
-        _verify_release_pull_contract(
-            config,
-            status=status,
-            pull_number=next(iter(unique_pull_numbers)),
-            require_merged=True,
-            blockers=blockers,
         )
     return results
 
@@ -1450,7 +1506,8 @@ def _verify_release_pull_contract(
         blockers.append({"code": "github_release_pull_lookup_failed"})
         return
     identity_valid = (
-        pull.get("number") == pull_number
+        pull_number == _release_pull_number(status)
+        and pull.get("number") == pull_number
         and pull.get("base_ref") == main_branch
         and (
             require_merged
@@ -1480,9 +1537,11 @@ def _verify_release_pull_contract(
     ):
         blockers.append({"code": "release_pull_premerge_state_mismatch"})
     body = pull.get("body")
-    expected_declarations = sorted(
-        (repository.casefold(), issue_number)
-        for issue_number in _release_closure_issues(status)
+    release_closing_issue = _release_closing_issue(status)
+    expected_declarations = (
+        [(repository.casefold(), release_closing_issue)]
+        if release_closing_issue is not None
+        else []
     )
     observed_declarations = (
         sorted(_closing_declarations(body, repository))
@@ -1526,8 +1585,18 @@ def _closing_declarations(
     return declarations
 
 
-def _release_closure_issues(status: Mapping[str, object]) -> list[int]:
-    value = status.get("release_closure_issues")
+def _release_pull_number(status: Mapping[str, object]) -> int | None:
+    value = status.get("release_pull_number")
+    return value if type(value) is int and value > 0 else None
+
+
+def _release_closing_issue(status: Mapping[str, object]) -> int | None:
+    value = status.get("release_closing_issue")
+    return value if type(value) is int and value > 0 else None
+
+
+def _release_completion_issues(status: Mapping[str, object]) -> list[int]:
+    value = status.get("release_completion_issues")
     if not isinstance(value, list):
         return []
     return [item for item in value if type(item) is int and item > 0]
@@ -1574,7 +1643,9 @@ def _load_release_status(
         "release_issue",
         "parent_issue",
         "master_issue",
-        "release_closure_issues",
+        "release_pull_number",
+        "release_closing_issue",
+        "release_completion_issues",
         "main_branch",
         "manual_live_qa_remaining",
         "max_artifact_age_seconds",
@@ -1585,7 +1656,7 @@ def _load_release_status(
     }
     if payload and set(payload) != expected_fields:
         blockers.append({"code": "invalid_release_status_fields"})
-    if payload.get("schema_version") != 1:
+    if payload.get("schema_version") != 2:
         blockers.append({"code": "unsupported_release_status_schema"})
     if payload.get("repository") != "Marker-Inc-Korea/voiStarcraft2":
         blockers.append({"code": "invalid_release_repository"})
@@ -1593,9 +1664,13 @@ def _load_release_status(
         blockers.append({"code": "invalid_release_issue"})
     if payload.get("parent_issue") != 128 or payload.get("master_issue") != 124:
         blockers.append({"code": "invalid_release_issue_hierarchy"})
-    release_closure_issues = payload.get("release_closure_issues")
-    if release_closure_issues != [141, 142, 128, 124]:
-        blockers.append({"code": "invalid_release_closure_issues"})
+    if payload.get("release_pull_number") != 168:
+        blockers.append({"code": "invalid_release_pull_number"})
+    if payload.get("release_closing_issue") != 141:
+        blockers.append({"code": "invalid_release_closing_issue"})
+    release_completion_issues = payload.get("release_completion_issues")
+    if release_completion_issues != [141, 142, 128, 124]:
+        blockers.append({"code": "invalid_release_completion_issues"})
     if payload.get("main_branch") != "main":
         blockers.append({"code": "invalid_main_branch"})
     if payload.get("manual_live_qa_remaining") is not True:
@@ -1613,7 +1688,7 @@ def _load_release_status(
         or any(type(number) is not int or number <= 0 for number in dependency_numbers)
         or len(set(dependency_numbers)) != len(dependency_numbers)
         or any(
-            number in _release_closure_issues(payload)
+            number in _release_completion_issues(payload)
             for number in dependency_numbers
         )
         or any(
@@ -1684,21 +1759,26 @@ def _load_journey_manifest(
 
 
 def _validate_runbook(
-    path: Path,
+    path: Path | None,
     *,
     status: Mapping[str, object],
     manifest: Mapping[str, object],
     blockers: list[dict[str, object]],
 ) -> dict[str, object]:
-    try:
-        path_state = path.lstat()
-        if path.is_symlink() or not stat.S_ISREG(path_state.st_mode):
-            raise OSError
-        document = path.read_text(encoding="utf-8")
-    except OSError:
-        blockers.append({"code": "runbook_missing_or_unsafe"})
-        return {"status": "blocked", "journey_count": 0}
     expected = render_final_live_qa_runbook(status, manifest)
+    if path is None:
+        document = expected
+        source = "generated"
+    else:
+        try:
+            path_state = path.lstat()
+            if path.is_symlink() or not stat.S_ISREG(path_state.st_mode):
+                raise OSError
+            document = path.read_text(encoding="utf-8")
+        except OSError:
+            blockers.append({"code": "runbook_missing_or_unsafe"})
+            return {"status": "blocked", "journey_count": 0}
+        source = "file"
     if document != expected:
         blockers.append({"code": "runbook_contract_drift"})
     if not check_structured_status_markdown(status, document):
@@ -1712,6 +1792,7 @@ def _validate_runbook(
         "status": "passed" if document == expected else "blocked",
         "suite_id": manifest.get("suite_id"),
         "journey_count": len(observed_ids),
+        "source": source,
     }
 
 

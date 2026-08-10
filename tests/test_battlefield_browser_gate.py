@@ -10,11 +10,13 @@ import starcraft_commander.battlefield_browser_gate as browser_gate
 from starcraft_commander.battlefield_browser_gate import (
     BrowserGateConfig,
     PIXEL_CHANNEL_TOLERANCE,
+    STANDARD_OPERATION_ACTIONS,
     VISUAL_DIFF_THRESHOLD,
     _CandidateFixtureProcess,
     _FIXTURE_BOOTSTRAP,
     _BrowserFixtureBridge,
     _BrowserFixtureLauncher,
+    _assert_visible_structure,
     _pixel_diff,
     _status_payload,
     _write_rgba_png,
@@ -23,6 +25,36 @@ from starcraft_commander.battlefield_browser_gate import (
 
 REPOSITORY_SHA = "a" * 40
 BUILD_IDENTITY = "sha256:" + "b" * 64
+
+
+def _visible_metrics() -> dict[str, object]:
+    return {
+        "hidden": False,
+        "display": "block",
+        "visibility": "visible",
+        "content_visibility": "visible",
+        "transparent": False,
+        "width": 100,
+        "height": 40,
+        "client_rects": 1,
+    }
+
+
+def _visible_structure() -> dict[str, object]:
+    return {
+        "lanes": [_visible_metrics() for _ in range(4)],
+        "cards": [
+            {
+                "visibility": _visible_metrics(),
+                "stages": [_visible_metrics() for _ in range(4)],
+                "actions": [
+                    {"name": action, **_visible_metrics()}
+                    for action in STANDARD_OPERATION_ACTIONS
+                ],
+            }
+            for _ in range(4)
+        ],
+    }
 
 
 class BattlefieldBrowserGateContractTest(unittest.TestCase):
@@ -224,6 +256,48 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             launcher.runtime_instance_id,
             validated.telemetry_document["runtime_instance_id"],
         )
+
+    def test_visible_structure_requires_rendered_lanes_cards_stages_and_actions(
+        self,
+    ) -> None:
+        result = _assert_visible_structure(_visible_structure())
+
+        self.assertEqual({"lanes": 4, "cards": 4}, result)
+
+        mutations = (
+            (
+                "hidden lane",
+                lambda structure: structure["lanes"][0].update(hidden=True),
+            ),
+            (
+                "display-none card",
+                lambda structure: structure["cards"][0]["visibility"].update(
+                    display="none"
+                ),
+            ),
+            (
+                "zero-size stage",
+                lambda structure: structure["cards"][0]["stages"][0].update(
+                    height=0
+                ),
+            ),
+            (
+                "non-rendered action",
+                lambda structure: structure["cards"][0]["actions"][0].update(
+                    client_rects=0
+                ),
+            ),
+        )
+        for label, mutate in mutations:
+            with self.subTest(label=label):
+                structure = _visible_structure()
+                mutate(structure)
+                with self.assertRaisesRegex(AssertionError, "not visible"):
+                    _assert_visible_structure(structure)
+
+    def test_visual_diff_threshold_is_one_percent(self) -> None:
+        self.assertEqual(0.01, VISUAL_DIFF_THRESHOLD)
+        self.assertLessEqual(VISUAL_DIFF_THRESHOLD, 0.01)
 
     def test_pixel_diff_ignores_bounded_channel_noise(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

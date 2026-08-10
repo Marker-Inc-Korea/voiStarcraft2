@@ -1,10 +1,12 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "repository": "Marker-Inc-Korea/voiStarcraft2",
   "release_issue": 142,
   "parent_issue": 128,
   "master_issue": 124,
-  "release_closure_issues": [
+  "release_pull_number": 168,
+  "release_closing_issue": 141,
+  "release_completion_issues": [
     141,
     142,
     128,

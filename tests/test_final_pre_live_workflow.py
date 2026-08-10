@@ -24,6 +24,7 @@ PRODUCER_JOBS = {
     "distribution_compliance",
     "pre_live_provenance",
 }
+HEAVY_JOBS = PRODUCER_JOBS | {"seal_child_artifacts"}
 EXPECTED_CHILD_ARTIFACTS = {
     "micromachine-build-identity",
     "micromachine-deterministic-journeys",
@@ -100,7 +101,7 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
         )
         self.assertEqual(["main"], trigger["push"]["branches"])
 
-    def test_admission_fails_foreign_repository_without_job_skip(self) -> None:
+    def test_admission_classifies_only_pull_168_and_its_merge_push(self) -> None:
         workflow = self.workflow()
         admission = workflow["jobs"]["event_admission"]
         boundary = self.step(
@@ -110,6 +111,15 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
 
         self.assertNotIn("if", admission)
         self.assertEqual([], self.checkouts(admission))
+        self.assertEqual(
+            "${{ steps.classify.outputs.release_required }}",
+            admission["outputs"]["release_required"],
+        )
+        self.assertEqual("168", workflow["env"]["RELEASE_PULL_NUMBER"])
+        self.assertIn(
+            'if test "${EVENT_PULL_NUMBER}" = "${RELEASE_PULL_NUMBER}"; then',
+            boundary,
+        )
         self.assertIn(
             'test -n "${EVENT_HEAD_REPOSITORY}"',
             boundary,
@@ -129,6 +139,61 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
         )
         self.assertIn("trusted_base_candidate_preflight", boundary)
         self.assertIn("authoritative_exact_main", boundary)
+        self.assertIn(
+            '"repos/${GITHUB_REPOSITORY}/pulls/${RELEASE_PULL_NUMBER}"',
+            boundary,
+        )
+        self.assertIn(".merged", boundary)
+        self.assertIn(".merge_commit_sha", boundary)
+        self.assertIn(
+            'if test "${release_pull_merge_sha}" = "${GITHUB_SHA}"; then',
+            boundary,
+        )
+        self.assertIn("release_required=true", boundary)
+        self.assertIn(
+            "printf 'release_required=%s\\n' \"${release_required}\"",
+            boundary,
+        )
+        classify = self.step(
+            admission,
+            "Admit exact same-repository release event before checkout",
+        )
+        self.assertEqual("classify", classify["id"])
+        self.assertEqual("${{ github.token }}", classify["env"]["GH_TOKEN"])
+        self.assertEqual("read", admission["permissions"]["pull-requests"])
+
+    def test_heavy_jobs_run_only_for_admitted_release_events(self) -> None:
+        workflow = self.workflow()
+
+        for name in HEAVY_JOBS:
+            with self.subTest(job=name):
+                job = workflow["jobs"][name]
+                condition = job["if"]
+                self.assertIn("event_admission", job["needs"])
+                self.assertIn("always()", condition)
+                self.assertIn(
+                    "needs.event_admission.result == 'success'",
+                    condition,
+                )
+                self.assertIn(
+                    "needs.event_admission.outputs.release_required == 'true'",
+                    condition,
+                )
+
+        for name in HEAVY_JOBS - {"build_identity"}:
+            with self.subTest(dependent_job=name):
+                self.assertIn(
+                    "needs.build_identity.result == 'success'",
+                    workflow["jobs"][name]["if"],
+                )
+
+        seal_condition = workflow["jobs"]["seal_child_artifacts"]["if"]
+        for producer in PRODUCER_JOBS - {"build_identity"}:
+            with self.subTest(sealed_producer=producer):
+                self.assertIn(
+                    f"needs.{producer}.result == 'success'",
+                    seal_condition,
+                )
 
     def test_candidate_and_trusted_checkouts_are_separated(self) -> None:
         workflow = self.workflow()
@@ -236,8 +301,40 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
             set(final["needs"]),
         )
         self.assertEqual("${{ toJSON(needs) }}", final["env"]["PREREQUISITE_RESULTS"])
+        self.assertEqual(
+            "${{ needs.event_admission.outputs.release_required }}",
+            final["env"]["RELEASE_REQUIRED"],
+        )
+        self.assertIn('release_required == "true"', guard["run"])
         self.assertIn('value.get("result") != "success"', guard["run"])
+        self.assertIn('release_required == "false"', guard["run"])
+        self.assertIn('value.get("result") != "skipped"', guard["run"])
+        self.assertIn(
+            'needs["event_admission"].get("result") != "success"',
+            guard["run"],
+        )
         self.assertIn("raise SystemExit", guard["run"])
+
+    def test_final_gate_has_successful_not_applicable_path(self) -> None:
+        final = self.workflow()["jobs"]["final_release_gate"]
+        report = self.step(final, "Report not-applicable release event")
+
+        self.assertEqual(
+            "needs.event_admission.outputs.release_required == 'false'",
+            report["if"],
+        )
+        self.assertIn("not applicable", report["run"])
+        for step in final["steps"]:
+            if step.get("name") in {
+                "Enforce all prerequisite results",
+                "Report not-applicable release event",
+            }:
+                continue
+            with self.subTest(step=step.get("name", step.get("uses"))):
+                self.assertIn(
+                    "needs.event_admission.outputs.release_required == 'true'",
+                    step["if"],
+                )
 
     def test_all_actions_are_immutable_sha_pinned(self) -> None:
         workflow = self.workflow()
@@ -281,6 +378,17 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
         self.assertIn("--candidate-root", gate["run"])
         self.assertIn("--candidate-uid", gate["run"])
         self.assertEqual("error", upload["with"]["if-no-files-found"])
+
+    def test_sealed_browser_artifact_enforces_one_percent_visual_limit(
+        self,
+    ) -> None:
+        seal = self.workflow()["jobs"]["seal_child_artifacts"]
+        source = yaml.safe_dump(seal, sort_keys=True)
+
+        self.assertIn("visual_diff_threshold", source)
+        self.assertIn("!= 0.01", source)
+        self.assertIn("not 0 <= ratio <= 0.01", source)
+        self.assertNotIn("0.18", source)
 
     def test_exact_child_ids_and_digests_are_sealed(self) -> None:
         workflow = self.workflow()
@@ -332,10 +440,11 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
         self.assertIn("--workflow-sha", generate["run"])
         self.assertIn("--workflow-run-id", generate["run"])
         self.assertIn("--run-attempt", generate["run"])
-        self.assertEqual(
-            "steps.release-gate.outcome != 'success'",
+        self.assertIn(
+            "needs.event_admission.outputs.release_required == 'true'",
             enforce["if"],
         )
+        self.assertIn("steps.release-gate.outcome != 'success'", enforce["if"])
         self.assertIn("exit 1", enforce["run"])
 
     def test_workflow_does_not_embed_private_provider_configuration(self) -> None:

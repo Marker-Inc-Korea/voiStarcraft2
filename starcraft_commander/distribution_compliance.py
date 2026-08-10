@@ -9429,6 +9429,8 @@ def distribution_report_blockers(
             blockers.append({"code": "target_install_runtime_data_failed"})
         if payload.get("packaged_defaults_loaded") is not True:
             blockers.append({"code": "installed_packaged_defaults_failed"})
+        if payload.get("bare_check_status_passed") is not True:
+            blockers.append({"code": "installed_bare_check_status_failed"})
         if payload.get("source_repository_root_is_none") is not True:
             blockers.append({"code": "installed_source_root_not_isolated"})
         if payload.get("target_packaged_defaults_loaded") is not True:
@@ -10019,7 +10021,7 @@ def isolated_wheel_install_smoke(wheel_path: Path) -> dict[str, object]:
                     ),
                 }
             script = (
-                "import json,sys\n"
+                "import contextlib,io,json,sys\n"
                 "failure_stage = 'bootstrap'\n"
                 "def report_exception(error_type, error, traceback):\n"
                 "    print(json.dumps({'failure_stage': failure_stage, "
@@ -10037,6 +10039,8 @@ def isolated_wheel_install_smoke(wheel_path: Path) -> dict[str, object]:
                 "load_micromachine_map_pool\n"
                 "from starcraft_commander.micromachine_pre_live_journeys import "
                 "load_pre_live_journey_manifest\n"
+                "from starcraft_commander.micromachine_final_release import "
+                "main as final_release_main\n"
                 "from starcraft_commander.runtime_data import "
                 "micromachine_data_path, micromachine_data_root, "
                 "source_repository_root\n"
@@ -10064,6 +10068,15 @@ def isolated_wheel_install_smoke(wheel_path: Path) -> dict[str, object]:
                 "packaged_defaults = bool(patch_defaults) and all("
                 "packaged_file(path) for path in default_assets) and all("
                 "packaged_file(root / 'scripts' / name) for name in scripts)\n"
+                "failure_stage = 'run_bare_check_status'\n"
+                "check_status_output = io.StringIO()\n"
+                "with contextlib.redirect_stdout(check_status_output):\n"
+                "    check_status_exit = final_release_main(['check-status'])\n"
+                "check_status = json.loads(check_status_output.getvalue())\n"
+                "bare_check_status = check_status_exit == 0 and "
+                "check_status.get('ok') is True and "
+                "check_status.get('source') == 'generated' and "
+                "check_status.get('journey_count') == 14\n"
                 "source_isolated = source_repository_root() is None and "
                 "build_identity.REPO_ROOT == root.parents[1]\n"
                 "failure_stage = 'inspect_distribution_metadata'\n"
@@ -10075,6 +10088,7 @@ def isolated_wheel_install_smoke(wheel_path: Path) -> dict[str, object]:
                 "'installed_metadata': installed_metadata, "
                 "'runtime_data_loaded': loaded, "
                 "'packaged_defaults_loaded': packaged_defaults, "
+                "'bare_check_status_passed': bare_check_status, "
                 "'source_repository_root_is_none': source_isolated}, "
                 "sort_keys=True))\n"
             )
