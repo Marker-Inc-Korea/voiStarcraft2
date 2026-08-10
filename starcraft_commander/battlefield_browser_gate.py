@@ -1493,6 +1493,17 @@ class _CandidateFixtureProcess:
             "PATH": "/usr/bin:/bin",
         }
 
+    def _candidate_git_command(self, *arguments: str) -> list[str]:
+        candidate_root = str(self._config.candidate_root)
+        return [
+            str(_GIT_EXECUTABLE),
+            "-c",
+            f"safe.directory={candidate_root}",
+            "-C",
+            candidate_root,
+            *arguments,
+        ]
+
     def _run_candidate_git(self, *arguments: str) -> bytes:
         if (
             _GIT_EXECUTABLE.is_symlink()
@@ -1501,12 +1512,7 @@ class _CandidateFixtureProcess:
         ):
             raise RuntimeError("trusted Git executable is unavailable")
         result = subprocess.run(
-            [
-                str(_GIT_EXECUTABLE),
-                "-C",
-                str(self._config.candidate_root),
-                *arguments,
-            ],
+            self._candidate_git_command(*arguments),
             check=False,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -1626,10 +1632,7 @@ class _CandidateFixtureProcess:
     def _candidate_git_tree_records(self) -> list[bytes]:
         with tempfile.TemporaryFile() as error_stream:
             process = subprocess.Popen(
-                [
-                    str(_GIT_EXECUTABLE),
-                    "-C",
-                    str(self._config.candidate_root),
+                self._candidate_git_command(
                     "ls-tree",
                     "-r",
                     "-z",
@@ -1637,7 +1640,7 @@ class _CandidateFixtureProcess:
                     self._config.repository_sha,
                     "--",
                     "starcraft_commander",
-                ],
+                ),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=error_stream,
@@ -1706,13 +1709,10 @@ class _CandidateFixtureProcess:
             raise RuntimeError("candidate fixture staging byte limit exceeded")
         with tempfile.TemporaryFile() as error_stream:
             process = subprocess.Popen(
-                [
-                    str(_GIT_EXECUTABLE),
-                    "-C",
-                    str(self._config.candidate_root),
+                self._candidate_git_command(
                     "cat-file",
                     "--batch",
-                ],
+                ),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=error_stream,
@@ -1720,6 +1720,7 @@ class _CandidateFixtureProcess:
             )
             total_bytes = 0
             web_gui_digest = ""
+            operation_failed = False
             try:
                 assert process.stdin is not None
                 assert process.stdout is not None
@@ -1772,14 +1773,38 @@ class _CandidateFixtureProcess:
                     raise RuntimeError(
                         f"candidate Git blob read failed: {details}"
                     )
+            except BaseException:
+                operation_failed = True
+                raise
             finally:
-                if process.stdin is not None and not process.stdin.closed:
-                    process.stdin.close()
-                if process.poll() is None:
-                    process.kill()
-                    process.wait(timeout=5)
-                if process.stdout is not None:
-                    process.stdout.close()
+                cleanup_error: BaseException | None = None
+                try:
+                    if process.stdin is not None and not process.stdin.closed:
+                        process.stdin.close()
+                except BaseException as error:
+                    cleanup_error = error
+                finally:
+                    try:
+                        if process.poll() is None:
+                            process.kill()
+                    except BaseException as error:
+                        if cleanup_error is None:
+                            cleanup_error = error
+                    finally:
+                        try:
+                            process.wait(timeout=5)
+                        except BaseException as error:
+                            if cleanup_error is None:
+                                cleanup_error = error
+                        finally:
+                            try:
+                                if process.stdout is not None:
+                                    process.stdout.close()
+                            except BaseException as error:
+                                if cleanup_error is None:
+                                    cleanup_error = error
+                if not operation_failed and cleanup_error is not None:
+                    raise cleanup_error
         if not web_gui_digest:
             raise RuntimeError("candidate web_gui Git blob was not staged")
         return total_bytes, web_gui_digest

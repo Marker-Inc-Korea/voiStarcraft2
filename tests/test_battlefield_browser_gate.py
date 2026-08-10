@@ -220,6 +220,34 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             self.assertEqual(str(staged_root), command[-2])
             self.assertEqual(str(staged), command[-1])
 
+    def test_candidate_git_commands_pin_validated_safe_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            candidate_root = Path(browser_gate.__file__).resolve().parents[1]
+            fixture = _CandidateFixtureProcess(
+                BrowserGateConfig(
+                    repository_sha=REPOSITORY_SHA,
+                    build_identity=BUILD_IDENTITY,
+                    artifact_dir=Path(directory),
+                    candidate_root=candidate_root,
+                    candidate_uid=65001,
+                    candidate_gid=65001,
+                )
+            )
+
+            command = fixture._candidate_git_command(
+                "rev-parse",
+                "--verify",
+                "HEAD^{commit}",
+            )
+
+            self.assertEqual("/usr/bin/git", command[0])
+            self.assertEqual("-c", command[1])
+            self.assertEqual(
+                f"safe.directory={candidate_root}",
+                command[2],
+            )
+            self.assertEqual(["-C", str(candidate_root)], command[3:5])
+
     def test_candidate_fixture_stages_exact_read_only_traversable_source(
         self,
     ) -> None:
@@ -842,6 +870,71 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
 
             self.assertFalse(destination.exists())
 
+    def test_candidate_git_blob_cleanup_preserves_pipe_failures(self) -> None:
+        for failure_phase in ("flush", "close"):
+            with (
+                self.subTest(failure_phase=failure_phase),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                staged_root = Path(directory)
+                package_root = staged_root / "starcraft_commander"
+                package_root.mkdir()
+                fixture = _CandidateFixtureProcess(
+                    BrowserGateConfig(
+                        repository_sha=REPOSITORY_SHA,
+                        build_identity=BUILD_IDENTITY,
+                        artifact_dir=staged_root / "artifacts",
+                        candidate_uid=65001,
+                        candidate_gid=65001,
+                    )
+                )
+                process = mock.Mock()
+                process.stdin.closed = False
+                process.poll.return_value = None
+                process.wait.return_value = -signal.SIGKILL
+                if failure_phase == "flush":
+                    process.stdin.flush.side_effect = BrokenPipeError(
+                        "flush failed"
+                    )
+                    entries = [
+                        (
+                            Path("starcraft_commander/web_gui.py"),
+                            "0" * 40,
+                        )
+                    ]
+                    expected_error = "flush failed"
+                    process.stdin.close.side_effect = BrokenPipeError(
+                        "cleanup close failed"
+                    )
+                else:
+                    process.stdin.close.side_effect = BrokenPipeError(
+                        "close failed"
+                    )
+                    entries = []
+                    expected_error = "close failed"
+
+                with (
+                    mock.patch.object(
+                        browser_gate.subprocess,
+                        "Popen",
+                        return_value=process,
+                    ),
+                    self.assertRaisesRegex(
+                        BrokenPipeError,
+                        expected_error,
+                    ),
+                ):
+                    fixture._stage_candidate_git_blobs(
+                        staged_root,
+                        entries,
+                        {Path("."): ("directory", 0, "")},
+                        byte_limit=1024,
+                    )
+
+                process.kill.assert_called_once_with()
+                process.wait.assert_called_once_with(timeout=5)
+                process.stdout.close.assert_called_once_with()
+
     def test_candidate_fixture_file_reads_are_chunk_bounded(
         self,
     ) -> None:
@@ -1249,36 +1342,77 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
         self.assertTrue(candidate_python.is_file())
         self.assertFalse(candidate_python.is_symlink())
 
-        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+        with (
+            tempfile.TemporaryDirectory(dir="/tmp") as directory,
+            tempfile.TemporaryDirectory(dir="/tmp") as candidate_directory,
+        ):
             staging_root = Path(directory).resolve()
             staging_root.chmod(0o755)
-            candidate_root = Path(browser_gate.__file__).resolve().parents[1]
-            fixture = _CandidateFixtureProcess(
-                BrowserGateConfig(
-                    repository_sha=_repository_head(candidate_root),
-                    build_identity=BUILD_IDENTITY,
-                    artifact_dir=staging_root / "artifacts",
-                    candidate_root=candidate_root,
-                    candidate_python=candidate_python,
-                    candidate_uid=candidate_uid,
-                    candidate_gid=candidate_gid,
-                )
+            repository_root = Path(browser_gate.__file__).resolve().parents[1]
+            candidate_root = Path(candidate_directory).resolve() / "candidate"
+            subprocess.run(
+                [
+                    "/usr/bin/git",
+                    "clone",
+                    "--no-hardlinks",
+                    "--quiet",
+                    str(repository_root),
+                    str(candidate_root),
+                ],
+                check=True,
             )
-
-            with mock.patch.object(
-                browser_gate,
-                "_FIXTURE_STAGING_ROOT",
-                staging_root,
-            ):
-                try:
+            candidate_sha = _repository_head(candidate_root)
+            subprocess.run(
+                [
+                    "/usr/bin/sudo",
+                    "--non-interactive",
+                    "/bin/chown",
+                    "-R",
+                    "0:0",
+                    str(candidate_root),
+                ],
+                check=True,
+            )
+            fixture: _CandidateFixtureProcess | None = None
+            try:
+                fixture = _CandidateFixtureProcess(
+                    BrowserGateConfig(
+                        repository_sha=candidate_sha,
+                        build_identity=BUILD_IDENTITY,
+                        artifact_dir=staging_root / "artifacts",
+                        candidate_root=candidate_root,
+                        candidate_python=candidate_python,
+                        candidate_uid=candidate_uid,
+                        candidate_gid=candidate_gid,
+                    )
+                )
+                with mock.patch.object(
+                    browser_gate,
+                    "_FIXTURE_STAGING_ROOT",
+                    staging_root,
+                ):
                     origin = fixture.start()
                     self.assertRegex(
                         origin,
                         r"^http://127[.]0[.]0[.]1:[0-9]+/$",
                     )
                     fixture.assert_quiet()
+            finally:
+                try:
+                    if fixture is not None:
+                        fixture.stop()
                 finally:
-                    fixture.stop()
+                    subprocess.run(
+                        [
+                            "/usr/bin/sudo",
+                            "--non-interactive",
+                            "/bin/chown",
+                            "-R",
+                            f"{os.getuid()}:{os.getgid()}",
+                            str(candidate_root),
+                        ],
+                        check=True,
+                    )
 
             self.assertEqual([], list(staging_root.iterdir()))
 
