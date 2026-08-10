@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import importlib.util
 import os
+import py_compile
 import signal
 import stat
 import subprocess
@@ -29,6 +32,72 @@ from starcraft_commander.battlefield_browser_gate import (
 
 REPOSITORY_SHA = "a" * 40
 BUILD_IDENTITY = "sha256:" + "b" * 64
+
+
+def _run_git(repository: Path, *arguments: str) -> str:
+    environment = {
+        **os.environ,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+    }
+    result = subprocess.run(
+        ["/usr/bin/git", "-C", str(repository), *arguments],
+        check=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+    )
+    return result.stdout.strip()
+
+
+def _commit_candidate_tree(candidate_root: Path) -> str:
+    _run_git(candidate_root, "init", "--quiet")
+    _run_git(candidate_root, "add", "--all")
+    _run_git(
+        candidate_root,
+        "-c",
+        "user.name=VOI Test",
+        "-c",
+        "user.email=voi-test@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--quiet",
+        "--message",
+        "candidate fixture",
+    )
+    return _run_git(candidate_root, "rev-parse", "HEAD")
+
+
+def _repository_head(repository: Path) -> str:
+    return _run_git(repository, "rev-parse", "HEAD")
+
+
+def _candidate_popen_side_effect(
+    replacement: subprocess.Popen[str] | BaseException,
+) -> object:
+    real_popen = subprocess.Popen
+
+    def start(
+        command: object,
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        if (
+            isinstance(command, list)
+            and command
+            and command[0] == "/usr/bin/git"
+        ):
+            return real_popen(command, *args, **kwargs)
+        if isinstance(replacement, BaseException):
+            raise replacement
+        return replacement
+
+    return start
 
 
 def _visible_metrics() -> dict[str, object]:
@@ -157,10 +226,12 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             staging_root = Path(directory).resolve()
             staging_root.chmod(0o755)
+            candidate_root = Path(browser_gate.__file__).resolve().parents[1]
             config = BrowserGateConfig(
-                repository_sha=REPOSITORY_SHA,
+                repository_sha=_repository_head(candidate_root),
                 build_identity=BUILD_IDENTITY,
                 artifact_dir=staging_root,
+                candidate_root=candidate_root,
                 candidate_uid=65001,
                 candidate_gid=65001,
             )
@@ -207,6 +278,18 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             self.assertEqual(
                 0o444,
                 stat.S_IMODE(staged_web_gui.stat().st_mode),
+            )
+            self.assertFalse(
+                staged_candidate_root.joinpath(
+                    "starcraft_commander",
+                    "__pycache__",
+                ).exists()
+            )
+            self.assertFalse(
+                staged_candidate_root.joinpath(
+                    "starcraft_commander",
+                    ".DS_Store",
+                ).exists()
             )
 
             fixture._cleanup_fixture_script()
@@ -312,10 +395,11 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
                 "    pass\n",
                 encoding="utf-8",
             )
+            candidate_sha = _commit_candidate_tree(candidate_root)
             staging_root = Path(staging_directory).resolve()
             staging_root.chmod(0o755)
             config = BrowserGateConfig(
-                repository_sha=REPOSITORY_SHA,
+                repository_sha=candidate_sha,
                 build_identity=BUILD_IDENTITY,
                 artifact_dir=source_root / "artifacts",
                 candidate_root=candidate_root,
@@ -369,6 +453,172 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
 
             self.assertEqual([], list(staging_root.iterdir()))
 
+    def test_candidate_fixture_ignores_untracked_unchecked_hash_bytecode(
+        self,
+    ) -> None:
+        with (
+            tempfile.TemporaryDirectory() as source_directory,
+            tempfile.TemporaryDirectory() as staging_directory,
+        ):
+            source_root = Path(source_directory).resolve()
+            candidate_root = source_root / "candidate"
+            package_root = candidate_root / "starcraft_commander"
+            package_root.mkdir(parents=True)
+            package_root.joinpath("__init__.py").write_text("", encoding="utf-8")
+            web_gui = package_root / "web_gui.py"
+            web_gui.write_text("MARKER = 'source'\n", encoding="utf-8")
+            candidate_sha = _commit_candidate_tree(candidate_root)
+
+            malicious_source = source_root / "malicious_web_gui.py"
+            malicious_source.write_text(
+                "MARKER = 'bytecode'\n",
+                encoding="utf-8",
+            )
+            cache_path = Path(importlib.util.cache_from_source(str(web_gui)))
+            cache_path.parent.mkdir()
+            py_compile.compile(
+                str(malicious_source),
+                cfile=str(cache_path),
+                dfile=str(web_gui),
+                doraise=True,
+                invalidation_mode=(
+                    py_compile.PycInvalidationMode.UNCHECKED_HASH
+                ),
+            )
+            import_command = [
+                sys.executable,
+                "-I",
+                "-B",
+                "-c",
+                (
+                    "import sys;"
+                    f"sys.path.insert(0,{str(candidate_root)!r});"
+                    "from starcraft_commander.web_gui import MARKER;"
+                    "print(MARKER)"
+                ),
+            ]
+            direct = subprocess.run(
+                import_command,
+                check=True,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual("bytecode", direct.stdout.strip())
+
+            staging_root = Path(staging_directory).resolve()
+            staging_root.chmod(0o755)
+            fixture = _CandidateFixtureProcess(
+                BrowserGateConfig(
+                    repository_sha=candidate_sha,
+                    build_identity=BUILD_IDENTITY,
+                    artifact_dir=source_root / "artifacts",
+                    candidate_root=candidate_root,
+                    candidate_uid=65001,
+                    candidate_gid=65001,
+                )
+            )
+            with mock.patch.object(
+                browser_gate,
+                "_FIXTURE_STAGING_ROOT",
+                staging_root,
+            ):
+                fixture._prepare_fixture_script()
+                staged_root = fixture._staged_candidate_root
+                assert staged_root is not None
+                expected_digest = hashlib.sha256(
+                    web_gui.read_bytes()
+                ).hexdigest()
+                web_gui.write_text(
+                    "MARKER = 'changed-worktree'\n",
+                    encoding="utf-8",
+                )
+                self.assertEqual(
+                    expected_digest,
+                    fixture.candidate_web_gui_sha256(),
+                )
+                self.assertFalse(
+                    staged_root.joinpath(
+                        "starcraft_commander",
+                        "__pycache__",
+                    ).exists()
+                )
+                staged_command = [
+                    sys.executable,
+                    "-I",
+                    "-B",
+                    "-c",
+                    (
+                        "import sys;"
+                        f"sys.path.insert(0,{str(staged_root)!r});"
+                        "from starcraft_commander.web_gui import MARKER;"
+                        "print(MARKER)"
+                    ),
+                ]
+                staged = subprocess.run(
+                    staged_command,
+                    check=True,
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertEqual("source", staged.stdout.strip())
+                fixture._cleanup_fixture_script()
+
+            self.assertEqual([], list(staging_root.iterdir()))
+
+    def test_candidate_fixture_rejects_tracked_import_artifacts(self) -> None:
+        for relative in (
+            "starcraft_commander/__pycache__/web_gui.cpython-312.pyc",
+            "starcraft_commander/web_gui.so",
+        ):
+            with (
+                self.subTest(relative=relative),
+                tempfile.TemporaryDirectory() as source_directory,
+                tempfile.TemporaryDirectory() as staging_directory,
+            ):
+                source_root = Path(source_directory).resolve()
+                candidate_root = source_root / "candidate"
+                package_root = candidate_root / "starcraft_commander"
+                package_root.mkdir(parents=True)
+                package_root.joinpath("__init__.py").write_text(
+                    "",
+                    encoding="utf-8",
+                )
+                package_root.joinpath("web_gui.py").write_text(
+                    "MARKER = 'source'\n",
+                    encoding="utf-8",
+                )
+                artifact = candidate_root / relative
+                artifact.parent.mkdir(parents=True, exist_ok=True)
+                artifact.write_bytes(b"not executable")
+                candidate_sha = _commit_candidate_tree(candidate_root)
+                staging_root = Path(staging_directory).resolve()
+                staging_root.chmod(0o755)
+                fixture = _CandidateFixtureProcess(
+                    BrowserGateConfig(
+                        repository_sha=candidate_sha,
+                        build_identity=BUILD_IDENTITY,
+                        artifact_dir=source_root / "artifacts",
+                        candidate_root=candidate_root,
+                        candidate_uid=65001,
+                        candidate_gid=65001,
+                    )
+                )
+
+                with (
+                    mock.patch.object(
+                        browser_gate,
+                        "_FIXTURE_STAGING_ROOT",
+                        staging_root,
+                    ),
+                    self.assertRaisesRegex(
+                        ValueError,
+                        "forbidden import artifact",
+                    ),
+                ):
+                    fixture._prepare_fixture_script()
+
+                self.assertEqual([], list(staging_root.iterdir()))
+
     def test_candidate_fixture_rejects_transitive_package_symlink(self) -> None:
         with (
             tempfile.TemporaryDirectory() as source_directory,
@@ -390,11 +640,12 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             outside = source_root / "outside.py"
             outside.write_text("ESCAPED = True\n", encoding="utf-8")
             package_root.joinpath("escaped.py").symlink_to(outside)
+            candidate_sha = _commit_candidate_tree(candidate_root)
             staging_root = Path(staging_directory).resolve()
             staging_root.chmod(0o755)
             fixture = _CandidateFixtureProcess(
                 BrowserGateConfig(
-                    repository_sha=REPOSITORY_SHA,
+                    repository_sha=candidate_sha,
                     build_identity=BUILD_IDENTITY,
                     artifact_dir=source_root / "artifacts",
                     candidate_root=candidate_root,
@@ -411,7 +662,7 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
                 ),
                 self.assertRaisesRegex(
                     ValueError,
-                    "candidate package contains a symlink",
+                    "linked or non-regular entry",
                 ),
             ):
                 fixture._prepare_fixture_script()
@@ -502,7 +753,7 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             self.assertIsNone(fixture._staged_candidate_root)
             self.assertIsNone(fixture._staged_fixture_script)
 
-    def test_candidate_fixture_entry_limit_stops_directory_iteration(
+    def test_candidate_fixture_entry_limit_rejects_large_git_tree(
         self,
     ) -> None:
         with (
@@ -518,12 +769,16 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             package_root.joinpath("__init__.py").write_text("", encoding="utf-8")
             package_root.joinpath("web_gui.py").write_text("", encoding="utf-8")
             for index in range(10):
-                package_root.joinpath(f"nested-{index}").mkdir()
+                package_root.joinpath(f"nested-{index}.py").write_text(
+                    "# tracked\n",
+                    encoding="utf-8",
+                )
+            candidate_sha = _commit_candidate_tree(candidate_root)
             staging_root = Path(staging_directory).resolve()
             staging_root.chmod(0o755)
             fixture = _CandidateFixtureProcess(
                 BrowserGateConfig(
-                    repository_sha=REPOSITORY_SHA,
+                    repository_sha=candidate_sha,
                     build_identity=BUILD_IDENTITY,
                     artifact_dir=source_root / "artifacts",
                     candidate_root=candidate_root,
@@ -531,59 +786,6 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
                     candidate_gid=65001,
                 )
             )
-            real_scandir = os.scandir
-            consumed_entries: list[str] = []
-            package_snapshot = package_root.stat()
-
-            class MonitoredScandir:
-                def __init__(self, directory: int | Path) -> None:
-                    self._scandir = real_scandir(directory)
-                    self._iterator: object | None = None
-
-                def __enter__(self) -> MonitoredScandir:
-                    self._iterator = self._scandir.__enter__()
-                    return self
-
-                def __exit__(self, *args: object) -> object:
-                    return self._scandir.__exit__(*args)
-
-                def __iter__(self) -> MonitoredScandir:
-                    return self
-
-                def __next__(self) -> os.DirEntry[str]:
-                    assert self._iterator is not None
-                    entry = next(self._iterator)  # type: ignore[arg-type]
-                    consumed_entries.append(entry.name)
-                    if len(consumed_entries) > 1:
-                        raise AssertionError(
-                            "candidate directory was materialized before limit"
-                        )
-                    return entry
-
-            def monitored_scandir(
-                directory: (
-                    int
-                    | str
-                    | bytes
-                    | os.PathLike[str]
-                    | os.PathLike[bytes]
-                ),
-            ) -> object:
-                if isinstance(directory, int):
-                    snapshot = os.fstat(directory)
-                    if (
-                        snapshot.st_dev,
-                        snapshot.st_ino,
-                    ) == (
-                        package_snapshot.st_dev,
-                        package_snapshot.st_ino,
-                    ):
-                        return MonitoredScandir(directory)
-                    return real_scandir(directory)
-                path = Path(directory).resolve()
-                if path == package_root:
-                    return MonitoredScandir(path)
-                return real_scandir(directory)
 
             with (
                 mock.patch.object(browser_gate, "__file__", str(trusted_fixture)),
@@ -597,171 +799,11 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
                     "_FIXTURE_STAGING_ENTRY_LIMIT",
                     2,
                 ),
-                mock.patch.object(browser_gate.os, "scandir", monitored_scandir),
                 self.assertRaisesRegex(RuntimeError, "entry limit exceeded"),
             ):
                 fixture._prepare_fixture_script()
 
-            self.assertEqual(1, len(consumed_entries))
             self.assertEqual([], list(staging_root.iterdir()))
-
-    def test_candidate_fixture_rejects_parent_directory_symlink_swap(
-        self,
-    ) -> None:
-        with (
-            tempfile.TemporaryDirectory() as source_directory,
-            tempfile.TemporaryDirectory() as staging_directory,
-            tempfile.TemporaryDirectory() as outside_directory,
-        ):
-            source_root = Path(source_directory).resolve()
-            trusted_fixture = source_root / "fixture.py"
-            trusted_fixture.write_text("# ok\n", encoding="utf-8")
-            candidate_root = source_root / "candidate"
-            package_root = candidate_root / "starcraft_commander"
-            nested_root = package_root / "nested"
-            nested_root.mkdir(parents=True)
-            package_root.joinpath("__init__.py").write_text("", encoding="utf-8")
-            package_root.joinpath("web_gui.py").write_text("", encoding="utf-8")
-            nested_root.joinpath("safe.py").write_text("# safe\n", encoding="utf-8")
-            outside_root = Path(outside_directory).resolve()
-            outside_root.joinpath("escaped.py").write_text(
-                "# outside\n",
-                encoding="utf-8",
-            )
-            staging_root = Path(staging_directory).resolve()
-            staging_root.chmod(0o755)
-            fixture = _CandidateFixtureProcess(
-                BrowserGateConfig(
-                    repository_sha=REPOSITORY_SHA,
-                    build_identity=BUILD_IDENTITY,
-                    artifact_dir=source_root / "artifacts",
-                    candidate_root=candidate_root,
-                    candidate_uid=65001,
-                    candidate_gid=65001,
-                )
-            )
-            real_open = os.open
-            swapped = False
-
-            def swapping_open(
-                path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
-                flags: int,
-                mode: int = 0o777,
-                *,
-                dir_fd: int | None = None,
-            ) -> int:
-                nonlocal swapped
-                if (
-                    not swapped
-                    and dir_fd is not None
-                    and os.fspath(path) == "nested"
-                    and flags & getattr(os, "O_DIRECTORY", 0)
-                ):
-                    swapped = True
-                    nested_root.rename(package_root / "nested-original")
-                    nested_root.symlink_to(outside_root, target_is_directory=True)
-                return real_open(path, flags, mode, dir_fd=dir_fd)
-
-            with (
-                mock.patch.object(browser_gate, "__file__", str(trusted_fixture)),
-                mock.patch.object(
-                    browser_gate,
-                    "_FIXTURE_STAGING_ROOT",
-                    staging_root,
-                ),
-                mock.patch.object(browser_gate.os, "open", swapping_open),
-                self.assertRaisesRegex(
-                    RuntimeError,
-                    "directory changed or linked",
-                ),
-            ):
-                fixture._prepare_fixture_script()
-
-            self.assertTrue(swapped)
-            self.assertEqual([], list(staging_root.iterdir()))
-            self.assertIsNone(fixture._staged_candidate_root)
-            self.assertIsNone(fixture._staged_fixture_script)
-
-    def test_candidate_fixture_closes_child_directory_when_fstat_fails(
-        self,
-    ) -> None:
-        with (
-            tempfile.TemporaryDirectory() as source_directory,
-            tempfile.TemporaryDirectory() as staging_directory,
-        ):
-            source_root = Path(source_directory).resolve()
-            trusted_fixture = source_root / "fixture.py"
-            trusted_fixture.write_text("# ok\n", encoding="utf-8")
-            candidate_root = source_root / "candidate"
-            package_root = candidate_root / "starcraft_commander"
-            nested_root = package_root / "nested"
-            nested_root.mkdir(parents=True)
-            package_root.joinpath("__init__.py").write_text("", encoding="utf-8")
-            package_root.joinpath("web_gui.py").write_text("", encoding="utf-8")
-            nested_root.joinpath("safe.py").write_text("# safe\n", encoding="utf-8")
-            staging_root = Path(staging_directory).resolve()
-            staging_root.chmod(0o755)
-            fixture = _CandidateFixtureProcess(
-                BrowserGateConfig(
-                    repository_sha=REPOSITORY_SHA,
-                    build_identity=BUILD_IDENTITY,
-                    artifact_dir=source_root / "artifacts",
-                    candidate_root=candidate_root,
-                    candidate_uid=65001,
-                    candidate_gid=65001,
-                )
-            )
-            real_open = os.open
-            real_fstat = os.fstat
-            real_close = os.close
-            child_descriptors: list[int] = []
-            closed_descriptors: list[int] = []
-
-            def recording_open(
-                path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
-                flags: int,
-                mode: int = 0o777,
-                *,
-                dir_fd: int | None = None,
-            ) -> int:
-                descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
-                if (
-                    dir_fd is not None
-                    and os.fspath(path) == "nested"
-                    and flags & getattr(os, "O_DIRECTORY", 0)
-                ):
-                    child_descriptors.append(descriptor)
-                return descriptor
-
-            def failing_fstat(descriptor: int) -> os.stat_result:
-                if descriptor in child_descriptors:
-                    raise OSError("child fstat failed")
-                return real_fstat(descriptor)
-
-            def recording_close(descriptor: int) -> None:
-                if descriptor in child_descriptors:
-                    closed_descriptors.append(descriptor)
-                real_close(descriptor)
-
-            with (
-                mock.patch.object(browser_gate, "__file__", str(trusted_fixture)),
-                mock.patch.object(
-                    browser_gate,
-                    "_FIXTURE_STAGING_ROOT",
-                    staging_root,
-                ),
-                mock.patch.object(browser_gate.os, "open", recording_open),
-                mock.patch.object(browser_gate.os, "fstat", failing_fstat),
-                mock.patch.object(browser_gate.os, "close", recording_close),
-                self.assertRaisesRegex(OSError, "child fstat failed"),
-            ):
-                fixture._prepare_fixture_script()
-
-            self.assertEqual(1, len(child_descriptors))
-            self.assertEqual(child_descriptors, closed_descriptors)
-            self.assertEqual([], list(staging_root.iterdir()))
-            self.assertIsNone(fixture._staged_candidate_root)
-            self.assertIsNone(fixture._staged_fixture_script)
 
     def test_candidate_fixture_preserves_fdopen_failure_without_double_close(
         self,
@@ -815,11 +857,12 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             package_root.mkdir(parents=True)
             package_root.joinpath("__init__.py").write_bytes(b"abcdefghij")
             package_root.joinpath("web_gui.py").write_bytes(b"klmnopqrst")
+            candidate_sha = _commit_candidate_tree(candidate_root)
             staging_root = Path(staging_directory).resolve()
             staging_root.chmod(0o755)
             fixture = _CandidateFixtureProcess(
                 BrowserGateConfig(
-                    repository_sha=REPOSITORY_SHA,
+                    repository_sha=candidate_sha,
                     build_identity=BUILD_IDENTITY,
                     artifact_dir=source_root / "artifacts",
                     candidate_root=candidate_root,
@@ -902,11 +945,12 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             package_root.mkdir(parents=True)
             package_root.joinpath("__init__.py").write_bytes(b"567")
             package_root.joinpath("web_gui.py").write_bytes(b"890")
+            candidate_sha = _commit_candidate_tree(candidate_root)
             staging_root = Path(staging_directory).resolve()
             staging_root.chmod(0o755)
             fixture = _CandidateFixtureProcess(
                 BrowserGateConfig(
-                    repository_sha=REPOSITORY_SHA,
+                    repository_sha=candidate_sha,
                     build_identity=BUILD_IDENTITY,
                     artifact_dir=source_root / "artifacts",
                     candidate_root=candidate_root,
@@ -950,11 +994,12 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             package_root.mkdir(parents=True)
             package_root.joinpath("__init__.py").write_text("", encoding="utf-8")
             package_root.joinpath("web_gui.py").write_text("", encoding="utf-8")
+            candidate_sha = _commit_candidate_tree(candidate_root)
             staging_root = Path(staging_directory).resolve()
             staging_root.chmod(0o755)
             fixture = _CandidateFixtureProcess(
                 BrowserGateConfig(
-                    repository_sha=REPOSITORY_SHA,
+                    repository_sha=candidate_sha,
                     build_identity=BUILD_IDENTITY,
                     artifact_dir=source_root / "artifacts",
                     candidate_root=candidate_root,
@@ -1001,11 +1046,12 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             package_root.mkdir(parents=True)
             package_root.joinpath("__init__.py").write_text("", encoding="utf-8")
             package_root.joinpath("web_gui.py").write_text("", encoding="utf-8")
+            candidate_sha = _commit_candidate_tree(candidate_root)
             staging_root = Path(staging_directory).resolve()
             staging_root.chmod(0o755)
             fixture = _CandidateFixtureProcess(
                 BrowserGateConfig(
-                    repository_sha=REPOSITORY_SHA,
+                    repository_sha=candidate_sha,
                     build_identity=BUILD_IDENTITY,
                     artifact_dir=source_root / "artifacts",
                     candidate_root=candidate_root,
@@ -1081,11 +1127,12 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             package_root.mkdir(parents=True)
             package_root.joinpath("__init__.py").write_text("", encoding="utf-8")
             package_root.joinpath("web_gui.py").write_text("", encoding="utf-8")
+            candidate_sha = _commit_candidate_tree(candidate_root)
             staging_root = Path(staging_directory).resolve()
             staging_root.chmod(0o755)
             fixture = _CandidateFixtureProcess(
                 BrowserGateConfig(
-                    repository_sha=REPOSITORY_SHA,
+                    repository_sha=candidate_sha,
                     build_identity=BUILD_IDENTITY,
                     artifact_dir=source_root / "artifacts",
                     candidate_root=candidate_root,
@@ -1137,11 +1184,12 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             package_root.mkdir(parents=True)
             package_root.joinpath("__init__.py").write_text("", encoding="utf-8")
             package_root.joinpath("web_gui.py").write_text("", encoding="utf-8")
+            candidate_sha = _commit_candidate_tree(candidate_root)
             staging_root = Path(staging_directory).resolve()
             staging_root.chmod(0o755)
             fixture = _CandidateFixtureProcess(
                 BrowserGateConfig(
-                    repository_sha=REPOSITORY_SHA,
+                    repository_sha=candidate_sha,
                     build_identity=BUILD_IDENTITY,
                     artifact_dir=source_root / "artifacts",
                     candidate_root=candidate_root,
@@ -1204,11 +1252,13 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             staging_root = Path(directory).resolve()
             staging_root.chmod(0o755)
+            candidate_root = Path(browser_gate.__file__).resolve().parents[1]
             fixture = _CandidateFixtureProcess(
                 BrowserGateConfig(
-                    repository_sha=REPOSITORY_SHA,
+                    repository_sha=_repository_head(candidate_root),
                     build_identity=BUILD_IDENTITY,
                     artifact_dir=staging_root / "artifacts",
+                    candidate_root=candidate_root,
                     candidate_python=candidate_python,
                     candidate_uid=candidate_uid,
                     candidate_gid=candidate_gid,
@@ -1238,14 +1288,19 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             staging_root = Path(directory).resolve()
             staging_root.chmod(0o755)
+            candidate_root = Path(browser_gate.__file__).resolve().parents[1]
             config = BrowserGateConfig(
-                repository_sha=REPOSITORY_SHA,
+                repository_sha=_repository_head(candidate_root),
                 build_identity=BUILD_IDENTITY,
                 artifact_dir=staging_root,
+                candidate_root=candidate_root,
                 candidate_uid=65001,
                 candidate_gid=65001,
             )
             fixture = _CandidateFixtureProcess(config)
+            popen_side_effect = _candidate_popen_side_effect(
+                OSError("spawn failed")
+            )
 
             with (
                 mock.patch.object(
@@ -1256,7 +1311,7 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
                 mock.patch.object(
                     browser_gate.subprocess,
                     "Popen",
-                    side_effect=OSError("spawn failed"),
+                    side_effect=popen_side_effect,
                 ),
                 self.assertRaisesRegex(OSError, "spawn failed"),
             ):
@@ -1271,10 +1326,12 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             staging_root = Path(directory).resolve()
             staging_root.chmod(0o755)
+            candidate_root = Path(browser_gate.__file__).resolve().parents[1]
             config = BrowserGateConfig(
-                repository_sha=REPOSITORY_SHA,
+                repository_sha=_repository_head(candidate_root),
                 build_identity=BUILD_IDENTITY,
                 artifact_dir=staging_root,
+                candidate_root=candidate_root,
                 candidate_uid=65001,
                 candidate_gid=65001,
             )
@@ -1282,6 +1339,7 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             process = mock.Mock(pid=4321, stdout=None, stderr=None)
             process.poll.return_value = 1
             process.stdin.write.side_effect = BrokenPipeError("handshake failed")
+            popen_side_effect = _candidate_popen_side_effect(process)
 
             with (
                 mock.patch.object(
@@ -1292,7 +1350,7 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
                 mock.patch.object(
                     browser_gate.subprocess,
                     "Popen",
-                    return_value=process,
+                    side_effect=popen_side_effect,
                 ),
                 mock.patch.object(fixture, "_cleanup_dedicated_uid"),
                 self.assertRaisesRegex(BrokenPipeError, "handshake failed"),
@@ -1309,10 +1367,12 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             staging_root = Path(directory).resolve()
             staging_root.chmod(0o755)
+            candidate_root = Path(browser_gate.__file__).resolve().parents[1]
             config = BrowserGateConfig(
-                repository_sha=REPOSITORY_SHA,
+                repository_sha=_repository_head(candidate_root),
                 build_identity=BUILD_IDENTITY,
                 artifact_dir=staging_root,
+                candidate_root=candidate_root,
                 candidate_uid=65001,
                 candidate_gid=65001,
             )
@@ -1347,10 +1407,12 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             staging_root = Path(directory).resolve()
             staging_root.chmod(0o755)
+            candidate_root = Path(browser_gate.__file__).resolve().parents[1]
             config = BrowserGateConfig(
-                repository_sha=REPOSITORY_SHA,
+                repository_sha=_repository_head(candidate_root),
                 build_identity=BUILD_IDENTITY,
                 artifact_dir=staging_root,
+                candidate_root=candidate_root,
                 candidate_uid=65001,
                 candidate_gid=65001,
             )
@@ -1359,7 +1421,7 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             process.poll.return_value = None
             process.stdout.readline.return_value = (
                 '{"candidate_sha":"'
-                + REPOSITORY_SHA
+                + config.repository_sha
                 + '","nonce":"'
                 + fixture._nonce
                 + '","origin":"http://127.0.0.1:99999/",'
@@ -1368,6 +1430,7 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             )
             selector = mock.Mock()
             selector.select.return_value = [(process.stdout, 1)]
+            popen_side_effect = _candidate_popen_side_effect(process)
 
             with (
                 mock.patch.object(
@@ -1378,7 +1441,7 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
                 mock.patch.object(
                     browser_gate.subprocess,
                     "Popen",
-                    return_value=process,
+                    side_effect=popen_side_effect,
                 ),
                 mock.patch.object(
                     browser_gate.selectors,
@@ -1406,10 +1469,12 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             staging_root = Path(directory).resolve()
             staging_root.chmod(0o755)
+            candidate_root = Path(browser_gate.__file__).resolve().parents[1]
             config = BrowserGateConfig(
-                repository_sha=REPOSITORY_SHA,
+                repository_sha=_repository_head(candidate_root),
                 build_identity=BUILD_IDENTITY,
                 artifact_dir=staging_root,
+                candidate_root=candidate_root,
                 candidate_uid=65001,
                 candidate_gid=65001,
             )

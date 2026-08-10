@@ -23,7 +23,7 @@ import zlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
 
@@ -53,8 +53,18 @@ _FIXTURE_STAGING_ROOT: Final[Path] = Path("/tmp").resolve()
 _FIXTURE_STAGING_ENTRY_LIMIT: Final[int] = 4096
 _FIXTURE_STAGING_BYTE_LIMIT: Final[int] = 64 * 1024 * 1024
 _FIXTURE_STAGING_CHUNK_SIZE: Final[int] = 1024 * 1024
-_SECURE_SOURCE_DIRECTORY_FDS: Final[bool] = (
-    os.open in os.supports_dir_fd and os.scandir in os.supports_fd
+_FIXTURE_GIT_RECORD_LIMIT: Final[int] = 4096
+_GIT_EXECUTABLE: Final[Path] = Path("/usr/bin/git")
+_GIT_OBJECT_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{40}$")
+_FORBIDDEN_IMPORT_SUFFIXES: Final[frozenset[str]] = frozenset(
+    {
+        ".dll",
+        ".dylib",
+        ".pyc",
+        ".pyd",
+        ".pyo",
+        ".so",
+    }
 )
 _FIXTURE_BOOTSTRAP: Final[str] = (
     "import runpy,sys;"
@@ -1343,6 +1353,7 @@ class _CandidateFixtureProcess:
         self._staged_fixture_cleanup_verification_error: (
             BaseException | None
         ) = None
+        self._candidate_web_gui_sha256: str | None = None
 
     def _command(
         self,
@@ -1390,6 +1401,7 @@ class _CandidateFixtureProcess:
             raise RuntimeError("candidate fixture source is already staged")
         if self._staged_candidate_root is not None:
             raise RuntimeError("candidate package source is already staged")
+        self._candidate_web_gui_sha256 = None
 
         staging_root = _FIXTURE_STAGING_ROOT
         if (
@@ -1413,14 +1425,8 @@ class _CandidateFixtureProcess:
         self._staged_candidate_root = staged_root
         self._staged_fixture_script = staged_script
         self._staged_fixture_manifest = manifest
-        total_entries = 0
         total_bytes = 0
         try:
-            total_entries += 1
-            if total_entries > _FIXTURE_STAGING_ENTRY_LIMIT:
-                raise RuntimeError(
-                    "candidate fixture staging entry limit exceeded"
-                )
             source_size, source_digest = self._copy_staged_file(
                 Path(__file__).resolve(),
                 staged_script,
@@ -1432,139 +1438,26 @@ class _CandidateFixtureProcess:
                 source_size,
                 source_digest,
             )
-            source_package = self._config.candidate_root / "starcraft_commander"
-            staged_package = staged_root / "starcraft_commander"
-            total_entries += 1
-            if total_entries > _FIXTURE_STAGING_ENTRY_LIMIT:
+            entries, directories = self._candidate_package_git_tree()
+            entry_count = 1 + len(entries) + len(directories)
+            if entry_count > _FIXTURE_STAGING_ENTRY_LIMIT:
                 raise RuntimeError(
                     "candidate fixture staging entry limit exceeded"
                 )
-            staged_package.mkdir(mode=0o755)
-            manifest[Path("starcraft_commander")] = ("directory", 0, "")
-
-            nofollow = getattr(os, "O_NOFOLLOW", 0)
-            directory_only = getattr(os, "O_DIRECTORY", 0)
-            if (
-                not nofollow
-                or not directory_only
-                or not _SECURE_SOURCE_DIRECTORY_FDS
+            for relative in sorted(
+                directories,
+                key=lambda path: len(path.parts),
             ):
-                raise RuntimeError(
-                    "secure candidate package traversal is unavailable"
-                )
-            directory_flags = (
-                os.O_RDONLY
-                | nofollow
-                | directory_only
-                | getattr(os, "O_CLOEXEC", 0)
+                (staged_root / relative).mkdir(mode=0o755)
+                manifest[relative] = ("directory", 0, "")
+            staged_bytes, web_gui_digest = self._stage_candidate_git_blobs(
+                staged_root,
+                entries,
+                manifest,
+                byte_limit=_FIXTURE_STAGING_BYTE_LIMIT - total_bytes,
             )
-            try:
-                package_descriptor = os.open(
-                    source_package,
-                    directory_flags,
-                )
-            except OSError as error:
-                raise ValueError(
-                    "candidate package is missing or linked"
-                ) from error
-            stack = [(package_descriptor, Path("starcraft_commander"))]
-            try:
-                while stack:
-                    source_descriptor, relative_directory = stack.pop()
-                    try:
-                        source_snapshot = os.fstat(source_descriptor)
-                        if not stat.S_ISDIR(source_snapshot.st_mode):
-                            raise RuntimeError(
-                                "candidate package directory changed or linked: "
-                                f"{relative_directory}"
-                            )
-                        with os.scandir(source_descriptor) as entries:
-                            for entry in entries:
-                                relative = relative_directory / entry.name
-                                staged = staged_root / relative
-                                snapshot = entry.stat(follow_symlinks=False)
-                                total_entries += 1
-                                if total_entries > _FIXTURE_STAGING_ENTRY_LIMIT:
-                                    raise RuntimeError(
-                                        "candidate fixture staging entry limit "
-                                        "exceeded"
-                                    )
-                                if stat.S_ISLNK(snapshot.st_mode):
-                                    raise ValueError(
-                                        "candidate package contains a symlink: "
-                                        f"{relative}"
-                                    )
-                                if stat.S_ISDIR(snapshot.st_mode):
-                                    try:
-                                        child_descriptor = os.open(
-                                            entry.name,
-                                            directory_flags,
-                                            dir_fd=source_descriptor,
-                                        )
-                                    except OSError as error:
-                                        raise RuntimeError(
-                                            "candidate package directory changed "
-                                            f"or linked: {relative}"
-                                        ) from error
-                                    try:
-                                        child_snapshot = os.fstat(
-                                            child_descriptor
-                                        )
-                                        if (
-                                            not stat.S_ISDIR(
-                                                child_snapshot.st_mode
-                                            )
-                                            or (
-                                                child_snapshot.st_dev,
-                                                child_snapshot.st_ino,
-                                                child_snapshot.st_mode,
-                                            )
-                                            != (
-                                                snapshot.st_dev,
-                                                snapshot.st_ino,
-                                                snapshot.st_mode,
-                                            )
-                                        ):
-                                            raise RuntimeError(
-                                                "candidate package directory "
-                                                "changed or linked: "
-                                                f"{relative}"
-                                            )
-                                        staged.mkdir(mode=0o755)
-                                        manifest[relative] = (
-                                            "directory",
-                                            0,
-                                            "",
-                                        )
-                                        stack.append(
-                                            (child_descriptor, relative)
-                                        )
-                                        child_descriptor = -1
-                                    finally:
-                                        if child_descriptor >= 0:
-                                            os.close(child_descriptor)
-                                    continue
-                                if not stat.S_ISREG(snapshot.st_mode):
-                                    raise ValueError(
-                                        "candidate package contains a non-regular "
-                                        f"entry: {relative}"
-                                    )
-                                size, digest = self._copy_staged_file(
-                                    entry.name,
-                                    staged,
-                                    byte_limit=(
-                                        _FIXTURE_STAGING_BYTE_LIMIT - total_bytes
-                                    ),
-                                    expected_snapshot=snapshot,
-                                    source_dir_fd=source_descriptor,
-                                )
-                                total_bytes += size
-                                manifest[relative] = ("file", size, digest)
-                    finally:
-                        os.close(source_descriptor)
-            finally:
-                for source_descriptor, _ in stack:
-                    os.close(source_descriptor)
+            total_bytes += staged_bytes
+            self._candidate_web_gui_sha256 = web_gui_digest
 
             for relative, (kind, _, _) in sorted(
                 manifest.items(),
@@ -1575,6 +1468,7 @@ class _CandidateFixtureProcess:
                     os.chmod(staged_root / relative, 0o555)
             self._verify_staged_fixture_tree(staged_root, manifest)
         except BaseException as prepare_error:
+            self._candidate_web_gui_sha256 = None
             self._staged_fixture_cleanup_started = True
             self._staged_fixture_cleanup_verification_error = None
             try:
@@ -1585,6 +1479,360 @@ class _CandidateFixtureProcess:
             raise
 
         return staged_script
+
+    @staticmethod
+    def _candidate_git_environment() -> dict[str, str]:
+        return {
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "HOME": "/tmp",
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PATH": "/usr/bin:/bin",
+        }
+
+    def _run_candidate_git(self, *arguments: str) -> bytes:
+        if (
+            _GIT_EXECUTABLE.is_symlink()
+            or not _GIT_EXECUTABLE.is_file()
+            or not os.access(_GIT_EXECUTABLE, os.X_OK)
+        ):
+            raise RuntimeError("trusted Git executable is unavailable")
+        result = subprocess.run(
+            [
+                str(_GIT_EXECUTABLE),
+                "-C",
+                str(self._config.candidate_root),
+                *arguments,
+            ],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=self._candidate_git_environment(),
+            timeout=30,
+        )
+        if result.returncode != 0:
+            details = result.stderr[:400].decode("utf-8", errors="replace")
+            raise RuntimeError(f"candidate Git tree query failed: {details}")
+        return result.stdout
+
+    def _candidate_package_git_tree(
+        self,
+    ) -> tuple[list[tuple[Path, str]], set[Path]]:
+        repository_root = Path(
+            self._run_candidate_git(
+                "rev-parse",
+                "--path-format=absolute",
+                "--show-toplevel",
+            )
+            .decode("utf-8")
+            .strip()
+        )
+        if repository_root.resolve() != self._config.candidate_root:
+            raise RuntimeError("candidate root is not the Git repository root")
+        head = (
+            self._run_candidate_git("rev-parse", "--verify", "HEAD^{commit}")
+            .decode("ascii")
+            .strip()
+        )
+        expected = (
+            self._run_candidate_git(
+                "rev-parse",
+                "--verify",
+                f"{self._config.repository_sha}^{{commit}}",
+            )
+            .decode("ascii")
+            .strip()
+        )
+        if (
+            head != self._config.repository_sha
+            or expected != self._config.repository_sha
+        ):
+            raise RuntimeError("candidate Git HEAD does not match repository SHA")
+
+        entries: list[tuple[Path, str]] = []
+        directories: set[Path] = set()
+        observed: set[Path] = set()
+        for record in self._candidate_git_tree_records():
+            metadata, separator, raw_path = record.partition(b"\t")
+            fields = metadata.split()
+            if separator != b"\t" or len(fields) != 3:
+                raise RuntimeError("candidate Git tree record is malformed")
+            mode, object_type, raw_object_id = fields
+            try:
+                path_text = raw_path.decode("utf-8")
+                object_id = raw_object_id.decode("ascii")
+            except UnicodeDecodeError as error:
+                raise ValueError(
+                    "candidate Git tree contains a non-UTF-8 path or object"
+                ) from error
+            posix_path = PurePosixPath(path_text)
+            if (
+                posix_path.is_absolute()
+                or not posix_path.parts
+                or posix_path.parts[0] != "starcraft_commander"
+                or any(part in {"", ".", ".."} for part in posix_path.parts)
+            ):
+                raise ValueError(
+                    f"candidate Git tree path is unsafe: {path_text!r}"
+                )
+            relative = Path(*posix_path.parts)
+            if relative in observed:
+                raise RuntimeError("candidate Git tree contains a duplicate path")
+            observed.add(relative)
+            if (
+                any(
+                    part.casefold() == "__pycache__"
+                    for part in posix_path.parts
+                )
+                or relative.suffix.lower() in _FORBIDDEN_IMPORT_SUFFIXES
+            ):
+                raise ValueError(
+                    "candidate Git tree contains a forbidden import artifact: "
+                    f"{relative}"
+                )
+            if (
+                mode not in {b"100644", b"100755"}
+                or object_type != b"blob"
+                or _GIT_OBJECT_RE.fullmatch(object_id) is None
+            ):
+                raise ValueError(
+                    "candidate Git tree contains a linked or non-regular entry: "
+                    f"{relative}"
+                )
+            entries.append((relative, object_id))
+            parent = relative.parent
+            while parent != Path("."):
+                directories.add(parent)
+                parent = parent.parent
+            if 1 + len(entries) + len(directories) > (
+                _FIXTURE_STAGING_ENTRY_LIMIT
+            ):
+                raise RuntimeError(
+                    "candidate fixture staging entry limit exceeded"
+                )
+
+        required = {
+            Path("starcraft_commander/__init__.py"),
+            Path("starcraft_commander/web_gui.py"),
+        }
+        if not required.issubset(observed):
+            raise ValueError("candidate Git tree is missing required package source")
+        return entries, directories
+
+    def _candidate_git_tree_records(self) -> list[bytes]:
+        with tempfile.TemporaryFile() as error_stream:
+            process = subprocess.Popen(
+                [
+                    str(_GIT_EXECUTABLE),
+                    "-C",
+                    str(self._config.candidate_root),
+                    "ls-tree",
+                    "-r",
+                    "-z",
+                    "--full-tree",
+                    self._config.repository_sha,
+                    "--",
+                    "starcraft_commander",
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=error_stream,
+                env=self._candidate_git_environment(),
+            )
+            records: list[bytes] = []
+            pending = bytearray()
+            try:
+                assert process.stdout is not None
+                while chunk := process.stdout.read(_FIXTURE_GIT_RECORD_LIMIT):
+                    pending.extend(chunk)
+                    while True:
+                        delimiter = pending.find(b"\0")
+                        if delimiter < 0:
+                            break
+                        record = bytes(pending[:delimiter])
+                        del pending[: delimiter + 1]
+                        if not record:
+                            raise RuntimeError(
+                                "candidate Git tree record is empty"
+                            )
+                        if len(record) > _FIXTURE_GIT_RECORD_LIMIT:
+                            raise RuntimeError(
+                                "candidate Git tree record is oversized"
+                            )
+                        records.append(record)
+                        if 1 + len(records) > _FIXTURE_STAGING_ENTRY_LIMIT:
+                            raise RuntimeError(
+                                "candidate fixture staging entry limit exceeded"
+                            )
+                    if len(pending) > _FIXTURE_GIT_RECORD_LIMIT:
+                        raise RuntimeError(
+                            "candidate Git tree record is oversized"
+                        )
+                if pending:
+                    raise RuntimeError(
+                        "candidate Git tree output is unterminated"
+                    )
+                return_code = process.wait(timeout=30)
+                if return_code != 0:
+                    error_stream.seek(0)
+                    details = error_stream.read(400).decode(
+                        "utf-8",
+                        errors="replace",
+                    )
+                    raise RuntimeError(
+                        f"candidate Git tree query failed: {details}"
+                    )
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+                if process.stdout is not None:
+                    process.stdout.close()
+        return records
+
+    def _stage_candidate_git_blobs(
+        self,
+        staged_root: Path,
+        entries: Sequence[tuple[Path, str]],
+        manifest: dict[Path, tuple[str, int, str]],
+        *,
+        byte_limit: int,
+    ) -> tuple[int, str]:
+        if byte_limit < 0:
+            raise RuntimeError("candidate fixture staging byte limit exceeded")
+        with tempfile.TemporaryFile() as error_stream:
+            process = subprocess.Popen(
+                [
+                    str(_GIT_EXECUTABLE),
+                    "-C",
+                    str(self._config.candidate_root),
+                    "cat-file",
+                    "--batch",
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=error_stream,
+                env=self._candidate_git_environment(),
+            )
+            total_bytes = 0
+            web_gui_digest = ""
+            try:
+                assert process.stdin is not None
+                assert process.stdout is not None
+                for relative, object_id in entries:
+                    process.stdin.write(f"{object_id}\n".encode("ascii"))
+                    process.stdin.flush()
+                    header = process.stdout.readline(4097)
+                    if len(header) > 4096 or not header.endswith(b"\n"):
+                        raise RuntimeError(
+                            "candidate Git blob header is malformed"
+                        )
+                    fields = header.rstrip(b"\n").split()
+                    if (
+                        len(fields) != 3
+                        or fields[0] != object_id.encode("ascii")
+                        or fields[1] != b"blob"
+                    ):
+                        raise RuntimeError(
+                            "candidate Git blob identity changed"
+                        )
+                    try:
+                        blob_size = int(fields[2])
+                    except ValueError as error:
+                        raise RuntimeError(
+                            "candidate Git blob size is malformed"
+                        ) from error
+                    size, digest = self._copy_staged_git_blob(
+                        process.stdout,
+                        staged_root / relative,
+                        object_id=object_id,
+                        size=blob_size,
+                        byte_limit=byte_limit - total_bytes,
+                    )
+                    if process.stdout.read(1) != b"\n":
+                        raise RuntimeError(
+                            "candidate Git blob delimiter is malformed"
+                        )
+                    total_bytes += size
+                    manifest[relative] = ("file", size, digest)
+                    if relative == Path("starcraft_commander/web_gui.py"):
+                        web_gui_digest = digest
+                process.stdin.close()
+                return_code = process.wait(timeout=30)
+                if return_code != 0:
+                    error_stream.seek(0)
+                    details = error_stream.read(400).decode(
+                        "utf-8",
+                        errors="replace",
+                    )
+                    raise RuntimeError(
+                        f"candidate Git blob read failed: {details}"
+                    )
+            finally:
+                if process.stdin is not None and not process.stdin.closed:
+                    process.stdin.close()
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+                if process.stdout is not None:
+                    process.stdout.close()
+        if not web_gui_digest:
+            raise RuntimeError("candidate web_gui Git blob was not staged")
+        return total_bytes, web_gui_digest
+
+    @staticmethod
+    def _copy_staged_git_blob(
+        source_stream: object,
+        destination: Path,
+        *,
+        object_id: str,
+        size: int,
+        byte_limit: int,
+    ) -> tuple[int, str]:
+        if size < 0 or size > byte_limit:
+            raise RuntimeError("candidate fixture staging byte limit exceeded")
+        destination_descriptor = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        try:
+            destination_stream = os.fdopen(destination_descriptor, "wb")
+            destination_descriptor = -1
+            sha256_digest = hashlib.sha256()
+            git_digest = hashlib.sha1(usedforsecurity=False)
+            git_digest.update(f"blob {size}\0".encode("ascii"))
+            remaining = size
+            try:
+                while remaining:
+                    chunk = source_stream.read(
+                        min(_FIXTURE_STAGING_CHUNK_SIZE, remaining)
+                    )
+                    if not chunk:
+                        raise RuntimeError(
+                            "candidate Git blob ended before declared size"
+                        )
+                    remaining -= len(chunk)
+                    sha256_digest.update(chunk)
+                    git_digest.update(chunk)
+                    destination_stream.write(chunk)
+                destination_stream.flush()
+                os.fsync(destination_stream.fileno())
+            finally:
+                destination_stream.close()
+            if git_digest.hexdigest() != object_id:
+                raise RuntimeError("candidate Git blob failed object verification")
+            os.chmod(destination, 0o444, follow_symlinks=False)
+            return size, sha256_digest.hexdigest()
+        except BaseException:
+            if destination_descriptor >= 0:
+                os.close(destination_descriptor)
+            destination.unlink(missing_ok=True)
+            raise
 
     @staticmethod
     def _copy_staged_file(
@@ -1803,6 +2051,15 @@ class _CandidateFixtureProcess:
         self._staged_fixture_manifest = {}
         self._staged_fixture_cleanup_started = False
         self._staged_fixture_cleanup_verification_error = None
+
+    def candidate_web_gui_sha256(self) -> str:
+        if self._candidate_web_gui_sha256 is not None:
+            return self._candidate_web_gui_sha256
+        return _sha256_regular_file(
+            self._config.candidate_root
+            / "starcraft_commander"
+            / "web_gui.py"
+        )
 
     def start(self) -> str:
         if self._process is not None:
@@ -2287,8 +2544,8 @@ def run_browser_gate(config: BrowserGateConfig) -> dict[str, object]:
         "status": "passed",
         "ok": True,
         "visual_diff_threshold": VISUAL_DIFF_THRESHOLD,
-        "candidate_web_gui_sha256": _sha256_regular_file(
-            config.candidate_root / "starcraft_commander" / "web_gui.py"
+        "candidate_web_gui_sha256": (
+            candidate_fixture.candidate_web_gui_sha256()
         ),
         "viewports": viewport_reports,
         "media": media,
