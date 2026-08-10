@@ -5,9 +5,13 @@ __pycache__/
 *.egg-info/
 .DS_Store
 .codex/
+AGENTS.md
+.codex-recovery/
 build/
 dist/
 distribution-compliance-evidence/
+battlefield-browser-artifacts/
+.playwright/
 .env
 .env.*
 !.env.example

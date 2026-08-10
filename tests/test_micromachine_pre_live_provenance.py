@@ -1673,7 +1673,12 @@ class GitHubSourceAttestationTest(unittest.TestCase):
         self.assertIn("      actions: read\n", registration_job)
         self.assertIn(
             "repos/${GITHUB_REPOSITORY}/actions/workflows/"
-            "pre-live-provenance.yml",
+            "${workflow_file}",
+            registration_job,
+        )
+        self.assertIn(
+            "            pre-live-provenance.yml \\\n"
+            "            final-pre-live.yml\n",
             registration_job,
         )
         self.assertIn(

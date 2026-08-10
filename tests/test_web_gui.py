@@ -15799,10 +15799,16 @@ class FakeElement {
     this._textContent = "";
     this.scrollTop = 0;
     this.scrollHeight = 0;
+    var classListOwner = this;
     this.classList = {
       add: function () {},
       remove: function () {},
-      toggle: function () {}
+      toggle: function () {},
+      contains: function (className) {
+        return (" " + (classListOwner.className || "") + " ").indexOf(
+          " " + className + " "
+        ) >= 0;
+      }
     };
   }
 
@@ -15881,6 +15887,18 @@ class FakeElement {
     }
     return Object.prototype.hasOwnProperty.call(this.attributes, name) ? this.attributes[name] : null;
   }
+
+  removeAttribute(name) {
+    delete this.attributes[name];
+    if (name === "id") {
+      this.id = "";
+    }
+    if (name === "class") {
+      this.className = "";
+    }
+  }
+
+  scrollIntoView() {}
 
   closest() {
     return null;
@@ -19151,6 +19169,14 @@ const assert = require("assert");
   assert(assaultRecord);
   assert.strictEqual(Object.keys(operationRecords).length, 2);
   assert.strictEqual(nodes["operation-list"].querySelectorAll(".operation-card").length, 2);
+  var reconDomKey = reconRecord.node.getAttribute("data-operation-key");
+  var assaultDomKey = assaultRecord.node.getAttribute("data-operation-key");
+  assert(reconDomKey.includes("%00"));
+  assert(assaultDomKey.includes("%00"));
+  assert(!reconDomKey.includes("\ufffd"));
+  assert(!assaultDomKey.includes("\ufffd"));
+  assert.strictEqual(operationRecordKeyFromDom(reconDomKey), reconKey);
+  assert.strictEqual(operationRecordKeyFromDom(assaultDomKey), assaultKey);
   assert.strictEqual(reconRecord.node.parentNode.id, "operation-lane-executing");
   assert.strictEqual(assaultRecord.node.parentNode.id, "operation-lane-planning");
   assert(reconRecord.node.textContent.includes("recon-alpha#1"));
@@ -19165,6 +19191,28 @@ const assert = require("assert");
   assert.strictEqual(
     nodes["operation-timeline"].querySelectorAll(".operation-timeline-item").length,
     1
+  );
+  handleOperationCardKeydown({
+    target: assaultRecord.node,
+    key: "Enter",
+    preventDefault: function() {}
+  });
+  assert.strictEqual(
+    nodes["operation-timeline-selection"].textContent,
+    "assault-bravo#1"
+  );
+  assert.strictEqual(
+    assaultRecord.node.getAttribute("data-operation-selected"),
+    "true"
+  );
+  handleOperationCardKeydown({
+    target: reconRecord.node,
+    key: "Enter",
+    preventDefault: function() {}
+  });
+  assert.strictEqual(
+    reconRecord.node.getAttribute("data-operation-selected"),
+    "true"
   );
   assert(reconRecord.node.textContent.includes("move"));
   assert(!assaultRecord.node.textContent.includes("move"));
@@ -26204,7 +26252,7 @@ const assert = require("assert");
         self.assertIn(
             'id="operation-timeline"\n'
             '            class="operation-timeline"\n'
-            '            role="log"\n'
+            '            role="list"\n'
             '            aria-live="off"',
             page,
         )

@@ -96,6 +96,7 @@ class IsolatedInstallTest(unittest.TestCase):
                 {
                     "installed_metadata": installed_metadata,
                     "license_expression": EXPECTED_LICENSE_EXPRESSION,
+                    "bare_check_status_passed": True,
                     "packaged_defaults_loaded": True,
                     "runtime_data_loaded": True,
                     "source_repository_root_is_none": True,
@@ -149,6 +150,8 @@ class IsolatedInstallTest(unittest.TestCase):
         installed_script = run.call_args_list[1].args[0][-1]
         target_script = run.call_args_list[3].args[0][-2]
         self.assertIn("read_text('METADATA')", installed_script)
+        self.assertIn("final_release_main(['check-status'])", installed_script)
+        self.assertIn("check_status.get('source') == 'generated'", installed_script)
         for script in (installed_script, target_script):
             self.assertIn("source_repository_root() is None", script)
             self.assertNotIn("SOURCE_REPOSITORY_ROOT", script)
@@ -2270,6 +2273,44 @@ class ArchivePolicyTest(unittest.TestCase):
         self.assertIn("sensitive_archive_directory", codes)
         self.assertIn("denied_component:tests", reasons)
         self.assertIn("local_environment_file", reasons)
+
+    def test_pre_live_release_status_is_an_approved_release_payload(
+        self,
+    ) -> None:
+        root = Path.cwd()
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        release_path = (
+            "integrations/micromachine/PRE_LIVE_RELEASE_STATUS.json"
+        )
+
+        manifests = expected_archive_payloads(root, head)
+        wheel = ArchiveSnapshot(
+            kind="wheel",
+            path=Path("voistarcraft2-0.1.0-py3-none-any.whl"),
+            digest="c" * 64,
+            entries=(),
+            files={release_path: b"{}"},
+            blockers=(),
+        )
+        sdist = ArchiveSnapshot(
+            kind="sdist",
+            path=Path("voistarcraft2-0.1.0.tar.gz"),
+            digest="c" * 64,
+            entries=(),
+            files={f"voistarcraft2-0.1.0/{release_path}": b"{}"},
+            blockers=(),
+        )
+
+        self.assertIn(release_path, manifests["wheel"])
+        self.assertIn(release_path, manifests["sdist"])
+        self.assertEqual([], archive_content_blockers(wheel))
+        self.assertEqual([], archive_content_blockers(sdist))
 
     def test_sdist_rejects_alternate_egg_info_namespace(self) -> None:
         expected_payload = b"expected runtime"
@@ -7620,6 +7661,7 @@ dependencies = []
 sc2 = ["burnysc2>=6.5"]
 voice = ["faster-whisper>=1.0", "sounddevice>=0.4.6"]
 llm = ["anthropic>=0.40", "openai>=1.0"]
+browser = ["axe-playwright-python==0.1.7", "playwright==1.62.0"]
 dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
 """
         source_pyproject_digest = compliance_module.sha256_bytes(
@@ -7751,6 +7793,9 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
             "starcraft_commander/runtime_data.py": 1,
         }
         sdist_requires_raw = (
+            "[browser]\n"
+            "axe-playwright-python==0.1.7\n"
+            "playwright==1.62.0\n\n"
             "[dev]\n"
             "build>=1.2\n"
             "pytest>=7\n\n"
@@ -7966,6 +8011,7 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
                 "payload": {
                     "installed_metadata": metadata_raw,
                     "license_expression": EXPECTED_LICENSE_EXPRESSION,
+                    "bare_check_status_passed": True,
                     "packaged_defaults_loaded": True,
                     "runtime_data_loaded": True,
                     "source_repository_root_is_none": True,
@@ -8916,6 +8962,7 @@ dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
 
     def test_rejects_incomplete_installed_package_smoke_contract(self) -> None:
         expected_codes = {
+            "bare_check_status_passed": "installed_bare_check_status_failed",
             "packaged_defaults_loaded": "installed_packaged_defaults_failed",
             "source_repository_root_is_none": (
                 "installed_source_root_not_isolated"

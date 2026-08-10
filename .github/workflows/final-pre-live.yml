@@ -1,0 +1,1620 @@
+name: final-pre-live
+
+on:
+  pull_request_target:
+    branches:
+      - main
+    types:
+      - converted_to_draft
+      - edited
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+  push:
+    branches:
+      - main
+
+permissions:
+  actions: read
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: >-
+    final-pre-live-${{ github.event_name }}-${{
+    github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+  RELEASE_PULL_NUMBER: "168"
+  EXPECTED_RELEASE_COMMIT: >-
+    ${{ github.event_name == 'pull_request_target' &&
+    github.event.pull_request.head.sha || github.sha }}
+  EXPECTED_RELEASE_BASE_COMMIT: >-
+    ${{ github.event_name == 'pull_request_target' &&
+    github.event.pull_request.base.sha || github.event.before }}
+  EXPECTED_WORKFLOW_COMMIT: ${{ github.sha }}
+  RELEASE_MODE: >-
+    ${{ github.event_name == 'pull_request_target' &&
+    'ready_to_merge' || 'ready_for_live_qa' }}
+  RELEASE_AUTHORITY: >-
+    ${{ github.event_name == 'pull_request_target' &&
+    'trusted_base_candidate_preflight' || 'authoritative_exact_main' }}
+
+jobs:
+  event_admission:
+    name: event-admission
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      release_required: ${{ steps.classify.outputs.release_required }}
+    env:
+      EVENT_PULL_NUMBER: ${{ github.event.pull_request.number }}
+      EVENT_HEAD_REPOSITORY: >-
+        ${{ github.event.pull_request.head.repo.full_name }}
+      EVENT_HEAD_REPOSITORY_ID: >-
+        ${{ github.event.pull_request.head.repo.id }}
+      EVENT_BASE_REPOSITORY: >-
+        ${{ github.event.pull_request.base.repo.full_name }}
+      EVENT_BASE_REPOSITORY_ID: >-
+        ${{ github.event.pull_request.base.repo.id }}
+      EVENT_REPOSITORY_ID: ${{ github.event.repository.id }}
+    steps:
+      - name: Admit exact same-repository release event before checkout
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_WORKFLOW_SHA}" = "${EXPECTED_WORKFLOW_COMMIT}"
+          release_required=false
+          case "${GITHUB_EVENT_NAME}" in
+            pull_request_target)
+              if test "${EVENT_PULL_NUMBER}" = "${RELEASE_PULL_NUMBER}"; then
+                test -n "${EVENT_HEAD_REPOSITORY}"
+                test "${EVENT_HEAD_REPOSITORY}" = "${GITHUB_REPOSITORY}"
+                test "${EVENT_HEAD_REPOSITORY_ID}" = "${EVENT_REPOSITORY_ID}"
+                test "${EVENT_BASE_REPOSITORY}" = "${GITHUB_REPOSITORY}"
+                test "${EVENT_BASE_REPOSITORY_ID}" = "${EVENT_REPOSITORY_ID}"
+                test "${GITHUB_BASE_REF}" = "main"
+                test "${RELEASE_AUTHORITY}" = \
+                  "trusted_base_candidate_preflight"
+                test "${RELEASE_MODE}" = "ready_to_merge"
+                test "${EXPECTED_RELEASE_BASE_COMMIT}" = \
+                  "${EXPECTED_WORKFLOW_COMMIT}"
+                release_required=true
+              fi
+              ;;
+            push)
+              test -z "${EVENT_HEAD_REPOSITORY}"
+              test -z "${EVENT_HEAD_REPOSITORY_ID}"
+              test -z "${EVENT_BASE_REPOSITORY}"
+              test -z "${EVENT_BASE_REPOSITORY_ID}"
+              test "${GITHUB_REF}" = "refs/heads/main"
+              test "${RELEASE_AUTHORITY}" = "authoritative_exact_main"
+              test "${RELEASE_MODE}" = "ready_for_live_qa"
+              test "${GITHUB_SHA}" = "${EXPECTED_RELEASE_COMMIT}"
+              test "${EXPECTED_WORKFLOW_COMMIT}" = \
+                "${EXPECTED_RELEASE_COMMIT}"
+              read -r release_pull_merged release_pull_merge_sha < <(
+                gh api \
+                  --method GET \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "X-GitHub-Api-Version: 2022-11-28" \
+                  "repos/${GITHUB_REPOSITORY}/pulls/${RELEASE_PULL_NUMBER}" \
+                  --jq \
+                    '[.merged, (.merge_commit_sha // "")] | @tsv'
+              )
+              case "${release_pull_merged}" in
+                true)
+                  printf '%s\n' "${release_pull_merge_sha}" \
+                    | grep -Eq '^[0-9a-f]{40}$'
+                  if test "${release_pull_merge_sha}" = "${GITHUB_SHA}"; then
+                    release_required=true
+                  fi
+                  ;;
+                false)
+                  ;;
+                *)
+                  echo "invalid release pull request state" >&2
+                  exit 1
+                  ;;
+              esac
+              ;;
+            *)
+              echo "unsupported final release event" >&2
+              exit 1
+              ;;
+          esac
+          test "$(
+            printf '%s\n%s\n' \
+              "${EXPECTED_RELEASE_COMMIT}" \
+              "${EXPECTED_RELEASE_BASE_COMMIT}" \
+              | grep -Ec '^[0-9a-f]{40}$'
+          )" -eq 2
+          printf 'release_required=%s\n' "${release_required}" \
+            >> "${GITHUB_OUTPUT}"
+
+  build_identity:
+    name: build-identity
+    if: >-
+      ${{
+        always() &&
+        needs.event_admission.result == 'success' &&
+        needs.event_admission.outputs.release_required == 'true'
+      }}
+    needs:
+      - event_admission
+    runs-on: macos-14
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: candidate
+    env:
+      ROOT_DIR: /private/tmp/voi-micromachine-runtime
+      BUILD_JOBS: "3"
+      BUILD_REPORT: >-
+        /private/tmp/voi-micromachine-runtime/MicroMachine/build-latest-api/voi_build_identity.json
+      MICROMACHINE_BINARY: >-
+        /private/tmp/voi-micromachine-runtime/MicroMachine/build-latest-api/bin/MicroMachine
+    outputs:
+      build_identity: ${{ steps.project-build.outputs.build_identity }}
+      artifact_id: ${{ steps.upload-build-identity.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload-build-identity.outputs.artifact-digest }}
+      runtime_artifact_id: ${{ steps.upload-runtime.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          path: candidate
+          persist-credentials: false
+          ref: ${{ env.EXPECTED_RELEASE_COMMIT }}
+      - name: Verify admitted workflow authority boundary
+        run: |
+          set -euo pipefail
+          test "${GITHUB_WORKFLOW_SHA}" = "${EXPECTED_WORKFLOW_COMMIT}"
+          case "${GITHUB_EVENT_NAME}" in
+            pull_request_target)
+              test "${RELEASE_AUTHORITY}" = \
+                "trusted_base_candidate_preflight"
+              test "${RELEASE_MODE}" = "ready_to_merge"
+              test "${GITHUB_BASE_REF}" = "main"
+              test "${EXPECTED_RELEASE_BASE_COMMIT}" = \
+                "${EXPECTED_WORKFLOW_COMMIT}"
+              ;;
+            push)
+              test "${RELEASE_AUTHORITY}" = "authoritative_exact_main"
+              test "${RELEASE_MODE}" = "ready_for_live_qa"
+              test "${GITHUB_REF}" = "refs/heads/main"
+              test "${GITHUB_SHA}" = "${EXPECTED_RELEASE_COMMIT}"
+              test "${EXPECTED_WORKFLOW_COMMIT}" = \
+                "${EXPECTED_RELEASE_COMMIT}"
+              ;;
+          esac
+      - name: Verify exact clean release source
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${EXPECTED_RELEASE_COMMIT}"
+          test "$(
+            git rev-parse --verify \
+              "${EXPECTED_RELEASE_BASE_COMMIT}^{commit}"
+          )" = "${EXPECTED_RELEASE_BASE_COMMIT}"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+      - name: Build exact MicroMachine integration without credentials
+        run: integrations/micromachine/scripts/build_macos_local.sh
+      - name: Project admitted build identity
+        id: project-build
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/build-identity"
+          python3 -B - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          report_path = Path(os.environ["BUILD_REPORT"])
+          report = json.loads(report_path.read_text(encoding="utf-8"))
+          identity = report.get("identity")
+          observed = report.get("observed")
+          if (
+              report.get("ok") is not True
+              or report.get("failures") != []
+              or not isinstance(identity, str)
+              or re.fullmatch(r"sha256:[0-9a-f]{64}", identity) is None
+              or not isinstance(observed, dict)
+          ):
+              raise SystemExit("MicroMachine build identity was not admitted")
+          binary_sha256 = observed.get("binary_sha256")
+          embedded_identity = observed.get("embedded_build_input_identity")
+          if (
+              not isinstance(binary_sha256, str)
+              or re.fullmatch(r"[0-9a-f]{64}", binary_sha256) is None
+              or not isinstance(embedded_identity, str)
+              or re.fullmatch(
+                  r"sha256:[0-9a-f]{64}",
+                  embedded_identity,
+              ) is None
+          ):
+              raise SystemExit("build identity evidence is incomplete")
+          binary = Path(os.environ["MICROMACHINE_BINARY"])
+          if not binary.is_file() or binary.is_symlink():
+              raise SystemExit("MicroMachine binary is missing or linked")
+          digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+          if digest != binary_sha256:
+              raise SystemExit("MicroMachine binary digest changed after build")
+          projection = {
+              "binary_sha256": binary_sha256,
+              "build_identity": identity,
+              "build_report_schema_version": report.get("schema_version"),
+              "embedded_build_input_identity": embedded_identity,
+              "manual_live_qa_remaining": True,
+              "ok": True,
+              "producer": "build_identity",
+              "repository_sha": os.environ["EXPECTED_RELEASE_COMMIT"],
+              "schema_version": 1,
+              "status": "passed",
+              "verifier_sha": os.environ["EXPECTED_WORKFLOW_COMMIT"],
+          }
+          payload = (
+              json.dumps(
+                  projection,
+                  ensure_ascii=False,
+                  sort_keys=True,
+                  separators=(",", ":"),
+                  allow_nan=False,
+              )
+              + "\n"
+          )
+          output = Path(os.environ["RUNNER_TEMP"]) / "build-identity" / "report.json"
+          output.write_text(payload, encoding="utf-8")
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as stream:
+              stream.write(f"build_identity={identity}\n")
+          PY
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+      - name: Upload build identity child artifact
+        id: upload-build-identity
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: micromachine-build-identity
+          path: ${{ runner.temp }}/build-identity/report.json
+          compression-level: 0
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+      - name: Archive exact MicroMachine runtime handoff
+        run: |
+          set -euo pipefail
+          tar -czf "${RUNNER_TEMP}/micromachine-runtime.tar.gz" \
+            -C "${ROOT_DIR}" MicroMachine s2client-api
+      - name: Upload exact runtime handoff
+        id: upload-runtime
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: >-
+            final-pre-live-runtime-${{ github.run_id }}-${{
+            github.run_attempt }}
+          path: ${{ runner.temp }}/micromachine-runtime.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
+  deterministic_journeys:
+    name: deterministic-14-journeys
+    if: >-
+      ${{
+        always() &&
+        needs.event_admission.result == 'success' &&
+        needs.event_admission.outputs.release_required == 'true' &&
+        needs.build_identity.result == 'success'
+      }}
+    needs:
+      - event_admission
+      - build_identity
+    runs-on: macos-14
+    timeout-minutes: 90
+    permissions:
+      actions: read
+      contents: read
+    defaults:
+      run:
+        working-directory: candidate
+    env:
+      ROOT_DIR: /private/tmp/voi-micromachine-runtime
+      CANDIDATE_ROOT: ${{ github.workspace }}/candidate
+      TRUSTED_VERIFIER_ROOT: ${{ github.workspace }}/trusted-verifier
+      MICROMACHINE_BINARY: >-
+        /private/tmp/voi-micromachine-runtime/MicroMachine/build-latest-api/bin/MicroMachine
+      BUILD_IDENTITY: ${{ needs.build_identity.outputs.build_identity }}
+    outputs:
+      artifact_id: ${{ steps.upload-journeys.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload-journeys.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          path: trusted-verifier
+          persist-credentials: false
+          ref: ${{ env.EXPECTED_WORKFLOW_COMMIT }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          path: candidate
+          persist-credentials: false
+          ref: ${{ env.EXPECTED_RELEASE_COMMIT }}
+      - name: Verify trusted verifier and exact clean release source
+        run: |
+          set -euo pipefail
+          test "$(git -C "${TRUSTED_VERIFIER_ROOT}" rev-parse HEAD)" = \
+            "${EXPECTED_WORKFLOW_COMMIT}"
+          test "$(git -C "${CANDIDATE_ROOT}" rev-parse HEAD)" = \
+            "${EXPECTED_RELEASE_COMMIT}"
+          test -z "$(
+            git -C "${TRUSTED_VERIFIER_ROOT}" \
+              status --porcelain=v1 --untracked-files=all
+          )"
+          test -z "$(
+            git -C "${CANDIDATE_ROOT}" \
+              status --porcelain=v1 --untracked-files=all
+          )"
+      - name: Download exact runtime handoff
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.build_identity.outputs.runtime_artifact_id }}
+          path: ${{ runner.temp }}/runtime-handoff
+          merge-multiple: true
+      - name: Restore exact MicroMachine runtime
+        run: |
+          set -euo pipefail
+          mkdir -p "${ROOT_DIR}"
+          tar -xzf \
+            "${RUNNER_TEMP}/runtime-handoff/micromachine-runtime.tar.gz" \
+            -C "${ROOT_DIR}"
+      - name: Execute and verify deterministic fourteen-journey bundle
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/deterministic-journeys"
+          PYTHONPATH="${TRUSTED_VERIFIER_ROOT}" \
+            python3 -B \
+              "${TRUSTED_VERIFIER_ROOT}/starcraft_commander/micromachine_pre_live_journeys.py" \
+              --manifest \
+              "${CANDIDATE_ROOT}/integrations/micromachine/PRE_LIVE_JOURNEYS.json" \
+              --micromachine-binary "${MICROMACHINE_BINARY}" \
+              --emit-bundle \
+              "${RUNNER_TEMP}/deterministic-journeys/pre-live-journeys.zip" \
+              > "${RUNNER_TEMP}/deterministic-journeys/verification.json"
+          python3 -B - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "deterministic-journeys"
+          verification = json.loads(
+              (root / "verification.json").read_text(encoding="utf-8")
+          )
+          manifest = json.loads(
+              Path(
+                  os.environ["CANDIDATE_ROOT"]
+              )
+              .joinpath(
+                  "integrations/micromachine/PRE_LIVE_JOURNEYS.json"
+              ).read_text(encoding="utf-8")
+          )
+          journeys = manifest.get("journeys")
+          if (
+              verification.get("ok") is not True
+              or verification.get("status") != "accepted"
+              or verification.get("blockers") != []
+              or manifest.get("suite_id")
+              != "micromachine_deterministic_pre_live_v1"
+              or not isinstance(journeys, list)
+              or len(journeys) != 14
+              or len({item.get("id") for item in journeys}) != 14
+          ):
+              raise SystemExit("deterministic journey qualification failed")
+          build_identity = os.environ["BUILD_IDENTITY"]
+          if re.fullmatch(r"sha256:[0-9a-f]{64}", build_identity) is None:
+              raise SystemExit("invalid admitted build identity")
+          bundle = root / "pre-live-journeys.zip"
+          projection = {
+              "binary_sha256": verification.get("binary_sha256"),
+              "build_identity": build_identity,
+              "bundle_sha256": hashlib.sha256(bundle.read_bytes()).hexdigest(),
+              "embedded_build_input_identity": verification.get(
+                  "embedded_build_input_identity"
+              ),
+              "journey_count": 14,
+              "manual_live_qa_remaining": True,
+              "ok": True,
+              "producer": "deterministic_journeys",
+              "repository_sha": os.environ["EXPECTED_RELEASE_COMMIT"],
+              "schema_version": 1,
+              "status": "passed",
+              "suite_id": manifest["suite_id"],
+              "verifier_sha": os.environ["EXPECTED_WORKFLOW_COMMIT"],
+          }
+          payload = (
+              json.dumps(
+                  projection,
+                  ensure_ascii=False,
+                  sort_keys=True,
+                  separators=(",", ":"),
+                  allow_nan=False,
+              )
+              + "\n"
+          )
+          (root / "report.json").write_text(payload, encoding="utf-8")
+          PY
+      - name: Upload deterministic journeys child artifact
+        id: upload-journeys
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: micromachine-deterministic-journeys
+          path: |
+            ${{ runner.temp }}/deterministic-journeys/report.json
+            ${{ runner.temp }}/deterministic-journeys/pre-live-journeys.zip
+          compression-level: 0
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+
+  browser_accessibility:
+    name: browser-accessibility
+    if: >-
+      ${{
+        always() &&
+        needs.event_admission.result == 'success' &&
+        needs.event_admission.outputs.release_required == 'true' &&
+        needs.build_identity.result == 'success'
+      }}
+    needs:
+      - event_admission
+      - build_identity
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: candidate
+    env:
+      BUILD_IDENTITY: ${{ needs.build_identity.outputs.build_identity }}
+      CANDIDATE_ROOT: ${{ github.workspace }}/candidate
+      TRUSTED_VERIFIER_ROOT: ${{ github.workspace }}/trusted-verifier
+      VOI_BROWSER_CANDIDATE_UID: "65001"
+      VOI_BROWSER_CANDIDATE_GID: "65001"
+    outputs:
+      artifact_id: ${{ steps.upload-browser.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload-browser.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          path: trusted-verifier
+          persist-credentials: false
+          ref: ${{ env.EXPECTED_WORKFLOW_COMMIT }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          path: candidate
+          persist-credentials: false
+          ref: ${{ env.EXPECTED_RELEASE_COMMIT }}
+      - name: Verify trusted verifier and exact clean release source
+        run: |
+          set -euo pipefail
+          test "$(git -C "${TRUSTED_VERIFIER_ROOT}" rev-parse HEAD)" = \
+            "${EXPECTED_WORKFLOW_COMMIT}"
+          test "$(git -C "${CANDIDATE_ROOT}" rev-parse HEAD)" = \
+            "${EXPECTED_RELEASE_COMMIT}"
+          test -z "$(
+            git -C "${TRUSTED_VERIFIER_ROOT}" \
+              status --porcelain=v1 --untracked-files=all
+          )"
+          test -z "$(
+            git -C "${CANDIDATE_ROOT}" \
+              status --porcelain=v1 --untracked-files=all
+          )"
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
+        with:
+          enable-cache: true
+      - name: Install pinned browser gate environment
+        run: |
+          set -euo pipefail
+          uv python install 3.12
+          uv sync \
+            --locked \
+            --python 3.12 \
+            --project "${TRUSTED_VERIFIER_ROOT}" \
+            --extra browser
+          "${TRUSTED_VERIFIER_ROOT}/.venv/bin/playwright" \
+            install --with-deps chromium
+      - name: Harden trusted verifier and candidate source boundaries
+        run: |
+          set -euo pipefail
+          sudo groupadd \
+            --gid "${VOI_BROWSER_CANDIDATE_GID}" \
+            voi-browser-candidate
+          sudo useradd \
+            --uid "${VOI_BROWSER_CANDIDATE_UID}" \
+            --gid "${VOI_BROWSER_CANDIDATE_GID}" \
+            --no-create-home \
+            --shell /usr/sbin/nologin \
+            voi-browser-candidate
+          sudo chown -RP 0:0 \
+            "${TRUSTED_VERIFIER_ROOT}" \
+            "${CANDIDATE_ROOT}"
+          sudo chmod -R u=rwX,go=rX \
+            "${TRUSTED_VERIFIER_ROOT}" \
+            "${CANDIDATE_ROOT}"
+      - name: Run non-skippable browser and accessibility gate
+        run: |
+          set -euo pipefail
+          PYTHONPATH="${TRUSTED_VERIFIER_ROOT}" \
+            "${TRUSTED_VERIFIER_ROOT}/.venv/bin/python" -B \
+            "${TRUSTED_VERIFIER_ROOT}/starcraft_commander/battlefield_browser_gate.py" \
+            --repository-sha "${EXPECTED_RELEASE_COMMIT}" \
+            --build-identity "${BUILD_IDENTITY}" \
+            --artifact-dir "${RUNNER_TEMP}/browser-accessibility" \
+            --baseline-dir \
+              "${TRUSTED_VERIFIER_ROOT}/tests/browser_baselines" \
+            --candidate-root "${CANDIDATE_ROOT}" \
+            --candidate-python \
+              "${TRUSTED_VERIFIER_ROOT}/.venv/bin/python" \
+            --candidate-uid "${VOI_BROWSER_CANDIDATE_UID}" \
+            --candidate-gid "${VOI_BROWSER_CANDIDATE_GID}"
+          "${TRUSTED_VERIFIER_ROOT}/.venv/bin/python" - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "browser-accessibility"
+          source = json.loads(
+              (root / "battlefield-browser-gate.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          if (
+              source.get("ok") is not True
+              or source.get("status") != "passed"
+              or source.get("repository_sha")
+              != os.environ["EXPECTED_RELEASE_COMMIT"]
+              or source.get("build_identity") != os.environ["BUILD_IDENTITY"]
+              or source.get("manual_live_qa_remaining") is not True
+          ):
+              raise SystemExit("browser qualification projection rejected")
+          viewports = []
+          for item in source.get("viewports", []):
+              accessibility = item.get("accessibility", {})
+              structural = item.get("structural", {})
+              viewports.append(
+                  {
+                      "actions": structural.get("actions"),
+                      "all_visible": structural.get("all_visible"),
+                      "cards": structural.get("cards"),
+                      "lanes": structural.get("lanes"),
+                      "actual_sha256": item.get("actual_sha256"),
+                      "baseline_sha256": item.get("baseline_sha256"),
+                      "name": item.get("name"),
+                      "serious_critical_count": accessibility.get(
+                          "serious_critical_count"
+                      ),
+                      "stages": structural.get("stages"),
+                      "visual_diff_ratio": item.get("visual_diff_ratio"),
+                  }
+              )
+          projection = {
+              "build_identity": source["build_identity"],
+              "candidate_web_gui_sha256": source.get(
+                  "candidate_web_gui_sha256"
+              ),
+              "manual_live_qa_remaining": True,
+              "ok": True,
+              "producer": "browser_accessibility",
+              "repository_sha": source["repository_sha"],
+              "schema_version": 1,
+              "status": "passed",
+              "verifier_sha": os.environ["EXPECTED_WORKFLOW_COMMIT"],
+              "viewports": viewports,
+              "visual_diff_threshold": source.get("visual_diff_threshold"),
+          }
+          if re.fullmatch(
+              r"[0-9a-f]{64}",
+              str(projection["candidate_web_gui_sha256"]),
+          ) is None:
+              raise SystemExit("candidate WebGui digest is invalid")
+          payload = (
+              json.dumps(
+                  projection,
+                  ensure_ascii=False,
+                  sort_keys=True,
+                  separators=(",", ":"),
+                  allow_nan=False,
+              )
+              + "\n"
+          )
+          (root / "report.json").write_text(payload, encoding="utf-8")
+          PY
+      - name: Upload browser and accessibility child artifact
+        id: upload-browser
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: micromachine-browser-accessibility
+          path: ${{ runner.temp }}/browser-accessibility/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+
+  distribution_compliance:
+    name: distribution-compliance
+    if: >-
+      ${{
+        always() &&
+        needs.event_admission.result == 'success' &&
+        needs.event_admission.outputs.release_required == 'true' &&
+        needs.build_identity.result == 'success'
+      }}
+    needs:
+      - event_admission
+      - build_identity
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: candidate
+    env:
+      BUILD_IDENTITY: ${{ needs.build_identity.outputs.build_identity }}
+      CANDIDATE_ROOT: ${{ github.workspace }}/candidate
+      TRUSTED_VERIFIER_ROOT: ${{ github.workspace }}/trusted-verifier
+    outputs:
+      artifact_id: ${{ steps.upload-distribution.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload-distribution.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          path: trusted-verifier
+          persist-credentials: false
+          ref: ${{ env.EXPECTED_WORKFLOW_COMMIT }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          path: candidate
+          persist-credentials: false
+          ref: ${{ env.EXPECTED_RELEASE_COMMIT }}
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
+        with:
+          enable-cache: true
+      - name: Install exact distribution environment
+        run: |
+          set -euo pipefail
+          uv python install 3.12
+          uv sync \
+            --locked \
+            --python 3.12 \
+            --project "${TRUSTED_VERIFIER_ROOT}" \
+            --extra dev
+      - name: Verify trusted verifier and exact release source and range
+        run: |
+          set -euo pipefail
+          test "$(git -C "${TRUSTED_VERIFIER_ROOT}" rev-parse HEAD)" = \
+            "${EXPECTED_WORKFLOW_COMMIT}"
+          test "$(git -C "${CANDIDATE_ROOT}" rev-parse HEAD)" = \
+            "${EXPECTED_RELEASE_COMMIT}"
+          test "$(
+            git -C "${CANDIDATE_ROOT}" rev-parse --verify \
+              "${EXPECTED_RELEASE_BASE_COMMIT}^{commit}"
+          )" = "${EXPECTED_RELEASE_BASE_COMMIT}"
+          merge_base="$(
+            git -C "${CANDIDATE_ROOT}" merge-base \
+              "${EXPECTED_RELEASE_BASE_COMMIT}" \
+              "${EXPECTED_RELEASE_COMMIT}"
+          )"
+          test "${#merge_base}" -eq 40
+          if test "${GITHUB_EVENT_NAME}" = "push"; then
+            test "${merge_base}" = "${EXPECTED_RELEASE_BASE_COMMIT}"
+          fi
+          test -z "$(
+            git -C "${TRUSTED_VERIFIER_ROOT}" \
+              status --porcelain=v1 --untracked-files=all
+          )"
+          test -z "$(
+            git -C "${CANDIDATE_ROOT}" \
+              status --porcelain=v1 --untracked-files=all
+          )"
+      - name: Build and verify public distribution
+        run: |
+          set -euo pipefail
+          PYTHONPATH="${TRUSTED_VERIFIER_ROOT}" \
+            "${TRUSTED_VERIFIER_ROOT}/.venv/bin/python" -B \
+            "${TRUSTED_VERIFIER_ROOT}/starcraft_commander/distribution_compliance.py" \
+            --repository "${CANDIDATE_ROOT}" \
+            --base-commit "${EXPECTED_RELEASE_BASE_COMMIT}" \
+            --source-root "${CANDIDATE_ROOT}" \
+            --dist-dir "${RUNNER_TEMP}/distribution-dist" \
+            --output-dir "${RUNNER_TEMP}/distribution-compliance"
+          "${TRUSTED_VERIFIER_ROOT}/.venv/bin/python" - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "distribution-compliance"
+          canonical_path = root / "distribution-compliance.json"
+          source_bytes = canonical_path.read_bytes()
+          source = json.loads(source_bytes)
+          secret_scan = source.get("secret_scan")
+          repository = source.get("repository")
+          if (
+              source.get("ok") is not True
+              or source.get("status") != "passed"
+              or source.get("blockers") != []
+              or not isinstance(secret_scan, dict)
+              or secret_scan.get("finding_count") != 0
+              or not isinstance(repository, dict)
+              or repository.get("head_commit")
+              != os.environ["EXPECTED_RELEASE_COMMIT"]
+              or repository.get("base_commit")
+              != os.environ["EXPECTED_RELEASE_BASE_COMMIT"]
+          ):
+              raise SystemExit("distribution compliance projection rejected")
+          projection = {
+              "base_commit": repository["base_commit"],
+              "build_identity": os.environ["BUILD_IDENTITY"],
+              "canonical_report_sha256": hashlib.sha256(
+                  source_bytes
+              ).hexdigest(),
+              "distribution_schema_version": source.get("schema_version"),
+              "manual_live_qa_remaining": True,
+              "ok": True,
+              "producer": "distribution_compliance",
+              "repository_sha": repository["head_commit"],
+              "schema_version": 1,
+              "secret_finding_count": 0,
+              "status": "passed",
+              "verifier_sha": os.environ["EXPECTED_WORKFLOW_COMMIT"],
+          }
+          payload = (
+              json.dumps(
+                  projection,
+                  ensure_ascii=False,
+                  sort_keys=True,
+                  separators=(",", ":"),
+                  allow_nan=False,
+              )
+              + "\n"
+          )
+          (root / "report.json").write_text(payload, encoding="utf-8")
+          PY
+      - name: Upload distribution compliance child artifact
+        id: upload-distribution
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: micromachine-distribution-compliance
+          path: ${{ runner.temp }}/distribution-compliance/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+
+  pre_live_provenance:
+    name: pre-live-provenance
+    if: >-
+      ${{
+        always() &&
+        needs.event_admission.result == 'success' &&
+        needs.event_admission.outputs.release_required == 'true' &&
+        needs.build_identity.result == 'success'
+      }}
+    needs:
+      - event_admission
+      - build_identity
+    runs-on: macos-14
+    timeout-minutes: 150
+    permissions:
+      actions: read
+      contents: read
+    env:
+      ROOT_DIR: /private/tmp/voi-micromachine-runtime
+      CANDIDATE_ROOT: ${{ github.workspace }}/candidate
+      TRUSTED_VERIFIER_ROOT: ${{ github.workspace }}/trusted-verifier
+      BUILD_DIR: >-
+        /private/tmp/voi-micromachine-runtime/MicroMachine/build-latest-api
+      BUILD_REPORT: >-
+        /private/tmp/voi-micromachine-runtime/MicroMachine/build-latest-api/voi_build_identity.json
+      BUILD_IDENTITY: ${{ needs.build_identity.outputs.build_identity }}
+    outputs:
+      artifact_id: ${{ steps.upload-provenance.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload-provenance.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          path: trusted-verifier
+          persist-credentials: false
+          ref: ${{ env.EXPECTED_WORKFLOW_COMMIT }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          path: candidate
+          persist-credentials: false
+          ref: ${{ env.EXPECTED_RELEASE_COMMIT }}
+      - name: Verify trusted verifier and exact clean release source
+        run: |
+          set -euo pipefail
+          test "$(git -C "${TRUSTED_VERIFIER_ROOT}" rev-parse HEAD)" = \
+            "${EXPECTED_WORKFLOW_COMMIT}"
+          test "$(git -C "${CANDIDATE_ROOT}" rev-parse HEAD)" = \
+            "${EXPECTED_RELEASE_COMMIT}"
+          test -z "$(
+            git -C "${TRUSTED_VERIFIER_ROOT}" \
+              status --porcelain=v1 --untracked-files=all
+          )"
+          test -z "$(
+            git -C "${CANDIDATE_ROOT}" \
+              status --porcelain=v1 --untracked-files=all
+          )"
+      - name: Download exact runtime handoff
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.build_identity.outputs.runtime_artifact_id }}
+          path: ${{ runner.temp }}/runtime-handoff
+          merge-multiple: true
+      - name: Restore exact MicroMachine runtime
+        run: |
+          set -euo pipefail
+          mkdir -p "${ROOT_DIR}"
+          tar -xzf \
+            "${RUNNER_TEMP}/runtime-handoff/micromachine-runtime.tar.gz" \
+            -C "${ROOT_DIR}"
+      - name: Verify dedicated producer privilege separation
+        working-directory: trusted-verifier
+        run: |
+          set -euo pipefail
+          python_executable="$(
+            python3 -c 'import os, sys; print(os.path.realpath(sys.executable))'
+          )"
+          sudo env -u GITHUB_TOKEN -u GH_TOKEN \
+            DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+            PYTHONDONTWRITEBYTECODE="1" \
+            PYTHONPATH="${PWD}" \
+            VOI_PRODUCER_UID="65001" \
+            VOI_PRODUCER_GID="65001" \
+            "${python_executable}" -W error::ResourceWarning -B \
+              tests/test_micromachine_pre_live_provenance.py \
+              -k dedicated_producer_uid
+      - name: Verify provenance contracts and exact build binding
+        working-directory: trusted-verifier
+        run: |
+          set -euo pipefail
+          env -u GITHUB_TOKEN -u GH_TOKEN \
+            PYTHONPATH="${PWD}" \
+            python3 -B tests/test_micromachine_pre_live_provenance.py
+          mkdir -p "${RUNNER_TEMP}/pre-live-provenance"
+          PYTHONPATH="${PWD}" python3 -B - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          from starcraft_commander.micromachine_pre_live_provenance import (
+              attest_build_binding,
+          )
+
+          attestation = attest_build_binding(
+              os.environ["BUILD_REPORT"],
+              repository_dir=Path(os.environ["CANDIDATE_ROOT"]),
+              expected_repository_commit=os.environ["EXPECTED_RELEASE_COMMIT"],
+              expected_build_dir=os.environ["BUILD_DIR"],
+          )
+          build_identity = os.environ["BUILD_IDENTITY"]
+          if (
+              attestation.get("ok") is not True
+              or attestation.get("blockers") != []
+              or attestation.get("recorded_identity") != build_identity
+              or attestation.get("current_identity") != build_identity
+              or re.fullmatch(r"sha256:[0-9a-f]{64}", build_identity) is None
+          ):
+              raise SystemExit("authenticated build provenance failed")
+          projection = {
+              "binary_sha256": attestation.get("binary_sha256"),
+              "build_identity": build_identity,
+              "build_report_sha256": attestation.get("report_sha256"),
+              "embedded_build_input_identity": attestation.get(
+                  "embedded_build_input_identity"
+              ),
+              "manual_live_qa_remaining": True,
+              "ok": True,
+              "privilege_separation": "dedicated_producer_uid_passed",
+              "producer": "pre_live_provenance",
+              "provenance_contracts": "passed",
+              "repository_sha": attestation.get("repository_commit"),
+              "schema_version": 1,
+              "status": "passed",
+              "verifier_sha": os.environ["EXPECTED_WORKFLOW_COMMIT"],
+          }
+          payload = (
+              json.dumps(
+                  projection,
+                  ensure_ascii=False,
+                  sort_keys=True,
+                  separators=(",", ":"),
+                  allow_nan=False,
+              )
+              + "\n"
+          )
+          output = (
+              Path(os.environ["RUNNER_TEMP"])
+              / "pre-live-provenance"
+              / "report.json"
+          )
+          output.write_text(payload, encoding="utf-8")
+          PY
+          test -z "$(
+            git -C "${TRUSTED_VERIFIER_ROOT}" \
+              status --porcelain=v1 --untracked-files=all
+          )"
+          test -z "$(
+            git -C "${CANDIDATE_ROOT}" \
+              status --porcelain=v1 --untracked-files=all
+          )"
+      - name: Upload pre-live provenance child artifact
+        id: upload-provenance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: micromachine-pre-live-provenance
+          path: ${{ runner.temp }}/pre-live-provenance/report.json
+          compression-level: 0
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+
+  seal_child_artifacts:
+    name: seal-child-artifacts
+    if: >-
+      ${{
+        always() &&
+        needs.event_admission.result == 'success' &&
+        needs.event_admission.outputs.release_required == 'true' &&
+        needs.build_identity.result == 'success' &&
+        needs.deterministic_journeys.result == 'success' &&
+        needs.browser_accessibility.result == 'success' &&
+        needs.distribution_compliance.result == 'success' &&
+        needs.pre_live_provenance.result == 'success'
+      }}
+    needs:
+      - event_admission
+      - build_identity
+      - deterministic_journeys
+      - browser_accessibility
+      - distribution_compliance
+      - pre_live_provenance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    defaults:
+      run:
+        working-directory: candidate
+    env:
+      BUILD_IDENTITY: ${{ needs.build_identity.outputs.build_identity }}
+      BUILD_IDENTITY_ARTIFACT_ID: ${{ needs.build_identity.outputs.artifact_id }}
+      BUILD_IDENTITY_ARTIFACT_DIGEST: >-
+        ${{ needs.build_identity.outputs.artifact_digest }}
+      JOURNEYS_ARTIFACT_ID: ${{ needs.deterministic_journeys.outputs.artifact_id }}
+      JOURNEYS_ARTIFACT_DIGEST: >-
+        ${{ needs.deterministic_journeys.outputs.artifact_digest }}
+      BROWSER_ARTIFACT_ID: ${{ needs.browser_accessibility.outputs.artifact_id }}
+      BROWSER_ARTIFACT_DIGEST: >-
+        ${{ needs.browser_accessibility.outputs.artifact_digest }}
+      DISTRIBUTION_ARTIFACT_ID: >-
+        ${{ needs.distribution_compliance.outputs.artifact_id }}
+      DISTRIBUTION_ARTIFACT_DIGEST: >-
+        ${{ needs.distribution_compliance.outputs.artifact_digest }}
+      PROVENANCE_ARTIFACT_ID: ${{ needs.pre_live_provenance.outputs.artifact_id }}
+      PROVENANCE_ARTIFACT_DIGEST: >-
+        ${{ needs.pre_live_provenance.outputs.artifact_digest }}
+    outputs:
+      artifact_id: ${{ steps.upload-sealed.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          path: candidate
+          persist-credentials: false
+          ref: ${{ env.EXPECTED_RELEASE_COMMIT }}
+      - name: Verify exact clean release source
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${EXPECTED_RELEASE_COMMIT}"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+      - name: Download build identity child artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.build_identity.outputs.artifact_id }}
+          path: ${{ runner.temp }}/child-downloads/build_identity
+          merge-multiple: true
+      - name: Download deterministic journeys child artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.deterministic_journeys.outputs.artifact_id }}
+          path: ${{ runner.temp }}/child-downloads/deterministic_journeys
+          merge-multiple: true
+      - name: Download browser accessibility child artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.browser_accessibility.outputs.artifact_id }}
+          path: ${{ runner.temp }}/child-downloads/browser_accessibility
+          merge-multiple: true
+      - name: Download distribution compliance child artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.distribution_compliance.outputs.artifact_id }}
+          path: ${{ runner.temp }}/child-downloads/distribution_compliance
+          merge-multiple: true
+      - name: Download pre-live provenance child artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.pre_live_provenance.outputs.artifact_id }}
+          path: ${{ runner.temp }}/child-downloads/pre_live_provenance
+          merge-multiple: true
+      - name: Create canonical detached-digest envelopes
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import stat
+          from datetime import datetime, timezone
+          from pathlib import Path, PurePosixPath
+
+          def canonical(value):
+              return (
+                  json.dumps(
+                      value,
+                      ensure_ascii=False,
+                      sort_keys=True,
+                      separators=(",", ":"),
+                      allow_nan=False,
+                  )
+                  + "\n"
+              ).encode("utf-8")
+
+          def read_regular(path):
+              state = path.lstat()
+              if path.is_symlink() or not stat.S_ISREG(state.st_mode):
+                  raise SystemExit(f"unsafe child report: {path}")
+              payload = path.read_bytes()
+              if not payload or len(payload) > 32 * 1024 * 1024:
+                  raise SystemExit(f"invalid child report size: {path}")
+              return payload
+
+          def exact_keys(value, expected, producer):
+              if not isinstance(value, dict) or set(value) != expected:
+                  raise SystemExit(
+                      f"unexpected child report fields: {producer}"
+                  )
+
+          def sha256(value):
+              return (
+                  isinstance(value, str)
+                  and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+              )
+
+          def validate_child(producer, child):
+              common = {
+                  "build_identity",
+                  "manual_live_qa_remaining",
+                  "ok",
+                  "producer",
+                  "repository_sha",
+                  "schema_version",
+                  "status",
+                  "verifier_sha",
+              }
+              producer_fields = {
+                  "build_identity": {
+                      "binary_sha256",
+                      "build_report_schema_version",
+                      "embedded_build_input_identity",
+                  },
+                  "deterministic_journeys": {
+                      "binary_sha256",
+                      "bundle_sha256",
+                      "embedded_build_input_identity",
+                      "journey_count",
+                      "suite_id",
+                  },
+                  "browser_accessibility": {
+                      "candidate_web_gui_sha256",
+                      "viewports",
+                      "visual_diff_threshold",
+                  },
+                  "distribution_compliance": {
+                      "base_commit",
+                      "canonical_report_sha256",
+                      "distribution_schema_version",
+                      "secret_finding_count",
+                  },
+                  "pre_live_provenance": {
+                      "binary_sha256",
+                      "build_report_sha256",
+                      "embedded_build_input_identity",
+                      "privilege_separation",
+                      "provenance_contracts",
+                  },
+              }
+              exact_keys(
+                  child,
+                  common | producer_fields[producer],
+                  producer,
+              )
+              if (
+                  child["schema_version"] != 1
+                  or child["verifier_sha"]
+                  != os.environ["EXPECTED_WORKFLOW_COMMIT"]
+              ):
+                  raise SystemExit(
+                      f"child verifier binding failed: {producer}"
+                  )
+              if producer == "build_identity":
+                  if (
+                      not sha256(child["binary_sha256"])
+                      or child["build_report_schema_version"] != 80
+                      or re.fullmatch(
+                          r"sha256:[0-9a-f]{64}",
+                          str(child["embedded_build_input_identity"]),
+                      )
+                      is None
+                  ):
+                      raise SystemExit("build identity report is malformed")
+              elif producer == "deterministic_journeys":
+                  if (
+                      not sha256(child["binary_sha256"])
+                      or not sha256(child["bundle_sha256"])
+                      or child["journey_count"] != 14
+                      or child["suite_id"]
+                      != "micromachine_deterministic_pre_live_v1"
+                      or re.fullmatch(
+                          r"sha256:[0-9a-f]{64}",
+                          str(child["embedded_build_input_identity"]),
+                      )
+                      is None
+                  ):
+                      raise SystemExit(
+                          "deterministic journey report is malformed"
+                      )
+              elif producer == "browser_accessibility":
+                  viewports = child["viewports"]
+                  if (
+                      not sha256(child["candidate_web_gui_sha256"])
+                      or child["visual_diff_threshold"] != 0.01
+                      or not isinstance(viewports, list)
+                      or len(viewports) != 2
+                      or {item.get("name") for item in viewports}
+                      != {"desktop", "mobile"}
+                  ):
+                      raise SystemExit("browser report is malformed")
+                  for viewport in viewports:
+                      exact_keys(
+                          viewport,
+                          {
+                              "actions",
+                              "all_visible",
+                              "actual_sha256",
+                              "baseline_sha256",
+                              "cards",
+                              "lanes",
+                              "name",
+                              "serious_critical_count",
+                              "stages",
+                              "visual_diff_ratio",
+                          },
+                          producer,
+                      )
+                      ratio = viewport["visual_diff_ratio"]
+                      if (
+                          viewport["actions"] != 20
+                          or viewport["all_visible"] is not True
+                          or viewport["cards"] != 4
+                          or viewport["lanes"] != 4
+                          or viewport["serious_critical_count"] != 0
+                          or viewport["stages"] != 16
+                          or not sha256(viewport["actual_sha256"])
+                          or not sha256(viewport["baseline_sha256"])
+                          or isinstance(ratio, bool)
+                          or not isinstance(ratio, (int, float))
+                          or not 0 <= ratio <= 0.01
+                      ):
+                          raise SystemExit(
+                              "browser viewport evidence is malformed"
+                          )
+              elif producer == "distribution_compliance":
+                  if (
+                      child["base_commit"]
+                      != os.environ["EXPECTED_RELEASE_BASE_COMMIT"]
+                      or not sha256(child["canonical_report_sha256"])
+                      or child["distribution_schema_version"] != 7
+                      or child["secret_finding_count"] != 0
+                  ):
+                      raise SystemExit(
+                          "distribution compliance report is malformed"
+                      )
+              elif producer == "pre_live_provenance":
+                  if (
+                      not sha256(child["binary_sha256"])
+                      or not sha256(child["build_report_sha256"])
+                      or re.fullmatch(
+                          r"sha256:[0-9a-f]{64}",
+                          str(child["embedded_build_input_identity"]),
+                      )
+                      is None
+                      or child["privilege_separation"]
+                      != "dedicated_producer_uid_passed"
+                      or child["provenance_contracts"] != "passed"
+                  ):
+                      raise SystemExit(
+                          "pre-live provenance report is malformed"
+                      )
+
+          status = json.loads(
+              Path(
+                  "integrations/micromachine/PRE_LIVE_RELEASE_STATUS.json"
+              ).read_text(encoding="utf-8")
+          )
+          artifact_ids = {
+              "browser_accessibility": os.environ["BROWSER_ARTIFACT_ID"],
+              "build_identity": os.environ["BUILD_IDENTITY_ARTIFACT_ID"],
+              "deterministic_journeys": os.environ["JOURNEYS_ARTIFACT_ID"],
+              "distribution_compliance": os.environ[
+                  "DISTRIBUTION_ARTIFACT_ID"
+              ],
+              "pre_live_provenance": os.environ["PROVENANCE_ARTIFACT_ID"],
+          }
+          artifact_digests = {
+              "browser_accessibility": os.environ[
+                  "BROWSER_ARTIFACT_DIGEST"
+              ],
+              "build_identity": os.environ[
+                  "BUILD_IDENTITY_ARTIFACT_DIGEST"
+              ],
+              "deterministic_journeys": os.environ[
+                  "JOURNEYS_ARTIFACT_DIGEST"
+              ],
+              "distribution_compliance": os.environ[
+                  "DISTRIBUTION_ARTIFACT_DIGEST"
+              ],
+              "pre_live_provenance": os.environ[
+                  "PROVENANCE_ARTIFACT_DIGEST"
+              ],
+          }
+          if set(artifact_ids) != {
+              item.get("producer") for item in status["required_artifacts"]
+          }:
+              raise SystemExit("child producer set differs from release status")
+          if set(artifact_digests) != set(artifact_ids):
+              raise SystemExit("child artifact digest set is incomplete")
+          build_identity = os.environ["BUILD_IDENTITY"]
+          repository_sha = os.environ["EXPECTED_RELEASE_COMMIT"]
+          if (
+              re.fullmatch(r"sha256:[0-9a-f]{64}", build_identity) is None
+              or re.fullmatch(r"[0-9a-f]{40}", repository_sha) is None
+          ):
+              raise SystemExit("invalid release binding")
+          download_root = Path(os.environ["RUNNER_TEMP"]) / "child-downloads"
+          sealed_root = Path(os.environ["RUNNER_TEMP"]) / "sealed-child-artifacts"
+          sealed_root.mkdir(mode=0o700)
+          generated_at = datetime.now(timezone.utc).strftime(
+              "%Y-%m-%dT%H:%M:%SZ"
+          )
+          children = {}
+          for spec in status["required_artifacts"]:
+              producer = spec["producer"]
+              raw_artifact_id = artifact_ids[producer]
+              if not raw_artifact_id.isdecimal() or int(raw_artifact_id) <= 0:
+                  raise SystemExit(f"invalid artifact id for {producer}")
+              raw_artifact_digest = artifact_digests[producer]
+              if re.fullmatch(r"[0-9a-f]{64}", raw_artifact_digest):
+                  archive_sha256 = f"sha256:{raw_artifact_digest}"
+              elif re.fullmatch(
+                  r"sha256:[0-9a-f]{64}",
+                  raw_artifact_digest,
+              ):
+                  archive_sha256 = raw_artifact_digest
+              else:
+                  raise SystemExit(
+                      f"invalid artifact digest for {producer}"
+                  )
+              member_name = spec["member"]
+              member_path = PurePosixPath(member_name)
+              if (
+                  member_path.is_absolute()
+                  or ".." in member_path.parts
+                  or member_path.parts != (producer, "report.json")
+              ):
+                  raise SystemExit(f"unsafe member contract for {producer}")
+              source = download_root / producer / "report.json"
+              member_bytes = read_regular(source)
+              try:
+                  child = json.loads(member_bytes)
+              except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                  raise SystemExit(
+                      f"invalid child JSON for {producer}: {error}"
+                  ) from error
+              if (
+                  member_bytes != canonical(child)
+                  or child.get("ok") is not True
+                  or child.get("status") != "passed"
+                  or child.get("producer") != producer
+                  or child.get("repository_sha") != repository_sha
+                  or child.get("build_identity") != build_identity
+                  or child.get("manual_live_qa_remaining") is not True
+                  or child.get("live_qualified") is True
+              ):
+                  raise SystemExit(f"child report contract failed: {producer}")
+              validate_child(producer, child)
+              children[producer] = child
+              destination = sealed_root / member_path
+              destination.parent.mkdir(mode=0o700)
+              destination.write_bytes(member_bytes)
+              envelope = {
+                  "archive_sha256": archive_sha256,
+                  "artifact_id": int(raw_artifact_id),
+                  "build_identity": build_identity,
+                  "generated_at": generated_at,
+                  "member": member_name,
+                  "producer": producer,
+                  "repository_sha": repository_sha,
+                  "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+                  "schema_version": 1,
+                  "sha256": hashlib.sha256(member_bytes).hexdigest(),
+                  "workflow_run_id": int(os.environ["GITHUB_RUN_ID"]),
+              }
+              (destination.parent / "envelope.json").write_bytes(
+                  canonical(envelope)
+              )
+          build_report = children["build_identity"]
+          for producer in ("deterministic_journeys", "pre_live_provenance"):
+              child = children[producer]
+              if (
+                  child.get("binary_sha256")
+                  != build_report.get("binary_sha256")
+                  or child.get("embedded_build_input_identity")
+                  != build_report.get("embedded_build_input_identity")
+              ):
+                  raise SystemExit(
+                      f"child build evidence mismatch: {producer}"
+                  )
+          PY
+      - name: Upload sealed final release handoff
+        id: upload-sealed
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: >-
+            final-pre-live-sealed-${{ github.run_id }}-${{
+            github.run_attempt }}
+          path: ${{ runner.temp }}/sealed-child-artifacts/
+          compression-level: 0
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
+  final_release_gate:
+    name: >-
+      ${{ github.event_name == 'pull_request_target' &&
+      'ready-to-merge' || 'ready-for-live-qa' }}
+    if: always()
+    needs:
+      - event_admission
+      - build_identity
+      - deterministic_journeys
+      - browser_accessibility
+      - distribution_compliance
+      - pre_live_provenance
+      - seal_child_artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+      issues: read
+      pull-requests: read
+    env:
+      BUILD_IDENTITY: ${{ needs.build_identity.outputs.build_identity }}
+      CANDIDATE_ROOT: ${{ github.workspace }}/candidate
+      RELEASE_REQUIRED: >-
+        ${{ needs.event_admission.outputs.release_required }}
+      TRUSTED_VERIFIER_ROOT: ${{ github.workspace }}/trusted-verifier
+      PREREQUISITE_RESULTS: ${{ toJSON(needs) }}
+    steps:
+      - name: Enforce all prerequisite results
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import json
+          import os
+
+          expected = {
+              "browser_accessibility",
+              "build_identity",
+              "deterministic_journeys",
+              "distribution_compliance",
+              "event_admission",
+              "pre_live_provenance",
+              "seal_child_artifacts",
+          }
+          needs = json.loads(os.environ["PREREQUISITE_RESULTS"])
+          if set(needs) != expected:
+              raise SystemExit("unexpected final release prerequisite set")
+          if needs["event_admission"].get("result") != "success":
+              raise SystemExit("final release event admission did not pass")
+          release_required = os.environ["RELEASE_REQUIRED"]
+          if release_required == "true":
+              rejected = {
+                  name: value.get("result")
+                  for name, value in needs.items()
+                  if value.get("result") != "success"
+              }
+          elif release_required == "false":
+              rejected = {
+                  name: value.get("result")
+                  for name, value in needs.items()
+                  if name != "event_admission"
+                  and value.get("result") != "skipped"
+              }
+          else:
+              raise SystemExit("invalid release_required admission output")
+          if rejected:
+              raise SystemExit(
+                  "final release prerequisites did not all pass: "
+                  + json.dumps(rejected, sort_keys=True)
+              )
+          PY
+      - name: Report not-applicable release event
+        if: needs.event_admission.outputs.release_required == 'false'
+        run: |
+          {
+            echo "## Final pre-live"
+            echo
+            echo "This event is not the PR #168 release lifecycle."
+            echo "The final pre-live release gate is not applicable."
+          } >> "${GITHUB_STEP_SUMMARY}"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        if: needs.event_admission.outputs.release_required == 'true'
+        with:
+          fetch-depth: 0
+          path: trusted-verifier
+          persist-credentials: false
+          ref: ${{ env.EXPECTED_WORKFLOW_COMMIT }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        if: needs.event_admission.outputs.release_required == 'true'
+        with:
+          fetch-depth: 0
+          path: candidate
+          persist-credentials: false
+          ref: ${{ env.EXPECTED_RELEASE_COMMIT }}
+      - name: Verify trusted verifier and exact clean release source
+        if: needs.event_admission.outputs.release_required == 'true'
+        run: |
+          set -euo pipefail
+          test "$(git -C "${TRUSTED_VERIFIER_ROOT}" rev-parse HEAD)" = \
+            "${EXPECTED_WORKFLOW_COMMIT}"
+          test "$(git -C "${CANDIDATE_ROOT}" rev-parse HEAD)" = \
+            "${EXPECTED_RELEASE_COMMIT}"
+          test -z "$(
+            git -C "${TRUSTED_VERIFIER_ROOT}" \
+              status --porcelain=v1 --untracked-files=all
+          )"
+          test -z "$(
+            git -C "${CANDIDATE_ROOT}" \
+              status --porcelain=v1 --untracked-files=all
+          )"
+      - name: Download sealed child artifact tree
+        if: needs.event_admission.outputs.release_required == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.seal_child_artifacts.outputs.artifact_id }}
+          path: ${{ runner.temp }}/sealed-child-artifacts
+          merge-multiple: true
+      - name: Validate generated status and fourteen-journey runbook
+        if: needs.event_admission.outputs.release_required == 'true'
+        run: |
+          set -euo pipefail
+          python3 -B \
+            "${TRUSTED_VERIFIER_ROOT}/starcraft_commander/micromachine_final_release.py" \
+            check-status \
+            --status \
+              "${CANDIDATE_ROOT}/integrations/micromachine/PRE_LIVE_RELEASE_STATUS.json" \
+            --journey-manifest \
+              "${CANDIDATE_ROOT}/integrations/micromachine/PRE_LIVE_JOURNEYS.json" \
+            --runbook \
+              "${CANDIDATE_ROOT}/docs/micromachine-final-live-qa.md"
+      - name: Generate authenticated final release readiness
+        id: release-gate
+        if: needs.event_admission.outputs.release_required == 'true'
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          output_root="${RUNNER_TEMP}/final-release-output"
+          artifact_root="${RUNNER_TEMP}/sealed-child-artifacts"
+          mkdir -p "${output_root}"
+          python3 -B \
+            "${TRUSTED_VERIFIER_ROOT}/starcraft_commander/micromachine_final_release.py" \
+            report \
+            --mode "${RELEASE_MODE}" \
+            --artifact-root "${artifact_root}" \
+            --artifact \
+              "build_identity=${artifact_root}/build_identity/envelope.json" \
+            --artifact \
+              "deterministic_journeys=${artifact_root}/deterministic_journeys/envelope.json" \
+            --artifact \
+              "browser_accessibility=${artifact_root}/browser_accessibility/envelope.json" \
+            --artifact \
+              "distribution_compliance=${artifact_root}/distribution_compliance/envelope.json" \
+            --artifact \
+              "pre_live_provenance=${artifact_root}/pre_live_provenance/envelope.json" \
+            --repository-sha "${EXPECTED_RELEASE_COMMIT}" \
+            --build-identity "${BUILD_IDENTITY}" \
+            --workflow-sha "${EXPECTED_WORKFLOW_COMMIT}" \
+            --workflow-run-id "${GITHUB_RUN_ID}" \
+            --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --replay-ledger "${RUNNER_TEMP}/final-release-replay.json" \
+            --status \
+              "${CANDIDATE_ROOT}/integrations/micromachine/PRE_LIVE_RELEASE_STATUS.json" \
+            --journey-manifest \
+              "${CANDIDATE_ROOT}/integrations/micromachine/PRE_LIVE_JOURNEYS.json" \
+            --runbook \
+              "${CANDIDATE_ROOT}/docs/micromachine-final-live-qa.md" \
+            --output-json "${output_root}/${RELEASE_MODE}.json" \
+            --output-markdown "${output_root}/${RELEASE_MODE}.md"
+      - name: Publish readiness summary
+        if: >-
+          ${{
+            always() &&
+            needs.event_admission.outputs.release_required == 'true'
+          }}
+        run: |
+          report="${RUNNER_TEMP}/final-release-output/${RELEASE_MODE}.md"
+          if test -f "${report}"; then
+            cat "${report}" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+      - name: Upload generated readiness reports
+        if: >-
+          ${{
+            always() &&
+            needs.event_admission.outputs.release_required == 'true'
+          }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: micromachine-${{ env.RELEASE_MODE }}
+          path: ${{ runner.temp }}/final-release-output/
+          if-no-files-found: warn
+          overwrite: true
+          retention-days: 30
+      - name: Enforce final release verdict
+        if: >-
+          ${{
+            needs.event_admission.outputs.release_required == 'true' &&
+            steps.release-gate.outcome != 'success'
+          }}
+        run: |
+          echo "final release gate did not pass" >&2
+          exit 1

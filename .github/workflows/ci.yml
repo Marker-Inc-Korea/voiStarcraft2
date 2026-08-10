@@ -2316,13 +2316,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          workflow="$(
-            gh api \
-              "repos/${GITHUB_REPOSITORY}/actions/workflows/pre-live-provenance.yml"
-          )"
-          test "$(jq -r '.path' <<<"${workflow}")" = \
-            ".github/workflows/pre-live-provenance.yml"
-          test "$(jq -r '.state' <<<"${workflow}")" = "active"
+          for workflow_file in \
+            pre-live-provenance.yml \
+            final-pre-live.yml
+          do
+            workflow="$(
+              gh api \
+                "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}"
+            )"
+            test "$(jq -r '.path' <<<"${workflow}")" = \
+              ".github/workflows/${workflow_file}"
+            test "$(jq -r '.state' <<<"${workflow}")" = "active"
+          done
 
   micromachine-macos-contracts:
     if: github.event_name == 'push'

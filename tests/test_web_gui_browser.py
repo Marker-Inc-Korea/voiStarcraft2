@@ -418,7 +418,8 @@ def _browser_fixture_page() -> str:
       );
       var focusContinuity = false;
       if (focusTarget) {
-        var focusKey = focusTarget.getAttribute("data-operation-key");
+        var focusDomKey = focusTarget.getAttribute("data-operation-key");
+        var focusKey = operationRecordKeyFromDom(focusDomKey);
         var focusRecord = operationRecords[focusKey];
         var cardBefore = focusRecord && focusRecord.node;
         var fingerprintBefore = cardBefore && cardBefore.getAttribute(
@@ -441,7 +442,7 @@ def _browser_fixture_page() -> str:
               "data-operation-card-fingerprint"
             ) !== fingerprintBefore &&
             focusedAfter !== focusTarget &&
-            focusedAfter.getAttribute("data-operation-key") === focusKey &&
+            focusedAfter.getAttribute("data-operation-key") === focusDomKey &&
             focusedAfter.getAttribute("data-operation-action") ===
               "retarget" &&
             operationNodeContains(cardAfter, focusedAfter);
@@ -478,7 +479,7 @@ def _browser_fixture_page() -> str:
         document.getElementById("tactical-radio-status")
           .getAttribute("role") === "status" &&
         document.getElementById("tactical-radio-captions")
-          .getAttribute("role") === "log" &&
+          .getAttribute("role") === "list" &&
         document.getElementById("tactical-radio-mute")
           .getAttribute("aria-pressed") === "true" &&
         localizedAccessibility);
