@@ -1512,8 +1512,16 @@ jobs:
                       )
                       expected = expected_viewport_evidence[viewport["name"]]
                       ratio = viewport["visual_diff_ratio"]
+                      counts = (
+                          "actions",
+                          "cards",
+                          "lanes",
+                          "serious_critical_count",
+                          "stages",
+                      )
                       if (
-                          viewport["actions"] != expected["actions"]
+                          any(type(viewport[key]) is not int for key in counts)
+                          or viewport["actions"] != expected["actions"]
                           or viewport["all_visible"] is not True
                           or viewport["cards"] != expected["cards"]
                           or viewport["lanes"] != expected["lanes"]

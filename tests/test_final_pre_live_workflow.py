@@ -978,22 +978,30 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
 
     def test_sealer_rejects_browser_viewport_profile_drift(self) -> None:
-        viewports = self.browser_viewports()
-        viewports[1].update(
-            {
-                "actions": 20,
-                "cards": 4,
-                "stages": 16,
-            }
+        invalid_mobile_evidence = (
+            (
+                "desktop counts",
+                {
+                    "actions": 20,
+                    "cards": 4,
+                    "stages": 16,
+                },
+            ),
+            ("integral float", {"actions": 50.0}),
+            ("boolean count", {"serious_critical_count": False}),
         )
 
-        result = self.run_sealer(viewports)
+        for label, evidence in invalid_mobile_evidence:
+            with self.subTest(label=label):
+                viewports = self.browser_viewports()
+                viewports[1].update(evidence)
+                result = self.run_sealer(viewports)
 
-        self.assertNotEqual(0, result.returncode)
-        self.assertIn(
-            "browser viewport evidence is malformed",
-            result.stderr,
-        )
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn(
+                    "browser viewport evidence is malformed",
+                    result.stderr,
+                )
 
     def test_exact_child_ids_and_digests_are_sealed(self) -> None:
         workflow = self.workflow()
