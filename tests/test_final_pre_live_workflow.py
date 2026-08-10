@@ -129,9 +129,9 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
             "721726d8da88d1c3a7448e22265af1f817b3f2cd",
             workflow["env"]["RELEASE_MERGE_SHA"],
         )
-        self.assertEqual("169", workflow["env"]["QUALIFICATION_ISSUE_NUMBER"])
+        self.assertEqual("171", workflow["env"]["QUALIFICATION_ISSUE_NUMBER"])
         self.assertEqual(
-            "issue-169-final-prelive-browser-python",
+            "issue-171-final-prelive-fixture-staging",
             workflow["env"]["QUALIFICATION_HEAD_REF"],
         )
         self.assertIn("pull_request_target)", boundary)
@@ -162,7 +162,12 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
             boundary,
         )
         self.assertIn(
-            '"repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls"',
+            '"repos/${GITHUB_REPOSITORY}/pulls?state=closed&base=main&head='
+            '${GITHUB_REPOSITORY_OWNER}:${QUALIFICATION_HEAD_REF}&per_page=100"',
+            boundary,
+        )
+        self.assertIn(
+            "select(.merge_commit_sha == env.GITHUB_SHA)",
             boundary,
         )
         self.assertIn('if test "${qualification_head_ref}" =', boundary)
@@ -291,9 +296,9 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
                 "GITHUB_WORKFLOW_SHA": release_sha,
                 "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
                 "QUALIFICATION_HEAD_REF": (
-                    "issue-169-final-prelive-browser-python"
+                    "issue-171-final-prelive-fixture-staging"
                 ),
-                "QUALIFICATION_ISSUE_NUMBER": "169",
+                "QUALIFICATION_ISSUE_NUMBER": "171",
                 "RELEASE_AUTHORITY": "authoritative_exact_main",
                 "RELEASE_HEAD_REF": "issue-141-final-prelive-gates",
                 "RELEASE_MERGE_SHA": release_sha,

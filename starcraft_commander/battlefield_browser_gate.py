@@ -11,9 +11,11 @@ import re
 import selectors
 import secrets
 import signal
+import stat
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -47,6 +49,7 @@ _SHA_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{40}$")
 _BUILD_RE: Final[re.Pattern[str]] = re.compile(r"^sha256:[0-9a-f]{64}$")
 _FIXTURE_READY_TIMEOUT_SECONDS: Final[float] = 20.0
 _FIXTURE_STOP_TIMEOUT_SECONDS: Final[float] = 10.0
+_FIXTURE_STAGING_ROOT: Final[Path] = Path("/tmp").resolve()
 _FIXTURE_BOOTSTRAP: Final[str] = (
     "import runpy,sys;"
     "root=sys.argv[1];script=sys.argv[2];"
@@ -1275,6 +1278,10 @@ class BrowserGateConfig:
 
 
 def _sha256_regular_file(path: Path) -> str:
+    return hashlib.sha256(_read_regular_file(path)).hexdigest()
+
+
+def _read_regular_file(path: Path) -> bytes:
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"candidate source is missing or linked: {path}")
     before = path.stat()
@@ -1292,7 +1299,7 @@ def _sha256_regular_file(path: Path) -> str:
         after.st_mtime_ns,
     ):
         raise RuntimeError(f"candidate source changed while reading: {path}")
-    return hashlib.sha256(payload).hexdigest()
+    return payload
 
 
 class _CandidateFixtureProcess:
@@ -1304,9 +1311,15 @@ class _CandidateFixtureProcess:
         self._stdout_extra = bytearray()
         self._drain_lock = threading.Lock()
         self._drain_threads: list[threading.Thread] = []
+        self._staged_fixture_script: Path | None = None
 
-    def _command(self) -> list[str]:
-        trusted_script = Path(__file__).resolve()
+    def _command(self, fixture_script: Path | None = None) -> list[str]:
+        if fixture_script is None:
+            if self._config.candidate_uid is not None:
+                raise RuntimeError(
+                    "dedicated candidate execution requires staged fixture source"
+                )
+            fixture_script = Path(__file__).resolve()
         command = [
             str(self._config.candidate_python),
             "-I",
@@ -1314,7 +1327,7 @@ class _CandidateFixtureProcess:
             "-c",
             _FIXTURE_BOOTSTRAP,
             str(self._config.candidate_root),
-            str(trusted_script),
+            str(fixture_script),
         ]
         if self._config.candidate_uid is None:
             return command
@@ -1330,6 +1343,78 @@ class _CandidateFixtureProcess:
             *command,
         ]
 
+    def _prepare_fixture_script(self) -> Path:
+        if self._config.candidate_uid is None:
+            return Path(__file__).resolve()
+        if self._config.candidate_uid == os.geteuid():
+            raise RuntimeError("candidate UID must differ from trusted verifier UID")
+        if self._staged_fixture_script is not None:
+            raise RuntimeError("candidate fixture source is already staged")
+
+        staging_root = _FIXTURE_STAGING_ROOT
+        if (
+            staging_root.is_symlink()
+            or not staging_root.is_dir()
+            or staging_root.resolve() != staging_root.absolute()
+            or stat.S_IMODE(staging_root.stat().st_mode) & stat.S_IXOTH == 0
+        ):
+            raise RuntimeError("candidate fixture staging root is not traversable")
+
+        source_payload = _read_regular_file(Path(__file__).resolve())
+        descriptor, raw_path = tempfile.mkstemp(
+            dir=staging_root,
+            prefix="voi-browser-fixture-",
+            suffix=".py",
+        )
+        staged = Path(raw_path)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                descriptor = -1
+                stream.write(source_payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.chmod(staged, 0o444, follow_symlinks=False)
+            snapshot = staged.lstat()
+            if (
+                staged.is_symlink()
+                or not stat.S_ISREG(snapshot.st_mode)
+                or snapshot.st_uid != os.geteuid()
+                or stat.S_IMODE(snapshot.st_mode) != 0o444
+                or _read_regular_file(staged) != source_payload
+            ):
+                raise RuntimeError(
+                    "candidate fixture staged source failed integrity checks"
+                )
+        except BaseException:
+            if descriptor >= 0:
+                os.close(descriptor)
+            staged.unlink(missing_ok=True)
+            raise
+
+        self._staged_fixture_script = staged
+        return staged
+
+    def _cleanup_fixture_script(self) -> None:
+        staged = self._staged_fixture_script
+        self._staged_fixture_script = None
+        if staged is None:
+            return
+        try:
+            snapshot = staged.lstat()
+        except FileNotFoundError as error:
+            raise RuntimeError(
+                "candidate fixture staged source disappeared before cleanup"
+            ) from error
+        if (
+            staged.is_symlink()
+            or not stat.S_ISREG(snapshot.st_mode)
+            or snapshot.st_uid != os.geteuid()
+        ):
+            raise RuntimeError(
+                "candidate fixture staged source changed before cleanup"
+            )
+        staged.unlink()
+
     def start(self) -> str:
         if self._process is not None:
             raise RuntimeError("candidate fixture process already started")
@@ -1340,38 +1425,49 @@ class _CandidateFixtureProcess:
             "PATH": "/usr/bin:/bin",
             "PYTHONDONTWRITEBYTECODE": "1",
         }
-        process = subprocess.Popen(
-            self._command(),
-            cwd=self._config.candidate_root,
-            env=environment,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            start_new_session=True,
-        )
-        self._process = process
-        assert process.stdin is not None
-        process.stdin.write(
-            json.dumps(
-                {
-                    "candidate_sha": self._config.repository_sha,
-                    "nonce": self._nonce,
-                    "schema_version": 1,
-                    "type": "battlefield-webgui-start",
-                },
-                ensure_ascii=True,
-                sort_keys=True,
-                separators=(",", ":"),
+        fixture_script = self._prepare_fixture_script()
+        try:
+            process = subprocess.Popen(
+                self._command(fixture_script),
+                cwd=self._config.candidate_root,
+                env=environment,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                start_new_session=True,
             )
-            + "\n"
-        )
-        process.stdin.close()
-        assert process.stdout is not None
-        assert process.stderr is not None
-        self._start_drain(process.stderr, self._stderr, "candidate-stderr")
+        except BaseException:
+            self._cleanup_fixture_script()
+            raise
+        self._process = process
+        try:
+            assert process.stdin is not None
+            process.stdin.write(
+                json.dumps(
+                    {
+                        "candidate_sha": self._config.repository_sha,
+                        "nonce": self._nonce,
+                        "schema_version": 1,
+                        "type": "battlefield-webgui-start",
+                    },
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+            process.stdin.close()
+            assert process.stdout is not None
+            assert process.stderr is not None
+            self._start_drain(process.stderr, self._stderr, "candidate-stderr")
+        except BaseException:
+            try:
+                self.stop()
+            finally:
+                raise
         selector = selectors.DefaultSelector()
         selector.register(process.stdout, selectors.EVENT_READ)
         deadline = time.monotonic() + _FIXTURE_READY_TIMEOUT_SECONDS
@@ -1478,6 +1574,7 @@ class _CandidateFixtureProcess:
         process = self._process
         self._process = None
         if process is None:
+            self._cleanup_fixture_script()
             return
         try:
             if process.poll() is None:
@@ -1494,7 +1591,10 @@ class _CandidateFixtureProcess:
                 process.stderr.close()
             for thread in self._drain_threads:
                 thread.join(timeout=1)
-            self._cleanup_dedicated_uid()
+            try:
+                self._cleanup_dedicated_uid()
+            finally:
+                self._cleanup_fixture_script()
 
     def _signal_group(
         self,

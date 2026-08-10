@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import signal
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -123,6 +124,8 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
 
     def test_candidate_fixture_dedicated_identity_uses_numeric_sudo(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
+            staged = Path(directory) / "fixture.py"
+            staged.write_text("# staged fixture\n", encoding="utf-8")
             config = BrowserGateConfig(
                 repository_sha=REPOSITORY_SHA,
                 build_identity=BUILD_IDENTITY,
@@ -131,12 +134,159 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
                 candidate_gid=65001,
             )
 
-            command = _CandidateFixtureProcess(config)._command()
+            command = _CandidateFixtureProcess(config)._command(staged)
 
             self.assertEqual("/usr/bin/sudo", command[0])
             self.assertIn("--user=#65001", command)
             self.assertIn("--group=#65001", command)
             self.assertIn("--", command)
+            self.assertEqual(str(staged), command[-1])
+
+    def test_candidate_fixture_stages_exact_read_only_traversable_source(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            staging_root = Path(directory).resolve()
+            staging_root.chmod(0o755)
+            config = BrowserGateConfig(
+                repository_sha=REPOSITORY_SHA,
+                build_identity=BUILD_IDENTITY,
+                artifact_dir=staging_root,
+                candidate_uid=65001,
+                candidate_gid=65001,
+            )
+            fixture = _CandidateFixtureProcess(config)
+
+            with mock.patch.object(
+                browser_gate,
+                "_FIXTURE_STAGING_ROOT",
+                staging_root,
+            ):
+                staged = fixture._prepare_fixture_script()
+
+            self.assertEqual(staging_root, staged.parent)
+            self.assertFalse(staged.is_symlink())
+            self.assertEqual(
+                Path(browser_gate.__file__).read_bytes(),
+                staged.read_bytes(),
+            )
+            self.assertEqual(0o444, stat.S_IMODE(staged.stat().st_mode))
+            self.assertEqual(
+                Path(browser_gate.__file__).stat().st_uid,
+                staged.stat().st_uid,
+            )
+
+            fixture._cleanup_fixture_script()
+            self.assertFalse(staged.exists())
+
+    def test_candidate_fixture_cleans_staged_source_when_spawn_fails(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            staging_root = Path(directory).resolve()
+            staging_root.chmod(0o755)
+            config = BrowserGateConfig(
+                repository_sha=REPOSITORY_SHA,
+                build_identity=BUILD_IDENTITY,
+                artifact_dir=staging_root,
+                candidate_uid=65001,
+                candidate_gid=65001,
+            )
+            fixture = _CandidateFixtureProcess(config)
+
+            with (
+                mock.patch.object(
+                    browser_gate,
+                    "_FIXTURE_STAGING_ROOT",
+                    staging_root,
+                ),
+                mock.patch.object(
+                    browser_gate.subprocess,
+                    "Popen",
+                    side_effect=OSError("spawn failed"),
+                ),
+                self.assertRaisesRegex(OSError, "spawn failed"),
+            ):
+                fixture.start()
+
+            self.assertEqual([], list(staging_root.iterdir()))
+            self.assertIsNone(fixture._staged_fixture_script)
+
+    def test_candidate_fixture_cleans_staged_source_when_handshake_fails(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            staging_root = Path(directory).resolve()
+            staging_root.chmod(0o755)
+            config = BrowserGateConfig(
+                repository_sha=REPOSITORY_SHA,
+                build_identity=BUILD_IDENTITY,
+                artifact_dir=staging_root,
+                candidate_uid=65001,
+                candidate_gid=65001,
+            )
+            fixture = _CandidateFixtureProcess(config)
+            process = mock.Mock(pid=4321, stdout=None, stderr=None)
+            process.poll.return_value = 1
+            process.stdin.write.side_effect = BrokenPipeError("handshake failed")
+
+            with (
+                mock.patch.object(
+                    browser_gate,
+                    "_FIXTURE_STAGING_ROOT",
+                    staging_root,
+                ),
+                mock.patch.object(
+                    browser_gate.subprocess,
+                    "Popen",
+                    return_value=process,
+                ),
+                mock.patch.object(fixture, "_cleanup_dedicated_uid"),
+                self.assertRaisesRegex(BrokenPipeError, "handshake failed"),
+            ):
+                fixture.start()
+
+            self.assertEqual([], list(staging_root.iterdir()))
+            self.assertIsNone(fixture._staged_fixture_script)
+            self.assertIsNone(fixture._process)
+
+    def test_candidate_fixture_cleans_staged_source_when_uid_cleanup_fails(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            staging_root = Path(directory).resolve()
+            staging_root.chmod(0o755)
+            config = BrowserGateConfig(
+                repository_sha=REPOSITORY_SHA,
+                build_identity=BUILD_IDENTITY,
+                artifact_dir=staging_root,
+                candidate_uid=65001,
+                candidate_gid=65001,
+            )
+            fixture = _CandidateFixtureProcess(config)
+            process = mock.Mock(pid=4321, stdout=None, stderr=None)
+            process.poll.return_value = 1
+            fixture._process = process
+
+            with mock.patch.object(
+                browser_gate,
+                "_FIXTURE_STAGING_ROOT",
+                staging_root,
+            ):
+                fixture._prepare_fixture_script()
+            with (
+                mock.patch.object(
+                    fixture,
+                    "_cleanup_dedicated_uid",
+                    side_effect=RuntimeError("uid cleanup failed"),
+                ),
+                self.assertRaisesRegex(RuntimeError, "uid cleanup failed"),
+            ):
+                fixture.stop()
+
+            self.assertEqual([], list(staging_root.iterdir()))
+            self.assertIsNone(fixture._staged_fixture_script)
+            self.assertIsNone(fixture._process)
 
     def test_candidate_fixture_stop_signals_original_process_group(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
