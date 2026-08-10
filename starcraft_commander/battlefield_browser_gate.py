@@ -23,7 +23,7 @@ import zlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
 
@@ -50,6 +50,22 @@ _BUILD_RE: Final[re.Pattern[str]] = re.compile(r"^sha256:[0-9a-f]{64}$")
 _FIXTURE_READY_TIMEOUT_SECONDS: Final[float] = 20.0
 _FIXTURE_STOP_TIMEOUT_SECONDS: Final[float] = 10.0
 _FIXTURE_STAGING_ROOT: Final[Path] = Path("/tmp").resolve()
+_FIXTURE_STAGING_ENTRY_LIMIT: Final[int] = 4096
+_FIXTURE_STAGING_BYTE_LIMIT: Final[int] = 64 * 1024 * 1024
+_FIXTURE_STAGING_CHUNK_SIZE: Final[int] = 1024 * 1024
+_FIXTURE_GIT_RECORD_LIMIT: Final[int] = 4096
+_GIT_EXECUTABLE: Final[Path] = Path("/usr/bin/git")
+_GIT_OBJECT_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{40}$")
+_FORBIDDEN_IMPORT_SUFFIXES: Final[frozenset[str]] = frozenset(
+    {
+        ".dll",
+        ".dylib",
+        ".pyc",
+        ".pyd",
+        ".pyo",
+        ".so",
+    }
+)
 _FIXTURE_BOOTSTRAP: Final[str] = (
     "import runpy,sys;"
     "root=sys.argv[1];script=sys.argv[2];"
@@ -1255,7 +1271,13 @@ class BrowserGateConfig:
             or candidate_root.resolve() != candidate_root.absolute()
         ):
             raise ValueError("candidate_root must be an absolute regular directory")
-        for relative in ("starcraft_commander/web_gui.py",):
+        package_root = candidate_root / "starcraft_commander"
+        if package_root.is_symlink() or not package_root.is_dir():
+            raise ValueError("candidate package is missing or linked")
+        for relative in (
+            "starcraft_commander/__init__.py",
+            "starcraft_commander/web_gui.py",
+        ):
             candidate = candidate_root / relative
             if candidate.is_symlink() or not candidate.is_file():
                 raise ValueError(f"candidate source is missing or linked: {relative}")
@@ -1278,28 +1300,38 @@ class BrowserGateConfig:
 
 
 def _sha256_regular_file(path: Path) -> str:
-    return hashlib.sha256(_read_regular_file(path)).hexdigest()
-
-
-def _read_regular_file(path: Path) -> bytes:
-    if path.is_symlink() or not path.is_file():
-        raise ValueError(f"candidate source is missing or linked: {path}")
-    before = path.stat()
-    payload = path.read_bytes()
-    after = path.stat()
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError(f"candidate source is missing or linked: {path}")
+        digest = hashlib.sha256()
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = -1
+            while chunk := stream.read(_FIXTURE_STAGING_CHUNK_SIZE):
+                digest.update(chunk)
+            after = os.fstat(stream.fileno())
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
     if (
         before.st_dev,
         before.st_ino,
+        before.st_mode,
         before.st_size,
         before.st_mtime_ns,
     ) != (
         after.st_dev,
         after.st_ino,
+        after.st_mode,
         after.st_size,
         after.st_mtime_ns,
     ):
         raise RuntimeError(f"candidate source changed while reading: {path}")
-    return payload
+    return digest.hexdigest()
 
 
 class _CandidateFixtureProcess:
@@ -1312,21 +1344,38 @@ class _CandidateFixtureProcess:
         self._drain_lock = threading.Lock()
         self._drain_threads: list[threading.Thread] = []
         self._staged_fixture_script: Path | None = None
+        self._staged_candidate_root: Path | None = None
+        self._staged_fixture_manifest: dict[
+            Path,
+            tuple[str, int, str],
+        ] = {}
+        self._staged_fixture_cleanup_started = False
+        self._staged_fixture_cleanup_verification_error: (
+            BaseException | None
+        ) = None
+        self._candidate_web_gui_sha256: str | None = None
 
-    def _command(self, fixture_script: Path | None = None) -> list[str]:
+    def _command(
+        self,
+        fixture_script: Path | None = None,
+        *,
+        candidate_root: Path | None = None,
+    ) -> list[str]:
         if fixture_script is None:
             if self._config.candidate_uid is not None:
                 raise RuntimeError(
                     "dedicated candidate execution requires staged fixture source"
                 )
             fixture_script = Path(__file__).resolve()
+        if candidate_root is None:
+            candidate_root = self._config.candidate_root
         command = [
             str(self._config.candidate_python),
             "-I",
             "-B",
             "-c",
             _FIXTURE_BOOTSTRAP,
-            str(self._config.candidate_root),
+            str(candidate_root),
             str(fixture_script),
         ]
         if self._config.candidate_uid is None:
@@ -1350,6 +1399,9 @@ class _CandidateFixtureProcess:
             raise RuntimeError("candidate UID must differ from trusted verifier UID")
         if self._staged_fixture_script is not None:
             raise RuntimeError("candidate fixture source is already staged")
+        if self._staged_candidate_root is not None:
+            raise RuntimeError("candidate package source is already staged")
+        self._candidate_web_gui_sha256 = None
 
         staging_root = _FIXTURE_STAGING_ROOT
         if (
@@ -1360,60 +1412,679 @@ class _CandidateFixtureProcess:
         ):
             raise RuntimeError("candidate fixture staging root is not traversable")
 
-        source_payload = _read_regular_file(Path(__file__).resolve())
-        descriptor, raw_path = tempfile.mkstemp(
-            dir=staging_root,
-            prefix="voi-browser-fixture-",
-            suffix=".py",
+        staged_root = Path(
+            tempfile.mkdtemp(
+                dir=staging_root,
+                prefix="voi-browser-fixture-",
+            )
         )
-        staged = Path(raw_path)
+        manifest: dict[Path, tuple[str, int, str]] = {
+            Path("."): ("directory", 0, ""),
+        }
+        staged_script = staged_root / "fixture.py"
+        self._staged_candidate_root = staged_root
+        self._staged_fixture_script = staged_script
+        self._staged_fixture_manifest = manifest
+        total_bytes = 0
         try:
-            with os.fdopen(descriptor, "wb") as stream:
-                descriptor = -1
-                stream.write(source_payload)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.chmod(staged, 0o444, follow_symlinks=False)
-            snapshot = staged.lstat()
-            if (
-                staged.is_symlink()
-                or not stat.S_ISREG(snapshot.st_mode)
-                or snapshot.st_uid != os.geteuid()
-                or stat.S_IMODE(snapshot.st_mode) != 0o444
-                or _read_regular_file(staged) != source_payload
-            ):
+            source_size, source_digest = self._copy_staged_file(
+                Path(__file__).resolve(),
+                staged_script,
+                byte_limit=_FIXTURE_STAGING_BYTE_LIMIT - total_bytes,
+            )
+            total_bytes += source_size
+            manifest[Path("fixture.py")] = (
+                "file",
+                source_size,
+                source_digest,
+            )
+            entries, directories = self._candidate_package_git_tree()
+            entry_count = 1 + len(entries) + len(directories)
+            if entry_count > _FIXTURE_STAGING_ENTRY_LIMIT:
                 raise RuntimeError(
-                    "candidate fixture staged source failed integrity checks"
+                    "candidate fixture staging entry limit exceeded"
                 )
-        except BaseException:
-            if descriptor >= 0:
-                os.close(descriptor)
-            staged.unlink(missing_ok=True)
+            for relative in sorted(
+                directories,
+                key=lambda path: len(path.parts),
+            ):
+                (staged_root / relative).mkdir(mode=0o755)
+                manifest[relative] = ("directory", 0, "")
+            staged_bytes, web_gui_digest = self._stage_candidate_git_blobs(
+                staged_root,
+                entries,
+                manifest,
+                byte_limit=_FIXTURE_STAGING_BYTE_LIMIT - total_bytes,
+            )
+            total_bytes += staged_bytes
+            self._candidate_web_gui_sha256 = web_gui_digest
+
+            for relative, (kind, _, _) in sorted(
+                manifest.items(),
+                key=lambda item: len(item[0].parts),
+                reverse=True,
+            ):
+                if kind == "directory":
+                    os.chmod(staged_root / relative, 0o555)
+            self._verify_staged_fixture_tree(staged_root, manifest)
+        except BaseException as prepare_error:
+            self._candidate_web_gui_sha256 = None
+            self._staged_fixture_cleanup_started = True
+            self._staged_fixture_cleanup_verification_error = None
+            try:
+                self._discard_staged_fixture_tree(staged_root)
+            except BaseException as cleanup_error:
+                raise cleanup_error from prepare_error
+            self._clear_staged_fixture_state()
             raise
 
-        self._staged_fixture_script = staged
-        return staged
+        return staged_script
+
+    @staticmethod
+    def _candidate_git_environment() -> dict[str, str]:
+        return {
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "HOME": "/tmp",
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PATH": "/usr/bin:/bin",
+        }
+
+    def _candidate_git_command(self, *arguments: str) -> list[str]:
+        candidate_root = str(self._config.candidate_root)
+        return [
+            str(_GIT_EXECUTABLE),
+            "-c",
+            f"safe.directory={candidate_root}",
+            "-C",
+            candidate_root,
+            *arguments,
+        ]
+
+    def _run_candidate_git(self, *arguments: str) -> bytes:
+        if (
+            _GIT_EXECUTABLE.is_symlink()
+            or not _GIT_EXECUTABLE.is_file()
+            or not os.access(_GIT_EXECUTABLE, os.X_OK)
+        ):
+            raise RuntimeError("trusted Git executable is unavailable")
+        result = subprocess.run(
+            self._candidate_git_command(*arguments),
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=self._candidate_git_environment(),
+            timeout=30,
+        )
+        if result.returncode != 0:
+            details = result.stderr[:400].decode("utf-8", errors="replace")
+            raise RuntimeError(f"candidate Git tree query failed: {details}")
+        return result.stdout
+
+    def _candidate_package_git_tree(
+        self,
+    ) -> tuple[list[tuple[Path, str]], set[Path]]:
+        repository_root = Path(
+            self._run_candidate_git(
+                "rev-parse",
+                "--path-format=absolute",
+                "--show-toplevel",
+            )
+            .decode("utf-8")
+            .strip()
+        )
+        if repository_root.resolve() != self._config.candidate_root:
+            raise RuntimeError("candidate root is not the Git repository root")
+        head = (
+            self._run_candidate_git("rev-parse", "--verify", "HEAD^{commit}")
+            .decode("ascii")
+            .strip()
+        )
+        expected = (
+            self._run_candidate_git(
+                "rev-parse",
+                "--verify",
+                f"{self._config.repository_sha}^{{commit}}",
+            )
+            .decode("ascii")
+            .strip()
+        )
+        if (
+            head != self._config.repository_sha
+            or expected != self._config.repository_sha
+        ):
+            raise RuntimeError("candidate Git HEAD does not match repository SHA")
+
+        entries: list[tuple[Path, str]] = []
+        directories: set[Path] = set()
+        observed: set[Path] = set()
+        for record in self._candidate_git_tree_records():
+            metadata, separator, raw_path = record.partition(b"\t")
+            fields = metadata.split()
+            if separator != b"\t" or len(fields) != 3:
+                raise RuntimeError("candidate Git tree record is malformed")
+            mode, object_type, raw_object_id = fields
+            try:
+                path_text = raw_path.decode("utf-8")
+                object_id = raw_object_id.decode("ascii")
+            except UnicodeDecodeError as error:
+                raise ValueError(
+                    "candidate Git tree contains a non-UTF-8 path or object"
+                ) from error
+            posix_path = PurePosixPath(path_text)
+            if (
+                posix_path.is_absolute()
+                or not posix_path.parts
+                or posix_path.parts[0] != "starcraft_commander"
+                or any(part in {"", ".", ".."} for part in posix_path.parts)
+            ):
+                raise ValueError(
+                    f"candidate Git tree path is unsafe: {path_text!r}"
+                )
+            relative = Path(*posix_path.parts)
+            if relative in observed:
+                raise RuntimeError("candidate Git tree contains a duplicate path")
+            observed.add(relative)
+            if (
+                any(
+                    part.casefold() == "__pycache__"
+                    for part in posix_path.parts
+                )
+                or relative.suffix.lower() in _FORBIDDEN_IMPORT_SUFFIXES
+            ):
+                raise ValueError(
+                    "candidate Git tree contains a forbidden import artifact: "
+                    f"{relative}"
+                )
+            if (
+                mode not in {b"100644", b"100755"}
+                or object_type != b"blob"
+                or _GIT_OBJECT_RE.fullmatch(object_id) is None
+            ):
+                raise ValueError(
+                    "candidate Git tree contains a linked or non-regular entry: "
+                    f"{relative}"
+                )
+            entries.append((relative, object_id))
+            parent = relative.parent
+            while parent != Path("."):
+                directories.add(parent)
+                parent = parent.parent
+            if 1 + len(entries) + len(directories) > (
+                _FIXTURE_STAGING_ENTRY_LIMIT
+            ):
+                raise RuntimeError(
+                    "candidate fixture staging entry limit exceeded"
+                )
+
+        required = {
+            Path("starcraft_commander/__init__.py"),
+            Path("starcraft_commander/web_gui.py"),
+        }
+        if not required.issubset(observed):
+            raise ValueError("candidate Git tree is missing required package source")
+        return entries, directories
+
+    def _candidate_git_tree_records(self) -> list[bytes]:
+        with tempfile.TemporaryFile() as error_stream:
+            process = subprocess.Popen(
+                self._candidate_git_command(
+                    "ls-tree",
+                    "-r",
+                    "-z",
+                    "--full-tree",
+                    self._config.repository_sha,
+                    "--",
+                    "starcraft_commander",
+                ),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=error_stream,
+                env=self._candidate_git_environment(),
+            )
+            records: list[bytes] = []
+            pending = bytearray()
+            try:
+                assert process.stdout is not None
+                while chunk := process.stdout.read(_FIXTURE_GIT_RECORD_LIMIT):
+                    pending.extend(chunk)
+                    while True:
+                        delimiter = pending.find(b"\0")
+                        if delimiter < 0:
+                            break
+                        record = bytes(pending[:delimiter])
+                        del pending[: delimiter + 1]
+                        if not record:
+                            raise RuntimeError(
+                                "candidate Git tree record is empty"
+                            )
+                        if len(record) > _FIXTURE_GIT_RECORD_LIMIT:
+                            raise RuntimeError(
+                                "candidate Git tree record is oversized"
+                            )
+                        records.append(record)
+                        if 1 + len(records) > _FIXTURE_STAGING_ENTRY_LIMIT:
+                            raise RuntimeError(
+                                "candidate fixture staging entry limit exceeded"
+                            )
+                    if len(pending) > _FIXTURE_GIT_RECORD_LIMIT:
+                        raise RuntimeError(
+                            "candidate Git tree record is oversized"
+                        )
+                if pending:
+                    raise RuntimeError(
+                        "candidate Git tree output is unterminated"
+                    )
+                return_code = process.wait(timeout=30)
+                if return_code != 0:
+                    error_stream.seek(0)
+                    details = error_stream.read(400).decode(
+                        "utf-8",
+                        errors="replace",
+                    )
+                    raise RuntimeError(
+                        f"candidate Git tree query failed: {details}"
+                    )
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+                if process.stdout is not None:
+                    process.stdout.close()
+        return records
+
+    def _stage_candidate_git_blobs(
+        self,
+        staged_root: Path,
+        entries: Sequence[tuple[Path, str]],
+        manifest: dict[Path, tuple[str, int, str]],
+        *,
+        byte_limit: int,
+    ) -> tuple[int, str]:
+        if byte_limit < 0:
+            raise RuntimeError("candidate fixture staging byte limit exceeded")
+        with tempfile.TemporaryFile() as error_stream:
+            process = subprocess.Popen(
+                self._candidate_git_command(
+                    "cat-file",
+                    "--batch",
+                ),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=error_stream,
+                env=self._candidate_git_environment(),
+            )
+            total_bytes = 0
+            web_gui_digest = ""
+            operation_failed = False
+            try:
+                assert process.stdin is not None
+                assert process.stdout is not None
+                for relative, object_id in entries:
+                    process.stdin.write(f"{object_id}\n".encode("ascii"))
+                    process.stdin.flush()
+                    header = process.stdout.readline(4097)
+                    if len(header) > 4096 or not header.endswith(b"\n"):
+                        raise RuntimeError(
+                            "candidate Git blob header is malformed"
+                        )
+                    fields = header.rstrip(b"\n").split()
+                    if (
+                        len(fields) != 3
+                        or fields[0] != object_id.encode("ascii")
+                        or fields[1] != b"blob"
+                    ):
+                        raise RuntimeError(
+                            "candidate Git blob identity changed"
+                        )
+                    try:
+                        blob_size = int(fields[2])
+                    except ValueError as error:
+                        raise RuntimeError(
+                            "candidate Git blob size is malformed"
+                        ) from error
+                    size, digest = self._copy_staged_git_blob(
+                        process.stdout,
+                        staged_root / relative,
+                        object_id=object_id,
+                        size=blob_size,
+                        byte_limit=byte_limit - total_bytes,
+                    )
+                    if process.stdout.read(1) != b"\n":
+                        raise RuntimeError(
+                            "candidate Git blob delimiter is malformed"
+                        )
+                    total_bytes += size
+                    manifest[relative] = ("file", size, digest)
+                    if relative == Path("starcraft_commander/web_gui.py"):
+                        web_gui_digest = digest
+                process.stdin.close()
+                return_code = process.wait(timeout=30)
+                if return_code != 0:
+                    error_stream.seek(0)
+                    details = error_stream.read(400).decode(
+                        "utf-8",
+                        errors="replace",
+                    )
+                    raise RuntimeError(
+                        f"candidate Git blob read failed: {details}"
+                    )
+            except BaseException:
+                operation_failed = True
+                raise
+            finally:
+                cleanup_error: BaseException | None = None
+                try:
+                    if process.stdin is not None and not process.stdin.closed:
+                        process.stdin.close()
+                except BaseException as error:
+                    cleanup_error = error
+                finally:
+                    try:
+                        if process.poll() is None:
+                            process.kill()
+                    except BaseException as error:
+                        if cleanup_error is None:
+                            cleanup_error = error
+                    finally:
+                        try:
+                            process.wait(timeout=5)
+                        except BaseException as error:
+                            if cleanup_error is None:
+                                cleanup_error = error
+                        finally:
+                            try:
+                                if process.stdout is not None:
+                                    process.stdout.close()
+                            except BaseException as error:
+                                if cleanup_error is None:
+                                    cleanup_error = error
+                if not operation_failed and cleanup_error is not None:
+                    raise cleanup_error
+        if not web_gui_digest:
+            raise RuntimeError("candidate web_gui Git blob was not staged")
+        return total_bytes, web_gui_digest
+
+    @staticmethod
+    def _copy_staged_git_blob(
+        source_stream: object,
+        destination: Path,
+        *,
+        object_id: str,
+        size: int,
+        byte_limit: int,
+    ) -> tuple[int, str]:
+        if size < 0 or size > byte_limit:
+            raise RuntimeError("candidate fixture staging byte limit exceeded")
+        destination_descriptor = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        try:
+            destination_stream = os.fdopen(destination_descriptor, "wb")
+            destination_descriptor = -1
+            sha256_digest = hashlib.sha256()
+            git_digest = hashlib.sha1(usedforsecurity=False)
+            git_digest.update(f"blob {size}\0".encode("ascii"))
+            remaining = size
+            try:
+                while remaining:
+                    chunk = source_stream.read(
+                        min(_FIXTURE_STAGING_CHUNK_SIZE, remaining)
+                    )
+                    if not chunk:
+                        raise RuntimeError(
+                            "candidate Git blob ended before declared size"
+                        )
+                    remaining -= len(chunk)
+                    sha256_digest.update(chunk)
+                    git_digest.update(chunk)
+                    destination_stream.write(chunk)
+                destination_stream.flush()
+                os.fsync(destination_stream.fileno())
+            finally:
+                destination_stream.close()
+            if git_digest.hexdigest() != object_id:
+                raise RuntimeError("candidate Git blob failed object verification")
+            os.chmod(destination, 0o444, follow_symlinks=False)
+            return size, sha256_digest.hexdigest()
+        except BaseException:
+            if destination_descriptor >= 0:
+                os.close(destination_descriptor)
+            destination.unlink(missing_ok=True)
+            raise
+
+    @staticmethod
+    def _copy_staged_file(
+        source: Path | str,
+        destination: Path,
+        *,
+        byte_limit: int,
+        expected_snapshot: os.stat_result | None = None,
+        source_dir_fd: int | None = None,
+    ) -> tuple[int, str]:
+        if byte_limit < 0:
+            raise RuntimeError("candidate fixture staging byte limit exceeded")
+        source_descriptor = os.open(
+            source,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=source_dir_fd,
+        )
+        destination_descriptor = -1
+        try:
+            before = os.fstat(source_descriptor)
+            if not stat.S_ISREG(before.st_mode):
+                raise ValueError(
+                    f"candidate source is missing or linked: {source}"
+                )
+            if expected_snapshot is not None and (
+                before.st_dev,
+                before.st_ino,
+                before.st_mode,
+                before.st_size,
+                before.st_mtime_ns,
+            ) != (
+                expected_snapshot.st_dev,
+                expected_snapshot.st_ino,
+                expected_snapshot.st_mode,
+                expected_snapshot.st_size,
+                expected_snapshot.st_mtime_ns,
+            ):
+                raise RuntimeError(
+                    f"candidate source changed before reading: {source}"
+                )
+            if before.st_size > byte_limit:
+                raise RuntimeError(
+                    "candidate fixture staging byte limit exceeded"
+                )
+            destination_descriptor = os.open(
+                destination,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+            digest = hashlib.sha256()
+            total_bytes = 0
+            source_stream = os.fdopen(source_descriptor, "rb")
+            source_descriptor = -1
+            try:
+                destination_stream = os.fdopen(destination_descriptor, "wb")
+                destination_descriptor = -1
+                try:
+                    while chunk := source_stream.read(
+                        _FIXTURE_STAGING_CHUNK_SIZE
+                    ):
+                        total_bytes += len(chunk)
+                        if total_bytes > byte_limit:
+                            raise RuntimeError(
+                                "candidate fixture staging byte limit exceeded"
+                            )
+                        digest.update(chunk)
+                        destination_stream.write(chunk)
+                    after = os.fstat(source_stream.fileno())
+                    if (
+                        before.st_dev,
+                        before.st_ino,
+                        before.st_mode,
+                        before.st_size,
+                        before.st_mtime_ns,
+                    ) != (
+                        after.st_dev,
+                        after.st_ino,
+                        after.st_mode,
+                        after.st_size,
+                        after.st_mtime_ns,
+                    ):
+                        raise RuntimeError(
+                            f"candidate source changed while reading: {source}"
+                        )
+                    destination_stream.flush()
+                    os.fsync(destination_stream.fileno())
+                finally:
+                    destination_stream.close()
+            finally:
+                source_stream.close()
+            os.chmod(destination, 0o444, follow_symlinks=False)
+            return total_bytes, digest.hexdigest()
+        except BaseException:
+            if destination_descriptor >= 0:
+                os.close(destination_descriptor)
+            destination.unlink(missing_ok=True)
+            raise
+        finally:
+            if source_descriptor >= 0:
+                os.close(source_descriptor)
+
+    @staticmethod
+    def _verify_staged_fixture_tree(
+        staged_root: Path,
+        manifest: Mapping[Path, tuple[str, int, str]],
+    ) -> None:
+        observed: set[Path] = set()
+        stack = [staged_root]
+        while stack:
+            directory = stack.pop()
+            relative_directory = directory.relative_to(staged_root)
+            if relative_directory == Path("."):
+                relative_directory = Path(".")
+            observed.add(relative_directory)
+            snapshot = directory.lstat()
+            if (
+                directory.is_symlink()
+                or not stat.S_ISDIR(snapshot.st_mode)
+                or snapshot.st_uid != os.geteuid()
+                or stat.S_IMODE(snapshot.st_mode) != 0o555
+            ):
+                raise RuntimeError(
+                    "candidate fixture staged directory failed integrity checks"
+                )
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    path = Path(entry.path)
+                    relative = path.relative_to(staged_root)
+                    snapshot = entry.stat(follow_symlinks=False)
+                    if stat.S_ISLNK(snapshot.st_mode):
+                        raise RuntimeError(
+                            "candidate fixture staged tree contains a symlink"
+                        )
+                    if stat.S_ISDIR(snapshot.st_mode):
+                        stack.append(path)
+                        continue
+                    observed.add(relative)
+                    expected = manifest.get(relative)
+                    if (
+                        expected is None
+                        or expected[0] != "file"
+                        or not stat.S_ISREG(snapshot.st_mode)
+                        or snapshot.st_uid != os.geteuid()
+                        or stat.S_IMODE(snapshot.st_mode) != 0o444
+                    ):
+                        raise RuntimeError(
+                            "candidate fixture staged file failed integrity "
+                            "checks"
+                        )
+                    if (
+                        snapshot.st_size != expected[1]
+                        or _sha256_regular_file(path) != expected[2]
+                    ):
+                        raise RuntimeError(
+                            "candidate fixture staged bytes failed integrity "
+                            "checks"
+                        )
+        if observed != set(manifest):
+            raise RuntimeError("candidate fixture staged tree manifest changed")
+
+    @staticmethod
+    def _discard_staged_fixture_tree(staged_root: Path) -> None:
+        pending = [(staged_root, False)]
+        while pending:
+            path, visited = pending.pop()
+            try:
+                snapshot = path.lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(snapshot.st_mode) or not stat.S_ISDIR(
+                snapshot.st_mode
+            ):
+                path.unlink()
+                continue
+            if visited:
+                path.rmdir()
+                continue
+            os.chmod(path, 0o700, follow_symlinks=False)
+            pending.append((path, True))
+            with os.scandir(path) as entries:
+                pending.extend((Path(entry.path), False) for entry in entries)
 
     def _cleanup_fixture_script(self) -> None:
-        staged = self._staged_fixture_script
-        self._staged_fixture_script = None
-        if staged is None:
+        staged_root = self._staged_candidate_root
+        staged_script = self._staged_fixture_script
+        manifest = self._staged_fixture_manifest
+        if staged_root is None and staged_script is None:
             return
-        try:
-            snapshot = staged.lstat()
-        except FileNotFoundError as error:
-            raise RuntimeError(
-                "candidate fixture staged source disappeared before cleanup"
-            ) from error
-        if (
-            staged.is_symlink()
-            or not stat.S_ISREG(snapshot.st_mode)
-            or snapshot.st_uid != os.geteuid()
-        ):
-            raise RuntimeError(
-                "candidate fixture staged source changed before cleanup"
+        if staged_root is None or staged_script is None:
+            raise RuntimeError("candidate fixture staging state is incomplete")
+        if staged_script != staged_root / "fixture.py":
+            raise RuntimeError("candidate fixture staged script path changed")
+        verification_error = self._staged_fixture_cleanup_verification_error
+        if not self._staged_fixture_cleanup_started:
+            try:
+                self._verify_staged_fixture_tree(staged_root, manifest)
+            except BaseException as error:
+                verification_error = error
+            self._staged_fixture_cleanup_started = True
+            self._staged_fixture_cleanup_verification_error = (
+                verification_error
             )
-        staged.unlink()
+        try:
+            self._discard_staged_fixture_tree(staged_root)
+        except BaseException as cleanup_error:
+            if verification_error is not None:
+                raise cleanup_error from verification_error
+            raise
+        self._clear_staged_fixture_state()
+        if verification_error is not None:
+            raise verification_error
+
+    def _clear_staged_fixture_state(self) -> None:
+        self._staged_candidate_root = None
+        self._staged_fixture_script = None
+        self._staged_fixture_manifest = {}
+        self._staged_fixture_cleanup_started = False
+        self._staged_fixture_cleanup_verification_error = None
+
+    def candidate_web_gui_sha256(self) -> str:
+        if self._candidate_web_gui_sha256 is not None:
+            return self._candidate_web_gui_sha256
+        return _sha256_regular_file(
+            self._config.candidate_root
+            / "starcraft_commander"
+            / "web_gui.py"
+        )
 
     def start(self) -> str:
         if self._process is not None:
@@ -1426,10 +2097,16 @@ class _CandidateFixtureProcess:
             "PYTHONDONTWRITEBYTECODE": "1",
         }
         fixture_script = self._prepare_fixture_script()
+        candidate_root = (
+            self._staged_candidate_root or self._config.candidate_root
+        )
         try:
             process = subprocess.Popen(
-                self._command(fixture_script),
-                cwd=self._config.candidate_root,
+                self._command(
+                    fixture_script,
+                    candidate_root=candidate_root,
+                ),
+                cwd=candidate_root,
                 env=environment,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -1503,6 +2180,13 @@ class _CandidateFixtureProcess:
             parsed_port = parsed.port
         except ValueError:
             parsed_port = None
+        readiness_process_matches = (
+            isinstance(payload, dict)
+            and self._readiness_process_matches(
+                process,
+                payload.get("pid"),
+            )
+        )
         if (
             not isinstance(payload, dict)
             or set(payload)
@@ -1518,7 +2202,7 @@ class _CandidateFixtureProcess:
             or payload.get("type") != "battlefield-webgui-ready"
             or payload.get("nonce") != self._nonce
             or payload.get("candidate_sha") != self._config.repository_sha
-            or payload.get("pid") != process.pid
+            or not readiness_process_matches
             or parsed.scheme != "http"
             or parsed.hostname != "127.0.0.1"
             or parsed.path not in {"", "/"}
@@ -1538,6 +2222,74 @@ class _CandidateFixtureProcess:
             "candidate-stdout",
         )
         return f"http://127.0.0.1:{parsed_port}/"
+
+    def _readiness_process_matches(
+        self,
+        process: subprocess.Popen[str],
+        reported_pid: object,
+    ) -> bool:
+        if type(reported_pid) is not int or reported_pid <= 0:
+            return False
+        if self._config.candidate_uid is None:
+            return reported_pid == process.pid
+        if sys.platform != "linux":
+            return False
+        current_pid = reported_pid
+        visited: set[int] = set()
+        for depth in range(64):
+            if current_pid in visited or current_pid <= 1:
+                return False
+            visited.add(current_pid)
+            try:
+                parent_pid, uids, gids = self._linux_process_identity(
+                    current_pid
+                )
+            except (OSError, RuntimeError, ValueError):
+                return False
+            if depth == 0 and (
+                set(uids) != {self._config.candidate_uid}
+                or set(gids) != {self._config.candidate_gid}
+            ):
+                return False
+            if current_pid == process.pid:
+                return True
+            if parent_pid == process.pid:
+                return True
+            current_pid = parent_pid
+        return False
+
+    @staticmethod
+    def _linux_process_identity(
+        pid: int,
+    ) -> tuple[int, tuple[int, ...], tuple[int, ...]]:
+        stat_before = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        status = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
+        stat_after = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+
+        def process_identity(stat_payload: str) -> tuple[int, int]:
+            closing_parenthesis = stat_payload.rfind(")")
+            if closing_parenthesis < 0:
+                raise RuntimeError("candidate process stat is malformed")
+            fields = stat_payload[closing_parenthesis + 1 :].split()
+            if len(fields) < 20:
+                raise RuntimeError("candidate process stat is incomplete")
+            return int(fields[1]), int(fields[19])
+
+        before_identity = process_identity(stat_before)
+        if process_identity(stat_after) != before_identity:
+            raise RuntimeError("candidate process identity changed")
+        identifiers: dict[str, tuple[int, ...]] = {}
+        for line in status.splitlines():
+            key, separator, values = line.partition(":")
+            if separator and key in {"Uid", "Gid"}:
+                identifiers[key] = tuple(
+                    int(value) for value in values.split()
+                )
+        uids = identifiers.get("Uid", ())
+        gids = identifiers.get("Gid", ())
+        if len(uids) != 4 or len(gids) != 4:
+            raise RuntimeError("candidate process identity is incomplete")
+        return before_identity[0], uids, gids
 
     def _start_drain(
         self,
@@ -1817,8 +2569,8 @@ def run_browser_gate(config: BrowserGateConfig) -> dict[str, object]:
         "status": "passed",
         "ok": True,
         "visual_diff_threshold": VISUAL_DIFF_THRESHOLD,
-        "candidate_web_gui_sha256": _sha256_regular_file(
-            config.candidate_root / "starcraft_commander" / "web_gui.py"
+        "candidate_web_gui_sha256": (
+            candidate_fixture.candidate_web_gui_sha256()
         ),
         "viewports": viewport_reports,
         "media": media,

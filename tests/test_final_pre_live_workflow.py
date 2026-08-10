@@ -129,13 +129,13 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
             "721726d8da88d1c3a7448e22265af1f817b3f2cd",
             workflow["env"]["RELEASE_MERGE_SHA"],
         )
-        self.assertEqual("171", workflow["env"]["QUALIFICATION_ISSUE_NUMBER"])
+        self.assertEqual("173", workflow["env"]["QUALIFICATION_ISSUE_NUMBER"])
         self.assertEqual(
-            "issue-171-final-prelive-fixture-staging",
+            "issue-173-final-prelive-bootstrap-import",
             workflow["env"]["QUALIFICATION_HEAD_REF"],
         )
         self.assertEqual(
-            "25e38846e9dd22129c4d8ca653def1e62b64f715",
+            "ba85658dbfca2731b217b5f977feb1135cdabb73",
             workflow["env"]["QUALIFICATION_BASE_SHA"],
         )
         self.assertIn("pull_request_target)", boundary)
@@ -327,9 +327,9 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
                 "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
                 "QUALIFICATION_BASE_SHA": base_sha,
                 "QUALIFICATION_HEAD_REF": (
-                    "issue-171-final-prelive-fixture-staging"
+                    "issue-173-final-prelive-bootstrap-import"
                 ),
-                "QUALIFICATION_ISSUE_NUMBER": "171",
+                "QUALIFICATION_ISSUE_NUMBER": "173",
                 "RELEASE_AUTHORITY": "authoritative_exact_main",
                 "RELEASE_HEAD_REF": "issue-141-final-prelive-gates",
                 "RELEASE_MERGE_SHA": release_sha,
@@ -407,9 +407,9 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
                 "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
                 "QUALIFICATION_BASE_SHA": base_sha,
                 "QUALIFICATION_HEAD_REF": (
-                    "issue-171-final-prelive-fixture-staging"
+                    "issue-173-final-prelive-bootstrap-import"
                 ),
-                "QUALIFICATION_ISSUE_NUMBER": "171",
+                "QUALIFICATION_ISSUE_NUMBER": "173",
                 "RELEASE_AUTHORITY": "authoritative_exact_main",
                 "RELEASE_HEAD_REF": "issue-141-final-prelive-gates",
                 "RELEASE_MERGE_SHA": release_sha,
@@ -469,16 +469,16 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
                 "    ;;\n"
                 "  3)\n"
                 "    printf '172\\tclosed\\t2026-08-10T00:00:00Z\\t"
-                f"{'6' * 40}\\tissue-171-final-prelive-fixture-staging"
+                f"{'6' * 40}\\tissue-173-final-prelive-bootstrap-import"
                 "\\towner/repository\\t1\\tmain\\towner/repository\\t1\\n'\n"
                 "    ;;\n"
                 "  4)\n"
                 f"    printf '172\\tclosed\\t2026-08-10T00:00:00Z\\t"
-                f"{release_sha}\\tissue-171-final-prelive-fixture-staging"
+                f"{release_sha}\\tissue-173-final-prelive-bootstrap-import"
                 "\\towner/repository\\t1\\tmain\\towner/repository\\t1\\n'\n"
                 "    ;;\n"
                 "  5)\n"
-                "    printf '1\\t171\\tfalse\\towner/repository\\t171\\t"
+                "    printf '1\\t173\\tfalse\\towner/repository\\t173\\t"
                 "CLOSED\\tCOMPLETED\\t1\\t172\\tfalse\\t"
                 "owner/repository\\n'\n"
                 "    ;;\n"
@@ -517,9 +517,9 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
                 "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
                 "QUALIFICATION_BASE_SHA": base_sha,
                 "QUALIFICATION_HEAD_REF": (
-                    "issue-171-final-prelive-fixture-staging"
+                    "issue-173-final-prelive-bootstrap-import"
                 ),
-                "QUALIFICATION_ISSUE_NUMBER": "171",
+                "QUALIFICATION_ISSUE_NUMBER": "173",
                 "RELEASE_AUTHORITY": "authoritative_exact_main",
                 "RELEASE_HEAD_REF": "issue-141-final-prelive-gates",
                 "RELEASE_MERGE_SHA": release_sha,
@@ -576,7 +576,7 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
                 "  exit 0\n"
                 "fi\n"
                 "printf '172\\tclosed\\t2026-08-10T00:00:00Z\\t"
-                f"{stale_sha}\\tissue-171-final-prelive-fixture-staging"
+                f"{stale_sha}\\tissue-173-final-prelive-bootstrap-import"
                 "\\towner/repository\\t1\\tmain\\towner/repository\\t1\\n'\n",
                 encoding="utf-8",
             )
@@ -605,9 +605,9 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
                 "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
                 "QUALIFICATION_BASE_SHA": base_sha,
                 "QUALIFICATION_HEAD_REF": (
-                    "issue-171-final-prelive-fixture-staging"
+                    "issue-173-final-prelive-bootstrap-import"
                 ),
-                "QUALIFICATION_ISSUE_NUMBER": "171",
+                "QUALIFICATION_ISSUE_NUMBER": "173",
                 "RELEASE_AUTHORITY": "authoritative_exact_main",
                 "RELEASE_HEAD_REF": "issue-141-final-prelive-gates",
                 "RELEASE_MERGE_SHA": release_sha,
@@ -689,9 +689,9 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
                 "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
                 "QUALIFICATION_BASE_SHA": qualification_base_sha,
                 "QUALIFICATION_HEAD_REF": (
-                    "issue-171-final-prelive-fixture-staging"
+                    "issue-173-final-prelive-bootstrap-import"
                 ),
-                "QUALIFICATION_ISSUE_NUMBER": "171",
+                "QUALIFICATION_ISSUE_NUMBER": "173",
                 "RELEASE_AUTHORITY": "authoritative_exact_main",
                 "RELEASE_HEAD_REF": "issue-141-final-prelive-gates",
                 "RELEASE_MERGE_SHA": release_sha,

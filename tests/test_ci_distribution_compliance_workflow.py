@@ -71,6 +71,37 @@ class DistributionComplianceWorkflowContractTests(unittest.TestCase):
         self.assertEqual(0, checkout["with"]["fetch-depth"])
         self.assertFalse(checkout["with"]["persist-credentials"])
 
+    def test_unit_contracts_exercises_real_linux_sudo_process_boundary(
+        self,
+    ) -> None:
+        workflow = self._workflow()
+        unit = workflow["jobs"]["unit-contracts"]
+        step = self._step(
+            unit,
+            "Verify real Linux sudo candidate process boundary",
+        )
+
+        self.assertEqual(
+            "matrix.python-version == '3.12'",
+            step["if"],
+        )
+        self.assertEqual(5, step["timeout-minutes"])
+        self.assertEqual(
+            {
+                "VOI_REQUIRE_LINUX_SUDO_PID_TEST": "1",
+                "VOI_TEST_CANDIDATE_GID": "65001",
+                "VOI_TEST_CANDIDATE_UID": "65001",
+            },
+            step["env"],
+        )
+        command = step["run"]
+        self.assertIn("sudo groupadd", command)
+        self.assertIn("sudo useradd", command)
+        self.assertIn(
+            "-k real_linux_sudo_candidate_process_boundary",
+            command,
+        )
+
     def test_fresh_job_is_the_only_enabled_qualified_sealer(self) -> None:
         workflow = self._workflow()
         build = workflow["jobs"][BUILD_JOB]

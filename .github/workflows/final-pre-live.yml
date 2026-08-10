@@ -32,9 +32,9 @@ env:
   RELEASE_PULL_NUMBER: "168"
   RELEASE_HEAD_REF: "issue-141-final-prelive-gates"
   RELEASE_MERGE_SHA: "721726d8da88d1c3a7448e22265af1f817b3f2cd"
-  QUALIFICATION_ISSUE_NUMBER: "171"
-  QUALIFICATION_HEAD_REF: "issue-171-final-prelive-fixture-staging"
-  QUALIFICATION_BASE_SHA: "25e38846e9dd22129c4d8ca653def1e62b64f715"
+  QUALIFICATION_ISSUE_NUMBER: "173"
+  QUALIFICATION_HEAD_REF: "issue-173-final-prelive-bootstrap-import"
+  QUALIFICATION_BASE_SHA: "ba85658dbfca2731b217b5f977feb1135cdabb73"
   EXPECTED_RELEASE_COMMIT: >-
     ${{ github.event_name == 'pull_request_target' &&
     github.event.pull_request.head.sha || github.sha }}
@@ -1760,7 +1760,7 @@ jobs:
           {
             echo "## Final pre-live"
             echo
-            echo "This event is not the exact issue #171 qualification merge"
+            echo "This event is not the exact issue #173 qualification merge"
             echo "for release PR #168 and closing issue #141."
             echo "The final pre-live release gate is not applicable."
           } >> "${GITHUB_STEP_SUMMARY}"

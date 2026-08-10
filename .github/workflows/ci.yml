@@ -30,6 +30,27 @@ jobs:
         run: uv sync --locked --python ${{ matrix.python-version }} --extra dev --extra llm
       - name: Run tests
         run: uv run --python ${{ matrix.python-version }} pytest -q
+      - name: Verify real Linux sudo candidate process boundary
+        if: matrix.python-version == '3.12'
+        timeout-minutes: 5
+        env:
+          VOI_REQUIRE_LINUX_SUDO_PID_TEST: "1"
+          VOI_TEST_CANDIDATE_UID: "65001"
+          VOI_TEST_CANDIDATE_GID: "65001"
+        run: |
+          set -euo pipefail
+          sudo groupadd \
+            --gid "${VOI_TEST_CANDIDATE_GID}" \
+            voi-browser-candidate-test
+          sudo useradd \
+            --uid "${VOI_TEST_CANDIDATE_UID}" \
+            --gid "${VOI_TEST_CANDIDATE_GID}" \
+            --no-create-home \
+            --shell /usr/sbin/nologin \
+            voi-browser-candidate-test
+          uv run --python 3.12 pytest -q \
+            tests/test_battlefield_browser_gate.py \
+            -k real_linux_sudo_candidate_process_boundary
       - name: Check soak scripts
         run: |
           bash -n integrations/micromachine/scripts/smoke_macos_local.sh
