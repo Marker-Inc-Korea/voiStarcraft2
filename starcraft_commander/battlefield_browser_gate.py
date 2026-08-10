@@ -1502,34 +1502,43 @@ class _CandidateFixtureProcess:
                                             "candidate package directory changed "
                                             f"or linked: {relative}"
                                         ) from error
-                                    child_snapshot = os.fstat(child_descriptor)
-                                    if (
-                                        not stat.S_ISDIR(child_snapshot.st_mode)
-                                        or (
-                                            child_snapshot.st_dev,
-                                            child_snapshot.st_ino,
-                                            child_snapshot.st_mode,
-                                        )
-                                        != (
-                                            snapshot.st_dev,
-                                            snapshot.st_ino,
-                                            snapshot.st_mode,
-                                        )
-                                    ):
-                                        os.close(child_descriptor)
-                                        raise RuntimeError(
-                                            "candidate package directory changed "
-                                            f"or linked: {relative}"
-                                        )
                                     try:
+                                        child_snapshot = os.fstat(
+                                            child_descriptor
+                                        )
+                                        if (
+                                            not stat.S_ISDIR(
+                                                child_snapshot.st_mode
+                                            )
+                                            or (
+                                                child_snapshot.st_dev,
+                                                child_snapshot.st_ino,
+                                                child_snapshot.st_mode,
+                                            )
+                                            != (
+                                                snapshot.st_dev,
+                                                snapshot.st_ino,
+                                                snapshot.st_mode,
+                                            )
+                                        ):
+                                            raise RuntimeError(
+                                                "candidate package directory "
+                                                "changed or linked: "
+                                                f"{relative}"
+                                            )
                                         staged.mkdir(mode=0o755)
-                                    except BaseException:
-                                        os.close(child_descriptor)
-                                        raise
-                                    manifest[relative] = ("directory", 0, "")
-                                    stack.append(
-                                        (child_descriptor, relative)
-                                    )
+                                        manifest[relative] = (
+                                            "directory",
+                                            0,
+                                            "",
+                                        )
+                                        stack.append(
+                                            (child_descriptor, relative)
+                                        )
+                                        child_descriptor = -1
+                                    finally:
+                                        if child_descriptor >= 0:
+                                            os.close(child_descriptor)
                                     continue
                                 if not stat.S_ISREG(snapshot.st_mode):
                                     raise ValueError(
