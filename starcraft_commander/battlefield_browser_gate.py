@@ -50,8 +50,9 @@ _BUILD_RE: Final[re.Pattern[str]] = re.compile(r"^sha256:[0-9a-f]{64}$")
 _FIXTURE_READY_TIMEOUT_SECONDS: Final[float] = 20.0
 _FIXTURE_STOP_TIMEOUT_SECONDS: Final[float] = 10.0
 _FIXTURE_STAGING_ROOT: Final[Path] = Path("/tmp").resolve()
-_FIXTURE_STAGING_FILE_LIMIT: Final[int] = 4096
+_FIXTURE_STAGING_ENTRY_LIMIT: Final[int] = 4096
 _FIXTURE_STAGING_BYTE_LIMIT: Final[int] = 64 * 1024 * 1024
+_FIXTURE_STAGING_CHUNK_SIZE: Final[int] = 1024 * 1024
 _FIXTURE_BOOTSTRAP: Final[str] = (
     "import runpy,sys;"
     "root=sys.argv[1];script=sys.argv[2];"
@@ -1286,28 +1287,38 @@ class BrowserGateConfig:
 
 
 def _sha256_regular_file(path: Path) -> str:
-    return hashlib.sha256(_read_regular_file(path)).hexdigest()
-
-
-def _read_regular_file(path: Path) -> bytes:
-    if path.is_symlink() or not path.is_file():
-        raise ValueError(f"candidate source is missing or linked: {path}")
-    before = path.stat()
-    payload = path.read_bytes()
-    after = path.stat()
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError(f"candidate source is missing or linked: {path}")
+        digest = hashlib.sha256()
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = -1
+            while chunk := stream.read(_FIXTURE_STAGING_CHUNK_SIZE):
+                digest.update(chunk)
+            after = os.fstat(stream.fileno())
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
     if (
         before.st_dev,
         before.st_ino,
+        before.st_mode,
         before.st_size,
         before.st_mtime_ns,
     ) != (
         after.st_dev,
         after.st_ino,
+        after.st_mode,
         after.st_size,
         after.st_mtime_ns,
     ):
         raise RuntimeError(f"candidate source changed while reading: {path}")
-    return payload
+    return digest.hexdigest()
 
 
 class _CandidateFixtureProcess:
@@ -1391,68 +1402,77 @@ class _CandidateFixtureProcess:
         manifest: dict[Path, tuple[str, int, str]] = {
             Path("."): ("directory", 0, ""),
         }
-        source_payload = _read_regular_file(Path(__file__).resolve())
         staged_script = staged_root / "fixture.py"
-        total_files = 1
-        total_bytes = len(source_payload)
-        if total_bytes > _FIXTURE_STAGING_BYTE_LIMIT:
-            staged_root.rmdir()
-            raise RuntimeError("candidate fixture staging byte limit exceeded")
+        total_entries = 0
+        total_bytes = 0
         try:
-            self._write_staged_file(staged_script, source_payload)
+            total_entries += 1
+            if total_entries > _FIXTURE_STAGING_ENTRY_LIMIT:
+                raise RuntimeError(
+                    "candidate fixture staging entry limit exceeded"
+                )
+            source_size, source_digest = self._copy_staged_file(
+                Path(__file__).resolve(),
+                staged_script,
+                byte_limit=_FIXTURE_STAGING_BYTE_LIMIT - total_bytes,
+            )
+            total_bytes += source_size
             manifest[Path("fixture.py")] = (
                 "file",
-                len(source_payload),
-                hashlib.sha256(source_payload).hexdigest(),
+                source_size,
+                source_digest,
             )
             source_package = self._config.candidate_root / "starcraft_commander"
             staged_package = staged_root / "starcraft_commander"
+            total_entries += 1
+            if total_entries > _FIXTURE_STAGING_ENTRY_LIMIT:
+                raise RuntimeError(
+                    "candidate fixture staging entry limit exceeded"
+                )
             staged_package.mkdir(mode=0o755)
             manifest[Path("starcraft_commander")] = ("directory", 0, "")
 
             stack = [(source_package, staged_package)]
             while stack:
                 source_directory, staged_directory = stack.pop()
-                entries = sorted(
-                    os.scandir(source_directory),
-                    key=lambda entry: entry.name,
-                )
-                for entry in entries:
-                    source = Path(entry.path)
-                    relative = source.relative_to(self._config.candidate_root)
-                    staged = staged_root / relative
-                    snapshot = entry.stat(follow_symlinks=False)
-                    if stat.S_ISLNK(snapshot.st_mode):
-                        raise ValueError(
-                            f"candidate package contains a symlink: {relative}"
+                with os.scandir(source_directory) as entries:
+                    for entry in entries:
+                        source = Path(entry.path)
+                        relative = source.relative_to(
+                            self._config.candidate_root
                         )
-                    if stat.S_ISDIR(snapshot.st_mode):
-                        staged.mkdir(mode=0o755)
-                        manifest[relative] = ("directory", 0, "")
-                        stack.append((source, staged))
-                        continue
-                    if not stat.S_ISREG(snapshot.st_mode):
-                        raise ValueError(
-                            "candidate package contains a non-regular entry: "
-                            f"{relative}"
+                        staged = staged_root / relative
+                        snapshot = entry.stat(follow_symlinks=False)
+                        total_entries += 1
+                        if total_entries > _FIXTURE_STAGING_ENTRY_LIMIT:
+                            raise RuntimeError(
+                                "candidate fixture staging entry limit exceeded"
+                            )
+                        if stat.S_ISLNK(snapshot.st_mode):
+                            raise ValueError(
+                                "candidate package contains a symlink: "
+                                f"{relative}"
+                            )
+                        if stat.S_ISDIR(snapshot.st_mode):
+                            staged.mkdir(mode=0o755)
+                            manifest[relative] = ("directory", 0, "")
+                            stack.append((source, staged))
+                            continue
+                        if not stat.S_ISREG(snapshot.st_mode):
+                            raise ValueError(
+                                "candidate package contains a non-regular "
+                                f"entry: {relative}"
+                            )
+                        size, digest = self._copy_staged_file(
+                            source,
+                            staged,
+                            byte_limit=(
+                                _FIXTURE_STAGING_BYTE_LIMIT - total_bytes
+                            ),
+                            expected_snapshot=snapshot,
                         )
-                    payload = _read_regular_file(source)
-                    total_files += 1
-                    total_bytes += len(payload)
-                    if total_files > _FIXTURE_STAGING_FILE_LIMIT:
-                        raise RuntimeError(
-                            "candidate fixture staging file limit exceeded"
-                        )
-                    if total_bytes > _FIXTURE_STAGING_BYTE_LIMIT:
-                        raise RuntimeError(
-                            "candidate fixture staging byte limit exceeded"
-                        )
-                    self._write_staged_file(staged, payload)
-                    manifest[relative] = (
-                        "file",
-                        len(payload),
-                        hashlib.sha256(payload).hexdigest(),
-                    )
+                        total_bytes += size
+                        manifest[relative] = ("file", size, digest)
 
             for relative, (kind, _, _) in sorted(
                 manifest.items(),
@@ -1472,22 +1492,98 @@ class _CandidateFixtureProcess:
         return staged_script
 
     @staticmethod
-    def _write_staged_file(path: Path, payload: bytes) -> None:
-        descriptor = os.open(
-            path,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-            0o600,
+    def _copy_staged_file(
+        source: Path,
+        destination: Path,
+        *,
+        byte_limit: int,
+        expected_snapshot: os.stat_result | None = None,
+    ) -> tuple[int, str]:
+        if byte_limit < 0:
+            raise RuntimeError("candidate fixture staging byte limit exceeded")
+        source_descriptor = os.open(
+            source,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
         )
+        destination_descriptor = -1
         try:
-            with os.fdopen(descriptor, "wb") as stream:
-                descriptor = -1
-                stream.write(payload)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.chmod(path, 0o444, follow_symlinks=False)
+            before = os.fstat(source_descriptor)
+            if not stat.S_ISREG(before.st_mode):
+                raise ValueError(
+                    f"candidate source is missing or linked: {source}"
+                )
+            if expected_snapshot is not None and (
+                before.st_dev,
+                before.st_ino,
+                before.st_mode,
+                before.st_size,
+                before.st_mtime_ns,
+            ) != (
+                expected_snapshot.st_dev,
+                expected_snapshot.st_ino,
+                expected_snapshot.st_mode,
+                expected_snapshot.st_size,
+                expected_snapshot.st_mtime_ns,
+            ):
+                raise RuntimeError(
+                    f"candidate source changed before reading: {source}"
+                )
+            if before.st_size > byte_limit:
+                raise RuntimeError(
+                    "candidate fixture staging byte limit exceeded"
+                )
+            destination_descriptor = os.open(
+                destination,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+            digest = hashlib.sha256()
+            total_bytes = 0
+            with (
+                os.fdopen(source_descriptor, "rb") as source_stream,
+                os.fdopen(destination_descriptor, "wb") as destination_stream,
+            ):
+                source_descriptor = -1
+                destination_descriptor = -1
+                while chunk := source_stream.read(
+                    _FIXTURE_STAGING_CHUNK_SIZE
+                ):
+                    total_bytes += len(chunk)
+                    if total_bytes > byte_limit:
+                        raise RuntimeError(
+                            "candidate fixture staging byte limit exceeded"
+                        )
+                    digest.update(chunk)
+                    destination_stream.write(chunk)
+                after = os.fstat(source_stream.fileno())
+                if (
+                    before.st_dev,
+                    before.st_ino,
+                    before.st_mode,
+                    before.st_size,
+                    before.st_mtime_ns,
+                ) != (
+                    after.st_dev,
+                    after.st_ino,
+                    after.st_mode,
+                    after.st_size,
+                    after.st_mtime_ns,
+                ):
+                    raise RuntimeError(
+                        f"candidate source changed while reading: {source}"
+                    )
+                destination_stream.flush()
+                os.fsync(destination_stream.fileno())
+            os.chmod(destination, 0o444, follow_symlinks=False)
+            return total_bytes, digest.hexdigest()
+        except BaseException:
+            if destination_descriptor >= 0:
+                os.close(destination_descriptor)
+            destination.unlink(missing_ok=True)
+            raise
         finally:
-            if descriptor >= 0:
-                os.close(descriptor)
+            if source_descriptor >= 0:
+                os.close(source_descriptor)
 
     @staticmethod
     def _verify_staged_fixture_tree(
@@ -1535,10 +1631,9 @@ class _CandidateFixtureProcess:
                     raise RuntimeError(
                         "candidate fixture staged file failed integrity checks"
                     )
-                payload = _read_regular_file(path)
                 if (
-                    len(payload) != expected[1]
-                    or hashlib.sha256(payload).hexdigest() != expected[2]
+                    snapshot.st_size != expected[1]
+                    or _sha256_regular_file(path) != expected[2]
                 ):
                     raise RuntimeError(
                         "candidate fixture staged bytes failed integrity checks"
@@ -1548,48 +1643,52 @@ class _CandidateFixtureProcess:
 
     @staticmethod
     def _discard_staged_fixture_tree(staged_root: Path) -> None:
-        if staged_root.is_symlink():
-            raise RuntimeError("candidate fixture staging root became a symlink")
-        for directory, subdirectories, files in os.walk(
-            staged_root,
-            topdown=False,
-            followlinks=False,
-        ):
-            root = Path(directory)
-            os.chmod(root, 0o700, follow_symlinks=False)
-            for name in files:
-                path = root / name
-                if path.is_symlink():
-                    raise RuntimeError(
-                        "candidate fixture staged tree contains a symlink"
-                    )
-                os.chmod(path, 0o600, follow_symlinks=False)
+        pending = [(staged_root, False)]
+        while pending:
+            path, visited = pending.pop()
+            try:
+                snapshot = path.lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(snapshot.st_mode) or not stat.S_ISDIR(
+                snapshot.st_mode
+            ):
                 path.unlink()
-            for name in subdirectories:
-                path = root / name
-                if path.is_symlink():
-                    raise RuntimeError(
-                        "candidate fixture staged tree contains a symlink"
-                    )
-                os.chmod(path, 0o700, follow_symlinks=False)
+                continue
+            if visited:
                 path.rmdir()
-        staged_root.rmdir()
+                continue
+            os.chmod(path, 0o700, follow_symlinks=False)
+            pending.append((path, True))
+            with os.scandir(path) as entries:
+                pending.extend((Path(entry.path), False) for entry in entries)
 
     def _cleanup_fixture_script(self) -> None:
         staged_root = self._staged_candidate_root
         staged_script = self._staged_fixture_script
         manifest = self._staged_fixture_manifest
-        self._staged_candidate_root = None
-        self._staged_fixture_script = None
-        self._staged_fixture_manifest = {}
         if staged_root is None and staged_script is None:
             return
         if staged_root is None or staged_script is None:
             raise RuntimeError("candidate fixture staging state is incomplete")
         if staged_script != staged_root / "fixture.py":
             raise RuntimeError("candidate fixture staged script path changed")
-        self._verify_staged_fixture_tree(staged_root, manifest)
-        self._discard_staged_fixture_tree(staged_root)
+        verification_error: BaseException | None = None
+        try:
+            self._verify_staged_fixture_tree(staged_root, manifest)
+        except BaseException as error:
+            verification_error = error
+        try:
+            self._discard_staged_fixture_tree(staged_root)
+        except BaseException as cleanup_error:
+            if verification_error is not None:
+                raise cleanup_error from verification_error
+            raise
+        self._staged_candidate_root = None
+        self._staged_fixture_script = None
+        self._staged_fixture_manifest = {}
+        if verification_error is not None:
+            raise verification_error
 
     def start(self) -> str:
         if self._process is not None:
@@ -1685,6 +1784,13 @@ class _CandidateFixtureProcess:
             parsed_port = parsed.port
         except ValueError:
             parsed_port = None
+        readiness_process_matches = (
+            isinstance(payload, dict)
+            and self._readiness_process_matches(
+                process,
+                payload.get("pid"),
+            )
+        )
         if (
             not isinstance(payload, dict)
             or set(payload)
@@ -1700,7 +1806,7 @@ class _CandidateFixtureProcess:
             or payload.get("type") != "battlefield-webgui-ready"
             or payload.get("nonce") != self._nonce
             or payload.get("candidate_sha") != self._config.repository_sha
-            or payload.get("pid") != process.pid
+            or not readiness_process_matches
             or parsed.scheme != "http"
             or parsed.hostname != "127.0.0.1"
             or parsed.path not in {"", "/"}
@@ -1720,6 +1826,74 @@ class _CandidateFixtureProcess:
             "candidate-stdout",
         )
         return f"http://127.0.0.1:{parsed_port}/"
+
+    def _readiness_process_matches(
+        self,
+        process: subprocess.Popen[str],
+        reported_pid: object,
+    ) -> bool:
+        if type(reported_pid) is not int or reported_pid <= 0:
+            return False
+        if self._config.candidate_uid is None:
+            return reported_pid == process.pid
+        if sys.platform != "linux":
+            return False
+        current_pid = reported_pid
+        visited: set[int] = set()
+        for depth in range(64):
+            if current_pid in visited or current_pid <= 1:
+                return False
+            visited.add(current_pid)
+            try:
+                parent_pid, uids, gids = self._linux_process_identity(
+                    current_pid
+                )
+            except (OSError, RuntimeError, ValueError):
+                return False
+            if depth == 0 and (
+                set(uids) != {self._config.candidate_uid}
+                or set(gids) != {self._config.candidate_gid}
+            ):
+                return False
+            if current_pid == process.pid:
+                return True
+            if parent_pid == process.pid:
+                return True
+            current_pid = parent_pid
+        return False
+
+    @staticmethod
+    def _linux_process_identity(
+        pid: int,
+    ) -> tuple[int, tuple[int, ...], tuple[int, ...]]:
+        stat_before = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        status = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
+        stat_after = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+
+        def process_identity(stat_payload: str) -> tuple[int, int]:
+            closing_parenthesis = stat_payload.rfind(")")
+            if closing_parenthesis < 0:
+                raise RuntimeError("candidate process stat is malformed")
+            fields = stat_payload[closing_parenthesis + 1 :].split()
+            if len(fields) < 20:
+                raise RuntimeError("candidate process stat is incomplete")
+            return int(fields[1]), int(fields[19])
+
+        before_identity = process_identity(stat_before)
+        if process_identity(stat_after) != before_identity:
+            raise RuntimeError("candidate process identity changed")
+        identifiers: dict[str, tuple[int, ...]] = {}
+        for line in status.splitlines():
+            key, separator, values = line.partition(":")
+            if separator and key in {"Uid", "Gid"}:
+                identifiers[key] = tuple(
+                    int(value) for value in values.split()
+                )
+        uids = identifiers.get("Uid", ())
+        gids = identifiers.get("Gid", ())
+        if len(uids) != 4 or len(gids) != 4:
+            raise RuntimeError("candidate process identity is incomplete")
+        return before_identity[0], uids, gids
 
     def _start_drain(
         self,

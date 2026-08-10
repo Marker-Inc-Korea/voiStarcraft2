@@ -211,6 +211,85 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             self.assertFalse(staged.exists())
             self.assertFalse(staged_candidate_root.exists())
 
+    def test_candidate_fixture_accepts_verified_sudo_descendant_pid(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = BrowserGateConfig(
+                repository_sha=REPOSITORY_SHA,
+                build_identity=BUILD_IDENTITY,
+                artifact_dir=Path(directory),
+                candidate_uid=65001,
+                candidate_gid=65001,
+            )
+            fixture = _CandidateFixtureProcess(config)
+            process = mock.Mock(pid=4321)
+            process.poll.return_value = None
+            process.stdout.readline.return_value = (
+                '{"candidate_sha":"'
+                + REPOSITORY_SHA
+                + '","nonce":"'
+                + fixture._nonce
+                + '","origin":"http://127.0.0.1:8765/",'
+                '"pid":9876,"schema_version":1,'
+                '"type":"battlefield-webgui-ready"}\n'
+            )
+            selector = mock.Mock()
+            selector.select.return_value = [(process.stdout, 1)]
+
+            with (
+                mock.patch.object(browser_gate.sys, "platform", "linux"),
+                mock.patch.object(
+                    fixture,
+                    "_linux_process_identity",
+                    side_effect=[
+                        (7000, (65001,) * 4, (65001,) * 4),
+                        (4321, (0,) * 4, (0,) * 4),
+                    ],
+                ) as process_identity,
+                mock.patch.object(
+                    browser_gate.selectors,
+                    "DefaultSelector",
+                    return_value=selector,
+                ),
+                mock.patch.object(fixture, "_start_drain"),
+            ):
+                origin = fixture._wait_until_ready(process)
+
+            self.assertEqual("http://127.0.0.1:8765/", origin)
+            self.assertEqual(
+                [mock.call(9876), mock.call(7000)],
+                process_identity.call_args_list,
+            )
+            selector.close.assert_called_once_with()
+
+    def test_candidate_fixture_accepts_verified_direct_sudo_exec_pid(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = _CandidateFixtureProcess(
+                BrowserGateConfig(
+                    repository_sha=REPOSITORY_SHA,
+                    build_identity=BUILD_IDENTITY,
+                    artifact_dir=Path(directory),
+                    candidate_uid=65001,
+                    candidate_gid=65001,
+                )
+            )
+            process = mock.Mock(pid=4321)
+
+            with (
+                mock.patch.object(browser_gate.sys, "platform", "linux"),
+                mock.patch.object(
+                    fixture,
+                    "_linux_process_identity",
+                    return_value=(1234, (65001,) * 4, (65001,) * 4),
+                ),
+            ):
+                matches = fixture._readiness_process_matches(process, 4321)
+
+            self.assertTrue(matches)
+
     def test_staged_fixture_imports_candidate_package_with_isolated_python(
         self,
     ) -> None:
@@ -336,6 +415,239 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
                 fixture._prepare_fixture_script()
 
             self.assertEqual([], list(staging_root.iterdir()))
+            self.assertIsNone(fixture._staged_candidate_root)
+            self.assertIsNone(fixture._staged_fixture_script)
+
+    def test_candidate_fixture_cleans_staging_when_trusted_copy_fails(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            staging_root = Path(directory).resolve()
+            staging_root.chmod(0o755)
+            fixture = _CandidateFixtureProcess(
+                BrowserGateConfig(
+                    repository_sha=REPOSITORY_SHA,
+                    build_identity=BUILD_IDENTITY,
+                    artifact_dir=staging_root,
+                    candidate_uid=65001,
+                    candidate_gid=65001,
+                )
+            )
+
+            with (
+                mock.patch.object(
+                    browser_gate,
+                    "_FIXTURE_STAGING_ROOT",
+                    staging_root,
+                ),
+                mock.patch.object(
+                    fixture,
+                    "_copy_staged_file",
+                    side_effect=OSError("trusted copy failed"),
+                ),
+                self.assertRaisesRegex(OSError, "trusted copy failed"),
+            ):
+                fixture._prepare_fixture_script()
+
+            self.assertEqual([], list(staging_root.iterdir()))
+            self.assertIsNone(fixture._staged_candidate_root)
+            self.assertIsNone(fixture._staged_fixture_script)
+
+    def test_candidate_fixture_entry_limit_counts_directories(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as source_directory,
+            tempfile.TemporaryDirectory() as staging_directory,
+        ):
+            source_root = Path(source_directory).resolve()
+            trusted_fixture = source_root / "fixture.py"
+            trusted_fixture.write_text("# ok\n", encoding="utf-8")
+            candidate_root = source_root / "candidate"
+            package_root = candidate_root / "starcraft_commander"
+            package_root.mkdir(parents=True)
+            package_root.joinpath("__init__.py").write_text("", encoding="utf-8")
+            package_root.joinpath("web_gui.py").write_text("", encoding="utf-8")
+            package_root.joinpath("nested").mkdir()
+            staging_root = Path(staging_directory).resolve()
+            staging_root.chmod(0o755)
+            fixture = _CandidateFixtureProcess(
+                BrowserGateConfig(
+                    repository_sha=REPOSITORY_SHA,
+                    build_identity=BUILD_IDENTITY,
+                    artifact_dir=source_root / "artifacts",
+                    candidate_root=candidate_root,
+                    candidate_uid=65001,
+                    candidate_gid=65001,
+                )
+            )
+
+            with (
+                mock.patch.object(browser_gate, "__file__", str(trusted_fixture)),
+                mock.patch.object(
+                    browser_gate,
+                    "_FIXTURE_STAGING_ROOT",
+                    staging_root,
+                ),
+                mock.patch.object(
+                    browser_gate,
+                    "_FIXTURE_STAGING_ENTRY_LIMIT",
+                    4,
+                ),
+                self.assertRaisesRegex(RuntimeError, "entry limit exceeded"),
+            ):
+                fixture._prepare_fixture_script()
+
+            self.assertEqual([], list(staging_root.iterdir()))
+
+    def test_candidate_fixture_byte_limit_is_enforced_while_copying(
+        self,
+    ) -> None:
+        with (
+            tempfile.TemporaryDirectory() as source_directory,
+            tempfile.TemporaryDirectory() as staging_directory,
+        ):
+            source_root = Path(source_directory).resolve()
+            trusted_fixture = source_root / "fixture.py"
+            trusted_fixture.write_bytes(b"1234")
+            candidate_root = source_root / "candidate"
+            package_root = candidate_root / "starcraft_commander"
+            package_root.mkdir(parents=True)
+            package_root.joinpath("__init__.py").write_bytes(b"")
+            package_root.joinpath("web_gui.py").write_bytes(b"56789")
+            staging_root = Path(staging_directory).resolve()
+            staging_root.chmod(0o755)
+            fixture = _CandidateFixtureProcess(
+                BrowserGateConfig(
+                    repository_sha=REPOSITORY_SHA,
+                    build_identity=BUILD_IDENTITY,
+                    artifact_dir=source_root / "artifacts",
+                    candidate_root=candidate_root,
+                    candidate_uid=65001,
+                    candidate_gid=65001,
+                )
+            )
+
+            with (
+                mock.patch.object(browser_gate, "__file__", str(trusted_fixture)),
+                mock.patch.object(
+                    browser_gate,
+                    "_FIXTURE_STAGING_ROOT",
+                    staging_root,
+                ),
+                mock.patch.object(
+                    browser_gate,
+                    "_FIXTURE_STAGING_BYTE_LIMIT",
+                    8,
+                ),
+                self.assertRaisesRegex(RuntimeError, "byte limit exceeded"),
+            ):
+                fixture._prepare_fixture_script()
+
+            self.assertEqual([], list(staging_root.iterdir()))
+
+    def test_candidate_fixture_removes_tree_after_integrity_failure(
+        self,
+    ) -> None:
+        with (
+            tempfile.TemporaryDirectory() as source_directory,
+            tempfile.TemporaryDirectory() as staging_directory,
+        ):
+            source_root = Path(source_directory).resolve()
+            trusted_fixture = source_root / "fixture.py"
+            trusted_fixture.write_text("# ok\n", encoding="utf-8")
+            candidate_root = source_root / "candidate"
+            package_root = candidate_root / "starcraft_commander"
+            package_root.mkdir(parents=True)
+            package_root.joinpath("__init__.py").write_text("", encoding="utf-8")
+            package_root.joinpath("web_gui.py").write_text("", encoding="utf-8")
+            staging_root = Path(staging_directory).resolve()
+            staging_root.chmod(0o755)
+            fixture = _CandidateFixtureProcess(
+                BrowserGateConfig(
+                    repository_sha=REPOSITORY_SHA,
+                    build_identity=BUILD_IDENTITY,
+                    artifact_dir=source_root / "artifacts",
+                    candidate_root=candidate_root,
+                    candidate_uid=65001,
+                    candidate_gid=65001,
+                )
+            )
+
+            with (
+                mock.patch.object(browser_gate, "__file__", str(trusted_fixture)),
+                mock.patch.object(
+                    browser_gate,
+                    "_FIXTURE_STAGING_ROOT",
+                    staging_root,
+                ),
+            ):
+                staged_script = fixture._prepare_fixture_script()
+                staged_root = fixture._staged_candidate_root
+                assert staged_root is not None
+                staged_script.chmod(0o600)
+                staged_script.write_text("# changed\n", encoding="utf-8")
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "integrity checks",
+                ):
+                    fixture._cleanup_fixture_script()
+
+            self.assertFalse(staged_root.exists())
+            self.assertIsNone(fixture._staged_candidate_root)
+            self.assertIsNone(fixture._staged_fixture_script)
+
+    def test_candidate_fixture_cleanup_can_retry_after_delete_failure(
+        self,
+    ) -> None:
+        with (
+            tempfile.TemporaryDirectory() as source_directory,
+            tempfile.TemporaryDirectory() as staging_directory,
+        ):
+            source_root = Path(source_directory).resolve()
+            trusted_fixture = source_root / "fixture.py"
+            trusted_fixture.write_text("# ok\n", encoding="utf-8")
+            candidate_root = source_root / "candidate"
+            package_root = candidate_root / "starcraft_commander"
+            package_root.mkdir(parents=True)
+            package_root.joinpath("__init__.py").write_text("", encoding="utf-8")
+            package_root.joinpath("web_gui.py").write_text("", encoding="utf-8")
+            staging_root = Path(staging_directory).resolve()
+            staging_root.chmod(0o755)
+            fixture = _CandidateFixtureProcess(
+                BrowserGateConfig(
+                    repository_sha=REPOSITORY_SHA,
+                    build_identity=BUILD_IDENTITY,
+                    artifact_dir=source_root / "artifacts",
+                    candidate_root=candidate_root,
+                    candidate_uid=65001,
+                    candidate_gid=65001,
+                )
+            )
+
+            with (
+                mock.patch.object(browser_gate, "__file__", str(trusted_fixture)),
+                mock.patch.object(
+                    browser_gate,
+                    "_FIXTURE_STAGING_ROOT",
+                    staging_root,
+                ),
+            ):
+                fixture._prepare_fixture_script()
+                staged_root = fixture._staged_candidate_root
+                assert staged_root is not None
+                with (
+                    mock.patch.object(
+                        fixture,
+                        "_discard_staged_fixture_tree",
+                        side_effect=OSError("delete failed"),
+                    ),
+                    self.assertRaisesRegex(OSError, "delete failed"),
+                ):
+                    fixture._cleanup_fixture_script()
+
+                self.assertEqual(staged_root, fixture._staged_candidate_root)
+                fixture._cleanup_fixture_script()
+
+            self.assertFalse(staged_root.exists())
             self.assertIsNone(fixture._staged_candidate_root)
             self.assertIsNone(fixture._staged_fixture_script)
 
