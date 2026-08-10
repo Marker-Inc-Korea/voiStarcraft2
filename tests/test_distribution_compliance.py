@@ -2271,6 +2271,44 @@ class ArchivePolicyTest(unittest.TestCase):
         self.assertIn("denied_component:tests", reasons)
         self.assertIn("local_environment_file", reasons)
 
+    def test_pre_live_release_status_is_an_approved_release_payload(
+        self,
+    ) -> None:
+        root = Path.cwd()
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        release_path = (
+            "integrations/micromachine/PRE_LIVE_RELEASE_STATUS.json"
+        )
+
+        manifests = expected_archive_payloads(root, head)
+        wheel = ArchiveSnapshot(
+            kind="wheel",
+            path=Path("voistarcraft2-0.1.0-py3-none-any.whl"),
+            digest="c" * 64,
+            entries=(),
+            files={release_path: b"{}"},
+            blockers=(),
+        )
+        sdist = ArchiveSnapshot(
+            kind="sdist",
+            path=Path("voistarcraft2-0.1.0.tar.gz"),
+            digest="c" * 64,
+            entries=(),
+            files={f"voistarcraft2-0.1.0/{release_path}": b"{}"},
+            blockers=(),
+        )
+
+        self.assertIn(release_path, manifests["wheel"])
+        self.assertIn(release_path, manifests["sdist"])
+        self.assertEqual([], archive_content_blockers(wheel))
+        self.assertEqual([], archive_content_blockers(sdist))
+
     def test_sdist_rejects_alternate_egg_info_namespace(self) -> None:
         expected_payload = b"expected runtime"
         snapshot = ArchiveSnapshot(

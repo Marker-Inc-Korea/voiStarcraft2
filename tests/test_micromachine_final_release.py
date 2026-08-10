@@ -803,9 +803,9 @@ class MicroMachineFinalReleaseTest(unittest.TestCase):
             ),
             (
                 "secret",
-                {"openai_api_key": "sk-abcdefghijklmnop"},
+                {"openai_api_key": "fixture-value"},
                 "private_configuration_detected",
-                "sk-abcdefghijklmnop",
+                "fixture-value",
             ),
         )
         for label, extra, blocker, forbidden in cases:
