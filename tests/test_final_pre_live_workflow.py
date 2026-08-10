@@ -846,6 +846,11 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
             report["if"],
         )
         self.assertIn("not applicable", report["run"])
+        self.assertIn(
+            "issue #${QUALIFICATION_ISSUE_NUMBER} qualification merge",
+            report["run"],
+        )
+        self.assertNotIn("issue #175 qualification merge", report["run"])
         for step in final["steps"]:
             if step.get("name") in {
                 "Enforce all prerequisite results",

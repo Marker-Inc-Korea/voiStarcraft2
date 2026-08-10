@@ -1783,7 +1783,7 @@ jobs:
           {
             echo "## Final pre-live"
             echo
-            echo "This event is not the exact issue #175 qualification merge"
+            echo "This event is not the exact issue #${QUALIFICATION_ISSUE_NUMBER} qualification merge"
             echo "for release PR #168 and closing issue #141."
             echo "The final pre-live release gate is not applicable."
           } >> "${GITHUB_STEP_SUMMARY}"
