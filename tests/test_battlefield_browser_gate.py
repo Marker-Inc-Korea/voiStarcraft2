@@ -534,9 +534,10 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             )
             real_scandir = os.scandir
             consumed_entries: list[str] = []
+            package_snapshot = package_root.stat()
 
             class MonitoredScandir:
-                def __init__(self, directory: Path) -> None:
+                def __init__(self, directory: int | Path) -> None:
                     self._scandir = real_scandir(directory)
                     self._iterator: object | None = None
 
@@ -561,8 +562,25 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
                     return entry
 
             def monitored_scandir(
-                directory: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+                directory: (
+                    int
+                    | str
+                    | bytes
+                    | os.PathLike[str]
+                    | os.PathLike[bytes]
+                ),
             ) -> object:
+                if isinstance(directory, int):
+                    snapshot = os.fstat(directory)
+                    if (
+                        snapshot.st_dev,
+                        snapshot.st_ino,
+                    ) == (
+                        package_snapshot.st_dev,
+                        package_snapshot.st_ino,
+                    ):
+                        return MonitoredScandir(directory)
+                    return real_scandir(directory)
                 path = Path(directory).resolve()
                 if path == package_root:
                     return MonitoredScandir(path)
@@ -587,6 +605,83 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
 
             self.assertEqual(1, len(consumed_entries))
             self.assertEqual([], list(staging_root.iterdir()))
+
+    def test_candidate_fixture_rejects_parent_directory_symlink_swap(
+        self,
+    ) -> None:
+        with (
+            tempfile.TemporaryDirectory() as source_directory,
+            tempfile.TemporaryDirectory() as staging_directory,
+            tempfile.TemporaryDirectory() as outside_directory,
+        ):
+            source_root = Path(source_directory).resolve()
+            trusted_fixture = source_root / "fixture.py"
+            trusted_fixture.write_text("# ok\n", encoding="utf-8")
+            candidate_root = source_root / "candidate"
+            package_root = candidate_root / "starcraft_commander"
+            nested_root = package_root / "nested"
+            nested_root.mkdir(parents=True)
+            package_root.joinpath("__init__.py").write_text("", encoding="utf-8")
+            package_root.joinpath("web_gui.py").write_text("", encoding="utf-8")
+            nested_root.joinpath("safe.py").write_text("# safe\n", encoding="utf-8")
+            outside_root = Path(outside_directory).resolve()
+            outside_root.joinpath("escaped.py").write_text(
+                "# outside\n",
+                encoding="utf-8",
+            )
+            staging_root = Path(staging_directory).resolve()
+            staging_root.chmod(0o755)
+            fixture = _CandidateFixtureProcess(
+                BrowserGateConfig(
+                    repository_sha=REPOSITORY_SHA,
+                    build_identity=BUILD_IDENTITY,
+                    artifact_dir=source_root / "artifacts",
+                    candidate_root=candidate_root,
+                    candidate_uid=65001,
+                    candidate_gid=65001,
+                )
+            )
+            real_open = os.open
+            swapped = False
+
+            def swapping_open(
+                path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+                flags: int,
+                mode: int = 0o777,
+                *,
+                dir_fd: int | None = None,
+            ) -> int:
+                nonlocal swapped
+                if (
+                    not swapped
+                    and dir_fd is not None
+                    and os.fspath(path) == "nested"
+                    and flags & getattr(os, "O_DIRECTORY", 0)
+                ):
+                    swapped = True
+                    nested_root.rename(package_root / "nested-original")
+                    nested_root.symlink_to(outside_root, target_is_directory=True)
+                return real_open(path, flags, mode, dir_fd=dir_fd)
+
+            with (
+                mock.patch.object(browser_gate, "__file__", str(trusted_fixture)),
+                mock.patch.object(
+                    browser_gate,
+                    "_FIXTURE_STAGING_ROOT",
+                    staging_root,
+                ),
+                mock.patch.object(browser_gate.os, "open", swapping_open),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "directory changed or linked",
+                ),
+            ):
+                fixture._prepare_fixture_script()
+
+            self.assertTrue(swapped)
+            self.assertEqual([], list(staging_root.iterdir()))
+            self.assertIsNone(fixture._staged_candidate_root)
+            self.assertIsNone(fixture._staged_fixture_script)
 
     def test_candidate_fixture_file_reads_are_chunk_bounded(
         self,

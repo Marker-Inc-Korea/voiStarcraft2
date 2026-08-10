@@ -53,6 +53,9 @@ _FIXTURE_STAGING_ROOT: Final[Path] = Path("/tmp").resolve()
 _FIXTURE_STAGING_ENTRY_LIMIT: Final[int] = 4096
 _FIXTURE_STAGING_BYTE_LIMIT: Final[int] = 64 * 1024 * 1024
 _FIXTURE_STAGING_CHUNK_SIZE: Final[int] = 1024 * 1024
+_SECURE_SOURCE_DIRECTORY_FDS: Final[bool] = (
+    os.open in os.supports_dir_fd and os.scandir in os.supports_fd
+)
 _FIXTURE_BOOTSTRAP: Final[str] = (
     "import runpy,sys;"
     "root=sys.argv[1];script=sys.argv[2];"
@@ -1435,47 +1438,120 @@ class _CandidateFixtureProcess:
             staged_package.mkdir(mode=0o755)
             manifest[Path("starcraft_commander")] = ("directory", 0, "")
 
-            stack = [(source_package, staged_package)]
-            while stack:
-                source_directory, staged_directory = stack.pop()
-                with os.scandir(source_directory) as entries:
-                    for entry in entries:
-                        source = Path(entry.path)
-                        relative = source.relative_to(
-                            self._config.candidate_root
-                        )
-                        staged = staged_root / relative
-                        snapshot = entry.stat(follow_symlinks=False)
-                        total_entries += 1
-                        if total_entries > _FIXTURE_STAGING_ENTRY_LIMIT:
+            nofollow = getattr(os, "O_NOFOLLOW", 0)
+            directory_only = getattr(os, "O_DIRECTORY", 0)
+            if (
+                not nofollow
+                or not directory_only
+                or not _SECURE_SOURCE_DIRECTORY_FDS
+            ):
+                raise RuntimeError(
+                    "secure candidate package traversal is unavailable"
+                )
+            directory_flags = (
+                os.O_RDONLY
+                | nofollow
+                | directory_only
+                | getattr(os, "O_CLOEXEC", 0)
+            )
+            try:
+                package_descriptor = os.open(
+                    source_package,
+                    directory_flags,
+                )
+            except OSError as error:
+                raise ValueError(
+                    "candidate package is missing or linked"
+                ) from error
+            stack = [(package_descriptor, Path("starcraft_commander"))]
+            try:
+                while stack:
+                    source_descriptor, relative_directory = stack.pop()
+                    try:
+                        source_snapshot = os.fstat(source_descriptor)
+                        if not stat.S_ISDIR(source_snapshot.st_mode):
                             raise RuntimeError(
-                                "candidate fixture staging entry limit exceeded"
+                                "candidate package directory changed or linked: "
+                                f"{relative_directory}"
                             )
-                        if stat.S_ISLNK(snapshot.st_mode):
-                            raise ValueError(
-                                "candidate package contains a symlink: "
-                                f"{relative}"
-                            )
-                        if stat.S_ISDIR(snapshot.st_mode):
-                            staged.mkdir(mode=0o755)
-                            manifest[relative] = ("directory", 0, "")
-                            stack.append((source, staged))
-                            continue
-                        if not stat.S_ISREG(snapshot.st_mode):
-                            raise ValueError(
-                                "candidate package contains a non-regular "
-                                f"entry: {relative}"
-                            )
-                        size, digest = self._copy_staged_file(
-                            source,
-                            staged,
-                            byte_limit=(
-                                _FIXTURE_STAGING_BYTE_LIMIT - total_bytes
-                            ),
-                            expected_snapshot=snapshot,
-                        )
-                        total_bytes += size
-                        manifest[relative] = ("file", size, digest)
+                        with os.scandir(source_descriptor) as entries:
+                            for entry in entries:
+                                relative = relative_directory / entry.name
+                                staged = staged_root / relative
+                                snapshot = entry.stat(follow_symlinks=False)
+                                total_entries += 1
+                                if total_entries > _FIXTURE_STAGING_ENTRY_LIMIT:
+                                    raise RuntimeError(
+                                        "candidate fixture staging entry limit "
+                                        "exceeded"
+                                    )
+                                if stat.S_ISLNK(snapshot.st_mode):
+                                    raise ValueError(
+                                        "candidate package contains a symlink: "
+                                        f"{relative}"
+                                    )
+                                if stat.S_ISDIR(snapshot.st_mode):
+                                    try:
+                                        child_descriptor = os.open(
+                                            entry.name,
+                                            directory_flags,
+                                            dir_fd=source_descriptor,
+                                        )
+                                    except OSError as error:
+                                        raise RuntimeError(
+                                            "candidate package directory changed "
+                                            f"or linked: {relative}"
+                                        ) from error
+                                    child_snapshot = os.fstat(child_descriptor)
+                                    if (
+                                        not stat.S_ISDIR(child_snapshot.st_mode)
+                                        or (
+                                            child_snapshot.st_dev,
+                                            child_snapshot.st_ino,
+                                            child_snapshot.st_mode,
+                                        )
+                                        != (
+                                            snapshot.st_dev,
+                                            snapshot.st_ino,
+                                            snapshot.st_mode,
+                                        )
+                                    ):
+                                        os.close(child_descriptor)
+                                        raise RuntimeError(
+                                            "candidate package directory changed "
+                                            f"or linked: {relative}"
+                                        )
+                                    try:
+                                        staged.mkdir(mode=0o755)
+                                    except BaseException:
+                                        os.close(child_descriptor)
+                                        raise
+                                    manifest[relative] = ("directory", 0, "")
+                                    stack.append(
+                                        (child_descriptor, relative)
+                                    )
+                                    continue
+                                if not stat.S_ISREG(snapshot.st_mode):
+                                    raise ValueError(
+                                        "candidate package contains a non-regular "
+                                        f"entry: {relative}"
+                                    )
+                                size, digest = self._copy_staged_file(
+                                    entry.name,
+                                    staged,
+                                    byte_limit=(
+                                        _FIXTURE_STAGING_BYTE_LIMIT - total_bytes
+                                    ),
+                                    expected_snapshot=snapshot,
+                                    source_dir_fd=source_descriptor,
+                                )
+                                total_bytes += size
+                                manifest[relative] = ("file", size, digest)
+                    finally:
+                        os.close(source_descriptor)
+            finally:
+                for source_descriptor, _ in stack:
+                    os.close(source_descriptor)
 
             for relative, (kind, _, _) in sorted(
                 manifest.items(),
@@ -1497,17 +1573,19 @@ class _CandidateFixtureProcess:
 
     @staticmethod
     def _copy_staged_file(
-        source: Path,
+        source: Path | str,
         destination: Path,
         *,
         byte_limit: int,
         expected_snapshot: os.stat_result | None = None,
+        source_dir_fd: int | None = None,
     ) -> tuple[int, str]:
         if byte_limit < 0:
             raise RuntimeError("candidate fixture staging byte limit exceeded")
         source_descriptor = os.open(
             source,
             os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=source_dir_fd,
         )
         destination_descriptor = -1
         try:
