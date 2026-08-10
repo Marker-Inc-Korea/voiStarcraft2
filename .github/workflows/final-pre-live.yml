@@ -34,6 +34,7 @@ env:
   RELEASE_MERGE_SHA: "721726d8da88d1c3a7448e22265af1f817b3f2cd"
   QUALIFICATION_ISSUE_NUMBER: "171"
   QUALIFICATION_HEAD_REF: "issue-171-final-prelive-fixture-staging"
+  QUALIFICATION_BASE_SHA: "25e38846e9dd22129c4d8ca653def1e62b64f715"
   EXPECTED_RELEASE_COMMIT: >-
     ${{ github.event_name == 'pull_request_target' &&
     github.event.pull_request.head.sha || github.sha }}
@@ -130,6 +131,8 @@ jobs:
                   test "${release_pull_base_ref}" = "main"
                   test "${release_pull_base_repository_id}" = \
                     "${EVENT_REPOSITORY_ID}"
+                  if test "${EXPECTED_RELEASE_BASE_COMMIT}" = \
+                    "${QUALIFICATION_BASE_SHA}"; then
                   qualification_pull_payload=""
                   for qualification_lookup_attempt in {1..12}; do
                     qualification_pull_payload="$(
@@ -152,7 +155,18 @@ jobs:
                             (.base.repo.id | tostring)
                           ] | @tsv'
                     )"
+                    qualification_observed_merge_sha=""
                     if test -n "${qualification_pull_payload}"; then
+                      IFS=$'\t' read -r \
+                        _ \
+                        _ \
+                        _ \
+                        qualification_observed_merge_sha \
+                        _ \
+                        <<< "${qualification_pull_payload}"
+                    fi
+                    if test "${qualification_observed_merge_sha}" = \
+                      "${GITHUB_SHA}"; then
                       break
                     fi
                     if test "${qualification_lookup_attempt}" -lt 12; then
@@ -330,7 +344,13 @@ jobs:
                           exit 1
                           ;;
                       esac
+                    else
+                      echo \
+                        "qualification merge identity did not converge" \
+                        >&2
+                      exit 1
                     fi
+                  fi
                   fi
                   ;;
                 false)
