@@ -101,7 +101,9 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
         )
         self.assertEqual(["main"], trigger["push"]["branches"])
 
-    def test_admission_classifies_only_pull_168_and_its_merge_push(self) -> None:
+    def test_admission_separates_release_and_qualification_identity(
+        self,
+    ) -> None:
         workflow = self.workflow()
         admission = workflow["jobs"]["event_admission"]
         boundary = self.step(
@@ -116,23 +118,26 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
             admission["outputs"]["release_required"],
         )
         self.assertEqual("168", workflow["env"]["RELEASE_PULL_NUMBER"])
-        self.assertIn(
-            'if test "${EVENT_PULL_NUMBER}" = "${RELEASE_PULL_NUMBER}"; then',
-            boundary,
+        self.assertEqual(
+            "issue-141-final-prelive-gates",
+            workflow["env"]["RELEASE_HEAD_REF"],
         )
-        self.assertIn(
-            'test -n "${EVENT_HEAD_REPOSITORY}"',
-            boundary,
+        self.assertEqual(
+            "721726d8da88d1c3a7448e22265af1f817b3f2cd",
+            workflow["env"]["RELEASE_MERGE_SHA"],
         )
-        self.assertIn(
-            'test "${EVENT_HEAD_REPOSITORY}" = "${GITHUB_REPOSITORY}"',
-            boundary,
-        )
-        self.assertIn(
-            'test "${EVENT_HEAD_REPOSITORY_ID}" = "${EVENT_REPOSITORY_ID}"',
-            boundary,
+        self.assertEqual("169", workflow["env"]["QUALIFICATION_ISSUE_NUMBER"])
+        self.assertEqual(
+            "issue-169-final-prelive-browser-python",
+            workflow["env"]["QUALIFICATION_HEAD_REF"],
         )
         self.assertIn("pull_request_target)", boundary)
+        pull_request_boundary = boundary.split(
+            "pull_request_target)",
+            maxsplit=1,
+        )[1].split(";;", maxsplit=1)[0]
+        self.assertNotIn("release_required=true", pull_request_boundary)
+        self.assertIn("release_required=false", pull_request_boundary)
         self.assertIn(
             'test "${GITHUB_WORKFLOW_SHA}" = "${EXPECTED_WORKFLOW_COMMIT}"',
             boundary,
@@ -146,9 +151,33 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
         self.assertIn(".merged", boundary)
         self.assertIn(".merge_commit_sha", boundary)
         self.assertIn(
-            'if test "${release_pull_merge_sha}" = "${GITHUB_SHA}"; then',
+            'test "${release_pull_merge_sha}" = "${RELEASE_MERGE_SHA}"',
             boundary,
         )
+        self.assertIn(
+            'test "${release_pull_head_ref}" = "${RELEASE_HEAD_REF}"',
+            boundary,
+        )
+        self.assertIn(
+            '"repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls"',
+            boundary,
+        )
+        self.assertIn('if test "${qualification_head_ref}" =', boundary)
+        self.assertIn('"${QUALIFICATION_HEAD_REF}"; then', boundary)
+        self.assertIn("closingIssuesReferences(first: 10)", boundary)
+        self.assertIn("closedByPullRequestsReferences(first: 10)", boundary)
+        self.assertIn('test "${declared_issue_number}" =', boundary)
+        self.assertIn('test "${closing_pull_number}" =', boundary)
+        self.assertIn('"${qualification_pull_number}"', boundary)
+        self.assertIn('"${QUALIFICATION_ISSUE_NUMBER}"', boundary)
+        self.assertIn(
+            '"repos/${GITHUB_REPOSITORY}/compare/'
+            '${release_pull_merge_sha}...${GITHUB_SHA}"',
+            boundary,
+        )
+        self.assertIn('test "${comparison_base_sha}" =', boundary)
+        self.assertIn('test "${merge_base_sha}" =', boundary)
+        self.assertIn('"${RELEASE_MERGE_SHA}"', boundary)
         self.assertIn("release_required=true", boundary)
         self.assertIn(
             "printf 'release_required=%s\\n' \"${release_required}\"",
@@ -161,6 +190,15 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
         self.assertEqual("classify", classify["id"])
         self.assertEqual("${{ github.token }}", classify["env"]["GH_TOKEN"])
         self.assertEqual("read", admission["permissions"]["pull-requests"])
+        self.assertEqual("read", admission["permissions"]["issues"])
+        build_verify = self.step(
+            workflow["jobs"]["build_identity"],
+            "Verify exact clean release source",
+        )["run"]
+        self.assertIn(
+            'git merge-base --is-ancestor "${RELEASE_MERGE_SHA}" HEAD',
+            build_verify,
+        )
 
     def test_heavy_jobs_run_only_for_admitted_release_events(self) -> None:
         workflow = self.workflow()
@@ -353,6 +391,10 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
     def test_browser_gate_is_real_and_non_skippable(self) -> None:
         browser = self.workflow()["jobs"]["browser_accessibility"]
         install = self.step(browser, "Install pinned browser gate environment")
+        harden = self.step(
+            browser,
+            "Harden trusted verifier and candidate source boundaries",
+        )
         gate = self.step(
             browser,
             "Run non-skippable browser and accessibility gate",
@@ -377,6 +419,37 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
         )
         self.assertIn("--candidate-root", gate["run"])
         self.assertIn("--candidate-uid", gate["run"])
+        self.assertEqual(
+            "/usr/bin/python3",
+            browser["env"]["VOI_BROWSER_SYSTEM_PYTHON"],
+        )
+        self.assertIn(
+            'readlink -f "${VOI_BROWSER_SYSTEM_PYTHON}"',
+            harden["run"],
+        )
+        self.assertIn('test ! -L "${candidate_python}"', harden["run"])
+        self.assertIn('/usr/bin/python3.*)', harden["run"])
+        self.assertIn(
+            '--user="#${VOI_BROWSER_CANDIDATE_UID}"',
+            harden["run"],
+        )
+        self.assertIn(
+            '"${candidate_python}" -I -B -c',
+            harden["run"],
+        )
+        self.assertIn(
+            'VOI_BROWSER_CANDIDATE_PYTHON=%s',
+            harden["run"],
+        )
+        self.assertIn(
+            '"${VOI_BROWSER_CANDIDATE_PYTHON}"',
+            gate["run"],
+        )
+        self.assertNotIn(
+            '--candidate-python \\\n'
+            '              "${TRUSTED_VERIFIER_ROOT}/.venv/bin/python"',
+            gate["run"],
+        )
         self.assertEqual("error", upload["with"]["if-no-files-found"])
 
     def test_sealed_browser_artifact_enforces_one_percent_visual_limit(

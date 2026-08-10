@@ -30,6 +30,10 @@ concurrency:
 env:
   PYTHONDONTWRITEBYTECODE: "1"
   RELEASE_PULL_NUMBER: "168"
+  RELEASE_HEAD_REF: "issue-141-final-prelive-gates"
+  RELEASE_MERGE_SHA: "721726d8da88d1c3a7448e22265af1f817b3f2cd"
+  QUALIFICATION_ISSUE_NUMBER: "169"
+  QUALIFICATION_HEAD_REF: "issue-169-final-prelive-browser-python"
   EXPECTED_RELEASE_COMMIT: >-
     ${{ github.event_name == 'pull_request_target' &&
     github.event.pull_request.head.sha || github.sha }}
@@ -51,6 +55,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      issues: read
       pull-requests: read
     outputs:
       release_required: ${{ steps.classify.outputs.release_required }}
@@ -76,20 +81,11 @@ jobs:
           release_required=false
           case "${GITHUB_EVENT_NAME}" in
             pull_request_target)
-              if test "${EVENT_PULL_NUMBER}" = "${RELEASE_PULL_NUMBER}"; then
-                test -n "${EVENT_HEAD_REPOSITORY}"
-                test "${EVENT_HEAD_REPOSITORY}" = "${GITHUB_REPOSITORY}"
-                test "${EVENT_HEAD_REPOSITORY_ID}" = "${EVENT_REPOSITORY_ID}"
-                test "${EVENT_BASE_REPOSITORY}" = "${GITHUB_REPOSITORY}"
-                test "${EVENT_BASE_REPOSITORY_ID}" = "${EVENT_REPOSITORY_ID}"
-                test "${GITHUB_BASE_REF}" = "main"
-                test "${RELEASE_AUTHORITY}" = \
-                  "trusted_base_candidate_preflight"
-                test "${RELEASE_MODE}" = "ready_to_merge"
-                test "${EXPECTED_RELEASE_BASE_COMMIT}" = \
-                  "${EXPECTED_WORKFLOW_COMMIT}"
-                release_required=true
-              fi
+              test "${GITHUB_BASE_REF}" = "main"
+              test "${RELEASE_AUTHORITY}" = \
+                "trusted_base_candidate_preflight"
+              test "${RELEASE_MODE}" = "ready_to_merge"
+              release_required=false
               ;;
             push)
               test -z "${EVENT_HEAD_REPOSITORY}"
@@ -102,21 +98,213 @@ jobs:
               test "${GITHUB_SHA}" = "${EXPECTED_RELEASE_COMMIT}"
               test "${EXPECTED_WORKFLOW_COMMIT}" = \
                 "${EXPECTED_RELEASE_COMMIT}"
-              read -r release_pull_merged release_pull_merge_sha < <(
+              IFS=$'\t' read -r \
+                release_pull_merged \
+                release_pull_merge_sha \
+                release_pull_head_ref \
+                release_pull_head_repository_id \
+                release_pull_base_ref \
+                release_pull_base_repository_id \
+                < <(
                 gh api \
                   --method GET \
                   -H "Accept: application/vnd.github+json" \
                   -H "X-GitHub-Api-Version: 2022-11-28" \
                   "repos/${GITHUB_REPOSITORY}/pulls/${RELEASE_PULL_NUMBER}" \
                   --jq \
-                    '[.merged, (.merge_commit_sha // "")] | @tsv'
+                    '[
+                      .merged,
+                      (.merge_commit_sha // ""),
+                      .head.ref,
+                      (.head.repo.id | tostring),
+                      .base.ref,
+                      (.base.repo.id | tostring)
+                    ] | @tsv'
               )
               case "${release_pull_merged}" in
                 true)
-                  printf '%s\n' "${release_pull_merge_sha}" \
-                    | grep -Eq '^[0-9a-f]{40}$'
-                  if test "${release_pull_merge_sha}" = "${GITHUB_SHA}"; then
-                    release_required=true
+                  test "${release_pull_merge_sha}" = "${RELEASE_MERGE_SHA}"
+                  test "${release_pull_head_ref}" = "${RELEASE_HEAD_REF}"
+                  test "${release_pull_head_repository_id}" = \
+                    "${EVENT_REPOSITORY_ID}"
+                  test "${release_pull_base_ref}" = "main"
+                  test "${release_pull_base_repository_id}" = \
+                    "${EVENT_REPOSITORY_ID}"
+                  mapfile -t qualification_pulls < <(
+                    gh api \
+                      --method GET \
+                      -H "Accept: application/vnd.github+json" \
+                      -H "X-GitHub-Api-Version: 2022-11-28" \
+                      "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+                      --jq \
+                        '.[] | [
+                          (.number | tostring),
+                          .state,
+                          (.merged_at // ""),
+                          (.merge_commit_sha // ""),
+                          .head.ref,
+                          .head.repo.full_name,
+                          (.head.repo.id | tostring),
+                          .base.ref,
+                          .base.repo.full_name,
+                          (.base.repo.id | tostring)
+                        ] | @tsv'
+                  )
+                  if test "${#qualification_pulls[@]}" -eq 1; then
+                    IFS=$'\t' read -r \
+                      qualification_pull_number \
+                      qualification_state \
+                      qualification_merged_at \
+                      qualification_merge_sha \
+                      qualification_head_ref \
+                      qualification_head_repository \
+                      qualification_head_repository_id \
+                      qualification_base_ref \
+                      qualification_base_repository \
+                      qualification_base_repository_id \
+                      <<< "${qualification_pulls[0]}"
+                    if test "${qualification_head_ref}" = \
+                      "${QUALIFICATION_HEAD_REF}"; then
+                      printf '%s\n' "${qualification_pull_number}" \
+                        | grep -Eq '^[1-9][0-9]*$'
+                      test "${qualification_state}" = "closed"
+                      test -n "${qualification_merged_at}"
+                      test "${qualification_merge_sha}" = "${GITHUB_SHA}"
+                      test "${qualification_head_repository}" = \
+                        "${GITHUB_REPOSITORY}"
+                      test "${qualification_head_repository_id}" = \
+                        "${EVENT_REPOSITORY_ID}"
+                      test "${qualification_base_ref}" = "main"
+                      test "${qualification_base_repository}" = \
+                        "${GITHUB_REPOSITORY}"
+                      test "${qualification_base_repository_id}" = \
+                        "${EVENT_REPOSITORY_ID}"
+                      IFS=$'\t' read -r \
+                        declared_issue_count \
+                        declared_issue_number \
+                        declared_issue_has_next_page \
+                        declared_issue_repository \
+                        qualification_issue_number \
+                        qualification_issue_state \
+                        qualification_issue_state_reason \
+                        closing_pull_count \
+                        closing_pull_number \
+                        closing_pull_has_next_page \
+                        closing_pull_repository \
+                        < <(
+                        gh api graphql \
+                          -F owner="${GITHUB_REPOSITORY_OWNER}" \
+                          -F name="${GITHUB_REPOSITORY#*/}" \
+                          -F number="${qualification_pull_number}" \
+                          -F issue="${QUALIFICATION_ISSUE_NUMBER}" \
+                          -f query='
+                            query(
+                              $owner: String!,
+                              $name: String!,
+                              $number: Int!,
+                              $issue: Int!
+                            ) {
+                              repository(owner: $owner, name: $name) {
+                                pullRequest(number: $number) {
+                                  closingIssuesReferences(first: 10) {
+                                    nodes {
+                                      number
+                                      repository { nameWithOwner }
+                                    }
+                                    pageInfo { hasNextPage }
+                                  }
+                                }
+                                issue(number: $issue) {
+                                  number
+                                  state
+                                  stateReason
+                                  closedByPullRequestsReferences(first: 10) {
+                                    nodes {
+                                      number
+                                      repository { nameWithOwner }
+                                    }
+                                    pageInfo { hasNextPage }
+                                  }
+                                }
+                              }
+                            }' \
+                          --jq \
+                            '[
+                              (.data.repository.pullRequest
+                                .closingIssuesReferences.nodes | length),
+                              (.data.repository.pullRequest
+                                .closingIssuesReferences.nodes[0].number // 0),
+                              (.data.repository.pullRequest
+                                .closingIssuesReferences.pageInfo
+                                .hasNextPage),
+                              (.data.repository.pullRequest
+                                .closingIssuesReferences.nodes[0]
+                                .repository.nameWithOwner // ""),
+                              (.data.repository.issue.number // 0),
+                              (.data.repository.issue.state // ""),
+                              (.data.repository.issue.stateReason // ""),
+                              (.data.repository.issue
+                                .closedByPullRequestsReferences.nodes | length),
+                              (.data.repository.issue
+                                .closedByPullRequestsReferences.nodes[0]
+                                .number // 0),
+                              (.data.repository.issue
+                                .closedByPullRequestsReferences.pageInfo
+                                .hasNextPage),
+                              (.data.repository.issue
+                                .closedByPullRequestsReferences.nodes[0]
+                                .repository.nameWithOwner // "")
+                            ] | @tsv'
+                      )
+                      test "${declared_issue_count}" -eq 1
+                      test "${declared_issue_number}" = \
+                        "${QUALIFICATION_ISSUE_NUMBER}"
+                      test "${declared_issue_has_next_page}" = "false"
+                      test "${declared_issue_repository}" = \
+                        "${GITHUB_REPOSITORY}"
+                      test "${qualification_issue_number}" = \
+                        "${QUALIFICATION_ISSUE_NUMBER}"
+                      test "${qualification_issue_state}" = "CLOSED"
+                      test "${qualification_issue_state_reason}" = "COMPLETED"
+                      test "${closing_pull_count}" -eq 1
+                      test "${closing_pull_number}" = \
+                        "${qualification_pull_number}"
+                      test "${closing_pull_has_next_page}" = "false"
+                      test "${closing_pull_repository}" = \
+                        "${GITHUB_REPOSITORY}"
+                      IFS=$'\t' read -r \
+                        comparison_status \
+                        comparison_base_sha \
+                        merge_base_sha \
+                        < <(
+                        gh api \
+                          --method GET \
+                          -H "Accept: application/vnd.github+json" \
+                          -H "X-GitHub-Api-Version: 2022-11-28" \
+                          "repos/${GITHUB_REPOSITORY}/compare/${release_pull_merge_sha}...${GITHUB_SHA}" \
+                          --jq \
+                            '[
+                              .status,
+                              .base_commit.sha,
+                              .merge_base_commit.sha
+                            ] | @tsv'
+                      )
+                      case "${comparison_status}" in
+                        ahead|identical)
+                          test "${comparison_base_sha}" = \
+                            "${RELEASE_MERGE_SHA}"
+                          test "${merge_base_sha}" = \
+                            "${RELEASE_MERGE_SHA}"
+                          release_required=true
+                          ;;
+                        *)
+                          echo \
+                            "release PR merge is not a qualification ancestor" \
+                            >&2
+                          exit 1
+                          ;;
+                      esac
+                    fi
                   fi
                   ;;
                 false)
@@ -203,6 +391,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "${EXPECTED_RELEASE_COMMIT}"
+          git merge-base --is-ancestor "${RELEASE_MERGE_SHA}" HEAD
           test "$(
             git rev-parse --verify \
               "${EXPECTED_RELEASE_BASE_COMMIT}^{commit}"
@@ -495,6 +684,7 @@ jobs:
       TRUSTED_VERIFIER_ROOT: ${{ github.workspace }}/trusted-verifier
       VOI_BROWSER_CANDIDATE_UID: "65001"
       VOI_BROWSER_CANDIDATE_GID: "65001"
+      VOI_BROWSER_SYSTEM_PYTHON: /usr/bin/python3
     outputs:
       artifact_id: ${{ steps.upload-browser.outputs.artifact-id }}
       artifact_digest: ${{ steps.upload-browser.outputs.artifact-digest }}
@@ -558,6 +748,38 @@ jobs:
           sudo chmod -R u=rwX,go=rX \
             "${TRUSTED_VERIFIER_ROOT}" \
             "${CANDIDATE_ROOT}"
+          candidate_python="$(
+            readlink -f "${VOI_BROWSER_SYSTEM_PYTHON}"
+          )"
+          test -n "${candidate_python}"
+          test -f "${candidate_python}"
+          test ! -L "${candidate_python}"
+          test -x "${candidate_python}"
+          case "${candidate_python}" in
+            /usr/bin/python3|/usr/bin/python3.*)
+              ;;
+            *)
+              echo "candidate Python resolved outside /usr/bin" >&2
+              exit 1
+              ;;
+          esac
+          sudo \
+            --non-interactive \
+            --user="#${VOI_BROWSER_CANDIDATE_UID}" \
+            --group="#${VOI_BROWSER_CANDIDATE_GID}" \
+            -- \
+            /usr/bin/env -i \
+              HOME=/tmp \
+              LANG=C.UTF-8 \
+              LC_ALL=C.UTF-8 \
+              PATH=/usr/bin:/bin \
+              PYTHONDONTWRITEBYTECODE=1 \
+              "${candidate_python}" -I -B -c \
+                'import os,sys; assert os.getuid()==int(sys.argv[1]); assert os.getgid()==int(sys.argv[2]); assert sys.flags.isolated==1' \
+                "${VOI_BROWSER_CANDIDATE_UID}" \
+                "${VOI_BROWSER_CANDIDATE_GID}"
+          printf 'VOI_BROWSER_CANDIDATE_PYTHON=%s\n' \
+            "${candidate_python}" >> "${GITHUB_ENV}"
       - name: Run non-skippable browser and accessibility gate
         run: |
           set -euo pipefail
@@ -571,7 +793,7 @@ jobs:
               "${TRUSTED_VERIFIER_ROOT}/tests/browser_baselines" \
             --candidate-root "${CANDIDATE_ROOT}" \
             --candidate-python \
-              "${TRUSTED_VERIFIER_ROOT}/.venv/bin/python" \
+              "${VOI_BROWSER_CANDIDATE_PYTHON}" \
             --candidate-uid "${VOI_BROWSER_CANDIDATE_UID}" \
             --candidate-gid "${VOI_BROWSER_CANDIDATE_GID}"
           "${TRUSTED_VERIFIER_ROOT}/.venv/bin/python" - <<'PY'
@@ -1492,7 +1714,8 @@ jobs:
           {
             echo "## Final pre-live"
             echo
-            echo "This event is not the PR #168 release lifecycle."
+            echo "This event is not the exact issue #169 qualification merge"
+            echo "for release PR #168 and closing issue #141."
             echo "The final pre-live release gate is not applicable."
           } >> "${GITHUB_STEP_SUMMARY}"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262

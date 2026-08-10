@@ -1409,7 +1409,7 @@ def _verify_ready_for_live_qa(
     ):
         blockers.append({"code": "invalid_release_completion_contract"})
         return []
-    _verify_release_pull_contract(
+    release_pull = _verify_release_pull_contract(
         config,
         status=status,
         pull_number=release_pull_number,
@@ -1458,7 +1458,7 @@ def _verify_ready_for_live_qa(
                 or len(accepted_pulls) != 1
                 or accepted_pulls[0].get("number") != release_pull_number
                 or accepted_pulls[0].get("merge_commit_sha")
-                != config.expected_repository_sha
+                != release_pull.get("merge_commit_sha")
             ):
                 blockers.append(
                     {
@@ -1498,14 +1498,14 @@ def _verify_release_pull_contract(
     pull_number: int,
     require_merged: bool,
     blockers: list[dict[str, object]],
-) -> None:
+) -> Mapping[str, object]:
     repository = str(status.get("repository", ""))
     main_branch = str(status.get("main_branch", ""))
     try:
         pull = config.github_adapter.get_pull_request(repository, pull_number)
     except Exception:
         blockers.append({"code": "github_release_pull_lookup_failed"})
-        return
+        return {}
     identity_valid = (
         pull_number == _release_pull_number(status)
         and pull.get("number") == pull_number
@@ -1525,13 +1525,32 @@ def _verify_release_pull_contract(
     if not identity_valid:
         blockers.append({"code": "release_pull_identity_mismatch"})
     if require_merged:
+        merge_commit_sha = pull.get("merge_commit_sha")
         if (
             str(pull.get("state", "")).lower() != "closed"
             or pull.get("merged") is not True
             or not isinstance(pull.get("merged_at"), str)
-            or pull.get("merge_commit_sha") != config.expected_repository_sha
+            or not isinstance(merge_commit_sha, str)
+            or SHA40_RE.fullmatch(merge_commit_sha) is None
         ):
             blockers.append({"code": "release_pull_merge_state_mismatch"})
+        else:
+            try:
+                comparison = config.github_adapter.compare_commits(
+                    repository,
+                    merge_commit_sha,
+                    config.expected_repository_sha,
+                )
+            except Exception:
+                blockers.append({"code": "release_pull_ancestry_lookup_failed"})
+            else:
+                if (
+                    comparison.get("status") not in {"ahead", "identical"}
+                    or comparison.get("merge_base_sha") != merge_commit_sha
+                ):
+                    blockers.append(
+                        {"code": "release_pull_not_ancestor_of_candidate"}
+                    )
     elif (
         str(pull.get("state", "")).lower() != "open"
         or pull.get("merged") is not False
@@ -1561,6 +1580,7 @@ def _verify_release_pull_contract(
                 ],
             }
         )
+    return pull
 
 
 def _closing_declarations(
