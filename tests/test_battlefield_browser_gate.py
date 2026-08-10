@@ -4,10 +4,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import starcraft_commander.battlefield_browser_gate as browser_gate
 from starcraft_commander.battlefield_browser_gate import (
     BrowserGateConfig,
     PIXEL_CHANNEL_TOLERANCE,
     VISUAL_DIFF_THRESHOLD,
+    _CandidateFixtureProcess,
+    _FIXTURE_BOOTSTRAP,
     _BrowserFixtureBridge,
     _BrowserFixtureLauncher,
     _pixel_diff,
@@ -64,6 +67,52 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
                             artifact_dir=root,
                             chromium_executable=executable,
                         )
+
+    def test_candidate_fixture_command_is_an_isolated_subprocess(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = BrowserGateConfig(
+                repository_sha=REPOSITORY_SHA,
+                build_identity=BUILD_IDENTITY,
+                artifact_dir=Path(directory),
+            )
+
+            command = _CandidateFixtureProcess(config)._command()
+
+            self.assertEqual(str(config.candidate_python), command[0])
+            self.assertEqual(["-I", "-B", "-c"], command[1:4])
+            self.assertEqual(_FIXTURE_BOOTSTRAP, command[4])
+            self.assertEqual(str(config.candidate_root), command[5])
+            self.assertEqual(
+                str(Path(browser_gate.__file__).resolve()),
+                command[6],
+            )
+
+    def test_candidate_fixture_dedicated_identity_uses_numeric_sudo(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = BrowserGateConfig(
+                repository_sha=REPOSITORY_SHA,
+                build_identity=BUILD_IDENTITY,
+                artifact_dir=Path(directory),
+                candidate_uid=65001,
+                candidate_gid=65001,
+            )
+
+            command = _CandidateFixtureProcess(config)._command()
+
+            self.assertEqual("/usr/bin/sudo", command[0])
+            self.assertIn("--user=#65001", command)
+            self.assertIn("--group=#65001", command)
+            self.assertIn("--", command)
+
+    def test_release_cli_cannot_update_tracked_baselines(self) -> None:
+        parser = browser_gate.build_argument_parser()
+        option_strings = {
+            option
+            for action in parser._actions
+            for option in action.option_strings
+        }
+
+        self.assertNotIn("--update-baselines", option_strings)
 
     def test_fixture_status_preserves_four_lane_inputs(self) -> None:
         bridge = _BrowserFixtureBridge()

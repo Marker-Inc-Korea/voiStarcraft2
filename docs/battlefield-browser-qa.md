@@ -35,7 +35,7 @@ feel, and human multiplayer are not automated by this gate.
 Install the pinned Python environment and the pinned Playwright Chromium:
 
 ```bash
-uv sync --locked --extra dev
+uv sync --locked --extra browser
 uv run playwright install --with-deps chromium
 ```
 
@@ -61,25 +61,21 @@ or launch is unavailable.
 
 ## Baseline Updates
 
-Baseline changes are intentional review events, not automatic test repairs.
+Baseline changes are intentional hosted review events, not a release-gate
+write mode. The authoritative gate only reads tracked baselines.
 
-1. Run the gate against a clean exact candidate with
-   `--update-baselines`.
-2. Inspect `tests/browser_baselines/desktop.png` and
+1. Add an unprivileged, PR-only diagnostic step that runs the exact candidate
+   on GitHub-hosted Chromium and uploads `screenshots/desktop.png` and
+   `screenshots/mobile.png` even when the tracked visual comparison fails.
+2. Bind the diagnostic manifest to the candidate SHA, workflow SHA, viewport
+   sizes, Playwright/Chromium versions, and both PNG SHA-256 digests.
+3. Inspect both hosted screenshots before replacing
+   `tests/browser_baselines/desktop.png` and
    `tests/browser_baselines/mobile.png`.
-3. Re-run without `--update-baselines` and inspect actual/diff artifacts.
-4. Include the baseline change and rationale in the PR.
-5. Require the exact-SHA independent reviewer to approve the visual contract.
-
-```bash
-uv run python -m starcraft_commander.battlefield_browser_gate \
-  --repository-sha "$(git rev-parse HEAD)" \
-  --build-identity "sha256:<64 lowercase hex characters>" \
-  --artifact-dir battlefield-browser-artifacts \
-  --update-baselines
-```
-
-CI always runs without `--update-baselines`.
+4. Remove the temporary generation step, rerun the normal read-only gate, and
+   include the baseline rationale in the PR.
+5. Require the exact-SHA independent reviewer to approve the resulting visual
+   contract.
 
 ## Artifacts
 

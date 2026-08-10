@@ -8,6 +8,7 @@ import yaml
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = REPOSITORY_ROOT / ".github" / "workflows" / "final-pre-live.yml"
 EXPECTED_JOBS = {
+    "event_admission",
     "build_identity",
     "deterministic_journeys",
     "browser_accessibility",
@@ -101,15 +102,24 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
 
     def test_admission_fails_foreign_repository_without_job_skip(self) -> None:
         workflow = self.workflow()
-        build = workflow["jobs"]["build_identity"]
+        admission = workflow["jobs"]["event_admission"]
         boundary = self.step(
-            build,
-            "Verify event and workflow authority boundary",
+            admission,
+            "Admit exact same-repository release event before checkout",
         )["run"]
 
-        self.assertNotIn("if", build)
+        self.assertNotIn("if", admission)
+        self.assertEqual([], self.checkouts(admission))
         self.assertIn(
-            'test "${EXPECTED_HEAD_REPOSITORY}" = "${GITHUB_REPOSITORY}"',
+            'test -n "${EVENT_HEAD_REPOSITORY}"',
+            boundary,
+        )
+        self.assertIn(
+            'test "${EVENT_HEAD_REPOSITORY}" = "${GITHUB_REPOSITORY}"',
+            boundary,
+        )
+        self.assertIn(
+            'test "${EVENT_HEAD_REPOSITORY_ID}" = "${EVENT_REPOSITORY_ID}"',
             boundary,
         )
         self.assertIn("pull_request_target)", boundary)
@@ -125,9 +135,6 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
 
         for name in {
             "build_identity",
-            "deterministic_journeys",
-            "browser_accessibility",
-            "distribution_compliance",
             "seal_child_artifacts",
         }:
             with self.subTest(job=name):
@@ -139,7 +146,13 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
                     checkouts[0]["with"]["ref"],
                 )
 
-        for name in {"pre_live_provenance", "final_release_gate"}:
+        for name in {
+            "deterministic_journeys",
+            "browser_accessibility",
+            "distribution_compliance",
+            "pre_live_provenance",
+            "final_release_gate",
+        }:
             with self.subTest(job=name):
                 checkouts = self.checkouts(workflow["jobs"][name])
                 self.assertEqual(2, len(checkouts))
@@ -216,6 +229,7 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
                 "deterministic_journeys",
                 "browser_accessibility",
                 "distribution_compliance",
+                "event_admission",
                 "pre_live_provenance",
                 "seal_child_artifacts",
             },
@@ -234,7 +248,7 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
             if "uses" in step
         ]
 
-        self.assertEqual(27, len(action_uses))
+        self.assertEqual(30, len(action_uses))
         for action in action_uses:
             with self.subTest(action=action):
                 self.assertRegex(action, r"^[^@\s]+@[0-9a-f]{40}$")
@@ -254,13 +268,18 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
         self.assertNotIn("continue-on-error", install)
         self.assertNotIn("continue-on-error", gate)
         self.assertIn(
-            ".venv/bin/playwright install --with-deps chromium",
+            "install --with-deps chromium",
             install["run"],
         )
+        self.assertIn("--extra browser", install["run"])
+        self.assertNotIn("requirements-browser.txt", install["run"])
         self.assertIn(
-            "starcraft_commander.battlefield_browser_gate",
+            "${TRUSTED_VERIFIER_ROOT}/starcraft_commander/"
+            "battlefield_browser_gate.py",
             gate["run"],
         )
+        self.assertIn("--candidate-root", gate["run"])
+        self.assertIn("--candidate-uid", gate["run"])
         self.assertEqual("error", upload["with"]["if-no-files-found"])
 
     def test_exact_child_ids_and_digests_are_sealed(self) -> None:
@@ -295,6 +314,9 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
             self.assertNotIn("name", download["with"])
         self.assertIn("archive_sha256", seal_source)
         self.assertIn("ARTIFACT_DIGEST", seal_source)
+        self.assertIn("validate_child", seal_source)
+        self.assertIn("candidate_web_gui_sha256", seal_source)
+        self.assertIn("verifier_sha", seal_source)
 
     def test_final_gate_uses_sealed_artifact_and_enforces_verdict(self) -> None:
         final = self.workflow()["jobs"]["final_release_gate"]

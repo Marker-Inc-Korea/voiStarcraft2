@@ -36,9 +36,6 @@ env:
     ${{ github.event_name == 'pull_request_target' &&
     github.event.pull_request.base.sha || github.event.before }}
   EXPECTED_WORKFLOW_COMMIT: ${{ github.sha }}
-  EXPECTED_HEAD_REPOSITORY: >-
-    ${{ github.event_name == 'pull_request_target' &&
-    github.event.pull_request.head.repo.full_name || github.repository }}
   RELEASE_MODE: >-
     ${{ github.event_name == 'pull_request_target' &&
     'ready_to_merge' || 'ready_for_live_qa' }}
@@ -47,8 +44,69 @@ env:
     'trusted_base_candidate_preflight' || 'authoritative_exact_main' }}
 
 jobs:
+  event_admission:
+    name: event-admission
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      EVENT_HEAD_REPOSITORY: >-
+        ${{ github.event.pull_request.head.repo.full_name }}
+      EVENT_HEAD_REPOSITORY_ID: >-
+        ${{ github.event.pull_request.head.repo.id }}
+      EVENT_BASE_REPOSITORY: >-
+        ${{ github.event.pull_request.base.repo.full_name }}
+      EVENT_BASE_REPOSITORY_ID: >-
+        ${{ github.event.pull_request.base.repo.id }}
+      EVENT_REPOSITORY_ID: ${{ github.event.repository.id }}
+    steps:
+      - name: Admit exact same-repository release event before checkout
+        run: |
+          set -euo pipefail
+          test "${GITHUB_WORKFLOW_SHA}" = "${EXPECTED_WORKFLOW_COMMIT}"
+          case "${GITHUB_EVENT_NAME}" in
+            pull_request_target)
+              test -n "${EVENT_HEAD_REPOSITORY}"
+              test "${EVENT_HEAD_REPOSITORY}" = "${GITHUB_REPOSITORY}"
+              test "${EVENT_HEAD_REPOSITORY_ID}" = "${EVENT_REPOSITORY_ID}"
+              test "${EVENT_BASE_REPOSITORY}" = "${GITHUB_REPOSITORY}"
+              test "${EVENT_BASE_REPOSITORY_ID}" = "${EVENT_REPOSITORY_ID}"
+              test "${GITHUB_BASE_REF}" = "main"
+              test "${RELEASE_AUTHORITY}" = \
+                "trusted_base_candidate_preflight"
+              test "${RELEASE_MODE}" = "ready_to_merge"
+              test "${EXPECTED_RELEASE_BASE_COMMIT}" = \
+                "${EXPECTED_WORKFLOW_COMMIT}"
+              ;;
+            push)
+              test -z "${EVENT_HEAD_REPOSITORY}"
+              test -z "${EVENT_HEAD_REPOSITORY_ID}"
+              test -z "${EVENT_BASE_REPOSITORY}"
+              test -z "${EVENT_BASE_REPOSITORY_ID}"
+              test "${GITHUB_REF}" = "refs/heads/main"
+              test "${RELEASE_AUTHORITY}" = "authoritative_exact_main"
+              test "${RELEASE_MODE}" = "ready_for_live_qa"
+              test "${GITHUB_SHA}" = "${EXPECTED_RELEASE_COMMIT}"
+              test "${EXPECTED_WORKFLOW_COMMIT}" = \
+                "${EXPECTED_RELEASE_COMMIT}"
+              ;;
+            *)
+              echo "unsupported final release event" >&2
+              exit 1
+              ;;
+          esac
+          test "$(
+            printf '%s\n%s\n' \
+              "${EXPECTED_RELEASE_COMMIT}" \
+              "${EXPECTED_RELEASE_BASE_COMMIT}" \
+              | grep -Ec '^[0-9a-f]{40}$'
+          )" -eq 2
+
   build_identity:
     name: build-identity
+    needs:
+      - event_admission
     runs-on: macos-14
     timeout-minutes: 90
     permissions:
@@ -75,10 +133,9 @@ jobs:
           path: candidate
           persist-credentials: false
           ref: ${{ env.EXPECTED_RELEASE_COMMIT }}
-      - name: Verify event and workflow authority boundary
+      - name: Verify admitted workflow authority boundary
         run: |
           set -euo pipefail
-          test "${EXPECTED_HEAD_REPOSITORY}" = "${GITHUB_REPOSITORY}"
           test "${GITHUB_WORKFLOW_SHA}" = "${EXPECTED_WORKFLOW_COMMIT}"
           case "${GITHUB_EVENT_NAME}" in
             pull_request_target)
@@ -96,10 +153,6 @@ jobs:
               test "${GITHUB_SHA}" = "${EXPECTED_RELEASE_COMMIT}"
               test "${EXPECTED_WORKFLOW_COMMIT}" = \
                 "${EXPECTED_RELEASE_COMMIT}"
-              ;;
-            *)
-              echo "unsupported final release event" >&2
-              exit 1
               ;;
           esac
       - name: Verify exact clean release source
@@ -166,6 +219,7 @@ jobs:
               "repository_sha": os.environ["EXPECTED_RELEASE_COMMIT"],
               "schema_version": 1,
               "status": "passed",
+              "verifier_sha": os.environ["EXPECTED_WORKFLOW_COMMIT"],
           }
           payload = (
               json.dumps(
@@ -214,6 +268,7 @@ jobs:
   deterministic_journeys:
     name: deterministic-14-journeys
     needs:
+      - event_admission
       - build_identity
     runs-on: macos-14
     timeout-minutes: 90
@@ -225,6 +280,8 @@ jobs:
         working-directory: candidate
     env:
       ROOT_DIR: /private/tmp/voi-micromachine-runtime
+      CANDIDATE_ROOT: ${{ github.workspace }}/candidate
+      TRUSTED_VERIFIER_ROOT: ${{ github.workspace }}/trusted-verifier
       MICROMACHINE_BINARY: >-
         /private/tmp/voi-micromachine-runtime/MicroMachine/build-latest-api/bin/MicroMachine
       BUILD_IDENTITY: ${{ needs.build_identity.outputs.build_identity }}
@@ -235,14 +292,30 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
+          path: trusted-verifier
+          persist-credentials: false
+          ref: ${{ env.EXPECTED_WORKFLOW_COMMIT }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
           path: candidate
           persist-credentials: false
           ref: ${{ env.EXPECTED_RELEASE_COMMIT }}
-      - name: Verify exact clean release source
+      - name: Verify trusted verifier and exact clean release source
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "${EXPECTED_RELEASE_COMMIT}"
-          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          test "$(git -C "${TRUSTED_VERIFIER_ROOT}" rev-parse HEAD)" = \
+            "${EXPECTED_WORKFLOW_COMMIT}"
+          test "$(git -C "${CANDIDATE_ROOT}" rev-parse HEAD)" = \
+            "${EXPECTED_RELEASE_COMMIT}"
+          test -z "$(
+            git -C "${TRUSTED_VERIFIER_ROOT}" \
+              status --porcelain=v1 --untracked-files=all
+          )"
+          test -z "$(
+            git -C "${CANDIDATE_ROOT}" \
+              status --porcelain=v1 --untracked-files=all
+          )"
       - name: Download exact runtime handoff
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -260,9 +333,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/deterministic-journeys"
-          PYTHONPATH="${PWD}" \
-            python3 -B -m \
-              starcraft_commander.micromachine_pre_live_journeys \
+          PYTHONPATH="${TRUSTED_VERIFIER_ROOT}" \
+            python3 -B \
+              "${TRUSTED_VERIFIER_ROOT}/starcraft_commander/micromachine_pre_live_journeys.py" \
+              --manifest \
+              "${CANDIDATE_ROOT}/integrations/micromachine/PRE_LIVE_JOURNEYS.json" \
               --micromachine-binary "${MICROMACHINE_BINARY}" \
               --emit-bundle \
               "${RUNNER_TEMP}/deterministic-journeys/pre-live-journeys.zip" \
@@ -280,6 +355,9 @@ jobs:
           )
           manifest = json.loads(
               Path(
+                  os.environ["CANDIDATE_ROOT"]
+              )
+              .joinpath(
                   "integrations/micromachine/PRE_LIVE_JOURNEYS.json"
               ).read_text(encoding="utf-8")
           )
@@ -314,6 +392,7 @@ jobs:
               "schema_version": 1,
               "status": "passed",
               "suite_id": manifest["suite_id"],
+              "verifier_sha": os.environ["EXPECTED_WORKFLOW_COMMIT"],
           }
           payload = (
               json.dumps(
@@ -353,6 +432,10 @@ jobs:
         working-directory: candidate
     env:
       BUILD_IDENTITY: ${{ needs.build_identity.outputs.build_identity }}
+      CANDIDATE_ROOT: ${{ github.workspace }}/candidate
+      TRUSTED_VERIFIER_ROOT: ${{ github.workspace }}/trusted-verifier
+      VOI_BROWSER_CANDIDATE_UID: "65001"
+      VOI_BROWSER_CANDIDATE_GID: "65001"
     outputs:
       artifact_id: ${{ steps.upload-browser.outputs.artifact-id }}
       artifact_digest: ${{ steps.upload-browser.outputs.artifact-digest }}
@@ -360,14 +443,30 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
+          path: trusted-verifier
+          persist-credentials: false
+          ref: ${{ env.EXPECTED_WORKFLOW_COMMIT }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
           path: candidate
           persist-credentials: false
           ref: ${{ env.EXPECTED_RELEASE_COMMIT }}
-      - name: Verify exact clean release source
+      - name: Verify trusted verifier and exact clean release source
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "${EXPECTED_RELEASE_COMMIT}"
-          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          test "$(git -C "${TRUSTED_VERIFIER_ROOT}" rev-parse HEAD)" = \
+            "${EXPECTED_WORKFLOW_COMMIT}"
+          test "$(git -C "${CANDIDATE_ROOT}" rev-parse HEAD)" = \
+            "${EXPECTED_RELEASE_COMMIT}"
+          test -z "$(
+            git -C "${TRUSTED_VERIFIER_ROOT}" \
+              status --porcelain=v1 --untracked-files=all
+          )"
+          test -z "$(
+            git -C "${CANDIDATE_ROOT}" \
+              status --porcelain=v1 --untracked-files=all
+          )"
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
         with:
           enable-cache: true
@@ -375,22 +474,51 @@ jobs:
         run: |
           set -euo pipefail
           uv python install 3.12
-          uv sync --locked --python 3.12 --extra dev
-          uv pip install \
-            --python .venv/bin/python \
-            --requirements requirements-browser.txt
-          .venv/bin/playwright install --with-deps chromium
+          uv sync \
+            --locked \
+            --python 3.12 \
+            --project "${TRUSTED_VERIFIER_ROOT}" \
+            --extra browser
+          "${TRUSTED_VERIFIER_ROOT}/.venv/bin/playwright" \
+            install --with-deps chromium
+      - name: Harden trusted verifier and candidate source boundaries
+        run: |
+          set -euo pipefail
+          sudo groupadd \
+            --gid "${VOI_BROWSER_CANDIDATE_GID}" \
+            voi-browser-candidate
+          sudo useradd \
+            --uid "${VOI_BROWSER_CANDIDATE_UID}" \
+            --gid "${VOI_BROWSER_CANDIDATE_GID}" \
+            --no-create-home \
+            --shell /usr/sbin/nologin \
+            voi-browser-candidate
+          sudo chown -RP 0:0 \
+            "${TRUSTED_VERIFIER_ROOT}" \
+            "${CANDIDATE_ROOT}"
+          sudo chmod -R u=rwX,go=rX \
+            "${TRUSTED_VERIFIER_ROOT}" \
+            "${CANDIDATE_ROOT}"
       - name: Run non-skippable browser and accessibility gate
         run: |
           set -euo pipefail
-          .venv/bin/python -m \
-            starcraft_commander.battlefield_browser_gate \
+          PYTHONPATH="${TRUSTED_VERIFIER_ROOT}" \
+            "${TRUSTED_VERIFIER_ROOT}/.venv/bin/python" -B \
+            "${TRUSTED_VERIFIER_ROOT}/starcraft_commander/battlefield_browser_gate.py" \
             --repository-sha "${EXPECTED_RELEASE_COMMIT}" \
             --build-identity "${BUILD_IDENTITY}" \
-            --artifact-dir "${RUNNER_TEMP}/browser-accessibility"
-          .venv/bin/python - <<'PY'
+            --artifact-dir "${RUNNER_TEMP}/browser-accessibility" \
+            --baseline-dir \
+              "${TRUSTED_VERIFIER_ROOT}/tests/browser_baselines" \
+            --candidate-root "${CANDIDATE_ROOT}" \
+            --candidate-python \
+              "${TRUSTED_VERIFIER_ROOT}/.venv/bin/python" \
+            --candidate-uid "${VOI_BROWSER_CANDIDATE_UID}" \
+            --candidate-gid "${VOI_BROWSER_CANDIDATE_GID}"
+          "${TRUSTED_VERIFIER_ROOT}/.venv/bin/python" - <<'PY'
           import json
           import os
+          import re
           from pathlib import Path
 
           root = Path(os.environ["RUNNER_TEMP"]) / "browser-accessibility"
@@ -415,6 +543,8 @@ jobs:
               viewports.append(
                   {
                       "cards": structural.get("cards"),
+                      "actual_sha256": item.get("actual_sha256"),
+                      "baseline_sha256": item.get("baseline_sha256"),
                       "name": item.get("name"),
                       "serious_critical_count": accessibility.get(
                           "serious_critical_count"
@@ -424,15 +554,24 @@ jobs:
               )
           projection = {
               "build_identity": source["build_identity"],
+              "candidate_web_gui_sha256": source.get(
+                  "candidate_web_gui_sha256"
+              ),
               "manual_live_qa_remaining": True,
               "ok": True,
               "producer": "browser_accessibility",
               "repository_sha": source["repository_sha"],
               "schema_version": 1,
               "status": "passed",
+              "verifier_sha": os.environ["EXPECTED_WORKFLOW_COMMIT"],
               "viewports": viewports,
               "visual_diff_threshold": source.get("visual_diff_threshold"),
           }
+          if re.fullmatch(
+              r"[0-9a-f]{64}",
+              str(projection["candidate_web_gui_sha256"]),
+          ) is None:
+              raise SystemExit("candidate WebGui digest is invalid")
           payload = (
               json.dumps(
                   projection,
@@ -468,10 +607,18 @@ jobs:
         working-directory: candidate
     env:
       BUILD_IDENTITY: ${{ needs.build_identity.outputs.build_identity }}
+      CANDIDATE_ROOT: ${{ github.workspace }}/candidate
+      TRUSTED_VERIFIER_ROOT: ${{ github.workspace }}/trusted-verifier
     outputs:
       artifact_id: ${{ steps.upload-distribution.outputs.artifact-id }}
       artifact_digest: ${{ steps.upload-distribution.outputs.artifact-digest }}
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          path: trusted-verifier
+          persist-credentials: false
+          ref: ${{ env.EXPECTED_WORKFLOW_COMMIT }}
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
@@ -485,17 +632,24 @@ jobs:
         run: |
           set -euo pipefail
           uv python install 3.12
-          uv sync --locked --python 3.12 --extra dev
-      - name: Verify exact release source and range
+          uv sync \
+            --locked \
+            --python 3.12 \
+            --project "${TRUSTED_VERIFIER_ROOT}" \
+            --extra dev
+      - name: Verify trusted verifier and exact release source and range
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "${EXPECTED_RELEASE_COMMIT}"
+          test "$(git -C "${TRUSTED_VERIFIER_ROOT}" rev-parse HEAD)" = \
+            "${EXPECTED_WORKFLOW_COMMIT}"
+          test "$(git -C "${CANDIDATE_ROOT}" rev-parse HEAD)" = \
+            "${EXPECTED_RELEASE_COMMIT}"
           test "$(
-            git rev-parse --verify \
+            git -C "${CANDIDATE_ROOT}" rev-parse --verify \
               "${EXPECTED_RELEASE_BASE_COMMIT}^{commit}"
           )" = "${EXPECTED_RELEASE_BASE_COMMIT}"
           merge_base="$(
-            git merge-base \
+            git -C "${CANDIDATE_ROOT}" merge-base \
               "${EXPECTED_RELEASE_BASE_COMMIT}" \
               "${EXPECTED_RELEASE_COMMIT}"
           )"
@@ -503,18 +657,26 @@ jobs:
           if test "${GITHUB_EVENT_NAME}" = "push"; then
             test "${merge_base}" = "${EXPECTED_RELEASE_BASE_COMMIT}"
           fi
-          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          test -z "$(
+            git -C "${TRUSTED_VERIFIER_ROOT}" \
+              status --porcelain=v1 --untracked-files=all
+          )"
+          test -z "$(
+            git -C "${CANDIDATE_ROOT}" \
+              status --porcelain=v1 --untracked-files=all
+          )"
       - name: Build and verify public distribution
         run: |
           set -euo pipefail
-          uv run --python 3.12 python -m \
-            starcraft_commander.distribution_compliance \
-            --repository . \
+          PYTHONPATH="${TRUSTED_VERIFIER_ROOT}" \
+            "${TRUSTED_VERIFIER_ROOT}/.venv/bin/python" -B \
+            "${TRUSTED_VERIFIER_ROOT}/starcraft_commander/distribution_compliance.py" \
+            --repository "${CANDIDATE_ROOT}" \
             --base-commit "${EXPECTED_RELEASE_BASE_COMMIT}" \
-            --source-root . \
-            --dist-dir dist \
+            --source-root "${CANDIDATE_ROOT}" \
+            --dist-dir "${RUNNER_TEMP}/distribution-dist" \
             --output-dir "${RUNNER_TEMP}/distribution-compliance"
-          uv run --python 3.12 python - <<'PY'
+          "${TRUSTED_VERIFIER_ROOT}/.venv/bin/python" - <<'PY'
           import hashlib
           import json
           import os
@@ -553,6 +715,7 @@ jobs:
               "schema_version": 1,
               "secret_finding_count": 0,
               "status": "passed",
+              "verifier_sha": os.environ["EXPECTED_WORKFLOW_COMMIT"],
           }
           payload = (
               json.dumps(
@@ -702,6 +865,7 @@ jobs:
               "repository_sha": attestation.get("repository_commit"),
               "schema_version": 1,
               "status": "passed",
+              "verifier_sha": os.environ["EXPECTED_WORKFLOW_COMMIT"],
           }
           payload = (
               json.dumps(
@@ -850,6 +1014,166 @@ jobs:
                   raise SystemExit(f"invalid child report size: {path}")
               return payload
 
+          def exact_keys(value, expected, producer):
+              if not isinstance(value, dict) or set(value) != expected:
+                  raise SystemExit(
+                      f"unexpected child report fields: {producer}"
+                  )
+
+          def sha256(value):
+              return (
+                  isinstance(value, str)
+                  and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+              )
+
+          def validate_child(producer, child):
+              common = {
+                  "build_identity",
+                  "manual_live_qa_remaining",
+                  "ok",
+                  "producer",
+                  "repository_sha",
+                  "schema_version",
+                  "status",
+                  "verifier_sha",
+              }
+              producer_fields = {
+                  "build_identity": {
+                      "binary_sha256",
+                      "build_report_schema_version",
+                      "embedded_build_input_identity",
+                  },
+                  "deterministic_journeys": {
+                      "binary_sha256",
+                      "bundle_sha256",
+                      "embedded_build_input_identity",
+                      "journey_count",
+                      "suite_id",
+                  },
+                  "browser_accessibility": {
+                      "candidate_web_gui_sha256",
+                      "viewports",
+                      "visual_diff_threshold",
+                  },
+                  "distribution_compliance": {
+                      "base_commit",
+                      "canonical_report_sha256",
+                      "distribution_schema_version",
+                      "secret_finding_count",
+                  },
+                  "pre_live_provenance": {
+                      "binary_sha256",
+                      "build_report_sha256",
+                      "embedded_build_input_identity",
+                      "privilege_separation",
+                      "provenance_contracts",
+                  },
+              }
+              exact_keys(
+                  child,
+                  common | producer_fields[producer],
+                  producer,
+              )
+              if (
+                  child["schema_version"] != 1
+                  or child["verifier_sha"]
+                  != os.environ["EXPECTED_WORKFLOW_COMMIT"]
+              ):
+                  raise SystemExit(
+                      f"child verifier binding failed: {producer}"
+                  )
+              if producer == "build_identity":
+                  if (
+                      not sha256(child["binary_sha256"])
+                      or child["build_report_schema_version"] != 80
+                      or re.fullmatch(
+                          r"sha256:[0-9a-f]{64}",
+                          str(child["embedded_build_input_identity"]),
+                      )
+                      is None
+                  ):
+                      raise SystemExit("build identity report is malformed")
+              elif producer == "deterministic_journeys":
+                  if (
+                      not sha256(child["binary_sha256"])
+                      or not sha256(child["bundle_sha256"])
+                      or child["journey_count"] != 14
+                      or child["suite_id"]
+                      != "micromachine_deterministic_pre_live_v1"
+                      or re.fullmatch(
+                          r"sha256:[0-9a-f]{64}",
+                          str(child["embedded_build_input_identity"]),
+                      )
+                      is None
+                  ):
+                      raise SystemExit(
+                          "deterministic journey report is malformed"
+                      )
+              elif producer == "browser_accessibility":
+                  viewports = child["viewports"]
+                  if (
+                      not sha256(child["candidate_web_gui_sha256"])
+                      or child["visual_diff_threshold"] != 0.18
+                      or not isinstance(viewports, list)
+                      or len(viewports) != 2
+                      or {item.get("name") for item in viewports}
+                      != {"desktop", "mobile"}
+                  ):
+                      raise SystemExit("browser report is malformed")
+                  for viewport in viewports:
+                      exact_keys(
+                          viewport,
+                          {
+                              "actual_sha256",
+                              "baseline_sha256",
+                              "cards",
+                              "name",
+                              "serious_critical_count",
+                              "visual_diff_ratio",
+                          },
+                          producer,
+                      )
+                      ratio = viewport["visual_diff_ratio"]
+                      if (
+                          viewport["cards"] != 4
+                          or viewport["serious_critical_count"] != 0
+                          or not sha256(viewport["actual_sha256"])
+                          or not sha256(viewport["baseline_sha256"])
+                          or isinstance(ratio, bool)
+                          or not isinstance(ratio, (int, float))
+                          or not 0 <= ratio <= 0.18
+                      ):
+                          raise SystemExit(
+                              "browser viewport evidence is malformed"
+                          )
+              elif producer == "distribution_compliance":
+                  if (
+                      child["base_commit"]
+                      != os.environ["EXPECTED_RELEASE_BASE_COMMIT"]
+                      or not sha256(child["canonical_report_sha256"])
+                      or child["distribution_schema_version"] != 7
+                      or child["secret_finding_count"] != 0
+                  ):
+                      raise SystemExit(
+                          "distribution compliance report is malformed"
+                      )
+              elif producer == "pre_live_provenance":
+                  if (
+                      not sha256(child["binary_sha256"])
+                      or not sha256(child["build_report_sha256"])
+                      or re.fullmatch(
+                          r"sha256:[0-9a-f]{64}",
+                          str(child["embedded_build_input_identity"]),
+                      )
+                      is None
+                      or child["privilege_separation"]
+                      != "dedicated_producer_uid_passed"
+                      or child["provenance_contracts"] != "passed"
+                  ):
+                      raise SystemExit(
+                          "pre-live provenance report is malformed"
+                      )
+
           status = json.loads(
               Path(
                   "integrations/micromachine/PRE_LIVE_RELEASE_STATUS.json"
@@ -945,6 +1269,7 @@ jobs:
                   or child.get("live_qualified") is True
               ):
                   raise SystemExit(f"child report contract failed: {producer}")
+              validate_child(producer, child)
               children[producer] = child
               destination = sealed_root / member_path
               destination.parent.mkdir(mode=0o700)
@@ -997,6 +1322,7 @@ jobs:
       'ready-to-merge' || 'ready-for-live-qa' }}
     if: always()
     needs:
+      - event_admission
       - build_identity
       - deterministic_journeys
       - browser_accessibility
@@ -1028,6 +1354,7 @@ jobs:
               "build_identity",
               "deterministic_journeys",
               "distribution_compliance",
+              "event_admission",
               "pre_live_provenance",
               "seal_child_artifacts",
           }

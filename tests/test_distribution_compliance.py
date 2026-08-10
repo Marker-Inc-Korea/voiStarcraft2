@@ -7620,6 +7620,7 @@ dependencies = []
 sc2 = ["burnysc2>=6.5"]
 voice = ["faster-whisper>=1.0", "sounddevice>=0.4.6"]
 llm = ["anthropic>=0.40", "openai>=1.0"]
+browser = ["axe-playwright-python==0.1.7", "playwright==1.62.0"]
 dev = ["build>=1.2", "pytest>=7", "pyyaml>=6.0.3", "tomli>=2.4.1"]
 """
         source_pyproject_digest = compliance_module.sha256_bytes(

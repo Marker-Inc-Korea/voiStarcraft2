@@ -64,7 +64,7 @@ EXPECTED_LICENSE_FILE_SHA256: Final[Mapping[str, str]] = {
         "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0"
     ),
     "THIRD_PARTY_NOTICES.md": (
-        "cfa0d0ed9d877198f700febedb4162ce55df8f8a1702d5c0063625222fed3d41"
+        "c717bd7a08b3f8dba1014070ede9d265c8e02c1c75cfe85ab150da1694def3c5"
     ),
 }
 PRODUCT_PACKAGE_ROOTS: Final[frozenset[str]] = frozenset(
@@ -84,10 +84,12 @@ REQUIRED_RUNTIME_FILES: Final[tuple[str, ...]] = (
 EXPECTED_PROJECT_DISTRIBUTIONS: Final[frozenset[str]] = frozenset(
     {
         "anthropic",
+        "axe-playwright-python",
         "build",
         "burnysc2",
         "faster-whisper",
         "openai",
+        "playwright",
         "pytest",
         "pyyaml",
         "sounddevice",
@@ -109,10 +111,12 @@ EXPECTED_DIRECT_DISTRIBUTIONS: Final[frozenset[str]] = (
 )
 EXPECTED_NOTICE_LICENSES: Final[Mapping[str, str]] = {
     "anthropic": "MIT",
+    "axe-playwright-python": "MIT",
     "build": "MIT",
     "burnysc2": "MIT",
     "faster-whisper": "MIT",
     "openai": "Apache-2.0",
+    "playwright": "Apache-2.0",
     "pytest": "MIT",
     "pyyaml": "MIT",
     "setuptools": "MIT",

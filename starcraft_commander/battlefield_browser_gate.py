@@ -8,20 +8,21 @@ import hashlib
 import json
 import os
 import re
+import selectors
+import secrets
+import signal
 import struct
+import subprocess
+import sys
 import threading
 import time
+import urllib.parse
 import zlib
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final
-
-from starcraft_commander.web_gui import (
-    WebGuiServer,
-    _MicroMachineValidatedRuntimeSnapshot,
-)
 
 
 BROWSER_GATE_SCHEMA_VERSION: Final[int] = 1
@@ -37,6 +38,15 @@ VISUAL_DIFF_THRESHOLD: Final[float] = 0.18
 PIXEL_CHANNEL_TOLERANCE: Final[int] = 12
 _SHA_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{40}$")
 _BUILD_RE: Final[re.Pattern[str]] = re.compile(r"^sha256:[0-9a-f]{64}$")
+_FIXTURE_READY_TIMEOUT_SECONDS: Final[float] = 20.0
+_FIXTURE_STOP_TIMEOUT_SECONDS: Final[float] = 10.0
+_FIXTURE_BOOTSTRAP: Final[str] = (
+    "import runpy,sys;"
+    "root=sys.argv[1];script=sys.argv[2];"
+    "sys.path.insert(0,root);"
+    "sys.argv=[script,'serve-fixture'];"
+    "runpy.run_path(script,run_name='__main__')"
+)
 
 
 def _projection(
@@ -436,7 +446,11 @@ class _BrowserFixtureLauncher:
         self,
         *,
         blackboard_dir: str = "",
-    ) -> _MicroMachineValidatedRuntimeSnapshot:
+    ) -> object:
+        from starcraft_commander.web_gui import (
+            _MicroMachineValidatedRuntimeSnapshot,
+        )
+
         root = blackboard_dir or self.blackboard_dir
         telemetry = {
             "protocol_version": 1,
@@ -1047,8 +1061,15 @@ class BrowserGateConfig:
     build_identity: str
     artifact_dir: Path
     baseline_dir: Path = DEFAULT_BASELINE_DIR
-    update_baselines: bool = False
     chromium_executable: Path | None = None
+    candidate_root: Path = field(
+        default_factory=lambda: Path(__file__).resolve().parents[1]
+    )
+    candidate_python: Path = field(
+        default_factory=lambda: Path(sys.executable).resolve()
+    )
+    candidate_uid: int | None = None
+    candidate_gid: int | None = None
 
     def __post_init__(self) -> None:
         if _SHA_RE.fullmatch(self.repository_sha) is None:
@@ -1065,6 +1086,362 @@ class BrowserGateConfig:
                 raise ValueError(
                     "chromium_executable must be a regular executable file"
                 )
+        candidate_root = self.candidate_root
+        if (
+            candidate_root.is_symlink()
+            or not candidate_root.is_dir()
+            or candidate_root.resolve() != candidate_root.absolute()
+        ):
+            raise ValueError("candidate_root must be an absolute regular directory")
+        for relative in ("starcraft_commander/web_gui.py",):
+            candidate = candidate_root / relative
+            if candidate.is_symlink() or not candidate.is_file():
+                raise ValueError(f"candidate source is missing or linked: {relative}")
+        candidate_python = self.candidate_python
+        if (
+            candidate_python.is_symlink()
+            or not candidate_python.is_file()
+            or not os.access(candidate_python, os.X_OK)
+        ):
+            raise ValueError("candidate_python must be a regular executable file")
+        if (self.candidate_uid is None) != (self.candidate_gid is None):
+            raise ValueError("candidate UID and GID must be provided together")
+        if self.candidate_uid is not None and (
+            type(self.candidate_uid) is not int
+            or type(self.candidate_gid) is not int
+            or self.candidate_uid <= 0
+            or self.candidate_gid <= 0
+        ):
+            raise ValueError("candidate UID and GID must be positive integers")
+
+
+def _sha256_regular_file(path: Path) -> str:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"candidate source is missing or linked: {path}")
+    before = path.stat()
+    payload = path.read_bytes()
+    after = path.stat()
+    if (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+    ) != (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+    ):
+        raise RuntimeError(f"candidate source changed while reading: {path}")
+    return hashlib.sha256(payload).hexdigest()
+
+
+class _CandidateFixtureProcess:
+    def __init__(self, config: BrowserGateConfig) -> None:
+        self._config = config
+        self._process: subprocess.Popen[str] | None = None
+        self._nonce = secrets.token_hex(32)
+        self._stderr = bytearray()
+        self._stdout_extra = bytearray()
+        self._drain_lock = threading.Lock()
+        self._drain_threads: list[threading.Thread] = []
+
+    def _command(self) -> list[str]:
+        trusted_script = Path(__file__).resolve()
+        command = [
+            str(self._config.candidate_python),
+            "-I",
+            "-B",
+            "-c",
+            _FIXTURE_BOOTSTRAP,
+            str(self._config.candidate_root),
+            str(trusted_script),
+        ]
+        if self._config.candidate_uid is None:
+            return command
+        sudo = Path("/usr/bin/sudo")
+        if not sudo.is_file() or not os.access(sudo, os.X_OK):
+            raise RuntimeError("dedicated candidate execution requires /usr/bin/sudo")
+        return [
+            str(sudo),
+            "--non-interactive",
+            f"--user=#{self._config.candidate_uid}",
+            f"--group=#{self._config.candidate_gid}",
+            "--",
+            *command,
+        ]
+
+    def start(self) -> str:
+        if self._process is not None:
+            raise RuntimeError("candidate fixture process already started")
+        environment = {
+            "HOME": "/tmp",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "PATH": "/usr/bin:/bin",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+        process = subprocess.Popen(
+            self._command(),
+            cwd=self._config.candidate_root,
+            env=environment,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            start_new_session=True,
+        )
+        self._process = process
+        assert process.stdin is not None
+        process.stdin.write(
+            json.dumps(
+                {
+                    "candidate_sha": self._config.repository_sha,
+                    "nonce": self._nonce,
+                    "schema_version": 1,
+                    "type": "battlefield-webgui-start",
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        process.stdin.close()
+        assert process.stdout is not None
+        assert process.stderr is not None
+        self._start_drain(process.stderr, self._stderr, "candidate-stderr")
+        selector = selectors.DefaultSelector()
+        selector.register(process.stdout, selectors.EVENT_READ)
+        deadline = time.monotonic() + _FIXTURE_READY_TIMEOUT_SECONDS
+        line = ""
+        try:
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    break
+                ready = selector.select(
+                    timeout=min(0.1, max(0.0, deadline - time.monotonic()))
+                )
+                if ready:
+                    line = process.stdout.readline(4097)
+                    break
+        finally:
+            selector.close()
+        if len(line.encode("utf-8")) > 4096:
+            self.stop()
+            raise RuntimeError("candidate fixture readiness line is oversized")
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as error:
+            details = self._stderr_tail()
+            self.stop()
+            raise RuntimeError(
+                f"candidate fixture did not publish readiness: {details}"
+            ) from error
+        origin = payload.get("origin") if isinstance(payload, dict) else None
+        parsed = urllib.parse.urlsplit(origin if isinstance(origin, str) else "")
+        if (
+            not isinstance(payload, dict)
+            or set(payload)
+            != {
+                "candidate_sha",
+                "nonce",
+                "origin",
+                "pid",
+                "schema_version",
+                "type",
+            }
+            or payload.get("schema_version") != 1
+            or payload.get("type") != "battlefield-webgui-ready"
+            or payload.get("nonce") != self._nonce
+            or payload.get("candidate_sha") != self._config.repository_sha
+            or payload.get("pid") != process.pid
+            or parsed.scheme != "http"
+            or parsed.hostname != "127.0.0.1"
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+            or parsed.port is None
+            or not 1 <= parsed.port <= 65535
+            or process.poll() is not None
+        ):
+            details = self._stderr_tail()
+            self.stop()
+            raise RuntimeError(
+                f"candidate fixture readiness contract failed: {details}"
+            )
+        self._start_drain(
+            process.stdout,
+            self._stdout_extra,
+            "candidate-stdout",
+        )
+        return f"http://127.0.0.1:{parsed.port}/"
+
+    def _start_drain(
+        self,
+        stream: object,
+        destination: bytearray,
+        name: str,
+    ) -> None:
+        def drain() -> None:
+            while True:
+                chunk = stream.read(4096)
+                if not chunk:
+                    return
+                payload = str(chunk).encode("utf-8", errors="replace")
+                with self._drain_lock:
+                    destination.extend(payload)
+                    if len(destination) > 64 * 1024:
+                        del destination[: len(destination) - 64 * 1024]
+
+        thread = threading.Thread(target=drain, name=name, daemon=True)
+        thread.start()
+        self._drain_threads.append(thread)
+
+    def _stderr_tail(self) -> str:
+        with self._drain_lock:
+            return bytes(self._stderr[-4000:]).decode(
+                "utf-8",
+                errors="replace",
+            ).replace("\n", " ")
+
+    def assert_quiet(self) -> None:
+        process = self._process
+        if process is None or process.poll() is not None:
+            raise RuntimeError("candidate fixture exited before browser verdict")
+        with self._drain_lock:
+            if bytes(self._stdout_extra).strip():
+                raise RuntimeError("candidate fixture emitted duplicate protocol data")
+
+    def stop(self) -> None:
+        process = self._process
+        self._process = None
+        if process is None:
+            return
+        if process.poll() is None:
+            self._signal_group(signal.SIGTERM)
+            try:
+                process.wait(timeout=_FIXTURE_STOP_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                self._signal_group(signal.SIGKILL)
+                process.wait(timeout=_FIXTURE_STOP_TIMEOUT_SECONDS)
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
+        for thread in self._drain_threads:
+            thread.join(timeout=1)
+        self._cleanup_dedicated_uid()
+
+    def _signal_group(self, requested_signal: signal.Signals) -> None:
+        process = self._process
+        if process is None or process.poll() is not None:
+            return
+        if self._config.candidate_uid is None:
+            try:
+                os.killpg(process.pid, requested_signal)
+            except ProcessLookupError:
+                pass
+            return
+        subprocess.run(
+            [
+                "/usr/bin/sudo",
+                "--non-interactive",
+                "/bin/kill",
+                f"-{requested_signal.value}",
+                f"-{process.pid}",
+            ],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+
+    def _cleanup_dedicated_uid(self) -> None:
+        uid = self._config.candidate_uid
+        pkill = Path("/usr/bin/pkill")
+        if uid is None or not pkill.is_file():
+            return
+        subprocess.run(
+            [
+                "/usr/bin/sudo",
+                "--non-interactive",
+                str(pkill),
+                "-KILL",
+                "-U",
+                str(uid),
+            ],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+
+
+def _serve_candidate_fixture() -> int:
+    from starcraft_commander.web_gui import WebGuiServer
+
+    raw_request = sys.stdin.readline(4097)
+    if (
+        len(raw_request.encode("utf-8")) > 4096
+        or sys.stdin.read(1) != ""
+    ):
+        raise ValueError("candidate fixture start request is malformed")
+    request = json.loads(raw_request)
+    if (
+        not isinstance(request, dict)
+        or set(request)
+        != {"candidate_sha", "nonce", "schema_version", "type"}
+        or request.get("schema_version") != 1
+        or request.get("type") != "battlefield-webgui-start"
+        or _SHA_RE.fullmatch(str(request.get("candidate_sha", ""))) is None
+        or re.fullmatch(r"[0-9a-f]{64}", str(request.get("nonce", ""))) is None
+    ):
+        raise ValueError("candidate fixture start contract failed")
+    bridge = _BrowserFixtureBridge()
+    server = WebGuiServer(bridge=bridge, port=0)
+    stopped = threading.Event()
+
+    def request_stop(
+        signum: int,
+        frame: object,
+    ) -> None:
+        del signum, frame
+        stopped.set()
+
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
+    server.start()
+    if server._http is None:
+        raise RuntimeError("candidate browser fixture server did not start")
+    server._http.micromachine_launcher = _BrowserFixtureLauncher(
+        bridge.micromachine_blackboard_dir()
+    )
+    print(
+        json.dumps(
+            {
+                "candidate_sha": request["candidate_sha"],
+                "nonce": request["nonce"],
+                "origin": server.url,
+                "pid": os.getpid(),
+                "schema_version": 1,
+                "type": "battlefield-webgui-ready",
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        flush=True,
+    )
+    try:
+        stopped.wait()
+    finally:
+        server.stop()
+    return 0
 
 
 def run_browser_gate(config: BrowserGateConfig) -> dict[str, object]:
@@ -1075,16 +1452,11 @@ def run_browser_gate(config: BrowserGateConfig) -> dict[str, object]:
     diff_dir = config.artifact_dir / "diffs"
     screenshot_dir.mkdir(parents=True, exist_ok=True)
     diff_dir.mkdir(parents=True, exist_ok=True)
-    bridge = _BrowserFixtureBridge()
-    server = WebGuiServer(bridge=bridge, port=0)
-    server.start()
-    if server._http is None:
-        raise RuntimeError("browser fixture server did not start")
-    server._http.micromachine_launcher = _BrowserFixtureLauncher(
-        bridge.micromachine_blackboard_dir()
-    )
+    candidate_fixture = _CandidateFixtureProcess(config)
+    server_url = candidate_fixture.start()
     started_at = datetime.now(timezone.utc)
     viewport_reports: list[dict[str, object]] = []
+    visual_failures: list[str] = []
     try:
         with sync_playwright() as playwright:
             launch_options: dict[str, object] = {"headless": True}
@@ -1103,7 +1475,7 @@ def run_browser_gate(config: BrowserGateConfig) -> dict[str, object]:
                     try:
                         context.add_init_script(_BROWSER_INIT_SCRIPT)
                         page = context.new_page()
-                        page.goto(server.url, wait_until="domcontentloaded")
+                        page.goto(server_url, wait_until="domcontentloaded")
                         _wait_for_cards(page)
                         structural = _structural_assertions(page)
                         accessibility = _accessibility_assertions(page)
@@ -1112,25 +1484,20 @@ def run_browser_gate(config: BrowserGateConfig) -> dict[str, object]:
                         actual_path = screenshot_dir / f"{name}.png"
                         page.screenshot(path=str(actual_path), full_page=False)
                         baseline_path = config.baseline_dir / f"{name}.png"
-                        if config.update_baselines:
-                            baseline_path.parent.mkdir(parents=True, exist_ok=True)
-                            baseline_path.write_bytes(actual_path.read_bytes())
-                            diff_ratio = 0.0
-                        else:
-                            if not baseline_path.is_file():
-                                raise AssertionError(
-                                    f"tracked baseline is missing: {baseline_path}"
-                                )
-                            diff_ratio = _pixel_diff(
-                                baseline_path,
-                                actual_path,
-                                diff_dir / f"{name}.png",
+                        if not baseline_path.is_file():
+                            raise AssertionError(
+                                f"tracked baseline is missing: {baseline_path}"
                             )
-                            if diff_ratio > VISUAL_DIFF_THRESHOLD:
-                                raise AssertionError(
-                                    f"{name} visual diff {diff_ratio:.6f} exceeds "
-                                    f"{VISUAL_DIFF_THRESHOLD:.6f}"
-                                )
+                        diff_ratio = _pixel_diff(
+                            baseline_path,
+                            actual_path,
+                            diff_dir / f"{name}.png",
+                        )
+                        if diff_ratio > VISUAL_DIFF_THRESHOLD:
+                            visual_failures.append(
+                                f"{name} visual diff {diff_ratio:.6f} exceeds "
+                                f"{VISUAL_DIFF_THRESHOLD:.6f}"
+                            )
                         viewport_reports.append(
                             {
                                 "name": name,
@@ -1150,11 +1517,14 @@ def run_browser_gate(config: BrowserGateConfig) -> dict[str, object]:
                         )
                     finally:
                         context.close()
-                media = _media_assertions(browser, server.url)
+                media = _media_assertions(browser, server_url)
+                candidate_fixture.assert_quiet()
+                if visual_failures:
+                    raise AssertionError("; ".join(visual_failures))
             finally:
                 browser.close()
     finally:
-        server.stop()
+        candidate_fixture.stop()
     ended_at = datetime.now(timezone.utc)
     report: dict[str, object] = {
         "schema_version": BROWSER_GATE_SCHEMA_VERSION,
@@ -1166,6 +1536,9 @@ def run_browser_gate(config: BrowserGateConfig) -> dict[str, object]:
         "status": "passed",
         "ok": True,
         "visual_diff_threshold": VISUAL_DIFF_THRESHOLD,
+        "candidate_web_gui_sha256": _sha256_regular_file(
+            config.candidate_root / "starcraft_commander" / "web_gui.py"
+        ),
         "viewports": viewport_reports,
         "media": media,
         "manual_live_qa_remaining": True,
@@ -1218,12 +1591,23 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_BASELINE_DIR,
     )
-    parser.add_argument("--update-baselines", action="store_true")
     parser.add_argument("--chromium-executable", type=Path)
+    parser.add_argument("--candidate-root", type=Path)
+    parser.add_argument("--candidate-python", type=Path)
+    parser.add_argument("--candidate-uid", type=int)
+    parser.add_argument("--candidate-gid", type=int)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv and argv[0] == "serve-fixture":
+        try:
+            return _serve_candidate_fixture()
+        except Exception as error:  # noqa: BLE001 - child must fail closed.
+            print(f"candidate browser fixture failed: {error}", file=sys.stderr)
+            return 1
     args = build_argument_parser().parse_args(argv)
     try:
         report = run_browser_gate(
@@ -1232,8 +1616,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 build_identity=args.build_identity,
                 artifact_dir=args.artifact_dir,
                 baseline_dir=args.baseline_dir,
-                update_baselines=args.update_baselines,
                 chromium_executable=args.chromium_executable,
+                candidate_root=(
+                    args.candidate_root.resolve()
+                    if args.candidate_root is not None
+                    else Path(__file__).resolve().parents[1]
+                ),
+                candidate_python=(
+                    args.candidate_python.resolve()
+                    if args.candidate_python is not None
+                    else Path(sys.executable).resolve()
+                ),
+                candidate_uid=args.candidate_uid,
+                candidate_gid=args.candidate_gid,
             )
         )
     except Exception as error:  # noqa: BLE001 - CLI must fail closed.

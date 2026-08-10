@@ -65,6 +65,10 @@ license terms.
 
 License: MIT
 
+### Python distribution: `axe-playwright-python`
+
+License: MIT
+
 ### Python distribution: `build`
 
 License: MIT
@@ -78,6 +82,10 @@ License: MIT
 License: MIT
 
 ### Python distribution: `openai`
+
+License: Apache-2.0
+
+### Python distribution: `playwright`
 
 License: Apache-2.0
 
