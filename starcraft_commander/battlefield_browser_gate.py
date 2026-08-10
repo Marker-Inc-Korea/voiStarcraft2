@@ -1463,11 +1463,15 @@ class _CandidateFixtureProcess:
             assert process.stdout is not None
             assert process.stderr is not None
             self._start_drain(process.stderr, self._stderr, "candidate-stderr")
+            return self._wait_until_ready(process)
         except BaseException:
             try:
                 self.stop()
             finally:
                 raise
+
+    def _wait_until_ready(self, process: subprocess.Popen[str]) -> str:
+        assert process.stdout is not None
         selector = selectors.DefaultSelector()
         selector.register(process.stdout, selectors.EVENT_READ)
         deadline = time.monotonic() + _FIXTURE_READY_TIMEOUT_SECONDS
@@ -1485,18 +1489,20 @@ class _CandidateFixtureProcess:
         finally:
             selector.close()
         if len(line.encode("utf-8")) > 4096:
-            self.stop()
             raise RuntimeError("candidate fixture readiness line is oversized")
         try:
             payload = json.loads(line)
         except json.JSONDecodeError as error:
             details = self._stderr_tail()
-            self.stop()
             raise RuntimeError(
                 f"candidate fixture did not publish readiness: {details}"
             ) from error
         origin = payload.get("origin") if isinstance(payload, dict) else None
         parsed = urllib.parse.urlsplit(origin if isinstance(origin, str) else "")
+        try:
+            parsed_port = parsed.port
+        except ValueError:
+            parsed_port = None
         if (
             not isinstance(payload, dict)
             or set(payload)
@@ -1518,12 +1524,11 @@ class _CandidateFixtureProcess:
             or parsed.path not in {"", "/"}
             or parsed.query
             or parsed.fragment
-            or parsed.port is None
-            or not 1 <= parsed.port <= 65535
+            or parsed_port is None
+            or not 1 <= parsed_port <= 65535
             or process.poll() is not None
         ):
             details = self._stderr_tail()
-            self.stop()
             raise RuntimeError(
                 f"candidate fixture readiness contract failed: {details}"
             )
@@ -1532,7 +1537,7 @@ class _CandidateFixtureProcess:
             self._stdout_extra,
             "candidate-stdout",
         )
-        return f"http://127.0.0.1:{parsed.port}/"
+        return f"http://127.0.0.1:{parsed_port}/"
 
     def _start_drain(
         self,
@@ -1572,28 +1577,40 @@ class _CandidateFixtureProcess:
 
     def stop(self) -> None:
         process = self._process
-        self._process = None
         if process is None:
             self._cleanup_fixture_script()
             return
+        termination_confirmed = process.poll() is not None
+        dedicated_cleanup_attempted = False
         try:
-            if process.poll() is None:
+            if not termination_confirmed:
                 self._signal_group(process, signal.SIGTERM)
                 try:
                     process.wait(timeout=_FIXTURE_STOP_TIMEOUT_SECONDS)
+                    termination_confirmed = True
                 except subprocess.TimeoutExpired:
                     self._signal_group(process, signal.SIGKILL)
-                    process.wait(timeout=_FIXTURE_STOP_TIMEOUT_SECONDS)
+                    try:
+                        process.wait(timeout=_FIXTURE_STOP_TIMEOUT_SECONDS)
+                        termination_confirmed = True
+                    except subprocess.TimeoutExpired:
+                        dedicated_cleanup_attempted = True
+                        self._cleanup_dedicated_uid()
+                        process.wait(timeout=_FIXTURE_STOP_TIMEOUT_SECONDS)
+                        termination_confirmed = True
         finally:
-            if process.stdout is not None:
-                process.stdout.close()
-            if process.stderr is not None:
-                process.stderr.close()
-            for thread in self._drain_threads:
-                thread.join(timeout=1)
             try:
-                self._cleanup_dedicated_uid()
+                if termination_confirmed:
+                    if process.stdout is not None:
+                        process.stdout.close()
+                    if process.stderr is not None:
+                        process.stderr.close()
+                    for thread in self._drain_threads:
+                        thread.join(timeout=1)
+                    if not dedicated_cleanup_attempted:
+                        self._cleanup_dedicated_uid()
             finally:
+                self._process = None if termination_confirmed else process
                 self._cleanup_fixture_script()
 
     def _signal_group(

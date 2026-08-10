@@ -167,11 +167,24 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
             boundary,
         )
         self.assertIn(
-            "select(.merge_commit_sha == env.GITHUB_SHA)",
+            "for qualification_lookup_attempt in {1..12}; do",
+            boundary,
+        )
+        self.assertIn(
+            '"qualification pull lookup returned no branch match"',
+            boundary,
+        )
+        self.assertIn(
+            'test "${qualification_merge_sha}" =',
             boundary,
         )
         self.assertIn('if test "${qualification_head_ref}" =', boundary)
-        self.assertIn('"${QUALIFICATION_HEAD_REF}"; then', boundary)
+        self.assertIn('"${QUALIFICATION_HEAD_REF}" \\', boundary)
+        self.assertIn(
+            '&& test "${qualification_merge_sha}" =',
+            boundary,
+        )
+        self.assertIn('"${GITHUB_SHA}"; then', boundary)
         self.assertIn("closingIssuesReferences(first: 10)", boundary)
         self.assertIn("closedByPullRequestsReferences(first: 10)", boundary)
         self.assertIn('test "${declared_issue_number}" =', boundary)
@@ -319,6 +332,192 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
             self.assertEqual(42, result.returncode, result.stderr)
             self.assertIn("qualification lookup failed", result.stderr)
             self.assertFalse(output.exists())
+
+    def test_admission_fails_closed_when_qualification_lookup_stays_empty(
+        self,
+    ) -> None:
+        boundary = self.step(
+            self.workflow()["jobs"]["event_admission"],
+            "Admit exact same-repository release event before checkout",
+        )["run"]
+        release_sha = "7" * 40
+        base_sha = "2" * 40
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            call_count = root / "gh-call-count"
+            fake_gh = fake_bin / "gh"
+            fake_gh.write_text(
+                "#!/bin/sh\n"
+                f"count_file={call_count}\n"
+                "count=0\n"
+                "if test -f \"$count_file\"; then\n"
+                "  count=\"$(cat \"$count_file\")\"\n"
+                "fi\n"
+                "count=$((count + 1))\n"
+                "printf '%s\\n' \"$count\" > \"$count_file\"\n"
+                "if test \"$count\" -eq 1; then\n"
+                f"  printf 'true\\t{release_sha}\\t"
+                "issue-141-final-prelive-gates\\t1\\tmain\\t1\\n'\n"
+                "fi\n",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+            fake_sleep = fake_bin / "sleep"
+            fake_sleep.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            fake_sleep.chmod(0o755)
+            output = root / "github-output"
+            environment = {
+                "EVENT_BASE_REPOSITORY": "",
+                "EVENT_BASE_REPOSITORY_ID": "",
+                "EVENT_HEAD_REPOSITORY": "",
+                "EVENT_HEAD_REPOSITORY_ID": "",
+                "EVENT_REPOSITORY_ID": "1",
+                "EXPECTED_RELEASE_BASE_COMMIT": base_sha,
+                "EXPECTED_RELEASE_COMMIT": release_sha,
+                "EXPECTED_WORKFLOW_COMMIT": release_sha,
+                "GH_TOKEN": "fixture-token",
+                "GITHUB_EVENT_NAME": "push",
+                "GITHUB_OUTPUT": str(output),
+                "GITHUB_REF": "refs/heads/main",
+                "GITHUB_REPOSITORY": "owner/repository",
+                "GITHUB_REPOSITORY_OWNER": "owner",
+                "GITHUB_SHA": release_sha,
+                "GITHUB_WORKFLOW_SHA": release_sha,
+                "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+                "QUALIFICATION_HEAD_REF": (
+                    "issue-171-final-prelive-fixture-staging"
+                ),
+                "QUALIFICATION_ISSUE_NUMBER": "171",
+                "RELEASE_AUTHORITY": "authoritative_exact_main",
+                "RELEASE_HEAD_REF": "issue-141-final-prelive-gates",
+                "RELEASE_MERGE_SHA": release_sha,
+                "RELEASE_MODE": "ready_for_live_qa",
+                "RELEASE_PULL_NUMBER": "168",
+            }
+
+            result = subprocess.run(
+                ["/bin/bash"],
+                input=boundary,
+                cwd=REPOSITORY_ROOT,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(1, result.returncode, result.stderr)
+            self.assertIn(
+                "qualification pull lookup returned no branch match",
+                result.stderr,
+            )
+            self.assertEqual("13", call_count.read_text().strip())
+            self.assertFalse(output.exists())
+
+    def test_admission_retries_empty_qualification_lookup_then_admits(
+        self,
+    ) -> None:
+        boundary = self.step(
+            self.workflow()["jobs"]["event_admission"],
+            "Admit exact same-repository release event before checkout",
+        )["run"]
+        release_sha = "7" * 40
+        base_sha = "2" * 40
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            call_count = root / "gh-call-count"
+            fake_gh = fake_bin / "gh"
+            fake_gh.write_text(
+                "#!/bin/sh\n"
+                f"count_file={call_count}\n"
+                "count=0\n"
+                "if test -f \"$count_file\"; then\n"
+                "  count=\"$(cat \"$count_file\")\"\n"
+                "fi\n"
+                "count=$((count + 1))\n"
+                "printf '%s\\n' \"$count\" > \"$count_file\"\n"
+                "case \"$count\" in\n"
+                "  1)\n"
+                f"    printf 'true\\t{release_sha}\\t"
+                "issue-141-final-prelive-gates\\t1\\tmain\\t1\\n'\n"
+                "    ;;\n"
+                "  2)\n"
+                "    ;;\n"
+                "  3)\n"
+                f"    printf '172\\tclosed\\t2026-08-10T00:00:00Z\\t"
+                f"{release_sha}\\tissue-171-final-prelive-fixture-staging"
+                "\\towner/repository\\t1\\tmain\\towner/repository\\t1\\n'\n"
+                "    ;;\n"
+                "  4)\n"
+                "    printf '1\\t171\\tfalse\\towner/repository\\t171\\t"
+                "CLOSED\\tCOMPLETED\\t1\\t172\\tfalse\\t"
+                "owner/repository\\n'\n"
+                "    ;;\n"
+                "  5)\n"
+                f"    printf 'identical\\t{release_sha}\\t"
+                f"{release_sha}\\n'\n"
+                "    ;;\n"
+                "  *)\n"
+                "    exit 42\n"
+                "    ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+            fake_sleep = fake_bin / "sleep"
+            fake_sleep.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            fake_sleep.chmod(0o755)
+            output = root / "github-output"
+            environment = {
+                "EVENT_BASE_REPOSITORY": "",
+                "EVENT_BASE_REPOSITORY_ID": "",
+                "EVENT_HEAD_REPOSITORY": "",
+                "EVENT_HEAD_REPOSITORY_ID": "",
+                "EVENT_REPOSITORY_ID": "1",
+                "EXPECTED_RELEASE_BASE_COMMIT": base_sha,
+                "EXPECTED_RELEASE_COMMIT": release_sha,
+                "EXPECTED_WORKFLOW_COMMIT": release_sha,
+                "GH_TOKEN": "fixture-token",
+                "GITHUB_EVENT_NAME": "push",
+                "GITHUB_OUTPUT": str(output),
+                "GITHUB_REF": "refs/heads/main",
+                "GITHUB_REPOSITORY": "owner/repository",
+                "GITHUB_REPOSITORY_OWNER": "owner",
+                "GITHUB_SHA": release_sha,
+                "GITHUB_WORKFLOW_SHA": release_sha,
+                "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+                "QUALIFICATION_HEAD_REF": (
+                    "issue-171-final-prelive-fixture-staging"
+                ),
+                "QUALIFICATION_ISSUE_NUMBER": "171",
+                "RELEASE_AUTHORITY": "authoritative_exact_main",
+                "RELEASE_HEAD_REF": "issue-141-final-prelive-gates",
+                "RELEASE_MERGE_SHA": release_sha,
+                "RELEASE_MODE": "ready_for_live_qa",
+                "RELEASE_PULL_NUMBER": "168",
+            }
+
+            result = subprocess.run(
+                ["/bin/bash"],
+                input=boundary,
+                cwd=REPOSITORY_ROOT,
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("5", call_count.read_text().strip())
+            self.assertEqual(
+                "release_required=true\n",
+                output.read_text(encoding="utf-8"),
+            )
 
     def test_candidate_and_trusted_checkouts_are_separated(self) -> None:
         workflow = self.workflow()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import signal
 import stat
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -287,6 +288,116 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             self.assertEqual([], list(staging_root.iterdir()))
             self.assertIsNone(fixture._staged_fixture_script)
             self.assertIsNone(fixture._process)
+
+    def test_candidate_fixture_cleans_up_after_invalid_readiness_origin(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            staging_root = Path(directory).resolve()
+            staging_root.chmod(0o755)
+            config = BrowserGateConfig(
+                repository_sha=REPOSITORY_SHA,
+                build_identity=BUILD_IDENTITY,
+                artifact_dir=staging_root,
+                candidate_uid=65001,
+                candidate_gid=65001,
+            )
+            fixture = _CandidateFixtureProcess(config)
+            process = mock.Mock(pid=4321)
+            process.poll.return_value = None
+            process.stdout.readline.return_value = (
+                '{"candidate_sha":"'
+                + REPOSITORY_SHA
+                + '","nonce":"'
+                + fixture._nonce
+                + '","origin":"http://127.0.0.1:99999/",'
+                '"pid":4321,"schema_version":1,'
+                '"type":"battlefield-webgui-ready"}\n'
+            )
+            selector = mock.Mock()
+            selector.select.return_value = [(process.stdout, 1)]
+
+            with (
+                mock.patch.object(
+                    browser_gate,
+                    "_FIXTURE_STAGING_ROOT",
+                    staging_root,
+                ),
+                mock.patch.object(
+                    browser_gate.subprocess,
+                    "Popen",
+                    return_value=process,
+                ),
+                mock.patch.object(
+                    browser_gate.selectors,
+                    "DefaultSelector",
+                    return_value=selector,
+                ),
+                mock.patch.object(fixture, "_start_drain"),
+                mock.patch.object(fixture, "_signal_group"),
+                mock.patch.object(fixture, "_cleanup_dedicated_uid"),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "readiness contract failed",
+                ),
+            ):
+                fixture.start()
+
+            self.assertEqual([], list(staging_root.iterdir()))
+            self.assertIsNone(fixture._staged_fixture_script)
+            self.assertIsNone(fixture._process)
+            selector.close.assert_called_once_with()
+
+    def test_candidate_fixture_retains_process_when_forced_stop_times_out(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            staging_root = Path(directory).resolve()
+            staging_root.chmod(0o755)
+            config = BrowserGateConfig(
+                repository_sha=REPOSITORY_SHA,
+                build_identity=BUILD_IDENTITY,
+                artifact_dir=staging_root,
+                candidate_uid=65001,
+                candidate_gid=65001,
+            )
+            fixture = _CandidateFixtureProcess(config)
+            process = mock.Mock(pid=4321, stdout=None, stderr=None)
+            process.poll.return_value = None
+            process.wait.side_effect = subprocess.TimeoutExpired(
+                cmd="candidate fixture",
+                timeout=browser_gate._FIXTURE_STOP_TIMEOUT_SECONDS,
+            )
+            fixture._process = process
+
+            with mock.patch.object(
+                browser_gate,
+                "_FIXTURE_STAGING_ROOT",
+                staging_root,
+            ):
+                fixture._prepare_fixture_script()
+            with (
+                mock.patch.object(fixture, "_signal_group") as signal_group,
+                mock.patch.object(
+                    fixture,
+                    "_cleanup_dedicated_uid",
+                ) as cleanup_uid,
+                self.assertRaises(subprocess.TimeoutExpired),
+            ):
+                fixture.stop()
+
+            self.assertEqual(
+                [
+                    mock.call(process, signal.SIGTERM),
+                    mock.call(process, signal.SIGKILL),
+                ],
+                signal_group.call_args_list,
+            )
+            self.assertEqual(3, process.wait.call_count)
+            cleanup_uid.assert_called_once_with()
+            self.assertIs(process, fixture._process)
+            self.assertEqual([], list(staging_root.iterdir()))
+            self.assertIsNone(fixture._staged_fixture_script)
 
     def test_candidate_fixture_stop_signals_original_process_group(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
