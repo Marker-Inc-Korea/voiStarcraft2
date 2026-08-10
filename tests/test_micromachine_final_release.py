@@ -394,6 +394,25 @@ class MicroMachineFinalReleaseTest(unittest.TestCase):
             self.assertTrue(report["ok"], report["blockers"])
             self.assertEqual("ready_for_live_qa", report["status"])
 
+    def test_ready_for_live_qa_accepts_graphql_merged_closing_pull_state(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            adapter = FakeGitHubReleaseAdapter(READY_FOR_LIVE_QA, self.status)
+            adapter.closing_pulls[RELEASE_CLOSING_ISSUE][0]["state"] = "merged"
+            envelopes = self.write_green_artifacts(root, adapter)
+
+            report = self.build_report(
+                mode=READY_FOR_LIVE_QA,
+                root=root,
+                envelopes=envelopes,
+                adapter=adapter,
+            )
+
+            self.assertTrue(report["ok"], report["blockers"])
+            self.assertEqual("ready_for_live_qa", report["status"])
+
     def test_ready_to_merge_requires_exact_single_closing_declaration_in_pr_body(
         self,
     ) -> None:
@@ -892,6 +911,12 @@ class MicroMachineFinalReleaseTest(unittest.TestCase):
                 lambda adapter: adapter.closing_pulls[
                     RELEASE_CLOSING_ISSUE
                 ].append({"number": RELEASE_PULL_NUMBER + 1}),
+                "release_closing_pull_set_mismatch",
+            ),
+            "open release closing pull": (
+                lambda adapter: adapter.closing_pulls[
+                    RELEASE_CLOSING_ISSUE
+                ][0].update({"state": "open"}),
                 "release_closing_pull_set_mismatch",
             ),
             "pull metadata merge": (

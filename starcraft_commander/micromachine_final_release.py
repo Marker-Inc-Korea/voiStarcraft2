@@ -1636,7 +1636,7 @@ def _accepted_merged_pulls(
         if (
             type(number) is int
             and number > 0
-            and str(pull.get("state", "")).lower() == "closed"
+            and str(pull.get("state", "")).lower() in {"closed", "merged"}
             and pull.get("merged") is True
             and isinstance(pull.get("merged_at"), str)
             and pull.get("base_ref") == main_branch
