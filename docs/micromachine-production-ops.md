@@ -384,15 +384,15 @@ Real SC2 GUI soak:
 
 Stop condition for final pre-live sign-off:
 
-1. The final PR's hosted CI and all five final-pre-live child artifacts pass on
-   one exact SHA, build identity, run, and attempt.
-2. Existing hosted CI and the exact-SHA independent review approve PR #168;
+1. Existing hosted CI and the exact-SHA independent review approve PR #168;
    `ready_to_merge.json` is additionally required if that PR event is available
    from a trusted default-branch workflow.
-3. PR #168 merges to `main`, closes #141, and #142/#128/#124 are immediately
+2. PR #168 merges to `main` and closes #141.
+3. Issues #142, #128, and #124 are immediately
    closed explicitly as completed without closing PRs.
-4. The release merge push reruns every child gate and
-   `ready_for_live_qa.json` reports no blockers.
+4. The release merge push runs all five final-pre-live child gates on one exact
+   SHA, build identity, run, and attempt, and `ready_for_live_qa.json` reports
+   no blockers.
 5. The fourteen-journey live-QA runbook is completed against that exact SHA and
    build identity.
 6. Any ambiguous gameplay, visual, HUD, caption, or audio observation leaves

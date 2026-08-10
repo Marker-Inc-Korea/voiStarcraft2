@@ -212,11 +212,15 @@ status contract is
 repository SHA, one admitted MicroMachine build identity, one workflow run,
 and one run attempt.
 
-Pull requests produce `ready_to_merge.json` and `ready_to_merge.md`. After the
-closing PR is merged, the exact `main` push reruns all child gates and produces
-`ready_for_live_qa.json` and `ready_for_live_qa.md`. These generated reports,
-not manually edited test counts, browser versions, hashes, run IDs, or dated
-claims in this README, are the release source of truth.
+Admitted pull request events produce `ready_to_merge.json` and
+`ready_to_merge.md` when the trusted default branch already contains the
+workflow. The one-shot bootstrap PR #168 cannot produce that report before
+merge because it introduces the workflow itself. After #168 merges and the
+three explicit-completion issues are closed, the exact merge push runs all five
+child gates and produces `ready_for_live_qa.json` and
+`ready_for_live_qa.md`. These generated reports, not manually edited test
+counts, browser versions, hashes, run IDs, or dated claims in this README, are
+the release source of truth.
 
 The final manual procedure is generated from the same structured status and
 the exact fourteen-journey manifest in
