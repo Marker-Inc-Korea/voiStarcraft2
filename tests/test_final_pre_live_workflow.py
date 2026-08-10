@@ -383,12 +383,28 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
         self,
     ) -> None:
         seal = self.workflow()["jobs"]["seal_child_artifacts"]
-        source = yaml.safe_dump(seal, sort_keys=True)
+        source = self.step(
+            seal,
+            "Create canonical detached-digest envelopes",
+        )["run"]
 
         self.assertIn("visual_diff_threshold", source)
         self.assertIn("!= 0.01", source)
         self.assertIn("not 0 <= ratio <= 0.01", source)
         self.assertNotIn("0.18", source)
+        for evidence in (
+            '"actions"',
+            '"all_visible"',
+            '"cards"',
+            '"lanes"',
+            '"stages"',
+        ):
+            with self.subTest(evidence=evidence):
+                self.assertIn(evidence, source)
+        self.assertIn("viewport[\"actions\"] != 20", source)
+        self.assertIn("viewport[\"all_visible\"] is not True", source)
+        self.assertIn("viewport[\"lanes\"] != 4", source)
+        self.assertIn("viewport[\"stages\"] != 16", source)
 
     def test_exact_child_ids_and_digests_are_sealed(self) -> None:
         workflow = self.workflow()

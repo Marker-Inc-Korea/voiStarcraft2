@@ -157,20 +157,20 @@ with `SOAK_MATRIX_ALLOW_FAILURES=1`.
 
 ## Final Release Gate
 
-Issues #141, #142, #128, and #124 use one final PR followed by one exact-main
-post-merge qualification. The authoritative inputs are:
+Issues #141, #142, #128, and #124 use the one-shot release PR #168 followed by
+one exact-merge post-merge qualification. The authoritative inputs are:
 
 - `integrations/micromachine/PRE_LIVE_RELEASE_STATUS.json`
 - `integrations/micromachine/PRE_LIVE_JOURNEYS.json`
 - `.github/workflows/final-pre-live.yml`
 - `docs/micromachine-final-live-qa.md`
 
-After this bootstrap PR merges, later same-repository PRs run
-`ready_to_merge` from the trusted default-branch `pull_request_target`
-workflow. It verifies the real GitHub state of every declared dependency and
-requires each dependency issue to be closed by a merged PR. All four
-release-closure issues are intentionally excluded from that dependency list
-so a closing PR does not require its own merge and closure before it can pass.
+Only PR #168 is admitted to the release-required `pull_request_target` path.
+Ordinary future PRs and `main` pushes pass the workflow as not applicable
+without running the heavy release jobs. The ready-to-merge contract verifies
+the real GitHub state of every declared dependency and excludes the four
+release-completion issues so the release PR does not require its own merge
+before it can pass.
 
 The bootstrap PR that first adds `.github/workflows/final-pre-live.yml` cannot
 run that workflow before merge because `pull_request_target` loads workflow
@@ -181,14 +181,16 @@ review. The exact `main` push after merge is the first authoritative final
 release verdict: GitHub loads the merged workflow from the exact merge SHA,
 every child gate runs, and `ready_for_live_qa` must pass.
 
-After that PR merges, the `main` push reruns the full pipeline at the exact
-merge SHA in `ready_for_live_qa` mode. The final gate then verifies from GitHub
-that:
+Immediately after PR #168 merges, GitHub closes #141 through the PR. Issues
+#142, #128, and #124 must then be explicitly closed with
+`state_reason=completed`, without a closing PR, before the final aggregator
+reaches its GitHub verification step. The merge push reruns the full pipeline
+in `ready_for_live_qa` mode. The final gate then verifies from GitHub that:
 
-- The current `main` head is exactly the workflow SHA.
-- Issues #141, #142, #128, and #124 are closed.
-- Exactly one accepted closing PR for all four issues merged to that same
-  `main` SHA.
+- The PR #168 merge SHA is the current `main` head or an ancestor of it.
+- Issues #141, #142, #128, and #124 are closed as completed.
+- #141 has exactly one closing reference: PR #168 at the release merge SHA.
+- #142, #128, and #124 have no closing PR references.
 - The workflow event, run ID, run attempt, repository, and child artifacts all
   match the report inputs.
 
@@ -224,7 +226,9 @@ child status, and private configuration or secret-shaped values.
 
 ### Generated Reports
 
-The PR workflow artifact `micromachine-ready_to_merge` contains:
+When the trusted default branch already contains the workflow and PR #168 is
+still open, its release-required PR artifact
+`micromachine-ready_to_merge` contains:
 
 - `ready_to_merge.json`
 - `ready_to_merge.md`
@@ -358,11 +362,14 @@ Hosted CI:
 - Runs `uv run pytest -q` on Python 3.10, 3.11, and 3.12.
 - Runs `bash -n` on MicroMachine smoke/soak/matrix scripts.
 - `.github/workflows/final-pre-live.yml`
-- On the final PR, builds one admitted MicroMachine identity and runs the
+- Only for PR #168, builds one admitted MicroMachine identity and runs the
   deterministic fourteen journeys, browser/accessibility gate, distribution
-  compliance, pre-live provenance, and `ready_to_merge`.
-- On the exact `main` merge SHA, reruns every child gate and emits
+  compliance, pre-live provenance, and `ready_to_merge`. The bootstrap PR
+  relies on existing hosted CI plus exact-SHA independent review because the
+  default branch does not contain this workflow before merge.
+- On PR #168's exact `main` merge push, reruns every child gate and emits
   `ready_for_live_qa`.
+- Later ordinary PRs and pushes report the gate as not applicable.
 
 Real SC2 GUI soak:
 
@@ -379,10 +386,12 @@ Stop condition for final pre-live sign-off:
 
 1. The final PR's hosted CI and all five final-pre-live child artifacts pass on
    one exact SHA, build identity, run, and attempt.
-2. `ready_to_merge.json` reports no blockers while excluding the four
-   release-closure issues from dependency checks.
-3. The PR merges to `main` and closes #141, #142, #128, and #124.
-4. The exact merge SHA reruns every child gate and
+2. Existing hosted CI and the exact-SHA independent review approve PR #168;
+   `ready_to_merge.json` is additionally required if that PR event is available
+   from a trusted default-branch workflow.
+3. PR #168 merges to `main`, closes #141, and #142/#128/#124 are immediately
+   closed explicitly as completed without closing PRs.
+4. The release merge push reruns every child gate and
    `ready_for_live_qa.json` reports no blockers.
 5. The fourteen-journey live-QA runbook is completed against that exact SHA and
    build identity.

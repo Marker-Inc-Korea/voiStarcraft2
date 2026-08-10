@@ -791,6 +791,8 @@ def _assert_visible_structure(
     cards = _structure_items(snapshot.get("cards"), label="operation cards")
     if len(cards) < 4:
         raise AssertionError("expected at least four operation cards")
+    stage_count = 0
+    action_count = 0
     for card_index, card in enumerate(cards):
         if not isinstance(card, Mapping):
             raise AssertionError(f"operation card {card_index} snapshot is invalid")
@@ -813,6 +815,7 @@ def _assert_visible_structure(
             raise AssertionError(
                 f"operation card {card_index} does not have four stages"
             )
+        stage_count += len(stages)
         for stage_index, stage in enumerate(stages):
             if not isinstance(stage, Mapping):
                 raise AssertionError(
@@ -836,6 +839,7 @@ def _assert_visible_structure(
         ]
         if action_names != list(STANDARD_OPERATION_ACTIONS):
             raise AssertionError(f"operation actions changed: {action_names!r}")
+        action_count += len(actions)
         for action in actions:
             if not isinstance(action, Mapping):
                 raise AssertionError(
@@ -850,6 +854,9 @@ def _assert_visible_structure(
     return {
         "lanes": len(lanes),
         "cards": len(cards),
+        "stages": stage_count,
+        "actions": action_count,
+        "all_visible": True,
     }
 
 

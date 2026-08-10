@@ -601,13 +601,17 @@ jobs:
               structural = item.get("structural", {})
               viewports.append(
                   {
+                      "actions": structural.get("actions"),
+                      "all_visible": structural.get("all_visible"),
                       "cards": structural.get("cards"),
+                      "lanes": structural.get("lanes"),
                       "actual_sha256": item.get("actual_sha256"),
                       "baseline_sha256": item.get("baseline_sha256"),
                       "name": item.get("name"),
                       "serious_critical_count": accessibility.get(
                           "serious_critical_count"
                       ),
+                      "stages": structural.get("stages"),
                       "visual_diff_ratio": item.get("visual_diff_ratio"),
                   }
               )
@@ -1211,19 +1215,27 @@ jobs:
                       exact_keys(
                           viewport,
                           {
+                              "actions",
+                              "all_visible",
                               "actual_sha256",
                               "baseline_sha256",
                               "cards",
+                              "lanes",
                               "name",
                               "serious_critical_count",
+                              "stages",
                               "visual_diff_ratio",
                           },
                           producer,
                       )
                       ratio = viewport["visual_diff_ratio"]
                       if (
-                          viewport["cards"] != 4
+                          viewport["actions"] != 20
+                          or viewport["all_visible"] is not True
+                          or viewport["cards"] != 4
+                          or viewport["lanes"] != 4
                           or viewport["serious_critical_count"] != 0
+                          or viewport["stages"] != 16
                           or not sha256(viewport["actual_sha256"])
                           or not sha256(viewport["baseline_sha256"])
                           or isinstance(ratio, bool)

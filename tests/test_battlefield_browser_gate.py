@@ -262,7 +262,16 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
     ) -> None:
         result = _assert_visible_structure(_visible_structure())
 
-        self.assertEqual({"lanes": 4, "cards": 4}, result)
+        self.assertEqual(
+            {
+                "actions": 20,
+                "all_visible": True,
+                "cards": 4,
+                "lanes": 4,
+                "stages": 16,
+            },
+            result,
+        )
 
         mutations = (
             (

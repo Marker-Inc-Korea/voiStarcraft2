@@ -1445,30 +1445,31 @@ def _verify_ready_for_live_qa(
                     "issue": issue_number,
                 }
             )
+        closing_pulls = list(pulls)
         accepted_pulls = _accepted_merged_pulls(
-            pulls,
+            closing_pulls,
             repository=repository,
             main_branch=main_branch,
         )
         if issue_number == release_closing_issue:
-            exact_pulls = [
-                pull
-                for pull in accepted_pulls
-                if pull.get("number") == release_pull_number
-                and pull.get("merge_commit_sha")
-                == config.expected_repository_sha
-            ]
-            if len(exact_pulls) != 1:
+            exact_pulls = accepted_pulls
+            if (
+                len(closing_pulls) != 1
+                or len(accepted_pulls) != 1
+                or accepted_pulls[0].get("number") != release_pull_number
+                or accepted_pulls[0].get("merge_commit_sha")
+                != config.expected_repository_sha
+            ):
                 blockers.append(
                     {
-                        "code": "release_closing_pull_not_exact_main_merge",
+                        "code": "release_closing_pull_set_mismatch",
                         "issue": issue_number,
                     }
                 )
             closure_kind = "release_pull"
         else:
             exact_pulls = accepted_pulls
-            if exact_pulls:
+            if closing_pulls:
                 blockers.append(
                     {
                         "code": "explicit_completion_has_closing_pull",

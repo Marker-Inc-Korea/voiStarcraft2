@@ -818,13 +818,19 @@ class MicroMachineFinalReleaseTest(unittest.TestCase):
                 ),
                 "explicit_completion_has_closing_pull",
             ),
+            "malformed parent closing pull": (
+                lambda adapter: adapter.closing_pulls[128].append(
+                    {"number": RELEASE_PULL_NUMBER + 1}
+                ),
+                "explicit_completion_has_closing_pull",
+            ),
             "unmerged release closing pull": (
                 lambda adapter: adapter.closing_pulls[
                     RELEASE_CLOSING_ISSUE
                 ][0].update(
                     {"merged": False}
                 ),
-                "release_closing_pull_not_exact_main_merge",
+                "release_closing_pull_set_mismatch",
             ),
             "wrong release closing merge": (
                 lambda adapter: adapter.closing_pulls[
@@ -832,7 +838,24 @@ class MicroMachineFinalReleaseTest(unittest.TestCase):
                 ][0].update(
                     {"merge_commit_sha": "d" * 40}
                 ),
-                "release_closing_pull_not_exact_main_merge",
+                "release_closing_pull_set_mismatch",
+            ),
+            "additional release closing pull": (
+                lambda adapter: adapter.closing_pulls[
+                    RELEASE_CLOSING_ISSUE
+                ].append(
+                    adapter.merged_pull(
+                        number=RELEASE_PULL_NUMBER + 1,
+                        merge_sha=REPOSITORY_SHA,
+                    )
+                ),
+                "release_closing_pull_set_mismatch",
+            ),
+            "malformed release closing pull": (
+                lambda adapter: adapter.closing_pulls[
+                    RELEASE_CLOSING_ISSUE
+                ].append({"number": RELEASE_PULL_NUMBER + 1}),
+                "release_closing_pull_set_mismatch",
             ),
             "pull metadata merge": (
                 lambda adapter: adapter.pull_requests[
