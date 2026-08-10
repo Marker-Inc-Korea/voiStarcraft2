@@ -128,6 +128,10 @@ class FakeGitHubReleaseAdapter:
             "status": "identical",
             "merge_base_sha": REPOSITORY_SHA,
         }
+        self.release_comparison = {
+            "status": "identical",
+            "merge_base_sha": REPOSITORY_SHA,
+        }
         self.workflow = {
             "id": RUN_ID,
             "workflow_id": 7001,
@@ -187,13 +191,17 @@ class FakeGitHubReleaseAdapter:
         base: str,
         head: str,
     ) -> dict[str, object]:
-        if (
-            repository != REPOSITORY
-            or base != REPOSITORY_SHA
-            or head != self.branch["commit"]["sha"]
-        ):
+        if repository != REPOSITORY:
             raise AssertionError("unexpected commit comparison")
-        return dict(self.comparison)
+        if base == REPOSITORY_SHA and head == self.branch["commit"]["sha"]:
+            return dict(self.comparison)
+        if (
+            base
+            == self.pull_requests[RELEASE_PULL_NUMBER]["merge_commit_sha"]
+            and head == REPOSITORY_SHA
+        ):
+            return dict(self.release_comparison)
+        raise AssertionError("unexpected commit comparison")
 
     def get_pull_request(
         self,
@@ -344,6 +352,35 @@ class MicroMachineFinalReleaseTest(unittest.TestCase):
             adapter.comparison = {
                 "status": "ahead",
                 "merge_base_sha": REPOSITORY_SHA,
+            }
+            envelopes = self.write_green_artifacts(root, adapter)
+
+            report = self.build_report(
+                mode=READY_FOR_LIVE_QA,
+                root=root,
+                envelopes=envelopes,
+                adapter=adapter,
+            )
+
+            self.assertTrue(report["ok"], report["blockers"])
+            self.assertEqual("ready_for_live_qa", report["status"])
+
+    def test_ready_for_live_qa_accepts_release_pull_merge_behind_candidate(
+        self,
+    ) -> None:
+        release_merge_sha = "f" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            adapter = FakeGitHubReleaseAdapter(READY_FOR_LIVE_QA, self.status)
+            adapter.pull_requests[RELEASE_PULL_NUMBER][
+                "merge_commit_sha"
+            ] = release_merge_sha
+            adapter.closing_pulls[RELEASE_CLOSING_ISSUE][0][
+                "merge_commit_sha"
+            ] = release_merge_sha
+            adapter.release_comparison = {
+                "status": "ahead",
+                "merge_base_sha": release_merge_sha,
             }
             envelopes = self.write_green_artifacts(root, adapter)
 
@@ -860,8 +897,25 @@ class MicroMachineFinalReleaseTest(unittest.TestCase):
             "pull metadata merge": (
                 lambda adapter: adapter.pull_requests[
                     RELEASE_PULL_NUMBER
-                ].update({"merge_commit_sha": "d" * 40}),
+                ].update({"merge_commit_sha": "D" * 40}),
                 "release_pull_merge_state_mismatch",
+            ),
+            "release pull not candidate ancestor": (
+                lambda adapter: (
+                    adapter.pull_requests[RELEASE_PULL_NUMBER].update(
+                        {"merge_commit_sha": "f" * 40}
+                    ),
+                    adapter.closing_pulls[RELEASE_CLOSING_ISSUE][0].update(
+                        {"merge_commit_sha": "f" * 40}
+                    ),
+                    adapter.release_comparison.update(
+                        {
+                            "status": "diverged",
+                            "merge_base_sha": "f" * 40,
+                        }
+                    ),
+                ),
+                "release_pull_not_ancestor_of_candidate",
             ),
             "release commit not on main": (
                 lambda adapter: adapter.comparison.update(

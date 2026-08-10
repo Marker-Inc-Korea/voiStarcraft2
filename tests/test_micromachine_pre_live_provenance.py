@@ -8831,25 +8831,50 @@ class ReplayLedgerTest(unittest.TestCase):
             digest = "sha256:" + "3" * 64
             script = (
                 "import json,sys;"
+                "sys.path.insert(0,sys.argv[1]);"
                 "from starcraft_commander.micromachine_pre_live_provenance "
                 "import consume_replay_ledger;"
                 "print(json.dumps(consume_replay_ledger("
-                "sys.argv[1],sys.argv[2],source_ids={'run_id':101})))"
+                "sys.argv[2],sys.argv[3],source_ids={'run_id':101})))"
             )
             processes = [
                 subprocess.Popen(
-                    [sys.executable, "-I", "-c", script, str(ledger), digest],
+                    [
+                        sys.executable,
+                        "-I",
+                        "-c",
+                        script,
+                        str(BUILD_IDENTITY_REPO_ROOT),
+                        str(ledger),
+                        digest,
+                    ],
                     cwd=BUILD_IDENTITY_REPO_ROOT,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
-                    env={"PATH": os.environ.get("PATH", "")},
+                    env={
+                        "PATH": os.environ.get("PATH", ""),
+                        "PYTHONDONTWRITEBYTECODE": "1",
+                    },
                 )
                 for _ in range(16)
             ]
+            outputs: list[tuple[str, str]] = []
+            try:
+                for process in processes:
+                    outputs.append(process.communicate(timeout=30))
+            finally:
+                for process in processes:
+                    if process.poll() is None:
+                        process.kill()
+                        process.communicate()
+
             results = []
-            for process in processes:
-                stdout, stderr = process.communicate(timeout=30)
+            for process, (stdout, stderr) in zip(
+                processes,
+                outputs,
+                strict=True,
+            ):
                 self.assertEqual(0, process.returncode, stderr)
                 results.append(json.loads(stdout))
 
