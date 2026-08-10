@@ -10222,6 +10222,11 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     #llm-panel button, .runtime-actions button {
       background: ButtonFace; color: ButtonText; border: 1px solid ButtonText;
     }
+    :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+      outline: 3px solid Highlight;
+      outline-offset: 3px;
+      box-shadow: none;
+    }
   }
   .app-shell { position: relative; z-index: 1; max-width: 1540px; margin: 0 auto; }
   .language-switcher {
@@ -11122,6 +11127,14 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
   #send-button:disabled, #command-input:disabled, #voice-button:disabled {
     opacity: 0.55; cursor: not-allowed;
   }
+  :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+    outline: 3px solid var(--accent);
+    outline-offset: 3px;
+    box-shadow: 0 0 0 5px rgba(77, 238, 234, 0.24);
+  }
+  .operation-card[tabindex="0"] {
+    border-color: var(--line-strong);
+  }
   #send-button:hover:not(:disabled) { filter: brightness(1.08); }
   .briefing-block {
     margin: 0 0 12px; padding: 12px 13px; border: 1px solid var(--line);
@@ -11303,7 +11316,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
         </div>
         <ol id="operation-timeline"
             class="operation-timeline"
-            role="log"
+            role="list"
             aria-live="off"
             aria-label="선택된 작전의 의미 사건 기록"
             data-i18n-aria-label="operationTimelineLabel"></ol>
@@ -11422,7 +11435,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
       </div>
       <ol id="tactical-radio-captions"
           class="tactical-radio-captions"
-          role="log"
+          role="list"
           aria-live="off"
           aria-relevant="additions text"
           aria-label="전술 무전 자막"
@@ -13493,6 +13506,7 @@ function renderVoiceSessionPending(session, text, skipTrim) {
   session.state = "pending";
   var entry = session.node;
   entry.className = "log-entry pending-entry voice-session-entry";
+  entry.setAttribute("data-pending-id", String(session.pendingId || ""));
   entry.textContent = "";
 
   var userMessage = document.createElement("div");
@@ -13655,6 +13669,7 @@ function renderVoiceSessionTerminal(session, status, narration) {
   releaseVoicePendingSession(session);
   var entry = session.node;
   entry.className = "log-entry voice-session-entry";
+  entry.removeAttribute("data-pending-id");
   entry.textContent = "";
   var userMessage = document.createElement("div");
   userMessage.className = "message message-user";
@@ -17402,6 +17417,18 @@ function operationRecordKey(scopeId, operationId) {
   return String(scopeId || "") + "\u0000" + String(operationId || "");
 }
 
+function operationRecordDomKey(recordKey) {
+  return encodeURIComponent(String(recordKey || ""));
+}
+
+function operationRecordKeyFromDom(domKey) {
+  try {
+    return decodeURIComponent(String(domKey || ""));
+  } catch (error) {
+    return "";
+  }
+}
+
 function operationPayloadScopeId(operation, data) {
   var explicitScope = String(
     operation && operation.blackboard_scope_id ||
@@ -19043,7 +19070,7 @@ function operationActionButton(record, label, action, handler) {
   button.type = "button";
   button.textContent = label;
   button.setAttribute("data-operation-action", action);
-  button.setAttribute("data-operation-key", record.key);
+  button.setAttribute("data-operation-key", operationRecordDomKey(record.key));
   button.setAttribute(
     "aria-label",
     label + ": " + (record.text || record.operationId)
@@ -20279,6 +20306,7 @@ function renderOperationTimeline(record) {
 function focusOperationRecord(record) {
   if (!record || !record.data) { return; }
   selectedOperationKey = record.key;
+  syncOperationCardRovingTabIndex(record.key);
   microMachineCommandAnnouncementSeq += 1;
   activeCommandConsoleRecord = {
     pendingId: "",
@@ -20304,6 +20332,124 @@ function focusOperationRecord(record) {
   renderOperationTimeline(record);
 }
 
+function operationCardForElement(element) {
+  var current = element;
+  while (current) {
+    if (
+      current.classList &&
+      current.classList.contains("operation-card")
+    ) {
+      return current;
+    }
+    current = current.parentNode;
+  }
+  return null;
+}
+
+function syncOperationCardRovingTabIndex(preferredKey) {
+  var cards = Array.prototype.slice.call(
+    document.querySelectorAll(".operation-card")
+  );
+  if (!cards.length) { return; }
+  var focusedCard = operationCardForElement(document.activeElement);
+  var selectedKey = String(
+    preferredKey ||
+    focusedCard && operationRecordKeyFromDom(
+      focusedCard.getAttribute("data-operation-key")
+    ) ||
+    selectedOperationKey ||
+    operationRecordKeyFromDom(cards[0].getAttribute("data-operation-key")) ||
+    ""
+  );
+  var selectedFound = false;
+  cards.forEach(function(card) {
+    var selected = Boolean(
+      !selectedFound &&
+      operationRecordKeyFromDom(
+        card.getAttribute("data-operation-key")
+      ) === selectedKey
+    );
+    if (selected) { selectedFound = true; }
+    card.tabIndex = selected ? 0 : -1;
+    card.setAttribute(
+      "data-operation-selected",
+      selected ? "true" : "false"
+    );
+  });
+  if (!selectedFound) {
+    cards[0].tabIndex = 0;
+    cards[0].setAttribute("data-operation-selected", "true");
+  }
+}
+
+function moveOperationCardFocus(card, direction) {
+  var cards = Array.prototype.slice.call(
+    document.querySelectorAll(".operation-card")
+  );
+  var currentIndex = cards.indexOf(card);
+  if (currentIndex < 0 || !cards.length) { return false; }
+  var nextIndex = currentIndex;
+  if (direction === "first") {
+    nextIndex = 0;
+  } else if (direction === "last") {
+    nextIndex = cards.length - 1;
+  } else {
+    nextIndex = (
+      currentIndex + Number(direction || 0) + cards.length
+    ) % cards.length;
+  }
+  var target = cards[nextIndex];
+  selectedOperationKey = String(
+    operationRecordKeyFromDom(
+      target.getAttribute("data-operation-key")
+    ) || selectedOperationKey
+  );
+  syncOperationCardRovingTabIndex(selectedOperationKey);
+  target.focus({ preventScroll: true });
+  target.scrollIntoView({ block: "nearest", inline: "nearest" });
+  return true;
+}
+
+function handleOperationCardKeydown(event) {
+  var card = operationCardForElement(event.target);
+  if (!card || event.target !== card) { return; }
+  var key = String(event.key || "");
+  if (
+    key === "ArrowRight" ||
+    key === "ArrowDown" ||
+    key === "ArrowLeft" ||
+    key === "ArrowUp" ||
+    key === "Home" ||
+    key === "End"
+  ) {
+    event.preventDefault();
+    moveOperationCardFocus(
+      card,
+      key === "Home"
+        ? "first"
+        : (
+          key === "End"
+            ? "last"
+            : (
+              key === "ArrowRight" || key === "ArrowDown"
+                ? 1
+                : -1
+            )
+        )
+    );
+    return;
+  }
+  if (key === "Enter" || key === " ") {
+    event.preventDefault();
+    var recordKey = operationRecordKeyFromDom(
+      card.getAttribute("data-operation-key") || ""
+    );
+    if (recordKey && operationRecords[recordKey]) {
+      focusOperationRecord(operationRecords[recordKey]);
+    }
+  }
+}
+
 function renderOperationCard(record) {
   var data = record.data || {
     status: "queued",
@@ -20315,7 +20461,7 @@ function renderOperationCard(record) {
   var canonicalCompletionVerified = Boolean(
     model.canonicalCompletionVerified
   );
-  var card = record.node || document.createElement("article");
+  var card = record.node || document.createElement("div");
   record.node = card;
   var cardFingerprint = JSON.stringify({
     locale: currentLang,
@@ -20341,10 +20487,27 @@ function renderOperationCard(record) {
     "operation-card"
   );
   card.setAttribute("role", "listitem");
-  card.setAttribute("data-operation-key", record.key);
+  card.setAttribute("data-operation-key", operationRecordDomKey(record.key));
   card.setAttribute("data-operation-id", record.operationId);
+  card.setAttribute(
+    "data-operation-transport-status",
+    String(data.transport_status || data.status || "")
+  );
+  card.setAttribute(
+    "data-operation-execution-state",
+    String(
+      data.intervention &&
+      data.intervention.command_execution &&
+      data.intervention.command_execution.state ||
+      ""
+    )
+  );
   card.setAttribute("data-operation-card-fingerprint", cardFingerprint);
   card.setAttribute("aria-labelledby", record.domId + "-title");
+  if (card.getAttribute("data-keyboard-navigation-ready") !== "true") {
+    card.setAttribute("data-keyboard-navigation-ready", "true");
+    card.addEventListener("keydown", handleOperationCardKeydown);
+  }
 
   var header = document.createElement("div");
   header.className = "operation-card-header";
@@ -20819,11 +20982,14 @@ function renderOperationRecords(options) {
       if (card.parentNode !== lane) {
         lane.appendChild(card);
       }
+      card.setAttribute("data-operation-lane-current", laneName);
       restoreOperationFocusedControl(card, focusedControlKey);
     });
   }
   list.querySelectorAll(".operation-card").forEach(function(card) {
-    var key = String(card.getAttribute("data-operation-key") || "");
+    var key = operationRecordKeyFromDom(
+      card.getAttribute("data-operation-key") || ""
+    );
     if (!operationRecords[key] && card.parentNode) {
       card.parentNode.removeChild(card);
     }
@@ -20845,6 +21011,7 @@ function renderOperationRecords(options) {
       ? visibleRecords[0].key
       : "";
   }
+  syncOperationCardRovingTabIndex(selectedOperationKey);
   renderOperationTimeline(
     selectedOperationKey ? operationRecords[selectedOperationKey] : null
   );

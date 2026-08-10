@@ -203,39 +203,37 @@ situational feedback, not a hidden mouse or keyboard automation layer.
 | Brood War / BWAPI | Semantic executor boundary implemented; real BWAPI adapter still requires a BWAPI machine. |
 | Human multiplayer | Deferred. Current qualification target is local AI/custom-game operation control. |
 
-## Latest Qualification
+## Release Status And Qualification
 
-The current cockpit pre-live regression and clean patched build were refreshed
-on July 30, 2026. The latest live SC2 evidence below was collected on July 27,
-2026:
+Release readiness is generated, not maintained as prose. The authoritative
+status contract is
+`integrations/micromachine/PRE_LIVE_RELEASE_STATUS.json`, and
+`.github/workflows/final-pre-live.yml` binds every automated result to one
+repository SHA, one admitted MicroMachine build identity, one workflow run,
+and one run attempt.
 
-| Gate | Result |
-| --- | --- |
-| Current Python suite | `2177 passed, 6386 subtests passed` in the local `dev + llm` environment |
-| Historical cross-version baseline | Python 3.10, 3.11, and 3.12 each passed `1904 tests, 5357 subtests` on July 27, 2026 |
-| MicroMachine integration kit | `117 passed, 2414 subtests passed` |
-| Current web operation UX | `218 passed, 319 subtests passed`, including non-blocking SSE publication, replay rollover recovery, atomic operation/overview snapshot acceptance, split request/execution-owner identity authentication, same-generation foreign-update rejection, delayed owner telemetry reconciliation, bounded scope-revisit replay history, retired-operation identity tombstones, exact legacy voice-request correlation, explicit legacy HTTP failure rendering, bounded stalled-voice DOM/session state, retired-recognizer isolation, session-epoch Tactical Radio reset, bounded plan/high-water registries, Chinese `zh-CN` TTS, canonical terminal completion without synthetic effect evidence, canonical completion consistency across cards/active console/badge/chat, explicit failure precedence across visual and accessibility surfaces, truthful `order_issued` versus `action_issued`, cancellation cleanup waiting, stable 24-card reconciliation, lane-move focus, single-node concurrent voice sessions, async structured plan readback, authoritative safety callouts, and accessibility motion fallbacks |
-| Actual Chrome cockpit QA | Raw headless Google Chrome `150.0.7871.187` passed at desktop `1440x1100` and mobile `390x844`: four operation lanes, four stages per operation card, five exact standard actions, unique DOM IDs, rendered card/stage/action accessibility, keyed action-focus retention, no horizontal overflow, tactical-radio placement, voice exactly-once submission, truthful plan identity, mute/caption behavior, and localized accessibility labels |
-| Clean patched build | Build identity schema `71`, `ok=true`, identity `sha256:2352557f778ca3591ee500d36465b6712b5fb31dac3778edf927aebe91e19bd0`, embedded build-input identity `sha256:95f7504183e50b69bc9820a3c21269e0512dd0aa5f8556e8f69ec87518570be1`, binary SHA-256 `41a911404652a15d0db7215ecbfe56b87e8f442cbe686dcac79c6d6297734d29`, source attestation SHA-256 `d2104a557a01515f791109efbc962de5146a5c3be91832a36da06b9bc92dc005` |
-| Fresh live smoke | Difficulty `10`, run ID `20260727T143156Z-27690-3244`, single attempt, final accepted frame `5250`, exit code `0` |
-| Tech-gas opening | A required Refinery was queued and promoted at frame `1527`; the first Barracks issued an actual SC2 command at `1561`, the Refinery issued its build command at `2616` and was observed building at `2689`, the second Barracks issued an actual command at `2655`, the Refinery completed at `3118`, and `3` live gas workers were observed by frame `3463` |
-| Parallel execution | The parallel update was published at frame `3716` and observed by the manager at `3731`; attack submitted at `3731`, reached `MOVING` at `3745` and `ENGAGED` at `4703`; scout submitted at `5030` and reached `MOVING` at `5046`; the operations used different exclusive unit tags. `MOVING` is set only after observed displacement from the per-unit SC2 submission position. |
-| Selective cancellation | Attack cancellation was published at frame `5030`; frame `5046` recorded matching-generation `release_stop`, released `smoke-attack-bravo#1`, and retained an owner-keyed purge event with exactly one exclusively owned queue item removed while the scout remained `MOVING`; every later archived terminal snapshot through frame `5085` preserved the same cleanup action and frame |
-| Autonomous restoration | Restore policy was issued at frame `5085` with MainAttack command baseline `4`; a fresh autonomous MainAttack action and same-unit movement were observed under the restore policy by frame `5091`, command count reached `8` at frame `5139`, and the final accepted snapshot recorded `31.1514` maximum home distance |
-| Provenance | Runtime manifest covered 36 Python source files and matched the schema-71 embedded build identity through smoke completion |
+Pull requests produce `ready_to_merge.json` and `ready_to_merge.md`. After the
+closing PR is merged, the exact `main` push reruns all child gates and produces
+`ready_for_live_qa.json` and `ready_for_live_qa.md`. These generated reports,
+not manually edited test counts, browser versions, hashes, run IDs, or dated
+claims in this README, are the release source of truth.
 
-This qualification proves the tested parallel operation and autonomous
-restoration path. It does not replace the family-by-family all-Terran live
-matrix described above.
+The final manual procedure is generated from the same structured status and
+the exact fourteen-journey manifest in
+`docs/micromachine-final-live-qa.md`. Automated readiness always preserves
+`manual_live_qa_remaining=true`; actual StarCraft II visual, movement,
+engagement, HUD, caption, and tactical-audio observations remain required.
+Human multiplayer, ladder, Battle.net qualification, and competitive balance
+signoff remain deferred.
 
-Current verification command:
+Local regression command:
 
 ```bash
 python3 -m pytest -q
 ```
 
-The suite does not require StarCraft II, `burnysc2`, BWAPI, LLM credentials,
-or audio hardware.
+The ordinary unit suite does not require StarCraft II, `burnysc2`, BWAPI, LLM
+credentials, or audio hardware. Passing it alone is not a release verdict.
 
 ## License
 

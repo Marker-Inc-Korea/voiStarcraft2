@@ -1,0 +1,2 @@
+axe-playwright-python==0.1.7
+playwright==1.62.0

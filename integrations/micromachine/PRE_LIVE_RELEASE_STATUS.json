@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "repository": "Marker-Inc-Korea/voiStarcraft2",
+  "release_issue": 142,
+  "parent_issue": 128,
+  "master_issue": 124,
+  "release_closure_issues": [
+    141,
+    142,
+    128,
+    124
+  ],
+  "main_branch": "main",
+  "manual_live_qa_remaining": true,
+  "max_artifact_age_seconds": 86400,
+  "journey_suite_id": "micromachine_deterministic_pre_live_v1",
+  "ready_to_merge_dependencies": [
+    {
+      "issue": 3,
+      "require_merged_closing_pull": true
+    },
+    {
+      "issue": 4,
+      "require_merged_closing_pull": true
+    },
+    {
+      "issue": 125,
+      "require_merged_closing_pull": true
+    },
+    {
+      "issue": 126,
+      "require_merged_closing_pull": true
+    },
+    {
+      "issue": 127,
+      "require_merged_closing_pull": true
+    },
+    {
+      "issue": 133,
+      "require_merged_closing_pull": true
+    },
+    {
+      "issue": 134,
+      "require_merged_closing_pull": true
+    },
+    {
+      "issue": 138,
+      "require_merged_closing_pull": true
+    },
+    {
+      "issue": 139,
+      "require_merged_closing_pull": true
+    },
+    {
+      "issue": 140,
+      "require_merged_closing_pull": true
+    }
+  ],
+  "required_artifacts": [
+    {
+      "producer": "build_identity",
+      "artifact_name": "micromachine-build-identity",
+      "member": "build_identity/report.json"
+    },
+    {
+      "producer": "deterministic_journeys",
+      "artifact_name": "micromachine-deterministic-journeys",
+      "member": "deterministic_journeys/report.json"
+    },
+    {
+      "producer": "browser_accessibility",
+      "artifact_name": "micromachine-browser-accessibility",
+      "member": "browser_accessibility/report.json"
+    },
+    {
+      "producer": "distribution_compliance",
+      "artifact_name": "micromachine-distribution-compliance",
+      "member": "distribution_compliance/report.json"
+    },
+    {
+      "producer": "pre_live_provenance",
+      "artifact_name": "micromachine-pre-live-provenance",
+      "member": "pre_live_provenance/report.json"
+    }
+  ],
+  "status": {
+    "implemented": [
+      "Parallel operation ownership, transfer, reinforcement, retarget, cancellation, emergency preemption, autonomous defense restoration, all-Terran lowering, event replay, and tactical voice identity contracts are implemented.",
+      "Hardened source, build, producer, artifact, distribution, and replay verification components are implemented."
+    ],
+    "automated_qualified": [
+      "Automated qualification requires all five child artifacts to pass on one exact repository SHA, MicroMachine build identity, workflow run, and run attempt.",
+      "The checked-in deterministic manifest defines exactly fourteen executable pre-live journeys."
+    ],
+    "live_qa_pending": [
+      "Actual StarCraft II movement, engagement, browser and HUD consistency, and tactical voice audio remain manual observations.",
+      "No automated report may set live qualified or clear manual_live_qa_remaining."
+    ],
+    "proposed_deferred": [
+      "Human multiplayer, ladder, Battle.net qualification, and competitive balance signoff are deferred.",
+      "Raw unit-tag control, arbitrary frame scripting, mouse automation, and direct provider SC2 actions remain excluded."
+    ]
+  }
+}

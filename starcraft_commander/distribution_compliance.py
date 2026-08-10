@@ -456,6 +456,11 @@ _SAFE_FIXTURE_FINGERPRINTS: Final[
             "2a452e8451a18651177c8cfeff71b5c6d1e8fd1d1faab95968b77e83cd7efd09": 2
         }
     },
+    "tests/test_micromachine_final_release.py": {
+        "api_key": {
+            "da3df90b7e130d9b4997d4c8966f6b061105532f8f134b1bdd18e98bc0caacfb": 2
+        }
+    },
     "tests/test_web_gui.py": {
         "api_key": {
             "3ecb7ee0b6df1921344b76307f224695e417e4a63f638471b2428b6f7c54c355": 2,

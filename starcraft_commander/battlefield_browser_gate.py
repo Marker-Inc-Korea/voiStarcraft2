@@ -1,0 +1,1247 @@
+"""Release-blocking Playwright gate for the Battlefield Commander cockpit."""
+
+from __future__ import annotations
+
+import argparse
+import binascii
+import hashlib
+import json
+import os
+import re
+import struct
+import threading
+import time
+import zlib
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Final
+
+from starcraft_commander.web_gui import (
+    WebGuiServer,
+    _MicroMachineValidatedRuntimeSnapshot,
+)
+
+
+BROWSER_GATE_SCHEMA_VERSION: Final[int] = 1
+BROWSER_GATE_PRODUCER: Final[str] = "battlefield-playwright-gate"
+DEFAULT_BASELINE_DIR: Final[Path] = (
+    Path(__file__).resolve().parents[1] / "tests" / "browser_baselines"
+)
+VIEWPORTS: Final[tuple[tuple[str, int, int], ...]] = (
+    ("desktop", 1440, 1100),
+    ("mobile", 390, 844),
+)
+VISUAL_DIFF_THRESHOLD: Final[float] = 0.18
+PIXEL_CHANNEL_TOLERANCE: Final[int] = 12
+_SHA_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{40}$")
+_BUILD_RE: Final[re.Pattern[str]] = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def _projection(
+    operation_id: str,
+    generation: int,
+    *,
+    stage: str,
+    completed: bool = False,
+    blocker: str = "",
+) -> dict[str, object]:
+    return {
+        "identity": {
+            "update_id": f"browser-{operation_id}",
+            "scope": f"operation:{operation_id}",
+            "session_epoch": 1_700_000_000_000,
+            "operation_id": operation_id,
+            "generation": generation,
+            "stage": stage,
+            "game_frame": 480,
+        },
+        "operation_id": operation_id,
+        "generation": generation,
+        "operation_route": {
+            "requested_route_type": "direct",
+            "applied_route_type": "direct",
+            "location_intent": "enemy_natural",
+            "target_type": "enemy_expansion",
+            "resolved_target_label": "enemy natural",
+            "target_x": 120.0,
+            "target_y": 44.0,
+            "target_evidence": "semantic_anchor",
+        },
+        "operation_lifetime": {
+            "mode": "until_completed",
+            "completion_state": "completed" if completed else "active",
+            "completion_conditions": ["target_reached", "cancelled_by_user"],
+            "duration_seconds": 300,
+            "issued_at_frame": 400,
+            "deadline_frame": 4_700,
+            "standing": False,
+            "completed": completed,
+            "completion_reason": "target_reached" if completed else "",
+            "completed_frame": 480 if completed else 0,
+        },
+        "operation_ownership": {
+            "owner_count": 4,
+            "integrity_status": "valid",
+        },
+        "operation_launch_policy": {
+            "min_units": 2,
+            "max_units": 4,
+            "allow_partial_requested": True,
+            "strict_scope": True,
+            "partial_launch_allowed": True,
+            "partial_launch_safe": not blocker,
+            "launch_count": 4 if not blocker else 2,
+            "missing_count": 0 if not blocker else 2,
+            "decision": "launch" if not blocker else "wait",
+            "blocker": blocker,
+            "recommended_choices": (
+                [] if not blocker else ["wait_for_full_force"]
+            ),
+            "safety_evidence": {
+                "evaluated_at_frame": 480,
+                "protected_defense_minimum_respected": True,
+                "source_operation_minimum_respected": True,
+                "transfer_admission": "accepted",
+                "emergency_preemption": "none",
+            },
+        },
+        "operation_completion": {
+            "movement_observed": stage in {"moving", "engaged", "completed"},
+            "engagement_observed": stage in {"engaged", "completed"},
+            "target_reached": completed,
+            "terminal": completed,
+            "state": "completed" if completed else "active",
+            "reason": "target_reached" if completed else "",
+            "frame": 480 if completed else 0,
+            "generation": generation,
+        },
+    }
+
+
+def _operation(
+    operation_id: str,
+    generation: int,
+    lane: str,
+) -> dict[str, object]:
+    update_id = f"browser-{operation_id}"
+    stage = {
+        "planning": "assigned",
+        "executing": "submitted",
+        "completed": "completed",
+        "waiting": "assigned",
+    }[lane]
+    completed = lane == "completed"
+    blocker = "composition_prerequisites_pending" if lane == "waiting" else ""
+    execution_state = {
+        "planning": "queued_or_assigned",
+        "executing": "action_issued",
+        "completed": "action_issued",
+        "waiting": "blocked",
+    }[lane]
+    stages = [
+        {"name": "parsed", "ok": True},
+        {"name": "reduced", "ok": True},
+        {"name": "consumed_by_manager", "ok": True},
+        {"name": "queued_or_assigned", "ok": True},
+    ]
+    if lane in {"executing", "completed"}:
+        stages.extend(
+            [
+                {"name": "order_issued", "ok": True},
+                {
+                    "name": "action_issued",
+                    "ok": True,
+                    "evidence": {"submitted_count": 1},
+                },
+            ]
+        )
+    if completed:
+        stages.append(
+            {
+                "name": "effect_observed",
+                "ok": True,
+                "evidence": {"movement_observed": True},
+            }
+        )
+    return {
+        "operation_id": operation_id,
+        "operation_generation": generation,
+        "requested_operation_generation": generation,
+        "update_id": update_id,
+        "operation_console_execution_owner_update_id": update_id,
+        "operation_console_execution_owner_vector": {
+            "operation_id": operation_id,
+            "generation": generation,
+            "composition_requirements": [
+                {"unit_type": "TERRAN_MARINE", "count": 4}
+            ],
+            "tactical_task": {"task_type": "pressure_with_main_army"},
+            "route_intent": {
+                "route_type": "direct",
+                "target_intent": "enemy_natural",
+            },
+        },
+        "command_text": f"Execute {operation_id}",
+        "operation_mission": "pressure",
+        "transport_status": "published",
+        "status": "published",
+        "consumption_status": "consumed",
+        "telemetry_frame": 480,
+        "telemetry_current": True,
+        "disposition": "completed" if completed else "active",
+        "operation_convergence": {
+            "target_count": 4,
+            "represented_count": 4 if not blocker else 2,
+            "missing_count": 0 if not blocker else 2,
+            "blocker": blocker,
+            "requirements": [],
+            "prerequisite_integrity_status": "valid",
+            "prerequisite_integrity_blockers": [],
+        },
+        "battlefield_projection_join": {
+            "status": "matched",
+            "reason": "",
+            "update_id": update_id,
+            "scope": f"operation:{operation_id}",
+            "session_epoch": "1700000000000",
+            "operation_id": operation_id,
+            "generation": generation,
+        },
+        "battlefield_operation": _projection(
+            operation_id,
+            generation,
+            stage=stage,
+            completed=completed,
+            blocker=blocker,
+        ),
+        "semantic_timeline": [
+            {
+                "timeline_seq": 1,
+                "kind": "planned",
+                "summary": f"{operation_id} planned",
+                "game_frame": 420,
+                "technical": {},
+            }
+        ],
+        "update": {
+            "update_id": update_id,
+            "vector": {
+                "goal": f"Execute {operation_id}",
+                "operation_id": operation_id,
+                "generation": generation,
+                "tactical_task": {"task_type": "pressure_with_main_army"},
+            },
+        },
+        "intervention": {
+            "telemetry_frame": 480,
+            "command_execution": {
+                "command_id": update_id,
+                "operation_id": operation_id,
+                "operation_generation": generation,
+                "state": execution_state,
+                "completed": completed,
+                "failed": lane == "waiting",
+                "expired": False,
+                "blocker_reason": blocker,
+                "stages": stages,
+            },
+        },
+    }
+
+
+def _status_payload(operations: Sequence[Mapping[str, object]]) -> dict[str, object]:
+    projections = [
+        dict(operation["battlefield_operation"])  # type: ignore[index]
+        for operation in operations
+    ]
+    return {
+        "ok": True,
+        "status": "published",
+        "blackboard_dir": "/tmp/voi-browser-gate",
+        "battlefield_projection_identity": {
+            "update_id": "browser-overview",
+            "scope": "battlefield",
+            "session_epoch": 1_700_000_000_000,
+            "generation": 9,
+            "stage": "observed",
+            "game_frame": 480,
+        },
+        "battlefield_projection_fingerprint": "e" * 64,
+        "battlefield_overview": {
+            "schema_version": 2,
+            "authority": "micromachine_cpp",
+            "identity": {
+                "update_id": "browser-overview",
+                "scope": "battlefield",
+                "session_epoch": 1_700_000_000_000,
+                "generation": 9,
+                "stage": "observed",
+                "game_frame": 480,
+            },
+            "eligible_combat_count": 18,
+            "explicit_operation_owned_count": 16,
+            "autonomous_owned_count": 2,
+            "unassigned_count": 0,
+            "duplicate_owner_count": 0,
+            "operation_ownership": projections,
+            "autonomous_ownership": [
+                {
+                    "owner_id": "squad:Base Defense",
+                    "owner_count": 2,
+                    "composition": [
+                        {
+                            "family": "marine",
+                            "role": "base_defender",
+                            "count": 2,
+                            "ground_capable_count": 2,
+                            "air_capable_count": 2,
+                        }
+                    ],
+                    "integrity_status": "valid",
+                }
+            ],
+            "bases": [],
+            "transfer_availability": {
+                "evaluated_at_frame": 480,
+                "atomic_revalidation_required": True,
+                "entries": [],
+            },
+        },
+        "battlefield_projection_integrity": {
+            "status": "valid",
+            "blocker_count": 0,
+        },
+        "operation_registry_authoritative": True,
+        "operations": [dict(operation) for operation in operations],
+    }
+
+
+class _BrowserFixtureBridge:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._operations = [
+            _operation("planning-alpha", 1, "planning"),
+            _operation("assault-bravo", 2, "executing"),
+            _operation("completed-charlie", 3, "completed"),
+            _operation("waiting-delta", 4, "waiting"),
+        ]
+        self._submission_count = 0
+
+    def submit_command(self, text: str) -> None:
+        del text
+
+    def state_snapshot(self) -> None:
+        return None
+
+    def history_since(self, seq: int) -> list[dict[str, object]]:
+        del seq
+        return []
+
+    def latest_seq(self) -> int:
+        return 0
+
+    def llm_settings_snapshot(self) -> dict[str, object]:
+        return {"configured": True, "provider": "fixture", "model": "fixture"}
+
+    def configure_llm(
+        self,
+        provider: str,
+        api_key: str,
+        model: str = "",
+    ) -> dict[str, object]:
+        del provider, api_key, model
+        return self.llm_settings_snapshot()
+
+    def micromachine_blackboard_dir(self) -> str:
+        return "/tmp/voi-browser-gate"
+
+    def micromachine_status(
+        self,
+        *,
+        blackboard_dir: str = "",
+    ) -> dict[str, object]:
+        del blackboard_dir
+        with self._lock:
+            return _status_payload(self._operations)
+
+    def micromachine_status_detached(
+        self,
+        *,
+        blackboard_dir: str = "",
+    ) -> dict[str, object]:
+        return self.micromachine_status(blackboard_dir=blackboard_dir)
+
+    def micromachine_status_for_runtime(
+        self,
+        *,
+        blackboard_dir: str = "",
+        runtime_instance_id: str,
+        telemetry_document: Mapping[str, object],
+    ) -> dict[str, object]:
+        del runtime_instance_id, telemetry_document
+        return self.micromachine_status(blackboard_dir=blackboard_dir)
+
+    def submit_micromachine_modulation(
+        self,
+        text: str,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        del kwargs
+        with self._lock:
+            self._submission_count += 1
+            ordinal = self._submission_count
+        if ordinal == 1:
+            time.sleep(0.12)
+        else:
+            time.sleep(0.04)
+        created = [
+            _operation(f"voice-{ordinal}-recon", ordinal + 10, "planning"),
+            _operation(f"voice-{ordinal}-attack", ordinal + 20, "executing"),
+        ]
+        for item in created:
+            item["command_text"] = text
+        with self._lock:
+            self._operations.extend(created)
+            return _status_payload(self._operations)
+
+    def submit_micromachine_modulation_background(
+        self,
+        text: str,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        result = self.submit_micromachine_modulation(text, **kwargs)
+        return {
+            **result,
+            "accepted": True,
+            "queued": True,
+            "async_publish": True,
+        }
+
+
+class _BrowserFixtureLauncher:
+    def __init__(self, blackboard_dir: str) -> None:
+        self.blackboard_dir = blackboard_dir
+        self.runtime_instance_id = "f" * 32
+
+    def snapshot(self, blackboard_dir: str = "") -> dict[str, object]:
+        return dict(
+            self.validated_snapshot(
+                blackboard_dir=blackboard_dir,
+            ).metadata
+        )
+
+    def validated_snapshot(
+        self,
+        *,
+        blackboard_dir: str = "",
+    ) -> _MicroMachineValidatedRuntimeSnapshot:
+        root = blackboard_dir or self.blackboard_dir
+        telemetry = {
+            "protocol_version": 1,
+            "frame": 480,
+            "bot_name": "MicroMachine",
+            "race": "Terran",
+            "managers": {},
+            "active_modulation_ids": [],
+            "runtime_instance_id": self.runtime_instance_id,
+        }
+        return _MicroMachineValidatedRuntimeSnapshot(
+            metadata={
+                "enabled": True,
+                "mode": "micromachine",
+                "status": "connected",
+                "blackboard_dir": root,
+                "pid": 4242,
+                "runtime_instance_id": self.runtime_instance_id,
+                "runtime_attached": True,
+                "telemetry_present": True,
+                "telemetry_current_for_process": True,
+                "telemetry_stale_or_detached": False,
+                "telemetry_frame": 480,
+            },
+            telemetry_document=telemetry,
+        )
+
+
+_BROWSER_INIT_SCRIPT = r"""
+(() => {
+  window.__voiSpeechInstances = [];
+  class FixtureSpeechRecognition {
+    constructor() {
+      this.lang = "ko-KR";
+      this.interimResults = true;
+      this.continuous = false;
+      window.__voiSpeechInstances.push(this);
+    }
+    start() {
+      if (this.onstart) { this.onstart(); }
+    }
+    stop() {
+      if (this.onend) { this.onend(); }
+    }
+    abort() {
+      if (this.onend) { this.onend(); }
+    }
+    emitFinal(text) {
+      const result = [{ transcript: text }];
+      result.isFinal = true;
+      if (this.onresult) { this.onresult({ results: [result] }); }
+    }
+  }
+  window.SpeechRecognition = FixtureSpeechRecognition;
+  window.webkitSpeechRecognition = FixtureSpeechRecognition;
+  window.SpeechSynthesisUtterance = function(text) { this.text = text; };
+  window.speechSynthesis = {
+    speaking: false,
+    pending: false,
+    speak() {},
+    cancel() {}
+  };
+})();
+"""
+
+
+def _wait_for_cards(page: Any, count: int = 4) -> None:
+    try:
+        page.wait_for_function(
+            "(count) => document.querySelectorAll('.operation-card').length >= count",
+            arg=count,
+            timeout=15_000,
+        )
+    except Exception as error:
+        diagnostics = page.evaluate(
+            """async () => {
+              let response = {};
+              try {
+                const result = await fetch("/api/micromachine/status");
+                response = {
+                  status: result.status,
+                  body: (await result.text()).slice(0, 4000)
+                };
+              } catch (fetchError) {
+                response = { error: String(fetchError) };
+              }
+              return {
+                cardCount: document.querySelectorAll(".operation-card").length,
+                statusText:
+                  document.getElementById("micromachine-status")?.textContent || "",
+                response
+              };
+            }"""
+        )
+        raise AssertionError(
+            "operation cards did not render: "
+            + json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
+        ) from error
+
+
+def _tab_until(page: Any, selector: str, *, reverse: bool = False) -> None:
+    key = "Shift+Tab" if reverse else "Tab"
+    for _ in range(160):
+        if page.evaluate(
+            "(selector) => document.activeElement?.matches(selector) === true",
+            selector,
+        ):
+            return
+        page.keyboard.press(key)
+    raise AssertionError(f"keyboard focus did not reach {selector}")
+
+
+def _focused_outline(page: Any) -> dict[str, str]:
+    return page.evaluate(
+        """() => {
+          const node = document.activeElement;
+          const style = node ? getComputedStyle(node) : null;
+          return {
+            tag: node ? node.tagName : "",
+            id: node ? node.id : "",
+            outline: style ? style.outlineStyle : "",
+            width: style ? style.outlineWidth : ""
+          };
+        }"""
+    )
+
+
+def _keyboard_journey(page: Any) -> dict[str, object]:
+    page.locator("body").focus()
+    _tab_until(page, "#command-input")
+    page.keyboard.type("마린 정찰조와 공격조를 동시에 편성해")
+    page.keyboard.press("Enter")
+    _wait_for_cards(page, 6)
+    _tab_until(page, ".operation-card[tabindex='0']")
+    first_key = page.evaluate(
+        "() => document.activeElement.getAttribute('data-operation-key')"
+    )
+    timeline_before = page.locator("#operation-timeline-selection").text_content()
+    page.keyboard.press("ArrowDown")
+    second_key = page.evaluate(
+        "() => document.activeElement.getAttribute('data-operation-key')"
+    )
+    if not first_key or not second_key or first_key == second_key:
+        raise AssertionError("operation lane navigation did not move focus")
+    if "\ufffd" in first_key or "\ufffd" in second_key:
+        raise AssertionError("operation DOM key contains a replacement character")
+    focused_operation_id = page.evaluate(
+        "() => document.activeElement.getAttribute('data-operation-id')"
+    )
+    page.keyboard.press("Enter")
+    selected = page.evaluate(
+        "() => document.activeElement.getAttribute('data-operation-selected')"
+    )
+    if selected != "true":
+        raise AssertionError("keyboard-selected operation did not retain selection")
+    timeline_after = page.locator("#operation-timeline-selection").text_content()
+    if (
+        not focused_operation_id
+        or timeline_after == timeline_before
+        or not str(timeline_after or "").startswith(f"{focused_operation_id}#")
+    ):
+        raise AssertionError(
+            "keyboard selection did not update the focused operation timeline"
+        )
+
+    exercised: list[str] = []
+    for action in ("view", "revise", "reinforce", "retarget", "cancel"):
+        selector = (
+            f".operation-card[data-operation-selected='true'] "
+            f"[data-operation-action='{action}']"
+        )
+        _tab_until(page, selector)
+        before = _focused_outline(page)
+        if before["outline"] == "none" or before["width"] in {"", "0px"}:
+            raise AssertionError(f"{action} control has no visible focus")
+        page.keyboard.press("Enter")
+        exercised.append(action)
+        if action in {"revise", "reinforce", "retarget"}:
+            if not page.locator("#command-input").input_value().strip():
+                raise AssertionError(f"{action} did not update the command input")
+            page.locator("#command-input").fill("")
+        if action == "cancel":
+            page.wait_for_timeout(180)
+
+    page.locator("body").focus()
+    _tab_until(page, "#tactical-radio-mute")
+    page.keyboard.press("Space")
+    if page.locator("#tactical-radio-mute").get_attribute("aria-pressed") != "true":
+        raise AssertionError("keyboard mute did not update aria-pressed")
+    return {
+        "first_operation_key": first_key,
+        "second_operation_key": second_key,
+        "selected_operation_id": focused_operation_id,
+        "timeline_selection": timeline_after,
+        "actions": exercised,
+        "focus": _focused_outline(page),
+    }
+
+
+def _voice_journey(page: Any) -> dict[str, object]:
+    for ordinal in (1, 2):
+        page.locator("body").focus()
+        _tab_until(page, "#voice-button")
+        page.keyboard.press("Enter")
+        page.wait_for_function(
+            "(count) => window.__voiSpeechInstances.length >= count",
+            arg=ordinal,
+        )
+        page.evaluate(
+            """({ index, text }) => {
+              window.__voiSpeechInstances[index].emitFinal(text);
+            }""",
+            {
+                "index": ordinal - 1,
+                "text": f"음성 병렬 명령 {ordinal}",
+            },
+        )
+    try:
+        page.wait_for_function(
+            """() =>
+              document.querySelectorAll('[data-operation-id^="voice-"]').length >= 4
+              && document.querySelectorAll('.voice-session-entry').length === 1
+            """,
+            timeout=15_000,
+        )
+    except Exception as error:
+        diagnostics = page.evaluate(
+            """async () => {
+              let response = {};
+              try {
+                const result = await fetch("/api/micromachine/status");
+                response = {
+                  status: result.status,
+                  body: (await result.text()).slice(0, 4000)
+                };
+              } catch (fetchError) {
+                response = { error: String(fetchError) };
+              }
+              return {
+                voiceSessionCount:
+                  document.querySelectorAll(".voice-session-entry").length,
+                operationIds: Array.from(
+                  document.querySelectorAll("[data-operation-id]")
+                ).map(node => node.getAttribute("data-operation-id")),
+                pendingIds: Array.from(
+                  document.querySelectorAll("[data-pending-id]")
+                ).map(node => node.getAttribute("data-pending-id")),
+                response
+              };
+            }"""
+        )
+        raise AssertionError(
+            "voice operation identities did not render: "
+            + json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
+        ) from error
+    duplicate_pending = page.evaluate(
+        """() => {
+          const ids = Array.from(
+            document.querySelectorAll('[data-pending-id]')
+          ).map(node => node.getAttribute('data-pending-id')).filter(Boolean);
+          return ids.length !== new Set(ids).size;
+        }"""
+    )
+    if duplicate_pending:
+        raise AssertionError("voice pending identities are duplicated")
+    operation_ids = page.locator(
+        '[data-operation-id^="voice-"]'
+    ).evaluate_all(
+        "nodes => nodes.map(node => node.getAttribute('data-operation-id'))"
+    )
+    if len(operation_ids) != len(set(operation_ids)):
+        raise AssertionError("voice operations do not have independent identities")
+    voice_session_nodes = page.locator(".voice-session-entry").count()
+    if voice_session_nodes != 1:
+        raise AssertionError("voice commands did not retain one aggregate surface")
+    return {
+        "voice_session_nodes": voice_session_nodes,
+        "operation_ids": operation_ids,
+        "duplicate_pending": duplicate_pending,
+    }
+
+
+def _structural_assertions(page: Any) -> dict[str, object]:
+    lanes = page.locator("[data-operation-lane]").count()
+    if lanes != 4:
+        raise AssertionError(f"expected four operation lanes, got {lanes}")
+    cards = page.locator(".operation-card")
+    if cards.count() < 4:
+        raise AssertionError("expected at least four operation cards")
+    for index in range(cards.count()):
+        card = cards.nth(index)
+        if card.locator(".operation-stage").count() != 4:
+            raise AssertionError("operation card does not have four stages")
+        actions = card.locator(
+            ".operation-card-actions [data-operation-action]"
+        ).evaluate_all(
+            "nodes => nodes.map(node => node.getAttribute('data-operation-action'))"
+        )
+        if actions != ["view", "revise", "reinforce", "retarget", "cancel"]:
+            raise AssertionError(f"operation actions changed: {actions!r}")
+    ids = page.locator("[id]").evaluate_all(
+        "nodes => nodes.map(node => node.id)"
+    )
+    if len(ids) != len(set(ids)):
+        raise AssertionError("duplicate DOM ID detected")
+    published = page.locator(
+        ".operation-card[data-operation-transport-status='published']"
+        "[data-operation-execution-state='queued_or_assigned']"
+    ).first
+    if "executing" in published.inner_text().lower():
+        raise AssertionError("published-only operation rendered as executing")
+    overflow = page.evaluate(
+        """() => ({
+          document: document.documentElement.scrollWidth
+            > document.documentElement.clientWidth + 1,
+          body: document.body.scrollWidth > document.body.clientWidth + 1,
+          cards: Array.from(document.querySelectorAll('.operation-card'))
+            .some(node => node.scrollWidth > node.clientWidth + 1)
+        })"""
+    )
+    if any(overflow.values()):
+        raise AssertionError(f"horizontal overflow detected: {overflow!r}")
+    body_text = page.locator("body").inner_text()
+    for runtime_failure in (
+        "런타임 시작 실패",
+        "Runtime launch failed",
+        "运行时启动失败",
+    ):
+        if runtime_failure in body_text:
+            raise AssertionError(
+                f"browser fixture exposed a runtime failure: {runtime_failure}"
+            )
+    return {
+        "lanes": lanes,
+        "cards": cards.count(),
+        "unique_ids": len(ids),
+        "overflow": overflow,
+    }
+
+
+def _accessibility_assertions(page: Any) -> dict[str, object]:
+    from axe_playwright_python.sync_playwright import Axe
+
+    response = Axe().run(page)
+    violations = response.response.get("violations", [])
+    blockers = [
+        violation
+        for violation in violations
+        if violation.get("impact") in {"serious", "critical"}
+    ]
+    if blockers:
+        summary = [
+            {
+                "id": violation.get("id"),
+                "impact": violation.get("impact"),
+                "nodes": [
+                    {
+                        "target": node.get("target"),
+                        "html": node.get("html"),
+                        "failure_summary": node.get("failureSummary"),
+                    }
+                    for node in violation.get("nodes", [])
+                ],
+            }
+            for violation in blockers
+        ]
+        raise AssertionError(
+            "axe serious/critical violations detected: "
+            + json.dumps(summary, sort_keys=True)
+        )
+    return {
+        "serious_critical_count": 0,
+        "violation_count": len(violations),
+        "violations": violations,
+    }
+
+
+def _media_assertions(
+    browser: Any,
+    server_url: str,
+) -> dict[str, object]:
+    results: dict[str, object] = {}
+    for name, kwargs in (
+        ("reduced_motion", {"reduced_motion": "reduce"}),
+        ("forced_colors", {"forced_colors": "active"}),
+    ):
+        context = browser.new_context(
+            viewport={"width": 1440, "height": 1100},
+            color_scheme="light",
+            **kwargs,
+        )
+        try:
+            context.add_init_script(_BROWSER_INIT_SCRIPT)
+            page = context.new_page()
+            page.goto(server_url, wait_until="domcontentloaded")
+            _wait_for_cards(page)
+            structural = _structural_assertions(page)
+            if name == "reduced_motion":
+                active = page.evaluate(
+                    "() => matchMedia('(prefers-reduced-motion: reduce)').matches"
+                )
+                animated = page.evaluate(
+                    """() => Array.from(document.querySelectorAll('*')).some(node => {
+                      const style = getComputedStyle(node);
+                      const values = [style.animationDuration, style.transitionDuration];
+                      return values.some(value => value.split(',').some(item => {
+                        const text = item.trim();
+                        return text.endsWith('s') && parseFloat(text) > 0.02;
+                      }));
+                    })"""
+                )
+                if not active or animated:
+                    raise AssertionError(
+                        "reduced-motion context retained meaningful animation"
+                    )
+                results[name] = {"active": active, "animated": animated, **structural}
+            else:
+                page.locator(".operation-card[tabindex='0']").focus()
+                outline = _focused_outline(page)
+                active = page.evaluate(
+                    "() => matchMedia('(forced-colors: active)').matches"
+                )
+                if (
+                    not active
+                    or outline["outline"] == "none"
+                    or outline["width"] in {"", "0px"}
+                ):
+                    raise AssertionError(
+                        "forced-colors context lost visible focus information"
+                    )
+                results[name] = {"active": active, "focus": outline, **structural}
+        finally:
+            context.close()
+    return results
+
+
+def _png_chunk(kind: bytes, payload: bytes) -> bytes:
+    body = kind + payload
+    return (
+        struct.pack(">I", len(payload))
+        + body
+        + struct.pack(">I", binascii.crc32(body) & 0xFFFFFFFF)
+    )
+
+
+def _write_rgba_png(
+    path: Path,
+    width: int,
+    height: int,
+    pixels: bytes,
+) -> None:
+    if len(pixels) != width * height * 4:
+        raise ValueError("RGBA pixel payload size mismatch")
+    scanlines = b"".join(
+        b"\x00" + pixels[offset : offset + width * 4]
+        for offset in range(0, len(pixels), width * 4)
+    )
+    payload = (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(
+            b"IHDR",
+            struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0),
+        )
+        + _png_chunk(b"IDAT", zlib.compress(scanlines, level=9))
+        + _png_chunk(b"IEND", b"")
+    )
+    path.write_bytes(payload)
+
+
+def _read_png(path: Path) -> tuple[int, int, bytes]:
+    payload = path.read_bytes()
+    if payload[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError(f"{path} is not a PNG")
+    offset = 8
+    width = height = color_type = bit_depth = 0
+    compressed = bytearray()
+    while offset < len(payload):
+        if offset + 12 > len(payload):
+            raise ValueError("truncated PNG chunk")
+        length = struct.unpack(">I", payload[offset : offset + 4])[0]
+        kind = payload[offset + 4 : offset + 8]
+        data_start = offset + 8
+        data_end = data_start + length
+        if data_end + 4 > len(payload):
+            raise ValueError("truncated PNG payload")
+        data = payload[data_start:data_end]
+        expected_crc = struct.unpack(">I", payload[data_end : data_end + 4])[0]
+        if (binascii.crc32(kind + data) & 0xFFFFFFFF) != expected_crc:
+            raise ValueError("PNG chunk checksum mismatch")
+        if kind == b"IHDR":
+            (
+                width,
+                height,
+                bit_depth,
+                color_type,
+                compression,
+                filtering,
+                interlace,
+            ) = struct.unpack(">IIBBBBB", data)
+            if (
+                bit_depth != 8
+                or color_type not in {2, 6}
+                or compression != 0
+                or filtering != 0
+                or interlace != 0
+            ):
+                raise ValueError("unsupported PNG encoding")
+        elif kind == b"IDAT":
+            compressed.extend(data)
+        elif kind == b"IEND":
+            break
+        offset = data_end + 4
+    channels = 4 if color_type == 6 else 3
+    stride = width * channels
+    raw = zlib.decompress(bytes(compressed))
+    if len(raw) != height * (stride + 1):
+        raise ValueError("PNG decompressed size mismatch")
+    previous = bytearray(stride)
+    rgba = bytearray()
+    cursor = 0
+    for _ in range(height):
+        filter_type = raw[cursor]
+        cursor += 1
+        encoded = bytearray(raw[cursor : cursor + stride])
+        cursor += stride
+        decoded = bytearray(stride)
+        for index, value in enumerate(encoded):
+            left = decoded[index - channels] if index >= channels else 0
+            up = previous[index]
+            upper_left = previous[index - channels] if index >= channels else 0
+            if filter_type == 0:
+                predictor = 0
+            elif filter_type == 1:
+                predictor = left
+            elif filter_type == 2:
+                predictor = up
+            elif filter_type == 3:
+                predictor = (left + up) // 2
+            elif filter_type == 4:
+                base = left + up - upper_left
+                distance_left = abs(base - left)
+                distance_up = abs(base - up)
+                distance_upper_left = abs(base - upper_left)
+                predictor = (
+                    left
+                    if distance_left <= distance_up
+                    and distance_left <= distance_upper_left
+                    else (
+                        up
+                        if distance_up <= distance_upper_left
+                        else upper_left
+                    )
+                )
+            else:
+                raise ValueError("unsupported PNG filter")
+            decoded[index] = (value + predictor) & 0xFF
+        previous = decoded
+        for index in range(0, stride, channels):
+            rgba.extend(decoded[index : index + channels])
+            if channels == 3:
+                rgba.append(255)
+    return width, height, bytes(rgba)
+
+
+def _pixel_diff(
+    expected_path: Path,
+    actual_path: Path,
+    diff_path: Path,
+) -> float:
+    expected_width, expected_height, expected = _read_png(expected_path)
+    actual_width, actual_height, actual = _read_png(actual_path)
+    if (expected_width, expected_height) != (actual_width, actual_height):
+        raise AssertionError(
+            "baseline size mismatch: "
+            f"expected={(expected_width, expected_height)} "
+            f"actual={(actual_width, actual_height)}"
+        )
+    diff_pixels = bytearray(len(expected))
+    changed = 0
+    for offset in range(0, len(expected), 4):
+        channels = [
+            abs(expected[offset + channel] - actual[offset + channel])
+            for channel in range(4)
+        ]
+        is_changed = any(
+            value > PIXEL_CHANNEL_TOLERANCE for value in channels
+        )
+        if is_changed:
+            changed += 1
+            diff_pixels[offset : offset + 4] = b"\xff\x00\x00\xff"
+        else:
+            diff_pixels[offset : offset + 4] = b"\x00\x00\x00\x00"
+    total = expected_width * expected_height
+    ratio = changed / total
+    diff_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_rgba_png(
+        diff_path,
+        expected_width,
+        expected_height,
+        bytes(diff_pixels),
+    )
+    return ratio
+
+
+@dataclass(frozen=True)
+class BrowserGateConfig:
+    repository_sha: str
+    build_identity: str
+    artifact_dir: Path
+    baseline_dir: Path = DEFAULT_BASELINE_DIR
+    update_baselines: bool = False
+    chromium_executable: Path | None = None
+
+    def __post_init__(self) -> None:
+        if _SHA_RE.fullmatch(self.repository_sha) is None:
+            raise ValueError("repository_sha must be an exact lowercase Git SHA")
+        if _BUILD_RE.fullmatch(self.build_identity) is None:
+            raise ValueError("build_identity must be a canonical sha256 identity")
+        if self.chromium_executable is not None:
+            executable = self.chromium_executable
+            if (
+                executable.is_symlink()
+                or not executable.is_file()
+                or not os.access(executable, os.X_OK)
+            ):
+                raise ValueError(
+                    "chromium_executable must be a regular executable file"
+                )
+
+
+def run_browser_gate(config: BrowserGateConfig) -> dict[str, object]:
+    from playwright.sync_api import sync_playwright
+
+    config.artifact_dir.mkdir(parents=True, exist_ok=True)
+    screenshot_dir = config.artifact_dir / "screenshots"
+    diff_dir = config.artifact_dir / "diffs"
+    screenshot_dir.mkdir(parents=True, exist_ok=True)
+    diff_dir.mkdir(parents=True, exist_ok=True)
+    bridge = _BrowserFixtureBridge()
+    server = WebGuiServer(bridge=bridge, port=0)
+    server.start()
+    if server._http is None:
+        raise RuntimeError("browser fixture server did not start")
+    server._http.micromachine_launcher = _BrowserFixtureLauncher(
+        bridge.micromachine_blackboard_dir()
+    )
+    started_at = datetime.now(timezone.utc)
+    viewport_reports: list[dict[str, object]] = []
+    try:
+        with sync_playwright() as playwright:
+            launch_options: dict[str, object] = {"headless": True}
+            if config.chromium_executable is not None:
+                launch_options["executable_path"] = str(
+                    config.chromium_executable
+                )
+            browser = playwright.chromium.launch(**launch_options)
+            try:
+                for name, width, height in VIEWPORTS:
+                    context = browser.new_context(
+                        viewport={"width": width, "height": height},
+                        color_scheme="light",
+                        locale="ko-KR",
+                    )
+                    try:
+                        context.add_init_script(_BROWSER_INIT_SCRIPT)
+                        page = context.new_page()
+                        page.goto(server.url, wait_until="domcontentloaded")
+                        _wait_for_cards(page)
+                        structural = _structural_assertions(page)
+                        accessibility = _accessibility_assertions(page)
+                        keyboard = _keyboard_journey(page)
+                        voice = _voice_journey(page) if name == "desktop" else {}
+                        actual_path = screenshot_dir / f"{name}.png"
+                        page.screenshot(path=str(actual_path), full_page=False)
+                        baseline_path = config.baseline_dir / f"{name}.png"
+                        if config.update_baselines:
+                            baseline_path.parent.mkdir(parents=True, exist_ok=True)
+                            baseline_path.write_bytes(actual_path.read_bytes())
+                            diff_ratio = 0.0
+                        else:
+                            if not baseline_path.is_file():
+                                raise AssertionError(
+                                    f"tracked baseline is missing: {baseline_path}"
+                                )
+                            diff_ratio = _pixel_diff(
+                                baseline_path,
+                                actual_path,
+                                diff_dir / f"{name}.png",
+                            )
+                            if diff_ratio > VISUAL_DIFF_THRESHOLD:
+                                raise AssertionError(
+                                    f"{name} visual diff {diff_ratio:.6f} exceeds "
+                                    f"{VISUAL_DIFF_THRESHOLD:.6f}"
+                                )
+                        viewport_reports.append(
+                            {
+                                "name": name,
+                                "viewport": {"width": width, "height": height},
+                                "structural": structural,
+                                "accessibility": accessibility,
+                                "keyboard": keyboard,
+                                "voice": voice,
+                                "visual_diff_ratio": diff_ratio,
+                                "baseline_sha256": hashlib.sha256(
+                                    baseline_path.read_bytes()
+                                ).hexdigest(),
+                                "actual_sha256": hashlib.sha256(
+                                    actual_path.read_bytes()
+                                ).hexdigest(),
+                            }
+                        )
+                    finally:
+                        context.close()
+                media = _media_assertions(browser, server.url)
+            finally:
+                browser.close()
+    finally:
+        server.stop()
+    ended_at = datetime.now(timezone.utc)
+    report: dict[str, object] = {
+        "schema_version": BROWSER_GATE_SCHEMA_VERSION,
+        "producer": BROWSER_GATE_PRODUCER,
+        "repository_sha": config.repository_sha,
+        "build_identity": config.build_identity,
+        "generated_at": ended_at.isoformat().replace("+00:00", "Z"),
+        "started_at": started_at.isoformat().replace("+00:00", "Z"),
+        "status": "passed",
+        "ok": True,
+        "visual_diff_threshold": VISUAL_DIFF_THRESHOLD,
+        "viewports": viewport_reports,
+        "media": media,
+        "manual_live_qa_remaining": True,
+    }
+    json_path = config.artifact_dir / "battlefield-browser-gate.json"
+    markdown_path = config.artifact_dir / "battlefield-browser-gate.md"
+    json_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    markdown_path.write_text(_markdown_report(report), encoding="utf-8")
+    return report
+
+
+def _markdown_report(report: Mapping[str, object]) -> str:
+    lines = [
+        "# Battlefield Commander browser gate",
+        "",
+        f"- Status: `{report['status']}`",
+        f"- Repository SHA: `{report['repository_sha']}`",
+        f"- Build identity: `{report['build_identity']}`",
+        f"- Visual threshold: `{report['visual_diff_threshold']}`",
+        "- Manual SC2 visual/audio QA remaining: `true`",
+        "",
+        "| Viewport | Cards | Axe serious/critical | Visual diff |",
+        "|---|---:|---:|---:|",
+    ]
+    for viewport in report["viewports"]:  # type: ignore[index]
+        item = dict(viewport)
+        structural = dict(item["structural"])
+        accessibility = dict(item["accessibility"])
+        lines.append(
+            f"| `{item['name']}` | {structural['cards']} | "
+            f"{accessibility['serious_critical_count']} | "
+            f"{float(item['visual_diff_ratio']):.6f} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def build_argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run the non-skippable Battlefield Commander browser gate."
+    )
+    parser.add_argument("--repository-sha", required=True)
+    parser.add_argument("--build-identity", required=True)
+    parser.add_argument("--artifact-dir", type=Path, required=True)
+    parser.add_argument(
+        "--baseline-dir",
+        type=Path,
+        default=DEFAULT_BASELINE_DIR,
+    )
+    parser.add_argument("--update-baselines", action="store_true")
+    parser.add_argument("--chromium-executable", type=Path)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_argument_parser().parse_args(argv)
+    try:
+        report = run_browser_gate(
+            BrowserGateConfig(
+                repository_sha=args.repository_sha,
+                build_identity=args.build_identity,
+                artifact_dir=args.artifact_dir,
+                baseline_dir=args.baseline_dir,
+                update_baselines=args.update_baselines,
+                chromium_executable=args.chromium_executable,
+            )
+        )
+    except Exception as error:  # noqa: BLE001 - CLI must fail closed.
+        print(f"battlefield browser gate failed: {error}")
+        return 1
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
