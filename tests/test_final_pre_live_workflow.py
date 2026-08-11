@@ -130,13 +130,13 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
             "721726d8da88d1c3a7448e22265af1f817b3f2cd",
             workflow["env"]["RELEASE_MERGE_SHA"],
         )
-        self.assertEqual("175", workflow["env"]["QUALIFICATION_ISSUE_NUMBER"])
+        self.assertEqual("179", workflow["env"]["QUALIFICATION_ISSUE_NUMBER"])
         self.assertEqual(
-            "issue-175-final-prelive-browser-envelope",
+            "issue-179-final-prelive-release-rebind",
             workflow["env"]["QUALIFICATION_HEAD_REF"],
         )
         self.assertEqual(
-            "5f27f4110190970dce04071e65cf1614ec98657f",
+            "5fff4afd83084e46cf1231835da4c65ba6dc4f6d",
             workflow["env"]["QUALIFICATION_BASE_SHA"],
         )
         self.assertIn("pull_request_target)", boundary)
@@ -846,6 +846,11 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
             report["if"],
         )
         self.assertIn("not applicable", report["run"])
+        self.assertIn(
+            "issue #${QUALIFICATION_ISSUE_NUMBER} qualification merge",
+            report["run"],
+        )
+        self.assertNotIn("issue #175 qualification merge", report["run"])
         for step in final["steps"]:
             if step.get("name") in {
                 "Enforce all prerequisite results",
