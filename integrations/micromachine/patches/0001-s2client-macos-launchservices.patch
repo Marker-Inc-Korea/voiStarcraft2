@@ -217,13 +217,6 @@ index 4ecc4b0..9eb4d72 100644
  #include <signal.h>
  #include <errno.h>
  #include <cstring>
-@@ -40,6 +41,6 @@
- 
- #include <Carbon/Carbon.h>
- 
- #elif defined(__linux__)
- 
- // Linux headers for process manipulation.
 @@ -390,22 +393,121 @@ int _kbhit() {
      return bytesWaiting;
  }

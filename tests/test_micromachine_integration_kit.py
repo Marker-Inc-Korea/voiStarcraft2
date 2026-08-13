@@ -318,6 +318,18 @@ def _read_patch_text(path: Path) -> str:
 
 
 class MicroMachineIntegrationKitTest(unittest.TestCase):
+    def test_s2client_patch_is_parseable_unified_diff(self) -> None:
+        completed = subprocess.run(
+            ["git", "apply", "--numstat", str(S2CLIENT_PATCH_FILE)],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("src/sc2utils/sc2_manage_process.cc", completed.stdout)
+
     def test_parallel_operations_close_operation_scoped_production_prerequisites(
         self,
     ) -> None:
