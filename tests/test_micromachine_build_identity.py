@@ -18,11 +18,16 @@ from starcraft_commander.micromachine_build_identity import (
     _ctest_registry_attestation,
     build_argument_parser,
     build_micromachine_build_identity,
+    build_runtime_install_provenance,
     build_runtime_workspace_identity,
     inspect_git_worktree_state,
     micromachine_build_identity_admission_error,
+    micromachine_build_readiness_error,
+    micromachine_build_ready,
     read_build_identity,
+    resolve_runtime_repository_identity,
     write_build_identity_report,
+    write_runtime_install_provenance,
     write_micromachine_build_attestation,
     write_micromachine_embedded_build_identity_header,
     write_micromachine_source_attestation,
@@ -82,7 +87,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         self.assertEqual(120.0, runner.call_args.kwargs["timeout"])
 
     def test_live_admission_requires_the_supported_schema(self) -> None:
-        self.assertEqual(80, MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION)
+        self.assertEqual(82, MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION)
         passing = {
             "schema_version": MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
             "identity": "sha256:fixture",
@@ -112,6 +117,113 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                     error,
                 )
 
+    def test_strict_build_readiness_accepts_exact_current_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            report_path = root / "identity.json"
+            write_build_identity_report(
+                build_micromachine_build_identity(config),
+                report_path,
+            )
+
+            self.assertEqual(
+                "",
+                micromachine_build_readiness_error(config, report_path),
+            )
+            self.assertTrue(micromachine_build_ready(config, report_path))
+
+    def test_strict_build_readiness_rejects_bare_ok_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            report_path = root / "identity.json"
+            report_path.write_text(json.dumps({"ok": True}), encoding="utf-8")
+
+            error = micromachine_build_readiness_error(config, report_path)
+
+            self.assertFalse(micromachine_build_ready(config, report_path))
+            self.assertIn("unsupported recorded build identity schema", error)
+
+    def test_strict_build_readiness_rejects_forged_hash_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            report_path = root / "identity.json"
+            recorded = build_micromachine_build_identity(config)
+            checksums = dict(recorded["checksums"])
+            checksums["binary_sha256"] = "0" * 64
+            recorded["checksums"] = checksums
+            write_build_identity_report(recorded, report_path)
+
+            error = micromachine_build_readiness_error(config, report_path)
+
+            self.assertFalse(micromachine_build_ready(config, report_path))
+            self.assertIn("recorded checksums", error)
+
+    def test_strict_build_readiness_rejects_forged_source_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            report_path = root / "identity.json"
+            recorded = build_micromachine_build_identity(config)
+            observed = dict(recorded["observed"])
+            observed["micromachine_source_state_sha256"] = "0" * 64
+            recorded["observed"] = observed
+            write_build_identity_report(recorded, report_path)
+
+            error = micromachine_build_readiness_error(config, report_path)
+
+            self.assertFalse(micromachine_build_ready(config, report_path))
+            self.assertIn("recorded observed", error)
+
+    def test_strict_build_readiness_rejects_forged_native_test_receipt(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            report_path = root / "identity.json"
+            recorded = build_micromachine_build_identity(config)
+            observed = dict(recorded["observed"])
+            observed["native_tests"] = {
+                "ok": True,
+                "tests": {},
+            }
+            recorded["observed"] = observed
+            write_build_identity_report(recorded, report_path)
+
+            error = micromachine_build_readiness_error(config, report_path)
+
+            self.assertFalse(micromachine_build_ready(config, report_path))
+            self.assertIn("recorded observed", error)
+
+    def test_strict_build_readiness_rejects_changed_build_attestation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            report_path = root / "identity.json"
+            write_build_identity_report(
+                build_micromachine_build_identity(config),
+                report_path,
+            )
+            attestation = json.loads(
+                config.source_attestation_path.read_text(encoding="utf-8")
+            )
+            attestation["binary"]["sha256"] = "0" * 64
+            config.source_attestation_path.write_text(
+                json.dumps(attestation, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            error = micromachine_build_readiness_error(config, report_path)
+
+            self.assertFalse(micromachine_build_ready(config, report_path))
+            self.assertIn("current build identity is not ok", error)
+            self.assertIn("binary_attestation_mismatch", error)
+
     def test_runtime_workspace_identity_covers_dirty_python_sources(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -138,6 +250,28 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 ],
                 [entry["path"] for entry in third["files"]],
             )
+
+    def test_installed_runtime_identity_requires_matching_source_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "starcraft_commander"
+            package.mkdir()
+            (root / "pyproject.toml").write_text("[project]\nname='fixture'\n")
+            runtime = package / "runtime.py"
+            runtime.write_text("VALUE = 1\n")
+            provenance = build_runtime_install_provenance(
+                root,
+                repo_head_sha="a" * 40,
+            )
+            write_runtime_install_provenance(root, provenance)
+
+            resolved = resolve_runtime_repository_identity(root)
+            runtime.write_text("VALUE = 2\n")
+
+            self.assertEqual("installed_manifest", resolved["source"])
+            self.assertEqual("a" * 40, resolved["repo_head_sha"])
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                resolve_runtime_repository_identity(root)
 
     def test_expected_build_identity_is_stable_and_json_ready(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -218,6 +352,22 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             )
             self.assertIn(
                 "micromachine_production_path_journey_review_closure_patch_sha256",
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_until_completed_submission_deadline_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                "micromachine_until_completed_submission_deadline_patch_sha256",
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_exact_operation_policy_lifetime_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                "micromachine_exact_operation_policy_lifetime_patch_sha256",
                 report["checksums"],
             )
             self.assertIn(
@@ -2439,6 +2589,30 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             ).name,
         )
 
+    def test_until_completed_submission_deadline_cli_defaults_to_patch_0079(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0079-until-completed-submission-deadline.patch",
+            Path(
+                args.micromachine_until_completed_submission_deadline_patch
+            ).name,
+        )
+
+    def test_exact_operation_policy_lifetime_cli_defaults_to_patch_0080(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0080-exact-operation-policy-lifetime.patch",
+            Path(
+                args.micromachine_exact_operation_policy_lifetime_patch
+            ).name,
+        )
+
     def test_operation_edit_ownership_handoff_patch_changes_identity(
         self,
     ) -> None:
@@ -3294,6 +3468,102 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             self.assertFalse(report["ok"], report)
             self.assertIn(
                 "micromachine_production_path_journey_review_closure_patch_sha256",
+                {
+                    failure.get("checksum")
+                    for failure in report["failures"]
+                    if failure["code"] == "missing_required_build_input"
+                },
+            )
+
+    def test_until_completed_submission_deadline_patch_changes_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            checksum = (
+                "micromachine_until_completed_submission_deadline_patch_sha256"
+            )
+
+            config.micromachine_until_completed_submission_deadline_patch.write_text(
+                "changed until completed submission deadline\n"
+            )
+            second = build_micromachine_build_identity(config)
+
+            self.assertTrue(first["ok"], first)
+            self.assertFalse(second["ok"], second)
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+            self.assertIn(
+                "source_attestation_input_mismatch",
+                {failure["code"] for failure in second["failures"]},
+            )
+
+    def test_missing_until_completed_submission_deadline_patch_fails_closed(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_until_completed_submission_deadline_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"], report)
+            self.assertIn(
+                "micromachine_until_completed_submission_deadline_patch_sha256",
+                {
+                    failure.get("checksum")
+                    for failure in report["failures"]
+                    if failure["code"] == "missing_required_build_input"
+                },
+            )
+
+    def test_exact_operation_policy_lifetime_patch_changes_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            first = build_micromachine_build_identity(config)
+            checksum = (
+                "micromachine_exact_operation_policy_lifetime_patch_sha256"
+            )
+
+            config.micromachine_exact_operation_policy_lifetime_patch.write_text(
+                "changed exact operation policy lifetime\n"
+            )
+            second = build_micromachine_build_identity(config)
+
+            self.assertTrue(first["ok"], first)
+            self.assertFalse(second["ok"], second)
+            self.assertNotEqual(first["identity"], second["identity"])
+            self.assertNotEqual(
+                first["checksums"][checksum],
+                second["checksums"][checksum],
+            )
+            self.assertIn(
+                "source_attestation_input_mismatch",
+                {failure["code"] for failure in second["failures"]},
+            )
+
+    def test_missing_exact_operation_policy_lifetime_patch_fails_closed(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root, binary=True)
+            config.micromachine_exact_operation_policy_lifetime_patch.unlink()
+
+            report = build_micromachine_build_identity(config)
+
+            self.assertFalse(report["ok"], report)
+            self.assertIn(
+                "micromachine_exact_operation_policy_lifetime_patch_sha256",
                 {
                     failure.get("checksum")
                     for failure in report["failures"]
@@ -4273,6 +4543,12 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         micromachine_production_path_journey_review_closure_patch = (
             root / "micromachine-production-path-journey-review-closure.patch"
         )
+        micromachine_until_completed_submission_deadline_patch = (
+            root / "micromachine-until-completed-submission-deadline.patch"
+        )
+        micromachine_exact_operation_policy_lifetime_patch = (
+            root / "micromachine-exact-operation-policy-lifetime.patch"
+        )
         s2client_patch = root / "s2client.patch"
         hook_manifest = root / "HOOK_MANIFEST.json"
         map_pool = root / "MICROMACHINE_MAP_POOL.json"
@@ -4356,6 +4632,8 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             micromachine_bounded_terminal_operation_hud_patch,
             micromachine_deterministic_pre_live_journey_adapter_patch,
             micromachine_production_path_journey_review_closure_patch,
+            micromachine_until_completed_submission_deadline_patch,
+            micromachine_exact_operation_policy_lifetime_patch,
             s2client_patch,
             hook_manifest,
             map_pool,
@@ -4588,6 +4866,12 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             ),
             micromachine_production_path_journey_review_closure_patch=(
                 micromachine_production_path_journey_review_closure_patch
+            ),
+            micromachine_until_completed_submission_deadline_patch=(
+                micromachine_until_completed_submission_deadline_patch
+            ),
+            micromachine_exact_operation_policy_lifetime_patch=(
+                micromachine_exact_operation_policy_lifetime_patch
             ),
             s2client_patch=s2client_patch,
             hook_manifest=hook_manifest,

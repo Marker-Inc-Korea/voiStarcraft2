@@ -51,12 +51,31 @@ from starcraft_commander.web_gui import (
     WebGuiServer,
     render_web_gui_page,
 )
+from starcraft_commander.companion_ui import render_companion_page
 
 
 POLL_DEADLINE_SECONDS = 10.0
 POLL_INTERVAL_SECONDS = 0.05
 EXECUTED_FAMILY_STATUSES = frozenset({"executed", "partially_executed"})
 BRIDGE_THREAD_NAME = "voiStarcraft2-web-gui-session-loop"
+
+
+def visible_sc2_launch_receipt():
+    """Return a complete native visible-launch proof for launcher unit tests."""
+
+    return {
+        "accepted": True,
+        "pid": 222,
+        "port": web_gui.DEFAULT_SC2_API_PORT,
+        "base": web_gui.REQUIRED_SC2_BASE,
+        "process_created": True,
+        "api_ready": True,
+        "window_created": True,
+        "window_onscreen": True,
+        "frontmost": True,
+        "screen_locked": False,
+        "render_verified": True,
+    }
 
 
 def battlefield_projection_telemetry(
@@ -836,13 +855,21 @@ class MicroMachineLaunchProvenanceTest(unittest.TestCase):
                 mock.patch.object(web_gui, "_REPO_ROOT", str(clone_root)),
             ):
                 launcher = web_gui._MicroMachineLaunchManager()
-                with mock.patch.object(
-                    launcher,
-                    "_spawn_process_unlocked",
-                    side_effect=replace_after_validation,
+                with (
+                    mock.patch.object(
+                        web_gui,
+                        "read_sc2_launch_receipt",
+                        return_value=visible_sc2_launch_receipt(),
+                    ),
+                    mock.patch.object(
+                        launcher,
+                        "_spawn_process_unlocked",
+                        side_effect=replace_after_validation,
+                    ),
                 ):
                     started = launcher.start(
-                        str(Path(directory) / "blackboard")
+                        str(Path(directory) / "blackboard"),
+                        sc2_launch_nonce="test-visible-launch-nonce",
                     )
 
         self.assertTrue(started["enabled"], started)
@@ -1259,6 +1286,9 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "window.location.assign(status.url)",
             "live-open-button",
             "runtime-start-button",
+            "openCompanionWindow",
+            "window.location.assign(companionWindowUrl())",
+            "/companion?",
             "runtime-refresh-button",
             "micromachine-enemy-difficulty",
             "수동 live-hold 적 난이도 (1..10)",
@@ -1334,6 +1364,38 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 r'class="sr-only"\s+role="status"\s+aria-live="polite"'
             ),
         )
+
+    def test_companion_page_is_compact_and_uses_existing_runtime_apis(self):
+        status, content_type, payload = self.request("GET", "/companion")
+        page = payload.decode("utf-8")
+
+        self.assertEqual(status, 200)
+        self.assertIn("text/html", content_type)
+        for fragment in (
+            "전술 명령창",
+            "cockpit-back",
+            "window.location.assign(endpoint(\"/\"))",
+            "SC2 / MicroMachine 시작",
+            "긴급 전군 후퇴",
+            "/api/runtime/start",
+            "/api/runtime/status",
+            "/api/micromachine/status",
+            "/api/micromachine/modulate",
+            "async_publish: true",
+            "SpeechRecognition",
+            "width",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, page)
+        self.assertNotIn("LLM 설정", page)
+        self.assertNotIn("전장 통제", page)
+        self.assertNotIn("window.open(", page)
+
+    def test_companion_renderer_escapes_script_breakout_in_default_path(self):
+        page = render_companion_page("</script><script>alert(1)</script>")
+
+        self.assertNotIn("</script><script>alert(1)</script>", page)
+        self.assertIn("\\u003c/script>", page)
 
     def test_sse_initial_snapshot_contains_authoritative_sources_and_heartbeat(self):
         stream = self.get_sse()
@@ -4772,6 +4834,23 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             events[0]["data"]["event_seq"],
             event["event_seq"],
         )
+
+    def test_single_shot_sse_closes_after_snapshot(self):
+        connection = http.client.HTTPConnection(
+            "127.0.0.1",
+            self.server.port,
+            timeout=5,
+        )
+        try:
+            connection.request("GET", "/api/events?once=1")
+            response = connection.getresponse()
+            payload = response.read()
+        finally:
+            connection.close()
+
+        self.assertEqual(200, response.status)
+        self.assertEqual("close", response.getheader("Connection"))
+        self.assertIn(b"event: snapshot", payload)
 
     def test_sse_replay_filters_other_blackboard_events_server_side(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -10057,8 +10136,15 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             def __init__(self):
                 self.started = []
 
-            def start(self, blackboard_dir="", enemy_difficulty=7):
-                self.started.append((blackboard_dir, enemy_difficulty))
+            def start(
+                self,
+                blackboard_dir="",
+                enemy_difficulty=7,
+                sc2_launch_nonce="",
+            ):
+                self.started.append(
+                    (blackboard_dir, enemy_difficulty, sc2_launch_nonce)
+                )
                 return {
                     "enabled": True,
                     "mode": "micromachine",
@@ -10086,6 +10172,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 "mode": "micromachine",
                 "blackboard_dir": "/tmp/voi-mm-runtime-test",
                 "enemy_difficulty": 9,
+                "sc2_launch_nonce": "visible-launch-nonce",
             }
         ).encode("utf-8")
         status, content_type, payload = self.request(
@@ -10101,7 +10188,13 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertEqual(document["status"], "starting")
         self.assertEqual(
             launcher.started,
-            [("/tmp/voi-mm-runtime-test", 9)],
+            [
+                (
+                    "/tmp/voi-mm-runtime-test",
+                    9,
+                    "visible-launch-nonce",
+                )
+            ],
         )
         self.assertEqual(document["enemy_difficulty"], 9)
 
@@ -10148,7 +10241,12 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     "blackboard_dir": blackboard_dir,
                 }
 
-            def start(self, blackboard_dir="", enemy_difficulty=7):
+            def start(
+                self,
+                blackboard_dir="",
+                enemy_difficulty=7,
+                sc2_launch_nonce="",
+            ):
                 return {
                     **launcher_payload("starting"),
                     "blackboard_dir": blackboard_dir,
@@ -10329,13 +10427,24 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                 return 0
 
         with tempfile.TemporaryDirectory() as directory:
-            with mock.patch.object(
-                web_gui.subprocess,
-                "Popen",
-                return_value=FakeProcess(),
-            ) as popen:
+            with (
+                mock.patch.object(
+                    web_gui.subprocess,
+                    "Popen",
+                    return_value=FakeProcess(),
+                ) as popen,
+                mock.patch.object(
+                    web_gui,
+                    "read_sc2_launch_receipt",
+                    return_value=visible_sc2_launch_receipt(),
+                ),
+            ):
                 launcher = web_gui._MicroMachineLaunchManager(script_path=__file__)
-                launcher.start(directory, enemy_difficulty=9)
+                launcher.start(
+                    directory,
+                    enemy_difficulty=9,
+                    sc2_launch_nonce="visible-launch-nonce",
+                )
 
             argv = popen.call_args.args[0]
             env = popen.call_args.kwargs["env"]
@@ -10438,8 +10547,16 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     "start",
                     return_value=None,
                 ),
+                mock.patch.object(
+                    web_gui,
+                    "read_sc2_launch_receipt",
+                    return_value=visible_sc2_launch_receipt(),
+                ),
             ):
-                stale = launcher.start(directory)
+                stale = launcher.start(
+                    directory,
+                    sc2_launch_nonce="visible-launch-nonce",
+                )
 
             self.assertTrue(stale["runtime_attached"])
             self.assertFalse(stale["telemetry_present"])
@@ -10503,8 +10620,16 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     "time_ns",
                     return_value=launch_ns,
                 ),
+                mock.patch.object(
+                    web_gui,
+                    "read_sc2_launch_receipt",
+                    return_value=visible_sc2_launch_receipt(),
+                ),
             ):
-                launcher.start(directory)
+                launcher.start(
+                    directory,
+                    sc2_launch_nonce="visible-launch-nonce",
+                )
 
             def write_telemetry(frame, mtime_ns):
                 with open(telemetry_path, "w", encoding="utf-8") as handle:
@@ -10628,8 +10753,16 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     "time_ns",
                     return_value=launch_ns,
                 ),
+                mock.patch.object(
+                    web_gui,
+                    "read_sc2_launch_receipt",
+                    return_value=visible_sc2_launch_receipt(),
+                ),
             ):
-                launcher.start(directory)
+                launcher.start(
+                    directory,
+                    sc2_launch_nonce="visible-launch-nonce",
+                )
 
             write_ns = launch_ns + 1_000_000_000
             with open(telemetry_path, "w", encoding="utf-8") as handle:
@@ -28037,6 +28170,78 @@ class WebGuiServerConstructionTest(unittest.TestCase):
         server = WebGuiServer(bridge=self.bridge)
         self.assertEqual(server.port, 8350)
         self.assertEqual(server.url, "http://127.0.0.1:8350")
+
+    def test_forwards_explicit_micromachine_runtime_paths(self):
+        server = WebGuiServer(bridge=self.bridge)
+        server.configure_micromachine_runtime(
+            script_path="/tmp/runtime/smoke_macos_local.sh",
+            cwd="/tmp/runtime",
+        )
+
+        self.assertEqual(
+            server._micromachine_launcher._script_path,
+            "/tmp/runtime/smoke_macos_local.sh",
+        )
+        self.assertEqual(server._micromachine_launcher._cwd, "/tmp/runtime")
+        self.assertFalse(
+            server._micromachine_launcher._requires_source_provenance
+        )
+
+    def test_rejects_runtime_path_change_after_server_start(self):
+        server = WebGuiServer(bridge=self.bridge, port=0)
+        server.start()
+        self.addCleanup(server.stop)
+
+        with self.assertRaisesRegex(RuntimeError, "after server start"):
+            server.configure_micromachine_runtime(
+                script_path="/tmp/runtime/smoke_macos_local.sh",
+                cwd="/tmp/runtime",
+            )
+
+    def test_plain_http_response_ignores_disconnected_client(self):
+        handler = object.__new__(web_gui._WebGuiRequestHandler)
+        handler.send_response = mock.Mock()
+        handler.send_header = mock.Mock()
+        handler.end_headers = mock.Mock(
+            side_effect=BrokenPipeError("client disconnected")
+        )
+        handler.wfile = mock.Mock()
+
+        handler._send_body(
+            HTTPStatus.OK,
+            "application/json; charset=utf-8",
+            b"{}",
+        )
+
+        handler.wfile.write.assert_not_called()
+
+    def test_http_server_suppresses_expected_client_disconnects(self):
+        server = object.__new__(web_gui._BridgedThreadingHTTPServer)
+
+        with mock.patch.object(
+            web_gui.ThreadingHTTPServer,
+            "handle_error",
+        ) as parent_handle_error:
+            try:
+                raise ConnectionResetError("client disconnected")
+            except ConnectionResetError:
+                server.handle_error(object(), ("127.0.0.1", 4321))
+
+        parent_handle_error.assert_not_called()
+
+    def test_http_server_reports_unexpected_request_errors(self):
+        server = object.__new__(web_gui._BridgedThreadingHTTPServer)
+
+        with mock.patch.object(
+            web_gui.ThreadingHTTPServer,
+            "handle_error",
+        ) as parent_handle_error:
+            try:
+                raise RuntimeError("unexpected request failure")
+            except RuntimeError:
+                server.handle_error(object(), ("127.0.0.1", 4321))
+
+        parent_handle_error.assert_called_once()
 
     def test_rejects_non_bridge_and_bad_ports(self):
         with self.assertRaises(TypeError):

@@ -1567,7 +1567,6 @@ def _reduce_live_command_queue(
     operation_count = len(_operation_ids(reduced_payload))
     if operation_count > 0:
         _ensure_operation_lifetimes(reduced_payload)
-    if operation_count > 1:
         _clear_legacy_operation_projection(reduced_payload)
     else:
         _sync_lifetime_duration_fields(
@@ -1577,8 +1576,6 @@ def _reduce_live_command_queue(
                 fallback=transient_lifetime,
             ),
         )
-        if operation_count == 1:
-            _sync_single_operation_projection(reduced_payload)
     queue_summary["lifetime_mode"] = transient_lifetime["mode"]
     queue_summary["ttl_seconds"] = transient_lifetime["ttl_seconds"]
     queue_summary["completion_conditions"] = list(transient_lifetime["completion_conditions"])
@@ -2398,10 +2395,8 @@ def _project_live_layer_state(
         )
         projected["tactical_task"] = projected_task
     operation_count = len(_operation_ids(projected))
-    if operation_count > 1:
+    if operation_count > 0:
         _clear_legacy_operation_projection(projected)
-    elif operation_count == 1:
-        _sync_single_operation_projection(projected)
     projected.pop("command_layer", None)
     return projected
 
@@ -2659,34 +2654,6 @@ def _normalized_parallel_operation_lifetime(
             f"{task_type or 'operation'} uses task-specific runtime completion"
         )
     return lifetime, default_duration
-
-
-def _sync_single_operation_projection(payload: dict[str, object]) -> None:
-    operations = list(_explicit_operations(payload))
-    if len(operations) != 1:
-        return
-    operation = operations[0]
-    aggregate_lifetime = dict(_mapping_value(payload, "lifetime"))
-    preserve_aggregate_lifetime = (
-        str(aggregate_lifetime.get("completion_state", "active") or "active")
-        .strip()
-        .lower()
-        == "active"
-        and str(aggregate_lifetime.get("mode", "") or "").strip().lower()
-        in {"until_cancelled", "standing_order"}
-    )
-    for domain in (
-        "tactical_task",
-        "scope",
-        "composition_requirements",
-        "unit_roles",
-        "route_intent",
-        "target_intent",
-    ):
-        payload[domain] = deepcopy(operation.get(domain, {}))
-    if not preserve_aggregate_lifetime:
-        payload["lifetime"] = deepcopy(operation.get("lifetime", {}))
-    payload["operations"] = [operation]
 
 
 def _canonical_live_layer_payload(

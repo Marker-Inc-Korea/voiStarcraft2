@@ -217,12 +217,10 @@ index 4ecc4b0..9eb4d72 100644
  #include <signal.h>
  #include <errno.h>
  #include <cstring>
-@@ -40,6 +41,8 @@
+@@ -40,6 +41,6 @@
  
  #include <Carbon/Carbon.h>
  
-+extern char **environ;
-+
  #elif defined(__linux__)
  
  // Linux headers for process manipulation.
@@ -286,31 +284,14 @@ index 4ecc4b0..9eb4d72 100644
 +    const std::string::size_type app_marker_pos = process_path.find(app_marker);
 +    if (!(disable_launchservices != nullptr && std::strcmp(disable_launchservices, "1") == 0)
 +        && app_marker_pos != std::string::npos) {
-+        auto shell_quote = [](const std::string& value) {
-+            std::string quoted = "'";
-+            for (char ch : value) {
-+                if (ch == '\'') {
-+                    quoted += "'\\''";
-+                } else {
-+                    quoted += ch;
-+                }
-+            }
-+            quoted += "'";
-+            return quoted;
-+        };
-+
-+        std::string command = "open -n ";
-+        command += shell_quote(process_path.substr(0, app_marker_pos + 4));
-+        command += " --args";
++        launcher_path = "/usr/bin/open";
++        launch_arguments.push_back("open");
++        launch_arguments.push_back("-n");
++        launch_arguments.push_back(process_path.substr(0, app_marker_pos + 4));
++        launch_arguments.push_back("--args");
 +        for (const auto& s : command_line) {
-+            command += " ";
-+            command += shell_quote(s);
++            launch_arguments.push_back(s);
 +        }
-+
-+        launcher_path = "/bin/zsh";
-+        launch_arguments.push_back("zsh");
-+        launch_arguments.push_back("-lc");
-+        launch_arguments.push_back(command);
 +        launched_via_open = true;
 +    } else {
 +        launch_arguments.push_back(launcher_path);
@@ -334,12 +315,29 @@ index 4ecc4b0..9eb4d72 100644
      // List needs to be null terminated for execve.
      char_list.push_back(nullptr);
  
-+    std::vector<char*> environment_list;
-+    for (char** env = environ; env != nullptr && *env != nullptr; ++env) {
-+        if (std::strncmp(*env, "VOI_", 4) == 0) {
-+            continue;
++    const char* allowed_environment_names[] = {
++        "HOME",
++        "USER",
++        "LOGNAME",
++        "TMPDIR",
++        "LANG",
++        "LC_ALL",
++        "LC_CTYPE",
++        "__CF_USER_TEXT_ENCODING",
++        nullptr,
++    };
++    std::vector<std::string> allowed_environment;
++    allowed_environment.emplace_back("PATH=/usr/bin:/bin:/usr/sbin:/sbin");
++    for (const char** name = allowed_environment_names; *name != nullptr; ++name) {
++        const char* value = std::getenv(*name);
++        if (value != nullptr && *value != '\0') {
++            allowed_environment.emplace_back(std::string(*name) + "=" + value);
 +        }
-+        environment_list.push_back(*env);
++    }
++    std::vector<char*> environment_list;
++    environment_list.reserve(allowed_environment.size() + 1);
++    for (auto& item : allowed_environment) {
++        environment_list.push_back(const_cast<char*>(item.c_str()));
 +    }
 +    environment_list.push_back(nullptr);
 +

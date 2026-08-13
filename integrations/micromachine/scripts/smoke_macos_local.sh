@@ -93,6 +93,8 @@ discover_sc2_root() {
 }
 
 SC2_ROOT="$(discover_sc2_root)"
+SC2_REQUIRED_BASE="${SC2_REQUIRED_BASE:-97364}"
+SC2_ALLOW_LATEST_BASE_DIAGNOSTIC="${SC2_ALLOW_LATEST_BASE_DIAGNOSTIC:-0}"
 SC2_LAUNCH_MODE="${SC2_LAUNCH_MODE:-auto}"
 SC2_BATTLENET_EXECUTABLE="${SC2_BATTLENET_EXECUTABLE:-/Applications/Battle.net.app/Contents/MacOS/Battle.net}"
 SC2_BATTLENET_GAME="${SC2_BATTLENET_GAME:-s2_kokr}"
@@ -111,42 +113,39 @@ if [[ -z "${SC2_CLEAN_PORTS_BEFORE_LAUNCH+x}" ]]; then
 fi
 
 resolve_latest_direct_sc2_executable() {
-  local pinned="${SC2_ROOT}/Versions/Base96883/SC2.app/Contents/MacOS/SC2"
+  local required_base="${SC2_REQUIRED_BASE:-97364}"
+  local allow_latest_diagnostic="${SC2_ALLOW_LATEST_BASE_DIAGNOSTIC:-0}"
+  local pinned="${SC2_ROOT}/Versions/Base${required_base}/SC2.app/Contents/MacOS/SC2"
   if [[ -x "${pinned}" ]]; then
+    printf '%s\n' "${pinned}"
+    return
+  fi
+
+  if [[ "${allow_latest_diagnostic}" != "1" ]]; then
     printf '%s\n' "${pinned}"
     return
   fi
 
   local versions_dir="${SC2_ROOT}/Versions"
   if [[ -d "${versions_dir}" ]]; then
-    local latest
-    latest="$(
-      find "${versions_dir}" -path '*/SC2.app/Contents/MacOS/SC2' -type f 2>/dev/null |
-        awk -F/ '
-          {
-            for (part = 1; part <= NF - 4; ++part) {
-              if ($part ~ /^Base[0-9]+$/ &&
-                  $(part + 1) == "SC2.app" &&
-                  $(part + 2) == "Contents" &&
-                  $(part + 3) == "MacOS" &&
-                  $(part + 4) == "SC2") {
-                version = substr($part, 5) + 0
-                if (!found || version > maximum) {
-                  found = 1
-                  maximum = version
-                  selected = $0
-                }
-              }
-            }
-          }
-          END {
-            if (found) {
-              print selected
-            }
-          }
-        '
-    )"
-    if [[ -n "${latest}" && -x "${latest}" ]]; then
+    local candidate
+    local base_dir
+    local base_name
+    local version
+    local latest=""
+    local latest_version=-1
+    for candidate in "${versions_dir}"/Base*/SC2.app/Contents/MacOS/SC2; do
+      [[ -x "${candidate}" ]] || continue
+      base_dir="${candidate%/SC2.app/Contents/MacOS/SC2}"
+      base_name="${base_dir##*/}"
+      [[ "${base_name}" =~ ^Base([0-9]+)$ ]] || continue
+      version="${BASH_REMATCH[1]}"
+      if (( 10#${version} > latest_version )); then
+        latest="${candidate}"
+        latest_version=$((10#${version}))
+      fi
+    done
+    if [[ -n "${latest}" ]]; then
       printf '%s\n' "${latest}"
       return
     fi
@@ -164,12 +163,7 @@ resolve_sc2_executable() {
       printf '%s\n' "${SC2_BATTLENET_EXECUTABLE}"
       ;;
     auto)
-      local pinned="${SC2_ROOT}/Versions/Base96883/SC2.app/Contents/MacOS/SC2"
-      if [[ -x "${pinned}" ]]; then
-        printf '%s\n' "${pinned}"
-      else
-        resolve_latest_direct_sc2_executable
-      fi
+      resolve_latest_direct_sc2_executable
       ;;
     *)
       echo "MicroMachine smoke rejected: SC2_LAUNCH_MODE must be auto, direct, or battlenet." >&2
@@ -271,6 +265,7 @@ snapshot_runtime_identity() {
     "${MICROMACHINE_BUILD_DIR}/bin/MicroMachine" \
     "${RUNTIME_IDENTITY_SNAPSHOT}" \
     "${SMOKE_RUN_ID}" \
+    "${VOI_MICROMACHINE_RUNTIME_INSTANCE_ID}" \
     "${SMOKE_REPO_HEAD_SHA}" \
     "${BASH_SOURCE[0]}" \
     "${REPO_ROOT}"
@@ -283,15 +278,17 @@ from pathlib import Path
 
 from starcraft_commander.micromachine_build_identity import (
     build_runtime_workspace_identity,
+    resolve_runtime_repository_identity,
 )
 
 report_path = Path(sys.argv[1])
 binary_path = Path(sys.argv[2])
 snapshot_path = Path(sys.argv[3])
 run_id = sys.argv[4]
-repo_head_sha = sys.argv[5]
-smoke_script_path = Path(sys.argv[6]).resolve()
-repo_root = Path(sys.argv[7]).resolve()
+runtime_instance_id = sys.argv[5]
+repo_head_sha = sys.argv[6]
+smoke_script_path = Path(sys.argv[7]).resolve()
+repo_root = Path(sys.argv[8]).resolve()
 
 def sha256(path):
     digest = hashlib.sha256()
@@ -299,21 +296,6 @@ def sha256(path):
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-def git_head(path):
-    completed = subprocess.run(
-        ["git", "-C", str(path), "rev-parse", "HEAD"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    head = completed.stdout.strip()
-    if completed.returncode != 0 or not head:
-        raise SystemExit(
-            "MicroMachine smoke rejected: cannot resolve repository HEAD "
-            f"for runtime provenance: {completed.stderr.strip()}"
-        )
-    return head
 
 try:
     report = json.loads(report_path.read_text())
@@ -334,7 +316,11 @@ if binary_sha256 != reported_binary_sha256:
     )
 observed = report.get("observed", {})
 runtime_workspace = build_runtime_workspace_identity(repo_root)
-actual_repo_head_sha = git_head(repo_root)
+try:
+    runtime_repository = resolve_runtime_repository_identity(repo_root)
+except ValueError as exc:
+    raise SystemExit(f"MicroMachine smoke rejected: {exc}") from exc
+actual_repo_head_sha = runtime_repository["repo_head_sha"]
 if repo_head_sha != actual_repo_head_sha:
     raise SystemExit(
         "MicroMachine smoke rejected: configured repository HEAD does not "
@@ -344,6 +330,7 @@ if repo_head_sha != actual_repo_head_sha:
 payload = {
     "schema_version": 1,
     "run_id": run_id,
+    "runtime_instance_id": runtime_instance_id,
     "repo_head_sha": actual_repo_head_sha,
     "smoke_script": str(smoke_script_path),
     "smoke_script_sha256": sha256(smoke_script_path),
@@ -374,6 +361,7 @@ verify_runtime_identity_snapshot() {
     "${MICROMACHINE_BUILD_DIR}/bin/MicroMachine" \
     "${RUNTIME_IDENTITY_SNAPSHOT}" \
     "${SMOKE_RUN_ID}" \
+    "${VOI_MICROMACHINE_RUNTIME_INSTANCE_ID}" \
     "${SMOKE_REPO_HEAD_SHA}" \
     "${BASH_SOURCE[0]}" \
     "${REPO_ROOT}"
@@ -385,15 +373,17 @@ from pathlib import Path
 
 from starcraft_commander.micromachine_build_identity import (
     build_runtime_workspace_identity,
+    resolve_runtime_repository_identity,
 )
 
 report_path = Path(sys.argv[1])
 binary_path = Path(sys.argv[2])
 snapshot_path = Path(sys.argv[3])
 run_id = sys.argv[4]
-repo_head_sha = sys.argv[5]
-smoke_script_path = Path(sys.argv[6]).resolve()
-repo_root = Path(sys.argv[7]).resolve()
+runtime_instance_id = sys.argv[5]
+repo_head_sha = sys.argv[6]
+smoke_script_path = Path(sys.argv[7]).resolve()
+repo_root = Path(sys.argv[8]).resolve()
 
 def sha256(path):
     digest = hashlib.sha256()
@@ -401,21 +391,6 @@ def sha256(path):
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-def git_head(path):
-    completed = subprocess.run(
-        ["git", "-C", str(path), "rev-parse", "HEAD"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    head = completed.stdout.strip()
-    if completed.returncode != 0 or not head:
-        raise SystemExit(
-            "MicroMachine smoke rejected: cannot resolve repository HEAD "
-            f"for runtime provenance: {completed.stderr.strip()}"
-        )
-    return head
 
 try:
     snapshot = json.loads(snapshot_path.read_text())
@@ -435,7 +410,15 @@ if snapshot.get("run_id") != run_id:
     raise SystemExit(
         "MicroMachine smoke rejected: runtime run ID changed during live run."
     )
-actual_repo_head_sha = git_head(repo_root)
+if snapshot.get("runtime_instance_id") != runtime_instance_id:
+    raise SystemExit(
+        "MicroMachine smoke rejected: runtime instance ID changed during live run."
+    )
+try:
+    runtime_repository = resolve_runtime_repository_identity(repo_root)
+except ValueError as exc:
+    raise SystemExit(f"MicroMachine smoke rejected: {exc}") from exc
+actual_repo_head_sha = runtime_repository["repo_head_sha"]
 if snapshot.get("repo_head_sha") != actual_repo_head_sha:
     raise SystemExit(
         "MicroMachine smoke rejected: repository HEAD changed during live run: "
@@ -479,7 +462,24 @@ SMOKE_MAX_ATTEMPTS="${SMOKE_MAX_ATTEMPTS:-3}"
 SMOKE_RETRY_SETTLE_SECONDS="${SMOKE_RETRY_SETTLE_SECONDS:-15}"
 SMOKE_ATTEMPT_INDEX="${SMOKE_ATTEMPT_INDEX:-}"
 SMOKE_RUN_ID="${SMOKE_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM}}"
-SMOKE_REPO_HEAD_SHA="${SMOKE_REPO_HEAD_SHA:-$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || printf 'unknown')}"
+if [[ -z "${SMOKE_REPO_HEAD_SHA:-}" ]]; then
+  SMOKE_REPO_HEAD_SHA="$(
+    PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}" python3 - <<'PY' "${REPO_ROOT}"
+import sys
+from pathlib import Path
+
+from starcraft_commander.micromachine_build_identity import (
+    resolve_runtime_repository_identity,
+)
+
+try:
+    identity = resolve_runtime_repository_identity(Path(sys.argv[1]))
+except ValueError as exc:
+    raise SystemExit(f"MicroMachine smoke rejected: {exc}") from exc
+print(identity["repo_head_sha"])
+PY
+  )"
+fi
 export SMOKE_RUN_ID SMOKE_REPO_HEAD_SHA
 BOT_LOG="${BLACKBOARD_DIR}/micromachine.log"
 CLASSIFIER_BOT_LOG="${BLACKBOARD_DIR}/micromachine_combined.log"
@@ -871,6 +871,21 @@ PY
   echo "MicroMachine smoke failed after ${SMOKE_MAX_ATTEMPTS} attempts; summary: ${BLACKBOARD_DIR}/smoke_attempts.json" >&2
   exit 1
 fi
+
+if [[ -z "${VOI_MICROMACHINE_RUNTIME_INSTANCE_ID:-}" ]]; then
+  VOI_MICROMACHINE_RUNTIME_INSTANCE_ID="$(
+    python3 - <<'PY'
+import uuid
+
+print(uuid.uuid4().hex)
+PY
+  )"
+fi
+if [[ ! "${VOI_MICROMACHINE_RUNTIME_INSTANCE_ID}" =~ ^[0-9a-f]{32}$ ]]; then
+  echo "MicroMachine smoke rejected: VOI_MICROMACHINE_RUNTIME_INSTANCE_ID must be a 32-character lowercase hex value." >&2
+  exit 2
+fi
+export VOI_MICROMACHINE_RUNTIME_INSTANCE_ID
 
 REQUIRED_MACRO_EVIDENCE=(
   "build command type=TERRAN_SUPPLYDEPOT"

@@ -2154,10 +2154,6 @@ class PolicyModulationVector:
             "tags": list(self.tags),
             "rationale": self.rationale,
         }
-        if len(self.operations) == 1:
-            operation_projection = _operation_projection(self.operations[0])
-            operation_projection.pop("lifetime", None)
-            payload.update(operation_projection)
         return payload
 
 

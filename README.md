@@ -375,6 +375,33 @@ python3 -m starcraft_commander.web_gui --dry-run
 python3 -m starcraft_commander.web_gui --dry-run --port 0
 ```
 
+These commands print a localhost URL but do not open another browser window.
+Use the installed **voiStarcraft2** app for the enforced single-window UI.
+
+MyProxy one-click setup on macOS:
+
+```bash
+.venv/bin/python scripts/start_local_cockpit.py \
+  --store-key-from-env --install-app --launch-app --prepare-only
+```
+
+This one setup command stores only the current MyProxy API key outside the
+repository in owner-only local cockpit storage (`0700` directory, `0600`
+file), reads the endpoint and model from `~/.codex/config.toml`, installs the
+declared LLM dependencies, and builds patched MicroMachine with
+`BUILD_JOBS=2` when a passing local build is absent, installs the app, and
+opens it. It never writes the key, private endpoint, or private model into this
+repository. Later launches only require double-clicking **voiStarcraft2** in
+`~/Applications`; preparation is idempotent and the browser opens after the
+localhost cockpit is healthy.
+StarCraft II itself still starts only after **선택 모드 실행** is clicked.
+That click switches the same app/web window to a compact tactical companion,
+then starts the selected runtime. It never creates a second cockpit window.
+The companion keeps only runtime truth,
+current operation/composition, tactical captions, text/voice command input,
+and emergency retreat; the full cockpit remains available for configuration
+and detailed evidence.
+
 In that page, the **Commander Chat** and browser voice button are the unified
 input surface. One push-to-talk session keeps interim text, final text, pending
 state, and the final result in one stable command surface and submits the

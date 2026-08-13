@@ -19,6 +19,7 @@ from starcraft_commander.llm_interpreter import (
     DEFAULT_LLM_MAX_TOKENS,
     DEFAULT_LLM_MODEL,
     DEFAULT_MYPROXY_MODEL,
+    DEFAULT_LLM_TIMEOUT_SECONDS,
     HybridCommandInterpreter,
     LocalLLMControl,
     LLM_COMBO_TOOL_NAME,
@@ -34,6 +35,7 @@ from starcraft_commander.llm_interpreter import (
     MYPROXY_API_KEY_ENV_VAR,
     MYPROXY_MODEL_ENV_VAR,
     MYPROXY_OPENAI_BASE_URL_ENV_VAR,
+    LLM_TIMEOUT_SECONDS_ENV_VAR,
     OPENAI_API_KEY_ENV_VAR,
     OPENAI_API_KEY_REAL_ENV_VAR,
     build_hybrid_interpreter,
@@ -5015,7 +5017,51 @@ class LLMAvailabilityTest(unittest.TestCase):
             snapshot = control.snapshot()
             self.assertTrue(snapshot["configured"])
             self.assertTrue(snapshot["key_present"])
+            self.assertTrue(snapshot["available"])
             self.assertTrue(control.is_available())
+
+    def test_local_llm_control_snapshot_distinguishes_configured_from_available(
+        self,
+    ) -> None:
+        control = LocalLLMControl(provider="openai", model="gpt-5.5")
+        with mock.patch(
+            "starcraft_commander.llm_interpreter._is_provider_available",
+            return_value=False,
+        ), mock.patch.dict(
+            os.environ,
+            {OPENAI_API_KEY_ENV_VAR: "configured-key"},
+        ):
+            snapshot = control.snapshot()
+
+        self.assertTrue(snapshot["configured"])
+        self.assertTrue(snapshot["key_present"])
+        self.assertFalse(snapshot["available"])
+
+    def test_local_llm_control_uses_bounded_timeout_environment(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {LLM_TIMEOUT_SECONDS_ENV_VAR: "25"},
+            clear=False,
+        ):
+            control = LocalLLMControl(provider="openai", model="gpt-5.5")
+
+        self.assertEqual(
+            25.0,
+            control._build_current_interpreter().timeout_seconds,
+        )
+
+    def test_local_llm_control_rejects_unsafe_timeout_environment(self) -> None:
+        for value in ("0", "26", "not-a-number"):
+            with self.subTest(value=value), mock.patch.dict(
+                os.environ,
+                {LLM_TIMEOUT_SECONDS_ENV_VAR: value},
+                clear=False,
+            ):
+                control = LocalLLMControl(provider="openai", model="gpt-5.5")
+                self.assertEqual(
+                    DEFAULT_LLM_TIMEOUT_SECONDS,
+                    control._build_current_interpreter().timeout_seconds,
+                )
 
     def test_myproxy_uses_openai_sdk_with_configured_base_url(self) -> None:
         sentinel = object()

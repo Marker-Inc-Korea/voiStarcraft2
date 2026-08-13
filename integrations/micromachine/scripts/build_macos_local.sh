@@ -89,6 +89,8 @@ BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/pa
 BOUNDED_TERMINAL_OPERATION_HUD_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0076-bounded-terminal-operation-hud.patch"
 DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0077-deterministic-pre-live-journey-adapter.patch"
 PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0078-production-path-journey-review-closure.patch"
+UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0079-until-completed-submission-deadline.patch"
+EXACT_OPERATION_POLICY_LIFETIME_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0080-exact-operation-policy-lifetime.patch"
 S2CLIENT_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0001-s2client-macos-launchservices.patch"
 BLACKBOARD_HEADER_FILE="${REPO_ROOT}/integrations/micromachine/voi_policy_blackboard.hpp"
 HOOK_MANIFEST_FILE="${REPO_ROOT}/integrations/micromachine/HOOK_MANIFEST.json"
@@ -250,7 +252,7 @@ git -C "${S2CLIENT_DIR}" apply --ignore-space-change --whitespace=nowarn "${S2CL
 
 cmake -S "${S2CLIENT_DIR}" -B "${S2CLIENT_BUILD_DIR}" \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-cmake --build "${S2CLIENT_BUILD_DIR}" --parallel "${BUILD_JOBS:-8}"
+cmake --build "${S2CLIENT_BUILD_DIR}" --parallel "${BUILD_JOBS:-2}"
 
 prepare_git_checkout "${MICROMACHINE_DIR}" "${ROOT_DIR}" https://github.com/RaphaelRoyerRivard/MicroMachine MicroMachine
 git -C "${MICROMACHINE_DIR}" fetch --tags
@@ -420,6 +422,10 @@ git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whi
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${EXACT_OPERATION_POLICY_LIFETIME_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${EXACT_OPERATION_POLICY_LIFETIME_PATCH_FILE}"
 cp "${BLACKBOARD_HEADER_FILE}" "${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"
 
 require_secure_build_root \
@@ -461,6 +467,8 @@ python3 -m starcraft_commander.micromachine_build_identity \
   --micromachine-bounded-terminal-operation-hud-patch "${BOUNDED_TERMINAL_OPERATION_HUD_PATCH_FILE}" \
   --micromachine-deterministic-pre-live-journey-adapter-patch "${DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH_FILE}" \
   --micromachine-production-path-journey-review-closure-patch "${PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE}" \
+  --micromachine-until-completed-submission-deadline-patch "${UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH_FILE}" \
+  --micromachine-exact-operation-policy-lifetime-patch "${EXACT_OPERATION_POLICY_LIFETIME_PATCH_FILE}" \
   --hook-manifest "${HOOK_MANIFEST_FILE}" \
   --write-embedded-identity-header \
   --initialize-source-attestation
@@ -477,7 +485,7 @@ cmake -S "${MICROMACHINE_DIR}" -B "${MICROMACHINE_BUILD_DIR}" \
   -DSC2Api_SC2PROTOCOL_LIB="${S2CLIENT_BUILD_DIR}/bin/libsc2protocol.a" \
   -DSC2Api_CIVETWEB_LIB="${S2CLIENT_BUILD_DIR}/bin/libcivetweb.a" \
   -DSC2Api_PROTOBUF_LIB="${S2CLIENT_BUILD_DIR}/bin/libprotobuf.a"
-cmake --build "${MICROMACHINE_BUILD_DIR}" --parallel "${BUILD_JOBS:-8}"
+cmake --build "${MICROMACHINE_BUILD_DIR}" --parallel "${BUILD_JOBS:-2}"
 "${CTEST_COMMAND}" --test-dir "${MICROMACHINE_BUILD_DIR}" --output-on-failure
 
 python3 -m starcraft_commander.micromachine_build_identity \
@@ -565,6 +573,8 @@ python3 -m starcraft_commander.micromachine_build_identity \
   --micromachine-bounded-terminal-operation-hud-patch "${BOUNDED_TERMINAL_OPERATION_HUD_PATCH_FILE}" \
   --micromachine-deterministic-pre-live-journey-adapter-patch "${DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH_FILE}" \
   --micromachine-production-path-journey-review-closure-patch "${PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE}" \
+  --micromachine-until-completed-submission-deadline-patch "${UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH_FILE}" \
+  --micromachine-exact-operation-policy-lifetime-patch "${EXACT_OPERATION_POLICY_LIFETIME_PATCH_FILE}" \
   --s2client-patch "${S2CLIENT_PATCH_FILE}" \
   --hook-manifest "${HOOK_MANIFEST_FILE}" \
   --finalize-build-attestation \

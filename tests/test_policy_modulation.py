@@ -393,7 +393,7 @@ class PolicyModulationVectorTest(unittest.TestCase):
                 }
             )
 
-    def test_single_operation_projects_to_legacy_fields(self) -> None:
+    def test_single_operation_serializes_only_under_operations(self) -> None:
         vector = PolicyModulationVector(
             goal="정찰",
             operations=(
@@ -413,12 +413,57 @@ class PolicyModulationVectorTest(unittest.TestCase):
         self.assertEqual("", vector.tactical_task.task_type)
         self.assertEqual("", vector.route_intent.route_type)
         payload = vector.to_dict()
+        self.assertEqual("", payload["tactical_task"]["task_type"])
+        self.assertEqual("", payload["scope"]["army_group"])
+        self.assertEqual([], payload["composition_requirements"])
+        self.assertEqual([], payload["unit_roles"])
+        self.assertEqual("", payload["route_intent"]["route_type"])
+        self.assertEqual("", payload["target_intent"]["target_type"])
         self.assertEqual(
             "scout_with_units",
-            payload["tactical_task"]["task_type"],
+            payload["operations"][0]["tactical_task"]["task_type"],
         )
-        self.assertEqual("safe_path", payload["route_intent"]["route_type"])
+        self.assertEqual(
+            "safe_path",
+            payload["operations"][0]["route_intent"]["route_type"],
+        )
         self.assertEqual(vector, PolicyModulationVector.from_mapping(payload))
+
+    def test_single_operation_composition_is_not_duplicated_when_flattened(
+        self,
+    ) -> None:
+        vector = PolicyModulationVector(
+            goal="6 marine 2 tank 2 viking assault",
+            operations=(
+                TacticalOperationModulation(
+                    operation_id="enemy-main-assault-1",
+                    goal="attack enemy main",
+                    composition_requirements=(
+                        CompositionRequirement("marine", count=6, role="frontline"),
+                        CompositionRequirement(
+                            "tank",
+                            count=2,
+                            role="siege_support",
+                        ),
+                        CompositionRequirement("viking", count=2, role="anti_air"),
+                    ),
+                ),
+            ),
+        )
+
+        payload = vector.to_dict()
+        top_level = payload["composition_requirements"]
+        operation = payload["operations"][0]["composition_requirements"]
+
+        self.assertEqual([], top_level)
+        self.assertEqual(
+            {
+                "TERRAN_MARINE": 6,
+                "TERRAN_SIEGETANK": 2,
+                "TERRAN_VIKINGFIGHTER": 2,
+            },
+            {item["unit_type"]: item["count"] for item in operation},
+        )
 
     def test_legacy_payload_round_trips_without_synthesizing_operation(
         self,

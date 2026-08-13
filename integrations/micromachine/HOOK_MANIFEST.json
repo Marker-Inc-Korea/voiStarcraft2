@@ -398,6 +398,16 @@
       "path": "patches/0078-production-path-journey-review-closure.patch",
       "order": 78,
       "scope": "close deterministic journey review findings by routing production ownership, Squad orders, and SC2 action submission through shared production entrypoints; consume resource, reconnect, prerequisite, and voice initial state; preserve both active transfer endpoints on rejection; and emit schema-2 raw receipts for causal verification"
+    },
+    {
+      "path": "patches/0079-until-completed-submission-deadline.patch",
+      "order": 79,
+      "scope": "start an exact-composition until_completed operation duration at its first observed SC2 submission, preserve the latched deadline across same-target generation handoff, reset it on retarget, and retain issued-frame deadlines for non-exact finite operations"
+    },
+    {
+      "path": "patches/0080-exact-operation-policy-lifetime.patch",
+      "order": 80,
+      "scope": "retain an expired top-level policy only when every nonterminal raw operation exactly matches an already-admitted active exact-composition until_completed runtime operation by update, operation ID, generation, duration, and composition; fail closed on terminal, blocked, duplicate, stale, missing, or unmatched operations"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {
