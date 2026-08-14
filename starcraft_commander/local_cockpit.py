@@ -689,6 +689,12 @@ def _stop_owned_cockpit(
         capture_output=True,
         text=True,
     )
+    if completed.returncode != 0:
+        try:
+            pid_path.unlink()
+        except FileNotFoundError:
+            pass
+        return True
     command = completed.stdout.strip()
     expected_markers = [
         "-m starcraft_commander.web_gui",
@@ -696,9 +702,7 @@ def _stop_owned_cockpit(
     ]
     if port is not None:
         expected_markers.append(f"--port {int(port)}")
-    if completed.returncode != 0 or not all(
-        marker in command for marker in expected_markers
-    ):
+    if not all(marker in command for marker in expected_markers):
         return False
 
     try:

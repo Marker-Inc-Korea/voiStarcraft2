@@ -757,6 +757,29 @@ class LocalCockpitTest(unittest.TestCase):
             kill_process.call_args_list[0],
         )
 
+    def test_removes_stale_recorded_cockpit_pid_during_app_update(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            paths = self._paths(Path(directory))
+            paths.state_dir.mkdir(parents=True)
+            pid_path = paths.state_dir / "cockpit.pid"
+            pid_path.write_text("4321\n", encoding="ascii")
+            with (
+                mock.patch(
+                    "starcraft_commander.local_cockpit.subprocess.run",
+                    return_value=mock.Mock(returncode=1, stdout=""),
+                ),
+                mock.patch(
+                    "starcraft_commander.local_cockpit.os.kill"
+                ) as kill_process,
+            ):
+                stopped = _stop_owned_cockpit(paths, None)
+
+        self.assertTrue(stopped)
+        self.assertFalse(pid_path.exists())
+        kill_process.assert_not_called()
+
     def test_refuses_to_stop_pid_with_unrelated_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             paths = self._paths(Path(directory))
