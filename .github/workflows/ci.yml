@@ -62,7 +62,9 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 10
     env:
+      BUILD_JOBS: "2"
       PYTHONDONTWRITEBYTECODE: "1"
+      ROOT_DIR: /private/tmp/voi-diagnostic-runtime
       VOI_PRODUCER_UID: "65001"
       VOI_PRODUCER_GID: "65001"
     steps:
@@ -70,10 +72,13 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Exercise authenticated runtime resource as dedicated UID
+      - name: Build exact diagnostic MicroMachine integration
+        run: integrations/micromachine/scripts/build_macos_local.sh
+      - name: Exercise deterministic producer as dedicated UID
         run: |
           sudo env \
             PYTHONDONTWRITEBYTECODE="${PYTHONDONTWRITEBYTECODE}" \
+            VOI_DIAGNOSTIC_MICROMACHINE_BINARY="${ROOT_DIR}/MicroMachine/build-latest-api/bin/MicroMachine" \
             VOI_PRODUCER_UID="${VOI_PRODUCER_UID}" \
             VOI_PRODUCER_GID="${VOI_PRODUCER_GID}" \
             python3 -I -B -S -c '
@@ -92,7 +97,7 @@ jobs:
           suite = unittest.TestSuite(
               [
                   module.LocalProducerTest(
-                      "test_dedicated_authenticated_bootstrap_loads_runtime_resource"
+                      "test_dedicated_deterministic_producer_emits_bundle"
                   )
               ]
           )

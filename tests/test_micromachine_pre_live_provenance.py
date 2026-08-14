@@ -5687,6 +5687,80 @@ class LocalProducerTest(unittest.TestCase):
                 json.loads(output.read_bytes()),
             )
 
+    def test_dedicated_deterministic_producer_emits_bundle(
+        self,
+    ) -> None:
+        producer_uid, producer_gid = self.dedicated_producer_uid()
+        raw_binary = os.environ.get("VOI_DIAGNOSTIC_MICROMACHINE_BINARY")
+        if not raw_binary:
+            self.skipTest("diagnostic MicroMachine binary is not configured")
+        repository = BUILD_IDENTITY_REPO_ROOT.resolve()
+        binary = Path(raw_binary).resolve(strict=True)
+        node_candidate = shutil.which("node")
+        if node_candidate is None:
+            self.skipTest("Node.js is required for deterministic journeys")
+        node = Path(node_candidate).resolve(strict=True)
+        commit = git(repository, "rev-parse", "HEAD").stdout.strip()
+        policy = resolve_local_producer_policy(
+            repository_dir=repository,
+            expected_commit=commit,
+            producer_id=PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID,
+            micromachine_binary_path=binary,
+            micromachine_binary_sha256=hashlib.sha256(
+                binary.read_bytes()
+            ).hexdigest(),
+            node_executable=node,
+        )
+        self.assertTrue(policy["ok"], policy)
+        source_files = policy["runtime_sources"]["files"]
+        captured: list[subprocess.CompletedProcess[bytes]] = []
+        original_runner = provenance_module._run_authenticated_python_exec
+
+        def capture_stderr(
+            *args: object,
+            **kwargs: object,
+        ) -> subprocess.CompletedProcess[bytes]:
+            completed = original_runner(*args, **kwargs)
+            captured.append(completed)
+            return completed
+
+        with mock.patch.object(
+            provenance_module,
+            "_run_authenticated_python_exec",
+            side_effect=capture_stderr,
+        ):
+            report = run_local_producer(
+                repository_dir=repository,
+                cwd=policy["cwd"],
+                argv=policy["argv"],
+                allowed_argv=(policy["argv"],),
+                output_artifact=policy["output_artifact"],
+                producer_id=PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID,
+                producer_policy_sha256=policy["policy_sha256"],
+                authenticated_files=[item["path"] for item in source_files],
+                authenticated_file_digests={
+                    item["path"]: item["sha256"] for item in source_files
+                },
+                pinned_argv_file_digests=(
+                    provenance_module._producer_pinned_argv_file_digests(
+                        policy
+                    )
+                ),
+                path_bound_argv_files=(
+                    provenance_module._producer_path_bound_argv_files(policy)
+                ),
+                producer_uid=producer_uid,
+                producer_gid=producer_gid,
+                timeout_seconds=1800.0,
+            )
+
+        stderr = (
+            captured[-1].stderr.decode("utf-8", errors="replace")
+            if captured
+            else "<producer did not return a completed process>"
+        )
+        self.assertTrue(report["ok"], f"{report}\nproducer stderr:\n{stderr}")
+
     def test_checked_in_policy_has_an_executable_production_producer(self) -> None:
         repository = BUILD_IDENTITY_REPO_ROOT.resolve()
         policy_path = repository / PRODUCER_POLICY_RELATIVE_PATH
