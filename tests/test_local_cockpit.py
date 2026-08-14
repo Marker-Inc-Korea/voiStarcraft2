@@ -601,6 +601,10 @@ class LocalCockpitTest(unittest.TestCase):
                     return_value=True,
                 ) as stop,
                 mock.patch(
+                    "starcraft_commander.local_cockpit._port_is_bound",
+                    return_value=False,
+                ),
+                mock.patch(
                     "starcraft_commander.local_cockpit.install_local_runtime",
                     side_effect=RuntimeError("stop after restart check"),
                 ),
@@ -626,6 +630,39 @@ class LocalCockpitTest(unittest.TestCase):
                         returncode=0,
                         stdout=str(executable.resolve()),
                     ),
+                ),
+                mock.patch(
+                    "starcraft_commander.local_cockpit.os.kill",
+                    side_effect=[None, ProcessLookupError()],
+                ) as kill_process,
+            ):
+                stopped = _stop_owned_app(paths, app_path)
+
+        self.assertTrue(stopped)
+        self.assertEqual(mock.call(4321, signal.SIGTERM), kill_process.call_args_list[0])
+
+    def test_stops_matching_app_started_with_runtime_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = self._paths(root)
+            app_path = root / "Applications" / "voiStarcraft2.app"
+            executable = app_path / "Contents" / "MacOS" / "voiStarcraft2"
+            paths.state_dir.mkdir(parents=True)
+            (paths.state_dir / "app.pid").write_text("4321\n", encoding="ascii")
+
+            def inspect_process(command, **_kwargs):
+                field = command[-1]
+                stdout = (
+                    str(executable.resolve())
+                    if field == "comm="
+                    else f"{executable.resolve()} --auto-start-micromachine"
+                )
+                return mock.Mock(returncode=0, stdout=stdout)
+
+            with (
+                mock.patch(
+                    "starcraft_commander.local_cockpit.subprocess.run",
+                    side_effect=inspect_process,
                 ),
                 mock.patch(
                     "starcraft_commander.local_cockpit.os.kill",

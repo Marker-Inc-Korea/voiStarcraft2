@@ -754,7 +754,7 @@ def _stop_owned_app(
         return False
 
     completed = subprocess.run(
-        ["/bin/ps", "-p", str(pid), "-o", "command="],
+        ["/bin/ps", "-p", str(pid), "-o", "comm="],
         check=False,
         capture_output=True,
         text=True,
@@ -771,7 +771,9 @@ def _stop_owned_app(
         except FileNotFoundError:
             pass
         return True
-    if completed.stdout.strip() != expected_executable:
+    if os.path.realpath(completed.stdout.strip()) != os.path.realpath(
+        expected_executable
+    ):
         return False
 
     try:
