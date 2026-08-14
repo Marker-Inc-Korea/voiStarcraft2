@@ -8,7 +8,6 @@ import json
 import os
 import plistlib
 import shutil
-import shlex
 import signal
 import socket
 import stat
@@ -175,22 +174,29 @@ def _sc2_receipt_process_matches(
     executable: Path,
     port: int,
 ) -> bool:
-    completed = subprocess.run(
+    executable_result = subprocess.run(
+        ["/bin/ps", "-p", str(pid), "-o", "comm="],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    command_result = subprocess.run(
         ["/bin/ps", "-p", str(pid), "-o", "command="],
         check=False,
         capture_output=True,
         text=True,
     )
-    if completed.returncode != 0:
+    if executable_result.returncode != 0 or command_result.returncode != 0:
         return False
-    try:
-        arguments = shlex.split(completed.stdout.strip())
-    except ValueError:
+    observed_executable = executable_result.stdout.strip()
+    command_line = command_result.stdout.strip()
+    if not observed_executable or not command_line.startswith(observed_executable):
         return False
+    arguments = command_line[len(observed_executable) :].split()
     if not arguments:
         return False
     return bool(
-        os.path.realpath(arguments[0]) == os.path.realpath(executable)
+        os.path.realpath(observed_executable) == os.path.realpath(executable)
         and "-port" in arguments
         and str(port) in arguments
         and "-listen" in arguments
@@ -205,7 +211,7 @@ def read_sc2_launch_receipt(
     now_unix: float | None = None,
     require_live_process: bool = True,
 ) -> dict[str, object]:
-    """Read and validate one fresh native visible-launch receipt."""
+    """Read and validate one fresh native SC2 launch receipt."""
 
     expected_nonce = nonce.strip()
     if not expected_nonce:
@@ -248,12 +254,16 @@ def read_sc2_launch_receipt(
     age_seconds = now - (float(created_at_unix_ms) / 1000.0)
     if age_seconds < -5 or age_seconds > SC2_LAUNCH_RECEIPT_MAX_AGE_SECONDS:
         raise RuntimeError("SC2 native launch receipt is stale.")
-    required_true_fields = (
+    bootstrap_true_fields = (
         "process_created",
         "api_ready",
         "window_created",
         "window_onscreen",
         "frontmost",
+    )
+    required_true_fields = (
+        *bootstrap_true_fields,
+        "screen_capture_authorized",
         "render_verified",
     )
     missing = [
@@ -1095,6 +1105,16 @@ private let sc2ApplicationURL = sc2ExecutableURL
 private let sc2ReceiptURL = URL(fileURLWithPath: __SC2_RECEIPT__)
 private let sc2Port = __SC2_PORT__
 private let sc2Base = __SC2_BASE__
+private let launchArguments = ProcessInfo.processInfo.arguments
+private let autoCommandArgument: String? = {
+    guard let index = launchArguments.firstIndex(of: "--auto-command"),
+          index + 1 < launchArguments.count else {
+        return nil
+    }
+    let command = launchArguments[index + 1]
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    return command.isEmpty ? nil : command
+}()
 
 final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
     WKUIDelegate, WKScriptMessageHandler {
@@ -1103,6 +1123,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
     private var readinessAttempt = 0
     private var sc2PID: pid_t = 0
     private var sc2LaunchInFlight = false
+    private var screenCapturePermissionRequested = false
+    private let autoStartMicroMachine = launchArguments
+        .contains("--auto-start-micromachine") || autoCommandArgument != nil
+    private var autoStartTriggered = false
+    private var autoCommandTriggered = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -1114,7 +1139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        return true
+        return false
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -1203,7 +1228,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         }
         if let running = exactRunningSC2Application() {
             sc2PID = running.processIdentifier
-            running.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+            if autoCommandArgument != nil {
+                hideCockpitAndFocusSC2()
+            } else {
+                running.activate(
+                    options: [.activateAllWindows, .activateIgnoringOtherApps]
+                )
+            }
             verifyVisibleSC2(nonce: nonce, pid: sc2PID, processCreated: true)
             return
         }
@@ -1233,9 +1264,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
                     return
                 }
                 self.sc2PID = application.processIdentifier
-                application.activate(
-                    options: [.activateAllWindows, .activateIgnoringOtherApps]
-                )
+                if autoCommandArgument != nil {
+                    self.hideCockpitAndFocusSC2()
+                } else {
+                    application.activate(
+                        options: [.activateAllWindows, .activateIgnoringOtherApps]
+                    )
+                }
                 self.verifyVisibleSC2(
                     nonce: nonce,
                     pid: application.processIdentifier,
@@ -1258,7 +1293,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         pid: pid_t,
         processCreated: Bool
     ) {
-        let deadline = Date().addingTimeInterval(75)
+        let deadline = Date().addingTimeInterval(180)
         func inspect() {
             let state = self.visibleSC2State(pid: pid)
             if state.accepted {
@@ -1266,7 +1301,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
                     nonce: nonce,
                     pid: pid,
                     processCreated: processCreated,
-                    visibleState: state
+                    visibleState: state,
+                    error: ""
+                )
+                return
+            }
+            if state.bootstrapAccepted && !state.screenCaptureAuthorized {
+                self.finishSC2Launch(
+                    nonce: nonce,
+                    pid: pid,
+                    processCreated: processCreated,
+                    visibleState: state,
+                    error: "voiStarcraft2에 화면 기록 권한이 없어 SC2 렌더링을 검증할 수 없습니다. 권한을 허용한 뒤 앱을 다시 실행하세요."
                 )
                 return
             }
@@ -1278,11 +1324,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
                     visibleState: state,
                     error: state.screenLocked
                         ? "macOS 화면이 잠겨 있어 SC2 표시를 검증할 수 없습니다."
-                        : "SC2 창/API/실제 렌더링 검증 시간이 초과되었습니다."
+                        : !state.screenCaptureAuthorized
+                            ? "voiStarcraft2에 화면 기록 권한이 없어 SC2 렌더링을 검증할 수 없습니다. 권한을 허용한 뒤 앱을 다시 실행하세요."
+                            : "SC2 창/API/실제 렌더링 검증 시간이 초과되었습니다."
                 )
                 return
             }
-            if let application = NSRunningApplication(processIdentifier: pid) {
+            if !state.frontmost,
+               let application = NSRunningApplication(processIdentifier: pid) {
                 application.activate(
                     options: [.activateAllWindows, .activateIgnoringOtherApps]
                 )
@@ -1300,14 +1349,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         let windowOnscreen: Bool
         let frontmost: Bool
         let screenLocked: Bool
+        let screenCaptureAuthorized: Bool
         let renderVerified: Bool
         let windowID: CGWindowID
         let width: Int
         let height: Int
 
-        var accepted: Bool {
+        var bootstrapAccepted: Bool {
             apiReady && windowCreated && windowOnscreen && frontmost
-                && !screenLocked && renderVerified
+                && !screenLocked
+        }
+
+        var accepted: Bool {
+            bootstrapAccepted && renderVerified
         }
     }
 
@@ -1331,6 +1385,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
                   let height = bounds["Height"] as? Double else {
                 continue
             }
+            let layer = info[kCGWindowLayer as String] as? Int ?? 0
+            let alpha = info[kCGWindowAlpha as String] as? Double ?? 1
+            guard layer == 0, alpha > 0.01 else { continue }
             if Int(width * height) > selectedWidth * selectedHeight {
                 selectedWindowID = CGWindowID(number)
                 selectedWidth = Int(width)
@@ -1338,10 +1395,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
             }
         }
         let windowCreated = selectedWindowID != 0
-        let windowOnscreen = windowCreated && selectedWidth >= 640
-            && selectedHeight >= 400
-        let rendered = windowOnscreen
+        let windowOnscreen = windowCreated && selectedWidth >= 480
+            && selectedHeight >= 360
+        let captureAuthorized = windowOnscreen
             && !screenLocked
+            && screenCaptureAuthorized()
+        let rendered = captureAuthorized
             && windowHasRenderedPixels(selectedWindowID)
         return VisibleSC2State(
             apiReady: tcpPortReady(sc2Port),
@@ -1349,6 +1408,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
             windowOnscreen: windowOnscreen,
             frontmost: frontmost,
             screenLocked: screenLocked,
+            screenCaptureAuthorized: captureAuthorized,
             renderVerified: rendered,
             windowID: selectedWindowID,
             width: selectedWidth,
@@ -1362,6 +1422,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
             return true
         }
         return session["CGSSessionScreenIsLocked"] as? Bool ?? false
+    }
+
+    private func screenCaptureAuthorized() -> Bool {
+        if CGPreflightScreenCaptureAccess() {
+            return true
+        }
+        guard !screenCapturePermissionRequested else { return false }
+        screenCapturePermissionRequested = true
+        return CGRequestScreenCaptureAccess()
     }
 
     private func tcpPortReady(_ port: Int) -> Bool {
@@ -1412,38 +1481,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
                 [.boundsIgnoreFraming, .bestResolution]
               ),
               let image = Optional(unmanagedImage.takeRetainedValue()),
-              image.width >= 640,
-              image.height >= 400,
-              let provider = image.dataProvider,
-              let data = provider.data,
-              let bytes = CFDataGetBytePtr(data) else {
+              image.width >= 480,
+              image.height >= 360 else {
             return false
         }
-        let bytesPerRow = image.bytesPerRow
-        let bitsPerPixel = image.bitsPerPixel
-        guard bitsPerPixel >= 24, bytesPerRow > 0 else { return false }
-        let bytesPerPixel = max(3, bitsPerPixel / 8)
+        let sampleWidth = 64
+        let sampleHeight = 40
+        var grayscale = [UInt8](
+            repeating: 0,
+            count: sampleWidth * sampleHeight
+        )
+        let rendered = grayscale.withUnsafeMutableBytes { buffer -> Bool in
+            guard let baseAddress = buffer.baseAddress,
+                  let context = CGContext(
+                    data: baseAddress,
+                    width: sampleWidth,
+                    height: sampleHeight,
+                    bitsPerComponent: 8,
+                    bytesPerRow: sampleWidth,
+                    space: CGColorSpaceCreateDeviceGray(),
+                    bitmapInfo: CGImageAlphaInfo.none.rawValue
+                  ) else {
+                return false
+            }
+            context.interpolationQuality = .low
+            context.draw(
+                image,
+                in: CGRect(
+                    x: 0,
+                    y: 0,
+                    width: sampleWidth,
+                    height: sampleHeight
+                )
+            )
+            return true
+        }
+        guard rendered else { return false }
         var brightSamples = 0
         var variedSamples = 0
         var previousLuma = -1
-        var samples = 0
-        let horizontalStep = max(1, image.width / 32)
-        let verticalStep = max(1, image.height / 24)
-        for y in stride(from: 0, to: image.height, by: verticalStep) {
-            for x in stride(from: 0, to: image.width, by: horizontalStep) {
-                let offset = y * bytesPerRow + x * bytesPerPixel
-                let b = Int(bytes[offset])
-                let g = Int(bytes[offset + 1])
-                let r = Int(bytes[offset + 2])
-                let luma = (r * 3 + g * 6 + b) / 10
-                if luma > 12 { brightSamples += 1 }
-                if previousLuma >= 0 && abs(luma - previousLuma) > 8 {
-                    variedSamples += 1
-                }
-                previousLuma = luma
-                samples += 1
+        for value in grayscale {
+            let luma = Int(value)
+            if luma > 12 { brightSamples += 1 }
+            if previousLuma >= 0 && abs(luma - previousLuma) > 8 {
+                variedSamples += 1
             }
+            previousLuma = luma
         }
+        let samples = grayscale.count
         return samples > 0
             && brightSamples * 100 / samples >= 3
             && variedSamples * 100 / samples >= 2
@@ -1462,34 +1547,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
             windowOnscreen: false,
             frontmost: false,
             screenLocked: currentScreenLocked(),
+            screenCaptureAuthorized: false,
             renderVerified: false,
             windowID: 0,
             width: 0,
             height: 0
         )
         let accepted = processCreated && state.accepted && error.isEmpty
-        let receipt: [String: Any] = [
-            "schema": "voi-sc2-visible-launch/v1",
-            "nonce": nonce,
-            "created_at_unix_ms": Int(Date().timeIntervalSince1970 * 1000),
-            "accepted": accepted,
-            "pid": Int(pid),
-            "port": sc2Port,
-            "base": sc2Base,
-            "bundle_path": sc2ApplicationURL.path,
-            "executable_path": sc2ExecutableURL.path,
-            "process_created": processCreated,
-            "api_ready": state.apiReady,
-            "window_created": state.windowCreated,
-            "window_onscreen": state.windowOnscreen,
-            "frontmost": state.frontmost,
-            "screen_locked": state.screenLocked,
-            "render_verified": state.renderVerified,
-            "window_id": Int(state.windowID),
-            "window_width": state.width,
-            "window_height": state.height,
-            "error": error
-        ]
+        let receipt = sc2Receipt(
+            nonce: nonce,
+            pid: pid,
+            processCreated: processCreated,
+            visibleState: state,
+            bootstrapAccepted: processCreated
+                && state.bootstrapAccepted
+                && error.isEmpty,
+            accepted: accepted,
+            error: error
+        )
         do {
             try writeSC2Receipt(receipt)
         } catch {
@@ -1503,6 +1578,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         }
         sc2LaunchInFlight = false
         resolveSC2Launch(nonce: nonce, accepted: accepted, error: error)
+    }
+
+    private func sc2Receipt(
+        nonce: String,
+        pid: pid_t,
+        processCreated: Bool,
+        visibleState state: VisibleSC2State,
+        bootstrapAccepted: Bool,
+        accepted: Bool,
+        error: String
+    ) -> [String: Any] {
+        return [
+            "schema": "voi-sc2-visible-launch/v1",
+            "nonce": nonce,
+            "created_at_unix_ms": Int(Date().timeIntervalSince1970 * 1000),
+            "accepted": accepted,
+            "bootstrap_accepted": bootstrapAccepted,
+            "pid": Int(pid),
+            "port": sc2Port,
+            "base": sc2Base,
+            "bundle_path": sc2ApplicationURL.path,
+            "executable_path": sc2ExecutableURL.path,
+            "process_created": processCreated,
+            "api_ready": state.apiReady,
+            "window_created": state.windowCreated,
+            "window_onscreen": state.windowOnscreen,
+            "frontmost": state.frontmost,
+            "screen_locked": state.screenLocked,
+            "screen_capture_authorized": state.screenCaptureAuthorized,
+            "render_verified": state.renderVerified,
+            "window_id": Int(state.windowID),
+            "window_width": state.width,
+            "window_height": state.height,
+            "error": error
+        ]
     }
 
     private func writeSC2Receipt(_ receipt: [String: Any]) throws {
@@ -1591,12 +1701,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
                     self.webView.load(URLRequest(url: cockpitURL))
                     return
                 }
-                if self.readinessAttempt >= 120 {
+                if self.readinessAttempt == 120 {
                     self.showFailure(
                         "조종석 시작 시간이 초과되었습니다. "
-                        + "$HOME/Library/Logs/voiStarcraft2/bootstrap.log를 확인하세요."
+                        + "백엔드 준비를 계속 기다리고 있으며 준비되면 자동 복구합니다. "
+                        + "$HOME/Library/Logs/voiStarcraft2/bootstrap.log에서 진행 상황을 확인할 수 있습니다."
                     )
-                    return
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     self.waitForCockpit()
@@ -1614,6 +1724,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
             "<!doctype html><meta charset='utf-8'><style>body{margin:0;display:grid;place-items:center;height:100vh;background:#1c0b0b;color:#ffd8d3;font:700 16px -apple-system,sans-serif}p{max-width:640px;padding:28px;line-height:1.6}</style><p>\\(encoded)</p>",
             baseURL: nil
         )
+    }
+
+    private func submitAutoCommandWhenRuntimeReady(_ command: String) {
+        guard let data = try? JSONEncoder().encode(command),
+              let commandJSON = String(data: data, encoding: .utf8) else {
+            return
+        }
+        let script = [
+            "(function pollAutoCommand(attempt) {",
+            "  fetch(endpoint('/api/runtime/status', {",
+            "    mode: 'micromachine',",
+            "    blackboard_dir: blackboardDir",
+            "  })).then(parseJsonResponse).then(function(status) {",
+            "    if (",
+            "      status.runtime_attached === true &&",
+            "      status.telemetry_current_for_process === true",
+            "    ) {",
+            "      var input = document.getElementById('command-input');",
+            "      var form = document.getElementById('command-form');",
+            "      if (input && form) {",
+            "        input.value = \\(commandJSON);",
+            "        form.requestSubmit();",
+            "      }",
+            "      return;",
+            "    }",
+            "    if (",
+            "      status.status === 'failed' ||",
+            "      status.status === 'blocked' ||",
+            "      attempt >= 1800",
+            "    ) {",
+            "      return;",
+            "    }",
+            "    window.setTimeout(function() {",
+            "      pollAutoCommand(attempt + 1);",
+            "    }, 1000);",
+            "  }).catch(function() {",
+            "    if (attempt < 1800) {",
+            "      window.setTimeout(function() {",
+            "        pollAutoCommand(attempt + 1);",
+            "      }, 1000);",
+            "    }",
+            "  });",
+            "})(0);",
+        ].joined(separator: "\\n")
+        webView.evaluateJavaScript(script, completionHandler: nil)
+    }
+
+    private func hideCockpitAndFocusSC2() {
+        window.orderOut(nil)
+        if let application = NSRunningApplication(processIdentifier: sc2PID) {
+            application.activate(
+                options: [.activateAllWindows, .activateIgnoringOtherApps]
+            )
+        }
     }
 
     func webView(
@@ -1635,7 +1799,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
             : NSSize(width: 1180, height: 820)
         window.setContentSize(size)
         window.center()
-        window.makeKeyAndOrderFront(nil)
+        if companion, autoCommandArgument != nil {
+            hideCockpitAndFocusSC2()
+        } else {
+            window.makeKeyAndOrderFront(nil)
+        }
+        let cockpitLoaded = webView.url?.host == "127.0.0.1"
+        if cockpitLoaded, !companion, autoStartMicroMachine,
+           !autoStartTriggered {
+            autoStartTriggered = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                webView.evaluateJavaScript(
+                    "document.getElementById('runtime-start-button')?.click();",
+                    completionHandler: nil
+                )
+            }
+        }
+        if companion, let command = autoCommandArgument,
+           !autoCommandTriggered {
+            autoCommandTriggered = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.submitAutoCommandWhenRuntimeReady(command)
+            }
+        }
     }
 }
 

@@ -16,6 +16,7 @@ from starcraft_commander.micromachine_build_identity import (
     TRUSTED_GIT_EXECUTABLE,
     MicroMachineBuildIdentityConfig,
     _ctest_registry_attestation,
+    _resolve_ctest_executable,
     build_argument_parser,
     build_micromachine_build_identity,
     build_runtime_install_provenance,
@@ -85,6 +86,49 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         self.assertIsNotNone(attestation)
         self.assertIs(subprocess.DEVNULL, runner.call_args.kwargs["stdin"])
         self.assertEqual(120.0, runner.call_args.kwargs["timeout"])
+
+    def test_resolves_pip_ctest_wrapper_to_bundled_native_binary(self) -> None:
+        with tempfile.TemporaryDirectory(
+            dir=Path(__file__).resolve().parents[1],
+        ) as directory:
+            prefix = Path(directory)
+            wrapper = prefix / "bin" / "ctest"
+            native = (
+                prefix
+                / "lib"
+                / "python3.10"
+                / "site-packages"
+                / "cmake"
+                / "data"
+                / "bin"
+                / "ctest"
+            )
+            wrapper.parent.mkdir(parents=True)
+            native.parent.mkdir(parents=True)
+            wrapper.write_text(
+                "#!/usr/bin/python3\n"
+                "from cmake import ctest\n",
+                encoding="utf-8",
+            )
+            native.write_bytes(b"native-ctest-fixture")
+            wrapper.chmod(0o755)
+            native.chmod(0o755)
+
+            resolved = _resolve_ctest_executable(wrapper)
+
+        self.assertEqual(native, resolved)
+
+    def test_keeps_non_pip_ctest_fixture_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory(
+            dir=Path(__file__).resolve().parents[1],
+        ) as directory:
+            ctest = Path(directory) / "ctest"
+            ctest.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            ctest.chmod(0o755)
+
+            resolved = _resolve_ctest_executable(ctest)
+
+        self.assertEqual(ctest, resolved)
 
     def test_live_admission_requires_the_supported_schema(self) -> None:
         self.assertEqual(82, MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION)
@@ -232,6 +276,10 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             (root / "pyproject.toml").write_text("[project]\nname='fixture'\n")
             runtime = package / "runtime.py"
             runtime.write_text("VALUE = 1\n")
+            integrations = root / "integrations"
+            integrations.mkdir()
+            build_script = integrations / "build.sh"
+            build_script.write_text("#!/bin/sh\nexit 0\n")
 
             first = build_runtime_workspace_identity(root)
             runtime.write_text("VALUE = 2\n")
@@ -239,16 +287,20 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             untracked = package / "new_runtime.py"
             untracked.write_text("NEW_VALUE = 1\n")
             third = build_runtime_workspace_identity(root)
+            build_script.write_text("#!/bin/sh\nexit 1\n")
+            fourth = build_runtime_workspace_identity(root)
 
             self.assertNotEqual(first["identity"], second["identity"])
             self.assertNotEqual(second["identity"], third["identity"])
+            self.assertNotEqual(third["identity"], fourth["identity"])
             self.assertEqual(
                 [
+                    "integrations/build.sh",
                     "pyproject.toml",
                     "starcraft_commander/new_runtime.py",
                     "starcraft_commander/runtime.py",
                 ],
-                [entry["path"] for entry in third["files"]],
+                [entry["path"] for entry in fourth["files"]],
             )
 
     def test_installed_runtime_identity_requires_matching_source_manifest(self) -> None:
@@ -4009,9 +4061,13 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         resolve = script.index(
             'CTEST_COMMAND="$(resolve_regular_executable "${CTEST_COMMAND}" "CTest")"'
         )
+        native = script.index(
+            'CTEST_COMMAND="$(resolve_ctest_executable "${CTEST_COMMAND}")"',
+            resolve,
+        )
         configure = script.index(
             '-DCMAKE_CTEST_COMMAND:INTERNAL="${CTEST_COMMAND}"',
-            resolve,
+            native,
         )
         execute = script.index(
             '"${CTEST_COMMAND}" --test-dir "${MICROMACHINE_BUILD_DIR}"',
@@ -4020,8 +4076,72 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         finalize = script.index("--finalize-build-attestation", execute)
 
         self.assertLess(resolve, configure)
+        self.assertLess(resolve, native)
+        self.assertLess(native, configure)
         self.assertLess(configure, execute)
         self.assertLess(execute, finalize)
+
+    def test_build_script_binds_and_runs_one_resolved_cmake_executable(
+        self,
+    ) -> None:
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "integrations"
+            / "micromachine"
+            / "scripts"
+            / "build_macos_local.sh"
+        ).read_text()
+
+        resolve = script.index(
+            'CMAKE_COMMAND="$(resolve_regular_executable "${CMAKE_COMMAND}" "CMake")"'
+        )
+        native = script.index(
+            'CMAKE_COMMAND="$(resolve_cmake_executable "${CMAKE_COMMAND}")"',
+            resolve,
+        )
+        s2_configure = script.index(
+            '"${CMAKE_COMMAND}" -S "${S2CLIENT_DIR}"',
+            native,
+        )
+        s2_build = script.index(
+            '"${CMAKE_COMMAND}" --build "${S2CLIENT_BUILD_DIR}"',
+            s2_configure,
+        )
+        micro_configure = script.index(
+            '"${CMAKE_COMMAND}" -S "${MICROMACHINE_DIR}"',
+            s2_build,
+        )
+        micro_build = script.index(
+            '"${CMAKE_COMMAND}" --build "${MICROMACHINE_BUILD_DIR}"',
+            micro_configure,
+        )
+
+        self.assertLess(resolve, native)
+        self.assertLess(native, s2_configure)
+        self.assertLess(s2_configure, s2_build)
+        self.assertLess(s2_build, micro_configure)
+        self.assertLess(micro_configure, micro_build)
+        self.assertNotIn('\ncmake -S "', script)
+        self.assertNotIn("\ncmake --build ", script)
+
+    def test_build_script_isolates_internal_python_from_site_packages(
+        self,
+    ) -> None:
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "integrations"
+            / "micromachine"
+            / "scripts"
+            / "build_macos_local.sh"
+        ).read_text()
+
+        self.assertNotIn("python3 -c '", script)
+        self.assertEqual(4, script.count("python3 -S -c '"))
+        self.assertEqual(2, script.count("run_build_identity \\"))
+        self.assertIn('"${REPO_ROOT}/.venv/bin/python"', script)
+        self.assertIn('"${BUILD_IDENTITY_PYTHON}" -I -c', script)
+        self.assertIn("sys.path.insert(0, repo_root)", script)
+        self.assertNotIn("/usr/bin/python3 -S -m", script)
 
     def test_build_script_preflight_rejects_linked_build_root_before_cleanup(
         self,

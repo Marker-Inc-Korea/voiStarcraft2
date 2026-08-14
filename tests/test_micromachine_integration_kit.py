@@ -1539,9 +1539,37 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "canContinueExpiredVoiOperationsForPolicy(",
             "exactOperationLifetimeActive",
             "operationCompletionState == \"superseded\"",
+            "voiProductionBlockingPrerequisiteTaskPriority()",
+            "queueSupplyProviderRecovery",
+            "supply_recovery",
+            "barracks_prerequisite_supply",
+            "tech_bootstrap_refinery",
         ):
             with self.subTest(term=term):
                 self.assertIn(term, patch)
+        self.assertEqual(
+            4,
+            patch.count("voiProductionBlockingPrerequisiteTaskPriority());"),
+        )
+        supply_guard = patch.index(
+            "if (voiProductionShouldPromoteSupplyBeforeFirstBarracks("
+        )
+        supply_promotion = patch.index(
+            'recordVoiDoctrineConsumption(\n'
+            '+\t\t\tsupplyProviderType,\n'
+            '+\t\t\t"barracks_prerequisite_supply"',
+            supply_guard,
+        )
+        barracks_enqueue = patch.index(
+            "if (barracksDoctrineRequested",
+            supply_promotion,
+        )
+        self.assertLess(supply_guard, supply_promotion)
+        self.assertLess(supply_promotion, barracks_enqueue)
+        self.assertIn(
+            "+\t\treturn;\n+\t}\n+\tif (barracksDoctrineRequested",
+            patch,
+        )
 
         parse_result = subprocess.run(
             [
@@ -7129,7 +7157,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "Invalid ${repo_name} git checkout; moving aside",
             "submodule update --init --recursive",
             "apply --check --ignore-space-change --whitespace=nowarn",
-            "cmake --build",
+            '"${CMAKE_COMMAND}" --build',
             "MICROMACHINE_BUILD_IDENTITY_REPORT",
             "starcraft_commander.micromachine_build_identity",
             "--s2client-build-dir",
@@ -7170,14 +7198,18 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 self.assertIn(term, build_script)
         self.assertLess(
             build_script.index("--initialize-source-attestation"),
-            build_script.index('cmake -S "${MICROMACHINE_DIR}"'),
+            build_script.index(
+                '"${CMAKE_COMMAND}" -S "${MICROMACHINE_DIR}"'
+            ),
         )
         self.assertLess(
             build_script.index('"${MICROMACHINE_BUILD_DIR}/bin/MicroMachine"'),
             build_script.index("--initialize-source-attestation"),
         )
         self.assertLess(
-            build_script.index('cmake --build "${MICROMACHINE_BUILD_DIR}"'),
+            build_script.index(
+                '"${CMAKE_COMMAND}" --build "${MICROMACHINE_BUILD_DIR}"'
+            ),
             build_script.index("--finalize-build-attestation"),
         )
         adaptive_apply = (

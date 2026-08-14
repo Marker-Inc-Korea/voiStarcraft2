@@ -407,7 +407,7 @@
     {
       "path": "patches/0080-exact-operation-policy-lifetime.patch",
       "order": 80,
-      "scope": "retain an expired top-level policy only when every nonterminal raw operation exactly matches an already-admitted active exact-composition until_completed runtime operation by update, operation ID, generation, duration, and composition; fail closed on terminal, blocked, duplicate, stale, missing, or unmatched operations"
+      "scope": "retain an expired top-level policy only when every nonterminal raw operation exactly matches an already-admitted active exact-composition until_completed runtime operation by update, operation ID, generation, duration, and composition; fail closed on terminal, blocked, duplicate, stale, missing, or unmatched operations; and promote the queued first Supply Depot, runtime supply-recovery Depot, and required tech-gas Refinery ahead of blocking production in both numeric and VOI task priority so exact Terran composition production cannot deadlock before prerequisite structures or at a later supply cap"
     }
   ],
   "python_lowered_to_cpp_consumed_axes": {

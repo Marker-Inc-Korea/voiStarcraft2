@@ -38,9 +38,23 @@ MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 82
 MICROMACHINE_SOURCE_ATTESTATION_SCHEMA_VERSION: Final[int] = 6
 MICROMACHINE_BUILD_TRANSACTION_SCHEMA_VERSION: Final[int] = 1
 MICROMACHINE_CTEST_REGISTRY_SCHEMA_VERSION: Final[int] = 1
-MICROMACHINE_RUNTIME_INSTALL_PROVENANCE_SCHEMA_VERSION: Final[int] = 1
+MICROMACHINE_RUNTIME_INSTALL_PROVENANCE_SCHEMA_VERSION: Final[int] = 2
 MICROMACHINE_RUNTIME_INSTALL_PROVENANCE_FILE: Final[str] = (
     ".voi-runtime-provenance.json"
+)
+MICROMACHINE_RUNTIME_SOURCE_DIRS: Final[tuple[str, ...]] = (
+    "broodwar_commander",
+    "integrations",
+    "scripts",
+    "starcraft_commander",
+    "toycraft_commander",
+)
+MICROMACHINE_RUNTIME_SOURCE_FILES: Final[tuple[str, ...]] = (
+    "LICENSE",
+    "MANIFEST.in",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md",
+    "pyproject.toml",
 )
 MICROMACHINE_BUILD_IDENTITY_REPORT_MAX_BYTES: Final[int] = 8 * 1024 * 1024
 MICROMACHINE_RUNTIME_MUTABLE_PATHS: Final[tuple[str, ...]] = ("bin/BotConfig.txt",)
@@ -1890,19 +1904,25 @@ def micromachine_build_ready(
 
 
 def build_runtime_workspace_identity(repo_root: Path | str) -> dict[str, object]:
-    """Hash Python runtime sources used by live smoke, including dirty files."""
+    """Hash every source copied into the owner-local runtime, including dirty files."""
 
     root = Path(repo_root).resolve()
     candidates: list[Path] = []
-    pyproject = root / "pyproject.toml"
-    if pyproject.is_file():
-        candidates.append(pyproject)
-    package_root = root / "starcraft_commander"
-    if package_root.is_dir():
+    for relative_path in MICROMACHINE_RUNTIME_SOURCE_FILES:
+        candidate = root / relative_path
+        if candidate.is_file():
+            candidates.append(candidate)
+    for relative_path in MICROMACHINE_RUNTIME_SOURCE_DIRS:
+        package_root = root / relative_path
+        if not package_root.is_dir():
+            continue
         candidates.extend(
             path
-            for path in package_root.rglob("*.py")
-            if path.is_file() and "__pycache__" not in path.parts
+            for path in package_root.rglob("*")
+            if path.is_file()
+            and "__pycache__" not in path.parts
+            and path.name != ".DS_Store"
+            and not path.name.endswith((".pyc", ".pyo"))
         )
     files = []
     for path in sorted(
@@ -2963,6 +2983,34 @@ def _regular_executable_evidence(path: Path) -> dict[str, object] | None:
     }
 
 
+def _resolve_ctest_executable(path: Path) -> Path:
+    """Resolve pip's Python ctest shim to the bundled native executable."""
+
+    if _regular_executable_evidence(path) is None:
+        return path
+    try:
+        prefix = path.read_bytes()[:4096]
+    except OSError:
+        return path
+    if not (
+        prefix.startswith(b"#!")
+        and b"from cmake import ctest" in prefix
+    ):
+        return path
+    python_prefix = path.parent.parent
+    candidates = sorted(
+        python_prefix.glob(
+            "lib/python*/site-packages/cmake/data/bin/ctest"
+        )
+    )
+    native = [
+        candidate
+        for candidate in candidates
+        if _regular_executable_evidence(candidate) is not None
+    ]
+    return native[0] if len(native) == 1 else path
+
+
 def canonical_micromachine_ctest_registry(
     test_executables: Mapping[str, str],
 ) -> dict[str, object]:
@@ -3207,7 +3255,7 @@ def _native_test_artifact_attestation(
                     }
                 )
             else:
-                ctest_path = candidate
+                ctest_path = _resolve_ctest_executable(candidate)
 
     ctest_evidence = (
         _regular_executable_evidence(ctest_path) if ctest_path is not None else None

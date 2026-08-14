@@ -30,6 +30,7 @@ from starcraft_commander.local_cockpit import (
     read_sc2_launch_receipt,
     resolve_required_sc2_executable,
     resolve_myproxy_key,
+    _sc2_receipt_process_matches,
     _stop_owned_app,
     _stop_owned_cockpit,
     store_local_secret,
@@ -60,6 +61,7 @@ class LocalCockpitTest(unittest.TestCase):
             "nonce": "unit-test-nonce",
             "created_at_unix_ms": int(now_unix * 1000),
             "accepted": True,
+            "bootstrap_accepted": True,
             "pid": 4321,
             "port": DEFAULT_SC2_API_PORT,
             "base": REQUIRED_SC2_BASE,
@@ -70,6 +72,7 @@ class LocalCockpitTest(unittest.TestCase):
             "window_onscreen": True,
             "frontmost": True,
             "screen_locked": False,
+            "screen_capture_authorized": True,
             "render_verified": True,
             "window_id": 99,
             "window_width": 1280,
@@ -191,6 +194,30 @@ class LocalCockpitTest(unittest.TestCase):
             DEFAULT_SC2_API_PORT,
         )
 
+    def test_sc2_process_match_preserves_spaces_in_executable_path(self) -> None:
+        executable = Path(
+            "/Users/test/Desktop/StarCraft2/StarCraft II/"
+            "Versions/Base97364/SC2.app/Contents/MacOS/SC2"
+        )
+        command = (
+            f"{executable} -listen 127.0.0.1 "
+            f"-port {DEFAULT_SC2_API_PORT} -displayMode 0\n"
+        )
+        with mock.patch(
+            "starcraft_commander.local_cockpit.subprocess.run",
+            side_effect=(
+                mock.Mock(returncode=0, stdout=f"{executable}\n"),
+                mock.Mock(returncode=0, stdout=command),
+            ),
+        ):
+            matches = _sc2_receipt_process_matches(
+                4321,
+                executable,
+                DEFAULT_SC2_API_PORT,
+            )
+
+        self.assertTrue(matches)
+
     def test_sc2_launch_receipt_rejects_stale_nonce_and_permissions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -266,6 +293,40 @@ class LocalCockpitTest(unittest.TestCase):
                         return_value=False,
                     ),
                     self.assertRaisesRegex(RuntimeError, "no longer live"),
+                ):
+                    read_sc2_launch_receipt(
+                        receipt,
+                        "unit-test-nonce",
+                        now_unix=1_700_000_000.0,
+                    )
+
+    def test_sc2_launch_receipt_rejects_bootstrap_only_runtime_handoff(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "SC2"
+            receipt = root / "sc2-launch-receipt.json"
+            self._write_sc2_launch_receipt(
+                receipt,
+                executable,
+                accepted=False,
+                screen_capture_authorized=False,
+                render_verified=False,
+            )
+            with (
+                mock.patch(
+                    "starcraft_commander.local_cockpit.resolve_required_sc2_executable",
+                    return_value=executable,
+                ),
+                mock.patch(
+                    "starcraft_commander.local_cockpit._sc2_receipt_process_matches",
+                    return_value=True,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "screen_capture_authorized, render_verified",
                 ):
                     read_sc2_launch_receipt(
                         receipt,
@@ -411,8 +472,41 @@ class LocalCockpitTest(unittest.TestCase):
         self.assertIn("WKScriptMessageHandler", launcher_source)
         self.assertIn('name: "sc2Launch"', launcher_source)
         self.assertIn("applicationShouldHandleReopen", launcher_source)
+        self.assertIn(
+            "applicationShouldTerminateAfterLastWindowClosed",
+            launcher_source,
+        )
+        self.assertIn("return false", launcher_source)
         self.assertIn("app.pid", launcher_source)
         self.assertIn("http://127.0.0.1:8350", launcher_source)
+        self.assertIn("--auto-start-micromachine", launcher_source)
+        self.assertIn("--auto-command", launcher_source)
+        self.assertIn("runtime-start-button", launcher_source)
+        self.assertIn("form.requestSubmit()", launcher_source)
+        self.assertIn("telemetry_current_for_process", launcher_source)
+        self.assertIn('webView.url?.host == "127.0.0.1"', launcher_source)
+        self.assertIn("hideCockpitAndFocusSC2", launcher_source)
+        self.assertIn("window.orderOut(nil)", launcher_source)
+        self.assertIn("bootstrap_accepted", launcher_source)
+        self.assertNotIn("verifyRenderedSC2", launcher_source)
+        self.assertIn("if state.accepted", launcher_source)
+        self.assertIn(
+            "state.bootstrapAccepted && !state.screenCaptureAuthorized",
+            launcher_source,
+        )
+        self.assertIn("selectedWidth >= 480", launcher_source)
+        self.assertIn("CGPreflightScreenCaptureAccess()", launcher_source)
+        self.assertIn("CGRequestScreenCaptureAccess()", launcher_source)
+        self.assertIn("CGColorSpaceCreateDeviceGray()", launcher_source)
+        self.assertIn("CGImageAlphaInfo.none.rawValue", launcher_source)
+        self.assertIn("layer == 0, alpha > 0.01", launcher_source)
+        self.assertIn("화면 기록 권한이 없어", launcher_source)
+        self.assertIn(
+            "if companion, autoCommandArgument != nil",
+            launcher_source,
+        )
+        self.assertIn("백엔드 준비를 계속 기다리고", launcher_source)
+        self.assertNotIn("self.readinessAttempt >= 120", launcher_source)
         self.assertIn("NSWorkspace.OpenConfiguration", launcher_source)
         self.assertIn("NSWorkspace.shared.openApplication", launcher_source)
         self.assertIn(f"private let sc2Port = {DEFAULT_SC2_API_PORT}", launcher_source)
@@ -424,6 +518,7 @@ class LocalCockpitTest(unittest.TestCase):
             "window_onscreen",
             "frontmost",
             "screen_locked",
+            "screen_capture_authorized",
             "render_verified",
         ):
             self.assertIn(field_name, launcher_source)
@@ -441,6 +536,10 @@ class LocalCockpitTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with (
+                mock.patch(
+                    "starcraft_commander.local_cockpit._stop_owned_app",
+                    return_value=True,
+                ),
                 mock.patch(
                     "starcraft_commander.local_cockpit._port_is_bound",
                     return_value=True,

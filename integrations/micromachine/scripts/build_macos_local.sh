@@ -114,7 +114,7 @@ canonical_checkout_path() {
 }
 
 resolve_regular_executable() {
-  python3 -c '
+  python3 -S -c '
 import os
 import stat
 import sys
@@ -131,6 +131,113 @@ if not stat.S_ISREG(mode) or not os.access(resolved, os.X_OK):
     raise SystemExit(f"{label} executable is not a regular executable: {resolved}")
 print(resolved)
 ' "$1" "$2"
+}
+
+resolve_ctest_executable() {
+  python3 -S -c '
+import os
+import stat
+import sys
+from pathlib import Path
+
+candidate = Path(sys.argv[1]).resolve(strict=True)
+try:
+    prefix = candidate.read_bytes()[:4096]
+except OSError:
+    print(candidate)
+    raise SystemExit(0)
+if not (prefix.startswith(b"#!") and b"from cmake import ctest" in prefix):
+    print(candidate)
+    raise SystemExit(0)
+python_prefix = candidate.parent.parent
+native = []
+for path in sorted(
+    python_prefix.glob("lib/python*/site-packages/cmake/data/bin/ctest")
+):
+    try:
+        resolved = path.resolve(strict=True)
+        mode = path.lstat().st_mode
+    except OSError:
+        continue
+    if (
+        not path.is_symlink()
+        and resolved == path.absolute()
+        and stat.S_ISREG(mode)
+        and os.access(path, os.X_OK)
+    ):
+        native.append(resolved)
+if len(native) != 1:
+    raise SystemExit(
+        f"Cannot resolve one native CTest executable for Python wrapper {candidate}"
+    )
+print(native[0])
+' "$1"
+}
+
+resolve_cmake_executable() {
+  python3 -S -c '
+import os
+import stat
+import sys
+from pathlib import Path
+
+candidate = Path(sys.argv[1]).resolve(strict=True)
+try:
+    prefix = candidate.read_bytes()[:4096]
+except OSError:
+    print(candidate)
+    raise SystemExit(0)
+if not (prefix.startswith(b"#!") and b"from cmake import cmake" in prefix):
+    print(candidate)
+    raise SystemExit(0)
+python_prefix = candidate.parent.parent
+native = []
+for path in sorted(
+    python_prefix.glob("lib/python*/site-packages/cmake/data/bin/cmake")
+):
+    try:
+        resolved = path.resolve(strict=True)
+        mode = path.lstat().st_mode
+    except OSError:
+        continue
+    if (
+        not path.is_symlink()
+        and resolved == path.absolute()
+        and stat.S_ISREG(mode)
+        and os.access(path, os.X_OK)
+    ):
+        native.append(resolved)
+if len(native) != 1:
+    raise SystemExit(
+        f"Cannot resolve one native CMake executable for Python wrapper {candidate}"
+    )
+print(native[0])
+' "$1"
+}
+
+BUILD_IDENTITY_PYTHON="$(
+  resolve_regular_executable \
+    "${REPO_ROOT}/.venv/bin/python" \
+    "Build identity Python"
+)"
+
+run_build_identity() {
+  "${BUILD_IDENTITY_PYTHON}" -I -c '
+import runpy
+import sys
+
+repo_root = sys.argv[1]
+module_args = sys.argv[2:]
+sys.path.insert(0, repo_root)
+sys.argv = [
+    "starcraft_commander.micromachine_build_identity",
+    *module_args,
+]
+runpy.run_module(
+    "starcraft_commander.micromachine_build_identity",
+    run_name="__main__",
+)
+' "${REPO_ROOT}" "$@"
 }
 
 require_disposable_checkout_mutation() {
@@ -190,7 +297,7 @@ prepare_git_checkout() {
 }
 
 require_secure_build_root() {
-  python3 -c '
+  python3 -S -c '
 import os
 import stat
 import sys
@@ -231,6 +338,9 @@ require_secure_build_root \
   "${MICROMACHINE_DIR}" \
   "${MICROMACHINE_BUILD_IDENTITY_REPORT}" \
   "MicroMachine"
+CMAKE_COMMAND="${CMAKE_COMMAND:-$(command -v cmake)}"
+CMAKE_COMMAND="$(resolve_regular_executable "${CMAKE_COMMAND}" "CMake")"
+CMAKE_COMMAND="$(resolve_cmake_executable "${CMAKE_COMMAND}")"
 if [[ "${VOI_BUILD_PREFLIGHT_ONLY:-0}" == "1" ]]; then
   exit 0
 fi
@@ -250,9 +360,9 @@ git -C "${S2CLIENT_DIR}" submodule update --init --recursive
 git -C "${S2CLIENT_DIR}" apply --check --ignore-space-change --whitespace=nowarn "${S2CLIENT_PATCH_FILE}"
 git -C "${S2CLIENT_DIR}" apply --ignore-space-change --whitespace=nowarn "${S2CLIENT_PATCH_FILE}"
 
-cmake -S "${S2CLIENT_DIR}" -B "${S2CLIENT_BUILD_DIR}" \
+"${CMAKE_COMMAND}" -S "${S2CLIENT_DIR}" -B "${S2CLIENT_BUILD_DIR}" \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-cmake --build "${S2CLIENT_BUILD_DIR}" --parallel "${BUILD_JOBS:-2}"
+"${CMAKE_COMMAND}" --build "${S2CLIENT_BUILD_DIR}" --parallel "${BUILD_JOBS:-2}"
 
 prepare_git_checkout "${MICROMACHINE_DIR}" "${ROOT_DIR}" https://github.com/RaphaelRoyerRivard/MicroMachine MicroMachine
 git -C "${MICROMACHINE_DIR}" fetch --tags
@@ -440,8 +550,9 @@ rm -f \
 mkdir -p "${MICROMACHINE_BUILD_DIR}"
 CTEST_COMMAND="${CTEST_COMMAND:-$(command -v ctest)}"
 CTEST_COMMAND="$(resolve_regular_executable "${CTEST_COMMAND}" "CTest")"
+CTEST_COMMAND="$(resolve_ctest_executable "${CTEST_COMMAND}")"
 
-python3 -m starcraft_commander.micromachine_build_identity \
+run_build_identity \
   --micromachine-dir "${MICROMACHINE_DIR}" \
   --s2client-dir "${S2CLIENT_DIR}" \
   --s2client-build-dir "${S2CLIENT_BUILD_DIR}" \
@@ -473,7 +584,7 @@ python3 -m starcraft_commander.micromachine_build_identity \
   --write-embedded-identity-header \
   --initialize-source-attestation
 
-cmake -S "${MICROMACHINE_DIR}" -B "${MICROMACHINE_BUILD_DIR}" \
+"${CMAKE_COMMAND}" -S "${MICROMACHINE_DIR}" -B "${MICROMACHINE_BUILD_DIR}" \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
   -DCMAKE_CTEST_COMMAND:INTERNAL="${CTEST_COMMAND}" \
   -DSC2Api_INCLUDE_DIR="${S2CLIENT_DIR}/include" \
@@ -485,10 +596,10 @@ cmake -S "${MICROMACHINE_DIR}" -B "${MICROMACHINE_BUILD_DIR}" \
   -DSC2Api_SC2PROTOCOL_LIB="${S2CLIENT_BUILD_DIR}/bin/libsc2protocol.a" \
   -DSC2Api_CIVETWEB_LIB="${S2CLIENT_BUILD_DIR}/bin/libcivetweb.a" \
   -DSC2Api_PROTOBUF_LIB="${S2CLIENT_BUILD_DIR}/bin/libprotobuf.a"
-cmake --build "${MICROMACHINE_BUILD_DIR}" --parallel "${BUILD_JOBS:-2}"
+"${CMAKE_COMMAND}" --build "${MICROMACHINE_BUILD_DIR}" --parallel "${BUILD_JOBS:-2}"
 "${CTEST_COMMAND}" --test-dir "${MICROMACHINE_BUILD_DIR}" --output-on-failure
 
-python3 -m starcraft_commander.micromachine_build_identity \
+run_build_identity \
   --micromachine-dir "${MICROMACHINE_DIR}" \
   --s2client-dir "${S2CLIENT_DIR}" \
   --s2client-build-dir "${S2CLIENT_BUILD_DIR}" \

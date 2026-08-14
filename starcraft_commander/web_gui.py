@@ -8270,6 +8270,7 @@ class _MicroMachineLaunchManager:
                     key: visible_launch_proof.get(key)
                     for key in (
                         "accepted",
+                        "bootstrap_accepted",
                         "pid",
                         "port",
                         "base",

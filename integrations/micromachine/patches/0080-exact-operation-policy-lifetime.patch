@@ -458,3 +458,202 @@ index b78b1a3..d7da56b 100644
  	assert(
  		voiLatchOperationDeadlineFrame(
  			15500,
+diff --git a/src/BuildOrderQueue.cpp b/src/BuildOrderQueue.cpp
+--- a/src/BuildOrderQueue.cpp
++++ b/src/BuildOrderQueue.cpp
+@@ -647,7 +647,8 @@ void BuildOrderQueue::reconcileTypeVoiClaims(
+ 
+ void BuildOrderQueue::promoteTypeToHighestPriority(
+ 	const MetaType & type,
+-	bool blocking)
++	bool blocking,
++	float minimumTaskPriority)
+ {
+ 	auto promoted = m_queue.end();
+ 	for (auto item = m_queue.begin(); item != m_queue.end(); ++item)
+@@ -701,6 +702,9 @@ void BuildOrderQueue::promoteTypeToHighestPriority(
+ 	if (promotePreserved)
+ 	{
+ 		promoted->voiPreservedPriority = promotedPriority;
++		promoted->voiPreservedTaskPriority = std::max(
++			promoted->voiPreservedTaskPriority,
++			minimumTaskPriority);
+ 		promoted->voiPreservedBlocking =
+ 			promoted->voiPreservedBlocking || blocking;
+ 	}
+@@ -708,6 +712,9 @@ void BuildOrderQueue::promoteTypeToHighestPriority(
+ 		!= promoted->voiOperationOwnerMetadata.end())
+ 	{
+ 		promotedOwner->second.priority = promotedPriority;
++		promotedOwner->second.taskPriority = std::max(
++			promotedOwner->second.taskPriority,
++			minimumTaskPriority);
+ 		promotedOwner->second.blocking =
+ 			promotedOwner->second.blocking || blocking;
+ 	}
+diff --git a/src/BuildOrderQueue.h b/src/BuildOrderQueue.h
+--- a/src/BuildOrderQueue.h
++++ b/src/BuildOrderQueue.h
+@@ -128,7 +128,10 @@ public:
+ 	void reconcileTypeVoiClaims(
+ 		const MetaType & type,
+ 		const std::vector<MM::VoiBuildOrderClaim> & claims);
+-	void promoteTypeToHighestPriority(const MetaType & type, bool blocking);
++	void promoteTypeToHighestPriority(
++		const MetaType & type,
++		bool blocking,
++		float minimumTaskPriority = 0.0f);
+ 	void resizeTypePreservingVoiClaims(
+ 		const MetaType & type,
+ 		int count,
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+index 517d173..cbe6cad 100644
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -3,6 +3,7 @@
+ #include "ProductionManager.h"
+ #include "Util.h"
+ #include "CCBot.h"
++#include "voi_production_path.hpp"
+ #include "voi_runtime_convergence.hpp"
+ 
+ const int MIN_VIKING_COUNT = 2;
+@@ -3129,9 +3130,10 @@ bool ProductionManager::ShouldSkipQueueItem(const MM::BuildOrderItem & currentI
+ 	{
+ 		if (m_queue.contains(MetaTypeEnum::Refinery))
+ 		{
+ 			m_queue.promoteTypeToHighestPriority(
+ 				MetaTypeEnum::Refinery,
+-				true);
++				true,
++				voiProductionBlockingPrerequisiteTaskPriority());
+ 		}
+ 		Util::Log(
+ 			__FUNCTION__,
+@@ -5501,6 +5503,10 @@ bool ProductionManager::queueSupplyProviderRecovery(const std::string & reason)
+ 		m_queue.removeAllOfType(supplyProviderType);
+ 	}
+ 	m_queue.queueAsHighestPriority(supplyProviderType, false);
++	m_queue.promoteTypeToHighestPriority(
++		supplyProviderType,
++		true,
++		voiProductionBlockingPrerequisiteTaskPriority());
+ 	m_voiSupplyRecoveryQueuedCount++;
+ 	m_lastVoiSupplyRecoveryStatus = hadExistingQueueItem ? "promoted_existing_queue" : "queued";
+ 	recordVoiDoctrineConsumption(supplyProviderType, "supply_recovery", hadExistingQueueItem ? "queued_existing" : "queued");
+@@ -6540,12 +6541,34 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+-	if (((wantsBioDoctrine
++	const bool barracksDoctrineRequested =
++		(wantsBioDoctrine
+ 			&& !explicitAbilityCasterPending
+ 			&& barracksCount < 2
+ 			&& effectiveBarracksBias > 0.35f
+ 			&& (!m_voiRequiresTechGasBeforeSecondBarracks
+ 				|| refineryCount > 0))
+-			|| needsTechBootstrapBarracks)
+-		&& queueVoiDoctrineItem(MetaTypeEnum::Barracks, needsTechBootstrapBarracks ? "tech_bootstrap_barracks" : "bio_facility", needsTechBootstrapBarracks))
++		|| needsTechBootstrapBarracks;
++	if (voiProductionShouldPromoteSupplyBeforeFirstBarracks(
++			barracksDoctrineRequested,
++			m_queue.contains(supplyProviderType),
++			m_bot.UnitInfo().getUnitTypeCount(
++				Players::Self,
++				supplyProvider,
++				true,
++				true),
++			m_bot.Buildings().countBeingBuilt(supplyProvider)))
++	{
++		m_queue.promoteTypeToHighestPriority(
++			supplyProviderType,
++			true,
++			voiProductionBlockingPrerequisiteTaskPriority());
++		recordVoiDoctrineConsumption(
++			supplyProviderType,
++			"barracks_prerequisite_supply",
++			"queued_existing_promoted");
++		return;
++	}
++	if (barracksDoctrineRequested
++		&& queueVoiDoctrineItem(MetaTypeEnum::Barracks, needsTechBootstrapBarracks ? "tech_bootstrap_barracks" : "bio_facility", needsTechBootstrapBarracks))
+ 	{
+ 		return;
+ 	}
+ 	const int marineScoutBootstrapTarget = std::min(2, requestedMarineCount);
+@@ -6564,9 +6588,10 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	{
+ 		if (m_queue.contains(MetaTypeEnum::Refinery))
+ 		{
+ 			m_queue.promoteTypeToHighestPriority(
+ 				MetaTypeEnum::Refinery,
+-				true);
++				true,
++				voiProductionBlockingPrerequisiteTaskPriority());
+ 			recordVoiDoctrineConsumption(
+ 				MetaTypeEnum::Refinery,
+ 				"tech_bootstrap_refinery",
+diff --git a/src/voi_production_path.hpp b/src/voi_production_path.hpp
+index 5c7f8f2..da187fc 100644
+--- a/src/voi_production_path.hpp
++++ b/src/voi_production_path.hpp
+@@ -11,5 +11,22 @@ using VoiProductionOperationOwners =
+ 	std::map<std::uint64_t, std::pair<std::string, std::uint64_t>>;
+ 
++inline float voiProductionBlockingPrerequisiteTaskPriority()
++{
++	return 1.0f;
++}
++
++inline bool voiProductionShouldPromoteSupplyBeforeFirstBarracks(
++	bool barracksRequested,
++	bool supplyProviderQueued,
++	int completedSupplyProviderCount,
++	int supplyProviderBuildingCount)
++{
++	return barracksRequested
++		&& supplyProviderQueued
++		&& completedSupplyProviderCount <= 0
++		&& supplyProviderBuildingCount <= 0;
++}
++
+ struct VoiProductionOwnershipReceipt
+ {
+ 	bool accepted = false;
+diff --git a/tests/production_path_test.cpp b/tests/production_path_test.cpp
+index 837f9cf..2ca5895 100644
+--- a/tests/production_path_test.cpp
++++ b/tests/production_path_test.cpp
+@@ -18,6 +18,34 @@ int failures = 0;
+ 
+ int main()
+ {
++	CHECK(
++		voiProductionBlockingPrerequisiteTaskPriority() == 1.0f);
++	CHECK(voiProductionShouldPromoteSupplyBeforeFirstBarracks(
++		true,
++		true,
++		0,
++		0));
++	CHECK(!voiProductionShouldPromoteSupplyBeforeFirstBarracks(
++		false,
++		true,
++		0,
++		0));
++	CHECK(!voiProductionShouldPromoteSupplyBeforeFirstBarracks(
++		true,
++		false,
++		0,
++		0));
++	CHECK(!voiProductionShouldPromoteSupplyBeforeFirstBarracks(
++		true,
++		true,
++		1,
++		0));
++	CHECK(!voiProductionShouldPromoteSupplyBeforeFirstBarracks(
++		true,
++		true,
++		0,
++		1));
++
+ 	const VoiProductionOperationIdentity identity = {
+ 		"update-17",
+ 		"operation-alpha",
