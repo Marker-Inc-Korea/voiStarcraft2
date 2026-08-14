@@ -323,6 +323,24 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
                 0o444,
                 stat.S_IMODE(staged_toycraft.stat().st_mode),
             )
+            staged_micromachine_manifest = (
+                staged_candidate_root
+                / "integrations"
+                / "micromachine"
+                / "HOOK_MANIFEST.json"
+            )
+            self.assertEqual(
+                config.candidate_root.joinpath(
+                    "integrations",
+                    "micromachine",
+                    "HOOK_MANIFEST.json",
+                ).read_bytes(),
+                staged_micromachine_manifest.read_bytes(),
+            )
+            self.assertEqual(
+                0o444,
+                stat.S_IMODE(staged_micromachine_manifest.stat().st_mode),
+            )
             self.assertFalse(
                 staged_candidate_root.joinpath(
                     "starcraft_commander",
