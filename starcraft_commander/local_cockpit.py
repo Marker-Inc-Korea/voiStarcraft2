@@ -35,13 +35,15 @@ from starcraft_commander.micromachine_build_identity import (
     resolve_runtime_repository_identity,
     write_runtime_install_provenance,
 )
+from starcraft_commander.sc2_launch_contract import (
+    DEFAULT_SC2_API_PORT,
+    REQUIRED_SC2_BASE,
+)
 
 
 DEFAULT_COCKPIT_PORT = 8350
 DEFAULT_BUILD_JOBS = 2
 DEFAULT_MYPROXY_TIMEOUT_SECONDS = 25
-DEFAULT_SC2_API_PORT = 8167
-REQUIRED_SC2_BASE = 97364
 SC2_LAUNCH_RECEIPT_FILE = "sc2-launch-receipt.json"
 SC2_LAUNCH_RECEIPT_MAX_AGE_SECONDS = 180
 MAX_SC2_LAUNCH_RECEIPT_BYTES = 64 * 1024

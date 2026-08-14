@@ -104,6 +104,10 @@ from starcraft_commander.policy_modulation import (
 )
 from starcraft_commander.runtime_deps import MissingLLMDependencyError
 from starcraft_commander.runtime_data import source_repository_root
+from starcraft_commander.sc2_launch_contract import (
+    DEFAULT_SC2_API_PORT,
+    REQUIRED_SC2_BASE,
+)
 from starcraft_commander.state_resolver import (
     DEFAULT_SC2_STATE_RESOLVER,
     SC2StateResolverInterface,
@@ -121,6 +125,40 @@ WEB_GUI_TOKEN_HEADER: Final[str] = "X-voiStarcraft2-Token"
 
 DEFAULT_WEB_GUI_PORT: Final[int] = 8350
 """Default web GUI port; ``0`` requests an ephemeral port (used by tests)."""
+
+
+def resolve_required_sc2_executable(
+    environment: Mapping[str, str] | None = None,
+) -> Path:
+    """Resolve the live SC2 binary without loading cockpit bootstrap eagerly."""
+
+    from starcraft_commander.local_cockpit import (
+        resolve_required_sc2_executable as resolve,
+    )
+
+    return resolve(environment)
+
+
+def read_sc2_launch_receipt(
+    path: Path,
+    nonce: str,
+    *,
+    now_unix: float | None = None,
+    require_live_process: bool = True,
+) -> dict[str, object]:
+    """Validate visible-launch proof without loading cockpit bootstrap eagerly."""
+
+    from starcraft_commander.local_cockpit import (
+        read_sc2_launch_receipt as read_receipt,
+    )
+
+    return read_receipt(
+        path,
+        nonce,
+        now_unix=now_unix,
+        require_live_process=require_live_process,
+    )
+
 
 _REPO_ROOT: Final[str] = str(Path(__file__).resolve().parents[1])
 """Module installation root used by explicit repo-local tooling."""
@@ -8185,17 +8223,18 @@ class _MicroMachineLaunchManager:
                 )
                 return self._snapshot_unlocked()
             try:
-                from starcraft_commander.local_cockpit import (
-                    DEFAULT_SC2_API_PORT,
-                    REQUIRED_SC2_BASE,
-                    read_sc2_launch_receipt,
-                    resolve_required_sc2_executable,
-                )
-
                 visible_launch_proof = read_sc2_launch_receipt(
                     self._sc2_launch_receipt_path,
                     sc2_launch_nonce,
                 )
+                sc2_executable = resolve_required_sc2_executable()
+            except ImportError as error:
+                self._status = "failed"
+                self._error = f"Live cockpit dependency unavailable: {error}"
+                self._visible_launch_proof = {}
+                if validated_launcher is not None:
+                    validated_launcher.close()
+                return self._snapshot_unlocked()
             except RuntimeError as error:
                 self._status = "blocked"
                 self._error = str(error)
@@ -8221,7 +8260,7 @@ class _MicroMachineLaunchManager:
             env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
             env["BLACKBOARD_DIR"] = root
             env["SC2_ROOT"] = DEFAULT_SC2_INSTALL_PATH
-            env["SC2_EXECUTABLE"] = str(resolve_required_sc2_executable())
+            env["SC2_EXECUTABLE"] = str(sc2_executable)
             env["SC2_REQUIRED_BASE"] = str(REQUIRED_SC2_BASE)
             env["VOI_SC2_CONNECT_PORT"] = str(DEFAULT_SC2_API_PORT)
             env["SC2_CLEAN_PORTS_BEFORE_LAUNCH"] = "0"

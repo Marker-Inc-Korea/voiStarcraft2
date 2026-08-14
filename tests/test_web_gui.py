@@ -33,7 +33,6 @@ from starcraft_commander.micromachine_bridge import (
 from starcraft_commander.micromachine_terran_capabilities import (
     TERRAN_UNIT_FAMILIES,
 )
-from starcraft_commander import local_cockpit
 from starcraft_commander import runtime_data
 from starcraft_commander import web_gui
 from starcraft_commander.demo_sc2 import build_dry_run_session
@@ -67,8 +66,8 @@ def visible_sc2_launch_receipt():
     return {
         "accepted": True,
         "pid": 222,
-        "port": local_cockpit.DEFAULT_SC2_API_PORT,
-        "base": local_cockpit.REQUIRED_SC2_BASE,
+        "port": web_gui.DEFAULT_SC2_API_PORT,
+        "base": web_gui.REQUIRED_SC2_BASE,
         "process_created": True,
         "api_ready": True,
         "window_created": True,
@@ -774,6 +773,62 @@ class MicroMachineLaunchProvenanceTest(unittest.TestCase):
         self.assertEqual("blocked", started["status"])
         self.assertIn("current Git provenance", started["error"])
 
+    def test_launcher_fails_closed_when_live_cockpit_dependency_is_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            launcher = web_gui._MicroMachineLaunchManager(script_path=__file__)
+            with mock.patch.object(
+                web_gui,
+                "read_sc2_launch_receipt",
+                side_effect=ModuleNotFoundError(
+                    "No module named 'starcraft_commander.local_cockpit'"
+                ),
+            ):
+                started = launcher.start(
+                    directory,
+                    sc2_launch_nonce="visible-launch-nonce",
+                )
+
+        self.assertEqual("failed", started["status"])
+        self.assertIn("Live cockpit dependency unavailable", started["error"])
+        self.assertFalse(started["runtime_attached"])
+        self.assertFalse(started.get("accepted", False))
+
+    def test_launcher_fails_closed_when_sc2_resolver_dependency_is_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            launcher = web_gui._MicroMachineLaunchManager(script_path=__file__)
+            validated_launcher = io.BytesIO(b"validated launcher")
+            launcher._requires_source_provenance = True  # noqa: SLF001
+            launcher._launch_available = True  # noqa: SLF001
+            with (
+                mock.patch.object(
+                    launcher,
+                    "_validated_source_launcher_unlocked",
+                    return_value=(validated_launcher, directory),
+                ),
+                mock.patch.object(
+                    web_gui,
+                    "read_sc2_launch_receipt",
+                    return_value=visible_sc2_launch_receipt(),
+                ),
+                mock.patch.object(
+                    web_gui,
+                    "resolve_required_sc2_executable",
+                    side_effect=ModuleNotFoundError(
+                        "No module named 'starcraft_commander.local_cockpit'"
+                    ),
+                ),
+            ):
+                started = launcher.start(
+                    directory,
+                    sc2_launch_nonce="visible-launch-nonce",
+                )
+
+        self.assertEqual("failed", started["status"])
+        self.assertIn("Live cockpit dependency unavailable", started["error"])
+        self.assertFalse(started["runtime_attached"])
+        self.assertFalse(started.get("accepted", False))
+        self.assertTrue(validated_launcher.closed)
+
     def test_launcher_executes_validated_bytes_after_path_replacement(self):
         class FakeProcess:
             pid = 12345
@@ -858,7 +913,7 @@ class MicroMachineLaunchProvenanceTest(unittest.TestCase):
                 launcher = web_gui._MicroMachineLaunchManager()
                 with (
                     mock.patch.object(
-                        local_cockpit,
+                        web_gui,
                         "read_sc2_launch_receipt",
                         return_value=visible_sc2_launch_receipt(),
                     ),
@@ -10435,7 +10490,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     return_value=FakeProcess(),
                 ) as popen,
                 mock.patch.object(
-                    local_cockpit,
+                    web_gui,
                     "read_sc2_launch_receipt",
                     return_value=visible_sc2_launch_receipt(),
                 ),
@@ -10549,7 +10604,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     return_value=None,
                 ),
                 mock.patch.object(
-                    local_cockpit,
+                    web_gui,
                     "read_sc2_launch_receipt",
                     return_value=visible_sc2_launch_receipt(),
                 ),
@@ -10622,7 +10677,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     return_value=launch_ns,
                 ),
                 mock.patch.object(
-                    local_cockpit,
+                    web_gui,
                     "read_sc2_launch_receipt",
                     return_value=visible_sc2_launch_receipt(),
                 ),
@@ -10755,7 +10810,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     return_value=launch_ns,
                 ),
                 mock.patch.object(
-                    local_cockpit,
+                    web_gui,
                     "read_sc2_launch_receipt",
                     return_value=visible_sc2_launch_receipt(),
                 ),

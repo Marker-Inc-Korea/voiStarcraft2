@@ -5594,40 +5594,59 @@ class LocalProducerTest(unittest.TestCase):
 
     def test_web_gui_import_excludes_live_cockpit_modules(self) -> None:
         repository = BUILD_IDENTITY_REPO_ROOT.resolve()
-        probe = "\n".join(
-            (
-                "import json",
-                "import sys",
-                f"sys.path.insert(0, {str(repository)!r})",
-                "import starcraft_commander.web_gui",
-                "blocked = ('starcraft_commander.local_cockpit', "
-                "'toycraft_commander')",
-                "loaded = sorted(name for name in sys.modules "
-                "if any(name == item or name.startswith(item + '.') "
-                "for item in blocked))",
-                "print(json.dumps(loaded))",
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = Path(directory) / "authenticated-snapshot"
+            for source in (repository / "starcraft_commander").rglob("*.py"):
+                destination = snapshot / source.relative_to(repository)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(source.read_bytes())
+            for relative in (
+                *provenance_module.DETERMINISTIC_JOURNEY_PACKAGE_SOURCES,
+                provenance_module.DETERMINISTIC_JOURNEY_MANIFEST_RELATIVE_PATH,
+            ):
+                destination = snapshot / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes((repository / relative).read_bytes())
+            probe = "\n".join(
+                (
+                    "import json",
+                    "import sys",
+                    f"sys.path.insert(0, {str(snapshot)!r})",
+                    "import starcraft_commander.web_gui as web_gui",
+                    "blocked = ('starcraft_commander.local_cockpit', "
+                    "'toycraft_commander')",
+                    "loaded = sorted(name for name in sys.modules "
+                    "if any(name == item or name.startswith(item + '.') "
+                    "for item in blocked))",
+                    "print(json.dumps({'loaded': loaded, "
+                    "'module_file': web_gui.__file__}))",
+                )
             )
-        )
 
-        completed = subprocess.run(
-            (
-                str(Path(sys.executable).resolve()),
-                "-I",
-                "-B",
-                "-S",
-                "-c",
-                probe,
-            ),
-            cwd=repository,
-            check=False,
-            capture_output=True,
-            text=False,
-            shell=False,
-            env=dict(SANITIZED_PRODUCER_ENV),
-        )
+            completed = subprocess.run(
+                (
+                    str(Path(sys.executable).resolve()),
+                    "-I",
+                    "-B",
+                    "-S",
+                    "-c",
+                    probe,
+                ),
+                cwd=snapshot,
+                check=False,
+                capture_output=True,
+                text=False,
+                shell=False,
+                env=dict(SANITIZED_PRODUCER_ENV),
+            )
 
-        self.assertEqual(0, completed.returncode, completed.stderr)
-        self.assertEqual([], json.loads(completed.stdout))
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            result = json.loads(completed.stdout)
+            self.assertEqual([], result["loaded"])
+            self.assertEqual(
+                str(snapshot / "starcraft_commander" / "web_gui.py"),
+                result["module_file"],
+            )
 
     def dedicated_producer_uid(self) -> tuple[int, int]:
         if os.geteuid() != 0:
