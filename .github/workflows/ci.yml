@@ -74,6 +74,12 @@ jobs:
           persist-credentials: false
       - name: Build exact diagnostic MicroMachine integration
         run: integrations/micromachine/scripts/build_macos_local.sh
+      - name: Freeze diagnostic candidate ownership
+        run: |
+          sudo chown -RP 0:0 "${GITHUB_WORKSPACE}"
+          sudo /bin/chmod -RN "${GITHUB_WORKSPACE}"
+          sudo /bin/chmod -R go-w "${GITHUB_WORKSPACE}"
+          sudo chmod 0755 "${GITHUB_WORKSPACE}"
       - name: Exercise deterministic producer as dedicated UID
         run: |
           sudo env \
@@ -104,6 +110,9 @@ jobs:
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           raise SystemExit(not result.wasSuccessful())
           '
+      - name: Restore diagnostic candidate ownership
+        if: always()
+        run: sudo chown -RP "$(id -u):$(id -g)" "${GITHUB_WORKSPACE}"
 
   distribution_compliance_build:
     name: distribution-compliance-build
