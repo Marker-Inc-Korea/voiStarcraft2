@@ -261,14 +261,9 @@ def read_sc2_launch_receipt(
         "window_onscreen",
         "frontmost",
     )
-    required_true_fields = (
-        *bootstrap_true_fields,
-        "screen_capture_authorized",
-        "render_verified",
-    )
     missing = [
         field_name
-        for field_name in required_true_fields
+        for field_name in bootstrap_true_fields
         if document.get(field_name) is not True
     ]
     if document.get("screen_locked") is not False:
@@ -663,11 +658,15 @@ def _port_is_bound(port: int) -> bool:
 
 def _stop_owned_cockpit(
     paths: LocalCockpitPaths,
-    port: int,
+    port: int | None,
     *,
     wait_seconds: float = 5.0,
 ) -> bool:
-    """Stop only the unhealthy cockpit recorded by this bootstrap."""
+    """Stop only the cockpit recorded by this bootstrap.
+
+    Passing ``None`` stops the recorded process regardless of which localhost
+    port an older app version selected.
+    """
 
     pid_path = paths.state_dir / "cockpit.pid"
     try:
@@ -691,11 +690,12 @@ def _stop_owned_cockpit(
         text=True,
     )
     command = completed.stdout.strip()
-    expected_markers = (
+    expected_markers = [
         "-m starcraft_commander.web_gui",
-        f"--port {int(port)}",
         f"--micromachine-cwd {paths.repo_root}",
-    )
+    ]
+    if port is not None:
+        expected_markers.append(f"--port {int(port)}")
     if completed.returncode != 0 or not all(
         marker in command for marker in expected_markers
     ):
@@ -707,12 +707,23 @@ def _stop_owned_cockpit(
         return False
     deadline = time.monotonic() + max(0.25, wait_seconds)
     while time.monotonic() < deadline:
-        if not _port_is_bound(port):
+        if port is not None and not _port_is_bound(port):
             try:
                 pid_path.unlink()
             except FileNotFoundError:
                 pass
             return True
+        if port is None:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                try:
+                    pid_path.unlink()
+                except FileNotFoundError:
+                    pass
+                return True
+            except OSError:
+                return False
         time.sleep(0.1)
     return False
 
@@ -1032,9 +1043,14 @@ def install_macos_application(
             raise RuntimeError(
                 "The installed voiStarcraft2 app could not be stopped safely."
             )
-        if _port_is_bound(DEFAULT_COCKPIT_PORT) and not _stop_owned_cockpit(
-            installed_paths, DEFAULT_COCKPIT_PORT
+        recorded_cockpit = installed_paths.state_dir / "cockpit.pid"
+        if recorded_cockpit.exists() and not _stop_owned_cockpit(
+            installed_paths, None
         ):
+            raise RuntimeError(
+                "The installed voiStarcraft2 cockpit could not be stopped safely."
+            )
+        if _port_is_bound(DEFAULT_COCKPIT_PORT):
             raise RuntimeError(
                 "Port 8350 is used by a process that is not the installed cockpit."
             )
@@ -1123,7 +1139,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
     private var readinessAttempt = 0
     private var sc2PID: pid_t = 0
     private var sc2LaunchInFlight = false
-    private var screenCapturePermissionRequested = false
     private let autoStartMicroMachine = launchArguments
         .contains("--auto-start-micromachine") || autoCommandArgument != nil
     private var autoStartTriggered = false
@@ -1306,16 +1321,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
                 )
                 return
             }
-            if state.bootstrapAccepted && !state.screenCaptureAuthorized {
-                self.finishSC2Launch(
-                    nonce: nonce,
-                    pid: pid,
-                    processCreated: processCreated,
-                    visibleState: state,
-                    error: "voiStarcraft2에 화면 기록 권한이 없어 SC2 렌더링을 검증할 수 없습니다. 권한을 허용한 뒤 앱을 다시 실행하세요."
-                )
-                return
-            }
             if Date() >= deadline {
                 self.finishSC2Launch(
                     nonce: nonce,
@@ -1324,9 +1329,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
                     visibleState: state,
                     error: state.screenLocked
                         ? "macOS 화면이 잠겨 있어 SC2 표시를 검증할 수 없습니다."
-                        : !state.screenCaptureAuthorized
-                            ? "voiStarcraft2에 화면 기록 권한이 없어 SC2 렌더링을 검증할 수 없습니다. 권한을 허용한 뒤 앱을 다시 실행하세요."
-                            : "SC2 창/API/실제 렌더링 검증 시간이 초과되었습니다."
+                        : "SC2 프로세스/API/온스크린 창 검증 시간이 초과되었습니다."
                 )
                 return
             }
@@ -1349,8 +1352,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         let windowOnscreen: Bool
         let frontmost: Bool
         let screenLocked: Bool
-        let screenCaptureAuthorized: Bool
-        let renderVerified: Bool
         let windowID: CGWindowID
         let width: Int
         let height: Int
@@ -1361,7 +1362,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         }
 
         var accepted: Bool {
-            bootstrapAccepted && renderVerified
+            bootstrapAccepted
         }
     }
 
@@ -1397,19 +1398,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         let windowCreated = selectedWindowID != 0
         let windowOnscreen = windowCreated && selectedWidth >= 480
             && selectedHeight >= 360
-        let captureAuthorized = windowOnscreen
-            && !screenLocked
-            && screenCaptureAuthorized()
-        let rendered = captureAuthorized
-            && windowHasRenderedPixels(selectedWindowID)
         return VisibleSC2State(
             apiReady: tcpPortReady(sc2Port),
             windowCreated: windowCreated,
             windowOnscreen: windowOnscreen,
             frontmost: frontmost,
             screenLocked: screenLocked,
-            screenCaptureAuthorized: captureAuthorized,
-            renderVerified: rendered,
             windowID: selectedWindowID,
             width: selectedWidth,
             height: selectedHeight
@@ -1422,15 +1416,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
             return true
         }
         return session["CGSSessionScreenIsLocked"] as? Bool ?? false
-    }
-
-    private func screenCaptureAuthorized() -> Bool {
-        if CGPreflightScreenCaptureAccess() {
-            return true
-        }
-        guard !screenCapturePermissionRequested else { return false }
-        screenCapturePermissionRequested = true
-        return CGRequestScreenCaptureAccess()
     }
 
     private func tcpPortReady(_ port: Int) -> Bool {
@@ -1456,84 +1441,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         }
     }
 
-    private func windowHasRenderedPixels(_ windowID: CGWindowID) -> Bool {
-        typealias WindowImageFunction = @convention(c) (
-            CGRect,
-            CGWindowListOption,
-            CGWindowID,
-            CGWindowImageOption
-        ) -> Unmanaged<CGImage>?
-        guard windowID != 0,
-              let symbol = dlsym(
-                UnsafeMutableRawPointer(bitPattern: -2),
-                "CGWindowListCreateImage"
-              ) else {
-            return false
-        }
-        let createImage = unsafeBitCast(
-            symbol,
-            to: WindowImageFunction.self
-        )
-        guard let unmanagedImage = createImage(
-                .null,
-                .optionIncludingWindow,
-                windowID,
-                [.boundsIgnoreFraming, .bestResolution]
-              ),
-              let image = Optional(unmanagedImage.takeRetainedValue()),
-              image.width >= 480,
-              image.height >= 360 else {
-            return false
-        }
-        let sampleWidth = 64
-        let sampleHeight = 40
-        var grayscale = [UInt8](
-            repeating: 0,
-            count: sampleWidth * sampleHeight
-        )
-        let rendered = grayscale.withUnsafeMutableBytes { buffer -> Bool in
-            guard let baseAddress = buffer.baseAddress,
-                  let context = CGContext(
-                    data: baseAddress,
-                    width: sampleWidth,
-                    height: sampleHeight,
-                    bitsPerComponent: 8,
-                    bytesPerRow: sampleWidth,
-                    space: CGColorSpaceCreateDeviceGray(),
-                    bitmapInfo: CGImageAlphaInfo.none.rawValue
-                  ) else {
-                return false
-            }
-            context.interpolationQuality = .low
-            context.draw(
-                image,
-                in: CGRect(
-                    x: 0,
-                    y: 0,
-                    width: sampleWidth,
-                    height: sampleHeight
-                )
-            )
-            return true
-        }
-        guard rendered else { return false }
-        var brightSamples = 0
-        var variedSamples = 0
-        var previousLuma = -1
-        for value in grayscale {
-            let luma = Int(value)
-            if luma > 12 { brightSamples += 1 }
-            if previousLuma >= 0 && abs(luma - previousLuma) > 8 {
-                variedSamples += 1
-            }
-            previousLuma = luma
-        }
-        let samples = grayscale.count
-        return samples > 0
-            && brightSamples * 100 / samples >= 3
-            && variedSamples * 100 / samples >= 2
-    }
-
     private func finishSC2Launch(
         nonce: String,
         pid: pid_t,
@@ -1547,8 +1454,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
             windowOnscreen: false,
             frontmost: false,
             screenLocked: currentScreenLocked(),
-            screenCaptureAuthorized: false,
-            renderVerified: false,
             windowID: 0,
             width: 0,
             height: 0
@@ -1606,8 +1511,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
             "window_onscreen": state.windowOnscreen,
             "frontmost": state.frontmost,
             "screen_locked": state.screenLocked,
-            "screen_capture_authorized": state.screenCaptureAuthorized,
-            "render_verified": state.renderVerified,
+            "screen_capture_authorized": false,
+            "render_verified": false,
             "window_id": Int(state.windowID),
             "window_width": state.width,
             "window_height": state.height,

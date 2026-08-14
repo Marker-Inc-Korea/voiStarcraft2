@@ -223,30 +223,74 @@ import sys
 from pathlib import Path
 
 candidate = Path(sys.argv[1])
-expected_parent = Path(sys.argv[2]).resolve(strict=True)
+expected_parent_arg = sys.argv[2]
 try:
     metadata = candidate.lstat()
     resolved = candidate.resolve(strict=True)
     resolved_metadata = resolved.lstat()
 except OSError as exc:
     raise SystemExit(f"Cannot resolve build identity Python {candidate}: {exc}")
-if candidate.parent.resolve(strict=True) != expected_parent:
-    raise SystemExit(
-        f"Build identity Python is outside the expected venv: {candidate}"
-    )
+if expected_parent_arg:
+    expected_parent = Path(expected_parent_arg).resolve(strict=True)
+    if candidate.parent.resolve(strict=True) != expected_parent:
+        raise SystemExit(
+            f"Build identity Python is outside the expected venv: {candidate}"
+        )
 if not (stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode)):
     raise SystemExit(f"Build identity Python launcher is invalid: {candidate}")
 if not stat.S_ISREG(resolved_metadata.st_mode) or not os.access(candidate, os.X_OK):
     raise SystemExit(f"Build identity Python target is not executable: {resolved}")
 print(candidate.absolute())
-' "$1" "$2"
+' "$1" "${2:-}"
 }
 
-BUILD_IDENTITY_PYTHON="$(
-  resolve_python_launcher \
-    "${REPO_ROOT}/.venv/bin/python" \
-    "${REPO_ROOT}/.venv/bin"
-)"
+build_identity_python_is_compatible() {
+  "$1" -I -S -c '
+import sys
+
+if (
+    sys.version_info < (3, 10)
+    or not sys.flags.isolated
+    or not sys.flags.no_site
+    or any("site-packages" in entry for entry in sys.path)
+):
+    raise SystemExit(1)
+' >/dev/null 2>&1
+}
+
+select_build_identity_python() {
+  local candidate
+  local expected_parent
+  local path_python
+  local resolved
+  local -a candidates=("${REPO_ROOT}/.venv/bin/python")
+
+  path_python="$(command -v python3 2>/dev/null || true)"
+  if [[ -n "${path_python}" ]]; then
+    candidates+=("${path_python}")
+  fi
+
+  for candidate in "${candidates[@]}"; do
+    expected_parent=""
+    if [[ "${candidate}" == "${REPO_ROOT}/.venv/bin/python" ]]; then
+      expected_parent="${REPO_ROOT}/.venv/bin"
+    fi
+    if ! resolved="$(
+      resolve_python_launcher "${candidate}" "${expected_parent}" 2>/dev/null
+    )"; then
+      continue
+    fi
+    if build_identity_python_is_compatible "${resolved}"; then
+      printf '%s\n' "${resolved}"
+      return 0
+    fi
+  done
+
+  echo "Cannot find a validated Python 3.10+ launcher for build identity." >&2
+  return 1
+}
+
+BUILD_IDENTITY_PYTHON="$(select_build_identity_python)"
 
 run_build_identity() {
   "${BUILD_IDENTITY_PYTHON}" -I -S -c '

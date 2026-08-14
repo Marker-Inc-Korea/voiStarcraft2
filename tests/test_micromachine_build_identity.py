@@ -4190,13 +4190,72 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         self.assertEqual(4, script.count("python3 -S -c '"))
         self.assertEqual(2, script.count("run_build_identity \\"))
         self.assertIn('"${REPO_ROOT}/.venv/bin/python"', script)
+        self.assertIn("command -v python3", script)
         self.assertIn("resolve_python_launcher", script)
+        self.assertIn("build_identity_python_is_compatible", script)
         self.assertIn('"${BUILD_IDENTITY_PYTHON}" -I -S -c', script)
         self.assertIn("not sys.flags.isolated", script)
         self.assertIn("not sys.flags.no_site", script)
         self.assertIn('"site-packages" in entry', script)
         self.assertIn("sys.path.insert(0, repo_root)", script)
         self.assertNotIn("/usr/bin/python3 -S -m", script)
+
+    def test_build_script_uses_path_python_without_repo_venv(self) -> None:
+        source_script = (
+            Path(__file__).resolve().parents[1]
+            / "integrations"
+            / "micromachine"
+            / "scripts"
+            / "build_macos_local.sh"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkout = root / "candidate"
+            script = (
+                checkout
+                / "integrations"
+                / "micromachine"
+                / "scripts"
+                / "build_macos_local.sh"
+            )
+            script.parent.mkdir(parents=True)
+            shutil.copy2(source_script, script)
+            self.assertFalse((checkout / ".venv").exists())
+
+            tool_bin = root / "bin"
+            tool_bin.mkdir()
+            (tool_bin / "python3").symlink_to(Path(sys.executable).resolve())
+            cmake = tool_bin / "cmake"
+            cmake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            cmake.chmod(0o755)
+
+            runtime = root / "runtime"
+            micromachine = runtime / "MicroMachine"
+            s2client = runtime / "s2client-api"
+            micromachine.mkdir(parents=True)
+            s2client.mkdir()
+
+            completed = subprocess.run(
+                ["bash", str(script)],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "PATH": f"{tool_bin}{os.pathsep}{os.environ['PATH']}",
+                    "ROOT_DIR": str(runtime),
+                    "MICROMACHINE_DIR": str(micromachine),
+                    "S2CLIENT_DIR": str(s2client),
+                    "CMAKE_COMMAND": str(cmake),
+                    "VOI_BUILD_PREFLIGHT_ONLY": "1",
+                },
+            )
+
+        self.assertEqual(
+            0,
+            completed.returncode,
+            msg=f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}",
+        )
 
     def test_build_script_preflight_rejects_linked_build_root_before_cleanup(
         self,

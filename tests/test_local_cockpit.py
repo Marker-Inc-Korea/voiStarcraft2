@@ -72,8 +72,8 @@ class LocalCockpitTest(unittest.TestCase):
             "window_onscreen": True,
             "frontmost": True,
             "screen_locked": False,
-            "screen_capture_authorized": True,
-            "render_verified": True,
+            "screen_capture_authorized": False,
+            "render_verified": False,
             "window_id": 99,
             "window_width": 1280,
             "window_height": 720,
@@ -164,7 +164,7 @@ class LocalCockpitTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "0600"):
                 read_local_secret(path)
 
-    def test_sc2_launch_receipt_accepts_complete_live_visible_proof(self) -> None:
+    def test_sc2_launch_receipt_accepts_complete_live_bootstrap_proof(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             executable = root / "SC2"
@@ -255,7 +255,7 @@ class LocalCockpitTest(unittest.TestCase):
                     require_live_process=False,
                 )
 
-    def test_sc2_launch_receipt_rejects_missing_visible_or_live_proof(self) -> None:
+    def test_sc2_launch_receipt_rejects_missing_bootstrap_or_live_proof(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             executable = root / "SC2"
@@ -265,7 +265,10 @@ class LocalCockpitTest(unittest.TestCase):
                 return_value=executable,
             ):
                 for field_name, value, expected_error in (
-                    ("render_verified", False, "render_verified"),
+                    ("process_created", False, "process_created"),
+                    ("api_ready", False, "api_ready"),
+                    ("window_created", False, "window_created"),
+                    ("window_onscreen", False, "window_onscreen"),
                     ("frontmost", False, "frontmost"),
                     ("screen_locked", True, "screen_unlocked"),
                 ):
@@ -300,7 +303,7 @@ class LocalCockpitTest(unittest.TestCase):
                         now_unix=1_700_000_000.0,
                     )
 
-    def test_sc2_launch_receipt_rejects_bootstrap_only_runtime_handoff(
+    def test_sc2_launch_receipt_allows_optional_render_fields_to_be_false_or_missing(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -310,7 +313,6 @@ class LocalCockpitTest(unittest.TestCase):
             self._write_sc2_launch_receipt(
                 receipt,
                 executable,
-                accepted=False,
                 screen_capture_authorized=False,
                 render_verified=False,
             )
@@ -324,15 +326,31 @@ class LocalCockpitTest(unittest.TestCase):
                     return_value=True,
                 ),
             ):
-                with self.assertRaisesRegex(
-                    RuntimeError,
-                    "screen_capture_authorized, render_verified",
-                ):
-                    read_sc2_launch_receipt(
-                        receipt,
-                        "unit-test-nonce",
-                        now_unix=1_700_000_000.0,
-                    )
+                rendered_false = read_sc2_launch_receipt(
+                    receipt,
+                    "unit-test-nonce",
+                    now_unix=1_700_000_000.0,
+                )
+                self.assertFalse(rendered_false["screen_capture_authorized"])
+                self.assertFalse(rendered_false["render_verified"])
+
+                without_render_fields = dict(rendered_false)
+                without_render_fields.pop("screen_capture_authorized")
+                without_render_fields.pop("render_verified")
+                receipt.write_text(
+                    json.dumps(without_render_fields),
+                    encoding="utf-8",
+                )
+                receipt.chmod(0o600)
+
+                rendered_missing = read_sc2_launch_receipt(
+                    receipt,
+                    "unit-test-nonce",
+                    now_unix=1_700_000_000.0,
+                )
+
+        self.assertNotIn("screen_capture_authorized", rendered_missing)
+        self.assertNotIn("render_verified", rendered_missing)
 
     def test_build_is_skipped_when_binary_and_identity_are_ready(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -444,17 +462,47 @@ class LocalCockpitTest(unittest.TestCase):
             self._create_runtime_source(root)
             destination = root / "Applications" / "voiStarcraft2.app"
             runtime = root / "state" / "runtime"
-            app_path = install_macos_application(
-                root,
-                destination=destination,
-                runtime_destination=runtime,
-            )
+            swiftc_commands: list[list[str]] = []
+            compiled_launcher_sources: list[str] = []
+            codesign_commands: list[list[str]] = []
+
+            def run_install_command(
+                command: list[str],
+                **kwargs: object,
+            ) -> mock.Mock:
+                if command[0].endswith("/.venv/bin/python"):
+                    return mock.Mock(returncode=0)
+                if command[0] == "/usr/bin/swiftc":
+                    launcher_input = Path(command[command.index("-o") - 1])
+                    executable = Path(command[command.index("-o") + 1])
+                    compiled_launcher_sources.append(
+                        launcher_input.read_text(encoding="utf-8")
+                    )
+                    executable.write_bytes(b"mock compiled launcher\n")
+                    executable.chmod(0o755)
+                    swiftc_commands.append(command)
+                    return mock.Mock(returncode=0, stderr="")
+                if command[0] == "/usr/bin/codesign":
+                    codesign_commands.append(command)
+                    return mock.Mock(returncode=0, stderr="")
+                raise AssertionError(f"Unexpected install command: {command}")
+
+            with mock.patch(
+                "starcraft_commander.local_cockpit.subprocess.run",
+                side_effect=run_install_command,
+            ):
+                app_path = install_macos_application(
+                    root,
+                    destination=destination,
+                    runtime_destination=runtime,
+                )
             launcher = (
                 app_path / "Contents" / "Resources" / "bootstrap.sh"
             ).read_text(encoding="utf-8")
-            launcher_source = (
+            launcher_source_path = (
                 app_path / "Contents" / "Resources" / "launcher.swift"
-            ).read_text(encoding="utf-8")
+            )
+            launcher_source = launcher_source_path.read_text(encoding="utf-8")
             with (app_path / "Contents" / "Info.plist").open("rb") as handle:
                 info = plistlib.load(handle)
             executable = os.access(
@@ -490,17 +538,18 @@ class LocalCockpitTest(unittest.TestCase):
         self.assertIn("bootstrap_accepted", launcher_source)
         self.assertNotIn("verifyRenderedSC2", launcher_source)
         self.assertIn("if state.accepted", launcher_source)
-        self.assertIn(
-            "state.bootstrapAccepted && !state.screenCaptureAuthorized",
+        self.assertRegex(
             launcher_source,
+            r"var accepted: Bool \{\s+bootstrapAccepted\s+\}",
         )
         self.assertIn("selectedWidth >= 480", launcher_source)
-        self.assertIn("CGPreflightScreenCaptureAccess()", launcher_source)
-        self.assertIn("CGRequestScreenCaptureAccess()", launcher_source)
-        self.assertIn("CGColorSpaceCreateDeviceGray()", launcher_source)
-        self.assertIn("CGImageAlphaInfo.none.rawValue", launcher_source)
+        self.assertNotIn("CGPreflightScreenCaptureAccess()", launcher_source)
+        self.assertNotIn("CGRequestScreenCaptureAccess()", launcher_source)
+        self.assertNotIn("CGWindowListCreateImage", launcher_source)
+        self.assertNotIn("CGColorSpaceCreateDeviceGray()", launcher_source)
+        self.assertNotIn("CGImageAlphaInfo.none.rawValue", launcher_source)
         self.assertIn("layer == 0, alpha > 0.01", launcher_source)
-        self.assertIn("화면 기록 권한이 없어", launcher_source)
+        self.assertNotIn("화면 기록 권한이 없어", launcher_source)
         self.assertIn(
             "if companion, autoCommandArgument != nil",
             launcher_source,
@@ -529,6 +578,9 @@ class LocalCockpitTest(unittest.TestCase):
         self.assertEqual("local.voi.starcraft2.cockpit", info["CFBundleIdentifier"])
         self.assertTrue(info["LSMultipleInstancesProhibited"])
         self.assertTrue(executable)
+        self.assertEqual(1, len(swiftc_commands))
+        self.assertEqual([launcher_source], compiled_launcher_sources)
+        self.assertEqual(1, len(codesign_commands))
 
     def test_default_app_update_stops_owned_cockpit_before_runtime_replace(
         self,
@@ -541,7 +593,7 @@ class LocalCockpitTest(unittest.TestCase):
                     return_value=True,
                 ),
                 mock.patch(
-                    "starcraft_commander.local_cockpit._port_is_bound",
+                    "pathlib.Path.exists",
                     return_value=True,
                 ),
                 mock.patch(
@@ -557,6 +609,7 @@ class LocalCockpitTest(unittest.TestCase):
                     install_macos_application(root)
 
         stop.assert_called_once()
+        self.assertIsNone(stop.call_args.args[1])
 
     def test_stops_only_recorded_matching_app(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -637,6 +690,35 @@ class LocalCockpitTest(unittest.TestCase):
 
         self.assertTrue(stopped)
         kill_process.assert_called_once()
+
+    def test_stops_recorded_cockpit_on_legacy_port_during_app_update(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            paths = self._paths(Path(directory))
+            paths.state_dir.mkdir(parents=True)
+            (paths.state_dir / "cockpit.pid").write_text("4321\n", encoding="ascii")
+            command = (
+                "python -m starcraft_commander.web_gui --dry-run --port 8351 "
+                f"--micromachine-cwd {paths.repo_root}"
+            )
+            with (
+                mock.patch(
+                    "starcraft_commander.local_cockpit.subprocess.run",
+                    return_value=mock.Mock(returncode=0, stdout=command),
+                ),
+                mock.patch(
+                    "starcraft_commander.local_cockpit.os.kill",
+                    side_effect=[None, ProcessLookupError()],
+                ) as kill_process,
+            ):
+                stopped = _stop_owned_cockpit(paths, None)
+
+        self.assertTrue(stopped)
+        self.assertEqual(
+            mock.call(4321, signal.SIGTERM),
+            kill_process.call_args_list[0],
+        )
 
     def test_refuses_to_stop_pid_with_unrelated_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
