@@ -57,6 +57,46 @@ jobs:
           bash -n integrations/micromachine/scripts/soak_macos_local.sh
           bash -n integrations/micromachine/scripts/soak_matrix_macos_local.sh
 
+  diagnose-macos-dedicated-runtime-resource:
+    if: github.event_name == 'pull_request'
+    runs-on: macos-14
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      VOI_PRODUCER_UID: "65001"
+      VOI_PRODUCER_GID: "65001"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Exercise authenticated runtime resource as dedicated UID
+        run: |
+          sudo env \
+            PYTHONDONTWRITEBYTECODE="${PYTHONDONTWRITEBYTECODE}" \
+            VOI_PRODUCER_UID="${VOI_PRODUCER_UID}" \
+            VOI_PRODUCER_GID="${VOI_PRODUCER_GID}" \
+            python3 -I -B -S -c '
+          import importlib.util
+          import unittest
+
+          spec = importlib.util.spec_from_file_location(
+              "test_pre_live",
+              "tests/test_micromachine_pre_live_provenance.py",
+          )
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          suite = unittest.TestSuite(
+              [
+                  module.LocalProducerTest(
+                      "test_dedicated_authenticated_bootstrap_loads_runtime_resource"
+                  )
+              ]
+          )
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          raise SystemExit(not result.wasSuccessful())
+          '
+
   distribution_compliance_build:
     name: distribution-compliance-build
     needs:

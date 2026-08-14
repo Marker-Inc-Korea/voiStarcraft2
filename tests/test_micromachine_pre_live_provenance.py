@@ -5600,6 +5600,93 @@ class LocalProducerTest(unittest.TestCase):
         provenance_module._assert_dedicated_producer_identity_available(uid, gid)
         return uid, gid
 
+    def test_dedicated_authenticated_bootstrap_loads_runtime_resource(
+        self,
+    ) -> None:
+        producer_uid, producer_gid = self.dedicated_producer_uid()
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+            root = Path(directory)
+            root.chmod(0o711)
+            state_dir = root / "state"
+            state_dir.mkdir()
+            output_dir = root / "producer-output"
+            output_dir.mkdir()
+            os.chown(output_dir, producer_uid, producer_gid)
+            output_dir.chmod(0o700)
+            output = output_dir / "runtime-resource.json"
+            sources: dict[str, bytes] = {}
+            for relative in (
+                Path("starcraft_commander/runtime_data.py"),
+                Path("integrations/__init__.py"),
+                Path("integrations/micromachine/__init__.py"),
+                Path("integrations/micromachine/PRE_LIVE_JOURNEYS.json"),
+            ):
+                payload = (BUILD_IDENTITY_REPO_ROOT / relative).read_bytes()
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(payload)
+                sources[relative.as_posix()] = payload
+            package_init = root / "starcraft_commander" / "__init__.py"
+            package_init.write_bytes(b"")
+            sources["starcraft_commander/__init__.py"] = b""
+            main_relative = "authenticated_probe.py"
+            main_source = (
+                "import json\n"
+                "import os\n"
+                "from pathlib import Path\n"
+                "import sys\n"
+                "from starcraft_commander.runtime_data import "
+                "micromachine_data_path\n"
+                "manifest = micromachine_data_path("
+                "'PRE_LIVE_JOURNEYS.json')\n"
+                "Path(sys.argv[1]).write_text(json.dumps({"
+                "'euid': os.geteuid(), "
+                "'manifest_exists': manifest.is_file()}))\n"
+            ).encode()
+            (root / main_relative).write_bytes(main_source)
+            sources[main_relative] = main_source
+            executable_path = Path(sys.executable).resolve()
+            executable_payload = executable_path.read_bytes()
+            argv = (
+                str(executable_path),
+                "-I",
+                "-B",
+                "-S",
+                "-c",
+                ISOLATED_PYTHON_BOOTSTRAP,
+                str(root),
+                main_relative,
+                str(output),
+            )
+
+            completed = provenance_module._run_pinned_command(
+                subprocess.run,
+                argv,
+                executable_payload=executable_payload,
+                executable_snapshot=(
+                    0,
+                    0,
+                    len(executable_payload),
+                    0,
+                    hashlib.sha256(executable_payload).hexdigest(),
+                ),
+                authenticated_python_sources=sources,
+                state_dir=state_dir,
+                cwd=str(root),
+                timeout=15.0,
+                producer_uid=producer_uid,
+                producer_gid=producer_gid,
+            )
+
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            self.assertEqual(
+                {
+                    "euid": producer_uid,
+                    "manifest_exists": True,
+                },
+                json.loads(output.read_bytes()),
+            )
+
     def test_checked_in_policy_has_an_executable_production_producer(self) -> None:
         repository = BUILD_IDENTITY_REPO_ROOT.resolve()
         policy_path = repository / PRODUCER_POLICY_RELATIVE_PATH
