@@ -57,12 +57,6 @@ from urllib.parse import parse_qs, urlsplit
 from weakref import WeakValueDictionary
 
 from starcraft_commander.companion_ui import render_companion_page
-from starcraft_commander.local_cockpit import (
-    DEFAULT_SC2_API_PORT,
-    REQUIRED_SC2_BASE,
-    read_sc2_launch_receipt,
-    resolve_required_sc2_executable,
-)
 from starcraft_commander.micromachine_bridge import (
     MICROMACHINE_GAME_LOOPS_PER_SECOND,
     MicroMachineBridgeFailureMode,
@@ -8191,6 +8185,13 @@ class _MicroMachineLaunchManager:
                 )
                 return self._snapshot_unlocked()
             try:
+                from starcraft_commander.local_cockpit import (
+                    DEFAULT_SC2_API_PORT,
+                    REQUIRED_SC2_BASE,
+                    read_sc2_launch_receipt,
+                    resolve_required_sc2_executable,
+                )
+
                 visible_launch_proof = read_sc2_launch_receipt(
                     self._sc2_launch_receipt_path,
                     sc2_launch_nonce,

@@ -33,6 +33,7 @@ from starcraft_commander.micromachine_bridge import (
 from starcraft_commander.micromachine_terran_capabilities import (
     TERRAN_UNIT_FAMILIES,
 )
+from starcraft_commander import local_cockpit
 from starcraft_commander import runtime_data
 from starcraft_commander import web_gui
 from starcraft_commander.demo_sc2 import build_dry_run_session
@@ -66,8 +67,8 @@ def visible_sc2_launch_receipt():
     return {
         "accepted": True,
         "pid": 222,
-        "port": web_gui.DEFAULT_SC2_API_PORT,
-        "base": web_gui.REQUIRED_SC2_BASE,
+        "port": local_cockpit.DEFAULT_SC2_API_PORT,
+        "base": local_cockpit.REQUIRED_SC2_BASE,
         "process_created": True,
         "api_ready": True,
         "window_created": True,
@@ -857,7 +858,7 @@ class MicroMachineLaunchProvenanceTest(unittest.TestCase):
                 launcher = web_gui._MicroMachineLaunchManager()
                 with (
                     mock.patch.object(
-                        web_gui,
+                        local_cockpit,
                         "read_sc2_launch_receipt",
                         return_value=visible_sc2_launch_receipt(),
                     ),
@@ -10434,7 +10435,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     return_value=FakeProcess(),
                 ) as popen,
                 mock.patch.object(
-                    web_gui,
+                    local_cockpit,
                     "read_sc2_launch_receipt",
                     return_value=visible_sc2_launch_receipt(),
                 ),
@@ -10548,7 +10549,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     return_value=None,
                 ),
                 mock.patch.object(
-                    web_gui,
+                    local_cockpit,
                     "read_sc2_launch_receipt",
                     return_value=visible_sc2_launch_receipt(),
                 ),
@@ -10621,7 +10622,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     return_value=launch_ns,
                 ),
                 mock.patch.object(
-                    web_gui,
+                    local_cockpit,
                     "read_sc2_launch_receipt",
                     return_value=visible_sc2_launch_receipt(),
                 ),
@@ -10754,7 +10755,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
                     return_value=launch_ns,
                 ),
                 mock.patch.object(
-                    web_gui,
+                    local_cockpit,
                     "read_sc2_launch_receipt",
                     return_value=visible_sc2_launch_receipt(),
                 ),

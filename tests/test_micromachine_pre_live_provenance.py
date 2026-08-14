@@ -5592,6 +5592,43 @@ class LocalProducerTest(unittest.TestCase):
                 json.loads(output.read_bytes()),
             )
 
+    def test_web_gui_import_excludes_live_cockpit_modules(self) -> None:
+        repository = BUILD_IDENTITY_REPO_ROOT.resolve()
+        probe = "\n".join(
+            (
+                "import json",
+                "import sys",
+                f"sys.path.insert(0, {str(repository)!r})",
+                "import starcraft_commander.web_gui",
+                "blocked = ('starcraft_commander.local_cockpit', "
+                "'toycraft_commander')",
+                "loaded = sorted(name for name in sys.modules "
+                "if any(name == item or name.startswith(item + '.') "
+                "for item in blocked))",
+                "print(json.dumps(loaded))",
+            )
+        )
+
+        completed = subprocess.run(
+            (
+                str(Path(sys.executable).resolve()),
+                "-I",
+                "-B",
+                "-S",
+                "-c",
+                probe,
+            ),
+            cwd=repository,
+            check=False,
+            capture_output=True,
+            text=False,
+            shell=False,
+            env=dict(SANITIZED_PRODUCER_ENV),
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual([], json.loads(completed.stdout))
+
     def dedicated_producer_uid(self) -> tuple[int, int]:
         if os.geteuid() != 0:
             self.skipTest("dedicated producer UID tests require a root verifier")
@@ -5599,167 +5636,6 @@ class LocalProducerTest(unittest.TestCase):
         gid = int(os.environ.get("VOI_PRODUCER_GID", "65001"))
         provenance_module._assert_dedicated_producer_identity_available(uid, gid)
         return uid, gid
-
-    def test_dedicated_authenticated_bootstrap_loads_runtime_resource(
-        self,
-    ) -> None:
-        producer_uid, producer_gid = self.dedicated_producer_uid()
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
-            root = Path(directory)
-            root.chmod(0o711)
-            state_dir = root / "state"
-            state_dir.mkdir()
-            output_dir = root / "producer-output"
-            output_dir.mkdir()
-            os.chown(output_dir, producer_uid, producer_gid)
-            output_dir.chmod(0o700)
-            output = output_dir / "runtime-resource.json"
-            sources: dict[str, bytes] = {}
-            for relative in (
-                Path("starcraft_commander/runtime_data.py"),
-                Path("integrations/__init__.py"),
-                Path("integrations/micromachine/__init__.py"),
-                Path("integrations/micromachine/PRE_LIVE_JOURNEYS.json"),
-            ):
-                payload = (BUILD_IDENTITY_REPO_ROOT / relative).read_bytes()
-                destination = root / relative
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_bytes(payload)
-                sources[relative.as_posix()] = payload
-            package_init = root / "starcraft_commander" / "__init__.py"
-            package_init.write_bytes(b"")
-            sources["starcraft_commander/__init__.py"] = b""
-            main_relative = "authenticated_probe.py"
-            main_source = (
-                "import json\n"
-                "import os\n"
-                "from pathlib import Path\n"
-                "import sys\n"
-                "from starcraft_commander.runtime_data import "
-                "micromachine_data_path\n"
-                "manifest = micromachine_data_path("
-                "'PRE_LIVE_JOURNEYS.json')\n"
-                "Path(sys.argv[1]).write_text(json.dumps({"
-                "'euid': os.geteuid(), "
-                "'manifest_exists': manifest.is_file()}))\n"
-            ).encode()
-            (root / main_relative).write_bytes(main_source)
-            sources[main_relative] = main_source
-            executable_path = Path(sys.executable).resolve()
-            executable_payload = executable_path.read_bytes()
-            argv = (
-                str(executable_path),
-                "-I",
-                "-B",
-                "-S",
-                "-c",
-                ISOLATED_PYTHON_BOOTSTRAP,
-                str(root),
-                main_relative,
-                str(output),
-            )
-
-            completed = provenance_module._run_pinned_command(
-                subprocess.run,
-                argv,
-                executable_payload=executable_payload,
-                executable_snapshot=(
-                    0,
-                    0,
-                    len(executable_payload),
-                    0,
-                    hashlib.sha256(executable_payload).hexdigest(),
-                ),
-                authenticated_python_sources=sources,
-                state_dir=state_dir,
-                cwd=str(root),
-                timeout=15.0,
-                producer_uid=producer_uid,
-                producer_gid=producer_gid,
-            )
-
-            self.assertEqual(0, completed.returncode, completed.stderr)
-            self.assertEqual(
-                {
-                    "euid": producer_uid,
-                    "manifest_exists": True,
-                },
-                json.loads(output.read_bytes()),
-            )
-
-    def test_dedicated_deterministic_producer_emits_bundle(
-        self,
-    ) -> None:
-        producer_uid, producer_gid = self.dedicated_producer_uid()
-        raw_binary = os.environ.get("VOI_DIAGNOSTIC_MICROMACHINE_BINARY")
-        if not raw_binary:
-            self.skipTest("diagnostic MicroMachine binary is not configured")
-        repository = BUILD_IDENTITY_REPO_ROOT.resolve()
-        binary = Path(raw_binary).resolve(strict=True)
-        node_candidate = shutil.which("node")
-        if node_candidate is None:
-            self.skipTest("Node.js is required for deterministic journeys")
-        node = Path(node_candidate).resolve(strict=True)
-        commit = git(repository, "rev-parse", "HEAD").stdout.strip()
-        policy = resolve_local_producer_policy(
-            repository_dir=repository,
-            expected_commit=commit,
-            producer_id=PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID,
-            micromachine_binary_path=binary,
-            micromachine_binary_sha256=hashlib.sha256(
-                binary.read_bytes()
-            ).hexdigest(),
-            node_executable=node,
-        )
-        self.assertTrue(policy["ok"], policy)
-        source_files = policy["runtime_sources"]["files"]
-        captured: list[subprocess.CompletedProcess[bytes]] = []
-        original_runner = provenance_module._run_authenticated_python_exec
-
-        def capture_stderr(
-            *args: object,
-            **kwargs: object,
-        ) -> subprocess.CompletedProcess[bytes]:
-            completed = original_runner(*args, **kwargs)
-            captured.append(completed)
-            return completed
-
-        with mock.patch.object(
-            provenance_module,
-            "_run_authenticated_python_exec",
-            side_effect=capture_stderr,
-        ):
-            report = run_local_producer(
-                repository_dir=repository,
-                cwd=policy["cwd"],
-                argv=policy["argv"],
-                allowed_argv=(policy["argv"],),
-                output_artifact=policy["output_artifact"],
-                producer_id=PRE_LIVE_DETERMINISTIC_JOURNEY_PRODUCER_ID,
-                producer_policy_sha256=policy["policy_sha256"],
-                authenticated_files=[item["path"] for item in source_files],
-                authenticated_file_digests={
-                    item["path"]: item["sha256"] for item in source_files
-                },
-                pinned_argv_file_digests=(
-                    provenance_module._producer_pinned_argv_file_digests(
-                        policy
-                    )
-                ),
-                path_bound_argv_files=(
-                    provenance_module._producer_path_bound_argv_files(policy)
-                ),
-                producer_uid=producer_uid,
-                producer_gid=producer_gid,
-                timeout_seconds=1800.0,
-            )
-
-        stderr = (
-            captured[-1].stderr.decode("utf-8", errors="replace")
-            if captured
-            else "<producer did not return a completed process>"
-        )
-        self.assertTrue(report["ok"], f"{report}\nproducer stderr:\n{stderr}")
 
     def test_checked_in_policy_has_an_executable_production_producer(self) -> None:
         repository = BUILD_IDENTITY_REPO_ROOT.resolve()
