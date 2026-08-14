@@ -4139,7 +4139,11 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         self.assertEqual(4, script.count("python3 -S -c '"))
         self.assertEqual(2, script.count("run_build_identity \\"))
         self.assertIn('"${REPO_ROOT}/.venv/bin/python"', script)
-        self.assertIn('"${BUILD_IDENTITY_PYTHON}" -I -c', script)
+        self.assertIn("resolve_python_launcher", script)
+        self.assertIn('"${BUILD_IDENTITY_PYTHON}" -I -S -c', script)
+        self.assertIn("not sys.flags.isolated", script)
+        self.assertIn("not sys.flags.no_site", script)
+        self.assertIn('"site-packages" in entry', script)
         self.assertIn("sys.path.insert(0, repo_root)", script)
         self.assertNotIn("/usr/bin/python3 -S -m", script)
 
