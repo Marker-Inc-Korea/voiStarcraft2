@@ -307,6 +307,22 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
                 0o444,
                 stat.S_IMODE(staged_web_gui.stat().st_mode),
             )
+            staged_toycraft = (
+                staged_candidate_root
+                / "toycraft_commander"
+                / "__init__.py"
+            )
+            self.assertEqual(
+                config.candidate_root.joinpath(
+                    "toycraft_commander",
+                    "__init__.py",
+                ).read_bytes(),
+                staged_toycraft.read_bytes(),
+            )
+            self.assertEqual(
+                0o444,
+                stat.S_IMODE(staged_toycraft.stat().st_mode),
+            )
             self.assertFalse(
                 staged_candidate_root.joinpath(
                     "starcraft_commander",
@@ -418,7 +434,19 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
                 "",
                 encoding="utf-8",
             )
+            toycraft_root = candidate_root / "toycraft_commander"
+            toycraft_root.mkdir()
+            toycraft_root.joinpath("__init__.py").write_text(
+                "",
+                encoding="utf-8",
+            )
+            toycraft_root.joinpath("fixture_dependency.py").write_text(
+                "CANDIDATE_MARKER = 'staged'\n",
+                encoding="utf-8",
+            )
             package_root.joinpath("web_gui.py").write_text(
+                "from toycraft_commander.fixture_dependency "
+                "import CANDIDATE_MARKER\n"
                 "class WebGuiServer:\n"
                 "    pass\n",
                 encoding="utf-8",

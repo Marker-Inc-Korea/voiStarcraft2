@@ -991,7 +991,9 @@ def build_compact_policy_modulation_system_prompt() -> str:
         "layers. A new command only supersedes its own layer; only an unscoped "
         "emergency interrupts all layers.\n"
         "8. Set standing_order=true for '계속', '게임 내내', '끝까지', or "
-        "until-cancelled intent. Otherwise Python selects a bounded lifecycle.\n"
+        "until-cancelled intent. Explicit completion intent such as "
+        "'완료될 때까지' or 'until completed' is bounded, not standing. "
+        "Otherwise Python selects a bounded lifecycle.\n"
         "9. assistant_message must be a natural answer in "
         "commander_context.response_language and must describe the interpreted "
         "action without claiming success before runtime confirmation.\n"
@@ -5633,6 +5635,24 @@ def _compact_priority(intensity: str) -> float:
 def _compact_text_requests_standing_order(command_text: str) -> bool:
     normalized = " ".join(str(command_text or "").lower().split())
     compact = "".join(normalized.split())
+    if any(
+        marker in normalized or marker in compact
+        for marker in (
+            "완료될 때까지",
+            "완료될때까지",
+            "완료할 때까지",
+            "완료할때까지",
+            "목표 달성까지",
+            "목표달성까지",
+            "목표에 도달할 때까지",
+            "목표에도달할때까지",
+            "until complete",
+            "until completed",
+            "until the operation completes",
+            "until the mission completes",
+        )
+    ):
+        return False
     return any(
         marker in normalized or marker in compact
         for marker in (

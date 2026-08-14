@@ -1043,6 +1043,64 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
             0.8,
         )
 
+    def test_myproxy_compact_completion_phrase_overrides_keep_marker(self) -> None:
+        payload = {
+            "status": "compiled",
+            "assistant_message": "정확한 편성으로 적 본진 공격 작전을 준비합니다.",
+            "command": {
+                "goal": "마린 6기, 공성전차 2기, 바이킹 2기로 적 본진 공격",
+                "command_layer": "operation",
+                "operation_action": "create",
+                "task_type": "pressure_with_main_army",
+                "unit_requests": [
+                    {
+                        "unit_type": "TERRAN_MARINE",
+                        "count": 6,
+                        "role": "frontline",
+                    },
+                    {
+                        "unit_type": "TERRAN_SIEGETANK",
+                        "count": 2,
+                        "role": "siege_support",
+                    },
+                    {
+                        "unit_type": "TERRAN_VIKINGFIGHTER",
+                        "count": 2,
+                        "role": "anti_air",
+                    },
+                ],
+                "location_intent": "enemy_main",
+                "standing_order": False,
+                "allow_partial": False,
+                "intensity": "high",
+                "stance": "aggressive",
+            },
+        }
+        fake_client = FakeResponsesClient(_responses_tool_response(payload))
+        interpreter = LLMCommandInterpreter(
+            provider="myproxy",
+            model=DEFAULT_MYPROXY_MODEL,
+            client_factory=lambda: fake_client,
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(
+                command_text=(
+                    "마린 6기, 공성전차 2기, 바이킹 2기를 정확히 한 분대로 "
+                    "편성해서 적 본진을 공격하고 작전이 완료될 때까지 유지해"
+                )
+            )
+        )
+
+        self.assertEqual("compiled", output["status"])
+        [operation] = output["modulation"]["operations"]
+        self.assertEqual("until_completed", operation["lifetime"]["mode"])
+        self.assertEqual(
+            ["target_reached"],
+            operation["lifetime"]["completion_conditions"],
+        )
+        self.assertEqual(300, operation["tactical_task"]["duration_seconds"])
+
     def test_myproxy_compact_tactical_nuke_lowers_complete_semantics(self) -> None:
         payload = {
             "status": "compiled",
