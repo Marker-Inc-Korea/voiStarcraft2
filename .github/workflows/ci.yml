@@ -78,8 +78,11 @@ jobs:
             VOI_PRODUCER_GID="${VOI_PRODUCER_GID}" \
             python3 -I -B -S -c '
           import importlib.util
+          import os
+          import sys
           import unittest
 
+          sys.path.insert(0, os.getcwd())
           spec = importlib.util.spec_from_file_location(
               "test_pre_live",
               "tests/test_micromachine_pre_live_provenance.py",
