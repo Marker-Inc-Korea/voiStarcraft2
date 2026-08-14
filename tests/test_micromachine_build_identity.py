@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import fields, replace
 from pathlib import Path
 from unittest import mock
 
@@ -176,6 +177,56 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
                 micromachine_build_readiness_error(config, report_path),
             )
             self.assertTrue(micromachine_build_ready(config, report_path))
+
+    def test_strict_build_readiness_accepts_relocated_runtime_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.build_config(root / "source", binary=True)
+            report_path = root / "identity.json"
+            recorded = build_micromachine_build_identity(config)
+            write_build_identity_report(recorded, report_path)
+
+            installed_inputs = root / "installed-runtime"
+            installed_inputs.mkdir()
+            relocated: dict[str, Path] = {}
+            runtime_input_names = {
+                "hook_manifest",
+                "map_pool",
+                "blackboard_header",
+            }
+            for config_field in fields(config):
+                if not (
+                    config_field.name.endswith("_patch")
+                    or config_field.name in runtime_input_names
+                ):
+                    continue
+                source = getattr(config, config_field.name)
+                destination = installed_inputs / source.name
+                shutil.copy2(source, destination)
+                relocated[config_field.name] = destination
+            installed_config = replace(config, **relocated)
+            current = build_micromachine_build_identity(installed_config)
+
+            self.assertEqual(recorded["identity"], current["identity"])
+            self.assertNotEqual(recorded["paths"], current["paths"])
+            self.assertEqual(
+                "",
+                micromachine_build_readiness_error(
+                    installed_config,
+                    report_path,
+                ),
+            )
+            self.assertTrue(
+                micromachine_build_ready(installed_config, report_path)
+            )
+
+            installed_config.micromachine_exact_operation_policy_lifetime_patch.write_text(
+                "tampered installed patch\n",
+                encoding="utf-8",
+            )
+            self.assertFalse(
+                micromachine_build_ready(installed_config, report_path)
+            )
 
     def test_strict_build_readiness_rejects_bare_ok_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

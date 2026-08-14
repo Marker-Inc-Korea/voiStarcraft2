@@ -40,6 +40,7 @@ from starcraft_commander.micromachine_build_identity import (
     MICROMACHINE_REQUIRED_NATIVE_TESTS,
     REPO_ROOT as BUILD_IDENTITY_REPO_ROOT,
     MicroMachineBuildIdentityConfig,
+    _resolve_ctest_executable,
     build_micromachine_build_identity,
     canonical_micromachine_ctest_registry,
     inspect_git_worktree_state,
@@ -6918,7 +6919,7 @@ def _resolve_cmake_ctest_path(build_dir: Path) -> Path:
     candidate = Path(matches[0].strip())
     if not candidate.is_absolute() or candidate.name != "ctest":
         raise ValueError("CMAKE_CTEST_COMMAND must be an absolute ctest path")
-    return candidate
+    return _resolve_ctest_executable(candidate)
 
 
 def _run_ctest_command(

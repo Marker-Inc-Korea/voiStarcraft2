@@ -1873,7 +1873,10 @@ def micromachine_build_readiness_error(
     if admission_error:
         return admission_error
 
-    for field in ("expected", "checksums", "observed", "paths", "failures"):
+    # Absolute paths are diagnostic transport metadata. Installed runtimes may
+    # relocate identical build inputs while preserving every authoritative
+    # identity, checksum, provenance, and native-test field.
+    for field in ("expected", "checksums", "observed", "failures"):
         recorded_value = recorded.get(field)
         current_value = current.get(field)
         if recorded_value != current_value:
