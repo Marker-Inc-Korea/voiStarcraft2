@@ -4579,7 +4579,7 @@ def _string_list(values: object) -> list[str]:
 LLM_REQUIRED_COMMAND_ERROR: Final[str] = (
     "LLM 키가 설정되지 않아 명령을 실행하지 않았습니다. "
     "이 프로젝트는 LLM 기반 해석을 필수로 사용합니다. "
-    "우측 LLM 설정에서 OpenAI 또는 Anthropic API 키를 먼저 설정하세요."
+    "설치 앱의 로컬 설정 또는 지원되는 환경 변수에 LLM 키를 먼저 설정하세요."
 )
 """User-facing refusal when a command arrives before local LLM configuration."""
 
@@ -5050,6 +5050,7 @@ class _MicroMachineModulationRequest:
     commander_context: Mapping[str, object]
     ttl_seconds: int | None
     current_frame: int | None
+    publish_frame_resolver: Callable[[], int | None] | None
     update_id: str | None
     future: concurrent.futures.Future[Mapping[str, object]]
     cancel_event: threading.Event
@@ -8296,7 +8297,11 @@ class _MicroMachineLaunchManager:
                     launcher_input=validated_launcher,
                 )
                 self._visible_launch_proof = {
-                    key: visible_launch_proof.get(key)
+                    (
+                        "sc2_pid"
+                        if key == "pid"
+                        else key
+                    ): visible_launch_proof.get(key)
                     for key in (
                         "accepted",
                         "bootstrap_accepted",
@@ -8931,6 +8936,7 @@ class SessionLoopBridge:
         commander_context: Mapping[str, object] | None = None,
         ttl_seconds: int | None = None,
         current_frame: int | None = None,
+        publish_frame_resolver: Callable[[], int | None] | None = None,
         update_id: str | None = None,
     ) -> Mapping[str, object]:
         if not isinstance(text, str):
@@ -8952,6 +8958,7 @@ class SessionLoopBridge:
             commander_context=dict(commander_context or {}),
             ttl_seconds=ttl_seconds,
             current_frame=current_frame,
+            publish_frame_resolver=publish_frame_resolver,
             update_id=resolved_update_id,
             future=future,
             cancel_event=threading.Event(),
@@ -9038,6 +9045,7 @@ class SessionLoopBridge:
                     commander_context={},
                     ttl_seconds=None,
                     current_frame=None,
+                    publish_frame_resolver=None,
                     update_id=request_contract.request_id,
                     future=future,
                     cancel_event=threading.Event(),
@@ -9138,6 +9146,7 @@ class SessionLoopBridge:
         commander_context: Mapping[str, object] | None = None,
         ttl_seconds: int | None = None,
         current_frame: int | None = None,
+        publish_frame_resolver: Callable[[], int | None] | None = None,
         update_id: str | None = None,
     ) -> Mapping[str, object]:
         """Queue one MicroMachine update and return immediately for chat UX."""
@@ -9161,6 +9170,7 @@ class SessionLoopBridge:
             commander_context=dict(commander_context or {}),
             ttl_seconds=ttl_seconds,
             current_frame=current_frame,
+            publish_frame_resolver=publish_frame_resolver,
             update_id=resolved_update_id,
             future=future,
             cancel_event=threading.Event(),
@@ -9265,6 +9275,7 @@ class SessionLoopBridge:
         commander_context: Mapping[str, object] | None = None,
         ttl_seconds: int | None = None,
         current_frame: int | None = None,
+        publish_frame_resolver: Callable[[], int | None] | None = None,
         update_id: str | None = None,
         request: _MicroMachineModulationRequest | None = None,
     ) -> Mapping[str, object]:
@@ -9328,6 +9339,7 @@ class SessionLoopBridge:
         ).submit_text(
             text,
             current_frame=current_frame,
+            publish_frame_resolver=publish_frame_resolver,
             update_id=update_id,
             commander_context=commander_context,
             tags=("web_gui",),
@@ -9766,6 +9778,7 @@ class SessionLoopBridge:
                     commander_context=commander_context,
                     ttl_seconds=request.ttl_seconds,
                     current_frame=request.current_frame,
+                    publish_frame_resolver=request.publish_frame_resolver,
                     update_id=request.update_id,
                     request=request,
                 )
@@ -9833,6 +9846,7 @@ class SessionLoopBridge:
             request.text = preparation.command_text
             request.provider_output = preparation.provider_output
             request.current_frame = preparation.current_frame
+            request.publish_frame_resolver = None
             payload = dict(
                 self._publish_micromachine_modulation(
                     preparation.command_text,
@@ -11222,6 +11236,58 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             default_dir = str(default_fn())
         return _clean_blackboard_dir(blackboard_dir, default_dir)
 
+    def _validated_micromachine_command_frame(
+        self,
+        blackboard_dir: str,
+    ) -> int | None:
+        """Return a launcher-validated frame without consulting stale files."""
+
+        launcher = getattr(self.server, "micromachine_launcher", None)  # type: ignore[attr-defined]
+        validated_snapshot_fn = getattr(launcher, "validated_snapshot", None)
+        if not callable(validated_snapshot_fn):
+            return None
+        validated_snapshot = validated_snapshot_fn(
+            blackboard_dir=blackboard_dir
+        )
+        if not isinstance(
+            validated_snapshot,
+            _MicroMachineValidatedRuntimeSnapshot,
+        ):
+            return None
+        runtime_snapshot = validated_snapshot.metadata
+        telemetry_document = validated_snapshot.telemetry_document
+        runtime_blackboard_dir = str(
+            runtime_snapshot.get("blackboard_dir", "") or ""
+        )
+        if (
+            runtime_snapshot.get("runtime_attached") is not True
+            or runtime_snapshot.get("telemetry_current_for_process") is not True
+            or runtime_snapshot.get("telemetry_stale_or_detached") is True
+            or not runtime_blackboard_dir
+            or _micromachine_blackboard_scope_id(runtime_blackboard_dir)
+            != _micromachine_blackboard_scope_id(blackboard_dir)
+            or not isinstance(telemetry_document, Mapping)
+        ):
+            return None
+        frame = telemetry_document.get("frame")
+        if type(frame) is not int or frame < 0:
+            return None
+        return frame
+
+    def _resolved_micromachine_command_frame(
+        self,
+        blackboard_dir: str,
+        requested_frame: int | None,
+    ) -> int:
+        """Bind frame-less commands to current telemetry, never stale files."""
+
+        if requested_frame is not None:
+            return requested_frame
+        validated_frame = self._validated_micromachine_command_frame(
+            blackboard_dir
+        )
+        return validated_frame if validated_frame is not None else 0
+
     def _authoritative_event_snapshot(
         self,
         blackboard_dir: str,
@@ -12184,6 +12250,18 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 {"accepted": False, "error": "current_frame 필드는 정수여야 합니다."},
             )
             return
+        requested_current_frame = current_frame
+        current_frame = self._resolved_micromachine_command_frame(
+            request_blackboard_dir,
+            requested_current_frame,
+        )
+        publish_frame_resolver = (
+            None
+            if requested_current_frame is not None
+            else lambda: self._validated_micromachine_command_frame(
+                request_blackboard_dir
+            )
+        )
         try:
             update_id = (
                 require_micromachine_update_id("update_id", document["update_id"])
@@ -12236,6 +12314,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                         commander_context=commander_context,
                         ttl_seconds=ttl_seconds,
                         current_frame=current_frame,
+                        publish_frame_resolver=publish_frame_resolver,
                         update_id=update_id,
                     )
                 )
@@ -12262,6 +12341,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     commander_context=commander_context,
                     ttl_seconds=ttl_seconds,
                     current_frame=current_frame,
+                    publish_frame_resolver=publish_frame_resolver,
                     update_id=update_id,
                 )
             )

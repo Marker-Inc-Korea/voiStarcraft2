@@ -121,33 +121,34 @@ python3 -m starcraft_commander.demo_sc2 --map AcropolisLE --difficulty easy
   iteration, not instantly at the prompt.
 - Exit command input with `종료`, `quit`, or EOF; the game keeps running.
 
-For local browser control of the legacy python-sc2 commander:
+The legacy python-sc2 commander remains a command-line compatibility path:
 
 ```bash
 SC2_ROOT="/path/to/StarCraft II" \
 OPENAI_API_KEY="sk-..." \
 python3 -m starcraft_commander.demo_sc2 \
-  --map AcropolisLE --difficulty easy \
-  --gui
+  --map AcropolisLE --difficulty easy
 ```
 
-- Open the printed `http://127.0.0.1:PORT` URL.
 - Live mode fails before StarCraft II starts unless the selected provider key
   is already available through `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`.
-- The **LLM 설정** panel can rotate the running process key after startup. The
-  key stays in process memory only; `/api/llm` returns status metadata, never
-  the key.
 - Defaults: `--llm-provider openai`, `--llm-model gpt-4.1-mini`.
-- Use windowed/borderless StarCraft II or a second monitor so the browser
-  remains usable while the game is running.
-- This path is **not** MicroMachine QA evidence. In the web page, the
-  **Legacy python-sc2 commander** mode is the route that posts to
-  `/api/command`; the default MicroMachine cockpit posts text/voice intent to
-  `/api/micromachine/modulate` and a MicroMachine blackboard instead. The same
-  web page has a mode-aware **선택 모드 실행** control: in MicroMachine mode it
-  calls `/api/runtime/start` and runs the patched MicroMachine smoke/live script
-  with the current blackboard directory; in legacy mode it starts the older
-  python-sc2 demo only after a key has been saved.
+- This path is **not** MicroMachine QA evidence. The compact controller has no
+  legacy mode selector and no LLM settings panel; `/api/command` and
+  `/api/llm` remain compatibility APIs only.
+
+For the current MicroMachine UX, install and launch the macOS
+**voiStarcraft2** app. It serves one compact controller window and owns the
+native SC2 launch proof and runtime auto-start path. Opening the same controller
+URL in an ordinary browser does not start StarCraft II: text or voice input is
+queued/published to `/api/micromachine/modulate`, and the page can only observe
+a runtime started elsewhere.
+
+Treat `published` as blackboard transport evidence, never as gameplay success.
+For a live smoke pass, require matching operation identity plus runtime
+assignment or submission and a visible or telemetry-confirmed command-specific
+effect such as movement, engagement, target arrival, production, completion,
+or `effect_observed`. Assignment or submission alone does not pass.
 
 ### Expected behavior (smoke-test acceptance)
 

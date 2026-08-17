@@ -198,6 +198,8 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       outline: none;
     }
     #command-input:focus {
+      outline: 3px solid rgba(101, 243, 223, 0.88);
+      outline-offset: 2px;
       box-shadow: 0 0 0 3px rgba(101, 243, 223, 0.18);
     }
     .icon-button, .send-button {
@@ -239,6 +241,20 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       from { transform: scale(0.96); }
       to { transform: scale(1); }
     }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+    @media (forced-colors: active) {
+      #command-input:focus {
+        outline: 2px solid Highlight;
+        box-shadow: none;
+      }
+    }
     @media (max-width: 430px) {
       .shell { padding: 10px; }
       .topbar { align-items: center; }
@@ -276,6 +292,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
 
     <form id="command-form" class="panel command-dock">
       <input id="command-input" type="text" autocomplete="off" autofocus
+             aria-label="전술 명령"
              placeholder="예: 마린 6기, 탱크 2기, 바이킹 2기로 적 본진 공격">
       <button id="voice-button" class="icon-button" type="button"
               title="음성 명령" aria-label="음성 명령" aria-pressed="false">◉</button>
@@ -301,6 +318,15 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
   var recording = false;
   var latestRuntimeStatus = null;
   var runtimeStartPromise = null;
+  var runtimeRequestSequence = 0;
+  var runtimeAppliedRequestSequence = 0;
+  var runtimeMutationEpoch = 0;
+  var operationRequestSequence = 0;
+  var operationAppliedRequestSequence = 0;
+  var operationMutationEpoch = 0;
+  var voiceSessionGeneration = 0;
+  var activeVoiceSessionGeneration = 0;
+  var NATIVE_SC2_LAUNCH_TIMEOUT_MS = 185000;
 
   function endpoint(path, values) {
     var query = new URLSearchParams(values || {});
@@ -482,23 +508,50 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
   function operationStage(operation, runtimeStatus) {
     var intervention = operation.intervention || {};
     var execution = intervention.command_execution || {};
-    var requestIdentity = commandIdentity(operation);
+    var update = operation.update || {};
+    var compileResult = operation.compile_result || {};
+    var requestIdentity = String(
+      operation.update_id ||
+      update.update_id ||
+      operation.policy_update_id ||
+      intervention.latest_update_id ||
+      compileResult.update_id ||
+      ""
+    );
     var executionOwnerIdentity = String(
       operation.operation_console_execution_owner_update_id ||
       execution.update_id ||
       execution.policy_update_id ||
+      execution.command_id ||
       ""
     );
+    var operationIdentity = String(operation.operation_id || "");
+    var executionOperationIdentity = String(execution.operation_id || "");
+    var operationGeneration = Number(operation.operation_generation || 0);
+    var executionGeneration = Number(execution.operation_generation || 0);
+    var runtimeCurrent = Boolean(
+      runtimeStatus &&
+      runtimeStatus.runtime_attached === true &&
+      runtimeStatus.telemetry_current_for_process === true &&
+      runtimeStatus.telemetry_stale_or_detached !== true
+    );
     var executionMatchesRequest = (
-      !requestIdentity ||
-      !executionOwnerIdentity ||
-      requestIdentity === executionOwnerIdentity
+      runtimeCurrent &&
+      Boolean(requestIdentity) &&
+      Boolean(executionOwnerIdentity) &&
+      requestIdentity === executionOwnerIdentity &&
+      Boolean(operationIdentity) &&
+      Boolean(executionOperationIdentity) &&
+      operationIdentity === executionOperationIdentity &&
+      Number.isInteger(operationGeneration) &&
+      operationGeneration > 0 &&
+      operationGeneration === executionGeneration
     );
     var state = executionMatchesRequest ? String(execution.state || "") : "";
     var disposition = String(operation.disposition || "");
     var consumption = String(operation.consumption_status || "");
     var transport = String(operation.transport_status || operation.status || "");
-    if (state === "effect_observed" || disposition === "completed") {
+    if (state === "effect_observed" || state === "completed") {
       return "효과 확인";
     }
     if (state === "action_issued") { return "SC2 실행"; }
@@ -642,7 +695,12 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       return;
     }
     var goal = operationGoal(operation);
-    var stage = operationStage(operation, data);
+    var operationRuntimeStatus = (
+      Object.prototype.hasOwnProperty.call(data, "runtime_attached")
+        ? data
+        : latestRuntimeStatus
+    );
+    var stage = operationStage(operation, operationRuntimeStatus);
     var composition = operationComposition(operation);
     var selectedUpdateId = commandIdentity(operation);
     if (
@@ -694,18 +752,58 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
   }
 
   function refreshRuntime() {
+    runtimeRequestSequence += 1;
+    var requestSequence = runtimeRequestSequence;
+    var mutationEpoch = runtimeMutationEpoch;
     return fetch(endpoint("/api/runtime/status", {
       mode: "micromachine",
       blackboard_dir: blackboardDir
-    })).then(parseJsonResponse).then(renderRuntime).catch(function(error) {
+    })).then(parseJsonResponse).then(function(status) {
+      if (
+        mutationEpoch !== runtimeMutationEpoch ||
+        requestSequence < runtimeAppliedRequestSequence
+      ) {
+        return status;
+      }
+      runtimeAppliedRequestSequence = requestSequence;
+      renderRuntime(status);
+      return status;
+    }).catch(function(error) {
+      if (
+        mutationEpoch !== runtimeMutationEpoch ||
+        requestSequence < runtimeAppliedRequestSequence
+      ) {
+        return;
+      }
+      runtimeAppliedRequestSequence = requestSequence;
       renderRuntime({ status: "failed", error: error.message });
     });
   }
 
   function refreshOperation() {
+    operationRequestSequence += 1;
+    var requestSequence = operationRequestSequence;
+    var mutationEpoch = operationMutationEpoch;
     return fetch(endpoint("/api/micromachine/status", {
       blackboard_dir: blackboardDir
-    })).then(parseJsonResponse).then(renderOperation).catch(function(error) {
+    })).then(parseJsonResponse).then(function(status) {
+      if (
+        mutationEpoch !== operationMutationEpoch ||
+        requestSequence < operationAppliedRequestSequence
+      ) {
+        return status;
+      }
+      operationAppliedRequestSequence = requestSequence;
+      renderOperation(status);
+      return status;
+    }).catch(function(error) {
+      if (
+        mutationEpoch !== operationMutationEpoch ||
+        requestSequence < operationAppliedRequestSequence
+      ) {
+        return;
+      }
+      operationAppliedRequestSequence = requestSequence;
       setFeedback("작전 상태 확인 실패: " + error.message, true);
     });
   }
@@ -722,6 +820,9 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     var pending = pendingNativeSC2Launches[nonce];
     if (!pending) { return; }
     delete pendingNativeSC2Launches[nonce];
+    if (typeof window.clearTimeout === "function") {
+      window.clearTimeout(pending.timeoutId);
+    }
     if (result && result.accepted === true) {
       pending.resolve(nonce);
       return;
@@ -745,15 +846,33 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       Math.random().toString(36).slice(2)
     );
     return new Promise(function(resolve, reject) {
+      var timeoutId = window.setTimeout(function() {
+        var pending = pendingNativeSC2Launches[nonce];
+        if (!pending) { return; }
+        delete pendingNativeSC2Launches[nonce];
+        pending.reject(new Error(
+          "SC2 visible launch verification timed out after 185 seconds."
+        ));
+      }, NATIVE_SC2_LAUNCH_TIMEOUT_MS);
       pendingNativeSC2Launches[nonce] = {
         resolve: resolve,
-        reject: reject
+        reject: reject,
+        timeoutId: timeoutId
       };
-      bridge.postMessage({ nonce: nonce });
+      try {
+        bridge.postMessage({ nonce: nonce });
+      } catch (error) {
+        delete pendingNativeSC2Launches[nonce];
+        if (typeof window.clearTimeout === "function") {
+          window.clearTimeout(timeoutId);
+        }
+        reject(error);
+      }
     });
   }
 
   function startRuntimeWithNonce(nonce) {
+    runtimeMutationEpoch += 1;
     return fetch(endpoint("/api/runtime/start"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -769,6 +888,15 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       })
     }).then(parseJsonResponse).then(function(status) {
       renderRuntime(status);
+      var runtimeState = String(status.status || "");
+      if (
+        status.accepted === false ||
+        ["failed", "blocked", "disabled"].indexOf(runtimeState) !== -1
+      ) {
+        throw new Error(
+          String(status.error || "SC2 / MicroMachine runtime start was rejected.")
+        );
+      }
       setFeedback("시작 요청을 보냈습니다. 연결될 때까지 상태를 추적합니다.", false);
       window.setTimeout(refreshAll, 700);
       return status;
@@ -825,6 +953,15 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
   }
 
   function startRuntime() {
+    if (!nativeSC2LaunchAvailable()) {
+      var message = (
+        "SC2 시작은 설치된 voiStarcraft2 앱에서만 사용할 수 있습니다. " +
+        "이 브라우저에서는 명령 대기열과 실행 상태만 확인할 수 있습니다."
+      );
+      setFeedback(message, true);
+      appendCaption(message, "warning");
+      return Promise.resolve(null);
+    }
     setFeedback("StarCraft II 실제 창과 렌더링을 확인하는 중입니다.", false);
     return ensureRuntimeForCommand().catch(function() {
       return null;
@@ -838,10 +975,12 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
   }
 
   function submitCommand(text) {
-    var cleaned = String(text || "").trim();
+    var originalText = String(text || "");
+    var cleaned = originalText.trim();
     if (!cleaned) { return Promise.resolve(); }
     submitSequence += 1;
     var submissionSequence = submitSequence;
+    operationMutationEpoch += 1;
     var updateId = "voi-companion-" + Date.now() + "-" + submitSequence;
     lastSubmittedUpdateId = updateId;
     var pendingPayload = {
@@ -860,7 +999,12 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       payload: pendingPayload
     };
     renderOperation(pendingPayload);
-    document.getElementById("command-input").value = "";
+    var inputNode = document.getElementById("command-input");
+    var submittedInputValue = inputNode.value;
+    var ownsInputValue = submittedInputValue === originalText;
+    if (ownsInputValue) {
+      inputNode.value = "";
+    }
     setFeedback("MyProxy가 명령을 해석하고 있습니다...", false);
     return fetch(endpoint("/api/micromachine/modulate"), {
       method: "POST",
@@ -906,6 +1050,9 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     }).catch(function(error) {
       if (submissionSequence !== submitSequence) { return; }
       pendingCommand = null;
+      if (ownsInputValue && !inputNode.value) {
+        inputNode.value = submittedInputValue;
+      }
       setFeedback("명령 실패: " + error.message, true);
       appendCaption("명령 실패: " + error.message, "danger");
       window.setTimeout(refreshOperation, 500);
@@ -921,60 +1068,94 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       });
       return;
     }
-    recognition = new VoiceRecognition();
-    recognition.lang = "ko-KR";
-    recognition.interimResults = true;
-    recognition.continuous = false;
-    recognition.onstart = function() {
-      recording = true;
-      button.classList.add("recording");
-      button.setAttribute("aria-pressed", "true");
-      setFeedback("듣고 있습니다. 명령을 말하세요.", false);
-    };
-    recognition.onresult = function(event) {
+    function startVoiceSession() {
+      voiceSessionGeneration += 1;
+      var sessionGeneration = voiceSessionGeneration;
       var finalText = "";
-      var interimText = "";
-      for (var index = event.resultIndex; index < event.results.length; index += 1) {
-        var transcript = event.results[index][0].transcript;
-        if (event.results[index].isFinal) {
-          finalText += transcript;
-        } else {
-          interimText += transcript;
+      var commandSubmitted = false;
+      var sessionRecognition = new VoiceRecognition();
+      activeVoiceSessionGeneration = sessionGeneration;
+      recognition = sessionRecognition;
+      sessionRecognition.lang = "ko-KR";
+      sessionRecognition.interimResults = true;
+      sessionRecognition.continuous = false;
+      sessionRecognition.onstart = function() {
+        if (sessionGeneration !== activeVoiceSessionGeneration) { return; }
+        recording = true;
+        button.classList.add("recording");
+        button.setAttribute("aria-pressed", "true");
+        setFeedback("듣고 있습니다. 명령을 말하세요.", false);
+      };
+      sessionRecognition.onresult = function(event) {
+        if (sessionGeneration !== activeVoiceSessionGeneration) { return; }
+        var finalSegments = [];
+        var interimSegments = [];
+        for (var index = 0; index < event.results.length; index += 1) {
+          var transcript = String(event.results[index][0].transcript || "").trim();
+          if (!transcript) { continue; }
+          if (event.results[index].isFinal) {
+            finalSegments.push(transcript);
+          } else {
+            interimSegments.push(transcript);
+          }
         }
+        finalText = finalSegments.join(" ");
+        document.getElementById("command-input").value = (
+          finalSegments.concat(interimSegments).join(" ")
+        );
+      };
+      sessionRecognition.onerror = function(event) {
+        if (sessionGeneration !== activeVoiceSessionGeneration) { return; }
+        activeVoiceSessionGeneration = 0;
+        recording = false;
+        recognition = null;
+        button.classList.remove("recording");
+        button.setAttribute("aria-pressed", "false");
+        setFeedback(
+          "음성 입력 실패: " + String(event.error || "unknown"),
+          true
+        );
+      };
+      sessionRecognition.onend = function() {
+        if (sessionGeneration !== activeVoiceSessionGeneration) { return; }
+        activeVoiceSessionGeneration = 0;
+        recording = false;
+        recognition = null;
+        button.classList.remove("recording");
+        button.setAttribute("aria-pressed", "false");
+        if (!commandSubmitted && finalText) {
+          commandSubmitted = true;
+          submitCommandWithRuntime(finalText);
+        }
+      };
+      try {
+        sessionRecognition.start();
+      } catch (error) {
+        sessionRecognition.onerror({
+          error: error && error.message ? error.message : error
+        });
       }
-      document.getElementById("command-input").value = finalText || interimText;
-      if (finalText.trim()) { submitCommandWithRuntime(finalText); }
-    };
-    recognition.onerror = function(event) {
-      setFeedback("음성 입력 실패: " + String(event.error || "unknown"), true);
-    };
-    recognition.onend = function() {
-      recording = false;
-      button.classList.remove("recording");
-      button.setAttribute("aria-pressed", "false");
-    };
+    }
     button.addEventListener("click", function() {
-      if (recording) {
+      if (recording && recognition) {
         recognition.stop();
       } else {
-        recognition.start();
+        startVoiceSession();
       }
     });
   }
 
   function submitCommandWithRuntime(text) {
-    var cleaned = String(text || "").trim();
+    var originalText = String(text || "");
+    var cleaned = originalText.trim();
     if (!cleaned) { return Promise.resolve(); }
-    return ensureRuntimeForCommand()
-      .catch(function(error) {
-        appendCaption(
-          "SC2 자동 시작 실패. 명령은 대기열에 보존합니다: " + error.message,
-          "warning"
-        );
-      })
-      .then(function() {
-        return submitCommand(cleaned);
-      });
+    ensureRuntimeForCommand().catch(function(error) {
+      appendCaption(
+        "SC2 자동 시작 실패. 명령은 대기열에 보존합니다: " + error.message,
+        "warning"
+      );
+    });
+    return submitCommand(originalText);
   }
 
   document.getElementById("runtime-start").addEventListener("click", startRuntime);

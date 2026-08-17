@@ -242,8 +242,9 @@ exact-SHA generated artifact.
 The only remaining manual gate after `ready_for_live_qa` passes is
 `docs/micromachine-final-live-qa.md`. It covers the fourteen deterministic
 journeys one-to-one and records actual SC2 visual, movement, engagement, HUD,
-caption, and tactical-audio observations. Human multiplayer, ladder,
-Battle.net qualification, and competitive balance signoff remain deferred.
+compact-controller consistency, and telemetry identity observations. Human
+multiplayer, ladder, Battle.net qualification, and competitive balance signoff
+remain deferred.
 
 Before launching a case, the matrix runner now writes
 `preflight_report.json`. Preflight distinguishes:

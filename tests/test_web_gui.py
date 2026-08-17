@@ -1167,6 +1167,144 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             headers={"Content-Type": "application/json"},
         )
 
+    def test_frame_less_command_ignores_detached_stale_telemetry_frame(self):
+        class DetachedLauncher:
+            def validated_snapshot(self, blackboard_dir=""):
+                return web_gui._MicroMachineValidatedRuntimeSnapshot(
+                    metadata={
+                        "blackboard_dir": blackboard_dir,
+                        "runtime_attached": False,
+                        "telemetry_current_for_process": False,
+                        "telemetry_stale_or_detached": True,
+                        "telemetry_frame": 11_971,
+                    },
+                    telemetry_document=None,
+                )
+
+        self.server._http.micromachine_launcher = DetachedLauncher()
+        accepted = {
+            "accepted": True,
+            "ok": True,
+            "queued": True,
+            "async_publish": True,
+            "status": "queued",
+            "update_id": "detached-frame-command",
+            "consumption_status": "pending_compile",
+        }
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(
+                self.bridge,
+                "submit_micromachine_modulation_background",
+                return_value=accepted,
+            ) as submit,
+        ):
+            status, _content_type, _payload = self.post_micromachine_modulation(
+                {
+                    "text": "SCV를 생산한다",
+                    "blackboard_dir": directory,
+                    "async_publish": True,
+                    "update_id": "detached-frame-command",
+                }
+            )
+
+        self.assertEqual(HTTPStatus.ACCEPTED, HTTPStatus(status))
+        self.assertEqual(0, submit.call_args.kwargs["current_frame"])
+        resolver = submit.call_args.kwargs["publish_frame_resolver"]
+        self.assertTrue(callable(resolver))
+        self.assertIsNone(resolver())
+
+    def test_frame_less_command_uses_current_attached_telemetry_frame(self):
+        runtime_instance_id = "a" * 32
+
+        class AttachedLauncher:
+            frame = 1_634
+
+            def validated_snapshot(self, blackboard_dir=""):
+                return web_gui._MicroMachineValidatedRuntimeSnapshot(
+                    metadata={
+                        "blackboard_dir": blackboard_dir,
+                        "runtime_instance_id": runtime_instance_id,
+                        "runtime_attached": True,
+                        "telemetry_current_for_process": True,
+                        "telemetry_stale_or_detached": False,
+                        "telemetry_frame": self.frame,
+                    },
+                    telemetry_document={
+                        "frame": self.frame,
+                        "runtime_instance_id": runtime_instance_id,
+                    },
+                )
+
+        launcher = AttachedLauncher()
+        self.server._http.micromachine_launcher = launcher
+        accepted = {
+            "accepted": True,
+            "ok": True,
+            "queued": True,
+            "async_publish": True,
+            "status": "queued",
+            "update_id": "attached-frame-command",
+            "consumption_status": "pending_compile",
+        }
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(
+                self.bridge,
+                "submit_micromachine_modulation_background",
+                return_value=accepted,
+            ) as submit,
+        ):
+            status, _content_type, _payload = self.post_micromachine_modulation(
+                {
+                    "text": "SCV를 생산한다",
+                    "blackboard_dir": directory,
+                    "async_publish": True,
+                    "update_id": "attached-frame-command",
+                }
+            )
+
+        self.assertEqual(HTTPStatus.ACCEPTED, HTTPStatus(status))
+        self.assertEqual(1_634, submit.call_args.kwargs["current_frame"])
+        resolver = submit.call_args.kwargs["publish_frame_resolver"]
+        self.assertTrue(callable(resolver))
+        launcher.frame = 1_700
+        self.assertEqual(1_700, resolver())
+
+    def test_explicit_command_frame_remains_fixed_for_async_publish(self):
+        accepted = {
+            "accepted": True,
+            "ok": True,
+            "queued": True,
+            "async_publish": True,
+            "status": "queued",
+            "update_id": "explicit-frame-command",
+            "consumption_status": "pending_compile",
+        }
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(
+                self.bridge,
+                "submit_micromachine_modulation_background",
+                return_value=accepted,
+            ) as submit,
+        ):
+            status, _content_type, _payload = self.post_micromachine_modulation(
+                {
+                    "text": "SCV를 생산한다",
+                    "blackboard_dir": directory,
+                    "async_publish": True,
+                    "current_frame": 88,
+                    "update_id": "explicit-frame-command",
+                }
+            )
+
+        self.assertEqual(HTTPStatus.ACCEPTED, HTTPStatus(status))
+        self.assertEqual(88, submit.call_args.kwargs["current_frame"])
+        self.assertIsNone(
+            submit.call_args.kwargs["publish_frame_resolver"]
+        )
+
     def attach_fake_micromachine_runtime(self, directory):
         runtime_instance_id = "f" * 32
         telemetry_path = os.path.join(directory, "latest_telemetry.json")
@@ -1354,6 +1492,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "selectCommand",
             "submitCommandWithRuntime",
             "ensureRuntimeForCommand",
+            "SC2 시작은 설치된 voiStarcraft2 앱에서만 사용할 수 있습니다.",
             "latest_request",
             "명령 해석 중",
             "SC2 실행 대기",
@@ -1462,6 +1601,64 @@ const splitOwner = selectCommand({
   }]
 });
 assert.strictEqual(operationStage(splitOwner), "정책 적용");
+
+const currentRuntime = {
+  runtime_attached: true,
+  telemetry_current_for_process: true,
+  telemetry_stale_or_detached: false
+};
+const matchedEffect = {
+  operation_id: "assault",
+  operation_generation: 2,
+  update_id: "assault-update",
+  consumption_status: "consumed",
+  operation_console_execution_owner_update_id: "assault-update",
+  intervention: {
+    command_execution: {
+      command_id: "assault-update",
+      operation_id: "assault",
+      operation_generation: 2,
+      state: "effect_observed"
+    }
+  }
+};
+assert.strictEqual(operationStage(matchedEffect, currentRuntime), "효과 확인");
+assert.strictEqual(
+  operationStage({
+    ...matchedEffect,
+    operation_console_execution_owner_update_id: "",
+    intervention: {
+      command_execution: {
+        ...matchedEffect.intervention.command_execution,
+        command_id: ""
+      }
+    }
+  }, currentRuntime),
+  "정책 적용"
+);
+assert.strictEqual(
+  operationStage({
+    ...matchedEffect,
+    intervention: {
+      command_execution: {
+        ...matchedEffect.intervention.command_execution,
+        operation_generation: 1
+      }
+    }
+  }, currentRuntime),
+  "정책 적용"
+);
+assert.strictEqual(
+  operationStage({
+    ...matchedEffect,
+    disposition: "completed"
+  }, {
+    runtime_attached: false,
+    telemetry_current_for_process: false,
+    telemetry_stale_or_detached: true
+  }),
+  "SC2 실행 대기"
+);
 """
         with tempfile.NamedTemporaryFile("w", suffix=".js") as script_file:
             script_file.write(command_script)
@@ -10675,13 +10872,18 @@ function response(payload) {
                     return_value=FakeProcess(),
                 ) as popen,
                 mock.patch.object(
+                    web_gui.threading.Thread,
+                    "start",
+                    return_value=None,
+                ),
+                mock.patch.object(
                     web_gui,
                     "read_sc2_launch_receipt",
                     return_value=visible_sc2_launch_receipt(),
                 ),
             ):
                 launcher = web_gui._MicroMachineLaunchManager(script_path=__file__)
-                launcher.start(
+                started = launcher.start(
                     directory,
                     enemy_difficulty=9,
                     sc2_launch_nonce="visible-launch-nonce",
@@ -10701,6 +10903,8 @@ function response(payload) {
                 env["VOI_MICROMACHINE_RUNTIME_INSTANCE_ID"],
                 launcher._runtime_instance_id,  # noqa: SLF001
             )
+            self.assertEqual(12345, started["pid"])
+            self.assertEqual(222, started["sc2_pid"])
             self.assertLess(
                 argv.index("--fresh-live-session"),
                 argv.index("--blackboard-dir"),
@@ -14388,6 +14592,135 @@ class SessionLoopBridgeTest(unittest.TestCase):
             }
             self.assertEqual("superseded", stream["slow-normal"]["status"])
             self.assertEqual("published", stream["urgent-retreat"]["status"])
+
+    def test_async_publish_refreshes_frame_after_delayed_llm_compile(self):
+        started = threading.Event()
+        release = threading.Event()
+        self.addCleanup(release.set)
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(
+            session=session,
+            llm_control=BlockingPolicyModulationLLMControl(
+                started=started,
+                release=release,
+            ),
+        )
+        bridge.start()
+        self.addCleanup(bridge.stop)
+        publish_frame = {"value": 10}
+
+        with tempfile.TemporaryDirectory() as directory:
+            bridge.submit_micromachine_modulation_background(
+                "탱크로 수비해",
+                blackboard_dir=directory,
+                current_frame=10,
+                publish_frame_resolver=lambda: publish_frame["value"],
+                update_id="fresh-publish-frame",
+            )
+            self.assertTrue(started.wait(1))
+            publish_frame["value"] = 250
+            release.set()
+
+            deadline = time.monotonic() + 2
+            latest = {}
+            while time.monotonic() < deadline:
+                path = os.path.join(directory, "latest_modulation.json")
+                if os.path.isfile(path):
+                    with open(path, encoding="utf-8") as handle:
+                        latest = json.load(handle)
+                    if latest.get("update_id") == "fresh-publish-frame":
+                        break
+                time.sleep(0.02)
+
+        self.assertEqual("fresh-publish-frame", latest.get("update_id"))
+        self.assertEqual(250, latest.get("issued_at_frame"))
+        self.assertGreater(latest.get("expires_at_frame", 0), 250)
+
+    def test_async_publish_keeps_last_valid_frame_when_snapshot_is_unavailable(self):
+        started = threading.Event()
+        release = threading.Event()
+        self.addCleanup(release.set)
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(
+            session=session,
+            llm_control=BlockingPolicyModulationLLMControl(
+                started=started,
+                release=release,
+            ),
+        )
+        bridge.start()
+        self.addCleanup(bridge.stop)
+
+        with tempfile.TemporaryDirectory() as directory:
+            bridge.submit_micromachine_modulation_background(
+                "탱크로 수비해",
+                blackboard_dir=directory,
+                current_frame=100_000,
+                publish_frame_resolver=lambda: None,
+                update_id="retain-valid-frame",
+            )
+            self.assertTrue(started.wait(1))
+            release.set()
+
+            deadline = time.monotonic() + 2
+            latest = {}
+            while time.monotonic() < deadline:
+                path = os.path.join(directory, "latest_modulation.json")
+                if os.path.isfile(path):
+                    with open(path, encoding="utf-8") as handle:
+                        latest = json.load(handle)
+                    if latest.get("update_id") == "retain-valid-frame":
+                        break
+                time.sleep(0.02)
+
+        self.assertEqual("retain-valid-frame", latest.get("update_id"))
+        self.assertEqual(100_000, latest.get("issued_at_frame"))
+        self.assertGreater(latest.get("expires_at_frame", 0), 100_000)
+
+    def test_publish_frame_resolver_error_is_not_recorded_as_provider_failure(self):
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(session=session)
+        bridge.start()
+        self.addCleanup(bridge.stop)
+
+        def fail_frame_resolution() -> int:
+            raise OSError("validated snapshot unavailable")
+
+        with tempfile.TemporaryDirectory() as directory:
+            bridge.submit_micromachine_modulation_background(
+                "긴급 즉시 후퇴",
+                blackboard_dir=directory,
+                provider_output={
+                    "goal": "긴급 즉시 후퇴",
+                    "override_level": "emergency",
+                    "command_layer": "emergency",
+                    "ttl_seconds": 45,
+                    "emergency": {
+                        "cancel_attacks": True,
+                        "force_retreat": True,
+                    },
+                },
+                current_frame=100,
+                publish_frame_resolver=fail_frame_resolution,
+                update_id="frame-resolution-error",
+            )
+
+            deadline = time.monotonic() + 2
+            compile_result = {}
+            while time.monotonic() < deadline:
+                compile_result = (
+                    web_gui._read_micromachine_compile_result(directory) or {}
+                )
+                if compile_result.get("update_id") == "frame-resolution-error":
+                    break
+                time.sleep(0.02)
+
+            self.assertEqual("publish_failed", compile_result.get("status"))
+            self.assertFalse(
+                os.path.exists(
+                    os.path.join(directory, "latest_telemetry.json")
+                )
+            )
 
     def test_latest_compile_result_preserves_request_acceptance_order(self):
         normal_write_ready = threading.Event()

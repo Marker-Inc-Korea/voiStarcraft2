@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import ast
+import ctypes
+import errno
 import json
 import os
 import plistlib
@@ -46,6 +48,10 @@ DEFAULT_BUILD_JOBS = 2
 DEFAULT_MYPROXY_TIMEOUT_SECONDS = 25
 SC2_LAUNCH_RECEIPT_FILE = "sc2-launch-receipt.json"
 SC2_LAUNCH_RECEIPT_MAX_AGE_SECONDS = 180
+LAUNCHSERVICES_REGISTER_PATH = Path(
+    "/System/Library/Frameworks/CoreServices.framework/Frameworks/"
+    "LaunchServices.framework/Support/lsregister"
+)
 MAX_SC2_LAUNCH_RECEIPT_BYTES = 64 * 1024
 MAX_LOCAL_SECRET_BYTES = 16 * 1024
 MYPROXY_KEY_ALIASES = (MYPROXY_API_KEY_ENV_VAR, "CODEX_MYPROXY_API_KEY")
@@ -64,6 +70,48 @@ LOCAL_RUNTIME_SOURCE_FILES = (
     "THIRD_PARTY_NOTICES.md",
     "pyproject.toml",
 )
+
+
+def _clone_file(source: str | os.PathLike[str], destination: str | os.PathLike[str]) -> bool:
+    """Clone one file on APFS without allocating a second full data copy."""
+
+    if sys.platform != "darwin":
+        return False
+    try:
+        clonefile = ctypes.CDLL(None, use_errno=True).clonefile
+    except (AttributeError, OSError):
+        return False
+    clonefile.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+    clonefile.restype = ctypes.c_int
+    if clonefile(os.fsencode(source), os.fsencode(destination), 0) == 0:
+        return True
+    error_number = ctypes.get_errno()
+    if error_number in {
+        errno.EACCES,
+        errno.EINVAL,
+        errno.ENOSYS,
+        errno.ENOTSUP,
+        errno.EPERM,
+        errno.EXDEV,
+    }:
+        return False
+    raise OSError(
+        error_number,
+        os.strerror(error_number),
+        os.fspath(source),
+        os.fspath(destination),
+    )
+
+
+def _runtime_copy_file(
+    source: str | os.PathLike[str],
+    destination: str | os.PathLike[str],
+) -> str:
+    """Prefer copy-on-write clones and retain a portable copy fallback."""
+
+    if _clone_file(source, destination):
+        return os.fspath(destination)
+    return shutil.copy2(source, destination)
 
 
 @dataclass(frozen=True)
@@ -261,7 +309,6 @@ def read_sc2_launch_receipt(
         "api_ready",
         "window_created",
         "window_onscreen",
-        "frontmost",
     )
     missing = [
         field_name
@@ -978,6 +1025,7 @@ def install_local_runtime(
                 staging / name,
                 symlinks=True,
                 ignore=_runtime_copy_ignore,
+                copy_function=_runtime_copy_file,
             )
         for name in LOCAL_RUNTIME_SOURCE_FILES:
             shutil.copy2(source_root / name, staging / name)
@@ -988,12 +1036,14 @@ def install_local_runtime(
                 staging / "LICENSES",
                 symlinks=True,
                 ignore=_runtime_copy_ignore,
+                copy_function=_runtime_copy_file,
             )
         shutil.copytree(
             source_root / ".venv",
             staging / ".venv",
             symlinks=True,
             ignore=_runtime_copy_ignore,
+            copy_function=_runtime_copy_file,
         )
         _remove_editable_install_metadata(staging)
         source_identity = resolve_runtime_repository_identity(source_root)
@@ -1080,6 +1130,7 @@ def install_macos_application(
     staging_root = Path(tempfile.mkdtemp(prefix=".voiStarcraft2-app.", dir=app_parent))
     staged_app = staging_root / app_path.name
     backup: Path | None = None
+    installed_new_app = False
     try:
         contents = staged_app / "Contents"
         macos_dir = contents / "MacOS"
@@ -1145,6 +1196,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
     private var window: NSWindow!
     private var webView: WKWebView!
     private var readinessAttempt = 0
+    private var backendHealthFailures = 0
+    private var backendRecoveryInFlight = false
+    private var backendMonitorStarted = false
     private var sc2PID: pid_t = 0
     private var sc2LaunchInFlight = false
     private let autoStartMicroMachine = launchArguments
@@ -1365,8 +1419,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         let height: Int
 
         var bootstrapAccepted: Bool {
-            apiReady && windowCreated && windowOnscreen && frontmost
-                && !screenLocked
+            apiReady && windowCreated && windowOnscreen && !screenLocked
         }
 
         var accepted: Bool {
@@ -1611,7 +1664,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 if ready {
+                    self.readinessAttempt = 0
+                    self.backendHealthFailures = 0
+                    self.backendRecoveryInFlight = false
                     self.webView.load(URLRequest(url: cockpitURL))
+                    self.startBackendMonitor()
                     return
                 }
                 if self.readinessAttempt == 120 {
@@ -1628,6 +1685,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         }.resume()
     }
 
+    private func startBackendMonitor() {
+        guard !backendMonitorStarted else { return }
+        backendMonitorStarted = true
+        scheduleBackendHealthCheck()
+    }
+
+    private func scheduleBackendHealthCheck() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            self.checkBackendHealth()
+        }
+    }
+
+    private func checkBackendHealth() {
+        var request = URLRequest(url: cockpitURL.appendingPathComponent("api/llm"))
+        request.timeoutInterval = 1
+        URLSession.shared.dataTask(with: request) {
+            [weak self] data, response, _ in
+            let document = data.flatMap {
+                try? JSONSerialization.jsonObject(with: $0) as? [String: Any]
+            }
+            let ready = (
+                (response as? HTTPURLResponse)?.statusCode == 200
+                && document?["configured"] as? Bool == true
+                && document?["available"] as? Bool == true
+            )
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if ready {
+                    self.backendHealthFailures = 0
+                    self.backendRecoveryInFlight = false
+                } else {
+                    self.backendHealthFailures += 1
+                    if self.backendHealthFailures >= 3,
+                       !self.backendRecoveryInFlight {
+                        self.backendRecoveryInFlight = true
+                        self.readinessAttempt = 0
+                        self.launchBackend()
+                        self.waitForCockpit()
+                    }
+                }
+                self.scheduleBackendHealthCheck()
+            }
+        }.resume()
+    }
+
     private func showFailure(_ message: String) {
         let encoded = message
             .replacingOccurrences(of: "&", with: "&amp;")
@@ -1639,47 +1741,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         )
     }
 
-    private func submitAutoCommandWhenRuntimeReady(_ command: String) {
+    private func submitAutoCommand(_ command: String) {
         guard let data = try? JSONEncoder().encode(command),
               let commandJSON = String(data: data, encoding: .utf8) else {
             return
         }
         let script = [
-            "(function pollAutoCommand(attempt) {",
-            "  fetch(endpoint('/api/runtime/status', {",
-            "    mode: 'micromachine',",
-            "    blackboard_dir: blackboardDir",
-            "  })).then(parseJsonResponse).then(function(status) {",
-            "    if (",
-            "      status.runtime_attached === true &&",
-            "      status.telemetry_current_for_process === true",
-            "    ) {",
-            "      var input = document.getElementById('command-input');",
-            "      var form = document.getElementById('command-form');",
-            "      if (input && form) {",
-            "        input.value = \\(commandJSON);",
-            "        form.requestSubmit();",
-            "      }",
-            "      return;",
-            "    }",
-            "    if (",
-            "      status.status === 'failed' ||",
-            "      status.status === 'blocked' ||",
-            "      attempt >= 1800",
-            "    ) {",
-            "      return;",
-            "    }",
-            "    window.setTimeout(function() {",
-            "      pollAutoCommand(attempt + 1);",
-            "    }, 1000);",
-            "  }).catch(function() {",
-            "    if (attempt < 1800) {",
-            "      window.setTimeout(function() {",
-            "        pollAutoCommand(attempt + 1);",
-            "      }, 1000);",
-            "    }",
-            "  });",
-            "})(0);",
+            "(function submitAutoCommand() {",
+            "  var input = document.getElementById('command-input');",
+            "  var form = document.getElementById('command-form');",
+            "  if (!input || !form) { return; }",
+            "  input.value = \\(commandJSON);",
+            "  form.requestSubmit();",
+            "})();",
         ].joined(separator: "\\n")
         webView.evaluateJavaScript(script, completionHandler: nil)
     }
@@ -1706,7 +1780,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        let compactController = ["/", "/companion"].contains(
+        let compactController = ["/", "/index.html", "/companion"].contains(
             webView.url?.path ?? ""
         )
         window.setContentSize(NSSize(width: 520, height: 720))
@@ -1731,7 +1805,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
            !autoCommandTriggered {
             autoCommandTriggered = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                self.submitAutoCommandWhenRuntimeReady(command)
+                self.submitAutoCommand(command)
             }
         }
     }
@@ -1822,13 +1896,43 @@ application.run()
             backup.rmdir()
             os.replace(app_path, backup)
         os.replace(staged_app, app_path)
+        installed_new_app = True
+        if LAUNCHSERVICES_REGISTER_PATH.is_file():
+            try:
+                subprocess.run(
+                    [
+                        str(LAUNCHSERVICES_REGISTER_PATH),
+                        "-f",
+                        str(app_path),
+                    ],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            except (OSError, subprocess.CalledProcessError) as error:
+                registration_error = str(
+                    getattr(error, "stderr", "") or error
+                ).strip()
+                raise RuntimeError(
+                    "voiStarcraft2 LaunchServices registration failed"
+                    + (
+                        f": {registration_error}"
+                        if registration_error
+                        else "."
+                    )
+                ) from error
         if backup is not None:
             shutil.rmtree(backup)
             backup = None
     except Exception:
-        if backup is not None and not app_path.exists():
+        if backup is not None:
+            if app_path.exists():
+                shutil.rmtree(app_path)
             os.replace(backup, app_path)
             backup = None
+        elif installed_new_app and app_path.exists():
+            shutil.rmtree(app_path)
         raise
     finally:
         if staging_root.exists():

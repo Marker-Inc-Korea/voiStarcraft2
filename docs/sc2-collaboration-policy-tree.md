@@ -4,6 +4,11 @@ Issue #10 asks whether there is a StarCraft II equivalent of a strong BWAPI bot
 such as PurpleWave, and whether voiStarcraft2 can use that style while still
 letting the human intervene.
 
+> UI status as of 2026-08-17: this document is architecture history, not the
+> current screen specification. The current product has one compact
+> MicroMachine controller. It does not expose the dashboard/briefing or policy
+> controls proposed below.
+
 ## Short Answer
 
 There are strong StarCraft II bots and frameworks, but there is no obvious
@@ -22,9 +27,10 @@ The complete issue #10 architecture, evaluation contract, and stop conditions
 are tracked in
 [issue-10-policy-tree-collaboration.md](issue-10-policy-tree-collaboration.md).
 
-The pragmatic route is to keep the existing python-sc2 executor boundary for
-the current live commander while designing a MicroMachine-compatible modulation
-layer above a strong autonomous bot. The LLM or a future SOTA strategy selector
+The original proposal kept the python-sc2 executor boundary while designing a
+MicroMachine-compatible modulation layer above a strong autonomous bot. The
+production direction now uses patched MicroMachine; python-sc2 remains a
+command-line compatibility runtime. The LLM or a future SOTA strategy selector
 may choose a bounded strategy profile or policy modulation vector, but the
 profile can only activate deterministic policy leaves, constraints, or
 recommended Korean utterances that still pass the existing Intent DSL,
@@ -104,17 +110,22 @@ The project already has the right lower-level architecture:
 - Conservative feasibility validation.
 - Semantic SC2 planner and executor.
 - Standing orders that run in the game loop without per-frame LLM calls.
-- Web dashboard state and briefing.
+- Machine-readable state, telemetry, and generated reports. The removed web
+  dashboard/briefing is not part of the compact controller.
 
 The policy tree is the missing middle layer between "SOTA model suggests
 strategy" and "deterministic controller executes safely." It gives us a place
 to plug in behavior-tree ideas without replacing the working command pipeline.
 
-## Next Steps
+## Historical Next Steps
 
-1. Surface `CommanderPolicyTree.to_dict()` in `/api/state` for dashboard
+These were proposals for the superseded dashboard and are not current product
+commitments.
+
+1. Surface `CommanderPolicyTree.to_dict()` in `/api/state` for API/report
    observability.
-2. Add UI controls for strategy profile and manual pause.
+2. Evaluate separate UI controls for strategy profile and manual pause without
+   adding them to the current compact controller by implication.
 3. Let a bounded LLM strategy selector propose only `strategy_profile`,
    `human_override`, and `allow_autonomy`.
 4. Convert `recommended_utterances` into queued commands only after explicit

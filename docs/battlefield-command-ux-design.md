@@ -1,23 +1,39 @@
-# Battlefield Command UX Design
+# Archived Battlefield Command UX Design
 
-> 최종 수정: 2026-07-29
-> 목적: 사용자가 채팅 옆의 봇을 구경하는 것이 아니라, 실제 전장의 병력을
-> 나누고 명령하고 결과를 확인한다는 감각을 제공한다.
+> 상태: **Archived / superseded on 2026-08-17**
+>
+> 이 문서는 제거된 Battlefield dashboard UX의 설계와 과거 pre-live
+> verifier 계약을 보존한다. 아래의 operation card, 4-stage rail, four-lane
+> board, LLM 설정/briefing panel, waveform, Tactical Radio/TTS 설명은 현재
+> 제품 UI가 아니다. 현재 구현은 단일 compact controller이며, 이 문서의
+> 현재형 문장은 명시적으로 historical design으로만 읽어야 한다.
 
-## TL;DR
+## Current Compact-Only Reality
+
+- `/`, `/index.html`, `/companion`은 모두 같은 compact controller를 반환한다.
+- 화면에는 runtime 상태, 현재 명령/편성 하나, 짧은 텍스트 상태 자막,
+  text/browser-voice 입력, 긴급 후퇴만 있다.
+- 설치된 macOS 앱만 native SC2 launch receipt를 만들고 runtime을
+  auto-start할 수 있다. 일반 브라우저는 명령을 queue/publish하고 외부에서
+  시작된 runtime을 관측할 뿐 SC2를 자동 시작하지 않는다.
+- `published`는 blackboard transport 성공이다. assignment/submission은
+  중간 runtime 증거이며, 실제 SC2 효과는 current identity-matched telemetry와
+  movement, engagement, production, target, completion 또는
+  `effect_observed` 조건을 함께 충족할 때만 확인한다.
+- controller instance는 하나만 유지하며 두 번째 cockpit/browser window를
+  만들지 않는다. SC2가 전면에 있을 때 설치 앱은 controller를 숨길 수 있다.
+
+## Historical Goal
 
 voiStarcraft2의 UX 대목표는 다음 한 문장이다.
 
 > **내 명령이 어떤 병력에 배정되었고, 지금 어디까지 실행되었으며, 왜
 > 멈췄는지를 웹과 게임 안에서 즉시 확인할 수 있어야 한다.**
 
-현재 구현에는 독립 작전 ID, 병렬 스쿼드, 유닛 독점 소유권, 작전 카드,
-실행 단계, 인게임 HUD와 SSE 기반 실시간 상태 갱신이 있다. 1초 폴링은 SSE
-장애 때만 fallback으로 동작한다. 명시적 resize/reinforce/retarget/transfer는
-같은 작전 카드의 새 generation으로 반영되고, 병력 변화와 충돌 해결 증거를
-표시한다. push-to-talk 단일 transcript와 Tactical Radio readback/callout도
-기존 command dock 안에 구현되어 있다. 전장 지도 기반 작전 편집과 실제
-SC2 화면·게임 음량을 포함한 최종 live QA는 후속 검증 대상이다.
+병렬 스쿼드, 독점 소유권, generation, 인게임 HUD, telemetry 계약은 backend에
+남아 있다. 그러나 이 문서가 설계했던 작전 카드, 실행 rail, SSE four-lane
+dashboard, waveform, Tactical Radio readback/callout은 compact-only 전환에서
+사용자 화면에서 제거됐다.
 
 ## 1. Capability Boundary
 
@@ -54,24 +70,25 @@ flowchart LR
 
 | 기능 | 상태 | 정확한 의미 |
 | --- | --- | --- |
-| 명령 입력 직후 하나의 진행 UI | **Implemented** | 중복 응답 말풍선 대신 같은 command/operation UI가 계속 갱신된다. |
-| 작전별 카드와 실행 단계 | **Implemented** | 작전마다 force, target, route, lifecycle, blocker를 분리해 표시한다. |
+| 명령 입력 직후 하나의 진행 UI | **Implemented: compact** | 현재 명령 하나와 transport/runtime 상태를 같은 compact surface에서 갱신한다. |
+| 작전별 카드와 실행 단계 | **Removed from UI** | Backend operation identity는 유지되지만 카드와 4-stage rail은 렌더링하지 않는다. |
 | 병렬 작전과 독점 유닛 소유권 | **Implemented** | 서로 다른 operation ID가 동시에 존재하며 한 유닛은 한 작전에만 속한다. |
 | 인게임 작전 HUD | **Implemented** | 작전 ID, 병력, 목표, 이동, 교전, blocker 증거를 게임 안에 표시한다. |
-| 웹 상태 전송 | **Implemented: SSE primary** | `/api/events`가 state, history, MicroMachine lifecycle을 push하며 1000ms polling은 연결 장애 때만 fallback으로 동작한다. |
-| SSE 이벤트 스트리밍 | **Implemented** | append-only journal, 전역 `event_seq`, heartbeat, `Last-Event-ID` replay, snapshot 재동기화를 지원한다. |
-| 전장 상황 cockpit | **Implemented: pre-live** | 기존 Operation card를 planning/executing/completed/waiting 네 lane으로 이동시키고, canonical ownership/readiness와 operation timeline을 표시한다. 실제 SC2 화면 체감은 사용자 live QA가 최종 gate다. |
-| 음성 입력과 녹음 waveform | **Implemented: pre-live** | 한 recording session의 partial/final transcript가 같은 DOM node에서 갱신되고 text와 같은 bounded command gateway에 정확히 한 번 제출된다. |
-| 전술 radio TTS/readback | **Implemented: pre-live** | exact operation ID/generation을 포함한 계획 확인과 권위 있는 lifecycle callout을 자막으로 유지하고, 지원 브라우저에서만 우선순위 TTS로 읽는다. 실제 SC2 음량·화면 체감은 live QA가 최종 gate다. |
-| 명시적 병력 이관/편집 UX | **Implemented: pre-live** | resize, reinforce, retarget, transfer, cancel을 typed operation edit로 처리하고 기존 카드에서 전후 편성·counterpart·해결 결과를 표시한다. 실제 SC2 이관 이동은 live QA가 최종 gate다. |
+| 웹 상태 전송 | **Implemented: compact polling** | 현재 controller는 runtime/operation 상태를 주기적으로 조회한다. `/api/events`와 journal은 backend/pre-live 계약이며 four-lane UI를 의미하지 않는다. |
+| SSE 이벤트 스트리밍 | **Backend contract only** | append-only journal과 replay 로직은 남아 있지만 현재 compact controller의 표시 구조가 아니다. |
+| 전장 상황 cockpit | **Removed from UI** | planning/executing/completed/waiting four-lane board와 timeline은 현재 제품에 없다. |
+| 음성 입력과 녹음 waveform | **Reduced** | Browser speech recognition은 지원될 수 있지만 waveform과 multi-node voice session UI는 제거됐다. |
+| 전술 radio TTS/readback | **Removed from UI** | 현재는 짧은 text status captions만 있다. TTS, mute, priority scheduler, readback은 pre-live fixture 기록일 뿐이다. |
+| 명시적 병력 이관/편집 UX | **Backend only** | Typed resize/reinforce/retarget/transfer/cancel 계약은 유지되지만 card action UI는 없다. |
 | 모든 Terran 유닛 live qualification | **Live qualification pending** | 런타임 경로가 있어도 유닛군별 생산부터 HUD까지 동일 수준으로 실전 검증된 것은 아니다. |
 
-## 3. Real-Time Command Experience
+## 3. Historical Real-Time Command Experience
 
 ### 3.1 사용자가 보아야 하는 상태
 
-명령 하나는 성공 또는 실패 한 줄로 끝나면 안 된다. 같은 작전 카드가 다음
-상태를 단조 증가 방식으로 갱신해야 한다.
+제거된 dashboard 설계는 같은 작전 카드가 다음 상태를 단조 증가 방식으로
+갱신하도록 요구했다. 현재 compact controller는 카드나 rail을 렌더링하지
+않고 현재 명령의 요약 상태만 표시한다.
 
 ```mermaid
 flowchart LR
@@ -98,7 +115,7 @@ flowchart LR
 | `교전/도달` | 공격, ability, 목표 도달 등 작전 효과가 관측되었다. |
 | `대기/차단` | 필요한 병력, 건물, 자원, 시야, 경로, ability 조건이 충족되지 않았다. |
 
-### 3.2 구현된 이벤트 전송 모델
+### 3.2 Historical Event-Driven Dashboard Model
 
 명령 제출은 HTTP `POST`, 실행 피드백은 SSE로 분리되어 있다. 1초 폴링은
 SSE 연결 전 또는 장애 때만 정확성 fallback으로 활성화된다. 브라우저에서 서버로 지속
@@ -182,9 +199,10 @@ family evidence의 권위 identity는
 5. `attempted`, `submitted`, `effect`는 각각 count와 frame을 모두 가져야
    하며, bool 하나만으로 단계를 승격하지 않는다.
 
-웹에서는 이 정보를 같은 Operation card의 `유닛 실행` detail에 표시하고,
-기존 4-stage rail `해석 → 배정 → 제출 → 관측`, ARIA status, 다섯 action
-버튼을 유지한다. HUD는 compact mirror이며 operation ID/generation,
+제거된 웹 dashboard는 이 정보를 같은 Operation card의 `유닛 실행` detail에
+표시하고, 기존 4-stage rail `해석 → 배정 → 제출 → 관측`, ARIA status,
+다섯 action 버튼을 유지했다. 현재 compact controller에는 이 구조가 없다.
+HUD는 compact mirror이며 operation ID/generation,
 Squad order, family/role force, action/effect/blocker를 같은 identity로
 압축 표시한다. HUD 자체가 명령 입력 surface가 되거나 family별 새
 dashboard를 만들지는 않는다.
@@ -369,8 +387,8 @@ resize하거나 partial 허용 작전으로 명시적으로 바꾼 뒤에만 병
 있다. 검증은 generation handoff 전에 끝나므로 거부된 이관은 기존 Squad,
 owner generation, unit action을 변경하지 않는다.
 
-기존 operation card는 publish 시점의 semantic preview와 runtime 적용
-결과를 같은 카드에서 다음 형태로 표시한다.
+제거된 operation card는 publish 시점의 semantic preview와 runtime 적용
+결과를 같은 카드에서 다음 형태로 표시하도록 설계됐다.
 
 ```text
 병력 이관 확인
@@ -394,8 +412,9 @@ assault-bravo: Marine 4 -> 5
    update로 발행한다. 한쪽만 있는 transfer는 validation에서 거부한다.
 5. source와 destination의 generation은 함께 증가하고, 관계없는 sibling
    operation generation과 lifetime은 유지된다.
-6. 최신 generation보다 낮거나 generation이 없는 늦은 웹 응답은 기존
-   operation card를 되돌리지 못한다.
+6. 최신 generation보다 낮거나 generation이 없는 늦은 웹 응답은 당시
+   operation card를 되돌리지 못하도록 설계됐다. 현재 controller에도
+   stale identity가 최신 명령을 덮지 못한다는 backend 원칙은 유지된다.
 
 ## 9. 명령 충돌 규칙
 
@@ -425,7 +444,7 @@ assault-bravo 대기
 선택지: 공격 partial 허용 / 방어 축소 / Tank 추가 생산
 ```
 
-## 10. Voice-First Immersion
+## 10. Historical Voice-First Proposal
 
 몰입감은 스피커 하나를 붙이는 것으로 생기지 않는다. 음성 입력, 시각적
 편성, 짧은 readback, 실제 게임 증거가 한 흐름으로 연결되어야 한다.
@@ -440,7 +459,7 @@ flowchart LR
     H --> E[이동/교전 증거]
 ```
 
-목표 UX:
+당시 목표 UX:
 
 1. 사용자가 누르고 말하는 동안 waveform과 부분 transcript를 같은 말풍선에
    표시한다.
@@ -465,7 +484,7 @@ flowchart LR
 | P2 | 편성 완료, 이동 시작, 교전 시작, 목표 도달 |
 | P3 | 생산 진행, 일반 상태 변경. 기본은 화면에만 표시 |
 
-구현된 radio 계약:
+제거된 radio UI가 사용하던 pre-live 계약:
 
 - 한 recording session은
   `listening -> finalizing -> pending/bound -> completed|failed`로 진행하고
@@ -485,11 +504,14 @@ flowchart LR
 - blackboard scope가 바뀌면 speech, queue, dedupe, frame high-water,
   caption history를 초기화한다.
 
-이 구현은 브라우저/Node 계약 수준의 pre-live 완료다. 실제 StarCraft II
-게임 소리와 TTS의 충돌, 브라우저별 음성 품질, 유닛 행동과 callout의 체감
-일치는 사용자 live QA와 최종 release gate에서 검증한다.
+이 계약은 historical browser/Node fixture로만 남는다. 현재 compact
+controller는 Tactical Radio, TTS, mute, waveform, multi-operation readback을
+제공하지 않으므로 실제 SC2 live QA에서 해당 UI를 요구하지 않는다.
 
-## 11. Web Cockpit Target Layout
+## 11. Historical Web Cockpit Target Layout
+
+이 절 전체는 제거된 dashboard 목표 레이아웃이다. 현재 제품 화면으로
+구현되어 있지 않다.
 
 ### 11.1 Command Dock
 
@@ -548,8 +570,8 @@ flowchart LR
 14:21:12 assault-bravo Marine 4 배정 후 출동
 ```
 
-현재 구현은 기존 Battlefield Commander 카드와 시각 언어를 유지한 채 다음
-네 lane으로 같은 DOM card를 이동시킨다.
+제거된 구현은 기존 Battlefield Commander 카드와 시각 언어를 유지한 채
+다음 네 lane으로 같은 DOM card를 이동시켰다.
 
 | Lane | 의미 |
 | --- | --- |
@@ -637,8 +659,8 @@ atomic runtime revalidation 입력이 불완전하면 버튼은 focus 가능한
 `aria-disabled=true` 상태로 남고, 차단 reason을 화면과
 `aria-describedby`에 함께 제공한다.
 
-operation card는 `scope + operation_id` keyed DOM node를 lane 사이에서
-이동시킨다. fingerprint가 같으면 다시 만들지 않으며, 내용 갱신과 lane
+당시 operation card는 `scope + operation_id` keyed DOM node를 lane 사이에서
+이동시켰다. fingerprint가 같으면 다시 만들지 않으며, 내용 갱신과 lane
 reparent 뒤에도 현재 standard/resolution button focus와 timeline
 `<details>` disclosure 상태를 복원한다. 빠르게 도착하는 SSE event가 키보드
 사용자의 위치나 기술 증거 펼침 상태를 불필요하게 초기화하면 회귀다.
@@ -712,9 +734,9 @@ production/prerequisite
 
 단위 테스트나 telemetry 필드 존재만으로 live 합격 처리하지 않는다.
 
-## 15. Remaining Implementation Work
+## 15. Historical Implementation Record
 
-### Completed: Event-Driven Feedback
+### Historical: Event-Driven Dashboard Feedback
 
 - 인증된 `/api/events` SSE endpoint와 replay cursor
 - 보존 한계가 있는 append-only operation lifecycle event journal
@@ -724,7 +746,7 @@ production/prerequisite
 - event sequence, operation generation, game frame 단조성 검증
 - parse/publish와 actual execution 문구 분리 회귀 테스트
 
-### Completed: Explicit Operation Editing
+### Historical: Explicit Operation Editing UI
 
 - operation resize/reinforce/retarget/transfer semantic intent
 - source/destination atomic transfer pair validation
@@ -735,7 +757,7 @@ production/prerequisite
 - ownership handoff, stale action cleanup, transferred count runtime telemetry
 - clean build와 자동 테스트 완료 후 실제 SC2 이동 관측은 수동 live QA gate
 
-### Completed: Situational Cockpit and Operation Timeline
+### Historical: Removed Situational Cockpit and Operation Timeline
 
 - 기존 Battlefield Commander visual language와 command dock 유지
 - 정확히 네 단계 `해석 / 배정 / 제출 / 관측`과 다섯 card action 유지
@@ -764,7 +786,7 @@ production/prerequisite
   reduced-motion, forced-colors, accessibility role 회귀 검증
 - 실제 게임에서 카드와 유닛 행동의 체감 일치는 사용자 live QA가 최종 gate
 
-### Completed: Voice Tactical Loop
+### Historical: Removed Voice Tactical Loop
 
 - partial/final transcript와 pending/result를 같은 voice session node에서 갱신
 - final/onend 순서와 무관한 exactly-once command submission

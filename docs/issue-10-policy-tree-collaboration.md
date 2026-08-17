@@ -3,6 +3,11 @@
 Issue #10 builds a production contract for injecting human intent into a strong
 StarCraft II bot without turning an LLM into a per-frame unit controller.
 
+> Current UI boundary: the policy/telemetry contracts in this document remain
+> backend architecture. The shipped UI is one compact MicroMachine controller,
+> not the legacy dashboard, mode selector, LLM settings panel, or briefing UI
+> described by older issue history.
+
 ## Capability Boundary
 
 ```text
@@ -37,7 +42,7 @@ provider output.
 | #13 | Added the deep policy modulation DSL and raw-control rejection. |
 | #14 | Added the provider compiler for LLM/UI/replay/neural payloads with refusal and clarification results. |
 | #15 | Added MicroMachine sidecar/blackboard protocol contracts, manager hook mapping, TTL, rollback, and failure modes. |
-| #16 | Adds dashboard observability and baseline-vs-modulated evaluation contracts. |
+| #16 | Added machine-readable observability and baseline-vs-modulated evaluation contracts. Its historical dashboard UI is removed. |
 | #22 | Adds the concrete filesystem runtime bridge and MicroMachine C++ integration kit. |
 | #26 | Adds long-run soak/sign-off gates for full-game MicroMachine collaboration. |
 | 10.12 | Adds map/race/difficulty matrix operations, self-hosted soak CI, and concrete neural representation adapter attachment. |
@@ -94,23 +99,23 @@ reports consumption from `MicroMachineTelemetry.active_modulation_ids`. It does
 not read the SC2 screen, inject keyboard/mouse input, or call python-sc2 raw
 runtime actions.
 
-`starcraft_commander.web_gui` is the default human cockpit for this sidecar.
-Top-level chat and browser voice input route to
-`POST /api/micromachine/modulate` unless the user explicitly switches to
-**Legacy python-sc2 commander** mode. The MicroMachine production route uses
-an LLM forced-tool provider that returns the same bounded DSL contract as other
-providers. The deterministic keyword provider is available only through an
-explicit smoke/test opt-in and is labeled `source=smoke_keyword`, never
-`source=llm`. Legacy `/api/command` remains available only as an opt-in
-compatibility path and must not be used as MicroMachine production sign-off
-evidence.
+`starcraft_commander.web_gui` serves the same compact controller at `/`,
+`/index.html`, and `/companion`. Text and browser voice input route to
+`POST /api/micromachine/modulate`; there is no legacy mode selector. The
+MicroMachine production route uses an LLM forced-tool provider that returns the
+same bounded DSL contract as other providers. The deterministic keyword
+provider is available only through an explicit smoke/test opt-in and is labeled
+`source=smoke_keyword`, never `source=llm`. Legacy `/api/command` remains
+compatibility infrastructure and must not be used as MicroMachine production
+sign-off evidence.
 
-Runtime startup is also cockpit-scoped. `/api/runtime/start` and
-`/api/runtime/status` use the selected mode: MicroMachine mode starts the
-patched MicroMachine smoke/live wrapper against the selected blackboard
-directory, while legacy mode starts the older python-sc2 demo only after a key
-has been saved. This removes the previous split where MicroMachine text
-injection and runtime launch appeared to be separate products.
+Runtime startup is installed-app scoped. The macOS app provides the native SC2
+launch receipt and may call `/api/runtime/start`; an ordinary browser has no
+native bridge and only queues/publishes commands or observes a runtime started
+elsewhere. The compact controller keeps `published` separate from actual SC2
+runtime progress. Assignment and submission are intermediate evidence; actual
+success additionally requires current identity-matched movement, engagement,
+production, target arrival, completion, or `effect_observed` telemetry.
 
 `starcraft_commander.micromachine_chat_modulation` is the safe in-game chat
 boundary. It can route only sidecar/telemetry-supplied `chat_events` into the
@@ -162,8 +167,9 @@ Issue #10 is complete when:
 3. Provider output compiles into the DSL without raw runtime control.
 4. Sidecar/blackboard contracts cover TTL, rollback, telemetry, failure modes,
    manager hook mapping, and stale/invalid rejection.
-5. Dashboard snapshots expose active modulation state without requiring SC2 or
-   MicroMachine to be installed.
+5. Machine-readable observability snapshots expose active modulation state
+   without requiring SC2 or MicroMachine to be installed. This is a data
+   contract, not the removed dashboard UI.
 6. Evaluation contracts compare baseline MicroMachine vs modulated
    MicroMachine using win/loss, crash rate, intent compliance, and intervention
    latency.

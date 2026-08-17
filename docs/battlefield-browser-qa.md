@@ -1,93 +1,59 @@
-# Battlefield Commander Browser Qualification
+# Compact Controller Browser Qualification
 
-This gate preserves the existing Battlefield Commander visual direction while
-making browser, keyboard, accessibility, and responsive behavior
-release-blocking.
+This document describes the current compact-only browser contract. The former
+Battlefield Commander dashboard, operation cards, four lanes, card actions,
+LLM settings/briefing panels, and Tactical Radio UI are removed. Historical
+`battlefield_browser_gate.py` code and screenshot artifacts may still be used
+by trusted exact-SHA provenance workflows, but they are not a specification for
+the current product surface and must not be used to restore the removed UI.
 
 ## Scope
 
-The runner starts the real localhost `WebGuiServer` on an ephemeral port.
-Only the bridge/runtime boundary and browser speech APIs use deterministic
-fixtures. The browser still submits commands over HTTP, consumes status from
-the server, and renders the production page.
+The current qualification starts the real localhost `WebGuiServer` on an
+ephemeral port and checks the production compact page. `/`, `/index.html`, and
+`/companion` must return the same page.
 
-The gate verifies:
+The current contract verifies:
 
-- Chromium desktop `1440x1100` and mobile `390x844`.
-- Exactly four visible operation lanes, visible operation cards, four visible
-  stages per card, and all five visible standard card actions. Hidden,
-  `display:none`, transparent, and zero-size structural elements fail the gate.
-- `published` is not rendered as executing without action evidence.
-- Keyboard command submission, operation selection, lane navigation, all five
-  operation actions, and tactical-radio mute.
-- Visible and retained focus, unique DOM IDs, and no horizontal overflow.
-- axe-core serious/critical violations equal zero.
-- Real `prefers-reduced-motion` and forced-colors browser contexts.
-- Two overlapping voice submissions, one aggregate voice/pending surface,
-  unique pending identities, and independent operation identities.
-- Tracked screenshots with a per-pixel channel tolerance of `12` and a maximum
-  changed-pixel ratio of `0.01`.
+- One compact current-command surface with runtime status, composition summary,
+  short text captions, text/browser-voice input, and emergency retreat.
+- Removed legacy labels and structures are absent, including `전장 대시보드`,
+  `LLM 설정`, `Legacy python-sc2 commander`, operation cards, four lanes, and
+  `window.open(...)`.
+- `queued` and `published` remain transport states. They are not rendered as an
+  actual SC2 effect without matching runtime telemetry.
+- In an ordinary browser, command submission queues/publishes through
+  `/api/micromachine/modulate` without starting SC2 because no native launch
+  bridge is available.
+- In the installed macOS app, the same page can use the native bridge and launch
+  receipt to auto-start the runtime while retaining one controller window.
+- The current-command selector does not let stale telemetry or an unrelated
+  standing operation replace the latest user command.
 
-Actual microphone quality, speaker quality, SC2 client rendering, gameplay
-feel, and human multiplayer are not automated by this gate.
+Actual microphone quality, SC2 client rendering, gameplay feel, and human
+multiplayer are not automated by this browser qualification.
 
 ## Run
 
-Install the pinned Python environment and the pinned Playwright Chromium:
+Run the compact page and browser-script regressions:
 
 ```bash
-uv sync --locked --extra browser
-uv run playwright install --with-deps chromium
+.venv/bin/python -m pytest -q tests/test_companion_browser.py
+.venv/bin/python -m pytest -q \
+  tests/test_web_gui.py::WebGuiServerHTTPTest::test_index_page_serves_only_compact_controller \
+  tests/test_web_gui.py::WebGuiServerHTTPTest::test_companion_page_is_compact_and_uses_existing_runtime_apis \
+  tests/test_web_gui.py::WebGuiServerHTTPTest::test_all_controller_routes_serve_the_same_compact_page
 ```
 
-Run the gate against an exact repository commit and admitted MicroMachine build
-identity:
+Run the installed-app bootstrap and single-window regressions separately:
 
 ```bash
-uv run python -m starcraft_commander.battlefield_browser_gate \
-  --repository-sha "$(git rev-parse HEAD)" \
-  --build-identity "sha256:<64 lowercase hex characters>" \
-  --artifact-dir battlefield-browser-artifacts
+.venv/bin/python -m pytest -q tests/test_local_cockpit.py
 ```
 
-Missing dependencies, missing browser binaries, Chromium launch failures,
-missing baselines, assertion failures, or visual threshold failures return a
-non-zero exit status. The release CI job must not convert that failure to a
-skip or warning.
-
-For local validation only, an already-installed regular executable may be
-selected explicitly with `--chromium-executable <path>`. CI does not use this
-override; it installs the Playwright-pinned Chromium and fails if that install
-or launch is unavailable.
-
-## Baseline Updates
-
-Baseline changes are intentional hosted review events, not a release-gate
-write mode. The authoritative gate only reads tracked baselines.
-
-1. Add an unprivileged, PR-only diagnostic step that runs the exact candidate
-   on GitHub-hosted Chromium and uploads `screenshots/desktop.png` and
-   `screenshots/mobile.png` even when the tracked visual comparison fails.
-2. Bind the diagnostic manifest to the candidate SHA, workflow SHA, viewport
-   sizes, Playwright/Chromium versions, and both PNG SHA-256 digests.
-3. Inspect both hosted screenshots before replacing
-   `tests/browser_baselines/desktop.png` and
-   `tests/browser_baselines/mobile.png`.
-4. Remove the temporary generation step, rerun the normal read-only gate, and
-   include the baseline rationale in the PR.
-5. Require the exact-SHA independent reviewer to approve the resulting visual
-   contract.
-
-## Artifacts
-
-The artifact directory contains:
-
-- `battlefield-browser-gate.json`
-- `battlefield-browser-gate.md`
-- `screenshots/desktop.png`
-- `screenshots/mobile.png`
-- `diffs/desktop.png`
-- `diffs/mobile.png`
-
-The JSON and Markdown reports bind the result to the repository SHA and
-MicroMachine build identity. They always state that manual SC2 live QA remains.
+These tests verify markup, routing, queueing, native-bridge behavior, and window
+policy. They do not replace the actual visible-SC2 live gate. A live pass still
+requires current matching operation identity and telemetry-backed assignment
+or submission plus the command-specific production, movement, engagement,
+target, completion, or `effect_observed` evidence. Assignment or submission
+alone is not a gameplay-success verdict.

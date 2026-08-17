@@ -1,9 +1,10 @@
 # Roadmap: LLM Interpreter + Web GUI + Event Memory
 
-Continuation checkpoint for this work phase. If a session dies mid-way, the
-next agent resumes from here: each item below is updated as it completes, and
-each milestone is committed to git so `git log` + this file are the source of
-truth. Start by running `python3 -m pytest -q` and `git status --short`.
+> **Archived historical roadmap.** This file records the 2026-06 legacy
+> LLM/dashboard implementation phase. It is not a continuation checkpoint and
+> does not describe the current compact-only product UI. In particular, the
+> current controller has no LLM setup panel, strategic briefing panel,
+> operation-card dashboard, or legacy runtime selector.
 
 ## Goal (user directive, 2026-06-13)
 
