@@ -123,3 +123,151 @@ window.fetch = function(url) {
         )
         self.assertNotIn("커맨더 채팅", result.stdout)
         self.assertNotIn('data-browser-errors="true"', result.stdout)
+
+    def test_native_submit_starts_runtime_then_preserves_exact_command(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        page = render_companion_page()
+        script_start = page.index('  "use strict";')
+        script_end = page.index(
+            '  document.getElementById("runtime-start")',
+            script_start,
+        )
+        command_script = page[script_start:script_end]
+        harness = r"""
+const assert = require("assert");
+
+class FakeElement {
+  constructor() {
+    this.children = [];
+    this.dataset = {};
+    this.style = {};
+    this.textContent = "";
+    this.value = "";
+    this.scrollTop = 0;
+    this.scrollHeight = 0;
+  }
+  appendChild(child) {
+    this.children.push(child);
+    this.scrollHeight = this.children.length;
+    return child;
+  }
+  removeChild(child) {
+    this.children.splice(this.children.indexOf(child), 1);
+  }
+  get firstChild() {
+    return this.children[0] || null;
+  }
+}
+
+const nodes = {
+  "caption-list": new FakeElement(),
+  "command-feedback": new FakeElement(),
+  "command-input": new FakeElement(),
+  "operation-composition": new FakeElement(),
+  "operation-goal": new FakeElement(),
+  "operation-stage": new FakeElement(),
+  "runtime-status": new FakeElement()
+};
+global.document = {
+  createElement: function() { return new FakeElement(); },
+  getElementById: function(id) { return nodes[id]; }
+};
+const requestOrder = [];
+global.window = {
+  location: { search: "" },
+  setTimeout: function() { return 1; },
+  webkit: {
+    messageHandlers: {
+      sc2Launch: {
+        postMessage: function(payload) {
+          requestOrder.push("native");
+          window.voiNativeSC2LaunchResolved({
+            nonce: payload.nonce,
+            accepted: true
+          });
+        }
+      }
+    }
+  }
+};
+function response(payload) {
+  return Promise.resolve({
+    ok: true,
+    status: 200,
+    text: function() { return Promise.resolve(JSON.stringify(payload)); }
+  });
+}
+global.fetch = function(url, options) {
+  const path = String(url || "").split("?")[0];
+  if (path === "/api/runtime/start") {
+    requestOrder.push("runtime");
+    return response({ status: "starting", runtime_attached: true });
+  }
+  if (path === "/api/micromachine/modulate") {
+    requestOrder.push("command");
+    global.commandRequest = JSON.parse(options.body);
+    return response({
+      status: "queued",
+      async_publish: true,
+      consumption_status: "pending_compile",
+      update_id: global.commandRequest.update_id
+    });
+  }
+  return Promise.reject(new Error("unexpected fetch: " + path));
+};
+"""
+        scenario = r"""
+(async function() {
+  renderRuntime({
+    status: "idle",
+    runtime_attached: false,
+    telemetry_current_for_process: false,
+    telemetry_stale_or_detached: true
+  });
+  await submitCommandWithRuntime("SCV를 생산한다");
+  assert.deepStrictEqual(requestOrder, ["native", "runtime", "command"]);
+  assert.strictEqual(global.commandRequest.text, "SCV를 생산한다");
+  assert.strictEqual(nodes["operation-goal"].textContent, "SCV를 생산한다");
+  assert.strictEqual(nodes["operation-stage"].textContent, "명령 해석 중");
+
+  const detached = selectCommand({
+    status: "published",
+    consumption_status: "detached_telemetry",
+    runtime_attached: false,
+    telemetry_current_for_process: false,
+    telemetry_stale_or_detached: true,
+    latest_request: {
+      update_id: global.commandRequest.update_id,
+      command_text: "SCV를 생산한다",
+      consumption_status: "detached_telemetry"
+    },
+    operations: []
+  });
+  assert.strictEqual(
+    operationStage(detached, {
+      runtime_attached: false,
+      telemetry_current_for_process: false,
+      telemetry_stale_or_detached: true
+    }),
+    "SC2 실행 대기"
+  );
+})().catch(function(error) {
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+});
+"""
+        with tempfile.NamedTemporaryFile("w", suffix=".js") as script_file:
+            script_file.write(harness)
+            script_file.write(command_script)
+            script_file.write(scenario)
+            script_file.flush()
+            result = subprocess.run(
+                [node, script_file.name],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)

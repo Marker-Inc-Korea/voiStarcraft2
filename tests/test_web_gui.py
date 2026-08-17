@@ -1352,8 +1352,11 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "async_publish: true",
             "SpeechRecognition",
             "selectCommand",
+            "submitCommandWithRuntime",
+            "ensureRuntimeForCommand",
             "latest_request",
             "명령 해석 중",
+            "SC2 실행 대기",
             "commandIdentity",
             'status: "queued"',
             'consumption_status: "pending_compile"',
@@ -1435,6 +1438,14 @@ const matching = selectCommand({
 assert.strictEqual(matching.operation_id, "scv-production");
 assert.strictEqual(operationGoal(matching), "SCV를 생산한다");
 assert.strictEqual(operationStage(matching), "명령 전달");
+assert.strictEqual(
+  operationStage(matching, {
+    runtime_attached: false,
+    telemetry_current_for_process: false,
+    telemetry_stale_or_detached: true
+  }),
+  "SC2 실행 대기"
+);
 
 const splitOwner = selectCommand({
   status: "published",

@@ -299,6 +299,8 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
   var captionKeys = {};
   var recognition = null;
   var recording = false;
+  var latestRuntimeStatus = null;
+  var runtimeStartPromise = null;
 
   function endpoint(path, values) {
     var query = new URLSearchParams(values || {});
@@ -360,6 +362,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
   }
 
   function renderRuntime(status) {
+    latestRuntimeStatus = status || {};
     var node = document.getElementById("runtime-status");
     var label = runtimeLabel(status || {});
     var connected = status &&
@@ -476,7 +479,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     );
   }
 
-  function operationStage(operation) {
+  function operationStage(operation, runtimeStatus) {
     var intervention = operation.intervention || {};
     var execution = intervention.command_execution || {};
     var requestIdentity = commandIdentity(operation);
@@ -505,12 +508,29 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     if (state === "blocked" || disposition === "blocked") { return "차단"; }
     if (state === "cancelled" || disposition === "cancelled") { return "취소"; }
     if (state === "superseded" || disposition === "superseded") { return "교체"; }
-    if (consumption === "consumed") { return "정책 적용"; }
-    if (consumption === "pending_telemetry") { return "실행 확인 중"; }
-    if (consumption === "detached_telemetry") { return "연결 확인 필요"; }
     if (consumption === "pending_compile" || transport === "queued") {
       return "명령 해석 중";
     }
+    var runtimeDetached = runtimeStatus && (
+      runtimeStatus.runtime_attached === false ||
+      runtimeStatus.telemetry_current_for_process === false ||
+      runtimeStatus.telemetry_stale_or_detached === true
+    );
+    if (
+      runtimeDetached &&
+      (
+        consumption === "consumed" ||
+        consumption === "pending_telemetry" ||
+        consumption === "detached_telemetry" ||
+        state === "published" ||
+        transport === "published"
+      )
+    ) {
+      return "SC2 실행 대기";
+    }
+    if (consumption === "consumed") { return "정책 적용"; }
+    if (consumption === "pending_telemetry") { return "실행 확인 중"; }
+    if (consumption === "detached_telemetry") { return "연결 확인 필요"; }
     if (state === "published" || transport === "published") {
       return "명령 전달";
     }
@@ -622,7 +642,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       return;
     }
     var goal = operationGoal(operation);
-    var stage = operationStage(operation);
+    var stage = operationStage(operation, data);
     var composition = operationComposition(operation);
     var selectedUpdateId = commandIdentity(operation);
     if (
@@ -660,6 +680,11 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       );
       if (stage === "효과 확인" || stage === "SC2 실행") {
         setFeedback("명령이 SC2 런타임에 적용되었습니다.", false);
+      } else if (stage === "SC2 실행 대기") {
+        setFeedback(
+          "명령 해석은 완료됐습니다. SC2 / MicroMachine 연결 후 실행됩니다.",
+          false
+        );
       } else if (stage === "차단") {
         setFeedback("명령 실행이 차단되었습니다. 전술 자막을 확인하세요.", true);
       } else if (lastSubmittedUpdateId === selectedUpdateId) {
@@ -746,20 +771,64 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       renderRuntime(status);
       setFeedback("시작 요청을 보냈습니다. 연결될 때까지 상태를 추적합니다.", false);
       window.setTimeout(refreshAll, 700);
+      return status;
     }).catch(function(error) {
       setFeedback("시작 실패: " + error.message, true);
       appendCaption("시작 실패: " + error.message, "danger");
+      throw error;
     });
+  }
+
+  function runtimeIsConnectedOrStarting(status) {
+    status = status || {};
+    return (
+      (
+        status.runtime_attached === true &&
+        status.telemetry_current_for_process === true
+      ) ||
+      status.status === "starting" ||
+      status.status === "running"
+    );
+  }
+
+  function nativeSC2LaunchAvailable() {
+    return Boolean(
+      window.webkit &&
+      window.webkit.messageHandlers &&
+      window.webkit.messageHandlers.sc2Launch &&
+      typeof window.webkit.messageHandlers.sc2Launch.postMessage === "function"
+    );
+  }
+
+  function ensureRuntimeForCommand() {
+    if (runtimeIsConnectedOrStarting(latestRuntimeStatus)) {
+      return Promise.resolve(latestRuntimeStatus);
+    }
+    if (!nativeSC2LaunchAvailable()) {
+      return Promise.resolve(latestRuntimeStatus);
+    }
+    if (runtimeStartPromise) { return runtimeStartPromise; }
+    setFeedback(
+      "SC2 / MicroMachine을 시작한 뒤 명령을 전달합니다.",
+      false
+    );
+    runtimeStartPromise = requestNativeSC2Launch()
+      .then(startRuntimeWithNonce)
+      .then(function(status) {
+        runtimeStartPromise = null;
+        return status;
+      }, function(error) {
+        runtimeStartPromise = null;
+        throw error;
+      });
+    return runtimeStartPromise;
   }
 
   function startRuntime() {
     setFeedback("StarCraft II 실제 창과 렌더링을 확인하는 중입니다.", false);
-    return requestNativeSC2Launch()
-      .then(startRuntimeWithNonce)
-      .catch(function(error) {
-        setFeedback("시작 실패: " + error.message, true);
-        appendCaption("시작 실패: " + error.message, "danger");
-      });
+    return ensureRuntimeForCommand().catch(function() {
+      return null;
+    });
   }
 
   function responseLanguage(text) {
@@ -874,7 +943,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
         }
       }
       document.getElementById("command-input").value = finalText || interimText;
-      if (finalText.trim()) { submitCommand(finalText); }
+      if (finalText.trim()) { submitCommandWithRuntime(finalText); }
     };
     recognition.onerror = function(event) {
       setFeedback("음성 입력 실패: " + String(event.error || "unknown"), true);
@@ -893,14 +962,29 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     });
   }
 
+  function submitCommandWithRuntime(text) {
+    var cleaned = String(text || "").trim();
+    if (!cleaned) { return Promise.resolve(); }
+    return ensureRuntimeForCommand()
+      .catch(function(error) {
+        appendCaption(
+          "SC2 자동 시작 실패. 명령은 대기열에 보존합니다: " + error.message,
+          "warning"
+        );
+      })
+      .then(function() {
+        return submitCommand(cleaned);
+      });
+  }
+
   document.getElementById("runtime-start").addEventListener("click", startRuntime);
   document.getElementById("runtime-refresh").addEventListener("click", refreshAll);
   document.getElementById("retreat-button").addEventListener("click", function() {
-    submitCommand("긴급 전군 즉시 후퇴해");
+    submitCommandWithRuntime("긴급 전군 즉시 후퇴해");
   });
   document.getElementById("command-form").addEventListener("submit", function(event) {
     event.preventDefault();
-    submitCommand(document.getElementById("command-input").value);
+    submitCommandWithRuntime(document.getElementById("command-input").value);
   });
 
   setupVoice();

@@ -393,7 +393,9 @@ opens it. It never writes the key, private endpoint, or private model into this
 repository. Later launches only require double-clicking **voiStarcraft2** in
 `~/Applications`; preparation is idempotent and the browser opens after the
 localhost cockpit is healthy.
-StarCraft II itself starts only after **SC2 / MicroMachine 시작** is clicked.
+StarCraft II starts after **SC2 / MicroMachine 시작** is clicked or when the
+first text/voice command is submitted from the installed app while the runtime
+is disconnected.
 The installed app and every controller URL use the same compact tactical
 controller and never create a second cockpit window. The controller keeps only runtime truth,
 current operation/composition, tactical captions, text/voice command input,
@@ -406,8 +408,9 @@ once. The tactical caption panel retains status updates and,
 when browser TTS is available and unmuted, reads structured plan confirmation
 and selected authoritative assignment/movement/engagement/blocker events. A
 plan confirmation never claims that units moved; movement is announced only
-after matching-generation runtime evidence. **SC2 / MicroMachine 시작** calls
-`POST /api/runtime/start` and launches
+after matching-generation runtime evidence. **SC2 / MicroMachine 시작** and
+the installed app's first disconnected command call `POST /api/runtime/start`
+and launch
 `integrations/micromachine/scripts/smoke_macos_local.sh` with the current
 blackboard directory, so StarCraft II and patched MicroMachine can be started
 from the UI when the local SC2/MicroMachine build prerequisites are present.
