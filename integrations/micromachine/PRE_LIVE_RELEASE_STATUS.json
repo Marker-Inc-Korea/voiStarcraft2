@@ -95,7 +95,7 @@
       "The checked-in deterministic manifest defines exactly fourteen executable pre-live journeys."
     ],
     "live_qa_pending": [
-      "Actual StarCraft II movement, engagement, browser and HUD consistency, and tactical voice audio remain manual observations.",
+      "Actual StarCraft II movement, engagement, compact-controller and HUD consistency, and operator feel remain manual observations.",
       "No automated report may set live qualified or clear manual_live_qa_remaining."
     ],
     "proposed_deferred": [
