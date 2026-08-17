@@ -919,6 +919,47 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     );
   }
 
+  function runtimeIsReadyForCommand(status) {
+    status = status || {};
+    return (
+      status.runtime_attached === true &&
+      status.telemetry_current_for_process === true
+    );
+  }
+
+  function waitForRuntimeCommandReady(status) {
+    var deadline = Date.now() + NATIVE_SC2_LAUNCH_TIMEOUT_MS;
+    return new Promise(function(resolve, reject) {
+      function inspect(current) {
+        current = current || {};
+        if (runtimeIsReadyForCommand(current)) {
+          resolve(current);
+          return;
+        }
+        if (
+          current.status === "failed" ||
+          current.status === "blocked" ||
+          current.status === "disabled"
+        ) {
+          reject(new Error(
+            String(current.error || "SC2 / MicroMachine runtime start was rejected.")
+          ));
+          return;
+        }
+        if (Date.now() >= deadline) {
+          reject(new Error(
+            "SC2 / MicroMachine 연결 확인 시간이 초과되었습니다."
+          ));
+          return;
+        }
+        window.setTimeout(function() {
+          refreshRuntime().then(inspect);
+        }, 500);
+      }
+      inspect(status);
+    });
+  }
+
   function nativeSC2LaunchAvailable() {
     return Boolean(
       window.webkit &&
@@ -974,10 +1015,10 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     return "en";
   }
 
-  function submitCommand(text) {
+  function stageCommand(text) {
     var originalText = String(text || "");
     var cleaned = originalText.trim();
-    if (!cleaned) { return Promise.resolve(); }
+    if (!cleaned) { return null; }
     submitSequence += 1;
     var submissionSequence = submitSequence;
     operationMutationEpoch += 1;
@@ -1005,6 +1046,32 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     if (ownsInputValue) {
       inputNode.value = "";
     }
+    return {
+      original_text: originalText,
+      cleaned_text: cleaned,
+      sequence: submissionSequence,
+      update_id: updateId,
+      input_node: inputNode,
+      submitted_input_value: submittedInputValue,
+      owns_input_value: ownsInputValue
+    };
+  }
+
+  function restoreStagedCommand(staged) {
+    if (
+      staged.owns_input_value &&
+      !staged.input_node.value
+    ) {
+      staged.input_node.value = staged.submitted_input_value;
+    }
+  }
+
+  function submitCommand(text, staged) {
+    staged = staged || stageCommand(text);
+    if (!staged) { return Promise.resolve(); }
+    var cleaned = staged.cleaned_text;
+    var submissionSequence = staged.sequence;
+    var updateId = staged.update_id;
     setFeedback("MyProxy가 명령을 해석하고 있습니다...", false);
     return fetch(endpoint("/api/micromachine/modulate"), {
       method: "POST",
@@ -1050,9 +1117,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     }).catch(function(error) {
       if (submissionSequence !== submitSequence) { return; }
       pendingCommand = null;
-      if (ownsInputValue && !inputNode.value) {
-        inputNode.value = submittedInputValue;
-      }
+      restoreStagedCommand(staged);
       setFeedback("명령 실패: " + error.message, true);
       appendCaption("명령 실패: " + error.message, "danger");
       window.setTimeout(refreshOperation, 500);
@@ -1149,13 +1214,33 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     var originalText = String(text || "");
     var cleaned = originalText.trim();
     if (!cleaned) { return Promise.resolve(); }
-    ensureRuntimeForCommand().catch(function(error) {
-      appendCaption(
-        "SC2 자동 시작 실패. 명령은 대기열에 보존합니다: " + error.message,
-        "warning"
-      );
-    });
-    return submitCommand(originalText);
+    if (
+      runtimeIsReadyForCommand(latestRuntimeStatus) ||
+      !nativeSC2LaunchAvailable()
+    ) {
+      return submitCommand(originalText);
+    }
+    var staged = stageCommand(originalText);
+    setFeedback(
+      "SC2를 시작하고 있습니다. 명령은 이 창에 보존됩니다.",
+      false
+    );
+    return ensureRuntimeForCommand()
+      .then(waitForRuntimeCommandReady)
+      .then(function() {
+        return submitCommand("", staged);
+      })
+      .catch(function(error) {
+        if (staged.sequence !== submitSequence) { return; }
+        pendingCommand = null;
+        restoreStagedCommand(staged);
+        var message = (
+          "SC2 자동 시작 실패. 명령을 전송하지 않았습니다: " +
+          error.message
+        );
+        setFeedback(message, true);
+        appendCaption(message, "warning");
+      });
   }
 
   document.getElementById("runtime-start").addEventListener("click", startRuntime);

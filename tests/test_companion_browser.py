@@ -224,7 +224,11 @@ global.document = {
 const requestOrder = [];
 global.window = {
   location: { search: "" },
-  setTimeout: function() { return 1; },
+  setTimeout: function(callback) {
+    setImmediate(callback);
+    return 1;
+  },
+  clearTimeout: function() {},
   webkit: {
     messageHandlers: {
       sc2Launch: {
@@ -250,7 +254,19 @@ global.fetch = function(url, options) {
   const path = String(url || "").split("?")[0];
   if (path === "/api/runtime/start") {
     requestOrder.push("runtime");
-    return response({ status: "starting", runtime_attached: true });
+    return response({
+      status: "starting",
+      runtime_attached: true,
+      telemetry_current_for_process: false
+    });
+  }
+  if (path === "/api/runtime/status") {
+    requestOrder.push("runtime-status");
+    return response({
+      status: "connected",
+      runtime_attached: true,
+      telemetry_current_for_process: true
+    });
   }
   if (path === "/api/micromachine/modulate") {
     requestOrder.push("command");
@@ -274,7 +290,10 @@ global.fetch = function(url, options) {
     telemetry_stale_or_detached: true
   });
   await submitCommandWithRuntime("SCV를 생산한다");
-  assert.deepStrictEqual(requestOrder, ["native", "command", "runtime"]);
+  assert.deepStrictEqual(
+    requestOrder,
+    ["native", "runtime", "runtime-status", "runtime-status", "command"]
+  );
   assert.strictEqual(global.commandRequest.text, "SCV를 생산한다");
   assert.strictEqual(nodes["operation-goal"].textContent, "SCV를 생산한다");
   assert.strictEqual(nodes["operation-stage"].textContent, "명령 해석 중");
@@ -417,7 +436,7 @@ global.window = {
 
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_runtime_start_rejection_still_queues_command(self):
+    def test_runtime_start_rejection_restores_command_without_publishing(self):
         node = shutil.which("node")
         if node is None:
             self.skipTest("node is not installed")
@@ -527,16 +546,17 @@ global.fetch = function(url, options) {
         scenario = r"""
 (async function() {
   nodes["command-input"].value = "  SCV를 생산한다  ";
-  await submitCommandWithRuntime(nodes["command-input"].value);
+  const submitPromise = submitCommandWithRuntime(nodes["command-input"].value);
   await Promise.resolve();
-  assert.deepStrictEqual(requestOrder, ["native", "command", "runtime"]);
-  assert.strictEqual(global.commandRequest.text, "SCV를 생산한다");
+  assert.deepStrictEqual(requestOrder, ["native", "runtime"]);
+  assert.strictEqual(global.commandRequest, undefined);
   assert.strictEqual(typeof resolveRuntimeStart, "function");
   resolveRuntimeStart();
-  await new Promise(function(resolve) { setImmediate(resolve); });
+  await submitPromise;
+  assert.strictEqual(nodes["command-input"].value, "  SCV를 생산한다  ");
   assert.ok(
     nodes["caption-list"].children.some(function(node) {
-      return node.textContent.indexOf("명령은 대기열에 보존합니다") !== -1;
+      return node.textContent.indexOf("명령을 전송하지 않았습니다") !== -1;
     })
   );
 })().catch(function(error) {
