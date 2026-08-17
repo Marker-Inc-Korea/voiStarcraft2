@@ -109,7 +109,7 @@ Open a follow-up implementation issue only for a bounded Suvorov prototype:
 
 1. Add race-selectable local harness.
 2. Add a Suvorov filesystem blackboard reader.
-3. Emit telemetry equivalent to the MicroMachine dashboard contract.
+3. Emit telemetry equivalent to the MicroMachine machine-readable evidence contract.
 4. Hook a minimal consumed set: combat aggression/defense, production priority,
    economy gas/worker bias, and supply buffer.
 5. Run Terran, Protoss, and Zerg smoke before any backend promotion.

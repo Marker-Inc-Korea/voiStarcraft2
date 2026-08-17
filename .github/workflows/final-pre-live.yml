@@ -1472,16 +1472,16 @@ jobs:
                   viewports = child["viewports"]
                   expected_viewport_evidence = {
                       "desktop": {
-                          "actions": 20,
-                          "cards": 4,
-                          "lanes": 4,
-                          "stages": 16,
+                          "actions": 5,
+                          "cards": 1,
+                          "lanes": 1,
+                          "stages": 1,
                       },
                       "mobile": {
-                          "actions": 50,
-                          "cards": 10,
-                          "lanes": 4,
-                          "stages": 40,
+                          "actions": 5,
+                          "cards": 1,
+                          "lanes": 1,
+                          "stages": 1,
                       },
                   }
                   if (

@@ -965,10 +965,10 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
                 self.assertIn(evidence, source)
         self.assertIn('"desktop": {', source)
         self.assertIn('"mobile": {', source)
-        self.assertIn('"actions": 20', source)
-        self.assertIn('"actions": 50', source)
-        self.assertIn('"cards": 10', source)
-        self.assertIn('"stages": 40', source)
+        self.assertEqual(2, source.count('"actions": 5'))
+        self.assertEqual(2, source.count('"cards": 1'))
+        self.assertEqual(2, source.count('"lanes": 1'))
+        self.assertEqual(2, source.count('"stages": 1'))
         self.assertIn(
             'viewport["actions"] != expected["actions"]',
             source,
@@ -992,7 +992,7 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
                     "stages": 16,
                 },
             ),
-            ("integral float", {"actions": 50.0}),
+            ("integral float", {"actions": 5.0}),
             ("boolean count", {"serious_critical_count": False}),
         )
 
@@ -1107,24 +1107,24 @@ class FinalPreLiveWorkflowContractTests(unittest.TestCase):
             "all_visible": True,
             "actual_sha256": "a" * 64,
             "baseline_sha256": "b" * 64,
-            "lanes": 4,
+            "lanes": 1,
             "serious_critical_count": 0,
             "visual_diff_ratio": 0.001,
         }
         return [
             {
                 **common,
-                "actions": 20,
-                "cards": 4,
+                "actions": 5,
+                "cards": 1,
                 "name": "desktop",
-                "stages": 16,
+                "stages": 1,
             },
             {
                 **common,
-                "actions": 50,
-                "cards": 10,
+                "actions": 5,
+                "cards": 1,
                 "name": "mobile",
-                "stages": 40,
+                "stages": 1,
             },
         ]
 

@@ -1,5 +1,11 @@
 # LLM Combo Controller Plan
 
+> **Archived / superseded plan.** The typed combo and safety discussion remains
+> useful architecture history, but dashboard, LLM setup, briefing, waveform,
+> and legacy-mode UI requirements below are not current implementation claims.
+> The shipped surface is one compact MicroMachine controller; legacy
+> python-sc2 remains command-line compatibility infrastructure.
+
 ## Answer
 
 Yes. The project can support one human utterance that the LLM expands into

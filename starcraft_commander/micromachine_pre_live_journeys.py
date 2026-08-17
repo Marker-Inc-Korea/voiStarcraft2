@@ -331,42 +331,631 @@ _CANONICAL_EVENT_STAGES: Final[dict[str, frozenset[str]]] = {
     "web_projection": frozenset({"assigned", "effect_observed"}),
 }
 _SHA256_IDENTITY_PREFIX: Final[str] = "sha256:"
-_TACTICAL_RADIO_VARIABLE_ANCHORS: Final[tuple[str, ...]] = (
-    "var TACTICAL_RADIO_MAX_QUEUE =",
-    "var TACTICAL_RADIO_MAX_CAPTION_HISTORY =",
-    "var TACTICAL_RADIO_MAX_SPEECH_CHARS =",
-    "var TACTICAL_RADIO_MAX_OPERATION_HIGH_WATER =",
-    "var TACTICAL_RADIO_PRIORITY_INTERVAL_MS =",
-    "var TACTICAL_RADIO_DEDUPE_TTL_MS =",
-    "var TACTICAL_RADIO_REPLAY_MAX_AGE_MS =",
-    "var tacticalRadio =",
-)
-_TACTICAL_RADIO_FUNCTION_NAMES: Final[tuple[str, ...]] = (
-    "tacticalRadioNow",
-    "tacticalRadioUiState",
-    "renderTacticalRadioState",
-    "renderTacticalRadioCaptions",
-    "appendTacticalRadioCaption",
-    "clearTacticalRadioTimer",
-    "interruptTacticalRadioSpeech",
-    "cancelTacticalRadioSpeechAndQueue",
-    "resetTacticalRadio",
-    "ensureTacticalRadioScope",
-    "rememberBoundedTacticalRadioValue",
-    "tacticalRadioOperationKey",
-    "rememberTacticalRadioHighWater",
-    "tacticalRadioDedupeExpired",
-    "tacticalRadioSpeechText",
-    "tacticalRadioQueueSort",
-    "compactTacticalRadioQueue",
-    "speakNextTacticalRadioCallout",
-    "queueTacticalRadioCallout",
-    "tacticalRadioSetMuted",
-    "normalizedTacticalReason",
-    "operationEventMatchesRecordUpdate",
-    "tacticalLifecycleCallout",
-    "announceOperationLifecycleEvent",
-)
+_TACTICAL_RADIO_RUNTIME_SOURCE: Final[str] = r"""var TACTICAL_RADIO_MAX_QUEUE = 8;
+
+var TACTICAL_RADIO_MAX_CAPTION_HISTORY = 20;
+
+var TACTICAL_RADIO_MAX_SPEECH_CHARS = 180;
+
+var TACTICAL_RADIO_MAX_OPERATION_HIGH_WATER = 256;
+
+var TACTICAL_RADIO_PRIORITY_INTERVAL_MS = {
+  0: 0,
+  1: 1200,
+  2: 3500,
+  3: 0
+};
+
+var TACTICAL_RADIO_DEDUPE_TTL_MS = {
+  0: 10000,
+  1: 20000,
+  2: 30000,
+  3: 15000
+};
+
+var TACTICAL_RADIO_REPLAY_MAX_AGE_MS = {
+  0: 8000,
+  1: 15000,
+  2: 12000,
+  3: 15000
+};
+
+var tacticalRadio = {
+  muted: false,
+  supported: Boolean(
+    window.speechSynthesis &&
+    typeof window.SpeechSynthesisUtterance === "function"
+  ),
+  speaking: false,
+  current: null,
+  queue: [],
+  captions: [],
+  dedupe: {},
+  planAnnouncements: {},
+  planAnnouncementOrder: [],
+  frameHighWater: {},
+  timelineHighWater: {},
+  operationHighWaterOrder: [],
+  scopeId: "",
+  sessionEpoch: "",
+  speechToken: 0,
+  timerId: null,
+  lastSpokenAt: { 0: 0, 1: 0, 2: 0 }
+};
+
+function tacticalRadioNow() {
+  return Date.now();
+}
+
+function tacticalRadioUiState() {
+  if (!tacticalRadio.supported) { return "unavailable"; }
+  if (tacticalRadio.muted) { return "muted"; }
+  if (tacticalRadio.speaking) { return "speaking"; }
+  return "ready";
+}
+
+function renderTacticalRadioState() {
+  var statusNode = document.getElementById("tactical-radio-status");
+  var muteButton = document.getElementById("tactical-radio-mute");
+  var state = tacticalRadioUiState();
+  if (statusNode) {
+    statusNode.className = "tactical-radio-status is-" + state;
+    statusNode.textContent = t(
+      state === "speaking"
+        ? "tacticalRadioSpeaking"
+        : (
+          state === "muted"
+            ? "tacticalRadioMuted"
+            : (
+              state === "unavailable"
+                ? "tacticalRadioUnavailable"
+                : "tacticalRadioReady"
+            )
+        )
+    );
+  }
+  if (muteButton) {
+    muteButton.setAttribute("aria-pressed", tacticalRadio.muted ? "true" : "false");
+    muteButton.textContent = t(
+      tacticalRadio.muted ? "tacticalRadioUnmute" : "tacticalRadioMute"
+    );
+  }
+}
+
+function renderTacticalRadioCaptions() {
+  var list = document.getElementById("tactical-radio-captions");
+  if (!list) { return; }
+  list.textContent = "";
+  tacticalRadio.captions.forEach(function(item) {
+    var row = document.createElement("li");
+    row.className = "tactical-radio-caption";
+    var priority = document.createElement("span");
+    priority.className = "tactical-radio-priority";
+    priority.textContent = "P" + String(item.priority);
+    var text = document.createElement("span");
+    text.className = "tactical-radio-caption-text";
+    text.textContent = item.caption;
+    row.appendChild(priority);
+    row.appendChild(text);
+    list.appendChild(row);
+  });
+  list.scrollTop = list.scrollHeight;
+}
+
+function appendTacticalRadioCaption(callout) {
+  tacticalRadio.captions.push({
+    priority: callout.priority,
+    caption: callout.caption,
+    createdAt: callout.createdAt
+  });
+  tacticalRadio.captions = tacticalRadio.captions.slice(
+    -TACTICAL_RADIO_MAX_CAPTION_HISTORY
+  );
+  renderTacticalRadioCaptions();
+}
+
+function clearTacticalRadioTimer() {
+  if (tacticalRadio.timerId !== null && window.clearTimeout) {
+    window.clearTimeout(tacticalRadio.timerId);
+  }
+  tacticalRadio.timerId = null;
+}
+
+function interruptTacticalRadioSpeech() {
+  clearTacticalRadioTimer();
+  tacticalRadio.speechToken += 1;
+  tacticalRadio.speaking = false;
+  tacticalRadio.current = null;
+  if (
+    tacticalRadio.supported &&
+    window.speechSynthesis &&
+    typeof window.speechSynthesis.cancel === "function"
+  ) {
+    window.speechSynthesis.cancel();
+  }
+  renderTacticalRadioState();
+}
+
+function cancelTacticalRadioSpeechAndQueue() {
+  tacticalRadio.queue = [];
+  interruptTacticalRadioSpeech();
+}
+
+function resetTacticalRadio(scopeId, sessionEpoch) {
+  cancelTacticalRadioSpeechAndQueue();
+  tacticalRadio.scopeId = String(scopeId || "");
+  tacticalRadio.sessionEpoch = String(sessionEpoch || "");
+  tacticalRadio.dedupe = {};
+  tacticalRadio.planAnnouncements = {};
+  tacticalRadio.planAnnouncementOrder = [];
+  tacticalRadio.frameHighWater = {};
+  tacticalRadio.timelineHighWater = {};
+  tacticalRadio.operationHighWaterOrder = [];
+  tacticalRadio.captions = [];
+  tacticalRadio.lastSpokenAt = { 0: 0, 1: 0, 2: 0 };
+  renderTacticalRadioCaptions();
+  renderTacticalRadioState();
+}
+
+function ensureTacticalRadioScope(scopeId, sessionEpoch) {
+  var normalized = String(scopeId || "");
+  var normalizedEpoch = String(sessionEpoch || "");
+  if (!normalized) { return true; }
+  if (!tacticalRadio.scopeId) {
+    tacticalRadio.scopeId = normalized;
+    tacticalRadio.sessionEpoch = normalizedEpoch;
+    return true;
+  }
+  if (
+    tacticalRadio.scopeId !== normalized ||
+    (
+      normalizedEpoch &&
+      tacticalRadio.sessionEpoch &&
+      tacticalRadio.sessionEpoch !== normalizedEpoch
+    )
+  ) {
+    resetTacticalRadio(normalized, normalizedEpoch);
+  } else if (!tacticalRadio.sessionEpoch && normalizedEpoch) {
+    tacticalRadio.sessionEpoch = normalizedEpoch;
+  }
+  return true;
+}
+
+function rememberBoundedTacticalRadioValue(
+  registry,
+  order,
+  key,
+  value,
+  maximum
+) {
+  var normalizedKey = String(key || "");
+  if (!normalizedKey) { return; }
+  var existingIndex = order.indexOf(normalizedKey);
+  if (existingIndex >= 0) { order.splice(existingIndex, 1); }
+  order.push(normalizedKey);
+  registry[normalizedKey] = value;
+  while (order.length > maximum) {
+    delete registry[order.shift()];
+  }
+}
+
+function tacticalRadioOperationKey(scopeId, sessionEpoch, operationId, generation) {
+  return [
+    String(scopeId || ""),
+    String(sessionEpoch || ""),
+    String(operationId || ""),
+    String(generation || 0)
+  ].join("|");
+}
+
+function rememberTacticalRadioHighWater(key, frame, timelineSeq) {
+  rememberBoundedTacticalRadioValue(
+    tacticalRadio.frameHighWater,
+    tacticalRadio.operationHighWaterOrder,
+    key,
+    Math.max(Number(tacticalRadio.frameHighWater[key] || -1), frame),
+    TACTICAL_RADIO_MAX_OPERATION_HIGH_WATER
+  );
+  tacticalRadio.timelineHighWater[key] = Math.max(
+    Number(tacticalRadio.timelineHighWater[key] || 0),
+    timelineSeq
+  );
+  Object.keys(tacticalRadio.timelineHighWater).forEach(function(candidate) {
+    if (tacticalRadio.operationHighWaterOrder.indexOf(candidate) < 0) {
+      delete tacticalRadio.timelineHighWater[candidate];
+    }
+  });
+}
+
+function tacticalRadioDedupeExpired(now) {
+  Object.keys(tacticalRadio.dedupe).forEach(function(key) {
+    if (Number(tacticalRadio.dedupe[key] || 0) <= now) {
+      delete tacticalRadio.dedupe[key];
+    }
+  });
+}
+
+function tacticalRadioSpeechText(text) {
+  var normalized = String(text || "").replace(/\s+/g, " ").trim();
+  if (normalized.length <= TACTICAL_RADIO_MAX_SPEECH_CHARS) {
+    return normalized;
+  }
+  return normalized.slice(0, TACTICAL_RADIO_MAX_SPEECH_CHARS - 1).trim() + "…";
+}
+
+function tacticalRadioQueueSort(left, right) {
+  if (left.priority !== right.priority) {
+    return left.priority - right.priority;
+  }
+  return left.createdAt - right.createdAt;
+}
+
+function compactTacticalRadioQueue(callout) {
+  if (
+    callout.priority !== 2 ||
+    !callout.operationKey ||
+    callout.progressionRank < 0
+  ) {
+    return;
+  }
+  tacticalRadio.queue = tacticalRadio.queue.filter(function(item) {
+    return !(
+      item.priority === 2 &&
+      item.operationKey === callout.operationKey &&
+      item.progressionRank >= 0 &&
+      item.progressionRank <= callout.progressionRank
+    );
+  });
+}
+
+function speakNextTacticalRadioCallout() {
+  clearTacticalRadioTimer();
+  if (
+    tacticalRadio.muted ||
+    !tacticalRadio.supported ||
+    tacticalRadio.speaking ||
+    !tacticalRadio.queue.length
+  ) {
+    renderTacticalRadioState();
+    return;
+  }
+  tacticalRadio.queue.sort(tacticalRadioQueueSort);
+  var callout = tacticalRadio.queue.shift();
+  var now = tacticalRadioNow();
+  var lastSpokenAt = Number(
+    tacticalRadio.lastSpokenAt[callout.priority] || 0
+  );
+  var interval = Number(
+    TACTICAL_RADIO_PRIORITY_INTERVAL_MS[callout.priority] || 0
+  );
+  var delay = Math.max(0, interval - Math.max(0, now - lastSpokenAt));
+  if (delay > 0 && window.setTimeout) {
+    tacticalRadio.queue.unshift(callout);
+    tacticalRadio.timerId = window.setTimeout(
+      speakNextTacticalRadioCallout,
+      delay
+    );
+    return;
+  }
+  var utterance = new window.SpeechSynthesisUtterance(
+    tacticalRadioSpeechText(callout.speech)
+  );
+  utterance.lang = currentLang === "en"
+    ? "en-US"
+    : (currentLang === "zh" ? "zh-CN" : "ko-KR");
+  var speechToken = tacticalRadio.speechToken + 1;
+  tacticalRadio.speechToken = speechToken;
+  tacticalRadio.current = callout;
+  tacticalRadio.speaking = true;
+  tacticalRadio.lastSpokenAt[callout.priority] = now;
+  function finishSpeech() {
+    if (tacticalRadio.speechToken !== speechToken) { return; }
+    tacticalRadio.speaking = false;
+    tacticalRadio.current = null;
+    renderTacticalRadioState();
+    speakNextTacticalRadioCallout();
+  }
+  utterance.onend = finishSpeech;
+  utterance.onerror = finishSpeech;
+  renderTacticalRadioState();
+  window.speechSynthesis.speak(utterance);
+}
+
+function queueTacticalRadioCallout(callout) {
+  if (!callout || !callout.caption) { return false; }
+  var now = tacticalRadioNow();
+  callout.priority = Math.max(0, Math.min(3, Number(callout.priority || 0)));
+  callout.createdAt = Number(callout.createdAt || now);
+  callout.progressionRank = Number.isFinite(callout.progressionRank)
+    ? callout.progressionRank
+    : -1;
+  var maximumAge = Number(
+    TACTICAL_RADIO_REPLAY_MAX_AGE_MS[callout.priority] || 0
+  );
+  if (
+    callout.fromReplay === true &&
+    maximumAge > 0 &&
+    now - callout.createdAt > maximumAge
+  ) {
+    return false;
+  }
+  tacticalRadioDedupeExpired(now);
+  var dedupeKey = String(
+    callout.dedupeKey ||
+    [callout.priority, callout.caption].join("|")
+  );
+  if (Number(tacticalRadio.dedupe[dedupeKey] || 0) > now) {
+    return false;
+  }
+  tacticalRadio.dedupe[dedupeKey] = now +
+    Number(TACTICAL_RADIO_DEDUPE_TTL_MS[callout.priority] || 0);
+  appendTacticalRadioCaption(callout);
+  if (
+    callout.priority === 3 ||
+    tacticalRadio.muted ||
+    !tacticalRadio.supported ||
+    !callout.speech
+  ) {
+    renderTacticalRadioState();
+    return true;
+  }
+  compactTacticalRadioQueue(callout);
+  if (callout.priority === 0) {
+    tacticalRadio.queue = tacticalRadio.queue.filter(function(item) {
+      return item.priority < 2;
+    });
+    if (
+      tacticalRadio.current &&
+      tacticalRadio.current.priority >= 1
+    ) {
+      interruptTacticalRadioSpeech();
+    }
+  } else if (callout.priority === 1) {
+    if (
+      tacticalRadio.current &&
+      tacticalRadio.current.priority === 2
+    ) {
+      interruptTacticalRadioSpeech();
+    }
+  }
+  tacticalRadio.queue.push(callout);
+  tacticalRadio.queue.sort(tacticalRadioQueueSort);
+  if (tacticalRadio.queue.length > TACTICAL_RADIO_MAX_QUEUE) {
+    tacticalRadio.queue = tacticalRadio.queue.slice(
+      0,
+      TACTICAL_RADIO_MAX_QUEUE
+    );
+  }
+  speakNextTacticalRadioCallout();
+  return true;
+}
+
+function tacticalRadioSetMuted(muted) {
+  tacticalRadio.muted = Boolean(muted);
+  if (tacticalRadio.muted) {
+    cancelTacticalRadioSpeechAndQueue();
+  }
+  renderTacticalRadioState();
+}
+
+function normalizedTacticalReason(payload) {
+  var technical = payload && payload.technical || {};
+  return String(
+    payload && payload.summary ||
+    payload && payload.blocker ||
+    technical.blocker ||
+    technical.reason ||
+    ""
+  ).trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function operationEventMatchesRecordUpdate(envelope, payload, record) {
+  var envelopeUpdateId = String(
+    envelope && envelope.update_id || ""
+  );
+  var payloadUpdateId = String(
+    payload && payload.update_id || ""
+  );
+  var recordRequestUpdateId = String(
+    record && record.updateId || ""
+  );
+  var recordExecutionOwnerUpdateId = String(
+    record && record.data &&
+      record.data.operation_console_execution_owner_update_id ||
+    recordRequestUpdateId ||
+    ""
+  );
+  if (
+    !recordRequestUpdateId ||
+    !recordExecutionOwnerUpdateId ||
+    (!envelopeUpdateId && !payloadUpdateId) ||
+    (
+      envelopeUpdateId &&
+      payloadUpdateId &&
+      envelopeUpdateId !== payloadUpdateId
+    )
+  ) {
+    return false;
+  }
+  var eventUpdateId = String(payloadUpdateId || envelopeUpdateId);
+  return (
+    eventUpdateId === recordRequestUpdateId ||
+    eventUpdateId === recordExecutionOwnerUpdateId
+  );
+}
+
+function tacticalLifecycleCallout(envelope, payload, scopeId, record) {
+  var kind = String(payload && payload.kind || "").toLowerCase();
+  var operationId = String(payload && payload.operation_id || "");
+  var generation = Number(payload && payload.generation || 0);
+  var requestedGeneration = Number(
+    payload && payload.requested_generation || generation
+  );
+  var recordRequestedGeneration = Number(
+    record && (
+      record.requestedOperationGeneration ||
+      record.operationGeneration
+    ) ||
+    0
+  );
+  if (
+    !operationId ||
+    generation <= 0 ||
+    requestedGeneration < generation ||
+    !record ||
+    Number(record.operationGeneration || 0) !== generation ||
+    requestedGeneration !== recordRequestedGeneration ||
+    !operationEventMatchesRecordUpdate(envelope, payload, record)
+  ) {
+    return null;
+  }
+  var frame = Number(payload.game_frame);
+  var sessionEpoch = String(
+    payload && payload.session_epoch ||
+    record && record.sessionEpoch ||
+    operationConsoleSessionEpoch ||
+    ""
+  );
+  var operationKey = tacticalRadioOperationKey(
+    scopeId,
+    sessionEpoch,
+    operationId,
+    generation
+  );
+  var timelineSeq = Number(payload.timeline_seq || 0);
+  var timelineHighWater = Number(
+    tacticalRadio.timelineHighWater[operationKey] || 0
+  );
+  var projectionIdentityValid = !(
+    payload.technical &&
+    payload.technical.projection_identity_valid === false
+  );
+  if (
+    Number.isFinite(timelineSeq) &&
+    timelineSeq > 0 &&
+    timelineSeq <= timelineHighWater
+  ) {
+    return null;
+  }
+  var frameHighWater = Number(
+    tacticalRadio.frameHighWater[operationKey] || -1
+  );
+  if (
+    projectionIdentityValid &&
+    Number.isFinite(frame) &&
+    frame >= 0 &&
+    frameHighWater >= 0 &&
+    frame < frameHighWater
+  ) {
+    return null;
+  }
+  if (
+    projectionIdentityValid &&
+    Number.isFinite(frame) &&
+    frame >= 0
+  ) {
+    rememberTacticalRadioHighWater(
+      operationKey,
+      Math.max(frameHighWater, frame),
+      timelineHighWater
+    );
+  }
+  var reason = normalizedTacticalReason(payload);
+  var priority = 3;
+  var label = "";
+  var progressionRank = -1;
+  if (kind === "assigned") {
+    priority = 2;
+    label = t("tacticalForceAssigned");
+    progressionRank = 1;
+  } else if (kind === "partially_assigned") {
+    priority = 3;
+    label = t("tacticalForcePartiallyAssigned");
+  } else if (kind === "movement_observed" || kind === "moving") {
+    priority = 2;
+    label = t("tacticalMoving");
+    progressionRank = 2;
+  } else if (kind === "engagement_observed" || kind === "engaged") {
+    priority = 2;
+    label = t("tacticalEngaged");
+    progressionRank = 3;
+  } else if (kind === "target_reached" || kind === "reached") {
+    priority = 2;
+    label = t("tacticalTargetReached");
+    progressionRank = 4;
+  } else if (kind === "completed") {
+    priority = 2;
+    label = t("tacticalCompleted");
+    progressionRank = 5;
+  } else if (kind === "blocked" || kind === "waiting") {
+    priority = 1;
+    label = /route|path|경로/.test(reason)
+      ? t("tacticalRouteUnavailable")
+      : t("tacticalBlocked");
+  } else if (kind === "emergency_retreat") {
+    priority = 0;
+    label = t("tacticalEmergencyRetreat");
+  } else if (kind === "base_under_attack") {
+    priority = 0;
+    label = t("tacticalBaseAttack");
+  } else if (kind === "critical_ability_failure") {
+    priority = 0;
+    label = t("tacticalCriticalAbilityFailure");
+  } else if (kind === "force_loss") {
+    priority = 1;
+    label = t("tacticalForceLoss");
+  } else if (kind === "submitted") {
+    priority = 3;
+    label = t("tacticalSubmittedCaption");
+  } else {
+    return null;
+  }
+  if (Number.isFinite(timelineSeq) && timelineSeq > 0) {
+    rememberTacticalRadioHighWater(
+      operationKey,
+      Number(tacticalRadio.frameHighWater[operationKey] || -1),
+      Math.max(timelineHighWater, timelineSeq)
+    );
+  }
+  var identity = operationId + "#" + generation;
+  var detail = reason && reason !== kind ? " · " + reason : "";
+  return {
+    priority: priority,
+    caption: label + " · " + identity + detail,
+    speech: priority < 3 ? label + ". " + identity + detail : "",
+    dedupeKey: [
+      scopeId,
+      String(payload.update_id || envelope.update_id || ""),
+      operationId,
+      generation,
+      requestedGeneration,
+      kind,
+      reason
+    ].join("|"),
+    operationKey: operationKey,
+    progressionRank: progressionRank,
+    createdAt: Number(envelope.created_at_unix_ms || tacticalRadioNow()),
+    fromReplay: true
+  };
+}
+
+function announceOperationLifecycleEvent(envelope, payload, scopeId, record) {
+  ensureTacticalRadioScope(
+    scopeId,
+    payload && payload.session_epoch ||
+      record && record.sessionEpoch ||
+      operationConsoleSessionEpoch ||
+      ""
+  );
+  var callout = tacticalLifecycleCallout(
+    envelope,
+    payload,
+    scopeId,
+    record
+  );
+  return callout ? queueTacticalRadioCallout(callout) : false;
+}
+"""
 _TACTICAL_RADIO_CALLOUT_KINDS: Final[frozenset[str]] = frozenset(
     {
         "assigned",
@@ -4336,88 +4925,7 @@ def _timeline_event_identity(
 
 
 def _production_tactical_radio_source() -> str:
-    page = web_gui.render_web_gui_page()
-    declarations = [
-        *(
-            _extract_javascript_statement(page, anchor)
-            for anchor in _TACTICAL_RADIO_VARIABLE_ANCHORS
-        ),
-        *(
-            _extract_javascript_function(page, name)
-            for name in _TACTICAL_RADIO_FUNCTION_NAMES
-        ),
-    ]
-    return "\n\n".join(declarations) + "\n"
-
-
-def _extract_javascript_statement(source: str, anchor: str) -> str:
-    start = source.find(anchor)
-    if start < 0:
-        raise ValueError(f"production JavaScript statement is missing: {anchor}")
-    end = source.find(";\n", start)
-    if end < 0:
-        raise ValueError(f"production JavaScript statement is unterminated: {anchor}")
-    return source[start : end + 1]
-
-
-def _extract_javascript_function(source: str, name: str) -> str:
-    anchor = f"function {name}("
-    start = source.find(anchor)
-    if start < 0:
-        raise ValueError(f"production JavaScript function is missing: {name}")
-    body_start = source.find("{", start)
-    if body_start < 0:
-        raise ValueError(f"production JavaScript function is malformed: {name}")
-    depth = 0
-    quote = ""
-    escaped = False
-    line_comment = False
-    block_comment = False
-    index = body_start
-    while index < len(source):
-        character = source[index]
-        next_character = source[index + 1] if index + 1 < len(source) else ""
-        if line_comment:
-            if character == "\n":
-                line_comment = False
-            index += 1
-            continue
-        if block_comment:
-            if character == "*" and next_character == "/":
-                block_comment = False
-                index += 2
-            else:
-                index += 1
-            continue
-        if quote:
-            if escaped:
-                escaped = False
-            elif character == "\\":
-                escaped = True
-            elif character == quote:
-                quote = ""
-            index += 1
-            continue
-        if character in {"'", '"', "`"}:
-            quote = character
-            index += 1
-            continue
-        if character == "/" and next_character == "/":
-            line_comment = True
-            index += 2
-            continue
-        if character == "/" and next_character == "*":
-            block_comment = True
-            index += 2
-            continue
-        if character == "{":
-            depth += 1
-        elif character == "}":
-            depth -= 1
-            if depth == 0:
-                return source[start : index + 1]
-        index += 1
-    raise ValueError(f"production JavaScript function is unterminated: {name}")
+    return _TACTICAL_RADIO_RUNTIME_SOURCE
 
 
 def _tactical_radio_node_harness(runtime_source: str) -> str:

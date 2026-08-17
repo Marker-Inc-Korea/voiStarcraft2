@@ -17,7 +17,7 @@ This runbook begins only after `ready_for_live_qa` passes on the exact `main` SH
 
 ### Live QA pending
 
-- Actual StarCraft II movement, engagement, browser and HUD consistency, and tactical voice audio remain manual observations.
+- Actual StarCraft II movement, engagement, compact-controller and HUD consistency, and operator feel remain manual observations.
 - No automated report may set live qualified or clear manual_live_qa_remaining.
 
 ### Proposed or deferred
@@ -38,10 +38,12 @@ This runbook begins only after `ready_for_live_qa` passes on the exact `main` SH
 
 ## Runtime And Surfaces
 
-1. Start `python3 -m starcraft_commander.web_gui --dry-run` and open the localhost cockpit.
-2. Use the cockpit runtime-start action to launch the patched MicroMachine build and StarCraft II.
-3. Keep browser operation cards, in-game HUD, tactical captions, and voice readback visible or audible.
-4. Capture the exact operation identity, game frame, screenshots, captions, audio notes, and runtime artifacts for every journey.
+1. Install and launch the macOS **voiStarcraft2** app for native runtime bootstrap.
+2. Confirm that exactly one compact controller instance exists and that no second browser/cockpit window is opened.
+3. Let the installed app supply the native SC2 launch receipt and auto-start the patched MicroMachine build and StarCraft II.
+4. Verify the compact current-command surface before launch, then allow the app to hide it while StarCraft II is frontmost; use the in-game HUD for gameplay evidence. An ordinary browser may observe or queue commands, but it is not a runtime-start surface.
+5. Capture the exact operation identity, game frame, controller/HUD screenshots, telemetry, and runtime artifacts for every journey.
+6. Do not treat `queued`, compiled, `published`, assignment, or submission as gameplay success. Require current identity-matched telemetry plus the journey's production, movement, engagement, target, completion, or `effect_observed` condition.
 
 ## Fourteen Journeys
 
@@ -51,8 +53,8 @@ This runbook begins only after `ready_for_live_qa` passes on the exact `main` SH
 - Expected observation events: `["command_input","blackboard_update","ownership_snapshot","squad_order","submission","movement","engagement","web_projection"]`
 - Stop condition: `{"count":3,"type":"all_operations_effect_observed"}`
 - Timeout frames: `1200`
-- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, browser/HUD/voice identity where applicable, and pass/fail notes.
-- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, visual inconsistency, or incorrect audio.
+- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, compact-controller/HUD identity where applicable, and pass/fail notes.
+- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, or controller/HUD inconsistency.
 
 ### 02. `shortage_prerequisite_wait` - Shortage and prerequisite wait
 
@@ -60,8 +62,8 @@ This runbook begins only after `ready_for_live_qa` passes on the exact `main` SH
 - Expected observation events: `["production_decision","prerequisite_wait","ownership_snapshot","submission","movement"]`
 - Stop condition: `{"count":1,"type":"effect_after_prerequisite_convergence"}`
 - Timeout frames: `1800`
-- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, browser/HUD/voice identity where applicable, and pass/fail notes.
-- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, visual inconsistency, or incorrect audio.
+- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, compact-controller/HUD identity where applicable, and pass/fail notes.
+- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, or controller/HUD inconsistency.
 
 ### 03. `safe_partial_launch` - Safe partial launch
 
@@ -69,8 +71,8 @@ This runbook begins only after `ready_for_live_qa` passes on the exact `main` SH
 - Expected observation events: `["launch_decision","ownership_snapshot","submission","movement"]`
 - Stop condition: `{"count":1,"type":"matching_effect_observed"}`
 - Timeout frames: `900`
-- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, browser/HUD/voice identity where applicable, and pass/fail notes.
-- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, visual inconsistency, or incorrect audio.
+- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, compact-controller/HUD identity where applicable, and pass/fail notes.
+- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, or controller/HUD inconsistency.
 
 ### 04. `protected_minimum_partial_rejection` - Protected-minimum partial-launch rejection
 
@@ -78,8 +80,8 @@ This runbook begins only after `ready_for_live_qa` passes on the exact `main` SH
 - Expected observation events: `["launch_decision","state_snapshot","rejection"]`
 - Stop condition: `{"count":0,"operation_id":"strict-assault","preserved_state_fields":["units","owners","operations","structures","base_threatened"],"type":"forbidden_submission_and_state_preserved"}`
 - Timeout frames: `300`
-- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, browser/HUD/voice identity where applicable, and pass/fail notes.
-- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, visual inconsistency, or incorrect audio.
+- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, compact-controller/HUD identity where applicable, and pass/fail notes.
+- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, or controller/HUD inconsistency.
 
 ### 05. `transfer_success` - Transfer success
 
@@ -87,8 +89,8 @@ This runbook begins only after `ready_for_live_qa` passes on the exact `main` SH
 - Expected observation events: `["ownership_snapshot","transfer","blackboard_update","submission","movement"]`
 - Stop condition: `{"count":1,"destination_operation_id":"assault-bravo","preserved_operation_ids":["defense-charlie"],"source_operation_id":"recon-alpha","type":"transfer_applied_and_siblings_preserved"}`
 - Timeout frames: `900`
-- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, browser/HUD/voice identity where applicable, and pass/fail notes.
-- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, visual inconsistency, or incorrect audio.
+- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, compact-controller/HUD identity where applicable, and pass/fail notes.
+- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, or controller/HUD inconsistency.
 
 ### 06. `transfer_rejection_preserves_active` - Transfer rejection preserving active operations
 
@@ -96,8 +98,8 @@ This runbook begins only after `ready_for_live_qa` passes on the exact `main` SH
 - Expected observation events: `["state_snapshot","rejection","ownership_snapshot"]`
 - Stop condition: `{"count":0,"expected_rejection_reason":"source_operation_minimum_violation","operation_id":"recon-alpha","preserved_active_operation_ids":["recon-alpha","assault-bravo"],"preserved_state_fields":["units","owners","operations","structures","base_threatened"],"type":"forbidden_submission_and_state_preserved"}`
 - Timeout frames: `300`
-- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, browser/HUD/voice identity where applicable, and pass/fail notes.
-- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, visual inconsistency, or incorrect audio.
+- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, compact-controller/HUD identity where applicable, and pass/fail notes.
+- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, or controller/HUD inconsistency.
 
 ### 07. `reinforcement_generation_update` - Reinforcement generation update
 
@@ -105,8 +107,8 @@ This runbook begins only after `ready_for_live_qa` passes on the exact `main` SH
 - Expected observation events: `["blackboard_update","generation_change","ownership_snapshot","submission","movement"]`
 - Stop condition: `{"count":1,"type":"updated_generation_effect_observed"}`
 - Timeout frames: `900`
-- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, browser/HUD/voice identity where applicable, and pass/fail notes.
-- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, visual inconsistency, or incorrect audio.
+- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, compact-controller/HUD identity where applicable, and pass/fail notes.
+- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, or controller/HUD inconsistency.
 
 ### 08. `retarget` - Retarget active operation
 
@@ -114,8 +116,8 @@ This runbook begins only after `ready_for_live_qa` passes on the exact `main` SH
 - Expected observation events: `["blackboard_update","generation_change","squad_order","submission","movement"]`
 - Stop condition: `{"count":1,"type":"updated_generation_effect_observed"}`
 - Timeout frames: `900`
-- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, browser/HUD/voice identity where applicable, and pass/fail notes.
-- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, visual inconsistency, or incorrect audio.
+- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, compact-controller/HUD identity where applicable, and pass/fail notes.
+- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, or controller/HUD inconsistency.
 
 ### 09. `selective_cancellation` - Selective cancellation
 
@@ -123,8 +125,8 @@ This runbook begins only after `ready_for_live_qa` passes on the exact `main` SH
 - Expected observation events: `["blackboard_update","cancellation","state_snapshot","submission","movement"]`
 - Stop condition: `{"count":1,"selected_operation_id":"recon-alpha","sibling_operation_id":"assault-bravo","type":"selected_operation_cancelled_sibling_active"}`
 - Timeout frames: `600`
-- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, browser/HUD/voice identity where applicable, and pass/fail notes.
-- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, visual inconsistency, or incorrect audio.
+- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, compact-controller/HUD identity where applicable, and pass/fail notes.
+- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, or controller/HUD inconsistency.
 
 ### 10. `emergency_preemption` - Emergency preemption
 
@@ -132,8 +134,8 @@ This runbook begins only after `ready_for_live_qa` passes on the exact `main` SH
 - Expected observation events: `["blackboard_update","preemption","squad_order","submission","movement"]`
 - Stop condition: `{"count":1,"type":"affected_offense_preempted"}`
 - Timeout frames: `300`
-- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, browser/HUD/voice identity where applicable, and pass/fail notes.
-- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, visual inconsistency, or incorrect audio.
+- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, compact-controller/HUD identity where applicable, and pass/fail notes.
+- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, or controller/HUD inconsistency.
 
 ### 11. `autonomous_defense_restoration` - Autonomous defense and restoration
 
@@ -141,8 +143,8 @@ This runbook begins only after `ready_for_live_qa` passes on the exact `main` SH
 - Expected observation events: `["autonomous_defense","launch_decision","ownership_snapshot","submission","movement"]`
 - Stop condition: `{"count":1,"type":"offense_restored_after_defense"}`
 - Timeout frames: `900`
-- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, browser/HUD/voice identity where applicable, and pass/fail notes.
-- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, visual inconsistency, or incorrect audio.
+- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, compact-controller/HUD identity where applicable, and pass/fail notes.
+- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, or controller/HUD inconsistency.
 
 ### 12. `all_terran_family_ability_blocker_matrix` - All-Terran family, ability, and blocker matrix
 
@@ -150,8 +152,8 @@ This runbook begins only after `ready_for_live_qa` passes on the exact `main` SH
 - Expected observation events: `["terran_lowering","production_decision","family_action_attempt","submission","ability_effect"]`
 - Stop condition: `{"count":15,"type":"all_terran_families_accounted"}`
 - Timeout frames: `2400`
-- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, browser/HUD/voice identity where applicable, and pass/fail notes.
-- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, visual inconsistency, or incorrect audio.
+- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, compact-controller/HUD identity where applicable, and pass/fail notes.
+- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, or controller/HUD inconsistency.
 
 ### 13. `event_reconnect_replay` - Event reconnect and replay
 
@@ -159,23 +161,26 @@ This runbook begins only after `ready_for_live_qa` passes on the exact `main` SH
 - Expected observation events: `["web_event","replay_batch","replay_deduplicated"]`
 - Stop condition: `{"count":1,"type":"replayed_events_counted_once"}`
 - Timeout frames: `300`
-- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, browser/HUD/voice identity where applicable, and pass/fail notes.
-- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, visual inconsistency, or incorrect audio.
+- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, compact-controller/HUD identity where applicable, and pass/fail notes.
+- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, or controller/HUD inconsistency.
 
 ### 14. `voice_readback_callout_identity` - Voice readback and callout identity
+
+The identifier is retained because it is part of the checked-in deterministic pre-live journey manifest. It verifies projection identity in fixtures; it does not assert that the current compact controller ships Tactical Radio, TTS, readback, mute, or waveform UI.
 
 - Input contract: `[{"command_text":"마린 두 기 정찰을 음성으로 확인해","frame":1400,"preset":"voice_recon"},{"frame":1460,"kind":"unit_observation","units":[{"home_distance":16.0,"unit_type":"TERRAN_MARINE"}]}]`
 - Expected observation events: `["web_projection","hud_projection","voice_projection","voice_callout"]`
 - Stop condition: `{"count":3,"type":"projection_identity_consistent"}`
 - Timeout frames: `600`
-- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, browser/HUD/voice identity where applicable, and pass/fail notes.
-- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, visual inconsistency, or incorrect audio.
+- Artifact capture: command input, authoritative operation projection, matching submission/effect evidence, compact-controller/HUD identity where applicable, and pass/fail notes.
+- Manual stop: stop on missing submission, mismatched generation or frame, duplicate ownership, unsafe launch, false success wording, stale replay, or controller/HUD inconsistency.
 
 ## Actual SC2 Visual And Audio Gate
 
 - Verify movement and engagement are visibly caused by the matching operation submission rather than unrelated autonomous behavior.
-- Verify the browser, HUD, caption, and voice callout use the same `update_id + operation_id + generation + stage + game_frame`.
-- Verify tactical audio is understandable, correctly prioritized, deduplicated, interruptible, and honest about pending versus observed effects.
+- Verify the compact controller, HUD, and telemetry use the same `update_id + operation_id + generation + stage + game_frame`.
+- Verify the controller never presents `published`, assignment, or submission as movement, engagement, completion, or another actual SC2 effect.
+- Verify one controller instance is maintained, no duplicate browser/cockpit opens, and the controller may be hidden while StarCraft II is the frontmost gameplay window.
 - Any failed or ambiguous observation keeps `manual_live_qa_remaining=true` and must not be reported as live qualified.
 
 ## Report Commands

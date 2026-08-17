@@ -62,21 +62,6 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       justify-content: space-between;
       gap: 12px;
     }
-    .title-row {
-      display: flex;
-      align-items: flex-start;
-      gap: 9px;
-    }
-    .back-button {
-      flex: none;
-      min-width: 38px;
-      min-height: 38px;
-      border: 1px solid var(--line);
-      border-radius: 11px;
-      color: var(--cyan);
-      background: rgba(2, 10, 14, 0.74);
-      font-weight: 900;
-    }
     .eyebrow {
       margin: 0 0 3px;
       color: var(--cyan);
@@ -213,6 +198,8 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       outline: none;
     }
     #command-input:focus {
+      outline: 3px solid rgba(101, 243, 223, 0.88);
+      outline-offset: 2px;
       box-shadow: 0 0 0 3px rgba(101, 243, 223, 0.18);
     }
     .icon-button, .send-button {
@@ -254,6 +241,20 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       from { transform: scale(0.96); }
       to { transform: scale(1); }
     }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+    @media (forced-colors: active) {
+      #command-input:focus {
+        outline: 2px solid Highlight;
+        box-shadow: none;
+      }
+    }
     @media (max-width: 430px) {
       .shell { padding: 10px; }
       .topbar { align-items: center; }
@@ -264,24 +265,20 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
 <body>
   <main class="shell">
     <header class="topbar">
-      <div class="title-row">
-        <button id="cockpit-back" class="back-button" type="button"
-                title="전체 조종석" aria-label="전체 조종석">←</button>
-        <div>
-          <p class="eyebrow">SC2 tactical companion</p>
-          <h1>전술 명령창</h1>
-        </div>
+      <div>
+        <p class="eyebrow">SC2 tactical companion</p>
+        <h1>전술 명령창</h1>
       </div>
       <div id="runtime-status" class="status-pill" data-state="idle">SC2 대기</div>
     </header>
 
     <section class="panel operation" aria-labelledby="operation-label">
       <div class="operation-head">
-        <span id="operation-label" class="label">현재 작전</span>
+        <span id="operation-label" class="label">현재 명령</span>
         <span id="operation-stage" class="stage">명령 대기</span>
       </div>
       <div id="operation-goal" class="goal">게임을 시작하고 명령을 입력하세요.</div>
-      <div id="operation-composition" class="composition">편성 정보가 여기에 표시됩니다.</div>
+      <div id="operation-composition" class="composition">실행 대상과 증거가 여기에 표시됩니다.</div>
       <div class="runtime-actions">
         <button id="runtime-start" type="button">SC2 / MicroMachine 시작</button>
         <button id="runtime-refresh" type="button" title="상태 새로고침">↻</button>
@@ -295,6 +292,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
 
     <form id="command-form" class="panel command-dock">
       <input id="command-input" type="text" autocomplete="off" autofocus
+             aria-label="전술 명령"
              placeholder="예: 마린 6기, 탱크 2기, 바이킹 2기로 적 본진 공격">
       <button id="voice-button" class="icon-button" type="button"
               title="음성 명령" aria-label="음성 명령" aria-pressed="false">◉</button>
@@ -313,9 +311,22 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
   var submitSequence = 0;
   var lastRuntimeSignature = "";
   var lastOperationSignature = "";
+  var lastSubmittedUpdateId = "";
+  var pendingCommand = null;
   var captionKeys = {};
   var recognition = null;
   var recording = false;
+  var latestRuntimeStatus = null;
+  var runtimeStartPromise = null;
+  var runtimeRequestSequence = 0;
+  var runtimeAppliedRequestSequence = 0;
+  var runtimeMutationEpoch = 0;
+  var operationRequestSequence = 0;
+  var operationAppliedRequestSequence = 0;
+  var operationMutationEpoch = 0;
+  var voiceSessionGeneration = 0;
+  var activeVoiceSessionGeneration = 0;
+  var NATIVE_SC2_LAUNCH_TIMEOUT_MS = 185000;
 
   function endpoint(path, values) {
     var query = new URLSearchParams(values || {});
@@ -377,6 +388,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
   }
 
   function renderRuntime(status) {
+    latestRuntimeStatus = status || {};
     var node = document.getElementById("runtime-status");
     var label = runtimeLabel(status || {});
     var connected = status &&
@@ -410,6 +422,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
 
   function unitName(value) {
     var names = {
+      TERRAN_SCV: "SCV",
       TERRAN_MARINE: "마린",
       TERRAN_MARAUDER: "불곰",
       TERRAN_REAPER: "사신",
@@ -451,7 +464,21 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       return Array.isArray(candidate) && candidate.length > 0;
     }) || [];
     if (!Array.isArray(values) || !values.length) {
-      return "편성 배정 대기";
+      var productionPlan = vector.production_plan || {};
+      var tacticalTask = vector.tactical_task || {};
+      var productionTargets = Array.isArray(productionPlan.targets)
+        ? productionPlan.targets
+        : [];
+      var tacticalTargets = Array.isArray(tacticalTask.production_targets)
+        ? tacticalTask.production_targets
+        : [];
+      var targets = productionTargets.concat(tacticalTargets).filter(function(value, index, all) {
+        return value && all.indexOf(value) === index;
+      });
+      if (targets.length) {
+        return "실행 대상 · " + targets.map(unitName).join(" · ");
+      }
+      return "실행 증거 확인 중";
     }
     return values.map(function(item) {
       return unitName(item.unit_type) + " " + String(item.count || 0) + "기";
@@ -462,20 +489,69 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     var update = operation.update || {};
     var vector = update.vector || {};
     var intervention = operation.intervention || {};
+    var latestRequest = operation.latest_request || {};
+    var latestQueue = latestRequest.command_queue || {};
+    var compileResult = operation.compile_result || {};
+    var compileQueue = compileResult.command_queue || {};
     return String(
       operation.command_text ||
+      latestRequest.command_text ||
+      latestQueue.command_text ||
+      compileResult.command_text ||
+      compileQueue.command_text ||
       vector.goal ||
       intervention.goal ||
-      "작전 목표 확인 중"
+      "명령 내용 확인 중"
     );
   }
 
-  function operationStage(operation) {
+  function operationStage(operation, runtimeStatus) {
     var intervention = operation.intervention || {};
     var execution = intervention.command_execution || {};
-    var state = String(execution.state || "");
+    var update = operation.update || {};
+    var compileResult = operation.compile_result || {};
+    var requestIdentity = String(
+      operation.update_id ||
+      update.update_id ||
+      operation.policy_update_id ||
+      intervention.latest_update_id ||
+      compileResult.update_id ||
+      ""
+    );
+    var executionOwnerIdentity = String(
+      operation.operation_console_execution_owner_update_id ||
+      execution.update_id ||
+      execution.policy_update_id ||
+      execution.command_id ||
+      ""
+    );
+    var operationIdentity = String(operation.operation_id || "");
+    var executionOperationIdentity = String(execution.operation_id || "");
+    var operationGeneration = Number(operation.operation_generation || 0);
+    var executionGeneration = Number(execution.operation_generation || 0);
+    var runtimeCurrent = Boolean(
+      runtimeStatus &&
+      runtimeStatus.runtime_attached === true &&
+      runtimeStatus.telemetry_current_for_process === true &&
+      runtimeStatus.telemetry_stale_or_detached !== true
+    );
+    var executionMatchesRequest = (
+      runtimeCurrent &&
+      Boolean(requestIdentity) &&
+      Boolean(executionOwnerIdentity) &&
+      requestIdentity === executionOwnerIdentity &&
+      Boolean(operationIdentity) &&
+      Boolean(executionOperationIdentity) &&
+      operationIdentity === executionOperationIdentity &&
+      Number.isInteger(operationGeneration) &&
+      operationGeneration > 0 &&
+      operationGeneration === executionGeneration
+    );
+    var state = executionMatchesRequest ? String(execution.state || "") : "";
     var disposition = String(operation.disposition || "");
-    if (state === "effect_observed" || disposition === "completed") {
+    var consumption = String(operation.consumption_status || "");
+    var transport = String(operation.transport_status || operation.status || "");
+    if (state === "effect_observed" || state === "completed") {
       return "효과 확인";
     }
     if (state === "action_issued") { return "SC2 실행"; }
@@ -485,10 +561,33 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     if (state === "blocked" || disposition === "blocked") { return "차단"; }
     if (state === "cancelled" || disposition === "cancelled") { return "취소"; }
     if (state === "superseded" || disposition === "superseded") { return "교체"; }
-    if (state === "published" || operation.transport_status === "published") {
-      return "명령 해석";
+    if (consumption === "pending_compile" || transport === "queued") {
+      return "명령 해석 중";
     }
-    return "작전 추적";
+    var runtimeDetached = runtimeStatus && (
+      runtimeStatus.runtime_attached === false ||
+      runtimeStatus.telemetry_current_for_process === false ||
+      runtimeStatus.telemetry_stale_or_detached === true
+    );
+    if (
+      runtimeDetached &&
+      (
+        consumption === "consumed" ||
+        consumption === "pending_telemetry" ||
+        consumption === "detached_telemetry" ||
+        state === "published" ||
+        transport === "published"
+      )
+    ) {
+      return "SC2 실행 대기";
+    }
+    if (consumption === "consumed") { return "정책 적용"; }
+    if (consumption === "pending_telemetry") { return "실행 확인 중"; }
+    if (consumption === "detached_telemetry") { return "연결 확인 필요"; }
+    if (state === "published" || transport === "published") {
+      return "명령 전달";
+    }
+    return "명령 추적";
   }
 
   function selectOperation(data) {
@@ -498,26 +597,128 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     }) || operations[0] || null;
   }
 
+  function commandIdentity(value) {
+    if (!value) { return ""; }
+    var update = value.update || {};
+    var intervention = value.intervention || {};
+    return String(
+      value.update_id ||
+      update.update_id ||
+      value.policy_update_id ||
+      value.active_update_id ||
+      intervention.latest_update_id ||
+      value.operation_id ||
+      ""
+    );
+  }
+
+  function selectCommand(data) {
+    var update = data.update || {};
+    var vector = update.vector || {};
+    var latestRequest = data.latest_request || {};
+    var latestQueue = latestRequest.command_queue || {};
+    var compileResult = data.compile_result || {};
+    var compileQueue = compileResult.command_queue || {};
+    var intervention = data.intervention || {};
+    var updateId = String(
+      latestRequest.update_id ||
+      update.update_id ||
+      intervention.latest_update_id ||
+      ""
+    );
+    var commandText = String(
+      latestRequest.command_text ||
+      latestQueue.command_text ||
+      compileResult.command_text ||
+      compileQueue.command_text ||
+      vector.goal ||
+      intervention.goal ||
+      ""
+    );
+    var operations = Array.isArray(data.operations) ? data.operations : [];
+    var matchingOperation = updateId ? operations.find(function(item) {
+      return commandIdentity(item) === updateId;
+    }) : null;
+    if (matchingOperation) {
+      return Object.assign({}, matchingOperation, {
+        command_text: matchingOperation.command_text || commandText,
+        latest_request: matchingOperation.latest_request || latestRequest,
+        consumption_status: (
+          matchingOperation.consumption_status ||
+          data.consumption_status ||
+          latestRequest.consumption_status ||
+          ""
+        ),
+        transport_status: (
+          matchingOperation.transport_status ||
+          data.status ||
+          ""
+        )
+      });
+    }
+    if (!updateId && !commandText) { return selectOperation(data); }
+    return {
+      operation_id: updateId,
+      update_id: updateId,
+      command_text: commandText,
+      update: update,
+      latest_request: latestRequest,
+      intervention: intervention,
+      consumption_status: (
+        data.consumption_status ||
+        latestRequest.consumption_status ||
+        ""
+      ),
+      transport_status: data.status || "",
+      disposition: data.disposition || "",
+      active: data.status === "published"
+    };
+  }
+
   function renderOperation(data) {
-    var operation = selectOperation(data || {});
+    data = data || {};
+    var operation = selectCommand(data);
+    if (
+      pendingCommand &&
+      commandIdentity(operation) !== pendingCommand.update_id
+    ) {
+      data = pendingCommand.payload;
+      operation = selectCommand(data);
+    }
     var goalNode = document.getElementById("operation-goal");
     var stageNode = document.getElementById("operation-stage");
     var compositionNode = document.getElementById("operation-composition");
     if (!operation) {
-      goalNode.textContent = "명령을 입력하면 현재 작전이 표시됩니다.";
+      goalNode.textContent = "명령을 입력하면 해석 및 실행 상태가 표시됩니다.";
       stageNode.textContent = "명령 대기";
-      compositionNode.textContent = "편성 정보가 여기에 표시됩니다.";
+      compositionNode.textContent = "실행 대상과 증거가 여기에 표시됩니다.";
       return;
     }
     var goal = operationGoal(operation);
-    var stage = operationStage(operation);
+    var operationRuntimeStatus = (
+      Object.prototype.hasOwnProperty.call(data, "runtime_attached")
+        ? data
+        : latestRuntimeStatus
+    );
+    var stage = operationStage(operation, operationRuntimeStatus);
     var composition = operationComposition(operation);
+    var selectedUpdateId = commandIdentity(operation);
+    if (
+      pendingCommand &&
+      selectedUpdateId === pendingCommand.update_id &&
+      stage !== "명령 해석 중"
+    ) {
+      pendingCommand = null;
+    }
     goalNode.textContent = goal;
     stageNode.textContent = stage;
     compositionNode.textContent = composition;
     var signature = [
+      selectedUpdateId,
       operation.operation_id || "",
       operation.operation_generation || "",
+      operation.requested_operation_generation || "",
+      operation.operation_console_execution_owner_update_id || "",
       stage,
       operation.consumption_status || "",
       data.runtime_attached === true
@@ -535,22 +736,74 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
         tone,
         signature
       );
+      if (stage === "효과 확인" || stage === "SC2 실행") {
+        setFeedback("명령이 SC2 런타임에 적용되었습니다.", false);
+      } else if (stage === "SC2 실행 대기") {
+        setFeedback(
+          "명령 해석은 완료됐습니다. SC2 / MicroMachine 연결 후 실행됩니다.",
+          false
+        );
+      } else if (stage === "차단") {
+        setFeedback("명령 실행이 차단되었습니다. 전술 자막을 확인하세요.", true);
+      } else if (lastSubmittedUpdateId === selectedUpdateId) {
+        setFeedback("명령을 전달했고 실제 실행 증거를 확인하고 있습니다.", false);
+      }
     }
   }
 
   function refreshRuntime() {
+    runtimeRequestSequence += 1;
+    var requestSequence = runtimeRequestSequence;
+    var mutationEpoch = runtimeMutationEpoch;
     return fetch(endpoint("/api/runtime/status", {
       mode: "micromachine",
       blackboard_dir: blackboardDir
-    })).then(parseJsonResponse).then(renderRuntime).catch(function(error) {
+    })).then(parseJsonResponse).then(function(status) {
+      if (
+        mutationEpoch !== runtimeMutationEpoch ||
+        requestSequence < runtimeAppliedRequestSequence
+      ) {
+        return status;
+      }
+      runtimeAppliedRequestSequence = requestSequence;
+      renderRuntime(status);
+      return status;
+    }).catch(function(error) {
+      if (
+        mutationEpoch !== runtimeMutationEpoch ||
+        requestSequence < runtimeAppliedRequestSequence
+      ) {
+        return;
+      }
+      runtimeAppliedRequestSequence = requestSequence;
       renderRuntime({ status: "failed", error: error.message });
     });
   }
 
   function refreshOperation() {
+    operationRequestSequence += 1;
+    var requestSequence = operationRequestSequence;
+    var mutationEpoch = operationMutationEpoch;
     return fetch(endpoint("/api/micromachine/status", {
       blackboard_dir: blackboardDir
-    })).then(parseJsonResponse).then(renderOperation).catch(function(error) {
+    })).then(parseJsonResponse).then(function(status) {
+      if (
+        mutationEpoch !== operationMutationEpoch ||
+        requestSequence < operationAppliedRequestSequence
+      ) {
+        return status;
+      }
+      operationAppliedRequestSequence = requestSequence;
+      renderOperation(status);
+      return status;
+    }).catch(function(error) {
+      if (
+        mutationEpoch !== operationMutationEpoch ||
+        requestSequence < operationAppliedRequestSequence
+      ) {
+        return;
+      }
+      operationAppliedRequestSequence = requestSequence;
       setFeedback("작전 상태 확인 실패: " + error.message, true);
     });
   }
@@ -567,6 +820,9 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     var pending = pendingNativeSC2Launches[nonce];
     if (!pending) { return; }
     delete pendingNativeSC2Launches[nonce];
+    if (typeof window.clearTimeout === "function") {
+      window.clearTimeout(pending.timeoutId);
+    }
     if (result && result.accepted === true) {
       pending.resolve(nonce);
       return;
@@ -590,15 +846,33 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       Math.random().toString(36).slice(2)
     );
     return new Promise(function(resolve, reject) {
+      var timeoutId = window.setTimeout(function() {
+        var pending = pendingNativeSC2Launches[nonce];
+        if (!pending) { return; }
+        delete pendingNativeSC2Launches[nonce];
+        pending.reject(new Error(
+          "SC2 visible launch verification timed out after 185 seconds."
+        ));
+      }, NATIVE_SC2_LAUNCH_TIMEOUT_MS);
       pendingNativeSC2Launches[nonce] = {
         resolve: resolve,
-        reject: reject
+        reject: reject,
+        timeoutId: timeoutId
       };
-      bridge.postMessage({ nonce: nonce });
+      try {
+        bridge.postMessage({ nonce: nonce });
+      } catch (error) {
+        delete pendingNativeSC2Launches[nonce];
+        if (typeof window.clearTimeout === "function") {
+          window.clearTimeout(timeoutId);
+        }
+        reject(error);
+      }
     });
   }
 
   function startRuntimeWithNonce(nonce) {
+    runtimeMutationEpoch += 1;
     return fetch(endpoint("/api/runtime/start"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -614,22 +888,125 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       })
     }).then(parseJsonResponse).then(function(status) {
       renderRuntime(status);
+      var runtimeState = String(status.status || "");
+      if (
+        status.accepted === false ||
+        ["failed", "blocked", "disabled"].indexOf(runtimeState) !== -1
+      ) {
+        throw new Error(
+          String(status.error || "SC2 / MicroMachine runtime start was rejected.")
+        );
+      }
       setFeedback("시작 요청을 보냈습니다. 연결될 때까지 상태를 추적합니다.", false);
       window.setTimeout(refreshAll, 700);
+      return status;
     }).catch(function(error) {
       setFeedback("시작 실패: " + error.message, true);
       appendCaption("시작 실패: " + error.message, "danger");
+      throw error;
     });
   }
 
-  function startRuntime() {
-    setFeedback("StarCraft II 실제 창과 렌더링을 확인하는 중입니다.", false);
-    return requestNativeSC2Launch()
+  function runtimeIsConnectedOrStarting(status) {
+    status = status || {};
+    return (
+      (
+        status.runtime_attached === true &&
+        status.telemetry_current_for_process === true
+      ) ||
+      status.status === "starting" ||
+      status.status === "running"
+    );
+  }
+
+  function runtimeIsReadyForCommand(status) {
+    status = status || {};
+    return (
+      status.runtime_attached === true &&
+      status.telemetry_current_for_process === true
+    );
+  }
+
+  function waitForRuntimeCommandReady(status) {
+    var deadline = Date.now() + NATIVE_SC2_LAUNCH_TIMEOUT_MS;
+    return new Promise(function(resolve, reject) {
+      function inspect(current) {
+        current = current || {};
+        if (runtimeIsReadyForCommand(current)) {
+          resolve(current);
+          return;
+        }
+        if (
+          current.status === "failed" ||
+          current.status === "blocked" ||
+          current.status === "disabled"
+        ) {
+          reject(new Error(
+            String(current.error || "SC2 / MicroMachine runtime start was rejected.")
+          ));
+          return;
+        }
+        if (Date.now() >= deadline) {
+          reject(new Error(
+            "SC2 / MicroMachine 연결 확인 시간이 초과되었습니다."
+          ));
+          return;
+        }
+        window.setTimeout(function() {
+          refreshRuntime().then(inspect);
+        }, 500);
+      }
+      inspect(status);
+    });
+  }
+
+  function nativeSC2LaunchAvailable() {
+    return Boolean(
+      window.webkit &&
+      window.webkit.messageHandlers &&
+      window.webkit.messageHandlers.sc2Launch &&
+      typeof window.webkit.messageHandlers.sc2Launch.postMessage === "function"
+    );
+  }
+
+  function ensureRuntimeForCommand() {
+    if (runtimeIsConnectedOrStarting(latestRuntimeStatus)) {
+      return Promise.resolve(latestRuntimeStatus);
+    }
+    if (!nativeSC2LaunchAvailable()) {
+      return Promise.resolve(latestRuntimeStatus);
+    }
+    if (runtimeStartPromise) { return runtimeStartPromise; }
+    setFeedback(
+      "SC2 / MicroMachine을 시작한 뒤 명령을 전달합니다.",
+      false
+    );
+    runtimeStartPromise = requestNativeSC2Launch()
       .then(startRuntimeWithNonce)
-      .catch(function(error) {
-        setFeedback("시작 실패: " + error.message, true);
-        appendCaption("시작 실패: " + error.message, "danger");
+      .then(function(status) {
+        runtimeStartPromise = null;
+        return status;
+      }, function(error) {
+        runtimeStartPromise = null;
+        throw error;
       });
+    return runtimeStartPromise;
+  }
+
+  function startRuntime() {
+    if (!nativeSC2LaunchAvailable()) {
+      var message = (
+        "SC2 시작은 설치된 voiStarcraft2 앱에서만 사용할 수 있습니다. " +
+        "이 브라우저에서는 명령 대기열과 실행 상태만 확인할 수 있습니다."
+      );
+      setFeedback(message, true);
+      appendCaption(message, "warning");
+      return Promise.resolve(null);
+    }
+    setFeedback("StarCraft II 실제 창과 렌더링을 확인하는 중입니다.", false);
+    return ensureRuntimeForCommand().catch(function() {
+      return null;
+    });
   }
 
   function responseLanguage(text) {
@@ -638,11 +1015,63 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     return "en";
   }
 
-  function submitCommand(text) {
-    var cleaned = String(text || "").trim();
-    if (!cleaned) { return Promise.resolve(); }
+  function stageCommand(text) {
+    var originalText = String(text || "");
+    var cleaned = originalText.trim();
+    if (!cleaned) { return null; }
     submitSequence += 1;
+    var submissionSequence = submitSequence;
+    operationMutationEpoch += 1;
     var updateId = "voi-companion-" + Date.now() + "-" + submitSequence;
+    lastSubmittedUpdateId = updateId;
+    var pendingPayload = {
+      status: "queued",
+      latest_request: {
+        update_id: updateId,
+        command_text: cleaned,
+        consumption_status: "pending_compile"
+      },
+      operations: []
+    };
+    pendingCommand = {
+      sequence: submissionSequence,
+      update_id: updateId,
+      command_text: cleaned,
+      payload: pendingPayload
+    };
+    renderOperation(pendingPayload);
+    var inputNode = document.getElementById("command-input");
+    var submittedInputValue = inputNode.value;
+    var ownsInputValue = submittedInputValue === originalText;
+    if (ownsInputValue) {
+      inputNode.value = "";
+    }
+    return {
+      original_text: originalText,
+      cleaned_text: cleaned,
+      sequence: submissionSequence,
+      update_id: updateId,
+      input_node: inputNode,
+      submitted_input_value: submittedInputValue,
+      owns_input_value: ownsInputValue
+    };
+  }
+
+  function restoreStagedCommand(staged) {
+    if (
+      staged.owns_input_value &&
+      !staged.input_node.value
+    ) {
+      staged.input_node.value = staged.submitted_input_value;
+    }
+  }
+
+  function submitCommand(text, staged) {
+    staged = staged || stageCommand(text);
+    if (!staged) { return Promise.resolve(); }
+    var cleaned = staged.cleaned_text;
+    var submissionSequence = staged.sequence;
+    var updateId = staged.update_id;
     setFeedback("MyProxy가 명령을 해석하고 있습니다...", false);
     return fetch(endpoint("/api/micromachine/modulate"), {
       method: "POST",
@@ -658,7 +1087,25 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
         operation_generation: 1
       })
     }).then(parseJsonResponse).then(function(data) {
-      document.getElementById("command-input").value = "";
+      if (submissionSequence !== submitSequence) { return data; }
+      lastSubmittedUpdateId = String(data.update_id || updateId);
+      var acceptedPayload = {
+        status: data.status || "queued",
+        consumption_status: data.consumption_status || "pending_compile",
+        latest_request: {
+          update_id: lastSubmittedUpdateId,
+          command_text: cleaned,
+          consumption_status: data.consumption_status || "pending_compile"
+        },
+        operations: []
+      };
+      pendingCommand = {
+        sequence: submissionSequence,
+        update_id: lastSubmittedUpdateId,
+        command_text: cleaned,
+        payload: acceptedPayload
+      };
+      renderOperation(acceptedPayload);
       setFeedback(
         data.async_publish
           ? "명령 접수 완료. 작전 상태를 계속 추적합니다."
@@ -668,8 +1115,12 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       appendCaption("명령 접수: " + cleaned, "", updateId);
       window.setTimeout(refreshOperation, 500);
     }).catch(function(error) {
+      if (submissionSequence !== submitSequence) { return; }
+      pendingCommand = null;
+      restoreStagedCommand(staged);
       setFeedback("명령 실패: " + error.message, true);
       appendCaption("명령 실패: " + error.message, "danger");
+      window.setTimeout(refreshOperation, 500);
     });
   }
 
@@ -682,58 +1133,124 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       });
       return;
     }
-    recognition = new VoiceRecognition();
-    recognition.lang = "ko-KR";
-    recognition.interimResults = true;
-    recognition.continuous = false;
-    recognition.onstart = function() {
-      recording = true;
-      button.classList.add("recording");
-      button.setAttribute("aria-pressed", "true");
-      setFeedback("듣고 있습니다. 명령을 말하세요.", false);
-    };
-    recognition.onresult = function(event) {
+    function startVoiceSession() {
+      voiceSessionGeneration += 1;
+      var sessionGeneration = voiceSessionGeneration;
       var finalText = "";
-      var interimText = "";
-      for (var index = event.resultIndex; index < event.results.length; index += 1) {
-        var transcript = event.results[index][0].transcript;
-        if (event.results[index].isFinal) {
-          finalText += transcript;
-        } else {
-          interimText += transcript;
+      var commandSubmitted = false;
+      var sessionRecognition = new VoiceRecognition();
+      activeVoiceSessionGeneration = sessionGeneration;
+      recognition = sessionRecognition;
+      sessionRecognition.lang = "ko-KR";
+      sessionRecognition.interimResults = true;
+      sessionRecognition.continuous = false;
+      sessionRecognition.onstart = function() {
+        if (sessionGeneration !== activeVoiceSessionGeneration) { return; }
+        recording = true;
+        button.classList.add("recording");
+        button.setAttribute("aria-pressed", "true");
+        setFeedback("듣고 있습니다. 명령을 말하세요.", false);
+      };
+      sessionRecognition.onresult = function(event) {
+        if (sessionGeneration !== activeVoiceSessionGeneration) { return; }
+        var finalSegments = [];
+        var interimSegments = [];
+        for (var index = 0; index < event.results.length; index += 1) {
+          var transcript = String(event.results[index][0].transcript || "").trim();
+          if (!transcript) { continue; }
+          if (event.results[index].isFinal) {
+            finalSegments.push(transcript);
+          } else {
+            interimSegments.push(transcript);
+          }
         }
+        finalText = finalSegments.join(" ");
+        document.getElementById("command-input").value = (
+          finalSegments.concat(interimSegments).join(" ")
+        );
+      };
+      sessionRecognition.onerror = function(event) {
+        if (sessionGeneration !== activeVoiceSessionGeneration) { return; }
+        activeVoiceSessionGeneration = 0;
+        recording = false;
+        recognition = null;
+        button.classList.remove("recording");
+        button.setAttribute("aria-pressed", "false");
+        setFeedback(
+          "음성 입력 실패: " + String(event.error || "unknown"),
+          true
+        );
+      };
+      sessionRecognition.onend = function() {
+        if (sessionGeneration !== activeVoiceSessionGeneration) { return; }
+        activeVoiceSessionGeneration = 0;
+        recording = false;
+        recognition = null;
+        button.classList.remove("recording");
+        button.setAttribute("aria-pressed", "false");
+        if (!commandSubmitted && finalText) {
+          commandSubmitted = true;
+          submitCommandWithRuntime(finalText);
+        }
+      };
+      try {
+        sessionRecognition.start();
+      } catch (error) {
+        sessionRecognition.onerror({
+          error: error && error.message ? error.message : error
+        });
       }
-      document.getElementById("command-input").value = finalText || interimText;
-      if (finalText.trim()) { submitCommand(finalText); }
-    };
-    recognition.onerror = function(event) {
-      setFeedback("음성 입력 실패: " + String(event.error || "unknown"), true);
-    };
-    recognition.onend = function() {
-      recording = false;
-      button.classList.remove("recording");
-      button.setAttribute("aria-pressed", "false");
-    };
+    }
     button.addEventListener("click", function() {
-      if (recording) {
+      if (recording && recognition) {
         recognition.stop();
       } else {
-        recognition.start();
+        startVoiceSession();
       }
     });
   }
 
+  function submitCommandWithRuntime(text) {
+    var originalText = String(text || "");
+    var cleaned = originalText.trim();
+    if (!cleaned) { return Promise.resolve(); }
+    if (
+      runtimeIsReadyForCommand(latestRuntimeStatus) ||
+      !nativeSC2LaunchAvailable()
+    ) {
+      return submitCommand(originalText);
+    }
+    var staged = stageCommand(originalText);
+    setFeedback(
+      "SC2를 시작하고 있습니다. 명령은 이 창에 보존됩니다.",
+      false
+    );
+    return ensureRuntimeForCommand()
+      .then(waitForRuntimeCommandReady)
+      .then(function() {
+        return submitCommand("", staged);
+      })
+      .catch(function(error) {
+        if (staged.sequence !== submitSequence) { return; }
+        pendingCommand = null;
+        restoreStagedCommand(staged);
+        var message = (
+          "SC2 자동 시작 실패. 명령을 전송하지 않았습니다: " +
+          error.message
+        );
+        setFeedback(message, true);
+        appendCaption(message, "warning");
+      });
+  }
+
   document.getElementById("runtime-start").addEventListener("click", startRuntime);
   document.getElementById("runtime-refresh").addEventListener("click", refreshAll);
-  document.getElementById("cockpit-back").addEventListener("click", function() {
-    window.location.assign(endpoint("/"));
-  });
   document.getElementById("retreat-button").addEventListener("click", function() {
-    submitCommand("긴급 전군 즉시 후퇴해");
+    submitCommandWithRuntime("긴급 전군 즉시 후퇴해");
   });
   document.getElementById("command-form").addEventListener("submit", function(event) {
     event.preventDefault();
-    submitCommand(document.getElementById("command-input").value);
+    submitCommandWithRuntime(document.getElementById("command-input").value);
   });
 
   setupVoice();

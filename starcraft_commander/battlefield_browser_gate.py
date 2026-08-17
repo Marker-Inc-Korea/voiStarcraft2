@@ -38,12 +38,43 @@ VIEWPORTS: Final[tuple[tuple[str, int, int], ...]] = (
 )
 VISUAL_DIFF_THRESHOLD: Final[float] = 0.01
 PIXEL_CHANNEL_TOLERANCE: Final[int] = 12
-STANDARD_OPERATION_ACTIONS: Final[tuple[str, ...]] = (
-    "view",
-    "revise",
-    "reinforce",
-    "retarget",
-    "cancel",
+COMPACT_CONTROLLER_SELECTORS: Final[tuple[tuple[str, str], ...]] = (
+    ("shell", ".shell"),
+    ("topbar", ".topbar"),
+    ("runtime_status", "#runtime-status"),
+    ("operation", ".operation"),
+    ("operation_stage", "#operation-stage"),
+    ("operation_goal", "#operation-goal"),
+    ("operation_composition", "#operation-composition"),
+    ("runtime_start", "#runtime-start"),
+    ("runtime_refresh", "#runtime-refresh"),
+    ("captions", ".captions"),
+    ("caption_list", "#caption-list"),
+    ("command_form", "#command-form"),
+    ("command_input", "#command-input"),
+    ("voice_button", "#voice-button"),
+    ("send_button", ".send-button"),
+    ("retreat_button", "#retreat-button"),
+    ("command_feedback", "#command-feedback"),
+)
+COMPACT_COMMAND_TEXT: Final[str] = (
+    "마린 6기, 탱크 2기, 바이킹 2기로 적 본진 공격"
+)
+LEGACY_CONTROLLER_SELECTORS: Final[tuple[str, ...]] = (
+    ".dashboard-grid",
+    ".metric-card",
+    ".operation-lane",
+    ".operation-card",
+    ".operation-card-actions",
+    "#operation-timeline-selection",
+    "#llm-panel",
+    ".llm-settings",
+    ".tactical-radio",
+    "#tactical-radio-mute",
+    ".tactical-radio-waveform",
+    ".waveform",
+    ".voice-session",
+    ".voice-session-entry",
 )
 _SHA_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{40}$")
 _BUILD_RE: Final[re.Pattern[str]] = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -216,7 +247,9 @@ def _operation(
             "operation_id": operation_id,
             "generation": generation,
             "composition_requirements": [
-                {"unit_type": "TERRAN_MARINE", "count": 4}
+                {"unit_type": "TERRAN_MARINE", "count": 6},
+                {"unit_type": "TERRAN_SIEGETANK", "count": 2},
+                {"unit_type": "TERRAN_VIKINGFIGHTER", "count": 2},
             ],
             "tactical_task": {"task_type": "pressure_with_main_army"},
             "route_intent": {
@@ -224,7 +257,7 @@ def _operation(
                 "target_intent": "enemy_natural",
             },
         },
-        "command_text": f"Execute {operation_id}",
+        "command_text": COMPACT_COMMAND_TEXT,
         "operation_mission": "pressure",
         "transport_status": "published",
         "status": "published",
@@ -269,10 +302,24 @@ def _operation(
         "update": {
             "update_id": update_id,
             "vector": {
-                "goal": f"Execute {operation_id}",
+                "goal": COMPACT_COMMAND_TEXT,
                 "operation_id": operation_id,
                 "generation": generation,
                 "tactical_task": {"task_type": "pressure_with_main_army"},
+                "operations": [
+                    {
+                        "operation_id": operation_id,
+                        "generation": generation,
+                        "composition_requirements": [
+                            {"unit_type": "TERRAN_MARINE", "count": 6},
+                            {"unit_type": "TERRAN_SIEGETANK", "count": 2},
+                            {
+                                "unit_type": "TERRAN_VIKINGFIGHTER",
+                                "count": 2,
+                            },
+                        ],
+                    }
+                ],
             },
         },
         "intervention": {
@@ -363,12 +410,10 @@ class _BrowserFixtureBridge:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._operations = [
-            _operation("planning-alpha", 1, "planning"),
-            _operation("assault-bravo", 2, "executing"),
-            _operation("completed-charlie", 3, "completed"),
-            _operation("waiting-delta", 4, "waiting"),
+            _operation("compact-assault", 1, "planning"),
         ]
         self._submission_count = 0
+        self.submissions: list[dict[str, object]] = []
 
     def submit_command(self, text: str) -> None:
         del text
@@ -429,23 +474,26 @@ class _BrowserFixtureBridge:
         text: str,
         **kwargs: object,
     ) -> dict[str, object]:
-        del kwargs
         with self._lock:
             self._submission_count += 1
             ordinal = self._submission_count
+            self.submissions.append({"text": text, **kwargs})
         if ordinal == 1:
             time.sleep(0.12)
         else:
             time.sleep(0.04)
-        created = [
-            _operation(f"voice-{ordinal}-recon", ordinal + 10, "planning"),
-            _operation(f"voice-{ordinal}-attack", ordinal + 20, "executing"),
-        ]
-        for item in created:
-            item["command_text"] = text
+        update_id = str(kwargs.get("update_id", "") or "")
+        operation_id = str(kwargs.get("operation_id", "") or "")
+        generation = kwargs.get("operation_generation")
         with self._lock:
-            self._operations.extend(created)
-            return _status_payload(self._operations)
+            return {
+                **_status_payload(self._operations),
+                "status": "queued",
+                "consumption_status": "pending_compile",
+                "update_id": update_id,
+                "operation_id": operation_id,
+                "operation_generation": generation,
+            }
 
     def submit_micromachine_modulation_background(
         self,
@@ -463,15 +511,77 @@ class _BrowserFixtureBridge:
 
 class _BrowserFixtureLauncher:
     def __init__(self, blackboard_dir: str) -> None:
+        self._lock = threading.Lock()
         self.blackboard_dir = blackboard_dir
         self.runtime_instance_id = "f" * 32
+        self._started = False
+        self.start_calls: list[dict[str, object]] = []
+
+    def start(
+        self,
+        blackboard_dir: str = "",
+        enemy_difficulty: int = 10,
+        sc2_launch_nonce: str = "",
+    ) -> dict[str, object]:
+        nonce = str(sc2_launch_nonce or "").strip()
+        if re.fullmatch(r"[a-z0-9-]{12,128}", nonce) is None:
+            raise ValueError("fixture requires a valid native SC2 launch nonce")
+        if (
+            isinstance(enemy_difficulty, bool)
+            or not isinstance(enemy_difficulty, int)
+            or not 1 <= enemy_difficulty <= 10
+        ):
+            raise ValueError("fixture enemy difficulty must be between 1 and 10")
+        with self._lock:
+            if blackboard_dir:
+                self.blackboard_dir = blackboard_dir
+            self.start_calls.append(
+                {
+                    "blackboard_dir": self.blackboard_dir,
+                    "enemy_difficulty": enemy_difficulty,
+                    "sc2_launch_nonce": nonce,
+                }
+            )
+            self._started = True
+            return {
+                **self._metadata(),
+                "enemy_difficulty": enemy_difficulty,
+            }
+
+    def _metadata(self) -> dict[str, object]:
+        if not self._started:
+            return {
+                "enabled": True,
+                "mode": "micromachine",
+                "status": "idle",
+                "blackboard_dir": self.blackboard_dir,
+                "pid": 0,
+                "runtime_instance_id": "",
+                "runtime_attached": False,
+                "telemetry_present": False,
+                "telemetry_current_for_process": False,
+                "telemetry_stale_or_detached": True,
+                "telemetry_frame": 0,
+            }
+        return {
+            "enabled": True,
+            "mode": "micromachine",
+            "status": "connected",
+            "blackboard_dir": self.blackboard_dir,
+            "pid": 4242,
+            "runtime_instance_id": self.runtime_instance_id,
+            "runtime_attached": True,
+            "telemetry_present": True,
+            "telemetry_current_for_process": True,
+            "telemetry_stale_or_detached": False,
+            "telemetry_frame": 480,
+        }
 
     def snapshot(self, blackboard_dir: str = "") -> dict[str, object]:
-        return dict(
-            self.validated_snapshot(
-                blackboard_dir=blackboard_dir,
-            ).metadata
-        )
+        with self._lock:
+            if blackboard_dir:
+                self.blackboard_dir = blackboard_dir
+            return self._metadata()
 
     def validated_snapshot(
         self,
@@ -482,7 +592,11 @@ class _BrowserFixtureLauncher:
             _MicroMachineValidatedRuntimeSnapshot,
         )
 
-        root = blackboard_dir or self.blackboard_dir
+        with self._lock:
+            if blackboard_dir:
+                self.blackboard_dir = blackboard_dir
+            metadata = self._metadata()
+            started = self._started
         telemetry = {
             "protocol_version": 1,
             "frame": 480,
@@ -493,26 +607,59 @@ class _BrowserFixtureLauncher:
             "runtime_instance_id": self.runtime_instance_id,
         }
         return _MicroMachineValidatedRuntimeSnapshot(
-            metadata={
-                "enabled": True,
-                "mode": "micromachine",
-                "status": "connected",
-                "blackboard_dir": root,
-                "pid": 4242,
-                "runtime_instance_id": self.runtime_instance_id,
-                "runtime_attached": True,
-                "telemetry_present": True,
-                "telemetry_current_for_process": True,
-                "telemetry_stale_or_detached": False,
-                "telemetry_frame": 480,
-            },
-            telemetry_document=telemetry,
+            metadata=metadata,
+            telemetry_document=telemetry if started else None,
         )
 
 
 _BROWSER_INIT_SCRIPT = r"""
 (() => {
   window.__voiSpeechInstances = [];
+  window.__voiBrowserErrors = [];
+  window.__voiFetchRequests = [];
+  window.__voiNativeLaunchRequests = [];
+  window.__voiWindowOpenCalls = [];
+  window.addEventListener("error", event => {
+    window.__voiBrowserErrors.push(
+      String(event.message || event.error || "browser error")
+    );
+  });
+  window.addEventListener("unhandledrejection", event => {
+    window.__voiBrowserErrors.push(
+      String(event.reason || "unhandled rejection")
+    );
+  });
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = async (input, options) => {
+    const request = {
+      url: String(input && input.url ? input.url : input || ""),
+      method: String(options && options.method || "GET").toUpperCase(),
+      body: String(options && options.body || "")
+    };
+    window.__voiFetchRequests.push(request);
+    const response = await originalFetch(input, options);
+    request.status = response.status;
+    request.contentType = response.headers.get("content-type") || "";
+    return response;
+  };
+  const webkit = window.webkit || {};
+  webkit.messageHandlers = webkit.messageHandlers || {};
+  webkit.messageHandlers.sc2Launch = {
+    postMessage(payload) {
+      const nonce = String(payload && payload.nonce || "");
+      window.__voiNativeLaunchRequests.push({ nonce });
+      window.setTimeout(() => {
+        if (typeof window.voiNativeSC2LaunchResolved === "function") {
+          window.voiNativeSC2LaunchResolved({ nonce, accepted: true });
+        }
+      }, 0);
+    }
+  };
+  window.webkit = webkit;
+  window.open = (...args) => {
+    window.__voiWindowOpenCalls.push(args.map(value => String(value)));
+    return null;
+  };
   class FixtureSpeechRecognition {
     constructor() {
       this.lang = "ko-KR";
@@ -537,27 +684,24 @@ _BROWSER_INIT_SCRIPT = r"""
   }
   window.SpeechRecognition = FixtureSpeechRecognition;
   window.webkitSpeechRecognition = FixtureSpeechRecognition;
-  window.SpeechSynthesisUtterance = function(text) { this.text = text; };
-  window.speechSynthesis = {
-    speaking: false,
-    pending: false,
-    speak() {},
-    cancel() {}
-  };
 })();
 """
 
 
-def _wait_for_cards(page: Any, count: int = 4) -> None:
+def _wait_for_compact_controller(page: Any) -> None:
     try:
         page.wait_for_function(
-            "(count) => document.querySelectorAll('.operation-card').length >= count",
-            arg=count,
+            """(selectors) => selectors.every(
+              item => document.querySelectorAll(item[1]).length === 1
+            ) && Boolean(
+              document.getElementById("operation-goal")?.textContent?.trim()
+            )""",
+            arg=list(COMPACT_CONTROLLER_SELECTORS),
             timeout=15_000,
         )
     except Exception as error:
         diagnostics = page.evaluate(
-            """async () => {
+            """async (selectors) => {
               let response = {};
               try {
                 const result = await fetch("/api/micromachine/status");
@@ -569,17 +713,65 @@ def _wait_for_cards(page: Any, count: int = 4) -> None:
                 response = { error: String(fetchError) };
               }
               return {
-                cardCount: document.querySelectorAll(".operation-card").length,
-                statusText:
-                  document.getElementById("micromachine-status")?.textContent || "",
+                selectorCounts: Object.fromEntries(
+                  selectors.map(item => [
+                    item[0],
+                    document.querySelectorAll(item[1]).length
+                  ])
+                ),
+                runtimeStatus:
+                  document.getElementById("runtime-status")?.textContent || "",
+                operationGoal:
+                  document.getElementById("operation-goal")?.textContent || "",
                 response
               };
-            }"""
+            }""",
+            list(COMPACT_CONTROLLER_SELECTORS),
         )
         raise AssertionError(
-            "operation cards did not render: "
+            "compact controller did not render: "
             + json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
         ) from error
+
+
+def _assert_compact_routes(page: Any) -> dict[str, object]:
+    route_results = page.evaluate(
+        """async () => Promise.all(
+          ["/", "/index.html", "/companion"].map(async path => {
+            const response = await fetch(path, { cache: "no-store" });
+            return {
+              path,
+              status: response.status,
+              content_type: response.headers.get("content-type") || "",
+              body: await response.text()
+            };
+          })
+        )"""
+    )
+    if not isinstance(route_results, Sequence) or len(route_results) != 3:
+        raise AssertionError("compact controller route snapshot is invalid")
+    bodies: list[str] = []
+    routes: list[str] = []
+    for result in route_results:
+        if not isinstance(result, Mapping):
+            raise AssertionError("compact controller route result is invalid")
+        path = str(result.get("path", ""))
+        routes.append(path)
+        if result.get("status") != 200:
+            raise AssertionError(f"compact controller route failed: {path}")
+        if "text/html" not in str(result.get("content_type", "")).lower():
+            raise AssertionError(
+                f"compact controller route is not HTML: {path}"
+            )
+        bodies.append(str(result.get("body", "")))
+    if len(set(bodies)) != 1:
+        raise AssertionError("compact controller routes are not byte-identical")
+    return {
+        "count": len(routes),
+        "paths": routes,
+        "identical": True,
+        "body_sha256": hashlib.sha256(bodies[0].encode("utf-8")).hexdigest(),
+    }
 
 
 def _tab_until(page: Any, selector: str, *, reverse: bool = False) -> None:
@@ -594,7 +786,7 @@ def _tab_until(page: Any, selector: str, *, reverse: bool = False) -> None:
     raise AssertionError(f"keyboard focus did not reach {selector}")
 
 
-def _focused_outline(page: Any) -> dict[str, str]:
+def _focused_indicator(page: Any) -> dict[str, str]:
     return page.evaluate(
         """() => {
           const node = document.activeElement;
@@ -603,164 +795,195 @@ def _focused_outline(page: Any) -> dict[str, str]:
             tag: node ? node.tagName : "",
             id: node ? node.id : "",
             outline: style ? style.outlineStyle : "",
-            width: style ? style.outlineWidth : ""
+            width: style ? style.outlineWidth : "",
+            box_shadow: style ? style.boxShadow : ""
           };
         }"""
     )
 
 
-def _keyboard_journey(page: Any) -> dict[str, object]:
+def _assert_focus_visible(details: Mapping[str, str], label: str) -> None:
+    outlined = (
+        details.get("outline") not in {"", "none"}
+        and details.get("width") not in {"", "0px"}
+    )
+    shadowed = details.get("box_shadow") not in {"", "none"}
+    if not outlined and not shadowed:
+        raise AssertionError(f"{label} control has no visible focus indicator")
+
+
+def _keyboard_journey(
+    page: Any,
+    *,
+    require_runtime_start: bool,
+) -> dict[str, object]:
+    focus: dict[str, Mapping[str, str]] = {}
     page.locator("body").focus()
-    _tab_until(page, "#command-input")
-    page.keyboard.type("마린 정찰조와 공격조를 동시에 편성해")
-    page.keyboard.press("Enter")
-    _wait_for_cards(page, 6)
-    _tab_until(page, ".operation-card[tabindex='0']")
-    first_key = page.evaluate(
-        "() => document.activeElement.getAttribute('data-operation-key')"
-    )
-    timeline_before = page.locator("#operation-timeline-selection").text_content()
-    page.keyboard.press("ArrowDown")
-    second_key = page.evaluate(
-        "() => document.activeElement.getAttribute('data-operation-key')"
-    )
-    if not first_key or not second_key or first_key == second_key:
-        raise AssertionError("operation lane navigation did not move focus")
-    if "\ufffd" in first_key or "\ufffd" in second_key:
-        raise AssertionError("operation DOM key contains a replacement character")
-    focused_operation_id = page.evaluate(
-        "() => document.activeElement.getAttribute('data-operation-id')"
-    )
-    page.keyboard.press("Enter")
-    selected = page.evaluate(
-        "() => document.activeElement.getAttribute('data-operation-selected')"
-    )
-    if selected != "true":
-        raise AssertionError("keyboard-selected operation did not retain selection")
-    timeline_after = page.locator("#operation-timeline-selection").text_content()
-    if (
-        not focused_operation_id
-        or timeline_after == timeline_before
-        or not str(timeline_after or "").startswith(f"{focused_operation_id}#")
-    ):
-        raise AssertionError(
-            "keyboard selection did not update the focused operation timeline"
-        )
-
-    exercised: list[str] = []
-    for action in ("view", "revise", "reinforce", "retarget", "cancel"):
-        selector = (
-            f".operation-card[data-operation-selected='true'] "
-            f"[data-operation-action='{action}']"
-        )
-        _tab_until(page, selector)
-        before = _focused_outline(page)
-        if before["outline"] == "none" or before["width"] in {"", "0px"}:
-            raise AssertionError(f"{action} control has no visible focus")
+    _tab_until(page, "#runtime-start")
+    focus["runtime_start"] = _focused_indicator(page)
+    _assert_focus_visible(focus["runtime_start"], "runtime start")
+    if require_runtime_start:
         page.keyboard.press("Enter")
-        exercised.append(action)
-        if action in {"revise", "reinforce", "retarget"}:
-            if not page.locator("#command-input").input_value().strip():
-                raise AssertionError(f"{action} did not update the command input")
-            page.locator("#command-input").fill("")
-        if action == "cancel":
-            page.wait_for_timeout(180)
-
-    page.locator("body").focus()
-    _tab_until(page, "#tactical-radio-mute")
-    page.keyboard.press("Space")
-    if page.locator("#tactical-radio-mute").get_attribute("aria-pressed") != "true":
-        raise AssertionError("keyboard mute did not update aria-pressed")
-    return {
-        "first_operation_key": first_key,
-        "second_operation_key": second_key,
-        "selected_operation_id": focused_operation_id,
-        "timeline_selection": timeline_after,
-        "actions": exercised,
-        "focus": _focused_outline(page),
-    }
-
-
-def _voice_journey(page: Any) -> dict[str, object]:
-    for ordinal in (1, 2):
-        page.locator("body").focus()
-        _tab_until(page, "#voice-button")
-        page.keyboard.press("Enter")
-        page.wait_for_function(
-            "(count) => window.__voiSpeechInstances.length >= count",
-            arg=ordinal,
-        )
-        page.evaluate(
-            """({ index, text }) => {
-              window.__voiSpeechInstances[index].emitFinal(text);
-            }""",
-            {
-                "index": ordinal - 1,
-                "text": f"음성 병렬 명령 {ordinal}",
-            },
-        )
-    try:
         page.wait_for_function(
             """() =>
-              document.querySelectorAll('[data-operation-id^="voice-"]').length >= 4
-              && document.querySelectorAll('.voice-session-entry').length === 1
-            """,
+              window.__voiNativeLaunchRequests.length === 1 &&
+              window.__voiFetchRequests.some(
+                request =>
+                  request.method === "POST" &&
+                  new URL(request.url, location.href).pathname ===
+                    "/api/runtime/start"
+              )""",
             timeout=15_000,
         )
-    except Exception as error:
-        diagnostics = page.evaluate(
-            """async () => {
-              let response = {};
-              try {
-                const result = await fetch("/api/micromachine/status");
-                response = {
-                  status: result.status,
-                  body: (await result.text()).slice(0, 4000)
-                };
-              } catch (fetchError) {
-                response = { error: String(fetchError) };
-              }
+        runtime_evidence = page.evaluate(
+            """() => {
+              const nativeRequest = window.__voiNativeLaunchRequests[0];
+              const fetchRequest = window.__voiFetchRequests.find(
+                request =>
+                  request.method === "POST" &&
+                  new URL(request.url, location.href).pathname ===
+                    "/api/runtime/start"
+              );
               return {
-                voiceSessionCount:
-                  document.querySelectorAll(".voice-session-entry").length,
-                operationIds: Array.from(
-                  document.querySelectorAll("[data-operation-id]")
-                ).map(node => node.getAttribute("data-operation-id")),
-                pendingIds: Array.from(
-                  document.querySelectorAll("[data-pending-id]")
-                ).map(node => node.getAttribute("data-pending-id")),
-                response
+                native_nonce: nativeRequest && nativeRequest.nonce,
+                request: fetchRequest,
+                body: fetchRequest ? JSON.parse(fetchRequest.body) : null
               };
             }"""
         )
-        raise AssertionError(
-            "voice operation identities did not render: "
-            + json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
-        ) from error
-    duplicate_pending = page.evaluate(
+        if not isinstance(runtime_evidence, Mapping):
+            raise AssertionError("runtime launch evidence is invalid")
+        body = runtime_evidence.get("body")
+        if not isinstance(body, Mapping):
+            raise AssertionError("runtime start request body is invalid")
+        native_nonce = str(runtime_evidence.get("native_nonce", ""))
+        if (
+            not native_nonce
+            or body.get("sc2_launch_nonce") != native_nonce
+            or body.get("mode") != "micromachine"
+        ):
+            raise AssertionError(
+                "runtime start did not preserve the native launch nonce"
+            )
+        page.wait_for_function(
+            """() =>
+              document.getElementById("runtime-status")?.dataset.state ===
+                "connected" &&
+              document.getElementById("operation-composition")?.textContent ===
+                "마린 6기 · 공성전차 2기 · 바이킹 2기" """,
+            timeout=15_000,
+        )
+    elif (
+        page.locator("#runtime-status").get_attribute("data-state")
+        != "connected"
+    ):
+        raise AssertionError("fixture runtime was not retained across viewports")
+
+    _tab_until(page, "#runtime-refresh")
+    focus["runtime_refresh"] = _focused_indicator(page)
+    _assert_focus_visible(focus["runtime_refresh"], "runtime refresh")
+    _tab_until(page, "#command-input")
+    focus["command_input"] = _focused_indicator(page)
+    _assert_focus_visible(focus["command_input"], "command input")
+    page.keyboard.type(COMPACT_COMMAND_TEXT)
+    page.keyboard.press("Enter")
+    page.wait_for_function(
+        """(text) =>
+          document.getElementById("operation-goal")?.textContent === text &&
+          document.getElementById("operation-stage")?.textContent ===
+            "명령 해석 중" &&
+          document.getElementById("command-input")?.value === "" &&
+          document.getElementById("command-feedback")?.textContent ===
+            "명령 접수 완료. 작전 상태를 계속 추적합니다." &&
+          Array.from(document.querySelectorAll("#caption-list li")).some(
+            node => node.textContent === "명령 접수: " + text
+          ) &&
+          window.__voiFetchRequests.some(request => {
+            if (
+              request.method !== "POST" ||
+              new URL(request.url, location.href).pathname !==
+                "/api/micromachine/modulate"
+            ) {
+              return false;
+            }
+            try {
+              return (
+                JSON.parse(request.body).text === text &&
+                Number.isInteger(request.status) &&
+                request.status >= 200 &&
+                request.status < 300
+              );
+            } catch (_error) {
+              return false;
+            }
+          })""",
+        arg=COMPACT_COMMAND_TEXT,
+        timeout=15_000,
+    )
+    command_evidence = page.evaluate(
         """() => {
-          const ids = Array.from(
-            document.querySelectorAll('[data-pending-id]')
-          ).map(node => node.getAttribute('data-pending-id')).filter(Boolean);
-          return ids.length !== new Set(ids).size;
+          const request = window.__voiFetchRequests.slice().reverse().find(
+            item =>
+              item.method === "POST" &&
+              new URL(item.url, location.href).pathname ===
+                "/api/micromachine/modulate"
+          );
+          return {
+            request,
+            body: request ? JSON.parse(request.body) : null,
+            goal: document.getElementById("operation-goal")?.textContent || "",
+            stage: document.getElementById("operation-stage")?.textContent || "",
+            input: document.getElementById("command-input")?.value || "",
+            feedback:
+              document.getElementById("command-feedback")?.textContent || ""
+          };
         }"""
     )
-    if duplicate_pending:
-        raise AssertionError("voice pending identities are duplicated")
-    operation_ids = page.locator(
-        '[data-operation-id^="voice-"]'
-    ).evaluate_all(
-        "nodes => nodes.map(node => node.getAttribute('data-operation-id'))"
-    )
-    if len(operation_ids) != len(set(operation_ids)):
-        raise AssertionError("voice operations do not have independent identities")
-    voice_session_nodes = page.locator(".voice-session-entry").count()
-    if voice_session_nodes != 1:
-        raise AssertionError("voice commands did not retain one aggregate surface")
+    if not isinstance(command_evidence, Mapping):
+        raise AssertionError("pending command evidence is invalid")
+    command_body = command_evidence.get("body")
+    if not isinstance(command_body, Mapping):
+        raise AssertionError("command request body is invalid")
+    update_id = str(command_body.get("update_id", ""))
+    if (
+        command_body.get("text") != COMPACT_COMMAND_TEXT
+        or not update_id.startswith("voi-companion-")
+        or command_body.get("operation_id") != update_id
+        or command_body.get("operation_generation") != 1
+        or command_body.get("async_publish") is not True
+        or command_evidence.get("goal") != COMPACT_COMMAND_TEXT
+        or command_evidence.get("stage") != "명령 해석 중"
+        or command_evidence.get("input") != ""
+        or command_evidence.get("feedback")
+        != "명령 접수 완료. 작전 상태를 계속 추적합니다."
+    ):
+        raise AssertionError(
+            "exact pending command text or update identity was not preserved"
+        )
+
+    for name, selector in (
+        ("voice_button", "#voice-button"),
+        ("send_button", ".send-button"),
+        ("retreat_button", "#retreat-button"),
+    ):
+        _tab_until(page, selector)
+        focus[name] = _focused_indicator(page)
+        _assert_focus_visible(focus[name], name.replace("_", " "))
+    browser_errors = page.evaluate("() => window.__voiBrowserErrors.slice()")
+    if browser_errors:
+        raise AssertionError(f"browser errors detected: {browser_errors!r}")
+    popup_calls = page.evaluate("() => window.__voiWindowOpenCalls.slice()")
+    if popup_calls:
+        raise AssertionError(
+            f"compact controller opened another window: {popup_calls!r}"
+        )
     return {
-        "voice_session_nodes": voice_session_nodes,
-        "operation_ids": operation_ids,
-        "duplicate_pending": duplicate_pending,
+        "runtime_started": require_runtime_start,
+        "command_text": COMPACT_COMMAND_TEXT,
+        "update_id": update_id,
+        "focus": focus,
+        "browser_errors": browser_errors,
+        "popup_calls": popup_calls,
     }
 
 
@@ -802,91 +1025,54 @@ def _visibility_failure(details: Mapping[str, object]) -> str:
 def _assert_visible_structure(
     snapshot: Mapping[str, object],
 ) -> dict[str, object]:
-    lanes = _structure_items(snapshot.get("lanes"), label="operation lanes")
-    if len(lanes) != 4:
-        raise AssertionError(f"expected four operation lanes, got {len(lanes)}")
-    for index, lane in enumerate(lanes):
-        if not isinstance(lane, Mapping):
-            raise AssertionError(f"operation lane {index} snapshot is invalid")
-        failure = _visibility_failure(lane)
-        if failure:
-            raise AssertionError(f"operation lane {index} is not visible: {failure}")
-
-    cards = _structure_items(snapshot.get("cards"), label="operation cards")
-    if len(cards) < 4:
-        raise AssertionError("expected at least four operation cards")
-    stage_count = 0
-    action_count = 0
-    for card_index, card in enumerate(cards):
-        if not isinstance(card, Mapping):
-            raise AssertionError(f"operation card {card_index} snapshot is invalid")
-        card_visibility = card.get("visibility")
-        if not isinstance(card_visibility, Mapping):
+    elements = snapshot.get("elements")
+    if not isinstance(elements, Mapping):
+        raise AssertionError("compact controller visibility snapshot is invalid")
+    for name, _selector in COMPACT_CONTROLLER_SELECTORS:
+        instances = _structure_items(
+            elements.get(name),
+            label=f"compact controller {name}",
+        )
+        if len(instances) != 1:
             raise AssertionError(
-                f"operation card {card_index} visibility snapshot is invalid"
+                f"expected one compact controller {name}, got {len(instances)}"
             )
-        failure = _visibility_failure(card_visibility)
+        instance = instances[0]
+        if not isinstance(instance, Mapping):
+            raise AssertionError(
+                f"compact controller {name} snapshot is invalid"
+            )
+        failure = _visibility_failure(instance)
         if failure:
             raise AssertionError(
-                f"operation card {card_index} is not visible: {failure}"
+                f"compact controller {name} is not visible: {failure}"
             )
-
-        stages = _structure_items(
-            card.get("stages"),
-            label=f"operation card {card_index} stages",
+    legacy = snapshot.get("legacy")
+    if not isinstance(legacy, Mapping):
+        raise AssertionError("legacy controller snapshot is invalid")
+    present_legacy = {
+        selector: legacy.get(selector)
+        for selector in LEGACY_CONTROLLER_SELECTORS
+        if legacy.get(selector) != 0
+    }
+    if present_legacy:
+        raise AssertionError(
+            f"legacy controller DOM is still present: {present_legacy!r}"
         )
-        if len(stages) != 4:
-            raise AssertionError(
-                f"operation card {card_index} does not have four stages"
-            )
-        stage_count += len(stages)
-        for stage_index, stage in enumerate(stages):
-            if not isinstance(stage, Mapping):
-                raise AssertionError(
-                    f"operation card {card_index} stage {stage_index} "
-                    "snapshot is invalid"
-                )
-            failure = _visibility_failure(stage)
-            if failure:
-                raise AssertionError(
-                    f"operation card {card_index} stage {stage_index} "
-                    f"is not visible: {failure}"
-                )
-
-        actions = _structure_items(
-            card.get("actions"),
-            label=f"operation card {card_index} actions",
-        )
-        action_names = [
-            action.get("name") if isinstance(action, Mapping) else None
-            for action in actions
-        ]
-        if action_names != list(STANDARD_OPERATION_ACTIONS):
-            raise AssertionError(f"operation actions changed: {action_names!r}")
-        action_count += len(actions)
-        for action in actions:
-            if not isinstance(action, Mapping):
-                raise AssertionError(
-                    f"operation card {card_index} action snapshot is invalid"
-                )
-            failure = _visibility_failure(action)
-            if failure:
-                raise AssertionError(
-                    f"operation card {card_index} action "
-                    f"{action.get('name')!r} is not visible: {failure}"
-                )
     return {
-        "lanes": len(lanes),
-        "cards": len(cards),
-        "stages": stage_count,
-        "actions": action_count,
+        "lanes": 1,
+        "cards": 1,
+        "stages": 1,
+        "actions": 5,
+        "controls": 6,
+        "elements": len(COMPACT_CONTROLLER_SELECTORS),
         "all_visible": True,
     }
 
 
 def _structural_assertions(page: Any) -> dict[str, object]:
     visible_structure = page.evaluate(
-        """() => {
+        """({ selectors, legacySelectors }) => {
           const visibility = (node) => {
             const style = getComputedStyle(node);
             const rect = node.getBoundingClientRect();
@@ -909,27 +1095,24 @@ def _structural_assertions(page: Any) -> dict[str, object]:
             };
           };
           return {
-            lanes: Array.from(
-              document.querySelectorAll("[data-operation-lane]")
-            ).map(visibility),
-            cards: Array.from(
-              document.querySelectorAll(".operation-card")
-            ).map(card => ({
-              visibility: visibility(card),
-              stages: Array.from(
-                card.querySelectorAll(".operation-stage")
-              ).map(visibility),
-              actions: Array.from(
-                card.querySelectorAll(
-                  ".operation-card-actions [data-operation-action]"
-                )
-              ).map(action => ({
-                name: action.getAttribute("data-operation-action"),
-                ...visibility(action)
-              }))
-            }))
+            elements: Object.fromEntries(
+              selectors.map(item => [
+                item[0],
+                Array.from(document.querySelectorAll(item[1])).map(visibility)
+              ])
+            ),
+            legacy: Object.fromEntries(
+              legacySelectors.map(selector => [
+                selector,
+                document.querySelectorAll(selector).length
+              ])
+            )
           };
-        }"""
+        }""",
+        {
+            "selectors": list(COMPACT_CONTROLLER_SELECTORS),
+            "legacySelectors": list(LEGACY_CONTROLLER_SELECTORS),
+        },
     )
     if not isinstance(visible_structure, Mapping):
         raise AssertionError("visible structure snapshot is invalid")
@@ -940,18 +1123,81 @@ def _structural_assertions(page: Any) -> dict[str, object]:
     )
     if len(ids) != len(set(ids)):
         raise AssertionError("duplicate DOM ID detected")
-    published = page.locator(
-        ".operation-card[data-operation-transport-status='published']"
-        "[data-operation-execution-state='queued_or_assigned']"
-    ).first
-    if "executing" in published.inner_text().lower():
-        raise AssertionError("published-only operation rendered as executing")
+    semantics = page.evaluate(
+        """() => {
+          const form = document.getElementById("command-form");
+          const input = document.getElementById("command-input");
+          const voice = document.getElementById("voice-button");
+          const send = document.querySelector(".send-button");
+          const operation = document.querySelector(".operation");
+          const captions = document.querySelector(".captions");
+          return {
+            form_tag: form?.tagName || "",
+            input_tag: input?.tagName || "",
+            input_type: input?.getAttribute("type") || "",
+            input_autocomplete: input?.getAttribute("autocomplete") || "",
+            input_label: input?.getAttribute("aria-label") || "",
+            runtime_start_type:
+              document.getElementById("runtime-start")?.getAttribute("type") || "",
+            runtime_refresh_type:
+              document.getElementById("runtime-refresh")?.getAttribute("type") || "",
+            voice_type: voice?.getAttribute("type") || "",
+            voice_label: voice?.getAttribute("aria-label") || "",
+            voice_pressed: voice?.getAttribute("aria-pressed") || "",
+            send_type: send?.getAttribute("type") || "",
+            retreat_type:
+              document.getElementById("retreat-button")?.getAttribute("type") || "",
+            input_in_form: Boolean(input && form && form.contains(input)),
+            send_in_form: Boolean(send && form && form.contains(send)),
+            operation_labelled:
+              operation?.getAttribute("aria-labelledby") === "operation-label",
+            captions_labelled:
+              captions?.getAttribute("aria-labelledby") === "caption-label",
+            blank_targets: document.querySelectorAll(
+              'a[target="_blank"], form[target="_blank"]'
+            ).length
+          };
+        }"""
+    )
+    expected_semantics = {
+        "form_tag": "FORM",
+        "input_tag": "INPUT",
+        "input_type": "text",
+        "input_autocomplete": "off",
+        "input_label": "전술 명령",
+        "runtime_start_type": "button",
+        "runtime_refresh_type": "button",
+        "voice_type": "button",
+        "voice_pressed": "false",
+        "send_type": "submit",
+        "retreat_type": "button",
+        "input_in_form": True,
+        "send_in_form": True,
+        "operation_labelled": True,
+        "captions_labelled": True,
+        "blank_targets": 0,
+    }
+    if not isinstance(semantics, Mapping):
+        raise AssertionError("compact controller semantics snapshot is invalid")
+    mismatches = {
+        key: semantics.get(key)
+        for key, value in expected_semantics.items()
+        if semantics.get(key) != value
+    }
+    if mismatches or not str(semantics.get("voice_label", "")).strip():
+        raise AssertionError(
+            f"compact controller semantics changed: {mismatches!r}"
+        )
     overflow = page.evaluate(
         """() => ({
           document: document.documentElement.scrollWidth
             > document.documentElement.clientWidth + 1,
           body: document.body.scrollWidth > document.body.clientWidth + 1,
-          cards: Array.from(document.querySelectorAll('.operation-card'))
+          shell: Array.from(document.querySelectorAll('.shell'))
+            .some(node => node.scrollWidth > node.clientWidth + 1),
+          panels: Array.from(document.querySelectorAll('.panel'))
+            .some(node => node.scrollWidth > node.clientWidth + 1),
+          form: Array.from(document.querySelectorAll('#command-form'))
             .some(node => node.scrollWidth > node.clientWidth + 1)
         })"""
     )
@@ -971,6 +1217,7 @@ def _structural_assertions(page: Any) -> dict[str, object]:
         **structural,
         "unique_ids": len(ids),
         "overflow": overflow,
+        "semantics": dict(semantics),
     }
 
 
@@ -1029,9 +1276,12 @@ def _media_assertions(
             context.add_init_script(_BROWSER_INIT_SCRIPT)
             page = context.new_page()
             page.goto(server_url, wait_until="domcontentloaded")
-            _wait_for_cards(page)
+            _wait_for_compact_controller(page)
             structural = _structural_assertions(page)
             if name == "reduced_motion":
+                page.locator("#voice-button").evaluate(
+                    "node => node.classList.add('recording')"
+                )
                 active = page.evaluate(
                     "() => matchMedia('(prefers-reduced-motion: reduce)').matches"
                 )
@@ -1051,20 +1301,29 @@ def _media_assertions(
                     )
                 results[name] = {"active": active, "animated": animated, **structural}
             else:
-                page.locator(".operation-card[tabindex='0']").focus()
-                outline = _focused_outline(page)
+                page.locator("#runtime-start").focus()
+                button_focus = _focused_indicator(page)
+                page.locator("#command-input").focus()
+                input_focus = _focused_indicator(page)
                 active = page.evaluate(
                     "() => matchMedia('(forced-colors: active)').matches"
                 )
                 if (
                     not active
-                    or outline["outline"] == "none"
-                    or outline["width"] in {"", "0px"}
+                    or button_focus["outline"] == "none"
+                    or button_focus["width"] in {"", "0px"}
+                    or input_focus["outline"] == "none"
+                    or input_focus["width"] in {"", "0px"}
                 ):
                     raise AssertionError(
                         "forced-colors context lost visible focus information"
                     )
-                results[name] = {"active": active, "focus": outline, **structural}
+                results[name] = {
+                    "active": active,
+                    "button_focus": button_focus,
+                    "input_focus": input_focus,
+                    **structural,
+                }
         finally:
             context.close()
     return results
@@ -2517,11 +2776,18 @@ def run_browser_gate(config: BrowserGateConfig) -> dict[str, object]:
                         context.add_init_script(_BROWSER_INIT_SCRIPT)
                         page = context.new_page()
                         page.goto(server_url, wait_until="domcontentloaded")
-                        _wait_for_cards(page)
+                        _wait_for_compact_controller(page)
+                        routes = _assert_compact_routes(page)
                         structural = _structural_assertions(page)
                         accessibility = _accessibility_assertions(page)
-                        keyboard = _keyboard_journey(page)
-                        voice = _voice_journey(page) if name == "desktop" else {}
+                        keyboard = _keyboard_journey(
+                            page,
+                            require_runtime_start=name == "desktop",
+                        )
+                        if len(context.pages) != 1:
+                            raise AssertionError(
+                                "compact controller opened an additional window"
+                            )
                         actual_path = screenshot_dir / f"{name}.png"
                         page.screenshot(path=str(actual_path), full_page=False)
                         baseline_path = config.baseline_dir / f"{name}.png"
@@ -2546,7 +2812,7 @@ def run_browser_gate(config: BrowserGateConfig) -> dict[str, object]:
                                 "structural": structural,
                                 "accessibility": accessibility,
                                 "keyboard": keyboard,
-                                "voice": voice,
+                                "routes": routes,
                                 "visual_diff_ratio": diff_ratio,
                                 "baseline_sha256": hashlib.sha256(
                                     baseline_path.read_bytes()
@@ -2604,7 +2870,7 @@ def _markdown_report(report: Mapping[str, object]) -> str:
         f"- Visual threshold: `{report['visual_diff_threshold']}`",
         "- Manual SC2 visual/audio QA remaining: `true`",
         "",
-        "| Viewport | Cards | Axe serious/critical | Visual diff |",
+        "| Viewport | Controls | Axe serious/critical | Visual diff |",
         "|---|---:|---:|---:|",
     ]
     for viewport in report["viewports"]:  # type: ignore[index]
@@ -2612,7 +2878,7 @@ def _markdown_report(report: Mapping[str, object]) -> str:
         structural = dict(item["structural"])
         accessibility = dict(item["accessibility"])
         lines.append(
-            f"| `{item['name']}` | {structural['cards']} | "
+            f"| `{item['name']}` | {structural['controls']} | "
             f"{accessibility['serious_critical_count']} | "
             f"{float(item['visual_diff_ratio']):.6f} |"
         )

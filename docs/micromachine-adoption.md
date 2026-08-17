@@ -4,6 +4,10 @@ Issue #10 is not looking for another SC2 API wrapper. It is looking for the
 strongest practical non-neural StarCraft II bot that can be studied and
 modulated by human intent without discarding its existing autonomous strength.
 
+> Current UI boundary: adoption and telemetry contracts remain active, but the
+> older multi-panel cockpit described in issue history has been superseded by
+> one compact controller.
+
 ## Decision
 
 MicroMachine is the only practical adoption candidate found so far.
@@ -259,25 +263,24 @@ The deterministic keyword provider is smoke/test-only and cannot claim
 
 ### Web Cockpit Routing
 
-`starcraft_commander.web_gui` treats MicroMachine as the default command route.
-The top chat box and browser voice input publish to
-`POST /api/micromachine/modulate`, using the same blackboard directory and
-semantic scope controls as the advanced MicroMachine panel. The UI renders the
-compile result, latest update id, manager bias domains, tactical posture,
-target priority, consumed axes, and recent tactical log snippets so a user can
-verify whether the DSL reached patched MicroMachine.
+`starcraft_commander.web_gui` serves the same compact MicroMachine controller
+at `/`, `/index.html`, and `/companion`. Text and browser voice input publish
+to `POST /api/micromachine/modulate`. The page shows one current-command
+summary and short text status captions; it does not render manager-bias panels,
+an operation board, an LLM settings panel, or a legacy runtime selector.
 
-The old `POST /api/command` route remains available only behind the explicit
-**Legacy python-sc2 commander** mode. That mode is for compatibility testing of
-the older `demo_sc2` commander and is not MicroMachine evidence. Runtime launch
-is integrated into the same cockpit: the **Launch selected runtime** button
-posts to `/api/runtime/start`, and `/api/runtime/status` reports whichever mode
-is selected. MicroMachine mode launches
-`integrations/micromachine/scripts/smoke_macos_local.sh` with the current
-blackboard directory; legacy mode launches the older python-sc2 demo only after
-an LLM key has been saved. The standalone web GUI keeps key-save-time legacy
-auto-launch disabled by default; it can be re-enabled only with
-`--auto-launch-legacy-live`.
+The old `POST /api/command` and `/api/llm` routes remain compatibility
+infrastructure for the older `demo_sc2` commander and are not selectable
+MicroMachine UI or production evidence. Native runtime launch belongs to the
+installed macOS app: it supplies a fresh visible-SC2 launch receipt before
+`/api/runtime/start` can launch
+`integrations/micromachine/scripts/smoke_macos_local.sh`. An ordinary browser
+has no native launch bridge, so it queues/publishes commands and can observe a
+runtime started elsewhere but does not auto-start StarCraft II.
+
+`published` only proves blackboard transport. Actual SC2 success requires
+matching MicroMachine assignment/submission plus movement, engagement,
+production, target, completion, or `effect_observed` telemetry.
 
 For in-game SC2 chat, the supported boundary is
 `MicroMachineChatModulationBridge` in

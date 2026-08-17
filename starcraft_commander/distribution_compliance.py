@@ -460,12 +460,6 @@ _SAFE_FIXTURE_FINGERPRINTS: Final[
             "2a452e8451a18651177c8cfeff71b5c6d1e8fd1d1faab95968b77e83cd7efd09": 2
         }
     },
-    "tests/test_web_gui.py": {
-        "api_key": {
-            "3ecb7ee0b6df1921344b76307f224695e417e4a63f638471b2428b6f7c54c355": 2,
-            "76bb8593aa73556c30f24f5e7f47d401383e5815b4117c4b0f0430398d93f544": 1,
-        }
-    },
 }
 _TEXT_SCAN_SUFFIXES: Final[frozenset[str]] = frozenset(
     {

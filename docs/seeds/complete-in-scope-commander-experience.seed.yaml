@@ -1,3 +1,7 @@
+# Archived/superseded historical seed for feat/llm-combo-dashboard-i18n.
+# Dashboard, LLM setup, strategic briefing, waveform, and related acceptance
+# criteria below are preserved as historical requirements, not current compact
+# controller implementation claims.
 goal: >
   Complete the in-scope Commander product experience on
   feat/llm-combo-dashboard-i18n so Korean natural-language play works as a

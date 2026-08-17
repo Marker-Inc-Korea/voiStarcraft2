@@ -148,33 +148,42 @@ integration.
 ## MicroMachine Cockpit Architecture
 
 The production-oriented SC2 bot-control target is patched MicroMachine, not
-the legacy python-sc2 commander. The web GUI's default chat and browser voice
-input compile human intent into bounded policy modulation DSL and publish it to
-a MicroMachine blackboard. MicroMachine remains the autonomous player; the UI,
-LLM, replay, or future neural provider may only modulate manager-level policy
-axes.
+the legacy python-sc2 commander. `/`, `/index.html`, and `/companion` all serve
+the same compact controller. Its text and browser-voice input compile human
+intent into bounded policy modulation DSL and publish it to a MicroMachine
+blackboard. MicroMachine remains the autonomous player; the UI, LLM, replay, or
+future neural provider may only modulate manager-level policy axes.
 
 ```text
 Korean text or browser voice
-  -> Web GUI MicroMachine mode in the unified Commander Chat
+  -> single compact controller
   -> LLM forced-tool provider / explicit smoke_keyword provider / future neural provider
   -> bounded provider compiler
   -> PolicyModulationVector
   -> MicroMachineModulationBackend
   -> blackboard files consumed by patched MicroMachine C++ managers
   -> telemetry + tactical logs
-  -> web DSL intervention dashboard
+  -> current-command summary + text status captions + in-game HUD
 ```
 
 This path does not call python-sc2, s2client-api, raw unit tags, keyboard hooks,
-mouse automation, OCR, or screen scraping. The old `/api/command` route is
-available only when the user explicitly selects **Legacy python-sc2 commander**
-mode. Runtime launch/status is mode-aware: the same cockpit calls
-`/api/runtime/start` and `/api/runtime/status`; MicroMachine mode starts the
-patched MicroMachine smoke/live script with the selected blackboard directory,
-while legacy mode starts the older python-sc2 demo only after a key has been
-saved.
-mode in the web UI.
+mouse automation, OCR, or screen scraping. The compact page has no legacy mode
+selector, LLM settings panel, operation-card board, four-lane dashboard,
+strategy briefing panel, or Tactical Radio/TTS surface. The old
+`/api/command`, `/api/llm`, and legacy runtime branches remain compatibility
+infrastructure, not selectable product UI.
+
+Runtime bootstrap is deliberately asymmetric. The installed macOS app hosts
+one WebKit controller window, obtains native proof that the SC2 process, API
+port, onscreen window, and unlocked session are valid,
+then may call `/api/runtime/start`. The ordinary-browser page has no native
+launch bridge; it queues/publishes commands and observes a runtime started
+elsewhere, but it does not auto-start StarCraft II. In every path, `published`
+is transport evidence only, while assignment and submission are intermediate
+runtime evidence. Actual SC2 success requires current identity-matched
+MicroMachine telemetry plus a command-specific observed effect such as
+production, movement, engagement, target arrival, completion, or
+`effect_observed`.
 
 ## Legacy Live SC2 Architecture
 
@@ -226,7 +235,8 @@ python-sc2, faster-whisper, or sounddevice.
 | Live pipeline | `starcraft_commander/live_pipeline.py` | `SC2CommandSession` composition, compound-command splitting, `SC2CommandOutcome` per part with stage artifacts only for stages that ran. | Stage-specific logic or game-loop scheduling. |
 | Voice input | `starcraft_commander/voice_input.py` | Microphone capture and Whisper transcription seams producing plain text for the unchanged interpreter; lazy optional dependencies with actionable `MissingVoiceDependencyError`. | Command interpretation or execution. |
 | Dependency guards | `starcraft_commander/runtime_deps.py` | `is_*_available()` probes and `require_*()` guards with bilingual install hints for python-sc2 (burnysc2), faster-whisper, and sounddevice. | Any game or audio logic. |
-| Web GUI | `starcraft_commander/web_gui.py` | Local cockpit with default MicroMachine DSL mode, explicit legacy python-sc2 commander mode, token-protected network binding, chat/voice routing, mode-aware runtime start/status, MicroMachine status, and DSL evidence dashboard. | Raw game control, MicroMachine C++ gameplay, or hidden mode switching. |
+| Compact controller server | `starcraft_commander/web_gui.py`, `starcraft_commander/companion_ui.py` | Serves the same compact page on all controller routes; queues text/voice MicroMachine modulation; exposes runtime and telemetry status; keeps published and observed effects distinct. | Native SC2 launch proof, raw game control, legacy mode selection, multi-card dashboards, or Tactical Radio/TTS. |
+| Installed macOS cockpit | `starcraft_commander/local_cockpit.py` | Owns the single WebKit controller window, native visible-SC2 launch receipt, and installed-app runtime auto-start bridge. | Command compilation, MicroMachine gameplay decisions, or additional browser/cockpit windows. |
 | Demo entrypoint | `starcraft_commander/demo_sc2.py` | `python -m starcraft_commander.demo_sc2`: `--dry-run` scripted fake-BotAI mode (testable), legacy live local-custom-game mode, `--voice` push-to-talk with a transcription confidence gate. | New intents or autonomous play. |
 
 ### Live Safety Invariants
@@ -245,6 +255,9 @@ The Phase 0 safety rules carry over unchanged to the live runtime:
 3. Unknown game state rejects mutating commands: a missing runtime or
    incomplete observation (`observation_notes` non-empty) is grounds for
    conservative rejection rather than optimistic guessing.
-4. No mouse or screen automation anywhere. Legacy commander mode uses only
-   semantic python-sc2 API calls; MicroMachine cockpit mode uses only bounded
-   policy modulation files and telemetry.
+4. No mouse or screen automation anywhere. The legacy command-line runtime uses
+   only semantic python-sc2 API calls; the compact MicroMachine controller uses
+   only bounded policy modulation files and telemetry.
+5. Browser publication is not execution. `queued`, compiled, and `published`
+   states cannot be presented as an actual SC2 effect without matching runtime
+   telemetry.

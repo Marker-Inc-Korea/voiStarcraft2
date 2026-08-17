@@ -620,7 +620,7 @@ def render_final_release_markdown(report: Mapping[str, object]) -> str:
             "## Manual Boundary",
             "",
             "This report never claims live qualification. Actual StarCraft II "
-            "visual movement, engagement, HUD consistency, tactical voice audio, "
+            "visual movement, engagement, compact-controller/HUD consistency, "
             "and operator feel remain mandatory manual observations.",
         ]
     )
@@ -740,14 +740,22 @@ def render_final_live_qa_runbook(
         "",
         "## Runtime And Surfaces",
         "",
-        "1. Start `python3 -m starcraft_commander.web_gui --dry-run` and open "
-        "the localhost cockpit.",
-        "2. Use the cockpit runtime-start action to launch the patched "
-        "MicroMachine build and StarCraft II.",
-        "3. Keep browser operation cards, in-game HUD, tactical captions, and "
-        "voice readback visible or audible.",
-        "4. Capture the exact operation identity, game frame, screenshots, "
-        "captions, audio notes, and runtime artifacts for every journey.",
+        "1. Install and launch the macOS **voiStarcraft2** app for native "
+        "runtime bootstrap.",
+        "2. Confirm that exactly one compact controller instance exists and "
+        "that no second browser/cockpit window is opened.",
+        "3. Let the installed app supply the native SC2 launch receipt and "
+        "auto-start the patched MicroMachine build and StarCraft II.",
+        "4. Verify the compact current-command surface before launch, then "
+        "allow the app to hide it while StarCraft II is frontmost; use the "
+        "in-game HUD for gameplay evidence. An ordinary browser may observe "
+        "or queue commands, but it is not a runtime-start surface.",
+        "5. Capture the exact operation identity, game frame, controller/HUD "
+        "screenshots, telemetry, and runtime artifacts for every journey.",
+        "6. Do not treat `queued`, compiled, `published`, assignment, or "
+        "submission as gameplay success. Require current identity-matched "
+        "telemetry plus the journey's production, movement, engagement, "
+        "target, completion, or `effect_observed` condition.",
         "",
         "## Fourteen Journeys",
         "",
@@ -759,10 +767,20 @@ def render_final_live_qa_runbook(
         expected_events = journey.get("expected_raw_event_types")
         stop_condition = journey.get("stop_condition")
         timeout_frames = journey.get("timeout_frames")
+        lines.extend([f"### {index:02d}. `{journey_id}` - {title}", ""])
+        if journey_id == "voice_readback_callout_identity":
+            lines.extend(
+                [
+                    "The identifier is retained because it is part of the "
+                    "checked-in deterministic pre-live journey manifest. It "
+                    "verifies projection identity in fixtures; it does not "
+                    "assert that the current compact controller ships "
+                    "Tactical Radio, TTS, readback, mute, or waveform UI.",
+                    "",
+                ]
+            )
         lines.extend(
             [
-                f"### {index:02d}. `{journey_id}` - {title}",
-                "",
                 "- Input contract: "
                 f"`{_inline_json(ordered_inputs)}`",
                 "- Expected observation events: "
@@ -770,11 +788,12 @@ def render_final_live_qa_runbook(
                 f"- Stop condition: `{_inline_json(stop_condition)}`",
                 f"- Timeout frames: `{timeout_frames}`",
                 "- Artifact capture: command input, authoritative operation "
-                "projection, matching submission/effect evidence, browser/HUD/"
-                "voice identity where applicable, and pass/fail notes.",
+                "projection, matching submission/effect evidence, compact-"
+                "controller/HUD identity where applicable, and pass/fail "
+                "notes.",
                 "- Manual stop: stop on missing submission, mismatched generation "
                 "or frame, duplicate ownership, unsafe launch, false success "
-                "wording, stale replay, visual inconsistency, or incorrect audio.",
+                "wording, stale replay, or controller/HUD inconsistency.",
                 "",
             ]
         )
@@ -784,11 +803,14 @@ def render_final_live_qa_runbook(
             "",
             "- Verify movement and engagement are visibly caused by the matching "
             "operation submission rather than unrelated autonomous behavior.",
-            "- Verify the browser, HUD, caption, and voice callout use the same "
+            "- Verify the compact controller, HUD, and telemetry use the same "
             "`update_id + operation_id + generation + stage + game_frame`.",
-            "- Verify tactical audio is understandable, correctly prioritized, "
-            "deduplicated, interruptible, and honest about pending versus observed "
-            "effects.",
+            "- Verify the controller never presents `published`, assignment, "
+            "or submission as movement, engagement, completion, or another "
+            "actual SC2 effect.",
+            "- Verify one controller instance is maintained, no duplicate "
+            "browser/cockpit opens, and the controller may be hidden while "
+            "StarCraft II is the frontmost gameplay window.",
             "- Any failed or ambiguous observation keeps "
             "`manual_live_qa_remaining=true` and must not be reported as live "
             "qualified.",

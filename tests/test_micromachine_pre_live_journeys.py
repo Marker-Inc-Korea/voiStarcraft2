@@ -1311,6 +1311,15 @@ class PreLiveJourneyExecutionTest(unittest.TestCase):
         self.assertEqual(6, runtime["timeline_high_water"])
         self.assertEqual(5, runtime["production_announcement_calls"])
 
+    def test_embedded_tactical_radio_source_matches_trusted_verifier(self) -> None:
+        runtime = self.artifacts["voice_readback_callout_identity"]["products"][
+            "tactical_radio_runtime"
+        ]
+        self.assertEqual(
+            "4b927ea923b4f3f2a11cb496db259896fdba99725389cab942745c9c709d0fc4",
+            runtime["source_sha256"],
+        )
+
     def test_production_tactical_radio_rejects_foreign_timeline_update(
         self,
     ) -> None:

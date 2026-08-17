@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import plistlib
 import signal
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -31,6 +32,7 @@ from starcraft_commander.local_cockpit import (
     resolve_required_sc2_executable,
     resolve_myproxy_key,
     _sc2_receipt_process_matches,
+    _runtime_copy_file,
     _stop_owned_app,
     _stop_owned_cockpit,
     store_local_secret,
@@ -48,6 +50,49 @@ from starcraft_commander.llm_interpreter import (
 
 
 class LocalCockpitTest(unittest.TestCase):
+    def test_runtime_copy_prefers_clone_and_falls_back_to_copy2(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            cloned = root / "cloned"
+            copied = root / "copied"
+            source.write_text("runtime", encoding="ascii")
+
+            def clone_file(source_path: object, destination_path: object) -> bool:
+                Path(destination_path).write_bytes(Path(source_path).read_bytes())
+                return True
+
+            with (
+                mock.patch(
+                    "starcraft_commander.local_cockpit._clone_file",
+                    side_effect=clone_file,
+                ) as clone,
+                mock.patch(
+                    "starcraft_commander.local_cockpit.shutil.copy2"
+                ) as copy2,
+            ):
+                result = _runtime_copy_file(source, cloned)
+
+            self.assertEqual(str(cloned), result)
+            self.assertEqual(b"runtime", cloned.read_bytes())
+            clone.assert_called_once_with(source, cloned)
+            copy2.assert_not_called()
+
+            with (
+                mock.patch(
+                    "starcraft_commander.local_cockpit._clone_file",
+                    return_value=False,
+                ),
+                mock.patch(
+                    "starcraft_commander.local_cockpit.shutil.copy2",
+                    return_value=str(copied),
+                ) as copy2,
+            ):
+                result = _runtime_copy_file(source, copied)
+
+            self.assertEqual(str(copied), result)
+            copy2.assert_called_once_with(source, copied)
+
     @staticmethod
     def _write_sc2_launch_receipt(
         path: Path,
@@ -194,6 +239,36 @@ class LocalCockpitTest(unittest.TestCase):
             DEFAULT_SC2_API_PORT,
         )
 
+    def test_sc2_launch_receipt_does_not_require_sc2_to_remain_frontmost(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "SC2"
+            receipt = root / "sc2-launch-receipt.json"
+            self._write_sc2_launch_receipt(
+                receipt,
+                executable,
+                frontmost=False,
+            )
+            with (
+                mock.patch(
+                    "starcraft_commander.local_cockpit.resolve_required_sc2_executable",
+                    return_value=executable,
+                ),
+                mock.patch(
+                    "starcraft_commander.local_cockpit._sc2_receipt_process_matches",
+                    return_value=True,
+                ),
+            ):
+                actual = read_sc2_launch_receipt(
+                    receipt,
+                    "unit-test-nonce",
+                    now_unix=1_700_000_000.0,
+                )
+
+        self.assertFalse(actual["frontmost"])
+
     def test_sc2_process_match_preserves_spaces_in_executable_path(self) -> None:
         executable = Path(
             "/Users/test/Desktop/StarCraft2/StarCraft II/"
@@ -269,7 +344,6 @@ class LocalCockpitTest(unittest.TestCase):
                     ("api_ready", False, "api_ready"),
                     ("window_created", False, "window_created"),
                     ("window_onscreen", False, "window_onscreen"),
-                    ("frontmost", False, "frontmost"),
                     ("screen_locked", True, "screen_unlocked"),
                 ):
                     with self.subTest(field_name=field_name):
@@ -465,6 +539,10 @@ class LocalCockpitTest(unittest.TestCase):
             swiftc_commands: list[list[str]] = []
             compiled_launcher_sources: list[str] = []
             codesign_commands: list[list[str]] = []
+            lsregister_commands: list[list[str]] = []
+            lsregister = root / "lsregister"
+            lsregister.write_text("#!/bin/sh\n", encoding="ascii")
+            lsregister.chmod(0o755)
 
             def run_install_command(
                 command: list[str],
@@ -485,11 +563,20 @@ class LocalCockpitTest(unittest.TestCase):
                 if command[0] == "/usr/bin/codesign":
                     codesign_commands.append(command)
                     return mock.Mock(returncode=0, stderr="")
+                if command[0] == str(lsregister):
+                    lsregister_commands.append(command)
+                    return mock.Mock(returncode=0, stderr="")
                 raise AssertionError(f"Unexpected install command: {command}")
 
-            with mock.patch(
-                "starcraft_commander.local_cockpit.subprocess.run",
-                side_effect=run_install_command,
+            with (
+                mock.patch(
+                    "starcraft_commander.local_cockpit.LAUNCHSERVICES_REGISTER_PATH",
+                    lsregister,
+                ),
+                mock.patch(
+                    "starcraft_commander.local_cockpit.subprocess.run",
+                    side_effect=run_install_command,
+                ),
             ):
                 app_path = install_macos_application(
                     root,
@@ -529,9 +616,15 @@ class LocalCockpitTest(unittest.TestCase):
         self.assertIn("http://127.0.0.1:8350", launcher_source)
         self.assertIn("--auto-start-micromachine", launcher_source)
         self.assertIn("--auto-command", launcher_source)
-        self.assertIn("runtime-start-button", launcher_source)
+        self.assertIn("runtime-start", launcher_source)
+        self.assertIn("private func submitAutoCommand(", launcher_source)
         self.assertIn("form.requestSubmit()", launcher_source)
-        self.assertIn("telemetry_current_for_process", launcher_source)
+        self.assertNotIn("pollAutoCommand", launcher_source)
+        self.assertNotIn("attempt >= 1800", launcher_source)
+        self.assertNotIn(
+            "submitAutoCommandWhenRuntimeReady",
+            launcher_source,
+        )
         self.assertIn('webView.url?.host == "127.0.0.1"', launcher_source)
         self.assertIn("hideCockpitAndFocusSC2", launcher_source)
         self.assertIn("window.orderOut(nil)", launcher_source)
@@ -551,11 +644,23 @@ class LocalCockpitTest(unittest.TestCase):
         self.assertIn("layer == 0, alpha > 0.01", launcher_source)
         self.assertNotIn("화면 기록 권한이 없어", launcher_source)
         self.assertIn(
-            "if companion, autoCommandArgument != nil",
+            "if compactController, autoCommandArgument != nil",
+            launcher_source,
+        )
+        self.assertIn(
+            '["/", "/index.html", "/companion"].contains',
             launcher_source,
         )
         self.assertIn("백엔드 준비를 계속 기다리고", launcher_source)
         self.assertNotIn("self.readinessAttempt >= 120", launcher_source)
+        self.assertIn("private func startBackendMonitor()", launcher_source)
+        self.assertIn("private func checkBackendHealth()", launcher_source)
+        self.assertIn("self.backendHealthFailures >= 3", launcher_source)
+        self.assertIn("!self.backendRecoveryInFlight", launcher_source)
+        self.assertIn('document?["configured"] as? Bool == true', launcher_source)
+        self.assertIn('document?["available"] as? Bool == true', launcher_source)
+        self.assertIn("self.launchBackend()", launcher_source)
+        self.assertIn("self.waitForCockpit()", launcher_source)
         self.assertIn("NSWorkspace.OpenConfiguration", launcher_source)
         self.assertIn("NSWorkspace.shared.openApplication", launcher_source)
         self.assertIn(f"private let sc2Port = {DEFAULT_SC2_API_PORT}", launcher_source)
@@ -581,6 +686,76 @@ class LocalCockpitTest(unittest.TestCase):
         self.assertEqual(1, len(swiftc_commands))
         self.assertEqual([launcher_source], compiled_launcher_sources)
         self.assertEqual(1, len(codesign_commands))
+        self.assertEqual(
+            [[str(lsregister), "-f", str(destination)]],
+            lsregister_commands,
+        )
+
+    def test_launchservices_registration_failure_restores_previous_app(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._create_runtime_source(root)
+            destination = root / "Applications" / "voiStarcraft2.app"
+            destination.mkdir(parents=True)
+            previous_marker = destination / "previous-install.txt"
+            previous_marker.write_text("previous", encoding="ascii")
+            runtime = root / "state" / "runtime"
+            lsregister = root / "lsregister"
+            lsregister.write_text("#!/bin/sh\n", encoding="ascii")
+            lsregister.chmod(0o755)
+            registration_commands: list[list[str]] = []
+
+            def run_install_command(
+                command: list[str],
+                **kwargs: object,
+            ) -> mock.Mock:
+                if command[0].endswith("/.venv/bin/python"):
+                    return mock.Mock(returncode=0)
+                if command[0] == "/usr/bin/swiftc":
+                    executable = Path(command[command.index("-o") + 1])
+                    executable.write_bytes(b"mock compiled launcher\n")
+                    executable.chmod(0o755)
+                    return mock.Mock(returncode=0, stderr="")
+                if command[0] == "/usr/bin/codesign":
+                    return mock.Mock(returncode=0, stderr="")
+                if command[0] == str(lsregister):
+                    registration_commands.append(command)
+                    raise subprocess.CalledProcessError(
+                        1,
+                        command,
+                        stderr="registration rejected",
+                    )
+                raise AssertionError(f"Unexpected install command: {command}")
+
+            with (
+                mock.patch(
+                    "starcraft_commander.local_cockpit.LAUNCHSERVICES_REGISTER_PATH",
+                    lsregister,
+                ),
+                mock.patch(
+                    "starcraft_commander.local_cockpit.subprocess.run",
+                    side_effect=run_install_command,
+                ),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "LaunchServices registration failed: registration rejected",
+                ),
+            ):
+                install_macos_application(
+                    root,
+                    destination=destination,
+                    runtime_destination=runtime,
+                )
+
+            self.assertEqual(
+                [[str(lsregister), "-f", str(destination)]],
+                registration_commands,
+            )
+            self.assertEqual(
+                "previous",
+                previous_marker.read_text(encoding="ascii"),
+            )
+            self.assertFalse((destination / "Contents").exists())
 
     def test_default_app_update_stops_owned_cockpit_before_runtime_replace(
         self,

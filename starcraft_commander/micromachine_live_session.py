@@ -16,7 +16,7 @@ import sys
 import time
 import uuid
 import zlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -861,6 +861,7 @@ class MicroMachineLiveTextSession:
         command_text: str,
         *,
         current_frame: int | None = None,
+        publish_frame_resolver: Callable[[], int | None] | None = None,
         update_id: str | None = None,
         rollback_update_id: str | None = None,
         allowed_override_levels: Sequence[PolicyOverrideLevel | str] = (
@@ -947,6 +948,30 @@ class MicroMachineLiveTextSession:
                 provider_failure_recorded=failure_recorded,
             )
 
+        if publish_frame_resolver is not None:
+            try:
+                resolved_publish_frame = publish_frame_resolver()
+            except Exception as error:
+                raise RuntimeError(
+                    "publish frame resolution failed"
+                ) from error
+            if resolved_publish_frame is not None:
+                frame = _non_negative_int(
+                    "current_frame",
+                    resolved_publish_frame,
+                )
+                telemetry_before = self._safe_read_latest_telemetry()
+                previous_update = self._safe_read_latest_update(frame)
+                previous_layers = (
+                    _active_live_command_layers(
+                        previous_update.vector.to_dict(),
+                        current_frame=frame,
+                        telemetry=telemetry_before,
+                        previous_update=previous_update,
+                    )
+                    if previous_update is not None
+                    else ()
+                )
         try:
             effective_update_id = update_id or _new_live_update_id()
             incoming_layer_payload = compile_result.vector.to_dict()

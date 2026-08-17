@@ -3,6 +3,10 @@
 This document tracks the local issue scope used when GitHub issue creation is
 not available from the sandbox.
 
+> Historical verification note: this document records backend and pre-live
+> work completed before the compact-only controller replaced the dashboard.
+> References to a web dashboard below do not describe the current product UI.
+
 ## Local Issue A: SCV self-position worker command loop
 
 Goal: fix and prove the bug where one SCV repeatedly receives a right-click or
@@ -80,8 +84,10 @@ Implementation:
 - The strategy matrix summary reports both the expected archive match and the
   latest production snapshot. This avoids hiding cases where a valid drop setup
   is later overwritten by normal Marine continuity production.
-- The web dashboard exposes the current strategy mode/play style beside manager
-  consumption evidence.
+- At the time of this verification, a now-removed dashboard exposed strategy
+  mode/play-style data beside manager consumption evidence. The current compact
+  controller does not render that panel; the evidence remains available in
+  telemetry and generated reports.
 
 ## Verified Evidence
 
@@ -130,5 +136,6 @@ problem classes.
 
 Live QA should still visually confirm that the SCV no longer receives repeated
 self-position right-clicks in the client and that user text commands visibly
-change the chosen strategy profile, production bias, and manager evidence in the
-dashboard.
+change the chosen strategy profile, production bias, and manager evidence in
+telemetry or generated reports. The current compact controller does not expose
+a strategy dashboard.

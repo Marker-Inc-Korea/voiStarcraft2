@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import inspect
 import os
 import py_compile
 import signal
@@ -16,8 +17,10 @@ from unittest import mock
 import starcraft_commander.battlefield_browser_gate as browser_gate
 from starcraft_commander.battlefield_browser_gate import (
     BrowserGateConfig,
+    COMPACT_COMMAND_TEXT,
+    COMPACT_CONTROLLER_SELECTORS,
+    LEGACY_CONTROLLER_SELECTORS,
     PIXEL_CHANNEL_TOLERANCE,
-    STANDARD_OPERATION_ACTIONS,
     VISUAL_DIFF_THRESHOLD,
     _CandidateFixtureProcess,
     _FIXTURE_BOOTSTRAP,
@@ -77,6 +80,30 @@ def _repository_head(repository: Path) -> str:
     return _run_git(repository, "rev-parse", "HEAD")
 
 
+def _git_blob(repository: Path, revision: str, path: str) -> bytes:
+    environment = {
+        **os.environ,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+    }
+    result = subprocess.run(
+        [
+            "/usr/bin/git",
+            "-C",
+            str(repository),
+            "show",
+            f"{revision}:{path}",
+        ],
+        check=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=environment,
+    )
+    return result.stdout
+
+
 def _candidate_popen_side_effect(
     replacement: subprocess.Popen[str] | BaseException,
 ) -> object:
@@ -115,22 +142,23 @@ def _visible_metrics() -> dict[str, object]:
 
 def _visible_structure() -> dict[str, object]:
     return {
-        "lanes": [_visible_metrics() for _ in range(4)],
-        "cards": [
-            {
-                "visibility": _visible_metrics(),
-                "stages": [_visible_metrics() for _ in range(4)],
-                "actions": [
-                    {"name": action, **_visible_metrics()}
-                    for action in STANDARD_OPERATION_ACTIONS
-                ],
-            }
-            for _ in range(4)
-        ],
+        "elements": {
+            name: [_visible_metrics()]
+            for name, _selector in COMPACT_CONTROLLER_SELECTORS
+        },
+        "legacy": {
+            selector: 0 for selector in LEGACY_CONTROLLER_SELECTORS
+        },
     }
 
 
 class BattlefieldBrowserGateContractTest(unittest.TestCase):
+    def test_compact_controller_wait_does_not_require_runtime_start(self) -> None:
+        source = inspect.getsource(browser_gate._wait_for_compact_controller)
+
+        self.assertNotIn('"SC2 대기"', source)
+        self.assertIn("operation-goal", source)
+
     def test_config_requires_exact_repository_and_build_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -297,10 +325,11 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
                 / "web_gui.py"
             )
             self.assertEqual(
-                config.candidate_root.joinpath(
-                    "starcraft_commander",
-                    "web_gui.py",
-                ).read_bytes(),
+                _git_blob(
+                    config.candidate_root,
+                    config.repository_sha,
+                    "starcraft_commander/web_gui.py",
+                ),
                 staged_web_gui.read_bytes(),
             )
             self.assertEqual(
@@ -313,10 +342,11 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
                 / "__init__.py"
             )
             self.assertEqual(
-                config.candidate_root.joinpath(
-                    "toycraft_commander",
-                    "__init__.py",
-                ).read_bytes(),
+                _git_blob(
+                    config.candidate_root,
+                    config.repository_sha,
+                    "toycraft_commander/__init__.py",
+                ),
                 staged_toycraft.read_bytes(),
             )
             self.assertEqual(
@@ -330,11 +360,11 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
                 / "HOOK_MANIFEST.json"
             )
             self.assertEqual(
-                config.candidate_root.joinpath(
-                    "integrations",
-                    "micromachine",
-                    "HOOK_MANIFEST.json",
-                ).read_bytes(),
+                _git_blob(
+                    config.candidate_root,
+                    config.repository_sha,
+                    "integrations/micromachine/HOOK_MANIFEST.json",
+                ),
                 staged_micromachine_manifest.read_bytes(),
             )
             self.assertEqual(
@@ -1730,56 +1760,54 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
 
         self.assertNotIn("--update-baselines", option_strings)
 
-    def test_fixture_status_preserves_four_lane_inputs(self) -> None:
+    def test_fixture_status_preserves_compact_nested_composition(self) -> None:
         bridge = _BrowserFixtureBridge()
         payload = bridge.micromachine_status()
         operations = payload["operations"]
 
-        self.assertEqual(4, len(operations))
+        self.assertEqual(1, len(operations))
+        operation = operations[0]
+        self.assertEqual("compact-assault", operation["operation_id"])
+        self.assertEqual(COMPACT_COMMAND_TEXT, operation["command_text"])
         self.assertEqual(
-            {
-                "planning-alpha",
-                "assault-bravo",
-                "completed-charlie",
-                "waiting-delta",
-            },
-            {operation["operation_id"] for operation in operations},
-        )
-        self.assertEqual(
-            "published",
-            operations[0]["transport_status"],
-        )
-        self.assertEqual(
-            "queued_or_assigned",
-            operations[0]["intervention"]["command_execution"]["state"],
-        )
-        self.assertEqual(
-            "completed",
-            operations[2]["battlefield_operation"]["operation_completion"][
-                "state"
+            [
+                {"unit_type": "TERRAN_MARINE", "count": 6},
+                {"unit_type": "TERRAN_SIEGETANK", "count": 2},
+                {"unit_type": "TERRAN_VIKINGFIGHTER", "count": 2},
             ],
-        )
-        self.assertEqual(
-            "composition_prerequisites_pending",
-            operations[3]["battlefield_operation"]["operation_launch_policy"][
-                "blocker"
+            operation["update"]["vector"]["operations"][0][
+                "composition_requirements"
             ],
         )
 
-    def test_voice_fixture_adds_independent_operation_identities(self) -> None:
+    def test_fixture_preserves_exact_pending_command_identity(self) -> None:
         bridge = _BrowserFixtureBridge()
-        first = bridge.submit_micromachine_modulation("first")
-        second = bridge.submit_micromachine_modulation("second")
-        operations = second["operations"]
-        operation_ids = [operation["operation_id"] for operation in operations]
+        result = bridge.submit_micromachine_modulation_background(
+            COMPACT_COMMAND_TEXT,
+            update_id="voi-companion-test-1",
+            operation_id="voi-companion-test-1",
+            operation_generation=1,
+            async_publish=True,
+        )
 
-        self.assertEqual(len(operation_ids), len(set(operation_ids)))
-        self.assertIn("voice-1-recon", operation_ids)
-        self.assertIn("voice-1-attack", operation_ids)
-        self.assertIn("voice-2-recon", operation_ids)
-        self.assertIn("voice-2-attack", operation_ids)
-        self.assertEqual(6, len(first["operations"]))
-        self.assertEqual(8, len(second["operations"]))
+        self.assertEqual("queued", result["status"])
+        self.assertEqual("pending_compile", result["consumption_status"])
+        self.assertEqual("voi-companion-test-1", result["update_id"])
+        self.assertEqual("voi-companion-test-1", result["operation_id"])
+        self.assertEqual(1, result["operation_generation"])
+        self.assertTrue(result["async_publish"])
+        self.assertEqual(
+            [
+                {
+                    "text": COMPACT_COMMAND_TEXT,
+                    "update_id": "voi-companion-test-1",
+                    "operation_id": "voi-companion-test-1",
+                    "operation_generation": 1,
+                    "async_publish": True,
+                }
+            ],
+            bridge.submissions,
+        )
 
     def test_status_payload_has_authoritative_overview_identity(self) -> None:
         bridge = _BrowserFixtureBridge()
@@ -1797,13 +1825,29 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             rebuilt["battlefield_overview"]["duplicate_owner_count"],
         )
 
-    def test_runtime_fixture_exposes_public_and_validated_snapshots(self) -> None:
+    def test_runtime_fixture_requires_nonce_then_connects(self) -> None:
         launcher = _BrowserFixtureLauncher("/tmp/browser-fixture")
 
+        detached = launcher.snapshot()
+        detached_validated = launcher.validated_snapshot()
+
+        self.assertEqual("idle", detached["status"])
+        self.assertFalse(detached["runtime_attached"])
+        self.assertIsNone(detached_validated.telemetry_document)
+        with self.assertRaisesRegex(ValueError, "native SC2 launch nonce"):
+            launcher.start(sc2_launch_nonce="")
+
+        started = launcher.start(
+            blackboard_dir="/tmp/browser-fixture",
+            enemy_difficulty=10,
+            sc2_launch_nonce="native-launch-test-123",
+        )
         public = launcher.snapshot()
         validated = launcher.validated_snapshot()
 
+        self.assertEqual("connected", started["status"])
         self.assertEqual("connected", public["status"])
+        self.assertTrue(public["runtime_attached"])
         self.assertEqual("/tmp/browser-fixture", public["blackboard_dir"])
         self.assertEqual(
             launcher.runtime_instance_id,
@@ -1814,44 +1858,64 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
             launcher.runtime_instance_id,
             validated.telemetry_document["runtime_instance_id"],
         )
+        self.assertEqual(
+            [
+                {
+                    "blackboard_dir": "/tmp/browser-fixture",
+                    "enemy_difficulty": 10,
+                    "sc2_launch_nonce": "native-launch-test-123",
+                }
+            ],
+            launcher.start_calls,
+        )
 
-    def test_visible_structure_requires_rendered_lanes_cards_stages_and_actions(
+    def test_visible_structure_requires_compact_controller_and_no_legacy_dom(
         self,
     ) -> None:
         result = _assert_visible_structure(_visible_structure())
 
         self.assertEqual(
             {
-                "actions": 20,
+                "actions": 5,
                 "all_visible": True,
-                "cards": 4,
-                "lanes": 4,
-                "stages": 16,
+                "cards": 1,
+                "controls": 6,
+                "elements": len(COMPACT_CONTROLLER_SELECTORS),
+                "lanes": 1,
+                "stages": 1,
             },
             result,
         )
 
         mutations = (
             (
-                "hidden lane",
-                lambda structure: structure["lanes"][0].update(hidden=True),
+                "hidden shell",
+                lambda structure: structure["elements"]["shell"][0].update(
+                    hidden=True
+                ),
             ),
             (
-                "display-none card",
-                lambda structure: structure["cards"][0]["visibility"].update(
+                "display-none command form",
+                lambda structure: structure["elements"]["command_form"][
+                    0
+                ].update(
                     display="none"
                 ),
             ),
             (
-                "zero-size stage",
-                lambda structure: structure["cards"][0]["stages"][0].update(
-                    height=0
+                "zero-size runtime status",
+                lambda structure: structure["elements"]["runtime_status"][
+                    0
+                ].update(
+                    height=0,
                 ),
             ),
             (
-                "non-rendered action",
-                lambda structure: structure["cards"][0]["actions"][0].update(
-                    client_rects=0
+                "non-rendered command input",
+                lambda structure: structure["elements"]["command_input"][
+                    0
+                ].update(
+                    client_rects=0,
                 ),
             ),
         )
@@ -1861,6 +1925,16 @@ class BattlefieldBrowserGateContractTest(unittest.TestCase):
                 mutate(structure)
                 with self.assertRaisesRegex(AssertionError, "not visible"):
                     _assert_visible_structure(structure)
+
+        duplicate = _visible_structure()
+        duplicate["elements"]["voice_button"].append(_visible_metrics())
+        with self.assertRaisesRegex(AssertionError, "expected one"):
+            _assert_visible_structure(duplicate)
+
+        legacy = _visible_structure()
+        legacy["legacy"][".operation-card"] = 1
+        with self.assertRaisesRegex(AssertionError, "legacy controller DOM"):
+            _assert_visible_structure(legacy)
 
     def test_visual_diff_threshold_is_one_percent(self) -> None:
         self.assertEqual(0.01, VISUAL_DIFF_THRESHOLD)
