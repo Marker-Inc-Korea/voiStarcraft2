@@ -331,8 +331,7 @@ _CANONICAL_EVENT_STAGES: Final[dict[str, frozenset[str]]] = {
     "web_projection": frozenset({"assigned", "effect_observed"}),
 }
 _SHA256_IDENTITY_PREFIX: Final[str] = "sha256:"
-_TACTICAL_RADIO_RUNTIME_SOURCE: Final[str] = r"""
-var TACTICAL_RADIO_MAX_QUEUE = 8;
+_TACTICAL_RADIO_RUNTIME_SOURCE: Final[str] = r"""var TACTICAL_RADIO_MAX_QUEUE = 8;
 
 var TACTICAL_RADIO_MAX_CAPTION_HISTORY = 20;
 
