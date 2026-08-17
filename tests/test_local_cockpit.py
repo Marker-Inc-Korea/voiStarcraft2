@@ -529,7 +529,7 @@ class LocalCockpitTest(unittest.TestCase):
         self.assertIn("http://127.0.0.1:8350", launcher_source)
         self.assertIn("--auto-start-micromachine", launcher_source)
         self.assertIn("--auto-command", launcher_source)
-        self.assertIn("runtime-start-button", launcher_source)
+        self.assertIn("runtime-start", launcher_source)
         self.assertIn("form.requestSubmit()", launcher_source)
         self.assertIn("telemetry_current_for_process", launcher_source)
         self.assertIn('webView.url?.host == "127.0.0.1"', launcher_source)
@@ -551,7 +551,7 @@ class LocalCockpitTest(unittest.TestCase):
         self.assertIn("layer == 0, alpha > 0.01", launcher_source)
         self.assertNotIn("화면 기록 권한이 없어", launcher_source)
         self.assertIn(
-            "if companion, autoCommandArgument != nil",
+            "if compactController, autoCommandArgument != nil",
             launcher_source,
         )
         self.assertIn("백엔드 준비를 계속 기다리고", launcher_source)

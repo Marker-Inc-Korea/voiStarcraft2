@@ -188,16 +188,16 @@ situational feedback, not a hidden mouse or keyboard automation layer.
 | --- | --- |
 | Dry-run SC2 pipeline | Implemented and tested. Runs without StarCraft II. |
 | Legacy live SC2 commander | Implemented and locally connected through python-sc2. This is compatibility mode, not MicroMachine. |
-| MicroMachine policy cockpit | Default web text/voice route. Uses forced-tool LLM output, deterministic validation, and fail-closed publishing. |
+| MicroMachine compact controller | The only web/app text and voice route. Uses forced-tool LLM output, deterministic validation, and fail-closed publishing. |
 | Parallel operations | Implemented through explicit `operations[]`, stable IDs, immutable per-generation deadlines, runtime-authoritative lifecycle, live upsert semantics, dynamic operation squads, and exclusive unit ownership. |
 | Terran operation runtime support | Implemented for supported Terran combat families by reusing existing MicroMachine Squad and unit ability code paths. |
 | Comprehensive all-Terran live qualification | Pending family-by-family evidence beyond the currently qualified Marine/Tank and selected support paths. |
-| Web operation UX | Per-operation cards, isolated telemetry, monotonic lifecycle updates, and truthful published/executing distinction. |
+| Web operation UX | One compact current-command surface with monotonic identity tracking and truthful compile/policy/execution stages. |
 | In-game HUD | Patched MicroMachine overlay for operation identity, force, route, target, assignment, action, movement, engagement, and blockers. |
 | Voice input | Browser push-to-talk keeps partial/final text in one session node and submits exactly once through the same bounded command gateway. CLI microphone transcription remains behind optional `[voice]` dependencies. |
 | Tactical radio | Implemented pre-live with exact operation ID/generation plan readback, authoritative lifecycle captions, priority TTS, interruption, cooldown, dedupe, mute, and replay/stale-event suppression. Actual SC2 audio/gameplay feel remains a manual live-QA gate. |
 | LLM command interpreter | Required for legacy python-sc2 live commands and production MicroMachine free-form text modulation. OpenAI/GPT is the default; Anthropic is still supported. |
-| Web GUI | Implemented as a localhost-first stdlib server with token-protected network mode. Default chat/voice mode is MicroMachine; legacy commander is explicit opt-in. |
+| Web GUI | Implemented as one localhost-first compact controller with token-protected network mode. The legacy dashboard is removed. |
 | Event memory | Implemented and used by state reports and GUI history. |
 | Standing orders | Implemented for continuous SCV production and supply-block prevention. |
 | Brood War / BWAPI | Semantic executor boundary implemented; real BWAPI adapter still requires a BWAPI machine. |
@@ -349,9 +349,8 @@ python3 -m starcraft_commander.demo_sc2 --dry-run --no-llm --script "SCV 계속 
 
 ### Web GUI
 
-Starts a browser cockpit with command input, voice input, MicroMachine DSL
-status, state, and history. The top chat/voice input defaults to
-**MicroMachine policy cockpit** mode:
+Starts the compact controller with text/voice command input, current command
+state, tactical captions, runtime status, and emergency retreat:
 
 ```text
 text / voice
@@ -394,24 +393,20 @@ opens it. It never writes the key, private endpoint, or private model into this
 repository. Later launches only require double-clicking **voiStarcraft2** in
 `~/Applications`; preparation is idempotent and the browser opens after the
 localhost cockpit is healthy.
-StarCraft II itself still starts only after **선택 모드 실행** is clicked.
-That click switches the same app/web window to a compact tactical companion,
-then starts the selected runtime. It never creates a second cockpit window.
-The companion keeps only runtime truth,
+StarCraft II itself starts only after **SC2 / MicroMachine 시작** is clicked.
+The installed app and every controller URL use the same compact tactical
+controller and never create a second cockpit window. The controller keeps only runtime truth,
 current operation/composition, tactical captions, text/voice command input,
-and emergency retreat; the full cockpit remains available for configuration
-and detailed evidence.
+and emergency retreat. The previous full dashboard is no longer shipped.
 
-In that page, the **Commander Chat** and browser voice button are the unified
-input surface. One push-to-talk session keeps interim text, final text, pending
-state, and the final result in one stable command surface and submits the
-command exactly once. The Tactical Radio panel always retains captions and,
+Text input and the voice button are the unified command surface. One
+push-to-talk session keeps interim text, final text, pending state, and the
+final result in one stable command surface and submits the command exactly
+once. The tactical caption panel retains status updates and,
 when browser TTS is available and unmuted, reads structured plan confirmation
 and selected authoritative assignment/movement/engagement/blocker events. A
 plan confirmation never claims that units moved; movement is announced only
-after matching-generation runtime evidence. Select **MicroMachine policy cockpit** or
-**Legacy python-sc2 commander**, then use **선택 모드 실행** to start the selected
-runtime from the same cockpit. In MicroMachine mode this calls
+after matching-generation runtime evidence. **SC2 / MicroMachine 시작** calls
 `POST /api/runtime/start` and launches
 `integrations/micromachine/scripts/smoke_macos_local.sh` with the current
 blackboard directory, so StarCraft II and patched MicroMachine can be started
@@ -439,22 +434,17 @@ python3 -m starcraft_commander.micromachine_live_session \
   --pretty
 ```
 
-The right-side **MicroMachine runtime / DSL evidence** panel is a collapsed
-advanced/debug panel. It controls the blackboard directory and optional
-semantic scope used by the top chat/voice input, and it shows telemetry evidence
-that patched MicroMachine consumed the published DSL. The left Commander Chat
-remains the primary input surface.
-
-Legacy python-sc2 GUI remains available only as an explicit compatibility mode:
+Legacy python-sc2 remains available only as an explicit command-line
+compatibility path; it is not exposed in the compact controller:
 
 ```bash
 python3 -m starcraft_commander.demo_sc2 --dry-run --gui
 python3 -m starcraft_commander.demo_sc2 --dry-run --gui 0
 ```
 
-`--gui 0` asks the OS for an available port. In the page, select
-**Legacy python-sc2 commander** only when intentionally testing the old
-`/api/command` route. It is not MicroMachine QA evidence.
+`--gui 0` asks the OS for an available port, but the served page remains the
+compact MicroMachine controller. The old `/api/command` route is compatibility
+infrastructure and is not MicroMachine QA evidence.
 
 For actual local play through the legacy python-sc2 commander:
 
@@ -470,14 +460,11 @@ is exclusive fullscreen, local GUI typing requires switching focus away from
 the game; use windowed/borderless mode or a second monitor for stable local
 GUI control. Live mode now fails before StarCraft II starts unless the selected
 provider key is already available through `OPENAI_API_KEY` or
-`ANTHROPIC_API_KEY`. The web GUI's **LLM 설정** panel can rotate the key for the
-running local process, but it cannot bypass startup preflight for the legacy
-python-sc2 path. Keys are kept only in process memory and are never written to
-repo files or returned by `/api/llm`.
+`ANTHROPIC_API_KEY`. Keys are kept only in process memory and are never written
+to repo files or returned by `/api/llm`.
 
 The standalone web GUI no longer auto-starts the legacy python-sc2 live GUI
-after LLM setup, because that looked like a MicroMachine launch. The explicit
-**선택 모드 실행** button is the supported launch path for both modes. If you
+after LLM setup, because that looked like a MicroMachine launch. If you
 explicitly need key-save-time legacy auto-launch for compatibility testing:
 
 ```bash
@@ -590,7 +577,7 @@ Korean text / voice
   -> RangedManager / MeleeManager / unit ability logic
   -> SC2 API
   -> operation-scoped telemetry
-  -> web cards + in-game HUD
+  -> compact controller + in-game HUD
 
 Legacy python-sc2 commander mode:
 Korean text / voice
@@ -664,8 +651,8 @@ Detailed design docs:
 - Unknown enemy locations are resolved from allowed map/start-location
   information and observed game state. Runtime evidence must not claim fresh
   enemy observation before it exists.
-- Legacy python-sc2 commander mode is visibly opt-in and must not be treated as
-  MicroMachine production evidence.
+- Legacy python-sc2 commander mode is command-line opt-in and must not be
+  treated as MicroMachine production evidence.
 - Web GUI binds to `127.0.0.1` by default; network companion mode requires a token.
 
 ## Development

@@ -1194,7 +1194,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
             baseURL: nil
         )
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1180, height: 820),
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 720),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -1706,29 +1706,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        let companion = webView.url?.path == "/companion"
-        let size = companion
-            ? NSSize(width: 520, height: 720)
-            : NSSize(width: 1180, height: 820)
-        window.setContentSize(size)
+        let compactController = ["/", "/companion"].contains(
+            webView.url?.path ?? ""
+        )
+        window.setContentSize(NSSize(width: 520, height: 720))
         window.center()
-        if companion, autoCommandArgument != nil {
+        if compactController, autoCommandArgument != nil {
             hideCockpitAndFocusSC2()
         } else {
             window.makeKeyAndOrderFront(nil)
         }
         let cockpitLoaded = webView.url?.host == "127.0.0.1"
-        if cockpitLoaded, !companion, autoStartMicroMachine,
+        if cockpitLoaded, compactController, autoStartMicroMachine,
            !autoStartTriggered {
             autoStartTriggered = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 webView.evaluateJavaScript(
-                    "document.getElementById('runtime-start-button')?.click();",
+                    "document.getElementById('runtime-start')?.click();",
                     completionHandler: nil
                 )
             }
         }
-        if companion, let command = autoCommandArgument,
+        if compactController, let command = autoCommandArgument,
            !autoCommandTriggered {
             autoCommandTriggered = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {

@@ -62,21 +62,6 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       justify-content: space-between;
       gap: 12px;
     }
-    .title-row {
-      display: flex;
-      align-items: flex-start;
-      gap: 9px;
-    }
-    .back-button {
-      flex: none;
-      min-width: 38px;
-      min-height: 38px;
-      border: 1px solid var(--line);
-      border-radius: 11px;
-      color: var(--cyan);
-      background: rgba(2, 10, 14, 0.74);
-      font-weight: 900;
-    }
     .eyebrow {
       margin: 0 0 3px;
       color: var(--cyan);
@@ -264,24 +249,20 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
 <body>
   <main class="shell">
     <header class="topbar">
-      <div class="title-row">
-        <button id="cockpit-back" class="back-button" type="button"
-                title="전체 조종석" aria-label="전체 조종석">←</button>
-        <div>
-          <p class="eyebrow">SC2 tactical companion</p>
-          <h1>전술 명령창</h1>
-        </div>
+      <div>
+        <p class="eyebrow">SC2 tactical companion</p>
+        <h1>전술 명령창</h1>
       </div>
       <div id="runtime-status" class="status-pill" data-state="idle">SC2 대기</div>
     </header>
 
     <section class="panel operation" aria-labelledby="operation-label">
       <div class="operation-head">
-        <span id="operation-label" class="label">현재 작전</span>
+        <span id="operation-label" class="label">현재 명령</span>
         <span id="operation-stage" class="stage">명령 대기</span>
       </div>
       <div id="operation-goal" class="goal">게임을 시작하고 명령을 입력하세요.</div>
-      <div id="operation-composition" class="composition">편성 정보가 여기에 표시됩니다.</div>
+      <div id="operation-composition" class="composition">실행 대상과 증거가 여기에 표시됩니다.</div>
       <div class="runtime-actions">
         <button id="runtime-start" type="button">SC2 / MicroMachine 시작</button>
         <button id="runtime-refresh" type="button" title="상태 새로고침">↻</button>
@@ -313,6 +294,8 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
   var submitSequence = 0;
   var lastRuntimeSignature = "";
   var lastOperationSignature = "";
+  var lastSubmittedUpdateId = "";
+  var pendingCommand = null;
   var captionKeys = {};
   var recognition = null;
   var recording = false;
@@ -410,6 +393,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
 
   function unitName(value) {
     var names = {
+      TERRAN_SCV: "SCV",
       TERRAN_MARINE: "마린",
       TERRAN_MARAUDER: "불곰",
       TERRAN_REAPER: "사신",
@@ -451,7 +435,21 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       return Array.isArray(candidate) && candidate.length > 0;
     }) || [];
     if (!Array.isArray(values) || !values.length) {
-      return "편성 배정 대기";
+      var productionPlan = vector.production_plan || {};
+      var tacticalTask = vector.tactical_task || {};
+      var productionTargets = Array.isArray(productionPlan.targets)
+        ? productionPlan.targets
+        : [];
+      var tacticalTargets = Array.isArray(tacticalTask.production_targets)
+        ? tacticalTask.production_targets
+        : [];
+      var targets = productionTargets.concat(tacticalTargets).filter(function(value, index, all) {
+        return value && all.indexOf(value) === index;
+      });
+      if (targets.length) {
+        return "실행 대상 · " + targets.map(unitName).join(" · ");
+      }
+      return "실행 증거 확인 중";
     }
     return values.map(function(item) {
       return unitName(item.unit_type) + " " + String(item.count || 0) + "기";
@@ -462,19 +460,41 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     var update = operation.update || {};
     var vector = update.vector || {};
     var intervention = operation.intervention || {};
+    var latestRequest = operation.latest_request || {};
+    var latestQueue = latestRequest.command_queue || {};
+    var compileResult = operation.compile_result || {};
+    var compileQueue = compileResult.command_queue || {};
     return String(
       operation.command_text ||
+      latestRequest.command_text ||
+      latestQueue.command_text ||
+      compileResult.command_text ||
+      compileQueue.command_text ||
       vector.goal ||
       intervention.goal ||
-      "작전 목표 확인 중"
+      "명령 내용 확인 중"
     );
   }
 
   function operationStage(operation) {
     var intervention = operation.intervention || {};
     var execution = intervention.command_execution || {};
-    var state = String(execution.state || "");
+    var requestIdentity = commandIdentity(operation);
+    var executionOwnerIdentity = String(
+      operation.operation_console_execution_owner_update_id ||
+      execution.update_id ||
+      execution.policy_update_id ||
+      ""
+    );
+    var executionMatchesRequest = (
+      !requestIdentity ||
+      !executionOwnerIdentity ||
+      requestIdentity === executionOwnerIdentity
+    );
+    var state = executionMatchesRequest ? String(execution.state || "") : "";
     var disposition = String(operation.disposition || "");
+    var consumption = String(operation.consumption_status || "");
+    var transport = String(operation.transport_status || operation.status || "");
     if (state === "effect_observed" || disposition === "completed") {
       return "효과 확인";
     }
@@ -485,10 +505,16 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     if (state === "blocked" || disposition === "blocked") { return "차단"; }
     if (state === "cancelled" || disposition === "cancelled") { return "취소"; }
     if (state === "superseded" || disposition === "superseded") { return "교체"; }
-    if (state === "published" || operation.transport_status === "published") {
-      return "명령 해석";
+    if (consumption === "consumed") { return "정책 적용"; }
+    if (consumption === "pending_telemetry") { return "실행 확인 중"; }
+    if (consumption === "detached_telemetry") { return "연결 확인 필요"; }
+    if (consumption === "pending_compile" || transport === "queued") {
+      return "명령 해석 중";
     }
-    return "작전 추적";
+    if (state === "published" || transport === "published") {
+      return "명령 전달";
+    }
+    return "명령 추적";
   }
 
   function selectOperation(data) {
@@ -498,26 +524,123 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     }) || operations[0] || null;
   }
 
+  function commandIdentity(value) {
+    if (!value) { return ""; }
+    var update = value.update || {};
+    var intervention = value.intervention || {};
+    return String(
+      value.update_id ||
+      update.update_id ||
+      value.policy_update_id ||
+      value.active_update_id ||
+      intervention.latest_update_id ||
+      value.operation_id ||
+      ""
+    );
+  }
+
+  function selectCommand(data) {
+    var update = data.update || {};
+    var vector = update.vector || {};
+    var latestRequest = data.latest_request || {};
+    var latestQueue = latestRequest.command_queue || {};
+    var compileResult = data.compile_result || {};
+    var compileQueue = compileResult.command_queue || {};
+    var intervention = data.intervention || {};
+    var updateId = String(
+      latestRequest.update_id ||
+      update.update_id ||
+      intervention.latest_update_id ||
+      ""
+    );
+    var commandText = String(
+      latestRequest.command_text ||
+      latestQueue.command_text ||
+      compileResult.command_text ||
+      compileQueue.command_text ||
+      vector.goal ||
+      intervention.goal ||
+      ""
+    );
+    var operations = Array.isArray(data.operations) ? data.operations : [];
+    var matchingOperation = updateId ? operations.find(function(item) {
+      return commandIdentity(item) === updateId;
+    }) : null;
+    if (matchingOperation) {
+      return Object.assign({}, matchingOperation, {
+        command_text: matchingOperation.command_text || commandText,
+        latest_request: matchingOperation.latest_request || latestRequest,
+        consumption_status: (
+          matchingOperation.consumption_status ||
+          data.consumption_status ||
+          latestRequest.consumption_status ||
+          ""
+        ),
+        transport_status: (
+          matchingOperation.transport_status ||
+          data.status ||
+          ""
+        )
+      });
+    }
+    if (!updateId && !commandText) { return selectOperation(data); }
+    return {
+      operation_id: updateId,
+      update_id: updateId,
+      command_text: commandText,
+      update: update,
+      latest_request: latestRequest,
+      intervention: intervention,
+      consumption_status: (
+        data.consumption_status ||
+        latestRequest.consumption_status ||
+        ""
+      ),
+      transport_status: data.status || "",
+      disposition: data.disposition || "",
+      active: data.status === "published"
+    };
+  }
+
   function renderOperation(data) {
-    var operation = selectOperation(data || {});
+    data = data || {};
+    var operation = selectCommand(data);
+    if (
+      pendingCommand &&
+      commandIdentity(operation) !== pendingCommand.update_id
+    ) {
+      data = pendingCommand.payload;
+      operation = selectCommand(data);
+    }
     var goalNode = document.getElementById("operation-goal");
     var stageNode = document.getElementById("operation-stage");
     var compositionNode = document.getElementById("operation-composition");
     if (!operation) {
-      goalNode.textContent = "명령을 입력하면 현재 작전이 표시됩니다.";
+      goalNode.textContent = "명령을 입력하면 해석 및 실행 상태가 표시됩니다.";
       stageNode.textContent = "명령 대기";
-      compositionNode.textContent = "편성 정보가 여기에 표시됩니다.";
+      compositionNode.textContent = "실행 대상과 증거가 여기에 표시됩니다.";
       return;
     }
     var goal = operationGoal(operation);
     var stage = operationStage(operation);
     var composition = operationComposition(operation);
+    var selectedUpdateId = commandIdentity(operation);
+    if (
+      pendingCommand &&
+      selectedUpdateId === pendingCommand.update_id &&
+      stage !== "명령 해석 중"
+    ) {
+      pendingCommand = null;
+    }
     goalNode.textContent = goal;
     stageNode.textContent = stage;
     compositionNode.textContent = composition;
     var signature = [
+      selectedUpdateId,
       operation.operation_id || "",
       operation.operation_generation || "",
+      operation.requested_operation_generation || "",
+      operation.operation_console_execution_owner_update_id || "",
       stage,
       operation.consumption_status || "",
       data.runtime_attached === true
@@ -535,6 +658,13 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
         tone,
         signature
       );
+      if (stage === "효과 확인" || stage === "SC2 실행") {
+        setFeedback("명령이 SC2 런타임에 적용되었습니다.", false);
+      } else if (stage === "차단") {
+        setFeedback("명령 실행이 차단되었습니다. 전술 자막을 확인하세요.", true);
+      } else if (lastSubmittedUpdateId === selectedUpdateId) {
+        setFeedback("명령을 전달했고 실제 실행 증거를 확인하고 있습니다.", false);
+      }
     }
   }
 
@@ -642,7 +772,26 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     var cleaned = String(text || "").trim();
     if (!cleaned) { return Promise.resolve(); }
     submitSequence += 1;
+    var submissionSequence = submitSequence;
     var updateId = "voi-companion-" + Date.now() + "-" + submitSequence;
+    lastSubmittedUpdateId = updateId;
+    var pendingPayload = {
+      status: "queued",
+      latest_request: {
+        update_id: updateId,
+        command_text: cleaned,
+        consumption_status: "pending_compile"
+      },
+      operations: []
+    };
+    pendingCommand = {
+      sequence: submissionSequence,
+      update_id: updateId,
+      command_text: cleaned,
+      payload: pendingPayload
+    };
+    renderOperation(pendingPayload);
+    document.getElementById("command-input").value = "";
     setFeedback("MyProxy가 명령을 해석하고 있습니다...", false);
     return fetch(endpoint("/api/micromachine/modulate"), {
       method: "POST",
@@ -658,7 +807,25 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
         operation_generation: 1
       })
     }).then(parseJsonResponse).then(function(data) {
-      document.getElementById("command-input").value = "";
+      if (submissionSequence !== submitSequence) { return data; }
+      lastSubmittedUpdateId = String(data.update_id || updateId);
+      var acceptedPayload = {
+        status: data.status || "queued",
+        consumption_status: data.consumption_status || "pending_compile",
+        latest_request: {
+          update_id: lastSubmittedUpdateId,
+          command_text: cleaned,
+          consumption_status: data.consumption_status || "pending_compile"
+        },
+        operations: []
+      };
+      pendingCommand = {
+        sequence: submissionSequence,
+        update_id: lastSubmittedUpdateId,
+        command_text: cleaned,
+        payload: acceptedPayload
+      };
+      renderOperation(acceptedPayload);
       setFeedback(
         data.async_publish
           ? "명령 접수 완료. 작전 상태를 계속 추적합니다."
@@ -668,8 +835,11 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       appendCaption("명령 접수: " + cleaned, "", updateId);
       window.setTimeout(refreshOperation, 500);
     }).catch(function(error) {
+      if (submissionSequence !== submitSequence) { return; }
+      pendingCommand = null;
       setFeedback("명령 실패: " + error.message, true);
       appendCaption("명령 실패: " + error.message, "danger");
+      window.setTimeout(refreshOperation, 500);
     });
   }
 
@@ -725,9 +895,6 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
 
   document.getElementById("runtime-start").addEventListener("click", startRuntime);
   document.getElementById("runtime-refresh").addEventListener("click", refreshAll);
-  document.getElementById("cockpit-back").addEventListener("click", function() {
-    window.location.assign(endpoint("/"));
-  });
   document.getElementById("retreat-button").addEventListener("click", function() {
     submitCommand("긴급 전군 즉시 후퇴해");
   });
