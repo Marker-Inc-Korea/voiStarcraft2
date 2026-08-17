@@ -56,6 +56,11 @@ _FIXTURE_STAGING_CHUNK_SIZE: Final[int] = 1024 * 1024
 _FIXTURE_GIT_RECORD_LIMIT: Final[int] = 4096
 _GIT_EXECUTABLE: Final[Path] = Path("/usr/bin/git")
 _GIT_OBJECT_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{40}$")
+_FIXTURE_STAGED_SOURCE_ROOTS: Final[tuple[PurePosixPath, ...]] = (
+    PurePosixPath("integrations/micromachine"),
+    PurePosixPath("starcraft_commander"),
+    PurePosixPath("toycraft_commander"),
+)
 _FORBIDDEN_IMPORT_SUFFIXES: Final[frozenset[str]] = frozenset(
     {
         ".dll",
@@ -1579,7 +1584,10 @@ class _CandidateFixtureProcess:
             if (
                 posix_path.is_absolute()
                 or not posix_path.parts
-                or posix_path.parts[0] != "starcraft_commander"
+                or not any(
+                    posix_path == root or root in posix_path.parents
+                    for root in _FIXTURE_STAGED_SOURCE_ROOTS
+                )
                 or any(part in {"", ".", ".."} for part in posix_path.parts)
             ):
                 raise ValueError(
@@ -1639,7 +1647,7 @@ class _CandidateFixtureProcess:
                     "--full-tree",
                     self._config.repository_sha,
                     "--",
-                    "starcraft_commander",
+                    *(root.as_posix() for root in _FIXTURE_STAGED_SOURCE_ROOTS),
                 ),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,

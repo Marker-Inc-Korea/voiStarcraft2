@@ -94,6 +94,8 @@ Verified upstream:
 | `patches/0076-bounded-terminal-operation-hud.patch` | Bounds the in-game HUD to eight deterministic operation rows while prioritizing nonterminal work and higher operation priority, latches terminal completion frames on the first transition, retains omitted terminal lifecycle/history/ownership evidence across production synchronization and zero-operation policy updates, displays only canonical terminal rows aged `0..109`, renders `+N operations hidden` outside the row cap, and draws target, route, squad, and unit markers only for the selected rows. Header-only native tests execute the same selection and production-used omission contract in Debug and NDEBUG without mutating terminal lifecycle, ownership history, or operation order. |
 | `patches/0077-deterministic-pre-live-journey-adapter.patch` | Adds the deterministic native pre-live journey adapter and runtime contract test. The patch is the required schema-77 build input bound into build identity and source attestation. |
 | `patches/0078-production-path-journey-review-closure.patch` | Routes deterministic journey ownership, Squad orders, and SC2 submissions through production-used entrypoints; accepts order/submission receipts only after the real callback reports an applied Squad mutation or dispatched SC2 action; records command-issued state only for accepted dispatch and keeps suppression/failure false; binds deterministic receipt IDs, exact Squad-to-dispatch tag sets, and raw events to canonical update/operation/generation/action evidence; consumes resource, prerequisite, reconnect, and voice initial state; executes the production web Tactical Radio lifecycle, dedupe, replay, mute, caption, queue, and speech path only for the matching operation update identity; and preserves both active transfer endpoints on rejection. The patch is a required schema-80 build input bound into build identity and source attestation. |
+| `patches/0079-until-completed-submission-deadline.patch` | Starts the finite execution window for an exact-composition `until_completed` operation at its first real SC2 submission instead of command admission, so production and squad assembly cannot consume the attack window. The deadline latches once, survives same-target generation handoff, resets on retarget, and leaves standing or ordinary finite operations unchanged. The patch is a required schema-81 build input bound into build identity and source attestation. |
+| `patches/0080-exact-operation-policy-lifetime.patch` | Keeps an expired top-level policy alive only while every nonterminal raw operation exactly matches an already-admitted active exact-composition `until_completed` runtime operation by update ID, operation ID, generation, duration, and composition. Terminal, blocked, duplicate, stale, missing, or unmatched operations fail closed, preventing production-time TTL expiry without permitting zombie reactivation. It also promotes the queued first Supply Depot, runtime supply-recovery Depot, and required tech-gas Refinery ahead of blocking production in both numeric and VOI task priority, preventing exact Terran composition production from deadlocking before prerequisite structures or at a later supply cap. The patch is a required schema-82 build input bound into build identity and source attestation. |
 | `scripts/build_macos_local.sh` | Reproducible macOS build script for `s2client-api` plus patched MicroMachine. |
 | `scripts/probe_macos_local.sh` | Standalone `s2client-api` bootstrap probe that proves CreateGame/JoinGame produces own starting units before MicroMachine is evaluated. |
 | `scripts/smoke_macos_local.sh` | Local StarCraft II smoke script that writes modulation and requires both telemetry and real macro-opening evidence. |
@@ -200,10 +202,10 @@ how to act.
 `scripts/build_macos_local.sh` writes
 `$MICROMACHINE_BUILD_DIR/voi_build_identity.json` after a successful build. The
 clean build applies the MicroMachine patch bundle in numeric order from `0001`
-through `0078`, runs the runtime CTest contracts, then copies the blackboard
+through `0080`, runs the runtime CTest contracts, then copies the blackboard
 header and generates the embedded
 identity header before compilation. The
-schema-80 report includes pinned MicroMachine and `s2client-api` commits, every patch
+schema-82 report includes pinned MicroMachine and `s2client-api` commits, every patch
 checksum, config/header checksums, binary path, and binary checksum. A pre-build
 source attestation is finalized only after the executable exists, binding its
 hash, size, and executable-reported build-input identity to the attested source
@@ -311,7 +313,7 @@ Launcher contract:
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
-| `SC2_LAUNCH_MODE` | `auto` | `direct` forces a `Versions/Base*/SC2.app/Contents/MacOS/SC2` binary, `battlenet` explicitly selects the diagnostic Battle.net wrapper, and `auto` prefers the pinned Base96883 binary when present, otherwise the numerically newest direct `BaseNNNNN` binary. Production and extended soak qualification reject Battle.net and fail if no runnable direct executable exists. |
+| `SC2_LAUNCH_MODE` | `auto` | `direct` forces a `Versions/Base*/SC2.app/Contents/MacOS/SC2` binary, `battlenet` explicitly selects the diagnostic Battle.net wrapper, and `auto` requires the pinned `Base97364` binary for production. Selecting the numerically newest installed base is available only when `SC2_ALLOW_LATEST_BASE_DIAGNOSTIC=1`. Production and extended soak qualification reject Battle.net and fail if the pinned direct executable is unavailable. |
 | `SOAK_QUALIFICATION_TIER` | `production` | Standalone soak qualification tier. The value must exist in `MICROMACHINE_MAP_POOL.json`; every tier except exact `diagnostic` resolves symlinks and requires the final executable path to match `Versions/BaseNNNNN/SC2.app/Contents/MacOS/SC2`. Wrapper executables are accepted only for explicitly diagnostic runs. The matrix always forwards `SOAK_MATRIX_QUALIFICATION_TIER` into this runtime guard. |
 | `SC2_ATTACH_TIMEOUT_MS` | `120000` | Explicit `s2client-api` attach timeout passed as `-t` so host `ExecuteInfo.txt` cannot shorten the launch window. |
 | `SC2_USE_RUNTIME_DIR_ARGS` | `0` | Opt-in direct-launch compatibility mode that passes `-dataDir ${SC2_ROOT_ALIAS} -tempDir ${SC2_TEMP_DIR}` through `VOI_SC2_EXTRA_ARGS`. Leave disabled on Base97364 hosts where those extra args prevent the SC2 API listener from opening. |
@@ -324,7 +326,7 @@ Launcher contract:
 | `SC2_BATTLENET_EXECUTABLE` | `/Applications/Battle.net.app/Contents/MacOS/Battle.net` | Explicit `SC2_LAUNCH_MODE=battlenet` diagnostic launcher only; clean-start production smoke should use direct Base launch. |
 | `SC2_BATTLENET_GAME` | `s2_kokr` | Battle.net game selector passed through `VOI_SC2_EXTRA_ARGS` when `SC2_LAUNCH_MODE=battlenet` is forced. |
 
-On this host the old pinned Base96883 direct executable is no longer present.
+On this host the production launcher is pinned to Base97364.
 Fresh launcher isolation on 2026-06-24 showed Base97364 can open the requested
 SC2 API listener and complete `s2client-api` join/observation when launched
 without direct runtime-dir extra args. The same `voi_probe` launch hangs before

@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -33,10 +34,29 @@ SANITIZED_GIT_ENV: Final[dict[str, str]] = {
     "LC_ALL": "C",
     "PATH": "/usr/bin:/bin",
 }
-MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 80
+MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 82
 MICROMACHINE_SOURCE_ATTESTATION_SCHEMA_VERSION: Final[int] = 6
 MICROMACHINE_BUILD_TRANSACTION_SCHEMA_VERSION: Final[int] = 1
 MICROMACHINE_CTEST_REGISTRY_SCHEMA_VERSION: Final[int] = 1
+MICROMACHINE_RUNTIME_INSTALL_PROVENANCE_SCHEMA_VERSION: Final[int] = 2
+MICROMACHINE_RUNTIME_INSTALL_PROVENANCE_FILE: Final[str] = (
+    ".voi-runtime-provenance.json"
+)
+MICROMACHINE_RUNTIME_SOURCE_DIRS: Final[tuple[str, ...]] = (
+    "broodwar_commander",
+    "integrations",
+    "scripts",
+    "starcraft_commander",
+    "toycraft_commander",
+)
+MICROMACHINE_RUNTIME_SOURCE_FILES: Final[tuple[str, ...]] = (
+    "LICENSE",
+    "MANIFEST.in",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md",
+    "pyproject.toml",
+)
+MICROMACHINE_BUILD_IDENTITY_REPORT_MAX_BYTES: Final[int] = 8 * 1024 * 1024
 MICROMACHINE_RUNTIME_MUTABLE_PATHS: Final[tuple[str, ...]] = ("bin/BotConfig.txt",)
 MICROMACHINE_REQUIRED_NATIVE_TESTS: Final[dict[str, str]] = {
     "voi_operation_transfer_admission": "voi_operation_transfer_admission_test",
@@ -621,6 +641,20 @@ DEFAULT_MICROMACHINE_PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH: Final[Path] =
     / "patches"
     / "0078-production-path-journey-review-closure.patch"
 )
+DEFAULT_MICROMACHINE_UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0079-until-completed-submission-deadline.patch"
+)
+DEFAULT_MICROMACHINE_EXACT_OPERATION_POLICY_LIFETIME_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0080-exact-operation-policy-lifetime.patch"
+)
 DEFAULT_S2CLIENT_PATCH: Final[Path] = (
     REPO_ROOT
     / "integrations"
@@ -874,6 +908,12 @@ class MicroMachineBuildIdentityConfig:
     )
     micromachine_production_path_journey_review_closure_patch: Path = (
         DEFAULT_MICROMACHINE_PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH
+    )
+    micromachine_until_completed_submission_deadline_patch: Path = (
+        DEFAULT_MICROMACHINE_UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH
+    )
+    micromachine_exact_operation_policy_lifetime_patch: Path = (
+        DEFAULT_MICROMACHINE_EXACT_OPERATION_POLICY_LIFETIME_PATCH
     )
     s2client_patch: Path = DEFAULT_S2CLIENT_PATCH
     hook_manifest: Path = DEFAULT_HOOK_MANIFEST
@@ -1332,6 +1372,16 @@ def build_micromachine_build_identity(
                 config.micromachine_production_path_journey_review_closure_patch
             )
         ),
+        "micromachine_until_completed_submission_deadline_patch_sha256": (
+            _sha256_file(
+                config.micromachine_until_completed_submission_deadline_patch
+            )
+        ),
+        "micromachine_exact_operation_policy_lifetime_patch_sha256": (
+            _sha256_file(
+                config.micromachine_exact_operation_policy_lifetime_patch
+            )
+        ),
         "s2client_patch_sha256": _sha256_file(config.s2client_patch),
         "hook_manifest_sha256": _sha256_file(config.hook_manifest),
         "map_pool_sha256": _sha256_file(config.map_pool),
@@ -1738,6 +1788,12 @@ def build_micromachine_build_identity(
             "micromachine_production_path_journey_review_closure_patch": str(
                 config.micromachine_production_path_journey_review_closure_patch
             ),
+            "micromachine_until_completed_submission_deadline_patch": str(
+                config.micromachine_until_completed_submission_deadline_patch
+            ),
+            "micromachine_exact_operation_policy_lifetime_patch": str(
+                config.micromachine_exact_operation_policy_lifetime_patch
+            ),
             "embedded_build_identity_header": str(
                 config.embedded_build_identity_header_path
             ),
@@ -1783,20 +1839,93 @@ def micromachine_build_identity_admission_error(
     return ""
 
 
+def micromachine_build_readiness_error(
+    config: MicroMachineBuildIdentityConfig,
+    report_path: Path | str,
+    *,
+    binary_identity_runner: BinaryIdentityRunner | None = None,
+    ctest_registry_runner: CTestRegistryRunner | None = None,
+    git_command_runner: GitCommandRunner | None = None,
+) -> str:
+    """Return why a recorded build receipt is not current and reusable."""
+
+    recorded, read_error = _read_build_identity_receipt(Path(report_path))
+    if read_error:
+        return read_error
+    assert recorded is not None
+    try:
+        current = build_micromachine_build_identity(
+            config,
+            binary_identity_runner=binary_identity_runner,
+            ctest_registry_runner=ctest_registry_runner,
+            git_command_runner=git_command_runner,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        return (
+            "cannot recompute current build identity: "
+            f"{type(error).__name__}"
+        )
+
+    admission_error = micromachine_build_identity_admission_error(
+        recorded,
+        current,
+    )
+    if admission_error:
+        return admission_error
+
+    # Absolute paths are diagnostic transport metadata. Installed runtimes may
+    # relocate identical build inputs while preserving every authoritative
+    # identity, checksum, provenance, and native-test field.
+    for field in ("expected", "checksums", "observed", "failures"):
+        recorded_value = recorded.get(field)
+        current_value = current.get(field)
+        if recorded_value != current_value:
+            return (
+                "stale build receipt: "
+                f"recorded {field} does not match the current build"
+            )
+    return ""
+
+
+def micromachine_build_ready(
+    config: MicroMachineBuildIdentityConfig,
+    report_path: Path | str,
+    *,
+    binary_identity_runner: BinaryIdentityRunner | None = None,
+    ctest_registry_runner: CTestRegistryRunner | None = None,
+    git_command_runner: GitCommandRunner | None = None,
+) -> bool:
+    """Return whether the executable and receipt match all current inputs."""
+
+    return not micromachine_build_readiness_error(
+        config,
+        report_path,
+        binary_identity_runner=binary_identity_runner,
+        ctest_registry_runner=ctest_registry_runner,
+        git_command_runner=git_command_runner,
+    )
+
+
 def build_runtime_workspace_identity(repo_root: Path | str) -> dict[str, object]:
-    """Hash Python runtime sources used by live smoke, including dirty files."""
+    """Hash every source copied into the owner-local runtime, including dirty files."""
 
     root = Path(repo_root).resolve()
     candidates: list[Path] = []
-    pyproject = root / "pyproject.toml"
-    if pyproject.is_file():
-        candidates.append(pyproject)
-    package_root = root / "starcraft_commander"
-    if package_root.is_dir():
+    for relative_path in MICROMACHINE_RUNTIME_SOURCE_FILES:
+        candidate = root / relative_path
+        if candidate.is_file():
+            candidates.append(candidate)
+    for relative_path in MICROMACHINE_RUNTIME_SOURCE_DIRS:
+        package_root = root / relative_path
+        if not package_root.is_dir():
+            continue
         candidates.extend(
             path
-            for path in package_root.rglob("*.py")
-            if path.is_file() and "__pycache__" not in path.parts
+            for path in package_root.rglob("*")
+            if path.is_file()
+            and "__pycache__" not in path.parts
+            and path.name != ".DS_Store"
+            and not path.name.endswith((".pyc", ".pyo"))
         )
     files = []
     for path in sorted(
@@ -1819,6 +1948,97 @@ def build_runtime_workspace_identity(repo_root: Path | str) -> dict[str, object]
     return {
         "identity": "sha256:" + _sha256_json(material),
         "files": files,
+    }
+
+
+def build_runtime_install_provenance(
+    runtime_root: Path | str,
+    *,
+    repo_head_sha: str,
+) -> dict[str, object]:
+    """Build provenance for a source-isolated owner-local runtime copy."""
+
+    head = str(repo_head_sha).strip().lower()
+    if re.fullmatch(r"[0-9a-f]{40}", head) is None:
+        raise ValueError("runtime install provenance requires a full Git commit SHA.")
+    workspace = build_runtime_workspace_identity(runtime_root)
+    return {
+        "schema_version": MICROMACHINE_RUNTIME_INSTALL_PROVENANCE_SCHEMA_VERSION,
+        "repo_head_sha": head,
+        "python_runtime_source_identity": workspace["identity"],
+        "python_runtime_source_files": workspace["files"],
+    }
+
+
+def write_runtime_install_provenance(
+    runtime_root: Path | str,
+    payload: Mapping[str, object],
+) -> Path:
+    """Write the owner-local runtime provenance manifest atomically."""
+
+    root = Path(runtime_root).resolve()
+    output = root / MICROMACHINE_RUNTIME_INSTALL_PROVENANCE_FILE
+    _write_json_atomic(output, payload)
+    output.chmod(0o600)
+    return output
+
+
+def resolve_runtime_repository_identity(
+    runtime_root: Path | str,
+) -> dict[str, object]:
+    """Resolve live source identity from Git or a verified install manifest."""
+
+    root = Path(runtime_root).resolve()
+    workspace = build_runtime_workspace_identity(root)
+    git_head = _git_head(root)
+    if git_head is not None:
+        return {
+            "source": "git",
+            "repo_head_sha": git_head,
+            "python_runtime_source_identity": workspace["identity"],
+            "python_runtime_source_files": workspace["files"],
+        }
+
+    manifest_path = root / MICROMACHINE_RUNTIME_INSTALL_PROVENANCE_FILE
+    try:
+        metadata = manifest_path.lstat()
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(
+            "cannot resolve repository HEAD for runtime provenance: "
+            "verified install manifest is unavailable"
+        ) from error
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or manifest_path.is_symlink()
+        or metadata.st_nlink != 1
+    ):
+        raise ValueError(
+            "cannot resolve repository HEAD for runtime provenance: "
+            "install manifest is not a regular file"
+        )
+    if not isinstance(payload, Mapping):
+        raise ValueError("runtime install provenance manifest must be a JSON object.")
+    if (
+        payload.get("schema_version")
+        != MICROMACHINE_RUNTIME_INSTALL_PROVENANCE_SCHEMA_VERSION
+    ):
+        raise ValueError("runtime install provenance schema is unsupported.")
+    repo_head_sha = str(payload.get("repo_head_sha", "") or "").strip().lower()
+    if re.fullmatch(r"[0-9a-f]{40}", repo_head_sha) is None:
+        raise ValueError("runtime install provenance Git commit is invalid.")
+    if (
+        payload.get("python_runtime_source_identity") != workspace["identity"]
+        or payload.get("python_runtime_source_files") != workspace["files"]
+    ):
+        raise ValueError(
+            "runtime install provenance does not match the installed Python sources."
+        )
+    return {
+        "source": "installed_manifest",
+        "repo_head_sha": repo_head_sha,
+        "python_runtime_source_identity": workspace["identity"],
+        "python_runtime_source_files": workspace["files"],
     }
 
 
@@ -2405,6 +2625,18 @@ def build_argument_parser() -> argparse.ArgumentParser:
             DEFAULT_MICROMACHINE_PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH
         ),
     )
+    parser.add_argument(
+        "--micromachine-until-completed-submission-deadline-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-exact-operation-policy-lifetime-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_EXACT_OPERATION_POLICY_LIFETIME_PATCH
+        ),
+    )
     parser.add_argument("--s2client-patch", default=str(DEFAULT_S2CLIENT_PATCH))
     parser.add_argument("--hook-manifest", default=str(DEFAULT_HOOK_MANIFEST))
     parser.add_argument("--map-pool", default=str(DEFAULT_MAP_POOL))
@@ -2680,6 +2912,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         micromachine_production_path_journey_review_closure_patch=Path(
             args.micromachine_production_path_journey_review_closure_patch
         ),
+        micromachine_until_completed_submission_deadline_patch=Path(
+            args.micromachine_until_completed_submission_deadline_patch
+        ),
+        micromachine_exact_operation_policy_lifetime_patch=Path(
+            args.micromachine_exact_operation_policy_lifetime_patch
+        ),
         s2client_patch=Path(args.s2client_patch),
         hook_manifest=Path(args.hook_manifest),
         map_pool=Path(args.map_pool),
@@ -2746,6 +2984,34 @@ def _regular_executable_evidence(path: Path) -> dict[str, object] | None:
         "sha256": checksum,
         "size_bytes": file_stat.st_size,
     }
+
+
+def _resolve_ctest_executable(path: Path) -> Path:
+    """Resolve pip's Python ctest shim to the bundled native executable."""
+
+    if _regular_executable_evidence(path) is None:
+        return path
+    try:
+        prefix = path.read_bytes()[:4096]
+    except OSError:
+        return path
+    if not (
+        prefix.startswith(b"#!")
+        and b"from cmake import ctest" in prefix
+    ):
+        return path
+    python_prefix = path.parent.parent
+    candidates = sorted(
+        python_prefix.glob(
+            "lib/python*/site-packages/cmake/data/bin/ctest"
+        )
+    )
+    native = [
+        candidate
+        for candidate in candidates
+        if _regular_executable_evidence(candidate) is not None
+    ]
+    return native[0] if len(native) == 1 else path
 
 
 def canonical_micromachine_ctest_registry(
@@ -2992,7 +3258,7 @@ def _native_test_artifact_attestation(
                     }
                 )
             else:
-                ctest_path = candidate
+                ctest_path = _resolve_ctest_executable(candidate)
 
     ctest_evidence = (
         _regular_executable_evidence(ctest_path) if ctest_path is not None else None
@@ -4129,6 +4395,82 @@ def _read_report(path: Path) -> dict[str, object]:
             "failures": [{"code": "invalid_build_identity_report"}],
         }
     return payload
+
+
+def _read_build_identity_receipt(
+    path: Path,
+) -> tuple[dict[str, object] | None, str]:
+    try:
+        lexical = path.lstat()
+    except OSError:
+        return None, f"missing build identity report: {path}"
+    if (
+        path.is_symlink()
+        or not stat.S_ISREG(lexical.st_mode)
+        or lexical.st_nlink != 1
+        or lexical.st_size > MICROMACHINE_BUILD_IDENTITY_REPORT_MAX_BYTES
+    ):
+        return None, f"invalid build identity report file: {path}"
+
+    descriptor: int | None = None
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or opened.st_size > MICROMACHINE_BUILD_IDENTITY_REPORT_MAX_BYTES
+            or (opened.st_dev, opened.st_ino) != (lexical.st_dev, lexical.st_ino)
+        ):
+            return None, f"invalid build identity report file: {path}"
+        payload_bytes = bytearray()
+        while len(payload_bytes) <= MICROMACHINE_BUILD_IDENTITY_REPORT_MAX_BYTES:
+            chunk = os.read(descriptor, 64 * 1024)
+            if not chunk:
+                break
+            payload_bytes.extend(chunk)
+        if len(payload_bytes) > MICROMACHINE_BUILD_IDENTITY_REPORT_MAX_BYTES:
+            return None, f"invalid build identity report file: {path}"
+        completed = os.fstat(descriptor)
+        current = path.lstat()
+        opened_state = (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_mode,
+            opened.st_nlink,
+            opened.st_size,
+            opened.st_mtime_ns,
+            opened.st_ctime_ns,
+        )
+        completed_state = (
+            completed.st_dev,
+            completed.st_ino,
+            completed.st_mode,
+            completed.st_nlink,
+            completed.st_size,
+            completed.st_mtime_ns,
+            completed.st_ctime_ns,
+        )
+        if (
+            completed_state != opened_state
+            or path.is_symlink()
+            or not stat.S_ISREG(current.st_mode)
+            or current.st_nlink != 1
+            or (current.st_dev, current.st_ino)
+            != (completed.st_dev, completed.st_ino)
+        ):
+            return None, f"invalid build identity report file: {path}"
+        payload = json.loads(payload_bytes.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None, f"invalid build identity report: {path}"
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    if not isinstance(payload, dict):
+        return None, f"invalid build identity report: {path}"
+    return payload, ""
 
 
 def _failure_codes(payload: Mapping[str, object]) -> list[str]:

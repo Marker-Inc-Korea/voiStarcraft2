@@ -89,6 +89,8 @@ BATTLEFIELD_REVIEW_CLOSURE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/pa
 BOUNDED_TERMINAL_OPERATION_HUD_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0076-bounded-terminal-operation-hud.patch"
 DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0077-deterministic-pre-live-journey-adapter.patch"
 PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0078-production-path-journey-review-closure.patch"
+UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0079-until-completed-submission-deadline.patch"
+EXACT_OPERATION_POLICY_LIFETIME_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0080-exact-operation-policy-lifetime.patch"
 S2CLIENT_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0001-s2client-macos-launchservices.patch"
 BLACKBOARD_HEADER_FILE="${REPO_ROOT}/integrations/micromachine/voi_policy_blackboard.hpp"
 HOOK_MANIFEST_FILE="${REPO_ROOT}/integrations/micromachine/HOOK_MANIFEST.json"
@@ -112,7 +114,7 @@ canonical_checkout_path() {
 }
 
 resolve_regular_executable() {
-  python3 -c '
+  python3 -S -c '
 import os
 import stat
 import sys
@@ -129,6 +131,191 @@ if not stat.S_ISREG(mode) or not os.access(resolved, os.X_OK):
     raise SystemExit(f"{label} executable is not a regular executable: {resolved}")
 print(resolved)
 ' "$1" "$2"
+}
+
+resolve_ctest_executable() {
+  python3 -S -c '
+import os
+import stat
+import sys
+from pathlib import Path
+
+candidate = Path(sys.argv[1]).resolve(strict=True)
+try:
+    prefix = candidate.read_bytes()[:4096]
+except OSError:
+    print(candidate)
+    raise SystemExit(0)
+if not (prefix.startswith(b"#!") and b"from cmake import ctest" in prefix):
+    print(candidate)
+    raise SystemExit(0)
+python_prefix = candidate.parent.parent
+native = []
+for path in sorted(
+    python_prefix.glob("lib/python*/site-packages/cmake/data/bin/ctest")
+):
+    try:
+        resolved = path.resolve(strict=True)
+        mode = path.lstat().st_mode
+    except OSError:
+        continue
+    if (
+        not path.is_symlink()
+        and resolved == path.absolute()
+        and stat.S_ISREG(mode)
+        and os.access(path, os.X_OK)
+    ):
+        native.append(resolved)
+if len(native) != 1:
+    raise SystemExit(
+        f"Cannot resolve one native CTest executable for Python wrapper {candidate}"
+    )
+print(native[0])
+' "$1"
+}
+
+resolve_cmake_executable() {
+  python3 -S -c '
+import os
+import stat
+import sys
+from pathlib import Path
+
+candidate = Path(sys.argv[1]).resolve(strict=True)
+try:
+    prefix = candidate.read_bytes()[:4096]
+except OSError:
+    print(candidate)
+    raise SystemExit(0)
+if not (prefix.startswith(b"#!") and b"from cmake import cmake" in prefix):
+    print(candidate)
+    raise SystemExit(0)
+python_prefix = candidate.parent.parent
+native = []
+for path in sorted(
+    python_prefix.glob("lib/python*/site-packages/cmake/data/bin/cmake")
+):
+    try:
+        resolved = path.resolve(strict=True)
+        mode = path.lstat().st_mode
+    except OSError:
+        continue
+    if (
+        not path.is_symlink()
+        and resolved == path.absolute()
+        and stat.S_ISREG(mode)
+        and os.access(path, os.X_OK)
+    ):
+        native.append(resolved)
+if len(native) != 1:
+    raise SystemExit(
+        f"Cannot resolve one native CMake executable for Python wrapper {candidate}"
+    )
+print(native[0])
+' "$1"
+}
+
+resolve_python_launcher() {
+  /usr/bin/python3 -I -S -c '
+import os
+import stat
+import sys
+from pathlib import Path
+
+candidate = Path(sys.argv[1])
+expected_parent_arg = sys.argv[2]
+try:
+    metadata = candidate.lstat()
+    resolved = candidate.resolve(strict=True)
+    resolved_metadata = resolved.lstat()
+except OSError as exc:
+    raise SystemExit(f"Cannot resolve build identity Python {candidate}: {exc}")
+if expected_parent_arg:
+    expected_parent = Path(expected_parent_arg).resolve(strict=True)
+    if candidate.parent.resolve(strict=True) != expected_parent:
+        raise SystemExit(
+            f"Build identity Python is outside the expected venv: {candidate}"
+        )
+if not (stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode)):
+    raise SystemExit(f"Build identity Python launcher is invalid: {candidate}")
+if not stat.S_ISREG(resolved_metadata.st_mode) or not os.access(candidate, os.X_OK):
+    raise SystemExit(f"Build identity Python target is not executable: {resolved}")
+print(candidate.absolute())
+' "$1" "${2:-}"
+}
+
+build_identity_python_is_compatible() {
+  "$1" -I -S -c '
+import sys
+
+if (
+    sys.version_info < (3, 10)
+    or not sys.flags.isolated
+    or not sys.flags.no_site
+    or any("site-packages" in entry for entry in sys.path)
+):
+    raise SystemExit(1)
+' >/dev/null 2>&1
+}
+
+select_build_identity_python() {
+  local candidate
+  local expected_parent
+  local path_python
+  local resolved
+  local -a candidates=("${REPO_ROOT}/.venv/bin/python")
+
+  path_python="$(command -v python3 2>/dev/null || true)"
+  if [[ -n "${path_python}" ]]; then
+    candidates+=("${path_python}")
+  fi
+
+  for candidate in "${candidates[@]}"; do
+    expected_parent=""
+    if [[ "${candidate}" == "${REPO_ROOT}/.venv/bin/python" ]]; then
+      expected_parent="${REPO_ROOT}/.venv/bin"
+    fi
+    if ! resolved="$(
+      resolve_python_launcher "${candidate}" "${expected_parent}" 2>/dev/null
+    )"; then
+      continue
+    fi
+    if build_identity_python_is_compatible "${resolved}"; then
+      printf '%s\n' "${resolved}"
+      return 0
+    fi
+  done
+
+  echo "Cannot find a validated Python 3.10+ launcher for build identity." >&2
+  return 1
+}
+
+BUILD_IDENTITY_PYTHON="$(select_build_identity_python)"
+
+run_build_identity() {
+  "${BUILD_IDENTITY_PYTHON}" -I -S -c '
+import runpy
+import sys
+
+if (
+    sys.version_info < (3, 10)
+    or not sys.flags.isolated
+    or not sys.flags.no_site
+    or any("site-packages" in entry for entry in sys.path)
+):
+    raise SystemExit("Build identity Python isolation is invalid.")
+repo_root = sys.argv[1]
+module_args = sys.argv[2:]
+sys.path.insert(0, repo_root)
+sys.argv = [
+    "starcraft_commander.micromachine_build_identity",
+    *module_args,
+]
+runpy.run_module(
+    "starcraft_commander.micromachine_build_identity",
+    run_name="__main__",
+)
+' "${REPO_ROOT}" "$@"
 }
 
 require_disposable_checkout_mutation() {
@@ -188,7 +375,7 @@ prepare_git_checkout() {
 }
 
 require_secure_build_root() {
-  python3 -c '
+  python3 -S -c '
 import os
 import stat
 import sys
@@ -229,6 +416,9 @@ require_secure_build_root \
   "${MICROMACHINE_DIR}" \
   "${MICROMACHINE_BUILD_IDENTITY_REPORT}" \
   "MicroMachine"
+CMAKE_COMMAND="${CMAKE_COMMAND:-$(command -v cmake)}"
+CMAKE_COMMAND="$(resolve_regular_executable "${CMAKE_COMMAND}" "CMake")"
+CMAKE_COMMAND="$(resolve_cmake_executable "${CMAKE_COMMAND}")"
 if [[ "${VOI_BUILD_PREFLIGHT_ONLY:-0}" == "1" ]]; then
   exit 0
 fi
@@ -248,9 +438,9 @@ git -C "${S2CLIENT_DIR}" submodule update --init --recursive
 git -C "${S2CLIENT_DIR}" apply --check --ignore-space-change --whitespace=nowarn "${S2CLIENT_PATCH_FILE}"
 git -C "${S2CLIENT_DIR}" apply --ignore-space-change --whitespace=nowarn "${S2CLIENT_PATCH_FILE}"
 
-cmake -S "${S2CLIENT_DIR}" -B "${S2CLIENT_BUILD_DIR}" \
+"${CMAKE_COMMAND}" -S "${S2CLIENT_DIR}" -B "${S2CLIENT_BUILD_DIR}" \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-cmake --build "${S2CLIENT_BUILD_DIR}" --parallel "${BUILD_JOBS:-8}"
+"${CMAKE_COMMAND}" --build "${S2CLIENT_BUILD_DIR}" --parallel "${BUILD_JOBS:-2}"
 
 prepare_git_checkout "${MICROMACHINE_DIR}" "${ROOT_DIR}" https://github.com/RaphaelRoyerRivard/MicroMachine MicroMachine
 git -C "${MICROMACHINE_DIR}" fetch --tags
@@ -420,6 +610,10 @@ git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whi
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${EXACT_OPERATION_POLICY_LIFETIME_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${EXACT_OPERATION_POLICY_LIFETIME_PATCH_FILE}"
 cp "${BLACKBOARD_HEADER_FILE}" "${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"
 
 require_secure_build_root \
@@ -434,8 +628,9 @@ rm -f \
 mkdir -p "${MICROMACHINE_BUILD_DIR}"
 CTEST_COMMAND="${CTEST_COMMAND:-$(command -v ctest)}"
 CTEST_COMMAND="$(resolve_regular_executable "${CTEST_COMMAND}" "CTest")"
+CTEST_COMMAND="$(resolve_ctest_executable "${CTEST_COMMAND}")"
 
-python3 -m starcraft_commander.micromachine_build_identity \
+run_build_identity \
   --micromachine-dir "${MICROMACHINE_DIR}" \
   --s2client-dir "${S2CLIENT_DIR}" \
   --s2client-build-dir "${S2CLIENT_BUILD_DIR}" \
@@ -461,11 +656,13 @@ python3 -m starcraft_commander.micromachine_build_identity \
   --micromachine-bounded-terminal-operation-hud-patch "${BOUNDED_TERMINAL_OPERATION_HUD_PATCH_FILE}" \
   --micromachine-deterministic-pre-live-journey-adapter-patch "${DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH_FILE}" \
   --micromachine-production-path-journey-review-closure-patch "${PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE}" \
+  --micromachine-until-completed-submission-deadline-patch "${UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH_FILE}" \
+  --micromachine-exact-operation-policy-lifetime-patch "${EXACT_OPERATION_POLICY_LIFETIME_PATCH_FILE}" \
   --hook-manifest "${HOOK_MANIFEST_FILE}" \
   --write-embedded-identity-header \
   --initialize-source-attestation
 
-cmake -S "${MICROMACHINE_DIR}" -B "${MICROMACHINE_BUILD_DIR}" \
+"${CMAKE_COMMAND}" -S "${MICROMACHINE_DIR}" -B "${MICROMACHINE_BUILD_DIR}" \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
   -DCMAKE_CTEST_COMMAND:INTERNAL="${CTEST_COMMAND}" \
   -DSC2Api_INCLUDE_DIR="${S2CLIENT_DIR}/include" \
@@ -477,10 +674,10 @@ cmake -S "${MICROMACHINE_DIR}" -B "${MICROMACHINE_BUILD_DIR}" \
   -DSC2Api_SC2PROTOCOL_LIB="${S2CLIENT_BUILD_DIR}/bin/libsc2protocol.a" \
   -DSC2Api_CIVETWEB_LIB="${S2CLIENT_BUILD_DIR}/bin/libcivetweb.a" \
   -DSC2Api_PROTOBUF_LIB="${S2CLIENT_BUILD_DIR}/bin/libprotobuf.a"
-cmake --build "${MICROMACHINE_BUILD_DIR}" --parallel "${BUILD_JOBS:-8}"
+"${CMAKE_COMMAND}" --build "${MICROMACHINE_BUILD_DIR}" --parallel "${BUILD_JOBS:-2}"
 "${CTEST_COMMAND}" --test-dir "${MICROMACHINE_BUILD_DIR}" --output-on-failure
 
-python3 -m starcraft_commander.micromachine_build_identity \
+run_build_identity \
   --micromachine-dir "${MICROMACHINE_DIR}" \
   --s2client-dir "${S2CLIENT_DIR}" \
   --s2client-build-dir "${S2CLIENT_BUILD_DIR}" \
@@ -565,6 +762,8 @@ python3 -m starcraft_commander.micromachine_build_identity \
   --micromachine-bounded-terminal-operation-hud-patch "${BOUNDED_TERMINAL_OPERATION_HUD_PATCH_FILE}" \
   --micromachine-deterministic-pre-live-journey-adapter-patch "${DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH_FILE}" \
   --micromachine-production-path-journey-review-closure-patch "${PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE}" \
+  --micromachine-until-completed-submission-deadline-patch "${UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH_FILE}" \
+  --micromachine-exact-operation-policy-lifetime-patch "${EXACT_OPERATION_POLICY_LIFETIME_PATCH_FILE}" \
   --s2client-patch "${S2CLIENT_PATCH_FILE}" \
   --hook-manifest "${HOOK_MANIFEST_FILE}" \
   --finalize-build-attestation \

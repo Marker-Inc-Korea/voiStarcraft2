@@ -1503,7 +1503,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         )
         self.assertEqual(4, restarted.update.vector.operations[0].generation)
 
-    def test_single_operation_terminal_lifetime_survives_projection(self) -> None:
+    def test_single_operation_terminal_lifetime_stays_in_operation(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
         result = MicroMachineLiveTextSession(
             backend,
@@ -1553,11 +1553,84 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         )
         serialized_vector = result.update.to_dict()["vector"]
         assert isinstance(serialized_vector, dict)
-        serialized_lifetime = serialized_vector["lifetime"]
-        assert isinstance(serialized_lifetime, dict)
+        self.assertEqual("", serialized_vector["tactical_task"]["task_type"])
+        self.assertEqual([], serialized_vector["composition_requirements"])
+        serialized_operations = serialized_vector["operations"]
+        assert isinstance(serialized_operations, list)
+        serialized_lifetime = serialized_operations[0]["lifetime"]
         self.assertEqual(
             "cancelled",
             serialized_lifetime["completion_state"],
+        )
+
+    def test_single_operation_composition_is_serialized_once(self) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        result = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "attack enemy main with exact squad",
+                    "command_layer": "operation",
+                    "operations": [
+                        {
+                            "operation_id": "enemy-main-assault-1",
+                            "goal": "attack enemy main",
+                            "tactical_task": {
+                                "task_type": "pressure_with_main_army",
+                                "unit_classes": [
+                                    "TERRAN_MARINE",
+                                    "TERRAN_SIEGETANK",
+                                    "TERRAN_VIKINGFIGHTER",
+                                ],
+                                "location_intent": "enemy_main",
+                                "min_units": 10,
+                                "max_units": 10,
+                                "allow_partial": False,
+                            },
+                            "composition_requirements": [
+                                {
+                                    "unit_type": "TERRAN_MARINE",
+                                    "count": 6,
+                                    "role": "frontline",
+                                },
+                                {
+                                    "unit_type": "TERRAN_SIEGETANK",
+                                    "count": 2,
+                                    "role": "siege_support",
+                                },
+                                {
+                                    "unit_type": "TERRAN_VIKINGFIGHTER",
+                                    "count": 2,
+                                    "role": "anti_air",
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ),
+        ).submit_text(
+            "마린 6기, 공성전차 2기, 바이킹 2기로 적 본진 공격",
+            current_frame=100,
+            update_id="exact-squad-once",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        assert result.update is not None
+        serialized_vector = result.update.to_dict()["vector"]
+        assert isinstance(serialized_vector, dict)
+        self.assertEqual([], serialized_vector["composition_requirements"])
+        serialized_operations = serialized_vector["operations"]
+        assert isinstance(serialized_operations, list)
+        self.assertEqual(
+            {
+                "TERRAN_MARINE": 6,
+                "TERRAN_SIEGETANK": 2,
+                "TERRAN_VIKINGFIGHTER": 2,
+            },
+            {
+                item["unit_type"]: item["count"]
+                for item in serialized_operations[0]["composition_requirements"]
+            },
         )
 
     def test_scoped_operation_cancel_preserves_sibling_without_global_emergency(

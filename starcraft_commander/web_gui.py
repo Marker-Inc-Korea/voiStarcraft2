@@ -56,6 +56,7 @@ from typing import BinaryIO, Callable, Final, Protocol, runtime_checkable
 from urllib.parse import parse_qs, urlsplit
 from weakref import WeakValueDictionary
 
+from starcraft_commander.companion_ui import render_companion_page
 from starcraft_commander.micromachine_bridge import (
     MICROMACHINE_GAME_LOOPS_PER_SECOND,
     MicroMachineBridgeFailureMode,
@@ -103,6 +104,10 @@ from starcraft_commander.policy_modulation import (
 )
 from starcraft_commander.runtime_deps import MissingLLMDependencyError
 from starcraft_commander.runtime_data import source_repository_root
+from starcraft_commander.sc2_launch_contract import (
+    DEFAULT_SC2_API_PORT,
+    REQUIRED_SC2_BASE,
+)
 from starcraft_commander.state_resolver import (
     DEFAULT_SC2_STATE_RESOLVER,
     SC2StateResolverInterface,
@@ -120,6 +125,40 @@ WEB_GUI_TOKEN_HEADER: Final[str] = "X-voiStarcraft2-Token"
 
 DEFAULT_WEB_GUI_PORT: Final[int] = 8350
 """Default web GUI port; ``0`` requests an ephemeral port (used by tests)."""
+
+
+def resolve_required_sc2_executable(
+    environment: Mapping[str, str] | None = None,
+) -> Path:
+    """Resolve the live SC2 binary without loading cockpit bootstrap eagerly."""
+
+    from starcraft_commander.local_cockpit import (
+        resolve_required_sc2_executable as resolve,
+    )
+
+    return resolve(environment)
+
+
+def read_sc2_launch_receipt(
+    path: Path,
+    nonce: str,
+    *,
+    now_unix: float | None = None,
+    require_live_process: bool = True,
+) -> dict[str, object]:
+    """Validate visible-launch proof without loading cockpit bootstrap eagerly."""
+
+    from starcraft_commander.local_cockpit import (
+        read_sc2_launch_receipt as read_receipt,
+    )
+
+    return read_receipt(
+        path,
+        nonce,
+        now_unix=now_unix,
+        require_live_process=require_live_process,
+    )
+
 
 _REPO_ROOT: Final[str] = str(Path(__file__).resolve().parents[1])
 """Module installation root used by explicit repo-local tooling."""
@@ -7981,6 +8020,19 @@ class _MicroMachineLaunchManager:
             _MicroMachineTelemetryFileIdentity | None
         ) = None
         self._runtime_instance_id = ""
+        self._visible_launch_proof: dict[str, object] = {}
+        self._sc2_launch_receipt_path = Path(
+            os.environ.get(
+                "VOI_SC2_LAUNCH_RECEIPT",
+                str(
+                    Path.home()
+                    / "Library"
+                    / "Application Support"
+                    / "voiStarcraft2"
+                    / "sc2-launch-receipt.json"
+                ),
+            )
+        ).expanduser()
         candidate_script = script_path.strip()
         self._requires_source_provenance = not candidate_script
         default_root = (
@@ -8114,6 +8166,7 @@ class _MicroMachineLaunchManager:
         self,
         blackboard_dir: str = "",
         enemy_difficulty: int = DEFAULT_MICROMACHINE_LIVE_ENEMY_DIFFICULTY,
+        sc2_launch_nonce: str = "",
     ) -> dict[str, object]:
         """Launch MicroMachine smoke/live runtime for the selected blackboard."""
 
@@ -8169,14 +8222,55 @@ class _MicroMachineLaunchManager:
                     f"{self._script_path}"
                 )
                 return self._snapshot_unlocked()
-            env = os.environ.copy()
-            env.pop(_MICROMACHINE_VALIDATED_SCRIPT_DIR_ENV, None)
+            try:
+                visible_launch_proof = read_sc2_launch_receipt(
+                    self._sc2_launch_receipt_path,
+                    sc2_launch_nonce,
+                )
+                sc2_executable = resolve_required_sc2_executable()
+            except ImportError as error:
+                self._status = "failed"
+                self._error = f"Live cockpit dependency unavailable: {error}"
+                self._visible_launch_proof = {}
+                if validated_launcher is not None:
+                    validated_launcher.close()
+                return self._snapshot_unlocked()
+            except RuntimeError as error:
+                self._status = "blocked"
+                self._error = str(error)
+                self._visible_launch_proof = {}
+                if validated_launcher is not None:
+                    validated_launcher.close()
+                return self._snapshot_unlocked()
+            allowed_environment_keys = (
+                "HOME",
+                "USER",
+                "LOGNAME",
+                "TMPDIR",
+                "LANG",
+                "LC_ALL",
+                "LC_CTYPE",
+                "__CF_USER_TEXT_ENCODING",
+            )
+            env = {
+                key: os.environ[key]
+                for key in allowed_environment_keys
+                if os.environ.get(key)
+            }
+            env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
             env["BLACKBOARD_DIR"] = root
-            env.setdefault("SC2_ROOT", DEFAULT_SC2_INSTALL_PATH)
-            env.setdefault("SMOKE_KEEP_RUNNING_AFTER_PASS", "1")
+            env["SC2_ROOT"] = DEFAULT_SC2_INSTALL_PATH
+            env["SC2_EXECUTABLE"] = str(sc2_executable)
+            env["SC2_REQUIRED_BASE"] = str(REQUIRED_SC2_BASE)
+            env["VOI_SC2_CONNECT_PORT"] = str(DEFAULT_SC2_API_PORT)
+            env["SC2_CLEAN_PORTS_BEFORE_LAUNCH"] = "0"
+            env["SMOKE_KEEP_RUNNING_AFTER_PASS"] = "1"
             env["SMOKE_ENEMY_DIFFICULTY"] = str(difficulty)
-            max_attempts = env.get(_MICROMACHINE_UI_SMOKE_MAX_ATTEMPTS_ENV, "1")
-            env.setdefault("SMOKE_MAX_ATTEMPTS", max_attempts)
+            max_attempts = os.environ.get(
+                _MICROMACHINE_UI_SMOKE_MAX_ATTEMPTS_ENV,
+                "1",
+            )
+            env["SMOKE_MAX_ATTEMPTS"] = max_attempts
             self._runtime_instance_id = uuid.uuid4().hex
             env["VOI_MICROMACHINE_RUNTIME_INSTANCE_ID"] = (
                 self._runtime_instance_id
@@ -8212,6 +8306,26 @@ class _MicroMachineLaunchManager:
                     env=env,
                     launcher_input=validated_launcher,
                 )
+                self._visible_launch_proof = {
+                    key: visible_launch_proof.get(key)
+                    for key in (
+                        "accepted",
+                        "bootstrap_accepted",
+                        "pid",
+                        "port",
+                        "base",
+                        "process_created",
+                        "api_ready",
+                        "window_created",
+                        "window_onscreen",
+                        "frontmost",
+                        "screen_locked",
+                        "render_verified",
+                        "window_id",
+                        "window_width",
+                        "window_height",
+                    )
+                }
             except OSError as error:
                 self._status = "failed"
                 self._error = _redact_sensitive_text(
@@ -8222,6 +8336,7 @@ class _MicroMachineLaunchManager:
                 self._launch_started_at_ns = 0
                 self._launch_telemetry_baseline = None
                 self._runtime_instance_id = ""
+                self._visible_launch_proof = {}
                 return self._snapshot_unlocked()
             finally:
                 if validated_launcher is not None:
@@ -8362,6 +8477,7 @@ class _MicroMachineLaunchManager:
                 and not telemetry_current_for_process
             ),
             "telemetry_frame": telemetry_snapshot.frame,
+            **self._visible_launch_proof,
         }
 
     def _latest_telemetry_unlocked(self) -> _MicroMachineTelemetrySnapshot:
@@ -11549,7 +11665,7 @@ _WEB_GUI_PAGE_TEMPLATE: Final[str] = """<!DOCTYPE html>
     </details>
     <details id="llm-panel" class="collapsible-panel">
       <summary><span data-i18n="llmTitle">LLM 설정</span></summary>
-      <p class="hint" data-i18n="llmHint">API 키는 이 로컬 프로세스 메모리에만 보관됩니다.</p>
+      <p class="hint" data-i18n="llmHint">API 키는 웹 프로세스 메모리에서 사용됩니다. 원클릭 앱은 저장소 밖 사용자 전용 로컬 저장소와 Codex 설정에서 MyProxy를 자동 연결합니다.</p>
       <form id="llm-form">
         <label data-i18n="llmProviderLabel">모델사 선택</label>
         <div id="llm-provider-options" class="provider-options">
@@ -16335,23 +16451,68 @@ function refreshLiveConnectionFlow() {
     });
 }
 
-function startSelectedRuntime() {
+var pendingNativeSC2Launches = {};
+
+window.voiNativeSC2LaunchResolved = function (result) {
+  var nonce = String(result && result.nonce || "");
+  var pending = pendingNativeSC2Launches[nonce];
+  if (!pending) { return; }
+  delete pendingNativeSC2Launches[nonce];
+  if (result && result.accepted === true) {
+    pending.resolve(nonce);
+    return;
+  }
+  pending.reject(new Error(
+    String(result && result.error || "SC2 visible launch was not verified.")
+  ));
+};
+
+function requestNativeSC2Launch() {
+  var bridge = window.webkit && window.webkit.messageHandlers &&
+    window.webkit.messageHandlers.sc2Launch;
+  if (!bridge || typeof bridge.postMessage !== "function") {
+    return Promise.reject(new Error(
+      "SC2는 설치된 voiStarcraft2 앱의 네이티브 실행 버튼에서만 시작할 수 있습니다."
+    ));
+  }
+  var nonce = (
+    Date.now().toString(36) + "-" +
+    Math.random().toString(36).slice(2) + "-" +
+    Math.random().toString(36).slice(2)
+  );
+  return new Promise(function (resolve, reject) {
+    pendingNativeSC2Launches[nonce] = {
+      resolve: resolve,
+      reject: reject
+    };
+    bridge.postMessage({ nonce: nonce });
+  });
+}
+
+function startSelectedRuntime(options) {
   var payload;
   try {
     payload = runtimeStartPayload();
   } catch (error) {
     setLiveStatusText(t("runtimeFailed") + ": " + error.message);
-    return;
+    return Promise.resolve(null);
+  }
+  if (options && options.sc2LaunchNonce) {
+    payload.sc2_launch_nonce = options.sc2LaunchNonce;
   }
   setLiveStatusText(t("runtimeStarting") + " (" + payload.mode + ")");
-  fetch("/api/runtime/start" + authQuery, {
+  return fetch("/api/runtime/start" + authQuery, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   }).then(parseJsonResponse)
-    .then(function (status) { handleRuntimeStatus(status); })
+    .then(function (status) {
+      handleRuntimeStatus(status);
+      return status;
+    })
     .catch(function (error) {
       setLiveStatusText(t("runtimeFailed") + ": " + error.message);
+      throw error;
     });
 }
 
@@ -16361,8 +16522,6 @@ function setLiveStatusLink(label, url) {
   statusNode.textContent = label + ": ";
   var link = document.createElement("a");
   link.href = url;
-  link.target = "_blank";
-  link.rel = "noopener";
   link.textContent = url;
   statusNode.appendChild(link);
   setLiveButtonEnabled(true);
@@ -24932,12 +25091,46 @@ Array.prototype.forEach.call(document.querySelectorAll("input[name='llm-provider
 });
 
 document.getElementById("live-open-button").addEventListener("click", function () {
-  if (liveGuiUrl) { window.open(liveGuiUrl, "_blank", "noopener"); }
+  if (liveGuiUrl) { window.location.assign(liveGuiUrl); }
 });
+
+function companionWindowUrl() {
+  var query = new URLSearchParams();
+  if (token) { query.set("token", token); }
+  query.set(
+    "blackboard_dir",
+    optionalMicroMachineField("micromachine-blackboard-dir")
+  );
+  query.set(
+    "enemy_difficulty",
+    optionalMicroMachineField("micromachine-enemy-difficulty") || "10"
+  );
+  return "/companion?" + query.toString();
+}
+
+function openCompanionWindow() {
+  window.location.assign(companionWindowUrl());
+}
 
 document.getElementById("runtime-start-button").addEventListener("click", function () {
   setCommandMode(selectedCommandMode());
-  startSelectedRuntime();
+  if (!isMicroMachineCommandMode()) {
+    startSelectedRuntime();
+    return;
+  }
+  setLiveStatusText("StarCraft II 실제 창과 렌더링을 확인하는 중입니다.");
+  requestNativeSC2Launch()
+    .then(function (nonce) {
+      return startSelectedRuntime({ sc2LaunchNonce: nonce });
+    })
+    .then(function (status) {
+      if (status && status.accepted === true) {
+        openCompanionWindow();
+      }
+    })
+    .catch(function (error) {
+      setLiveStatusText(t("runtimeFailed") + ": " + error.message);
+    });
 });
 
 document.getElementById("runtime-refresh-button").addEventListener("click", function () {
@@ -25035,6 +25228,21 @@ class _BridgedThreadingHTTPServer(ThreadingHTTPServer):
         self._failed_event_sources: set[str] = set()
         self.shutdown_event = threading.Event()
         super().__init__(server_address, handler_class)
+
+    def handle_error(
+        self,
+        request: object,
+        client_address: tuple[str, int],
+    ) -> None:
+        """Suppress expected client disconnects without hiding server faults."""
+
+        error = sys.exc_info()[1]
+        if isinstance(
+            error,
+            (BrokenPipeError, ConnectionResetError, TimeoutError),
+        ):
+            return
+        super().handle_error(request, client_address)
 
     def operation_status_lock(
         self,
@@ -25464,6 +25672,20 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 render_web_gui_page(blackboard_dir),
             )
             return
+        if path == "/companion":
+            blackboard_dir = ""
+            default_blackboard_dir = getattr(
+                self._bridge,
+                "micromachine_blackboard_dir",
+                None,
+            )
+            if callable(default_blackboard_dir):
+                blackboard_dir = str(default_blackboard_dir())
+            self._send_html(
+                HTTPStatus.OK,
+                render_companion_page(blackboard_dir),
+            )
+            return
         if path == "/api/state":
             self._handle_state()
             return
@@ -25586,7 +25808,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         self.send_response(int(HTTPStatus.OK))
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Connection", "keep-alive")
+        self.send_header("Connection", "close" if once else "keep-alive")
         self.send_header("X-Accel-Buffering", "no")
         self.end_headers()
         self.close_connection = True
@@ -25636,42 +25858,44 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     == blackboard_scope_id
                     for event in replay_events
                 )
+                replay_cursor_changed = cursor != after
                 reconnect_authority_current = False
-                try:
-                    reconnect_status = self._micromachine_status_payload(
-                        blackboard_dir,
-                        read_only=True,
-                    )
-                    reconnect_scope = str(
-                        reconnect_status.get("blackboard_scope_id")
-                        or blackboard_scope_id
-                    )
-                    reconnect_status_name = str(
-                        reconnect_status.get("status", "") or ""
-                    )
-                    reconnect_authority_current = bool(
-                        reconnect_scope == blackboard_scope_id
-                        and reconnect_status.get(
-                            "operation_registry_authoritative"
+                if not replay_cursor_changed:
+                    try:
+                        reconnect_status = self._micromachine_status_payload(
+                            blackboard_dir,
+                            read_only=True,
                         )
-                        is True
-                        and reconnect_status_name
-                        not in {
-                            "operation_history_capacity_rejected",
-                            "scope_capacity_rejected",
-                            "scope_identity_mismatch",
-                            "source_error",
-                        }
-                    )
-                except Exception:  # noqa: BLE001 - snapshot reports failure.
-                    reconnect_authority_current = False
+                        reconnect_scope = str(
+                            reconnect_status.get("blackboard_scope_id")
+                            or blackboard_scope_id
+                        )
+                        reconnect_status_name = str(
+                            reconnect_status.get("status", "") or ""
+                        )
+                        reconnect_authority_current = bool(
+                            reconnect_scope == blackboard_scope_id
+                            and reconnect_status.get(
+                                "operation_registry_authoritative"
+                            )
+                            is True
+                            and reconnect_status_name
+                            not in {
+                                "operation_history_capacity_rejected",
+                                "scope_capacity_rejected",
+                                "scope_identity_mismatch",
+                                "source_error",
+                            }
+                        )
+                    except Exception:  # noqa: BLE001 - snapshot reports failure.
+                        reconnect_authority_current = False
                 scope_was_authoritative = (
                     server.has_admitted_operation_event_scope(  # type: ignore[attr-defined]
                         blackboard_scope_id
                     )
                 )
                 if (
-                    cursor != after
+                    replay_cursor_changed
                     or replay_requires_snapshot
                     or (
                         scope_was_authoritative
@@ -25698,6 +25922,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     )
             self._write_sse_heartbeat()
             if once:
+                self.wfile.flush()
                 return
             server = self.server  # type: ignore[assignment]
             while not server.shutdown_event.is_set():  # type: ignore[attr-defined]
@@ -26826,6 +27051,9 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 launcher.start(
                     blackboard_dir=str(document.get("blackboard_dir", "") or ""),
                     enemy_difficulty=enemy_difficulty,
+                    sc2_launch_nonce=str(
+                        document.get("sc2_launch_nonce", "") or ""
+                    ),
                 )
             )
         except Exception as error:  # noqa: BLE001 - surfaced honestly.
@@ -27384,12 +27612,15 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         self._send_body(status, "text/html; charset=utf-8", page.encode("utf-8"))
 
     def _send_body(self, status: HTTPStatus, content_type: str, body: bytes) -> None:
-        self.send_response(int(status))
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(int(status))
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
+            return
 
 
 class WebGuiServer:
@@ -27440,6 +27671,24 @@ class WebGuiServer:
         self._lifecycle_lock = threading.Lock()
         self._http: _BridgedThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+
+    def configure_micromachine_runtime(
+        self,
+        *,
+        script_path: str = "",
+        cwd: str = "",
+    ) -> None:
+        """Set an explicit packaged runtime launcher before the server starts."""
+
+        with self._lifecycle_lock:
+            if self._http is not None:
+                raise RuntimeError(
+                    "MicroMachine runtime paths cannot change after server start."
+                )
+            self._micromachine_launcher = _MicroMachineLaunchManager(
+                script_path=script_path,
+                cwd=cwd,
+            )
 
     @property
     def host(self) -> str:
@@ -27564,6 +27813,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
             "Disabled by default so it is not confused with MicroMachine."
         ),
     )
+    parser.add_argument("--micromachine-script", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--micromachine-cwd", default="", help=argparse.SUPPRESS)
     return parser
 
 
@@ -27619,6 +27870,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         host=args.host,
         auth_token=args.token,
         auto_launch_live=args.auto_launch_legacy_live,
+    )
+    server.configure_micromachine_runtime(
+        script_path=args.micromachine_script,
+        cwd=args.micromachine_cwd,
     )
     bridge.start()
     try:

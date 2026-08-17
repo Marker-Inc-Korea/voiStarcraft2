@@ -291,6 +291,16 @@ PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE = (
     / "patches"
     / "0078-production-path-journey-review-closure.patch"
 )
+UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0079-until-completed-submission-deadline.patch"
+)
+EXACT_OPERATION_POLICY_LIFETIME_PATCH_FILE = (
+    KIT_DIR
+    / "patches"
+    / "0080-exact-operation-policy-lifetime.patch"
+)
 S2CLIENT_PATCH_FILE = KIT_DIR / "patches" / "0001-s2client-macos-launchservices.patch"
 BUILD_SCRIPT = KIT_DIR / "scripts" / "build_macos_local.sh"
 PROBE_SCRIPT = KIT_DIR / "scripts" / "probe_macos_local.sh"
@@ -308,6 +318,18 @@ def _read_patch_text(path: Path) -> str:
 
 
 class MicroMachineIntegrationKitTest(unittest.TestCase):
+    def test_s2client_patch_is_parseable_unified_diff(self) -> None:
+        completed = subprocess.run(
+            ["git", "apply", "--numstat", str(S2CLIENT_PATCH_FILE)],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("src/sc2utils/sc2_manage_process.cc", completed.stdout)
+
     def test_parallel_operations_close_operation_scoped_production_prerequisites(
         self,
     ) -> None:
@@ -1015,12 +1037,12 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
         self.assertEqual(
             [patch["order"] for patch in bundle],
-            list(range(1, 79)),
+            list(range(1, 81)),
         )
-        self.assertEqual(len(set(manifest_paths)), 78)
+        self.assertEqual(len(set(manifest_paths)), 80)
         self.assertEqual(
             manifest_paths[-1],
-            "patches/0078-production-path-journey-review-closure.patch",
+            "patches/0080-exact-operation-policy-lifetime.patch",
         )
         self.assertTrue(
             all((KIT_DIR / path).is_file() for path in manifest_paths)
@@ -1364,6 +1386,203 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 '"${PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE}"'
             ),
         )
+
+    def test_until_completed_submission_deadline_patch_is_registered(self) -> None:
+        manifest = json.loads((KIT_DIR / "HOOK_MANIFEST.json").read_text())
+        self.assertEqual(
+            {
+                "path": "patches/0079-until-completed-submission-deadline.patch",
+                "order": 79,
+            },
+            {
+                "path": manifest["patch_bundle"][78]["path"],
+                "order": manifest["patch_bundle"][78]["order"],
+            },
+        )
+
+        build_script = BUILD_SCRIPT.read_text()
+        patch_variable = "UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH_FILE"
+        self.assertIn(
+            f'{patch_variable}="${{REPO_ROOT}}/integrations/'
+            "micromachine/patches/"
+            '0079-until-completed-submission-deadline.patch"',
+            build_script,
+        )
+        prior_apply = build_script.index(
+            "apply --recount --ignore-space-change --whitespace=nowarn "
+            '"${PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE}"'
+        )
+        patch_check = build_script.index(
+            "apply --recount --check --ignore-space-change "
+            '--whitespace=nowarn "${UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH_FILE}"'
+        )
+        patch_apply = build_script.index(
+            "apply --recount --ignore-space-change --whitespace=nowarn "
+            '"${UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH_FILE}"'
+        )
+        blackboard_copy = build_script.index(
+            'cp "${BLACKBOARD_HEADER_FILE}" '
+            '"${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"'
+        )
+        self.assertLess(prior_apply, patch_check)
+        self.assertLess(patch_check, patch_apply)
+        self.assertLess(patch_apply, blackboard_copy)
+        self.assertEqual(
+            2,
+            build_script.count(
+                "--micromachine-until-completed-submission-deadline-patch "
+                '"${UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH_FILE}"'
+            ),
+        )
+
+    def test_until_completed_submission_deadline_patch_has_runtime_contract(
+        self,
+    ) -> None:
+        patch = _read_patch_text(
+            UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH_FILE
+        )
+
+        for term in (
+            "struct VoiOperationDeadlineInput",
+            'input.lifetimeMode == "until_completed"',
+            "startsAtSubmission && input.submittedFrame == 0",
+            "voiLatchOperationDeadlineFrame(",
+            "void CombatCommander::recordVoiOperationSubmission(",
+            "operation->deadlineFrame =",
+            "existing.submissionObserved = false;",
+            "existing.deadlineFrame =",
+            "targetChanged",
+            ": existing.deadlineFrame;",
+            "ordinaryUntilCompleted.exactComposition = false;",
+            "standing.standing = true;",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+
+        parse_result = subprocess.run(
+            [
+                "git",
+                "apply",
+                "--numstat",
+                str(UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH_FILE),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, parse_result.returncode, parse_result.stderr)
+
+    def test_exact_operation_policy_lifetime_patch_is_registered(self) -> None:
+        manifest = json.loads((KIT_DIR / "HOOK_MANIFEST.json").read_text())
+        self.assertEqual(
+            {
+                "path": "patches/0080-exact-operation-policy-lifetime.patch",
+                "order": 80,
+            },
+            {
+                "path": manifest["patch_bundle"][79]["path"],
+                "order": manifest["patch_bundle"][79]["order"],
+            },
+        )
+
+        build_script = BUILD_SCRIPT.read_text()
+        patch_variable = "EXACT_OPERATION_POLICY_LIFETIME_PATCH_FILE"
+        self.assertIn(
+            f'{patch_variable}="${{REPO_ROOT}}/integrations/'
+            "micromachine/patches/"
+            '0080-exact-operation-policy-lifetime.patch"',
+            build_script,
+        )
+        prior_apply = build_script.index(
+            "apply --recount --ignore-space-change --whitespace=nowarn "
+            '"${UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH_FILE}"'
+        )
+        patch_check = build_script.index(
+            "apply --recount --check --ignore-space-change "
+            '--whitespace=nowarn "${EXACT_OPERATION_POLICY_LIFETIME_PATCH_FILE}"'
+        )
+        patch_apply = build_script.index(
+            "apply --recount --ignore-space-change --whitespace=nowarn "
+            '"${EXACT_OPERATION_POLICY_LIFETIME_PATCH_FILE}"'
+        )
+        blackboard_copy = build_script.index(
+            'cp "${BLACKBOARD_HEADER_FILE}" '
+            '"${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"'
+        )
+        self.assertLess(prior_apply, patch_check)
+        self.assertLess(patch_check, patch_apply)
+        self.assertLess(patch_apply, blackboard_copy)
+        self.assertEqual(
+            2,
+            build_script.count(
+                "--micromachine-exact-operation-policy-lifetime-patch "
+                '"${EXACT_OPERATION_POLICY_LIFETIME_PATCH_FILE}"'
+            ),
+        )
+
+    def test_exact_operation_policy_lifetime_patch_has_runtime_contract(
+        self,
+    ) -> None:
+        patch = _read_patch_text(EXACT_OPERATION_POLICY_LIFETIME_PATCH_FILE)
+
+        for term in (
+            "struct VoiOperationPolicyContinuationEntry",
+            "voiRetainExpiredPolicyForOperations(",
+            'request.lifetimeMode != "until_completed"',
+            "request.durationSeconds <= 0",
+            "request.compositionRequirements.empty()",
+            "requested.size() != runtime.size()",
+            "candidate.operationPolicyUpdateId",
+            "candidate.generation",
+            "candidate.durationSeconds",
+            "candidate.active",
+            "canContinueExpiredVoiOperationsForPolicy(",
+            "exactOperationLifetimeActive",
+            "operationCompletionState == \"superseded\"",
+            "voiProductionBlockingPrerequisiteTaskPriority()",
+            "queueSupplyProviderRecovery",
+            "supply_recovery",
+            "barracks_prerequisite_supply",
+            "tech_bootstrap_refinery",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, patch)
+        self.assertEqual(
+            4,
+            patch.count("voiProductionBlockingPrerequisiteTaskPriority());"),
+        )
+        supply_guard = patch.index(
+            "if (voiProductionShouldPromoteSupplyBeforeFirstBarracks("
+        )
+        supply_promotion = patch.index(
+            'recordVoiDoctrineConsumption(\n'
+            '+\t\t\tsupplyProviderType,\n'
+            '+\t\t\t"barracks_prerequisite_supply"',
+            supply_guard,
+        )
+        barracks_enqueue = patch.index(
+            "if (barracksDoctrineRequested",
+            supply_promotion,
+        )
+        self.assertLess(supply_guard, supply_promotion)
+        self.assertLess(supply_promotion, barracks_enqueue)
+        self.assertIn(
+            "+\t\treturn;\n+\t}\n+\tif (barracksDoctrineRequested",
+            patch,
+        )
+
+        parse_result = subprocess.run(
+            [
+                "git",
+                "apply",
+                "--numstat",
+                str(EXACT_OPERATION_POLICY_LIFETIME_PATCH_FILE),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, parse_result.returncode, parse_result.stderr)
         parse_result = subprocess.run(
             [
                 "git",
@@ -5975,8 +6194,10 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "patches/0076-bounded-terminal-operation-hud.patch",
             "patches/0077-deterministic-pre-live-journey-adapter.patch",
             "patches/0078-production-path-journey-review-closure.patch",
-            "through `0078`",
-            "schema-80 report",
+            "patches/0079-until-completed-submission-deadline.patch",
+            "patches/0080-exact-operation-policy-lifetime.patch",
+            "through `0080`",
+            "schema-82 report",
         )
         for term in required_terms:
             with self.subTest(term=term):
@@ -6289,11 +6510,14 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "Scout duplicate prevention must be target-based, not reason-dependent.",
         )
         for term in (
-            "extern char **environ",
             "#include <sys/wait.h>",
             "FindProcessByPathAndPort",
             "waitpid(p, &status, 0)",
-            'std::strncmp(*env, "VOI_", 4) == 0',
+            'launcher_path = "/usr/bin/open"',
+            'launch_arguments.push_back("--args")',
+            '"PATH=/usr/bin:/bin:/usr/sbin:/sbin"',
+            '"__CF_USER_TEXT_ENCODING"',
+            "allowed_environment_names",
             "environment_list.data()",
             "execve(launcher_path.c_str(), &char_list[0], environment_list.data())",
             "data.size() != static_cast<size_t>(width * height)",
@@ -6322,6 +6546,16 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         ):
             with self.subTest(term=term):
                 self.assertIn(term, s2client_patch)
+        for forbidden_term in (
+            'launcher_path = "/bin/zsh"',
+            'launch_arguments.push_back("-lc")',
+            "extern char **environ",
+            "for (char** env = environ",
+            "MYPROXY_API_KEY",
+            "OPENAI_API_KEY",
+        ):
+            with self.subTest(forbidden_term=forbidden_term):
+                self.assertNotIn(forbidden_term, s2client_patch)
 
     def test_embedded_build_identity_patch_exposes_side_effect_free_query(
         self,
@@ -6824,6 +7058,8 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "0076-bounded-terminal-operation-hud.patch",
             "0077-deterministic-pre-live-journey-adapter.patch",
             "0078-production-path-journey-review-closure.patch",
+            "0079-until-completed-submission-deadline.patch",
+            "0080-exact-operation-policy-lifetime.patch",
             "0001-s2client-macos-launchservices.patch",
             "OPERATION_STATE_PATCH_FILE",
             "ADDON_RECOVERY_PATCH_FILE",
@@ -6921,7 +7157,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "Invalid ${repo_name} git checkout; moving aside",
             "submodule update --init --recursive",
             "apply --check --ignore-space-change --whitespace=nowarn",
-            "cmake --build",
+            '"${CMAKE_COMMAND}" --build',
             "MICROMACHINE_BUILD_IDENTITY_REPORT",
             "starcraft_commander.micromachine_build_identity",
             "--s2client-build-dir",
@@ -6962,14 +7198,18 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 self.assertIn(term, build_script)
         self.assertLess(
             build_script.index("--initialize-source-attestation"),
-            build_script.index('cmake -S "${MICROMACHINE_DIR}"'),
+            build_script.index(
+                '"${CMAKE_COMMAND}" -S "${MICROMACHINE_DIR}"'
+            ),
         )
         self.assertLess(
             build_script.index('"${MICROMACHINE_BUILD_DIR}/bin/MicroMachine"'),
             build_script.index("--initialize-source-attestation"),
         )
         self.assertLess(
-            build_script.index('cmake --build "${MICROMACHINE_BUILD_DIR}"'),
+            build_script.index(
+                '"${CMAKE_COMMAND}" --build "${MICROMACHINE_BUILD_DIR}"'
+            ),
             build_script.index("--finalize-build-attestation"),
         )
         adaptive_apply = (
@@ -7375,6 +7615,10 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             "SMOKE_RUN_ID",
             "SMOKE_RUN_ROOT",
             "SMOKE_REPO_HEAD_SHA",
+            "VOI_MICROMACHINE_RUNTIME_INSTANCE_ID",
+            "runtime_instance_id",
+            "uuid.uuid4().hex",
+            "32-character lowercase hex value",
             "reset_promoted_smoke_artifacts",
             "write_smoke_attempt_status",
             "write_smoke_attempt_summary",
@@ -7749,7 +7993,9 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             with self.subTest(term=term):
                 self.assertIn(term, (REPO_ROOT / "starcraft_commander" / "micromachine_soak.py").read_text())
 
-    def test_sc2_direct_resolvers_choose_highest_numeric_base(self) -> None:
+    def test_sc2_direct_resolvers_pin_production_and_bound_diagnostic_latest(
+        self,
+    ) -> None:
         for script_path in (PROBE_SCRIPT, SMOKE_SCRIPT, SOAK_SCRIPT):
             script = script_path.read_text()
             function_start = script.index(
@@ -7762,10 +8008,14 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             resolver = script[function_start:function_end]
             with self.subTest(script=script_path.name):
                 self.assertNotIn("sort -r", resolver)
-                self.assertIn("substr($part, 5) + 0", resolver)
+                self.assertNotIn("find ", resolver)
+                self.assertIn(
+                    '"${versions_dir}"/Base*/SC2.app/Contents/MacOS/SC2',
+                    resolver,
+                )
                 with tempfile.TemporaryDirectory() as directory:
                     root = Path(directory) / "StarCraft II"
-                    expected = (
+                    diagnostic_expected = (
                         root
                         / "Versions"
                         / "Base100000"
@@ -7783,11 +8033,47 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                         / "MacOS"
                         / "SC2"
                     )
-                    for executable in (older, expected):
+                    nested_newer = (
+                        root
+                        / "Versions"
+                        / "nested"
+                        / "Base100001"
+                        / "SC2.app"
+                        / "Contents"
+                        / "MacOS"
+                        / "SC2"
+                    )
+                    non_executable_newer = (
+                        root
+                        / "Versions"
+                        / "Base100002"
+                        / "SC2.app"
+                        / "Contents"
+                        / "MacOS"
+                        / "SC2"
+                    )
+                    for executable in (
+                        older,
+                        diagnostic_expected,
+                        nested_newer,
+                    ):
                         executable.parent.mkdir(parents=True)
                         executable.write_text("#!/usr/bin/env bash\nexit 0\n")
                         executable.chmod(0o755)
-                    completed = subprocess.run(
+                    non_executable_newer.parent.mkdir(parents=True)
+                    non_executable_newer.write_text(
+                        "#!/usr/bin/env bash\nexit 0\n"
+                    )
+                    pinned = (
+                        root
+                        / "Versions"
+                        / "Base97364"
+                        / "SC2.app"
+                        / "Contents"
+                        / "MacOS"
+                        / "SC2"
+                    )
+                    production = subprocess.run(
                         [
                             "bash",
                             "-c",
@@ -7806,12 +8092,39 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                     )
                     self.assertEqual(
                         0,
-                        completed.returncode,
-                        completed.stdout + completed.stderr,
+                        production.returncode,
+                        production.stdout + production.stderr,
                     )
                     self.assertEqual(
-                        str(expected),
-                        completed.stdout.strip(),
+                        str(pinned),
+                        production.stdout.strip(),
+                    )
+                    diagnostic = subprocess.run(
+                        [
+                            "bash",
+                            "-c",
+                            (
+                                "set -euo pipefail\n"
+                                f"{resolver}\n"
+                                'SC2_ROOT="$1"\n'
+                                "SC2_ALLOW_LATEST_BASE_DIAGNOSTIC=1\n"
+                                "resolve_latest_direct_sc2_executable\n"
+                            ),
+                            "resolver",
+                            str(root),
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+                    self.assertEqual(
+                        0,
+                        diagnostic.returncode,
+                        diagnostic.stdout + diagnostic.stderr,
+                    )
+                    self.assertEqual(
+                        str(diagnostic_expected),
+                        diagnostic.stdout.strip(),
                     )
 
     def test_production_soak_launcher_fails_without_direct_sc2(self) -> None:
@@ -8302,6 +8615,34 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                     (root / artifact).read_text(),
                     artifact,
                 )
+
+    def test_smoke_runtime_instance_id_is_generated_per_live_attempt_and_attested(
+        self,
+    ) -> None:
+        script = SMOKE_SCRIPT.read_text()
+        wrapper_end = script.index(
+            "\nREQUIRED_MACRO_EVIDENCE=(",
+        )
+        runtime_id_block = script.index(
+            'if [[ -z "${VOI_MICROMACHINE_RUNTIME_INSTANCE_ID:-}" ]]',
+        )
+        recursive_attempt = script.index(
+            'SMOKE_ATTEMPT_INDEX="${attempt}" SMOKE_MAX_ATTEMPTS=1',
+        )
+        self.assertLess(recursive_attempt, runtime_id_block)
+        self.assertLess(runtime_id_block, wrapper_end)
+        self.assertIn(
+            '"runtime_instance_id": runtime_instance_id',
+            script,
+        )
+        self.assertIn(
+            'snapshot.get("runtime_instance_id") != runtime_instance_id',
+            script,
+        )
+        self.assertIn(
+            'export VOI_MICROMACHINE_RUNTIME_INSTANCE_ID',
+            script,
+        )
 
     def test_smoke_modulation_evidence_ignores_pre_run_matching_id(self) -> None:
         script = SMOKE_SCRIPT.read_text()
@@ -9425,6 +9766,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                 capture_output=True,
                 text=True,
             ).stdout.strip()
+            runtime_instance_id = "1" * 32
             binary.write_bytes(b"compiled-binary-v1")
             binary_sha256 = hashlib.sha256(binary.read_bytes()).hexdigest()
             report.write_text(
@@ -9454,6 +9796,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                     str(binary),
                     str(snapshot),
                     "run-fixture",
+                    runtime_instance_id,
                     head_sha,
                     str(smoke_script),
                     str(root),
@@ -9471,6 +9814,10 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             self.assertEqual("sha256:fixture", payload["build_identity"])
             self.assertEqual(binary_sha256, payload["binary_sha256"])
             self.assertEqual("run-fixture", payload["run_id"])
+            self.assertEqual(
+                runtime_instance_id,
+                payload["runtime_instance_id"],
+            )
             self.assertEqual(head_sha, payload["repo_head_sha"])
             self.assertEqual(
                 str(smoke_script.resolve()),
@@ -9505,6 +9852,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                     str(binary),
                     str(snapshot),
                     "run-fixture",
+                    runtime_instance_id,
                     head_sha,
                     str(smoke_script),
                     str(root),
@@ -9529,6 +9877,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                     str(binary),
                     str(snapshot),
                     "run-fixture",
+                    runtime_instance_id,
                     head_sha,
                     str(smoke_script),
                     str(root),
@@ -9550,6 +9899,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                     str(binary),
                     str(snapshot),
                     "run-fixture",
+                    runtime_instance_id,
                     head_sha,
                     str(smoke_script),
                     str(root),
@@ -9570,6 +9920,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                     str(binary),
                     str(snapshot),
                     "run-fixture",
+                    runtime_instance_id,
                     head_sha,
                     str(smoke_script),
                     str(root),
@@ -9593,6 +9944,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                     str(binary),
                     str(snapshot),
                     "run-fixture",
+                    runtime_instance_id,
                     head_sha,
                     str(smoke_script),
                     str(root),
@@ -9613,6 +9965,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                     str(binary),
                     str(snapshot),
                     "run-fixture",
+                    runtime_instance_id,
                     head_sha,
                     str(smoke_script),
                     str(root),
@@ -9635,6 +9988,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                     str(binary),
                     str(snapshot),
                     "other-run",
+                    runtime_instance_id,
                     head_sha,
                     str(smoke_script),
                     str(root),
@@ -9653,6 +10007,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                     str(binary),
                     str(snapshot),
                     "run-fixture",
+                    runtime_instance_id,
                     "other-head",
                     str(smoke_script),
                     str(root),
@@ -9672,6 +10027,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                     str(binary),
                     str(snapshot),
                     "run-fixture",
+                    runtime_instance_id,
                     head_sha,
                     str(smoke_script),
                     str(root),
@@ -9709,6 +10065,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
                     str(binary),
                     str(snapshot),
                     "run-fixture",
+                    runtime_instance_id,
                     head_sha,
                     str(smoke_script),
                     str(root),

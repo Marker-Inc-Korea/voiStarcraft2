@@ -34,6 +34,7 @@ from starcraft_commander.micromachine_build_identity import (
     MICROMACHINE_REQUIRED_NATIVE_TESTS,
     REPO_ROOT as BUILD_IDENTITY_REPO_ROOT,
     MicroMachineBuildIdentityConfig,
+    _resolve_ctest_executable,
     build_micromachine_build_identity,
     canonical_micromachine_ctest_registry,
     write_micromachine_build_attestation,
@@ -3455,6 +3456,45 @@ class StdlibGitHubRESTAdapterTest(unittest.TestCase):
 
 
 class BuildBindingTest(unittest.TestCase):
+    def test_ctest_cache_resolves_pip_wrapper_to_bundled_native_binary(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(
+            dir=BUILD_IDENTITY_REPO_ROOT,
+        ) as directory:
+            root = Path(directory)
+            build_dir = root / "build"
+            wrapper = root / "bin" / "ctest"
+            native = (
+                root
+                / "lib"
+                / "python3.10"
+                / "site-packages"
+                / "cmake"
+                / "data"
+                / "bin"
+                / "ctest"
+            )
+            build_dir.mkdir()
+            wrapper.parent.mkdir()
+            native.parent.mkdir(parents=True)
+            wrapper.write_text(
+                "#!/usr/bin/python3\n"
+                "from cmake import ctest\n",
+                encoding="utf-8",
+            )
+            native.write_bytes(b"native-ctest-fixture")
+            wrapper.chmod(0o755)
+            native.chmod(0o755)
+            (build_dir / "CMakeCache.txt").write_text(
+                f"CMAKE_CTEST_COMMAND:INTERNAL={wrapper}\n",
+                encoding="utf-8",
+            )
+
+            resolved = provenance_module._resolve_cmake_ctest_path(build_dir)
+
+        self.assertEqual(native, resolved)
+
     def test_cross_runner_artifact_handoff_requires_identical_candidate_layout(
         self,
     ) -> None:
@@ -5550,6 +5590,62 @@ class LocalProducerTest(unittest.TestCase):
                     "stage": "native_adapter",
                 },
                 json.loads(output.read_bytes()),
+            )
+
+    def test_web_gui_import_excludes_live_cockpit_modules(self) -> None:
+        repository = BUILD_IDENTITY_REPO_ROOT.resolve()
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = Path(directory) / "authenticated-snapshot"
+            for source in (repository / "starcraft_commander").rglob("*.py"):
+                destination = snapshot / source.relative_to(repository)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(source.read_bytes())
+            for relative in (
+                *provenance_module.DETERMINISTIC_JOURNEY_PACKAGE_SOURCES,
+                provenance_module.DETERMINISTIC_JOURNEY_MANIFEST_RELATIVE_PATH,
+            ):
+                destination = snapshot / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes((repository / relative).read_bytes())
+            probe = "\n".join(
+                (
+                    "import json",
+                    "import sys",
+                    f"sys.path.insert(0, {str(snapshot)!r})",
+                    "import starcraft_commander.web_gui as web_gui",
+                    "blocked = ('starcraft_commander.local_cockpit', "
+                    "'toycraft_commander')",
+                    "loaded = sorted(name for name in sys.modules "
+                    "if any(name == item or name.startswith(item + '.') "
+                    "for item in blocked))",
+                    "print(json.dumps({'loaded': loaded, "
+                    "'module_file': web_gui.__file__}))",
+                )
+            )
+
+            completed = subprocess.run(
+                (
+                    str(Path(sys.executable).resolve()),
+                    "-I",
+                    "-B",
+                    "-S",
+                    "-c",
+                    probe,
+                ),
+                cwd=snapshot,
+                check=False,
+                capture_output=True,
+                text=False,
+                shell=False,
+                env=dict(SANITIZED_PRODUCER_ENV),
+            )
+
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            result = json.loads(completed.stdout)
+            self.assertEqual([], result["loaded"])
+            self.assertEqual(
+                str(snapshot / "starcraft_commander" / "web_gui.py"),
+                result["module_file"],
             )
 
     def dedicated_producer_uid(self) -> tuple[int, int]:
@@ -10150,7 +10246,7 @@ def make_ctest_evidence(build_dir: Path) -> dict[str, object]:
     ctest_candidate = shutil.which("ctest")
     if ctest_candidate is None:
         raise AssertionError("ctest is required by the provenance fixture")
-    ctest_path = Path(ctest_candidate).resolve()
+    ctest_path = _resolve_ctest_executable(Path(ctest_candidate)).resolve()
     executable_names = dict(MICROMACHINE_REQUIRED_NATIVE_TESTS)
     test_executables = {
         name: {

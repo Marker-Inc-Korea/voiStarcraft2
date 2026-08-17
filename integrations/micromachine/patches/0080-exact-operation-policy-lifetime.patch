@@ -1,0 +1,659 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index cf975aa..4e159ec 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -7810,6 +7810,52 @@ bool CombatCommander::hasVoiOperationState(
+ 	return findVoiOperation(operationId, generation) != nullptr;
+ }
+ 
++bool CombatCommander::canContinueExpiredVoiOperationsForPolicy(
++	const std::string & policyUpdateId,
++	const std::vector<VoiOperationPolicyContinuationEntry> &
++		requestedOperations) const
++{
++	std::vector<VoiOperationPolicyContinuationEntry>
++		runtimeOperations;
++	for (const auto & operation : m_voiOperations)
++	{
++		const bool terminal =
++			operation.completed
++			|| voiOperationPolicyTerminalState(operation.status);
++		if (terminal
++			|| operation.policyUpdateId != policyUpdateId)
++		{
++			continue;
++		}
++		VoiOperationPolicyContinuationEntry runtime;
++		runtime.operationId = operation.operationId;
++		runtime.generation = operation.generation;
++		runtime.operationPolicyUpdateId =
++			operation.policyUpdateId;
++		runtime.lifetimeMode = operation.lifetimeMode;
++		runtime.durationSeconds = operation.durationSeconds;
++		runtime.allowPartial = operation.allowPartial;
++		runtime.active = isVoiOperationActive(
++			operation.operationId,
++			operation.generation);
++		for (const auto & requirement :
++			operation.compositionRequirements)
++		{
++			runtime.compositionRequirements.push_back(
++				{
++					requirement.unitType,
++					requirement.count,
++					requirement.role
++				});
++		}
++		runtimeOperations.push_back(runtime);
++	}
++	return voiRetainExpiredPolicyForOperations(
++		policyUpdateId,
++		requestedOperations,
++		runtimeOperations);
++}
++
+ bool CombatCommander::isVoiOperationActive(
+ 	const std::string & operationId,
+ 	uint64_t generation) const
+diff --git a/src/CombatCommander.h b/src/CombatCommander.h
+index 86c5970..235f547 100644
+--- a/src/CombatCommander.h
++++ b/src/CombatCommander.h
+@@ -807,6 +807,10 @@ public:
+ 	bool isVoiOperationActive(
+ 		const std::string & operationId,
+ 		uint64_t generation) const;
++	bool canContinueExpiredVoiOperationsForPolicy(
++		const std::string & policyUpdateId,
++		const std::vector<VoiOperationPolicyContinuationEntry> &
++			requestedOperations) const;
+ 	int getVoiOperationOwnedUnitCount(
+ 		const std::string & operationId,
+ 		uint64_t generation,
+diff --git a/src/GameCommander.cpp b/src/GameCommander.cpp
+index e1e649b..49061f9 100644
+--- a/src/GameCommander.cpp
++++ b/src/GameCommander.cpp
+@@ -197,10 +197,144 @@ void GameCommander::updateVoiPolicyBlackboard()
+ 			|| lifetimeMode == "standing_order");
+ 	const std::string updateId =
+ 		m_voiPolicyBlackboard.getString("update_id", "");
++	std::vector<VoiOperationPolicyContinuationEntry>
++		requestedOperations;
++	const int operationCount = std::min(
++		32,
++		std::max(
++			0,
++			m_voiPolicyBlackboard.getInt(
++				"operations.count",
++				0)));
++	for (int index = 0; index < operationCount; ++index)
++	{
++		const std::string prefix =
++			"operations." + std::to_string(index);
++		const std::string status =
++			m_voiPolicyBlackboard.getString(
++				prefix + ".status",
++				"");
++		const std::string operationCompletionState =
++			m_voiPolicyBlackboard.getString(
++				prefix + ".lifetime.completion_state",
++				"active");
++		const bool terminal =
++			m_voiPolicyBlackboard.getBool(
++				prefix + ".completed",
++				false)
++			|| m_voiPolicyBlackboard.getBool(
++				prefix + ".cancelled",
++				false)
++			|| status == "BLOCKED"
++			|| status == "blocked"
++			|| status == "COMPLETED"
++			|| status == "completed"
++			|| status == "CANCELLED"
++			|| status == "cancelled"
++			|| status == "EXPIRED"
++			|| status == "expired"
++			|| status == "FAILED"
++			|| status == "failed"
++			|| status == "SUPERSEDED"
++			|| status == "superseded"
++			|| operationCompletionState == "blocked"
++			|| operationCompletionState == "completed"
++			|| operationCompletionState == "cancelled"
++			|| operationCompletionState == "expired"
++			|| operationCompletionState == "failed"
++			|| operationCompletionState == "superseded";
++		if (terminal)
++		{
++			continue;
++		}
++		VoiOperationPolicyContinuationEntry request;
++		request.operationId =
++			m_voiPolicyBlackboard.getString(
++				prefix + ".operation_id",
++				"");
++		request.generation =
++			static_cast<uint64_t>(
++				std::max(
++					0,
++					m_voiPolicyBlackboard.getInt(
++						prefix + ".generation",
++						0)));
++		request.lifetimeMode =
++			m_voiPolicyBlackboard.getString(
++				prefix + ".lifetime.mode",
++				"");
++		request.durationSeconds = std::max(
++			0,
++			m_voiPolicyBlackboard.getInt(
++				prefix
++					+ ".tactical_task.duration_seconds",
++				m_voiPolicyBlackboard.getInt(
++					prefix + ".scope.duration_seconds",
++					0)));
++		request.allowPartial =
++			m_voiPolicyBlackboard.getBool(
++				prefix + ".scope.allow_partial_scope",
++				true)
++			&& m_voiPolicyBlackboard.getBool(
++				prefix + ".tactical_task.allow_partial",
++				true)
++			&& m_voiPolicyBlackboard.getBool(
++				prefix + ".allow_partial",
++				true);
++		request.active =
++			operationCompletionState.empty()
++			|| operationCompletionState == "active";
++		const std::string requirementCountValue =
++			m_voiPolicyBlackboard.getString(
++				prefix
++					+ ".composition_requirements.count",
++				"");
++		const int requirementCount =
++			requirementCountValue.empty()
++				? 0
++				: std::min(
++					32,
++					std::max(
++						0,
++						m_voiPolicyBlackboard.getInt(
++							prefix
++								+ ".composition_requirements.count",
++							0)));
++		for (int requirementIndex = 0;
++			requirementIndex < requirementCount;
++			++requirementIndex)
++		{
++			const std::string requirementPrefix =
++				prefix + ".composition_requirements."
++					+ std::to_string(requirementIndex);
++			request.compositionRequirements.push_back(
++				{
++					m_voiPolicyBlackboard.getString(
++						requirementPrefix + ".unit_type",
++						""),
++					std::max(
++						0,
++						m_voiPolicyBlackboard.getInt(
++							requirementPrefix + ".count",
++							0)),
++					m_voiPolicyBlackboard.getString(
++						requirementPrefix + ".role",
++						"")
++				});
++		}
++		requestedOperations.push_back(request);
++	}
++	const bool exactOperationLifetimeActive =
++		completionState == "active"
++		&& m_combatCommander
++			.canContinueExpiredVoiOperationsForPolicy(
++				updateId,
++				requestedOperations);
+ 	if (!m_voiPolicyBlackboard.isProtocolCompatible()
+ 		|| updateId.empty()
+ 		|| (m_voiPolicyBlackboard.isExpired(m_bot.GetGameLoop())
+-			&& !semanticLifetimeActive)) {
++			&& !semanticLifetimeActive
++			&& !exactOperationLifetimeActive)) {
+ 		return;
+     }
+ 
+diff --git a/src/voi_runtime_convergence.hpp b/src/voi_runtime_convergence.hpp
+index 5656659..d55f62b 100644
+--- a/src/voi_runtime_convergence.hpp
++++ b/src/voi_runtime_convergence.hpp
+@@ -108,6 +108,140 @@ inline bool voiOperationDeadlineExpired(
+ 		&& currentFrame > effectiveDeadline;
+ }
+ 
++inline bool voiOperationPolicyTerminalState(
++	const std::string & value)
++{
++	return value == "BLOCKED"
++		|| value == "blocked"
++		|| value == "COMPLETED"
++		|| value == "completed"
++		|| value == "CANCELLED"
++		|| value == "cancelled"
++		|| value == "EXPIRED"
++		|| value == "expired"
++		|| value == "FAILED"
++		|| value == "failed"
++		|| value == "SUPERSEDED"
++		|| value == "superseded";
++}
++
++struct VoiOperationPolicyCompositionRequirement
++{
++	std::string unitType;
++	int count = 0;
++	std::string role;
++};
++
++struct VoiOperationPolicyContinuationEntry
++{
++	std::string operationId;
++	std::uint64_t generation = 0;
++	std::string operationPolicyUpdateId;
++	std::string lifetimeMode;
++	int durationSeconds = 0;
++	bool allowPartial = true;
++	std::vector<VoiOperationPolicyCompositionRequirement>
++		compositionRequirements;
++	bool active = false;
++};
++
++inline bool voiOperationPolicyCompositionMatches(
++	std::vector<VoiOperationPolicyCompositionRequirement> left,
++	std::vector<VoiOperationPolicyCompositionRequirement> right)
++{
++	const auto less =
++		[](const VoiOperationPolicyCompositionRequirement & lhs,
++			const VoiOperationPolicyCompositionRequirement & rhs)
++		{
++			if (lhs.unitType != rhs.unitType)
++			{
++				return lhs.unitType < rhs.unitType;
++			}
++			if (lhs.role != rhs.role)
++			{
++				return lhs.role < rhs.role;
++			}
++			return lhs.count < rhs.count;
++		};
++	std::sort(left.begin(), left.end(), less);
++	std::sort(right.begin(), right.end(), less);
++	if (left.size() != right.size())
++	{
++		return false;
++	}
++	for (std::size_t index = 0; index < left.size(); ++index)
++	{
++		if (left[index].unitType != right[index].unitType
++			|| left[index].count != right[index].count
++			|| left[index].role != right[index].role)
++		{
++			return false;
++		}
++	}
++	return true;
++}
++
++inline bool voiRetainExpiredPolicyForOperations(
++	const std::string & requestedPolicyUpdateId,
++	const std::vector<VoiOperationPolicyContinuationEntry> & requested,
++	const std::vector<VoiOperationPolicyContinuationEntry> & runtime)
++{
++	if (requestedPolicyUpdateId.empty()
++		|| requested.empty()
++		|| requested.size() != runtime.size())
++	{
++		return false;
++	}
++	std::set<std::pair<std::string, std::uint64_t>> requestedKeys;
++	for (const auto & request : requested)
++	{
++		if (request.operationId.empty()
++			|| request.generation == 0
++			|| request.lifetimeMode != "until_completed"
++			|| request.durationSeconds <= 0
++			|| request.allowPartial
++			|| request.compositionRequirements.empty()
++			|| !request.active
++			|| !requestedKeys.insert({
++					request.operationId,
++					request.generation
++				}).second)
++		{
++			return false;
++		}
++		int matchCount = 0;
++		for (const auto & candidate : runtime)
++		{
++			if (candidate.operationId != request.operationId
++				|| candidate.generation != request.generation)
++			{
++				continue;
++			}
++			++matchCount;
++			if (candidate.operationPolicyUpdateId
++					!= requestedPolicyUpdateId
++				|| candidate.lifetimeMode
++					!= request.lifetimeMode
++				|| candidate.durationSeconds
++					!= request.durationSeconds
++				|| candidate.allowPartial
++					!= request.allowPartial
++				|| !candidate.active
++				|| !voiOperationPolicyCompositionMatches(
++					candidate.compositionRequirements,
++					request.compositionRequirements))
++			{
++				return false;
++			}
++		}
++		if (matchCount != 1)
++		{
++			return false;
++		}
++	}
++	return true;
++}
++
+ inline VoiRuntimeProductionAllocation
+ voiAllocateOperationProductionProgress(
+ 	int targetCount,
+diff --git a/tests/runtime_convergence_test.cpp b/tests/runtime_convergence_test.cpp
+index b78b1a3..d7da56b 100644
+--- a/tests/runtime_convergence_test.cpp
++++ b/tests/runtime_convergence_test.cpp
+@@ -28,6 +28,88 @@ int main()
+ 		15601,
+ 		0,
+ 		exactUntilCompleted));
++	VoiOperationPolicyContinuationEntry exactPolicyRequest;
++	exactPolicyRequest.operationId = "attack-main";
++	exactPolicyRequest.generation = 1;
++	exactPolicyRequest.lifetimeMode = "until_completed";
++	exactPolicyRequest.durationSeconds = 300;
++	exactPolicyRequest.allowPartial = false;
++	exactPolicyRequest.compositionRequirements = {
++		{ "TERRAN_MARINE", 6, "frontline" },
++		{ "TERRAN_SIEGETANK", 2, "siege" },
++		{ "TERRAN_VIKINGFIGHTER", 2, "air_support" }
++	};
++	exactPolicyRequest.active = true;
++	VoiOperationPolicyContinuationEntry exactPolicyRuntime =
++		exactPolicyRequest;
++	exactPolicyRuntime.operationPolicyUpdateId = "update-1";
++	assert(voiOperationPolicyTerminalState("BLOCKED"));
++	assert(voiOperationPolicyTerminalState("blocked"));
++	assert(!voiOperationPolicyTerminalState("active"));
++	exactPolicyRequest.allowPartial = true;
++	assert(!voiRetainExpiredPolicyForOperations(
++		"update-1",
++		{ exactPolicyRequest },
++		{ exactPolicyRuntime }));
++	exactPolicyRequest.allowPartial = false;
++	assert(voiRetainExpiredPolicyForOperations(
++		"update-1",
++		{ exactPolicyRequest },
++		{ exactPolicyRuntime }));
++	exactPolicyRuntime.active = false;
++	assert(!voiRetainExpiredPolicyForOperations(
++		"update-1",
++		{ exactPolicyRequest },
++		{ exactPolicyRuntime }));
++	exactPolicyRuntime.active = true;
++	exactPolicyRuntime.generation = 2;
++	assert(!voiRetainExpiredPolicyForOperations(
++		"update-1",
++		{ exactPolicyRequest },
++		{ exactPolicyRuntime }));
++	exactPolicyRuntime.generation = 1;
++	exactPolicyRuntime.operationPolicyUpdateId = "update-2";
++	assert(!voiRetainExpiredPolicyForOperations(
++		"update-1",
++		{ exactPolicyRequest },
++		{ exactPolicyRuntime }));
++	exactPolicyRuntime.operationPolicyUpdateId = "update-1";
++	exactPolicyRuntime.durationSeconds = 299;
++	assert(!voiRetainExpiredPolicyForOperations(
++		"update-1",
++		{ exactPolicyRequest },
++		{ exactPolicyRuntime }));
++	exactPolicyRuntime.durationSeconds = 300;
++	exactPolicyRuntime.compositionRequirements[0].count = 5;
++	assert(!voiRetainExpiredPolicyForOperations(
++		"update-1",
++		{ exactPolicyRequest },
++		{ exactPolicyRuntime }));
++	exactPolicyRuntime.compositionRequirements[0].count = 6;
++	exactPolicyRequest.durationSeconds = 0;
++	assert(!voiRetainExpiredPolicyForOperations(
++		"update-1",
++		{ exactPolicyRequest },
++		{ exactPolicyRuntime }));
++	exactPolicyRequest.durationSeconds = 300;
++	exactPolicyRequest.compositionRequirements.clear();
++	assert(!voiRetainExpiredPolicyForOperations(
++		"update-1",
++		{ exactPolicyRequest },
++		{ exactPolicyRuntime }));
++	exactPolicyRequest.compositionRequirements =
++		exactPolicyRuntime.compositionRequirements;
++	assert(!voiRetainExpiredPolicyForOperations(
++		"update-1",
++		{ exactPolicyRequest, exactPolicyRequest },
++		{ exactPolicyRuntime, exactPolicyRuntime }));
++	VoiOperationPolicyContinuationEntry siblingRequest =
++		exactPolicyRequest;
++	siblingRequest.operationId = "attack-natural";
++	assert(!voiRetainExpiredPolicyForOperations(
++		"update-1",
++		{ exactPolicyRequest, siblingRequest },
++		{ exactPolicyRuntime }));
+ 	assert(
+ 		voiLatchOperationDeadlineFrame(
+ 			15500,
+diff --git a/src/BuildOrderQueue.cpp b/src/BuildOrderQueue.cpp
+--- a/src/BuildOrderQueue.cpp
++++ b/src/BuildOrderQueue.cpp
+@@ -647,7 +647,8 @@ void BuildOrderQueue::reconcileTypeVoiClaims(
+ 
+ void BuildOrderQueue::promoteTypeToHighestPriority(
+ 	const MetaType & type,
+-	bool blocking)
++	bool blocking,
++	float minimumTaskPriority)
+ {
+ 	auto promoted = m_queue.end();
+ 	for (auto item = m_queue.begin(); item != m_queue.end(); ++item)
+@@ -701,6 +702,9 @@ void BuildOrderQueue::promoteTypeToHighestPriority(
+ 	if (promotePreserved)
+ 	{
+ 		promoted->voiPreservedPriority = promotedPriority;
++		promoted->voiPreservedTaskPriority = std::max(
++			promoted->voiPreservedTaskPriority,
++			minimumTaskPriority);
+ 		promoted->voiPreservedBlocking =
+ 			promoted->voiPreservedBlocking || blocking;
+ 	}
+@@ -708,6 +712,9 @@ void BuildOrderQueue::promoteTypeToHighestPriority(
+ 		!= promoted->voiOperationOwnerMetadata.end())
+ 	{
+ 		promotedOwner->second.priority = promotedPriority;
++		promotedOwner->second.taskPriority = std::max(
++			promotedOwner->second.taskPriority,
++			minimumTaskPriority);
+ 		promotedOwner->second.blocking =
+ 			promotedOwner->second.blocking || blocking;
+ 	}
+diff --git a/src/BuildOrderQueue.h b/src/BuildOrderQueue.h
+--- a/src/BuildOrderQueue.h
++++ b/src/BuildOrderQueue.h
+@@ -128,7 +128,10 @@ public:
+ 	void reconcileTypeVoiClaims(
+ 		const MetaType & type,
+ 		const std::vector<MM::VoiBuildOrderClaim> & claims);
+-	void promoteTypeToHighestPriority(const MetaType & type, bool blocking);
++	void promoteTypeToHighestPriority(
++		const MetaType & type,
++		bool blocking,
++		float minimumTaskPriority = 0.0f);
+ 	void resizeTypePreservingVoiClaims(
+ 		const MetaType & type,
+ 		int count,
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+index 517d173..cbe6cad 100644
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -3,6 +3,7 @@
+ #include "ProductionManager.h"
+ #include "Util.h"
+ #include "CCBot.h"
++#include "voi_production_path.hpp"
+ #include "voi_runtime_convergence.hpp"
+ 
+ const int MIN_VIKING_COUNT = 2;
+@@ -3129,9 +3130,10 @@ bool ProductionManager::ShouldSkipQueueItem(const MM::BuildOrderItem & currentI
+ 	{
+ 		if (m_queue.contains(MetaTypeEnum::Refinery))
+ 		{
+ 			m_queue.promoteTypeToHighestPriority(
+ 				MetaTypeEnum::Refinery,
+-				true);
++				true,
++				voiProductionBlockingPrerequisiteTaskPriority());
+ 		}
+ 		Util::Log(
+ 			__FUNCTION__,
+@@ -5501,6 +5503,10 @@ bool ProductionManager::queueSupplyProviderRecovery(const std::string & reason)
+ 		m_queue.removeAllOfType(supplyProviderType);
+ 	}
+ 	m_queue.queueAsHighestPriority(supplyProviderType, false);
++	m_queue.promoteTypeToHighestPriority(
++		supplyProviderType,
++		true,
++		voiProductionBlockingPrerequisiteTaskPriority());
+ 	m_voiSupplyRecoveryQueuedCount++;
+ 	m_lastVoiSupplyRecoveryStatus = hadExistingQueueItem ? "promoted_existing_queue" : "queued";
+ 	recordVoiDoctrineConsumption(supplyProviderType, "supply_recovery", hadExistingQueueItem ? "queued_existing" : "queued");
+@@ -6540,12 +6541,34 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+-	if (((wantsBioDoctrine
++	const bool barracksDoctrineRequested =
++		(wantsBioDoctrine
+ 			&& !explicitAbilityCasterPending
+ 			&& barracksCount < 2
+ 			&& effectiveBarracksBias > 0.35f
+ 			&& (!m_voiRequiresTechGasBeforeSecondBarracks
+ 				|| refineryCount > 0))
+-			|| needsTechBootstrapBarracks)
+-		&& queueVoiDoctrineItem(MetaTypeEnum::Barracks, needsTechBootstrapBarracks ? "tech_bootstrap_barracks" : "bio_facility", needsTechBootstrapBarracks))
++		|| needsTechBootstrapBarracks;
++	if (voiProductionShouldPromoteSupplyBeforeFirstBarracks(
++			barracksDoctrineRequested,
++			m_queue.contains(supplyProviderType),
++			m_bot.UnitInfo().getUnitTypeCount(
++				Players::Self,
++				supplyProvider,
++				true,
++				true),
++			m_bot.Buildings().countBeingBuilt(supplyProvider)))
++	{
++		m_queue.promoteTypeToHighestPriority(
++			supplyProviderType,
++			true,
++			voiProductionBlockingPrerequisiteTaskPriority());
++		recordVoiDoctrineConsumption(
++			supplyProviderType,
++			"barracks_prerequisite_supply",
++			"queued_existing_promoted");
++		return;
++	}
++	if (barracksDoctrineRequested
++		&& queueVoiDoctrineItem(MetaTypeEnum::Barracks, needsTechBootstrapBarracks ? "tech_bootstrap_barracks" : "bio_facility", needsTechBootstrapBarracks))
+ 	{
+ 		return;
+ 	}
+ 	const int marineScoutBootstrapTarget = std::min(2, requestedMarineCount);
+@@ -6564,9 +6588,10 @@ void ProductionManager::applyVoiDoctrineProductionBias()
+ 	{
+ 		if (m_queue.contains(MetaTypeEnum::Refinery))
+ 		{
+ 			m_queue.promoteTypeToHighestPriority(
+ 				MetaTypeEnum::Refinery,
+-				true);
++				true,
++				voiProductionBlockingPrerequisiteTaskPriority());
+ 			recordVoiDoctrineConsumption(
+ 				MetaTypeEnum::Refinery,
+ 				"tech_bootstrap_refinery",
+diff --git a/src/voi_production_path.hpp b/src/voi_production_path.hpp
+index 5c7f8f2..da187fc 100644
+--- a/src/voi_production_path.hpp
++++ b/src/voi_production_path.hpp
+@@ -11,5 +11,22 @@ using VoiProductionOperationOwners =
+ 	std::map<std::uint64_t, std::pair<std::string, std::uint64_t>>;
+ 
++inline float voiProductionBlockingPrerequisiteTaskPriority()
++{
++	return 1.0f;
++}
++
++inline bool voiProductionShouldPromoteSupplyBeforeFirstBarracks(
++	bool barracksRequested,
++	bool supplyProviderQueued,
++	int completedSupplyProviderCount,
++	int supplyProviderBuildingCount)
++{
++	return barracksRequested
++		&& supplyProviderQueued
++		&& completedSupplyProviderCount <= 0
++		&& supplyProviderBuildingCount <= 0;
++}
++
+ struct VoiProductionOwnershipReceipt
+ {
+ 	bool accepted = false;
+diff --git a/tests/production_path_test.cpp b/tests/production_path_test.cpp
+index 837f9cf..2ca5895 100644
+--- a/tests/production_path_test.cpp
++++ b/tests/production_path_test.cpp
+@@ -18,6 +18,34 @@ int failures = 0;
+ 
+ int main()
+ {
++	CHECK(
++		voiProductionBlockingPrerequisiteTaskPriority() == 1.0f);
++	CHECK(voiProductionShouldPromoteSupplyBeforeFirstBarracks(
++		true,
++		true,
++		0,
++		0));
++	CHECK(!voiProductionShouldPromoteSupplyBeforeFirstBarracks(
++		false,
++		true,
++		0,
++		0));
++	CHECK(!voiProductionShouldPromoteSupplyBeforeFirstBarracks(
++		true,
++		false,
++		0,
++		0));
++	CHECK(!voiProductionShouldPromoteSupplyBeforeFirstBarracks(
++		true,
++		true,
++		1,
++		0));
++	CHECK(!voiProductionShouldPromoteSupplyBeforeFirstBarracks(
++		true,
++		true,
++		0,
++		1));
++
+ 	const VoiProductionOperationIdentity identity = {
+ 		"update-17",
+ 		"operation-alpha",

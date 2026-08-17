@@ -110,6 +110,7 @@ __all__ = [
     "DEFAULT_LLM_PROVIDER",
     "DEFAULT_OPENAI_MODEL",
     "DEFAULT_LLM_TIMEOUT_SECONDS",
+    "LLM_TIMEOUT_SECONDS_ENV_VAR",
     "HybridCommandInterpreter",
     "LocalLLMControl",
     "LLMCommandInterpreter",
@@ -230,6 +231,10 @@ DEFAULT_LLM_MAX_TOKENS: Final[int] = 1024
 
 DEFAULT_LLM_TIMEOUT_SECONDS: Final[float] = 12.0
 """Per-call timeout for one compact live command within the 30s publish budget."""
+MAX_LLM_TIMEOUT_SECONDS: Final[float] = 25.0
+"""Largest allowed provider timeout within the synchronous publish budget."""
+LLM_TIMEOUT_SECONDS_ENV_VAR: Final[str] = "VOI_LLM_TIMEOUT_SECONDS"
+"""Optional process-local override for one provider call."""
 
 LLM_INTENT_TOOL_NAME: Final[str] = "submit_commander_intent"
 """Name of the single forced tool the model must answer with."""
@@ -986,7 +991,9 @@ def build_compact_policy_modulation_system_prompt() -> str:
         "layers. A new command only supersedes its own layer; only an unscoped "
         "emergency interrupts all layers.\n"
         "8. Set standing_order=true for '계속', '게임 내내', '끝까지', or "
-        "until-cancelled intent. Otherwise Python selects a bounded lifecycle.\n"
+        "until-cancelled intent. Explicit completion intent such as "
+        "'완료될 때까지' or 'until completed' is bounded, not standing. "
+        "Otherwise Python selects a bounded lifecycle.\n"
         "9. assistant_message must be a natural answer in "
         "commander_context.response_language and must describe the interpreted "
         "action without claiming success before runtime confirmation.\n"
@@ -2850,6 +2857,7 @@ class LocalLLMControl:
         provider: str = DEFAULT_LLM_PROVIDER,
         model: str | None = None,
         reasoning_effort: str = "",
+        timeout_seconds: float | None = None,
     ) -> None:
         self._lock = threading.Lock()
         self._provider = _normalize_provider(provider)
@@ -2860,6 +2868,7 @@ class LocalLLMControl:
             reasoning_effort,
             provider=self._provider,
         )
+        self._timeout_seconds = _resolve_llm_timeout_seconds(timeout_seconds)
         self._api_key = ""
         self._context_provider: Callable[[], object] | None = None
         self._briefing_cache_key = ""
@@ -2899,12 +2908,14 @@ class LocalLLMControl:
                 provider,
                 model,
             )
+        available = configured and _is_provider_available(provider)
         return {
             "provider": provider,
             "model": model,
             "reasoning_effort": reasoning_effort,
             "configured": configured,
             "key_present": key_present,
+            "available": available,
         }
 
     def is_available(self) -> bool:
@@ -2984,6 +2995,7 @@ class LocalLLMControl:
             model=model,
             api_key=api_key or None,
             reasoning_effort=reasoning_effort,
+            timeout_seconds=self._timeout_seconds,
             context_provider=context_provider,
         )
 
@@ -5623,6 +5635,24 @@ def _compact_priority(intensity: str) -> float:
 def _compact_text_requests_standing_order(command_text: str) -> bool:
     normalized = " ".join(str(command_text or "").lower().split())
     compact = "".join(normalized.split())
+    if any(
+        marker in normalized or marker in compact
+        for marker in (
+            "완료될 때까지",
+            "완료될때까지",
+            "완료할 때까지",
+            "완료할때까지",
+            "목표 달성까지",
+            "목표달성까지",
+            "목표에 도달할 때까지",
+            "목표에도달할때까지",
+            "until complete",
+            "until completed",
+            "until the operation completes",
+            "until the mission completes",
+        )
+    ):
+        return False
     return any(
         marker in normalized or marker in compact
         for marker in (
@@ -7038,6 +7068,22 @@ def _normalize_reasoning_effort(value: object, *, provider: str) -> str:
     if normalized and normalized not in SUPPORTED_LLM_REASONING_EFFORTS:
         raise ValueError("reasoning_effort must be low, medium, high, xhigh, or empty.")
     return normalized
+
+
+def _resolve_llm_timeout_seconds(explicit: float | None = None) -> float:
+    value: object = explicit
+    if value is None:
+        configured = os.environ.get(LLM_TIMEOUT_SECONDS_ENV_VAR, "").strip()
+        value = configured if configured else DEFAULT_LLM_TIMEOUT_SECONDS
+    if isinstance(value, bool):
+        return DEFAULT_LLM_TIMEOUT_SECONDS
+    try:
+        resolved = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_LLM_TIMEOUT_SECONDS
+    if not 0 < resolved <= MAX_LLM_TIMEOUT_SECONDS:
+        return DEFAULT_LLM_TIMEOUT_SECONDS
+    return resolved
 
 
 def _openai_compatible_token_args(provider: str, max_tokens: int) -> dict[str, int]:

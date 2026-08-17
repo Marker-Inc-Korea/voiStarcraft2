@@ -32,6 +32,8 @@ discover_sc2_root() {
 }
 
 SC2_ROOT="$(discover_sc2_root)"
+SC2_REQUIRED_BASE="${SC2_REQUIRED_BASE:-97364}"
+SC2_ALLOW_LATEST_BASE_DIAGNOSTIC="${SC2_ALLOW_LATEST_BASE_DIAGNOSTIC:-0}"
 SC2_LAUNCH_MODE="${SC2_LAUNCH_MODE:-auto}"
 SC2_BATTLENET_EXECUTABLE="${SC2_BATTLENET_EXECUTABLE:-/Applications/Battle.net.app/Contents/MacOS/Battle.net}"
 SC2_BATTLENET_GAME="${SC2_BATTLENET_GAME:-s2_kokr}"
@@ -49,42 +51,39 @@ if [[ -z "${SC2_CLEAN_PORTS_BEFORE_LAUNCH+x}" ]]; then
 fi
 
 resolve_latest_direct_sc2_executable() {
-  local pinned="${SC2_ROOT}/Versions/Base96883/SC2.app/Contents/MacOS/SC2"
+  local required_base="${SC2_REQUIRED_BASE:-97364}"
+  local allow_latest_diagnostic="${SC2_ALLOW_LATEST_BASE_DIAGNOSTIC:-0}"
+  local pinned="${SC2_ROOT}/Versions/Base${required_base}/SC2.app/Contents/MacOS/SC2"
   if [[ -x "${pinned}" ]]; then
+    printf '%s\n' "${pinned}"
+    return
+  fi
+
+  if [[ "${allow_latest_diagnostic}" != "1" ]]; then
     printf '%s\n' "${pinned}"
     return
   fi
 
   local versions_dir="${SC2_ROOT}/Versions"
   if [[ -d "${versions_dir}" ]]; then
-    local latest
-    latest="$(
-      find "${versions_dir}" -path '*/SC2.app/Contents/MacOS/SC2' -type f 2>/dev/null |
-        awk -F/ '
-          {
-            for (part = 1; part <= NF - 4; ++part) {
-              if ($part ~ /^Base[0-9]+$/ &&
-                  $(part + 1) == "SC2.app" &&
-                  $(part + 2) == "Contents" &&
-                  $(part + 3) == "MacOS" &&
-                  $(part + 4) == "SC2") {
-                version = substr($part, 5) + 0
-                if (!found || version > maximum) {
-                  found = 1
-                  maximum = version
-                  selected = $0
-                }
-              }
-            }
-          }
-          END {
-            if (found) {
-              print selected
-            }
-          }
-        '
-    )"
-    if [[ -n "${latest}" && -x "${latest}" ]]; then
+    local candidate
+    local base_dir
+    local base_name
+    local version
+    local latest=""
+    local latest_version=-1
+    for candidate in "${versions_dir}"/Base*/SC2.app/Contents/MacOS/SC2; do
+      [[ -x "${candidate}" ]] || continue
+      base_dir="${candidate%/SC2.app/Contents/MacOS/SC2}"
+      base_name="${base_dir##*/}"
+      [[ "${base_name}" =~ ^Base([0-9]+)$ ]] || continue
+      version="${BASH_REMATCH[1]}"
+      if (( 10#${version} > latest_version )); then
+        latest="${candidate}"
+        latest_version=$((10#${version}))
+      fi
+    done
+    if [[ -n "${latest}" ]]; then
       printf '%s\n' "${latest}"
       return
     fi
@@ -102,12 +101,7 @@ resolve_sc2_executable() {
       printf '%s\n' "${SC2_BATTLENET_EXECUTABLE}"
       ;;
     auto)
-      local pinned="${SC2_ROOT}/Versions/Base96883/SC2.app/Contents/MacOS/SC2"
-      if [[ -x "${pinned}" ]]; then
-        printf '%s\n' "${pinned}"
-      else
-        resolve_latest_direct_sc2_executable
-      fi
+      resolve_latest_direct_sc2_executable
       ;;
     *)
       echo "MicroMachine soak rejected: SC2_LAUNCH_MODE must be auto, direct, or battlenet." >&2

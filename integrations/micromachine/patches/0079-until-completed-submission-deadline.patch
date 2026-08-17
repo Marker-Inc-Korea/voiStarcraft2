@@ -1,0 +1,313 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+index 28aacd7..cf975aa 100644
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -3838,6 +3838,18 @@ void CombatCommander::recordVoiOperationSubmission(
+ 	{
+ 		operation->submittedFrame = frame;
+ 		operation->submissionObserved = true;
++		operation->deadlineFrame =
++			voiLatchOperationDeadlineFrame(
++				operation->deadlineFrame,
++				{
++					operation->lifetimeMode,
++					operation->issuedAtFrame,
++					operation->submittedFrame,
++					operation->durationSeconds,
++					operation->standing,
++					!operation->allowPartial
++						&& !operation->compositionRequirements.empty()
++				});
+ 	}
+ 	if (operation->submittedPositions.find(unit->tag)
+ 		== operation->submittedPositions.end())
+@@ -3920,10 +3932,18 @@ void CombatCommander::observeVoiOperations()
+ 	for (auto & operation : m_voiOperations)
+ 	{
+ 		if (!operation.completed
+-			&& !operation.standing
+-			&& operation.deadlineFrame > 0
+-			&& static_cast<uint64_t>(currentFrame)
+-				> operation.deadlineFrame)
++			&& voiOperationDeadlineExpired(
++				static_cast<uint64_t>(currentFrame),
++				operation.deadlineFrame,
++				{
++					operation.lifetimeMode,
++					operation.issuedAtFrame,
++					operation.submittedFrame,
++					operation.durationSeconds,
++					operation.standing,
++					!operation.allowPartial
++						&& !operation.compositionRequirements.empty()
++				}))
+ 		{
+ 			releaseVoiOperation(
+ 				operation,
+@@ -5220,28 +5240,10 @@ void CombatCommander::updateVoiOperations()
+ 		requested.standing =
+ 			requested.lifetimeMode == "standing_order"
+ 			|| requested.lifetimeMode == "until_cancelled";
+-		if (!requested.standing
+-			&& requested.durationSeconds > 0)
+-		{
+-			if (!missingIssuedAtFrame)
+-			{
+-				requested.deadlineFrame =
+-					requested.issuedAtFrame
+-					+ static_cast<uint64_t>(
+-						requested.durationSeconds) * 22u;
+-			}
+-		}
+ 		const bool futureIssuedAtFrame =
+ 			!missingIssuedAtFrame
+ 			&& requested.issuedAtFrame
+ 				> currentOperationFrame;
+-		const bool expiredAtAdmission =
+-			!missingIssuedAtFrame
+-			&& !requested.standing
+-			&& requested.durationSeconds > 0
+-			&& requested.deadlineFrame > 0
+-			&& currentOperationFrame
+-				> requested.deadlineFrame;
+ 
+ 		const std::string requirementCountValue =
+ 			m_bot.Commander().getVoiPolicyString(
+@@ -5289,6 +5291,33 @@ void CombatCommander::updateVoiOperations()
+ 				requestedCompositionUnits += count;
+ 			}
+ 		}
++		requested.deadlineFrame =
++			missingIssuedAtFrame
++				? 0
++				: voiOperationDeadlineFrame(
++					{
++						requested.lifetimeMode,
++						requested.issuedAtFrame,
++						requested.submittedFrame,
++						requested.durationSeconds,
++						requested.standing,
++						!requested.allowPartial
++							&& !requested.compositionRequirements.empty()
++					});
++		const bool expiredAtAdmission =
++			!missingIssuedAtFrame
++			&& voiOperationDeadlineExpired(
++				currentOperationFrame,
++				requested.deadlineFrame,
++				{
++					requested.lifetimeMode,
++					requested.issuedAtFrame,
++					requested.submittedFrame,
++					requested.durationSeconds,
++					requested.standing,
++					!requested.allowPartial
++						&& !requested.compositionRequirements.empty()
++				});
+ 		const int unitRoleCount = std::min(
+ 			32,
+ 			std::max(
+@@ -6369,6 +6398,8 @@ void CombatCommander::updateVoiOperations()
+ 					requested.routeStageComplete;
+ 				existing.submissionObserved = false;
+ 				existing.submittedFrame = 0;
++				existing.deadlineFrame =
++					requested.deadlineFrame;
+ 				existing.submittedPositions.clear();
+ 				existing.familyEvidenceByKey.clear();
+ 			}
+@@ -6491,6 +6522,10 @@ void CombatCommander::updateVoiOperations()
+ 				existing.assignedFrame;
+ 			replacement.submittedFrame =
+ 				targetChanged ? 0 : existing.submittedFrame;
++			replacement.deadlineFrame =
++				targetChanged
++					? requested.deadlineFrame
++					: existing.deadlineFrame;
+ 			replacement.lastActionFrame =
+ 				existing.lastActionFrame;
+ 			replacement.maxHomeDistance =
+@@ -7690,16 +7725,6 @@ void CombatCommander::synchronizeVoiOperationLifecycleForProduction()
+ 						prefix
+ 							+ ".scope.duration_seconds",
+ 						0)));
+-			const uint64_t deadlineFrame =
+-				issuedAtFrame >= 0
+-					&& !standing
+-					&& durationSeconds > 0
+-				? static_cast<uint64_t>(
+-						issuedAtFrame)
+-					+ static_cast<uint64_t>(
+-						durationSeconds) * 22u
+-				: 0;
+-
+ 			if (issuedAtFrame < 0)
+ 			{
+ 				retained = false;
+@@ -7713,8 +7738,18 @@ void CombatCommander::synchronizeVoiOperationLifecycleForProduction()
+ 				reason =
+ 					"future_operation_issued_at_frame";
+ 			}
+-			else if (deadlineFrame > 0
+-				&& currentFrame > deadlineFrame)
++			else if (voiOperationDeadlineExpired(
++				currentFrame,
++				operation.deadlineFrame,
++				{
++					lifetimeMode,
++					static_cast<uint64_t>(issuedAtFrame),
++					operation.submittedFrame,
++					durationSeconds,
++					standing,
++					!operation.allowPartial
++						&& !operation.compositionRequirements.empty()
++				}))
+ 			{
+ 				terminal = true;
+ 				reason =
+@@ -7802,9 +7837,18 @@ bool CombatCommander::isVoiOperationActive(
+ 	{
+ 		return true;
+ 	}
+-	return operation->deadlineFrame > 0
+-		&& static_cast<uint64_t>(m_bot.GetCurrentFrame())
+-			<= operation->deadlineFrame;
++	return !voiOperationDeadlineExpired(
++		static_cast<uint64_t>(m_bot.GetCurrentFrame()),
++		operation->deadlineFrame,
++		{
++			operation->lifetimeMode,
++			operation->issuedAtFrame,
++			operation->submittedFrame,
++			operation->durationSeconds,
++			operation->standing,
++			!operation->allowPartial
++				&& !operation->compositionRequirements.empty()
++		});
+ }
+ 
+ int CombatCommander::getVoiOperationOwnedUnitCount(
+diff --git a/src/voi_runtime_convergence.hpp b/src/voi_runtime_convergence.hpp
+index 53dcf72..5656659 100644
+--- a/src/voi_runtime_convergence.hpp
++++ b/src/voi_runtime_convergence.hpp
+@@ -53,6 +53,61 @@ struct VoiRuntimeProductionAllocation
+ 	int representedCount = 0;
+ };
+ 
++struct VoiOperationDeadlineInput
++{
++	std::string lifetimeMode;
++	std::uint64_t issuedAtFrame = 0;
++	std::uint64_t submittedFrame = 0;
++	int durationSeconds = 0;
++	bool standing = false;
++	bool exactComposition = false;
++};
++
++inline std::uint64_t voiOperationDeadlineFrame(
++	const VoiOperationDeadlineInput & input)
++{
++	if (input.standing || input.durationSeconds <= 0)
++	{
++		return 0;
++	}
++	const bool startsAtSubmission =
++		input.lifetimeMode == "until_completed"
++		&& input.exactComposition;
++	if (startsAtSubmission && input.submittedFrame == 0)
++	{
++		return 0;
++	}
++	const std::uint64_t startFrame =
++		startsAtSubmission
++			? input.submittedFrame
++			: input.issuedAtFrame;
++	return startFrame
++		+ static_cast<std::uint64_t>(
++			input.durationSeconds) * 22u;
++}
++
++inline std::uint64_t voiLatchOperationDeadlineFrame(
++	std::uint64_t currentDeadlineFrame,
++	const VoiOperationDeadlineInput & input)
++{
++	return currentDeadlineFrame > 0
++		? currentDeadlineFrame
++		: voiOperationDeadlineFrame(input);
++}
++
++inline bool voiOperationDeadlineExpired(
++	std::uint64_t currentFrame,
++	std::uint64_t deadlineFrame,
++	const VoiOperationDeadlineInput & input)
++{
++	const std::uint64_t effectiveDeadline =
++		voiLatchOperationDeadlineFrame(
++			deadlineFrame,
++			input);
++	return effectiveDeadline > 0
++		&& currentFrame > effectiveDeadline;
++}
++
+ inline VoiRuntimeProductionAllocation
+ voiAllocateOperationProductionProgress(
+ 	int targetCount,
+diff --git a/tests/runtime_convergence_test.cpp b/tests/runtime_convergence_test.cpp
+index a593e8f..b78b1a3 100644
+--- a/tests/runtime_convergence_test.cpp
++++ b/tests/runtime_convergence_test.cpp
+@@ -7,6 +7,53 @@
+ 
+ int main()
+ {
++	VoiOperationDeadlineInput exactUntilCompleted;
++	exactUntilCompleted.lifetimeMode = "until_completed";
++	exactUntilCompleted.issuedAtFrame = 2508;
++	exactUntilCompleted.durationSeconds = 300;
++	exactUntilCompleted.exactComposition = true;
++	assert(voiOperationDeadlineFrame(exactUntilCompleted) == 0);
++	assert(!voiOperationDeadlineExpired(
++		50000,
++		0,
++		exactUntilCompleted));
++
++	exactUntilCompleted.submittedFrame = 9000;
++	assert(voiOperationDeadlineFrame(exactUntilCompleted) == 15600);
++	assert(!voiOperationDeadlineExpired(
++		15600,
++		0,
++		exactUntilCompleted));
++	assert(voiOperationDeadlineExpired(
++		15601,
++		0,
++		exactUntilCompleted));
++	assert(
++		voiLatchOperationDeadlineFrame(
++			15500,
++			exactUntilCompleted) == 15500);
++
++	VoiOperationDeadlineInput ordinaryUntilCompleted =
++		exactUntilCompleted;
++	ordinaryUntilCompleted.exactComposition = false;
++	ordinaryUntilCompleted.submittedFrame = 12000;
++	assert(
++		voiOperationDeadlineFrame(
++			ordinaryUntilCompleted) == 9108);
++	assert(!voiOperationDeadlineExpired(
++		9108,
++		0,
++		ordinaryUntilCompleted));
++	assert(voiOperationDeadlineExpired(
++		9109,
++		0,
++		ordinaryUntilCompleted));
++
++	VoiOperationDeadlineInput standing = exactUntilCompleted;
++	standing.standing = true;
++	assert(voiOperationDeadlineFrame(standing) == 0);
++	assert(!voiOperationDeadlineExpired(999999, 0, standing));
++
+ 	VoiRuntimeRequirementSnapshot tank;
+ 	tank.unitType = "TERRAN_SIEGETANK";
+ 	tank.role = "siege";
