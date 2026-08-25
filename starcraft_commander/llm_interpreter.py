@@ -137,6 +137,7 @@ __all__ = [
     "build_policy_modulation_tool_input_schema",
     "build_compact_policy_modulation_system_prompt",
     "build_compact_policy_modulation_tool_input_schema",
+    "build_live_compact_policy_modulation_tool_input_schema",
 ]
 
 LLM_PROVIDER_ANTHROPIC: Final[str] = "anthropic"
@@ -944,6 +945,30 @@ def build_compact_policy_modulation_tool_input_schema() -> dict[str, object]:
         ],
         "additionalProperties": False,
     }
+
+
+def _schema_without_descriptions(value: object) -> object:
+    """Remove explanatory schema prose from the latency-sensitive live call."""
+
+    if isinstance(value, Mapping):
+        return {
+            key: _schema_without_descriptions(child)
+            for key, child in value.items()
+            if key != "description"
+        }
+    if isinstance(value, list):
+        return [_schema_without_descriptions(child) for child in value]
+    return value
+
+
+def build_live_compact_policy_modulation_tool_input_schema() -> dict[str, object]:
+    """Return the compact strict schema without redundant field descriptions."""
+
+    schema = build_compact_policy_modulation_tool_input_schema()
+    stripped = _schema_without_descriptions(schema)
+    if not isinstance(stripped, dict):
+        raise TypeError("compact policy schema must be a JSON object.")
+    return stripped
 
 
 def build_compact_policy_modulation_system_prompt() -> str:
@@ -2585,8 +2610,10 @@ class LLMCommandInterpreter:
                 tool_description=(
                     "Submit one compact semantic MicroMachine commander command."
                 ),
-                tool_schema=build_compact_policy_modulation_tool_input_schema(),
-                max_output_tokens=min(self.max_tokens, 512),
+                tool_schema=build_live_compact_policy_modulation_tool_input_schema(),
+                # Use the interpreter budget instead of imposing a smaller
+                # fixed cap that can truncate parallel-operation JSON.
+                max_output_tokens=self.max_tokens,
                 strict=True,
             )
         client = self._build_client()
@@ -2873,6 +2900,8 @@ class LocalLLMControl:
         self._context_provider: Callable[[], object] | None = None
         self._briefing_cache_key = ""
         self._briefing_cache: dict[str, object] | None = None
+        self._client_cache_key: tuple[str, str, str, str, float] | None = None
+        self._client_cache: object | None = None
 
     def configure(self, provider: str, api_key: str, model: str = "") -> dict[str, object]:
         """Set provider credentials in process memory and return a safe snapshot."""
@@ -2894,6 +2923,8 @@ class LocalLLMControl:
             self._api_key = api_key.strip()
             self._briefing_cache_key = ""
             self._briefing_cache = None
+            self._client_cache_key = None
+            self._client_cache = None
         return self.snapshot()
 
     def snapshot(self) -> dict[str, object]:
@@ -2990,14 +3021,50 @@ class LocalLLMControl:
             reasoning_effort = self._reasoning_effort
             api_key = self._resolved_api_key_unlocked(provider)
             context_provider = self._context_provider
+        client_factory = (
+            self._cached_client
+            if (
+                api_key
+                and _provider_configuration_complete(provider, model)
+                and _is_provider_available(provider)
+            )
+            else None
+        )
         return LLMCommandInterpreter(
             provider=provider,
             model=model,
             api_key=api_key or None,
             reasoning_effort=reasoning_effort,
             timeout_seconds=self._timeout_seconds,
+            client_factory=client_factory,
             context_provider=context_provider,
         )
+
+    def _cached_client(self) -> object:
+        """Reuse one provider client while local credentials remain unchanged."""
+
+        with self._lock:
+            provider = self._provider
+            model = self._model
+            api_key = self._resolved_api_key_unlocked(provider)
+            base_url = _openai_compatible_base_url(provider)
+            timeout_seconds = self._timeout_seconds
+            cache_key = (provider, model, api_key, base_url, timeout_seconds)
+            if self._client_cache_key == cache_key and self._client_cache is not None:
+                return self._client_cache
+
+        builder = LLMCommandInterpreter(
+            provider=provider,
+            model=model,
+            api_key=api_key or None,
+            timeout_seconds=timeout_seconds,
+        )
+        client = builder._build_client()
+        with self._lock:
+            if self._client_cache_key != cache_key:
+                self._client_cache_key = cache_key
+                self._client_cache = client
+            return self._client_cache
 
     def _resolved_api_key_unlocked(self, provider: str) -> str:
         """Return the process-local key or environment fallback without exposing it."""
