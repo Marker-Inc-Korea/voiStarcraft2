@@ -982,26 +982,26 @@ def build_compact_policy_modulation_system_prompt() -> str:
         "1. Resolve Korean/English units, counts, locations, routes, targets, "
         "abilities, and placement. Never output coordinates, tags, clicks, API "
         "calls, or raw SC2 commands.\n"
-        "2. command_layer: macro=economy/production/tech/building standing "
-        "intent; operation=scout/attack/squad movement; micro=one explicit "
-        "unit ability; emergency=retreat/cancel/hold interrupt.\n"
-        "3. task_type: sustain_production=composition/continuous production; "
-        "tech_transition=prerequisites/non-expansion buildings; "
-        "expand_or_land_command_center=expansion/landing; "
-        "scout_with_units=scouting; pressure_with_main_army=attack/pressure; "
-        "harass_with_units=bounded worker/economy raid; "
-        "defend_with_units=independent defense; execute_ability=explicit ability. "
-        "Emergency may leave task_type empty.\n"
-        "4. Put every explicit combat unit/count in unit_requests. Use one "
-        "Marine for '마린 한 마리 정찰'. Use production_targets for requested "
-        "units, structures, upgrades, or TERRAN_NUKE. Python adds their complete "
-        "tech chain automatically.\n"
+        "2. command_layer: macro=production/tech/building; operation=intermediate "
+        "squad tactics; micro=ability; emergency=interrupt.\n"
+        "3. task_type: sustain_production=production; "
+        "tech_transition=prerequisites/buildings; "
+        "expand_or_land_command_center=expansion; scout_with_units=scouting; "
+        "pressure_with_main_army=attack; harass_with_units=economy raid; "
+        "defend_with_units=defense; regroup_with_units=regroup; "
+        "execute_ability=ability. Emergency may leave it empty.\n"
+        "4. Put explicit unit/counts in unit_requests. 'SCV 생산해' and "
+        "'마린 6기 생산해' are macro sustain_production, never squad operations. "
+        "Use production_targets for units/buildings/upgrades and let Python add "
+        "the tech chain. '가스터빈'/'가스 터빈'/'정제소' mean TERRAN_REFINERY; "
+        "use macro tech_transition + building_tasks, default count 1.\n"
         "5. For a Ghost tactical nuke use micro + execute_ability + "
         "ability=tactical_nuke + location_intent. For flank/alternate-route "
         "orders use flank_left or flank_right and preserve explicit direction.\n"
         "6. Use commands[] when one utterance creates independent forces. Give "
         "each item a stable operation_id and reuse it for follow-up changes. "
-        "Set operation_action explicitly. transfer uses operation_id=destination, "
+        "For macro and micro, set operation_action=null and operation ids=null. "
+        "transfer uses operation_id=destination, "
         "source_operation_id=source, unit_requests=moved force, and "
         "explicit_override=true only for explicit reassignment. reinforce counts "
         "are additive; resize counts are final; retarget preserves force. A scoped "
@@ -1019,9 +1019,8 @@ def build_compact_policy_modulation_system_prompt() -> str:
         "until-cancelled intent. Explicit completion intent such as "
         "'완료될 때까지' or 'until completed' is bounded, not standing. "
         "Otherwise Python selects a bounded lifecycle.\n"
-        "9. assistant_message must be a natural answer in "
-        "commander_context.response_language and must describe the interpreted "
-        "action without claiming success before runtime confirmation.\n"
+        "9. assistant_message is natural text in response_language describing "
+        "the action; do not claim success before runtime confirmation.\n"
         f"10. {LLM_PROMPT_INJECTION_GUARD}"
     )
 
@@ -4007,6 +4006,14 @@ def _lower_compact_policy_modulation_tool_input(
     """Expand compact Responses output into the canonical manager DSL."""
 
     status = str(tool_input.get("status", "") or "").strip().lower()
+    if status in {"clarification_required", "refused"}:
+        # The validated compact schema requires null command wrappers even for
+        # terminal replies. They are not fields of the canonical provider DSL.
+        return {
+            key: value
+            for key, value in tool_input.items()
+            if key not in {"command", "commands"} or value is not None
+        }
     raw_commands = tool_input.get("commands")
     if status == "compiled" and isinstance(raw_commands, Sequence) and not isinstance(
         raw_commands,
@@ -5677,6 +5684,7 @@ def _compact_command_layer(
         "pressure_with_main_army",
         "defend_with_units",
         "harass_with_units",
+        "regroup_with_units",
     }:
         return "operation"
     if task_type in {

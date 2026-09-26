@@ -231,6 +231,7 @@ The stable public SC2 action type name set is:
 | `move_group` | Move a named or resolved unit group to a semantic map target. |
 | `attack_move` | Issue combat movement toward a defensive or offensive target. |
 | `repair` | Assign repair workers to a damaged unit or structure target. |
+| `execute_ability` | Use a semantic unit ability such as Stim, Siege, or Yamato through the live SC2 adapter. |
 | `observe` | Read or summarize visible runtime state without issuing a mutating order. |
 | `move_camera` | Move the player's camera to a resolved semantic map target without issuing unit orders. |
 
@@ -268,12 +269,12 @@ semantics and invariants.
 
 `SC2RuntimeExecutor.execute(plan)` dispatches every planned `SC2CommandAction`
 by calling the method named after its `action_type` on the bound runtime
-adapter. `PythonSC2BotAdapter` therefore implements exactly the eight semantic
+adapter. `PythonSC2BotAdapter` therefore implements exactly the nine semantic
 action type names as methods:
 
 ```text
 assign_workers   build_structure   train_unit   move_group
-attack_move      repair            observe       move_camera
+attack_move      repair            execute_ability   observe   move_camera
 ```
 
 - Counted methods return `SC2ActionReport` (partial issuance is never collapsed

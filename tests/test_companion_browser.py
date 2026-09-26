@@ -858,31 +858,22 @@ global.fetch = function(url) {
   await runtimeFirst;
   assert.strictEqual(nodes["runtime-status"].textContent, "SC2 연결됨 · frame 500");
 
-  const operationFirst = refreshOperation();
-  const operationSecond = refreshOperation();
-  pendingOperation[1]({
-    status: "published",
-    consumption_status: "consumed",
-    latest_request: {
+      const operationFirst = refreshOperation();
+      const operationSecond = refreshOperation();
+      assert.strictEqual(operationFirst, operationSecond);
+      assert.strictEqual(pendingOperation.length, 1);
+      pendingOperation[0]({
+        status: "published",
+        consumption_status: "consumed",
+        latest_request: {
       update_id: "new-command",
       command_text: "SCV를 생산한다",
       consumption_status: "consumed"
-    },
-    operations: []
-  });
-  await operationSecond;
-  pendingOperation[0]({
-    status: "published",
-    consumption_status: "consumed",
-    latest_request: {
-      update_id: "old-command",
-      command_text: "오래된 명령",
-      consumption_status: "consumed"
-    },
-    operations: []
-  });
-  await operationFirst;
-  assert.strictEqual(nodes["operation-goal"].textContent, "SCV를 생산한다");
+        },
+        operations: []
+      });
+      await Promise.all([operationFirst, operationSecond]);
+      assert.strictEqual(nodes["operation-goal"].textContent, "SCV를 생산한다");
 })().catch(function(error) {
   console.error(error && error.stack ? error.stack : error);
   process.exit(1);

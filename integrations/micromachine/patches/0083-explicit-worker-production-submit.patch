@@ -1,0 +1,39 @@
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -2757,6 +2757,31 @@ void ProductionManager::manageBuildOrderQueue()
+ 	m_bot.StopProfiling("0.10.2.2.1      putImportantBuildOrderItemsInQueue");
+ 	prioritizeVoiExpandCommandCenter();
++
++	const bool explicitWorkerProductionRequested =
++		m_bot.Commander().isVoiPolicyActive()
++		&& voiCommaListContains(
++			m_bot.Commander().getVoiPolicyString(
++				"tactical_task.production_targets",
++				""),
++			"TERRAN_SCV");
++	if (explicitWorkerProductionRequested
++		&& m_bot.GetFreeMinerals() >= m_bot.Data(workerMetatype).mineralCost
++		&& m_bot.GetFreeGas() >= m_bot.Data(workerMetatype).gasCost
++		&& hasRequired(workerMetatype, false))
++	{
++		const Unit workerProducer = getProducer(workerMetatype);
++		if (workerProducer.isValid()
++			&& canMakeNow(workerProducer, workerMetatype))
++		{
++			MM::BuildOrderItem workerItem(
++				workerMetatype,
++				m_queue.isEmpty()
++					? 1
++					: m_queue.getHighestPriorityItem().priority + 1,
++				true);
++			if (create(workerProducer, workerItem, m_bot.GetBuildingArea(workerMetatype)))
++			{
++				m_queue.removeAllOfType(workerMetatype);
++				return;
++			}
++		}
++	}
+ 
+ 	if (m_queue.isEmpty())
+ 		return;

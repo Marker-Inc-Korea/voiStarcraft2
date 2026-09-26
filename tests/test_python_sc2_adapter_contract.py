@@ -295,6 +295,7 @@ class AdapterContractTest(unittest.TestCase):
                 "move_group",
                 "attack_move",
                 "repair",
+                "execute_ability",
                 "observe",
                 "move_camera",
             ),

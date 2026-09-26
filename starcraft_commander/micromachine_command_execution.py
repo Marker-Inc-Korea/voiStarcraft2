@@ -252,6 +252,7 @@ OPERATION_TASK_ROUTING: Final[Mapping[str, tuple[str, str]]] = {
     "pressure_with_main_army": ("attack", "attack"),
     "defend_with_units": ("defend", "defend"),
     "harass_with_units": ("harass", "harass"),
+    "regroup_with_units": ("regroup", "regroup"),
 }
 
 
@@ -2407,6 +2408,12 @@ def _command_stage_managers(
             ("AbilityTask",),
         )
     if task_type == "scout_with_units":
+        return (
+            ("TacticalTask", "CombatCommander"),
+            ("CombatCommander",),
+            ("CombatCommander",),
+        )
+    if task_type == "regroup_with_units":
         return (
             ("TacticalTask", "CombatCommander"),
             ("CombatCommander",),

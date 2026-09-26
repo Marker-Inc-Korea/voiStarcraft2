@@ -65,6 +65,7 @@ SC2_ADAPTER_ACTION_METHOD_NAMES: Final[tuple[str, ...]] = (
     "move_group",
     "attack_move",
     "repair",
+    "execute_ability",
     "observe",
     "move_camera",
 )
@@ -196,6 +197,9 @@ class SC2BotAdapterInterface(Protocol):
 
     async def repair(self, action: SC2CommandAction) -> SC2ActionReport:
         """Send workers to repair the first damaged matching own entity."""
+
+    async def execute_ability(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Issue one semantic unit ability through the live BotAI runtime."""
 
     async def observe(self, action: SC2CommandAction) -> Mapping[str, object]:
         """Return a JSON-ready commander state snapshot observation."""
@@ -558,6 +562,49 @@ class PythonSC2BotAdapter:
                 issued += 1
         return _issuance_report(action.count, issued, "insufficient_workers")
 
+    async def execute_ability(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Issue a bounded ability call on the selected live units.
+
+        ``ability_id`` may be injected by tests or a runtime adapter. A string
+        is resolved through python-sc2's ``AbilityId`` when that package exists.
+        """
+
+        if action.count <= 0:
+            return _refusal_report(action.count, "non_positive_count")
+        ability_name = str(
+            action.metadata.get("ability_id")
+            or action.metadata.get("ability")
+            or ""
+        ).strip()
+        if not ability_name:
+            return _refusal_report(action.count, "missing_ability")
+        ability = self._resolve_ability(ability_name)
+        if ability is None:
+            return _refusal_report(action.count, "unresolvable_ability")
+        units = self._select_group(action.subject)
+        if not units:
+            return _refusal_report(action.count, "no_matching_caster")
+        target = None
+        target_name = str(action.target or "").strip()
+        if target_name:
+            target_point = self._resolve_target_point(target_name)
+            if target_point is not None:
+                target = _game_point(target_point)
+        issued = 0
+        for unit in units[: action.count]:
+            use_ability = getattr(unit, "use_ability", None)
+            caller = use_ability if callable(use_ability) else unit
+            if not callable(caller):
+                continue
+            applied = (
+                await self._issue_unit_order(caller, ability, target)
+                if target is not None
+                else await self._issue_unit_order(caller, ability)
+            )
+            if applied:
+                issued += 1
+        return _issuance_report(action.count, issued, "insufficient_casters")
+
     async def observe(self, action: SC2CommandAction) -> Mapping[str, object]:
         """Resolve and return the commander state snapshot as a mapping.
 
@@ -866,6 +913,51 @@ class PythonSC2BotAdapter:
             raise ValueError(
                 f"Unknown python-sc2 UnitTypeId name: {type_name!r}."
             ) from error
+
+    def _resolve_ability(self, ability_name: str) -> object | None:
+        """Resolve a semantic ability name without importing python-sc2 eagerly."""
+
+        normalized = re.sub(r"[^A-Za-z0-9]+", "_", ability_name).strip("_").upper()
+        aliases = {
+            "STIM": "EFFECT_STIM",
+            "STIMPACK": "EFFECT_STIM",
+            "SIEGE": "SIEGEMODE_SIEGEMODE",
+            "SIEGEMODE": "SIEGEMODE_SIEGEMODE",
+            "UNSIEGE": "UNSIEGE_UNSIEGE",
+            "YAMATO": "YAMATO_YAMATO",
+            "TACTICAL_NUKE": "TACNUKE_CALLDOWN",
+            "NUKE": "TACNUKE_CALLDOWN",
+        }
+        candidates = tuple(
+            dict.fromkeys(
+                (
+                    ability_name,
+                    normalized,
+                    aliases.get(normalized, ""),
+                )
+            )
+        )
+        bot_resolver = getattr(self.bot, "ability_id_resolver", None)
+        if callable(bot_resolver):
+            for candidate in candidates:
+                if not candidate:
+                    continue
+                resolved = bot_resolver(candidate)
+                if resolved is not None:
+                    return resolved
+        try:
+            from sc2.ids.ability_id import AbilityId
+        except ImportError:
+            return aliases.get(normalized) if normalized in aliases else (
+                ability_name if ability_name.isupper() else None
+            )
+        for candidate in candidates:
+            if not candidate:
+                continue
+            value = getattr(AbilityId, candidate, None)
+            if value is not None:
+                return value
+        return None
 
     async def _is_affordable(self, type_id: object) -> bool:
         """Check ``bot.can_afford`` when present; refuse only explicit ``no``."""

@@ -1,0 +1,31 @@
+diff --git a/src/CCBot.cpp b/src/CCBot.cpp
+--- a/src/CCBot.cpp
++++ b/src/CCBot.cpp
+@@ -3098,6 +3098,7 @@ void CCBot::CheckGameResult()
+ {
+ 	const uint32_t selfId = Util::GetSelfPlayerId(*this);
+ 	if (selfId < 0)
+ 		return;
+ 	const auto & results = Observation()->GetResults();
++	Util::Log(__FUNCTION__, "CheckGameResult invoked", *this);
+ 	for (const auto & playerResult : results)
+ 	{
+@@ -475,6 +475,19 @@ void CCBot::OnStep()
+ 	const auto framesSinceLastStep = Observation()->GetGameLoop() - m_gameLoop;
+ 	m_gameLoop = Observation()->GetGameLoop();
++	const char * qaEndFrame = std::getenv("VOI_QA_FORCE_GAME_END_FRAME");
++	if (qaEndFrame != nullptr && qaEndFrame[0] != '\0')
++	{
++		static bool requestedQaEnd = false;
++		const uint64_t targetFrame = std::strtoull(qaEndFrame, nullptr, 10);
++		if (!requestedQaEnd && targetFrame > 0 && m_gameLoop >= targetFrame)
++		{
++			requestedQaEnd = true;
++			std::cout << "VOI_QA_FORCE_GAME_END_FRAME reached "
++				<< m_gameLoop << std::endl;
++			Control()->RequestLeaveGame();
++		}
++	}
+ 	if (m_realtime && !m_combatSimulatorInitialized && m_gameLoop > 50)
+ 	{
+ 		Util::InitializeCombatSimulator();

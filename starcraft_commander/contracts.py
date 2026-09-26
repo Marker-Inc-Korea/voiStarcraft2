@@ -22,6 +22,7 @@ class SC2ActionType(str, Enum):
     MOVE_GROUP = "move_group"
     ATTACK_MOVE = "attack_move"
     REPAIR = "repair"
+    EXECUTE_ABILITY = "execute_ability"
     OBSERVE = "observe"
     MOVE_CAMERA = "move_camera"
 

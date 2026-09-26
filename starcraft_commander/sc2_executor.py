@@ -249,6 +249,7 @@ SC2_INTENT_ACTION_TYPE_MAP: Final[dict[str, tuple[str, ...]]] = {
     "SUMMARIZE_STATE": ("observe",),
     "DEFEND": ("attack_move",),
     "REPAIR": ("repair",),
+    "EXECUTE_ABILITY": ("execute_ability",),
     "EXPAND": ("build_structure",),
     "HARASS": ("attack_move",),
     "MOVE_CAMERA": ("move_camera",),
@@ -1097,6 +1098,7 @@ def _method_name_for_action(action_type: SC2ActionType) -> str:
         SC2ActionType.MOVE_GROUP: "move_group",
         SC2ActionType.ATTACK_MOVE: "attack_move",
         SC2ActionType.REPAIR: "repair",
+        SC2ActionType.EXECUTE_ABILITY: "execute_ability",
         SC2ActionType.OBSERVE: "observe",
         SC2ActionType.MOVE_CAMERA: "move_camera",
     }[action_type]

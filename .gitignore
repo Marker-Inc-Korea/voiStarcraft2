@@ -7,6 +7,7 @@ __pycache__/
 .codex/
 AGENTS.md
 .codex-recovery/
+.local/
 build/
 dist/
 distribution-compliance-evidence/

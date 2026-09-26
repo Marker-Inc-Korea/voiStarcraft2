@@ -44,7 +44,8 @@ diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
 +			voiMaxBias(m_bot, "production.queue_biases.TERRAN_SUPPLYDEPOT", "economy.supply_buffer_bias", "tech.structure_biases.TERRAN_SUPPLYDEPOT"),
 +			continuousCompositionProduction
 +				? std::max(0.55f, productionContinuityBias) : 0.0f),
- 		(taskSustainProduction || taskTargetsSupplyDepot) ? tacticalTaskPriority : 0.0f);
+-		(taskSustainProduction || taskTargetsSupplyDepot) ? tacticalTaskPriority : 0.0f);
++		(taskSustainProduction || taskTargetsSupplyDepot) ? tacticalTaskPriority : 0.0f);
  
  	const bool wantsFactoryDoctrine = voiDoctrineIsOneOf(doctrine, "tank_defensive_hold", "siege_contain", "mech_transition", "drop_harassment")
 @@ -3083,10 +3086,12 @@ void ProductionManager::applyVoiDoctrineProductionBias()

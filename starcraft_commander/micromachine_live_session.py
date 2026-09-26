@@ -103,6 +103,7 @@ _TRANSIENT_TASK_TYPES = frozenset(
         "pressure_with_main_army",
         "defend_with_units",
         "harass_with_units",
+        "regroup_with_units",
     }
 )
 _MICRO_TASK_TYPES = frozenset({"execute_ability"})
@@ -112,6 +113,7 @@ _TACTICAL_ONLY_TASK_TYPES = frozenset(
         "pressure_with_main_army",
         "defend_with_units",
         "harass_with_units",
+        "regroup_with_units",
         "execute_ability",
     }
 )
@@ -408,7 +410,7 @@ class KeywordPolicyModulationProvider:
                 },
                 "production_plan": {
                     "targets": requested_production_targets,
-                    "allow_prerequisites": True,
+                    "allow_prerequisite_buildings": True,
                     "priority": 0.8,
                 },
                 "composition_requirements": composition_requirements,
@@ -467,6 +469,10 @@ class KeywordPolicyModulationProvider:
             defend_intent = (
                 terran_operation_intent is not None
                 and terran_operation_intent.task_type == "defend_with_units"
+            )
+            regroup_intent = (
+                terran_operation_intent is not None
+                and terran_operation_intent.task_type == "regroup_with_units"
             )
             if terran_operation_intent is None:
                 scout_intent = any(
@@ -565,7 +571,9 @@ class KeywordPolicyModulationProvider:
                 "defense_bias": 0.8 if defend_intent else -0.2,
                 "reinforce_bias": 0.3,
                 "contain_bias": 0.1 if flank_intent else 0.35,
-                "regroup_bias": 0.7 if tactical_retreat_intent else 0.2,
+                "regroup_bias": 0.95 if regroup_intent else (
+                    0.7 if tactical_retreat_intent else 0.2
+                ),
             }
             if flank_intent:
                 squad_payload["flank_bias"] = 0.75
@@ -580,6 +588,8 @@ class KeywordPolicyModulationProvider:
                 tags.append("harass_operation")
             if defend_intent:
                 tags.append("defense_operation")
+            if regroup_intent:
+                tags.append("regroup_operation")
             if requested_units is not None:
                 tags.append("explicit_unit_count")
             if composition_requirements:
@@ -717,7 +727,7 @@ class KeywordPolicyModulationProvider:
                 payload["composition_requirements"] = composition_requirements
                 payload["production_plan"] = {
                     "targets": requested_production_targets,
-                    "allow_prerequisites": True,
+                    "allow_prerequisite_buildings": True,
                     "priority": 0.8,
                 }
                 payload["unit_roles"] = [
@@ -793,6 +803,8 @@ class LiveTextModulationResult:
     consumption_status: LiveModulationConsumptionStatus | str
     command_queue: Mapping[str, object] | None = None
     provider_failure_recorded: bool = False
+    unified_route: Mapping[str, object] | None = None
+    tool_results: Sequence[Mapping[str, object]] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "command_text", _require_text("command_text", self.command_text))
@@ -814,6 +826,17 @@ class LiveTextModulationResult:
             "provider_failure_recorded",
             _coerce_bool(self.provider_failure_recorded, "provider_failure_recorded"),
         )
+        if self.unified_route is not None and not isinstance(
+            self.unified_route,
+            Mapping,
+        ):
+            raise ValueError("unified_route must be a mapping or None.")
+        normalized_tool_results = tuple(
+            dict(item)
+            for item in self.tool_results
+            if isinstance(item, Mapping)
+        )
+        object.__setattr__(self, "tool_results", normalized_tool_results)
 
     @property
     def ok(self) -> bool:
@@ -837,6 +860,10 @@ class LiveTextModulationResult:
             "consumed": self.consumed,
             "command_queue": dict(self.command_queue or {}),
             "provider_failure_recorded": self.provider_failure_recorded,
+            "unified_route": (
+                dict(self.unified_route) if self.unified_route is not None else None
+            ),
+            "tool_results": [dict(item) for item in self.tool_results],
         }
 
 
@@ -851,10 +878,14 @@ class MicroMachineLiveTextSession:
         bridge_status: PolicyModulationBridgeStatus | str = (
             PolicyModulationBridgeStatus.CONNECTED
         ),
+        direct_executor: object | None = None,
+        include_direct_tool: bool = True,
     ) -> None:
         self.backend = backend
         self.provider = provider
         self.bridge_status = _coerce_bridge_status(bridge_status)
+        self.direct_executor = direct_executor
+        self.include_direct_tool = bool(include_direct_tool)
 
     def submit_text(
         self,
@@ -1078,7 +1109,48 @@ class MicroMachineLiveTextSession:
                 telemetry_before,
             ),
             command_queue=command_queue,
+            **self._unified_route_result(
+                compile_result.vector,
+                update_id=update.update_id,
+                current_frame=frame,
+                published_payload={
+                    "ok": True,
+                    "status": LiveModulationStatus.PUBLISHED.value,
+                    "update_id": update.update_id,
+                },
+            ),
         )
+
+    def _unified_route_result(
+        self,
+        vector: PolicyModulationVector,
+        *,
+        update_id: str,
+        current_frame: int,
+        published_payload: Mapping[str, object],
+    ) -> dict[str, object]:
+        """Route one already-published vector without publishing MicroMachine twice."""
+
+        from starcraft_commander.unified_command_router import (
+            create_command_tool_registry,
+            route_and_execute,
+        )
+
+        registry = create_command_tool_registry(
+            micromachine_publish=lambda _arguments: dict(published_payload),
+            direct_executor=self.direct_executor,
+        )
+        routed = route_and_execute(
+            vector,
+            registry,
+            update_id=update_id,
+            current_frame=current_frame,
+            include_direct_tool=self.include_direct_tool,
+        )
+        return {
+            "unified_route": routed.get("route"),
+            "tool_results": routed.get("tool_results", ()),
+        }
 
     def _resolve_current_frame(self, current_frame: int | None) -> int:
         if current_frame is not None:
