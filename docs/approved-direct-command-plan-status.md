@@ -425,7 +425,7 @@ owner가 해당 유닛의 자율제어를 다시 수행하는 연결·Live QA는
 | JEV System 1 라우팅 | 미완료/외부 계약 대기 | #189에 정의 질문과 acceptance criteria만 등록했다. |
 | legacy route 완전 제거 | **완료(코드 경계)** | `include_legacy_tools` opt-in과 `micromachine.operation/ability/emergency` registry entries를 제거했다. 기본 registry와 MCP discovery에는 `micromachine.policy`만 남는다. |
 | 문서화 | 완료(현재 상태 보고) | 이 문서가 승인 원문 기준, 구조, capability, 위치·분대·수리, 병렬·선행조건, lifecycle, legacy 격리, JEV, PR·Live QA를 항목별로 기록한다. |
-| PR 반영 | 부분 완료 | PR #187이 열려 있고 `BLOCKED`다. 최신 hosted `ci` run `36347750502`에서 `unit-contracts (3.10)`, `(3.11)`, `(3.12)`이 모두 실패했고, `pre-live-provenance` run `36347748658`의 `pre-live-producer-isolation`도 실패했다. `event-admission`, `pre-live-build`, `ready-to-merge`는 성공했다. hosted CI green/merge를 주장할 수 없다. |
+| PR 반영 | 부분 완료 | PR #187이 열려 있고 `BLOCKED`다. 최신 hosted `ci` run `36351195349`에서 `unit-contracts (3.10)`, `(3.11)`, `(3.12)`이 모두 실패했고, `pre-live-provenance` run `36351193813`의 `pre-live-producer-isolation`도 실패했다. `event-admission`, `pre-live-build`, `ready-to-merge`는 성공했다. hosted CI green/merge를 주장할 수 없다. |
 | 실제 Live QA | 미완료 | 이전 PR 설명에도 실제 StarCraft II Live QA를 실행하지 않았다고 명시되어 있다. |
 
 ## 4. 현재 검증 결과
@@ -459,7 +459,7 @@ Direct release callback, registry lifecycle 공유, build completion 후 depende
 ```text
 ./.venv/bin/pytest -q tests/test_web_gui.py \\
   -k 'bridge_ticks_shared_direct_lifecycle_for_game_loop or modulation_requests_share_bridge_direct_ownership_registry'
-2 passed, 542 deselected
+2 passed, 261 deselected
 ```
 
 전체 저장소 실행도 수행했다.
@@ -477,11 +477,10 @@ Direct release callback, registry lifecycle 공유, build completion 후 depende
 PR #187의 최신 완료 hosted `unit-contracts` run도 확인했다.
 
 ```text
-head: 55c5e93
-ci run: 36347750502
+head: 64d41a7
+ci run: 36351195349
 unit-contracts (3.10), (3.11), (3.12): 모두 실패
-3.10 요약: hosted job 실패. 로컬 현재 작업 트리의 전체 live-session 집중 실행은
-145 failed, 421 passed, 1 skipped, 600 subtests passed
+3.10 요약: 173 failed, 2948 passed, 68 skipped, 7148 subtests passed
 주요 원인: 승인된 runtime_not_attached fail-closed와 충돌하는 기존
 MicroMachine 성공 기대 및 legacy 웹 UI publish 기대
 ```
@@ -489,7 +488,7 @@ MicroMachine 성공 기대 및 legacy 웹 UI publish 기대
 최신 완료 hosted `pre-live-provenance` run도 확인했다.
 
 ```text
-run: 36347748658
+run: 36351193813
 pre-live-build: success
 pre-live-producer-isolation: failure
 trusted verifier CTest: passed=0, total=10, failures=10, returncode=0
@@ -536,8 +535,7 @@ Live QA는 수행하지 못했다.
 
 따라서 이번 문서는 승인 계획을 토씨 하나 빠뜨리지 않고 현재 증거와
 대조한 상태 보고서이며, “승인한 계획이 전부 해결됐다”는 보고서는 아니다.
-현재 구현 보강은 집중 테스트·문서 대조 후 이 상태 문서와 함께 커밋·푸시할
-예정이다. 원격
+현재 구현 보강은 `6520abe`, 계획 대조 문서는 `64d41a7`로 커밋·푸시했다. 원격
 최신 완료 hosted 결과에서도 `unit-contracts` 3개와 `pre-live-producer-isolation`이
 실패했으므로 PR은 여전히 `BLOCKED`이며 green/merge가 아니다. PR merge는
 하지 않았고, Live QA도 완료되지 않았다.
