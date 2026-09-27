@@ -9,9 +9,9 @@
 [#187](https://github.com/Marker-Inc-Korea/voiStarcraft2/pull/187)이다. 현재
 실행 코드 기준 커밋은 `ef53ed2`이며, 이번 보강(종료 callback seam,
 dependent workflow, `enemy_destroyed` evidence, registry lifecycle 공유,
-compact prompt 축소)은 그 커밋에 포함됐다. 이후 `9b2ef8c`, `d39f4e3`,
-`c8152a2`, `59580ce`는 hosted/전체 suite 결과와 이 상태 문서를 갱신한
-문서 커밋이며 실행 코드는 바꾸지 않았다. GitHub에서 확인한 PR #187은
+compact prompt 축소)은 그 커밋에 포함됐다. 이후 상태 문서 커밋들은
+hosted/전체 suite 결과와 이 상태 문서를 갱신했으며 실행 코드는 바꾸지
+않았다. GitHub에서 확인한 PR #187은
 `OPEN / BLOCKED`이며, 최신 완료 hosted 결과(문서-only 상태 커밋
 `59580ce` 기준)는 `ci` run `36346988710`, `final-pre-live` run
 `36346986307`, `pre-live-provenance` run `36346986309`이다. `ci`의
@@ -295,7 +295,7 @@ Direct release callback, registry lifecycle 공유, build completion 후 depende
 포함되어 있어 PR green 증거가 아니다. 따라서 전체 suite를 통과했다고 보고하지
 않으며, 승인 구조를 직접 검증하는 위 집중 묶음을 별도 기준으로 유지한다.
 
-PR #187의 현재 HEAD hosted `unit-contracts` run도 확인했다.
+PR #187의 최신 완료 hosted `unit-contracts` run도 확인했다.
 
 ```text
 head: 59580ce
@@ -306,7 +306,7 @@ unit-contracts (3.10), (3.11), (3.12): 모두 실패
 MicroMachine 성공 기대 및 legacy 웹 UI publish 기대
 ```
 
-현재 HEAD hosted `pre-live-provenance` run도 확인했다.
+최신 완료 hosted `pre-live-provenance` run도 확인했다.
 
 ```text
 run: 36346986309
@@ -357,7 +357,8 @@ Live QA는 수행하지 못했다.
 따라서 이번 문서는 승인 계획을 토씨 하나 빠뜨리지 않고 현재 증거와
 대조한 상태 보고서이며, “승인한 계획이 전부 해결됐다”는 보고서는 아니다.
 현재 구현 보강은 집중 테스트·문서 대조 후 `ef53ed2`로 커밋·푸시했고,
-문서/검증 상태 갱신은 `59580ce`로 커밋·푸시했다. 원격 최신
-hosted 결과에서도 `unit-contracts` 3개와 `pre-live-producer-isolation`이
+`59580ce`를 마지막 완료 hosted snapshot을 기록한 상태 문서 커밋으로
+푸시했다. 후속 문서 정정 커밋의 hosted 검사는 별도로 진행 중이다. 원격
+최신 완료 hosted 결과에서도 `unit-contracts` 3개와 `pre-live-producer-isolation`이
 실패했으므로 PR은 여전히 `BLOCKED`이며 green/merge가 아니다. PR merge는
 하지 않았고, Live QA도 완료되지 않았다.
