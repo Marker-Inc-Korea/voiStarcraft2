@@ -364,6 +364,24 @@ def test_direct_lifecycle_records_subject_ownership_and_rejects_overlap() -> Non
     assert released == ["first"]
 
 
+def test_pending_failure_also_notifies_release_listener() -> None:
+    released: list[tuple[str, str]] = []
+    lifecycle = DirectCommandLifecycle(
+        on_release=lambda lease: released.append(
+            (lease.command_id, lease.release_reason)
+        )
+    )
+    lifecycle.pending(
+        command_id="pending-failure",
+        issued_at_frame=0,
+        ttl_seconds=2,
+        owned_subjects=("scout",),
+    )
+    failed = lifecycle.fail("pending-failure", reason="dispatch_error")
+    assert failed.state is DirectCommandState.FAILED
+    assert released == [("pending-failure", "dispatch_error")]
+
+
 def test_named_squad_and_target_pin_registry_rejects_unknown_squads() -> None:
     registry = DirectCommandRegistry(
         squads=(SquadDefinition("1분대", "4 MARINE"),),

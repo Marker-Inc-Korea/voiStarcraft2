@@ -251,7 +251,16 @@ class DirectCommandLifecycle:
             evidence=dict(evidence),
         )
         self._leases[lease.command_id] = updated
-        if lease.control_owned and not updated.control_owned and self.on_release is not None:
+        if (
+            lease.state
+            in {
+                DirectCommandState.PENDING,
+                DirectCommandState.DISPATCHED,
+                DirectCommandState.ACTIVE,
+            }
+            and not updated.control_owned
+            and self.on_release is not None
+        ):
             self.on_release(updated)
         return updated
 
