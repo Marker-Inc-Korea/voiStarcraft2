@@ -852,7 +852,16 @@ def create_command_tool_registry(
         # exits above intentionally create no lease and no ownership.
         lease = None
         if lifecycle_required:
-            subjects = tuple(action.subject for action in plan.actions)
+            # Once a live adapter has pinned concrete tags, semantic labels
+            # are not added as a second collision domain: two independently
+            # resolved squads may both be typed ``MARINE``. Keep the semantic
+            # fallback only for actions whose runtime selection could not be
+            # pinned (offline fakes or producer-level actions).
+            subjects = tuple(
+                action.subject
+                for action in plan.actions
+                if not action.metadata.get("_direct_unit_tags")
+            )
             owned_unit_tags = tuple(
                 tag
                 for action in plan.actions
