@@ -9,12 +9,12 @@
 [#187](https://github.com/Marker-Inc-Korea/voiStarcraft2/pull/187)이다. 현재
 실행 코드 기준 커밋은 `ef53ed2`이며, 이번 보강(종료 callback seam,
 dependent workflow, `enemy_destroyed` evidence, registry lifecycle 공유,
-compact prompt 축소)은 그 커밋에 포함됐다. 이후 `9b2ef8c`와 `d39f4e3`는
-hosted/전체 suite 결과와 이 상태 문서를 갱신한 문서 커밋이며, 현재 브랜치
-HEAD는 `c8152a2`다. GitHub에서 확인한 PR #187은 `OPEN / BLOCKED`이며,
-현재 HEAD `c8152a2853fb48c5447f3e52cb5a06bf844abc86`의 최신 hosted 결과는
-`ci` run `36346406961`, `final-pre-live` run `36346405325`,
-`pre-live-provenance` run `36346405341`이다. `ci`의
+compact prompt 축소)은 그 커밋에 포함됐다. 이후 `9b2ef8c`, `d39f4e3`,
+`c8152a2`, `59580ce`는 hosted/전체 suite 결과와 이 상태 문서를 갱신한
+문서 커밋이며 실행 코드는 바꾸지 않았다. GitHub에서 확인한 PR #187은
+`OPEN / BLOCKED`이며, 최신 완료 hosted 결과(문서-only 상태 커밋
+`59580ce` 기준)는 `ci` run `36346988710`, `final-pre-live` run
+`36346986307`, `pre-live-provenance` run `36346986309`이다. `ci`의
 `unit-contracts (3.10)`, `(3.11)`, `(3.12)`은 모두 실패했고,
 `pre-live-provenance`의 `pre-live-producer-isolation`도 실패했다.
 `event-admission`, `pre-live-build`, `ready-to-merge`는 성공했지만,
@@ -246,7 +246,7 @@ MicroMachine으로 몰래 대체하지 않고 `runtime_not_attached`로 실패�
 | JEV System 1 라우팅 | 미완료/외부 계약 대기 | #189에 정의 질문과 acceptance criteria만 등록했다. |
 | legacy route 완전 제거 | **완료(코드 경계)** | `include_legacy_tools` opt-in과 `micromachine.operation/ability/emergency` registry entries를 제거했다. 기본 registry와 MCP discovery에는 `micromachine.policy`만 남는다. |
 | 문서화 | 완료(현재 상태 보고) | 이 문서가 승인 원문 기준, 구조, capability, 위치·분대·수리, 병렬·선행조건, lifecycle, legacy 격리, JEV, PR·Live QA를 항목별로 기록한다. |
-| PR 반영 | 부분 완료 | PR #187이 열려 있고 `BLOCKED`다. 현재 HEAD `c8152a2`의 hosted `ci` run `36346406961`에서 `unit-contracts (3.10)`, `(3.11)`, `(3.12)`이 모두 실패했고, `pre-live-provenance` run `36346405341`의 `pre-live-producer-isolation`도 실패했다. `event-admission`, `pre-live-build`, `ready-to-merge`는 성공했다. hosted CI green/merge를 주장할 수 없다. |
+| PR 반영 | 부분 완료 | PR #187이 열려 있고 `BLOCKED`다. 최신 완료 hosted `ci` run `36346988710`에서 `unit-contracts (3.10)`, `(3.11)`, `(3.12)`이 모두 실패했고, `pre-live-provenance` run `36346986309`의 `pre-live-producer-isolation`도 실패했다. `event-admission`, `pre-live-build`, `ready-to-merge`는 성공했다. hosted CI green/merge를 주장할 수 없다. |
 | 실제 Live QA | 미완료 | 이전 PR 설명에도 실제 StarCraft II Live QA를 실행하지 않았다고 명시되어 있다. |
 
 ## 4. 현재 검증 결과
@@ -298,8 +298,8 @@ Direct release callback, registry lifecycle 공유, build completion 후 depende
 PR #187의 현재 HEAD hosted `unit-contracts` run도 확인했다.
 
 ```text
-head: c8152a2
-ci run: 36346406961
+head: 59580ce
+ci run: 36346988710
 unit-contracts (3.10), (3.11), (3.12): 모두 실패
 3.10 요약: 173 failed, 2945 passed, 68 skipped, 7148 subtests passed
 주요 원인: 승인된 runtime_not_attached fail-closed와 충돌하는 기존
@@ -309,7 +309,7 @@ MicroMachine 성공 기대 및 legacy 웹 UI publish 기대
 현재 HEAD hosted `pre-live-provenance` run도 확인했다.
 
 ```text
-run: 36346405341
+run: 36346986309
 pre-live-build: success
 pre-live-producer-isolation: failure
 trusted verifier CTest: passed=0, total=10, failures=10, returncode=0
@@ -357,7 +357,7 @@ Live QA는 수행하지 못했다.
 따라서 이번 문서는 승인 계획을 토씨 하나 빠뜨리지 않고 현재 증거와
 대조한 상태 보고서이며, “승인한 계획이 전부 해결됐다”는 보고서는 아니다.
 현재 구현 보강은 집중 테스트·문서 대조 후 `ef53ed2`로 커밋·푸시했고,
-문서/검증 상태 갱신은 현재 HEAD `c8152a2`로 커밋·푸시했다. 원격 최신
+문서/검증 상태 갱신은 `59580ce`로 커밋·푸시했다. 원격 최신
 hosted 결과에서도 `unit-contracts` 3개와 `pre-live-producer-isolation`이
 실패했으므로 PR은 여전히 `BLOCKED`이며 green/merge가 아니다. PR merge는
 하지 않았고, Live QA도 완료되지 않았다.
