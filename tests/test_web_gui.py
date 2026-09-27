@@ -30,6 +30,10 @@ from urllib.parse import quote
 from starcraft_commander.micromachine_bridge import (
     MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
 )
+from starcraft_commander.direct_command_lifecycle import (
+    DirectCommandLifecycle,
+)
+from starcraft_commander.contracts import SC2PlanExecutionResult
 from starcraft_commander.micromachine_terran_capabilities import (
     TERRAN_UNIT_FAMILIES,
 )
@@ -11661,6 +11665,91 @@ class SessionLoopBridgeTest(unittest.TestCase):
         session, _bot = build_dry_run_session()
         bridge = SessionLoopBridge(session=session)
         self.assertIsInstance(bridge, WebGuiBridgeInterface)
+
+    def test_bridge_ticks_shared_direct_lifecycle_for_game_loop(self):
+        session, _bot = build_dry_run_session()
+        lifecycle = DirectCommandLifecycle(game_loops_per_second=1)
+        bridge = SessionLoopBridge(
+            session=session,
+            direct_lifecycle=lifecycle,
+        )
+        lifecycle.dispatch(
+            command_id="bridge-direct",
+            issued_at_frame=10,
+            ttl_seconds=2,
+            completion_conditions=("target_reached",),
+            owned_subjects=("scout",),
+        )
+
+        observed = bridge.tick_direct_commands(
+            11,
+            {"bridge-direct": {"target_reached": True}},
+        )
+
+        self.assertEqual(1, len(observed))
+        self.assertEqual("completed", observed[0]["state"])
+        self.assertFalse(observed[0]["control_owned"])
+        self.assertEqual((), lifecycle.active_leases())
+        self.assertEqual((), bridge.observe_direct_commands(current_frame=99))
+
+    def test_modulation_requests_share_bridge_direct_ownership_registry(self):
+        class RecordingExecutor:
+            bot = object()
+
+            async def execute(self, plan):
+                return SC2PlanExecutionResult(
+                    plan=plan,
+                    attempted_actions=plan.actions,
+                    applied_actions=plan.actions,
+                    audit={"evidence": "bridge-test"},
+                )
+
+        class Session:
+            def __init__(self):
+                self.executor = RecordingExecutor()
+
+            async def process_text(self, _text):
+                return ()
+
+        bridge = SessionLoopBridge(
+            session=Session(),
+            direct_lifecycle=DirectCommandLifecycle(game_loops_per_second=1),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            provider_output = {
+                "goal": "scout",
+                "command_layer": "operation",
+                "operations": [
+                    {
+                        "operation_id": "bridge-scout",
+                        "tactical_task": {
+                            "task_type": "scout_with_units",
+                            "unit_classes": ["TERRAN_MARINE"],
+                            "location_intent": "enemy_natural",
+                        },
+                    }
+                ],
+            }
+            first = bridge._publish_micromachine_modulation(
+                "정찰 분대를 보내",
+                blackboard_dir=directory,
+                provider_output=provider_output,
+                current_frame=10,
+                update_id="bridge-scout-1",
+            )
+            second = bridge._publish_micromachine_modulation(
+                "정찰 분대를 다시 보내",
+                blackboard_dir=directory,
+                provider_output={**provider_output, "goal": "scout-again"},
+                current_frame=11,
+                update_id="bridge-scout-2",
+            )
+
+        self.assertTrue(first["ok"], first)
+        self.assertEqual("direct_executed", first["status"])
+        self.assertFalse(second["ok"], second)
+        self.assertEqual("direct_failed", second["status"])
+        self.assertEqual("direct_control_conflict", second["tool_results"][0]["result"]["status"])
 
     def test_web_event_journal_is_monotonic_bounded_and_redacted(self):
         journal = web_gui._WebEventJournal(retention=2)

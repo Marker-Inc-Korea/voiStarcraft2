@@ -83,6 +83,8 @@ from starcraft_commander.contextual_transfer import (
     ContextualTransferRequest,
     prepare_contextual_transfer,
 )
+from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
+from starcraft_commander.direct_command_registry import DirectCommandRegistry
 from starcraft_commander.micromachine_tactical_evidence import (
     classify_micromachine_tactical_evidence,
     normalize_tactical_effect_tags,
@@ -8576,6 +8578,8 @@ class SessionLoopBridge:
         state_resolver: SC2StateResolverInterface = DEFAULT_SC2_STATE_RESOLVER,
         llm_control: object | None = None,
         micromachine_blackboard_dir: str = "",
+        direct_lifecycle: DirectCommandLifecycle | None = None,
+        direct_command_registry: DirectCommandRegistry | None = None,
     ) -> None:
         if not callable(getattr(session, "process_text", None)):
             raise TypeError("Session loop bridge session must implement process_text().")
@@ -8588,6 +8592,14 @@ class SessionLoopBridge:
         if not callable(getattr(state_resolver, "resolve", None)):
             raise TypeError("Session loop bridge state_resolver must implement resolve().")
         self._session = session
+        # Keep Direct ownership for the lifetime of the bridge/game session.
+        # Modulation requests may create short-lived provider sessions, but a
+        # squad lease must survive until a game-loop tick, cancellation,
+        # failure, or TTL releases it.
+        self._direct_lifecycle = direct_lifecycle or DirectCommandLifecycle()
+        self._direct_command_registry = (
+            direct_command_registry or DirectCommandRegistry()
+        )
         self._history = store
         self._state_resolver = state_resolver
         self._llm_control = llm_control
@@ -8948,6 +8960,37 @@ class SessionLoopBridge:
 
     def micromachine_blackboard_dir(self) -> str:
         return self._micromachine_blackboard_dir
+
+    def observe_direct_commands(
+        self,
+        *,
+        current_frame: int,
+        evidence_by_command: Mapping[str, Mapping[str, object]] | None = None,
+    ) -> tuple[dict[str, object], ...]:
+        """Tick bridge-owned Direct leases from a live game-loop callback."""
+
+        frame = int(current_frame)
+        if frame < 0:
+            raise ValueError("current_frame must be non-negative")
+        return tuple(
+            lease.to_dict()
+            for lease in self._direct_lifecycle.observe_all(
+                frame=frame,
+                evidence_by_command=evidence_by_command,
+            )
+        )
+
+    def tick_direct_commands(
+        self,
+        current_frame: int,
+        evidence_by_command: Mapping[str, Mapping[str, object]] | None = None,
+    ) -> tuple[dict[str, object], ...]:
+        """Concise alias for BotAI/game-loop integrations."""
+
+        return self.observe_direct_commands(
+            current_frame=current_frame,
+            evidence_by_command=evidence_by_command,
+        )
 
     def configure_llm(self, provider: str, api_key: str, model: str = "") -> Mapping[str, object]:
         control = self._llm_control
@@ -9385,6 +9428,8 @@ class SessionLoopBridge:
             backend,
             provider,
             direct_executor=direct_executor,
+            direct_lifecycle=self._direct_lifecycle,
+            direct_command_registry=self._direct_command_registry,
         ).submit_text(
             text,
             current_frame=current_frame,

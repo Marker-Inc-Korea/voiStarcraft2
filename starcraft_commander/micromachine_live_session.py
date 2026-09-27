@@ -901,6 +901,12 @@ class MicroMachineLiveTextSession:
         # Keep one lease registry for the whole live session.  Recreating it
         # per request would make completion, cancellation, and TTL
         # observations unable to release a previously issued squad lease.
+        shared_lifecycle = getattr(direct_executor, "direct_lifecycle", None)
+        if direct_lifecycle is None and isinstance(
+            shared_lifecycle,
+            DirectCommandLifecycle,
+        ):
+            direct_lifecycle = shared_lifecycle
         self.direct_lifecycle = direct_lifecycle or DirectCommandLifecycle()
         self.direct_command_registry = direct_command_registry or DirectCommandRegistry()
 
