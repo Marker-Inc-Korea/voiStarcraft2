@@ -25,11 +25,16 @@ from enum import Enum
 from typing import Any, Final
 
 from starcraft_commander.contracts import (
+    SC2_DIRECT_ACTION_TYPES,
     SC2ActionType,
     SC2CommandAction,
     SC2ExecutionPlan,
     SC2PlanExecutionResult,
 )
+from starcraft_commander.direct_command_lifecycle import (
+    DirectCommandLifecycle,
+)
+from starcraft_commander.direct_command_registry import DirectCommandRegistry
 from starcraft_commander.policy_modulation import (
     CommandLayer,
     PolicyModulationVector,
@@ -45,6 +50,48 @@ class MicroCommandKind(str, Enum):
     OPERATION = "operation"
     ABILITY = "micro"
     EMERGENCY = "emergency"
+
+
+@dataclass(frozen=True)
+class SC2Capability:
+    """One bounded semantic capability exposed through MCP."""
+
+    name: str
+    action_type: SC2ActionType
+    description: str
+    category: str
+    supports_parallel: bool = True
+    requires_runtime: bool = True
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "action_type": self.action_type.value,
+            "description": self.description,
+            "category": self.category,
+            "supports_parallel": self.supports_parallel,
+            "requires_runtime": self.requires_runtime,
+        }
+
+
+SC2_CAPABILITY_CATALOG: Final[tuple[SC2Capability, ...]] = (
+    SC2Capability("sc2.direct.assign_workers", SC2ActionType.ASSIGN_WORKERS, "Assign workers to minerals or completed gas.", "economy"),
+    SC2Capability("sc2.direct.build_structure", SC2ActionType.BUILD_STRUCTURE, "Build one semantic structure at a validated location.", "construction", supports_parallel=False),
+    SC2Capability("sc2.direct.train_unit", SC2ActionType.TRAIN_UNIT, "Queue semantic unit production.", "production", supports_parallel=False),
+    SC2Capability("sc2.direct.move_group", SC2ActionType.MOVE_GROUP, "Move a named or typed squad to a semantic target.", "operation"),
+    SC2Capability("sc2.direct.attack_move", SC2ActionType.ATTACK_MOVE, "Attack-move a squad to a semantic target.", "operation"),
+    SC2Capability("sc2.direct.repair", SC2ActionType.REPAIR, "Repair a matching damaged friendly target.", "support", supports_parallel=False),
+    SC2Capability("sc2.direct.execute_ability", SC2ActionType.EXECUTE_ABILITY, "Use one validated unit ability.", "micro", supports_parallel=False),
+    SC2Capability("sc2.direct.observe", SC2ActionType.OBSERVE, "Read the structured live game state.", "observation", supports_parallel=True),
+    SC2Capability("sc2.direct.move_camera", SC2ActionType.MOVE_CAMERA, "Move the camera to a semantic target.", "observation"),
+    SC2Capability("sc2.direct.stop_group", SC2ActionType.STOP_GROUP, "Stop a named or typed squad.", "emergency", supports_parallel=False),
+    SC2Capability("sc2.direct.hold_position", SC2ActionType.HOLD_POSITION, "Hold a named or typed squad in place.", "emergency", supports_parallel=False),
+    # Retreat is a first-class semantic capability even though python-sc2
+    # lowers it to a move order at the adapter boundary.  Keeping the
+    # capability name explicit prevents providers from having to invent a
+    # target-specific ``move_group`` call for an emergency retreat.
+    SC2Capability("sc2.direct.retreat", SC2ActionType.MOVE_GROUP, "Retreat a named or typed squad to a safe semantic target.", "emergency", supports_parallel=False),
+)
 
 
 @dataclass(frozen=True)
@@ -208,10 +255,38 @@ class CommanderToolRegistry:
         self,
         calls: Sequence[ToolCall | Mapping[str, object]],
     ) -> tuple[ToolExecutionResult, ...]:
+        normalized = tuple(
+            item if isinstance(item, ToolCall) else ToolCall.from_mapping(item)
+            for item in calls
+        )
+        # Calls explicitly marked sequential, emergency calls, and calls that
+        # share a conflict key remain ordered. Independent semantic tools run
+        # together and results are restored to request order.
         results: list[ToolExecutionResult] = []
-        for item in calls:
-            call = item if isinstance(item, ToolCall) else ToolCall.from_mapping(item)
-            results.append(await self.call_async(call.name, call.arguments))
+        batch: list[ToolCall] = []
+        batch_keys: set[tuple[str, str]] = set()
+
+        async def flush() -> None:
+            if not batch:
+                return
+            results.extend(await asyncio.gather(*(self.call_async(call.name, call.arguments) for call in batch)))
+            batch.clear()
+            batch_keys.clear()
+
+        for call in normalized:
+            if _requires_sequential_call(call):
+                await flush()
+                results.append(await self.call_async(call.name, call.arguments))
+            else:
+                conflict_key = _call_conflict_key(call)
+                if conflict_key is not None and conflict_key in batch_keys:
+                    await flush()
+                    results.append(await self.call_async(call.name, call.arguments))
+                else:
+                    batch.append(call)
+                    if conflict_key is not None:
+                        batch_keys.add(conflict_key)
+        await flush()
         return tuple(results)
 
 
@@ -267,16 +342,15 @@ def route_policy_vector(
         )
     ):
         kind = MicroCommandKind.EMERGENCY
-        mm_tool = "micromachine.emergency"
     elif vector.tactical_task.task_type == "execute_ability":
         kind = MicroCommandKind.ABILITY
-        mm_tool = "micromachine.ability"
     else:
         kind = MicroCommandKind.OPERATION
-        mm_tool = "micromachine.operation"
 
     direct_plan = build_direct_plan_from_vector(vector)
-    calls = [ToolCall(mm_tool, common)]
+    # Non-macro commands are authoritative direct actions. MicroMachine is
+    # deliberately absent from this call list; only macro publishes bias.
+    calls: list[ToolCall] = []
     if include_direct_tool and direct_plan is not None:
         calls.append(
             ToolCall(
@@ -284,6 +358,7 @@ def route_policy_vector(
                 {
                     "plan": direct_plan.to_dict(),
                     "update_id": update_id,
+                    "command_id": update_id or direct_plan.audit.get("command_id", ""),
                     "current_frame": current_frame,
                 },
             )
@@ -294,9 +369,8 @@ def route_policy_vector(
         tool_calls=tuple(calls),
         direct_plan=direct_plan,
         reason=(
-            f"micro command routed as {kind.value}; "
-            "MicroMachine remains the autonomous policy path and direct SC2 "
-            "is an additional explicit tool when a live adapter is attached."
+            f"micro command routed as {kind.value}; direct SC2 owns the "
+            "explicit action until completion, cancellation, failure, or TTL expiry."
         ),
     )
 
@@ -361,16 +435,37 @@ def build_direct_plan_from_vector(
             vector.emergency.hold_position,
         )
     ):
-        actions.append(
-            SC2CommandAction(
-                action_type=SC2ActionType.MOVE_GROUP,
-                subject="available combat units",
-                target="self_main",
-                count=1,
-                priority=100,
-                metadata={"emergency": True},
+        if vector.emergency.cancel_attacks:
+            actions.append(
+                SC2CommandAction(
+                    action_type=SC2ActionType.STOP_GROUP,
+                    subject="available combat units",
+                    count=1,
+                    priority=100,
+                    metadata={"emergency": True},
+                )
             )
-        )
+        if vector.emergency.hold_position:
+            actions.append(
+                SC2CommandAction(
+                    action_type=SC2ActionType.HOLD_POSITION,
+                    subject="available combat units",
+                    count=1,
+                    priority=100,
+                    metadata={"emergency": True},
+                )
+            )
+        if vector.emergency.force_retreat or not actions:
+            actions.append(
+                SC2CommandAction(
+                    action_type=SC2ActionType.MOVE_GROUP,
+                    subject="available combat units",
+                    target="self_main",
+                    count=1,
+                    priority=100,
+                    metadata={"emergency": True, "retreat": True},
+                )
+            )
 
     if not actions:
         return None
@@ -381,7 +476,16 @@ def build_direct_plan_from_vector(
         constraints=tuple(item.key for item in vector.constraints),
         requires_live_sc2=True,
         notes=tuple(notes),
-        audit={"source": "unified_command_router"},
+        audit={
+            "source": "unified_command_router",
+            "command_id": vector.goal or "direct-command",
+            "ttl_seconds": vector.ttl_seconds,
+            "completion_conditions": list(
+                vector.operations[0].lifetime.completion_conditions
+                if vector.operations
+                else ("order_issued",)
+            ),
+        },
     )
 
 
@@ -412,6 +516,8 @@ def create_command_tool_registry(
     micromachine_publish: Callable[[Mapping[str, object]], object] | None = None,
     direct_executor: object | None = None,
     direct_bot: object | None = None,
+    lifecycle: DirectCommandLifecycle | None = None,
+    command_registry: DirectCommandRegistry | None = None,
 ) -> CommanderToolRegistry:
     """Create the built-in MicroMachine and direct SC2 tool set."""
 
@@ -420,6 +526,9 @@ def create_command_tool_registry(
             return {"ok": False, "status": "micromachine_runtime_unavailable"}
         value = micromachine_publish(arguments)
         return _mapping_result(value)
+
+    command_lifecycle = lifecycle or DirectCommandLifecycle()
+    semantic_registry = command_registry or DirectCommandRegistry()
 
     def direct_execute(arguments: Mapping[str, object]) -> Mapping[str, object]:
         if direct_executor is None:
@@ -454,11 +563,41 @@ def create_command_tool_registry(
         if inspect.isawaitable(value):
             value = _run_awaitable_sync(value)
         if isinstance(value, SC2PlanExecutionResult):
+            audit = dict(value.to_dict().get("audit", {}))
+            command_id = str(
+                arguments.get("command_id")
+                or plan.audit.get("command_id")
+                or plan.intent_name
+            )
+            raw_ttl = arguments.get("ttl_seconds")
+            if raw_ttl is None:
+                raw_ttl = plan.audit.get("ttl_seconds", 120)
+            ttl_seconds = int(raw_ttl)
+            raw_conditions = arguments.get(
+                "completion_conditions",
+                plan.audit.get("completion_conditions", ("order_issued",)),
+            )
+            conditions = tuple(str(item) for item in raw_conditions) if isinstance(raw_conditions, Sequence) and not isinstance(raw_conditions, (str, bytes)) else ("order_issued",)
+            lease = command_lifecycle.dispatch(
+                command_id=command_id,
+                issued_at_frame=int(arguments.get("current_frame", 0)),
+                ttl_seconds=max(1, ttl_seconds),
+                completion_conditions=conditions,
+            )
+            if not value.success:
+                lease = command_lifecycle.fail(
+                    command_id,
+                    reason="direct_plan_refused",
+                    evidence=audit,
+                )
+            audit["direct_command_lifecycle"] = lease.to_dict()
+            result_document = value.to_dict()
+            result_document["audit"] = audit
             return {
                 "ok": value.success,
                 "status": "executed" if value.success else "direct_action_refused",
                 "runtime_attached": True,
-                "result": value.to_dict(),
+                "result": result_document,
             }
         return _mapping_result(value)
 
@@ -481,6 +620,34 @@ def create_command_tool_registry(
             }
         )
 
+    def direct_lifecycle(arguments: Mapping[str, object]) -> Mapping[str, object]:
+        command_id = str(arguments.get("command_id", "")).strip()
+        if not command_id:
+            raise ValueError("command_id is required")
+        action = str(arguments.get("action", "observe")).strip().lower()
+        if action == "cancel":
+            lease = command_lifecycle.cancel(command_id)
+        elif action == "observe":
+            evidence = arguments.get("evidence", {})
+            if not isinstance(evidence, Mapping):
+                raise ValueError("evidence must be an object")
+            lease = command_lifecycle.observe(
+                command_id,
+                frame=int(arguments.get("current_frame", 0)),
+                evidence=evidence,
+            )
+        else:
+            raise ValueError("action must be observe or cancel")
+        return {"ok": True, "status": lease.state.value, "lifecycle": lease.to_dict()}
+
+    def list_capabilities(arguments: Mapping[str, object]) -> Mapping[str, object]:
+        return {
+            "ok": True,
+            "capabilities": [capability.to_dict() for capability in SC2_CAPABILITY_CATALOG],
+            "action_types": sorted(SC2_DIRECT_ACTION_TYPES),
+            "registry": semantic_registry.to_dict(),
+        }
+
     schema = {
         "type": "object",
         "properties": {
@@ -496,7 +663,10 @@ def create_command_tool_registry(
         "properties": {
             "plan": {"type": "object"},
             "update_id": {"type": "string"},
+            "command_id": {"type": "string", "minLength": 1},
             "current_frame": {"type": "integer", "minimum": 0},
+            "ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 900},
+            "completion_conditions": {"type": "array", "items": {"type": "string"}},
         },
         "required": ["plan"],
         "additionalProperties": False,
@@ -509,23 +679,41 @@ def create_command_tool_registry(
         metadata = arguments.get("metadata", {})
         if not isinstance(metadata, Mapping):
             raise ValueError("metadata must be an object.")
+        subject = str(arguments.get("subject", ""))
+        target = semantic_registry.resolve_target(str(arguments.get("target", "")))
+        metadata_map = dict(metadata)
+        try:
+            squad = semantic_registry.resolve_squad(subject)
+        except KeyError:
+            squad = None
+        if squad is not None:
+            subject = squad.unit_query
+            metadata_map.setdefault("squad", squad.name)
         plan = SC2ExecutionPlan(
             intent_name=f"mcp:direct:{action_type.value}",
             priority=str(arguments.get("priority_label", "normal")),
             ordered_actions=(
                 SC2CommandAction(
                     action_type=action_type,
-                    subject=str(arguments.get("subject", "")),
-                    target=str(arguments.get("target", "")),
+                    subject=subject,
+                    target=target,
                     count=int(arguments.get("count", 1)),
                     priority=int(arguments.get("priority", 50)),
-                    metadata=metadata,
+                    metadata=metadata_map,
                 ),
             ),
             requires_live_sc2=True,
             audit={"source": "mcp", "tool": action_type.value},
         )
-        return direct_execute({"plan": plan.to_dict()})
+        return direct_execute(
+            {
+                "plan": plan.to_dict(),
+                "command_id": arguments.get("command_id"),
+                "current_frame": arguments.get("current_frame", 0),
+                "ttl_seconds": arguments.get("ttl_seconds"),
+                "completion_conditions": arguments.get("completion_conditions"),
+            }
+        )
 
     action_schema = {
         "type": "object",
@@ -536,6 +724,9 @@ def create_command_tool_registry(
             "priority": {"type": "integer", "minimum": 0, "maximum": 100},
             "priority_label": {"type": "string"},
             "metadata": {"type": "object"},
+            "command_id": {"type": "string", "minLength": 1},
+            "ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 900},
+            "completion_conditions": {"type": "array", "items": {"type": "string"}},
         },
         "required": ["subject"],
         "additionalProperties": False,
@@ -581,6 +772,28 @@ def create_command_tool_registry(
             "Read a structured observation from the attached SC2 runtime.",
             {"type": "object", "additionalProperties": False},
             direct_observe,
+        ),
+        ToolSpec(
+            "sc2.direct.lifecycle",
+            "Observe, cancel, or expire a direct command lease.",
+            {
+                "type": "object",
+                "properties": {
+                    "command_id": {"type": "string", "minLength": 1},
+                    "action": {"type": "string", "enum": ["observe", "cancel"]},
+                    "current_frame": {"type": "integer", "minimum": 0},
+                    "evidence": {"type": "object"},
+                },
+                "required": ["command_id"],
+                "additionalProperties": False,
+            },
+            direct_lifecycle,
+        ),
+        ToolSpec(
+            "sc2.direct.capabilities",
+            "List the bounded semantic SC2 capability catalog.",
+            {"type": "object", "additionalProperties": False},
+            list_capabilities,
         ),
         ToolSpec(
             "sc2.direct.assign_workers",
@@ -634,6 +847,33 @@ def create_command_tool_registry(
             },
             action_tool(SC2ActionType.EXECUTE_ABILITY),
         ),
+        ToolSpec(
+            "sc2.direct.move_camera",
+            "Move the live camera to a semantic target.",
+            action_schema,
+            action_tool(SC2ActionType.MOVE_CAMERA),
+        ),
+        ToolSpec(
+            "sc2.direct.stop_group",
+            "Stop a semantic squad immediately.",
+            action_schema,
+            action_tool(SC2ActionType.STOP_GROUP),
+        ),
+        ToolSpec(
+            "sc2.direct.hold_position",
+            "Hold a semantic squad in place.",
+            action_schema,
+            action_tool(SC2ActionType.HOLD_POSITION),
+        ),
+        ToolSpec(
+            "sc2.direct.retreat",
+            "Move a semantic squad back to the own main base.",
+            action_schema,
+            lambda arguments: one_action_tool(
+                SC2ActionType.MOVE_GROUP,
+                {**dict(arguments), "target": arguments.get("target", "self_main")},
+            ),
+        ),
     )
     return CommanderToolRegistry(tools)
 
@@ -686,6 +926,45 @@ def _mapping_result(value: object) -> dict[str, object]:
     if value is None:
         return {"ok": True}
     return {"ok": bool(value), "value": value}
+
+
+def _requires_sequential_call(call: ToolCall) -> bool:
+    """Return whether a tool must remain ordered with neighboring calls."""
+
+    if call.arguments.get("parallel") is False:
+        return True
+    if call.name in {
+        "sc2.direct.build_structure",
+        "sc2.direct.train_unit",
+        "sc2.direct.repair",
+        "sc2.direct.execute_ability",
+        "sc2.direct.stop_group",
+        "sc2.direct.hold_position",
+        "sc2.direct.lifecycle",
+    }:
+        return True
+    if call.name == "sc2.direct.execute":
+        plan = call.arguments.get("plan")
+        if isinstance(plan, Mapping):
+            actions = plan.get("ordered_actions", plan.get("actions", ()))
+            if isinstance(actions, Sequence) and len(actions) > 1:
+                return True
+    return False
+
+
+def _call_conflict_key(call: ToolCall) -> tuple[str, str] | None:
+    """Return the semantic ownership key for a potentially conflicting call.
+
+    Two commands addressing the same named squad must not race, while calls
+    with different subjects (for example worker assignment and scout move)
+    remain eligible for one parallel batch.
+    """
+
+    if call.name.startswith("sc2.direct."):
+        subject = str(call.arguments.get("subject", "")).strip().casefold()
+        if subject:
+            return ("subject", subject)
+    return None
 
 
 def _run_awaitable_sync(value: object) -> object:

@@ -15,6 +15,7 @@ from typing import Any, Final
 
 from starcraft_commander.contracts import (
     SC2_ACTION_TYPES,
+    SC2_DIRECT_ACTION_TYPES,
     SC2ActionReport,
     SC2ActionType,
     SC2CommandAction,
@@ -36,6 +37,12 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "SC2RuntimeExecutor": "starcraft_commander.sc2_executor",
     "SC2RuntimeExecutorInterface": "starcraft_commander.sc2_executor",
     "build_sc2_execution_plan": "starcraft_commander.sc2_executor",
+    "DirectCommandLifecycle": "starcraft_commander.direct_command_lifecycle",
+    "DirectCommandLease": "starcraft_commander.direct_command_lifecycle",
+    "DirectCommandState": "starcraft_commander.direct_command_lifecycle",
+    "DirectCommandRegistry": "starcraft_commander.direct_command_registry",
+    "SquadDefinition": "starcraft_commander.direct_command_registry",
+    "TargetPin": "starcraft_commander.direct_command_registry",
     # Commander state resolution.
     "DEFAULT_SC2_STATE_RESOLVER": "starcraft_commander.state_resolver",
     "SC2CommanderState": "starcraft_commander.state_resolver",
@@ -199,6 +206,8 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "CommanderToolRegistry": "starcraft_commander.unified_command_router",
     "MicroCommandKind": "starcraft_commander.unified_command_router",
     "ToolCall": "starcraft_commander.unified_command_router",
+    "SC2Capability": "starcraft_commander.unified_command_router",
+    "SC2_CAPABILITY_CATALOG": "starcraft_commander.unified_command_router",
     "ToolExecutionResult": "starcraft_commander.unified_command_router",
     "ToolSpec": "starcraft_commander.unified_command_router",
     "UnifiedCommandLayer": "starcraft_commander.unified_command_router",
@@ -207,6 +216,9 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "create_command_tool_registry": "starcraft_commander.unified_command_router",
     "route_and_execute": "starcraft_commander.unified_command_router",
     "route_policy_vector": "starcraft_commander.unified_command_router",
+    "DirectCommandLease": "starcraft_commander.direct_command_lifecycle",
+    "DirectCommandLifecycle": "starcraft_commander.direct_command_lifecycle",
+    "DirectCommandState": "starcraft_commander.direct_command_lifecycle",
     "VoiStarcraftMCPServer": "starcraft_commander.mcp_server",
     "StaticJsonPolicyModulationProvider": "starcraft_commander.micromachine_live_session",
     "MicroMachineSoakConfig": "starcraft_commander.micromachine_soak",
@@ -270,6 +282,7 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
 
 _EAGER_EXPORTS: Final[tuple[str, ...]] = (
     "SC2_ACTION_TYPES",
+    "SC2_DIRECT_ACTION_TYPES",
     "SC2ActionReport",
     "SC2ActionType",
     "SC2CommandAction",

@@ -45,6 +45,8 @@ from starcraft_commander.policy_modulation import (
     PolicyOverrideLevel,
     WorkerModulation,
 )
+from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
+from starcraft_commander.direct_command_registry import DirectCommandRegistry
 from starcraft_commander.policy_modulation_provider import (
     PolicyModulationCompileResult,
     PolicyModulationCompileStatus,
@@ -65,6 +67,9 @@ class LiveModulationStatus(str, Enum):
     CLARIFICATION_REQUIRED = "clarification_required"
     REFUSED = "refused"
     PUBLISH_FAILED = "publish_failed"
+    DIRECT_EXECUTED = "direct_executed"
+    DIRECT_FAILED = "direct_failed"
+    DIRECT_PLANNED = "direct_planned"
 
 
 class LiveModulationConsumptionStatus(str, Enum):
@@ -840,7 +845,12 @@ class LiveTextModulationResult:
 
     @property
     def ok(self) -> bool:
-        return self.status is LiveModulationStatus.PUBLISHED and self.update is not None
+        return (
+            self.status is LiveModulationStatus.PUBLISHED and self.update is not None
+        ) or self.status in {
+            LiveModulationStatus.DIRECT_EXECUTED,
+            LiveModulationStatus.DIRECT_PLANNED,
+        }
 
     @property
     def consumed(self) -> bool:
@@ -880,12 +890,19 @@ class MicroMachineLiveTextSession:
         ),
         direct_executor: object | None = None,
         include_direct_tool: bool = True,
+        direct_lifecycle: DirectCommandLifecycle | None = None,
+        direct_command_registry: DirectCommandRegistry | None = None,
     ) -> None:
         self.backend = backend
         self.provider = provider
         self.bridge_status = _coerce_bridge_status(bridge_status)
         self.direct_executor = direct_executor
         self.include_direct_tool = bool(include_direct_tool)
+        # Keep one lease registry for the whole live session.  Recreating it
+        # per request would make completion, cancellation, and TTL
+        # observations unable to release a previously issued squad lease.
+        self.direct_lifecycle = direct_lifecycle or DirectCommandLifecycle()
+        self.direct_command_registry = direct_command_registry or DirectCommandRegistry()
 
     def submit_text(
         self,
@@ -1038,6 +1055,53 @@ class MicroMachineLiveTextSession:
                     telemetry=telemetry_before,
                     incoming_update_id=effective_update_id,
                 )
+            if compile_result.vector.command_layer is not CommandLayer.MACRO:
+                direct_route = self._unified_route_result(
+                    compile_result.vector,
+                    update_id=effective_update_id,
+                    current_frame=frame,
+                    published_payload={},
+                )
+                tool_results = tuple(direct_route.get("tool_results", ()))
+                direct_ok = bool(tool_results) and all(
+                    bool(item.get("ok")) for item in tool_results
+                )
+                direct_queue = {
+                    "active_command_id": effective_update_id,
+                    "update_id": effective_update_id,
+                    "command_layer": compile_result.vector.command_layer.value,
+                    "direct_control_owner": (
+                        "direct_sc2" if direct_ok else "none"
+                    ),
+                    "lifecycle": (
+                        tool_results[0].get("result", {}).get("result", {}).get("audit", {}).get("direct_command_lifecycle", {})
+                        if tool_results and isinstance(tool_results[0].get("result"), Mapping)
+                        else {}
+                    ),
+                }
+                return LiveTextModulationResult(
+                    command_text=text,
+                    status=(
+                        LiveModulationStatus.DIRECT_EXECUTED
+                        if direct_ok
+                        else (
+                            LiveModulationStatus.DIRECT_PLANNED
+                            if not self.include_direct_tool
+                            else LiveModulationStatus.DIRECT_FAILED
+                        )
+                    ),
+                    current_frame=frame,
+                    compile_result=compile_result,
+                    update=None,
+                    dashboard=self.backend.dashboard_snapshot(
+                        current_frame=frame,
+                        bridge_status=self.bridge_status,
+                    ),
+                    consumption_status=LiveModulationConsumptionStatus.NOT_PUBLISHED,
+                    command_queue=direct_queue,
+                    unified_route=direct_route.get("route"),
+                    tool_results=tool_results,
+                )
             compile_result, command_queue = _reduce_live_command_queue(
                 text,
                 compile_result,
@@ -1139,6 +1203,8 @@ class MicroMachineLiveTextSession:
         registry = create_command_tool_registry(
             micromachine_publish=lambda _arguments: dict(published_payload),
             direct_executor=self.direct_executor,
+            lifecycle=self.direct_lifecycle,
+            command_registry=self.direct_command_registry,
         )
         routed = route_and_execute(
             vector,
@@ -1151,6 +1217,38 @@ class MicroMachineLiveTextSession:
             "unified_route": routed.get("route"),
             "tool_results": routed.get("tool_results", ()),
         }
+
+    def observe_direct_command(
+        self,
+        command_id: str,
+        *,
+        current_frame: int,
+        evidence: Mapping[str, object] | None = None,
+    ) -> dict[str, object]:
+        """Advance a session-owned Direct lease from live observation data.
+
+        The method is intentionally small so a BotAI game-loop callback can
+        call it after each observation without publishing anything to
+        MicroMachine.  Once the lease reaches a terminal state, the normal
+        MicroMachine policy path is eligible again on the next macro command.
+        """
+
+        lease = self.direct_lifecycle.observe(
+            command_id,
+            frame=current_frame,
+            evidence=evidence or {},
+        )
+        return lease.to_dict()
+
+    def cancel_direct_command(
+        self,
+        command_id: str,
+        *,
+        reason: str = "cancelled_by_user",
+    ) -> dict[str, object]:
+        """Cancel a session-owned Direct lease and release squad ownership."""
+
+        return self.direct_lifecycle.cancel(command_id, reason=reason).to_dict()
 
     def _resolve_current_frame(self, current_frame: int | None) -> int:
         if current_frame is not None:

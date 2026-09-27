@@ -113,6 +113,8 @@ class StarCraftCommanderPackageSurfaceTest(unittest.TestCase):
                     "execute_ability",
                     "observe",
                     "move_camera",
+                    "stop_group",
+                    "hold_position",
                 },
             ),
             SC2_ACTION_TYPES,

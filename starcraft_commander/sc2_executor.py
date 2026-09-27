@@ -1101,4 +1101,6 @@ def _method_name_for_action(action_type: SC2ActionType) -> str:
         SC2ActionType.EXECUTE_ABILITY: "execute_ability",
         SC2ActionType.OBSERVE: "observe",
         SC2ActionType.MOVE_CAMERA: "move_camera",
+        SC2ActionType.STOP_GROUP: "stop_group",
+        SC2ActionType.HOLD_POSITION: "hold_position",
     }[action_type]

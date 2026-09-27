@@ -66,6 +66,9 @@ class VoiStarcraftMCPServer:
                 request_id,
                 {"tools": [tool.to_mcp_dict() for tool in self.registry.list_tools()]},
             )
+        if method == "voiStarcraft2/capabilities/list":
+            capability_tool = self.registry.call("sc2.direct.capabilities", {})
+            return self._result(request_id, capability_tool.result)
         if method == "tools/call":
             return await self._handle_call(request_id, params)
         if method == "voiStarcraft2/tools/call_many":

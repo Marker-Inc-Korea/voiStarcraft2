@@ -298,6 +298,8 @@ class AdapterContractTest(unittest.TestCase):
                 "execute_ability",
                 "observe",
                 "move_camera",
+                "stop_group",
+                "hold_position",
             ),
             SC2_ADAPTER_ACTION_METHOD_NAMES,
         )

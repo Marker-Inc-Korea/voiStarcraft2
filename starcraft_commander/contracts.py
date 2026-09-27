@@ -25,6 +25,13 @@ class SC2ActionType(str, Enum):
     EXECUTE_ABILITY = "execute_ability"
     OBSERVE = "observe"
     MOVE_CAMERA = "move_camera"
+    STOP_GROUP = "stop_group"
+    HOLD_POSITION = "hold_position"
+
+
+# The direct MCP surface is intentionally semantic and finite.  Keeping the
+# catalog next to the action enum makes it impossible for a provider to invent
+# an arbitrary python-sc2 method name at runtime.
 
 
 SC2_PRIORITY_VALUES: Final[dict[str, int]] = {
@@ -38,7 +45,17 @@ SC2_PRIORITY_VALUES: Final[dict[str, int]] = {
 SC2_ACTION_TYPES: Final[frozenset[str]] = frozenset(
     action_type.value for action_type in SC2ActionType
 )
-"""Stable public semantic SC2 action type values."""
+"""Stable public semantic SC2 action type values.
+
+Emergency Stop and Hold are part of the same bounded public action contract;
+callers should use :data:`SC2_DIRECT_ACTION_TYPES` only when they explicitly
+need to distinguish the MCP surface.
+"""
+
+SC2_DIRECT_ACTION_TYPES: Final[frozenset[str]] = frozenset(
+    action_type.value for action_type in SC2ActionType
+)
+"""Complete bounded action catalog exposed by direct SC2 tools."""
 
 
 @dataclass(frozen=True)
@@ -413,7 +430,7 @@ def _coerce_action_type(
         try:
             return SC2ActionType(action_type)
         except ValueError as exc:
-            supported = ", ".join(sorted(SC2_ACTION_TYPES))
+            supported = ", ".join(sorted(SC2_DIRECT_ACTION_TYPES))
             raise ValueError(
                 f"{field_name} must be one of: {supported}. "
                 f"Unknown action_type: {action_type!r}."

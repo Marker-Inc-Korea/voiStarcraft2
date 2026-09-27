@@ -68,6 +68,8 @@ SC2_ADAPTER_ACTION_METHOD_NAMES: Final[tuple[str, ...]] = (
     "execute_ability",
     "observe",
     "move_camera",
+    "stop_group",
+    "hold_position",
 )
 """The semantic action methods ``SC2RuntimeExecutor`` dispatches to."""
 
@@ -206,6 +208,12 @@ class SC2BotAdapterInterface(Protocol):
 
     async def move_camera(self, action: SC2CommandAction) -> SC2ActionReport:
         """Move the live camera to the resolved semantic map target."""
+
+    async def stop_group(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Stop the selected unit group immediately."""
+
+    async def hold_position(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Hold the selected unit group at its current position."""
 
 
 @dataclass
@@ -648,6 +656,32 @@ class PythonSC2BotAdapter:
                     moved = await _call_bot_operation(method, destination)
                     return _issuance_report(1, 1 if moved else 0, "camera_refused")
         return _refusal_report(1, "missing_camera_capability")
+
+    async def stop_group(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Issue a stop order to the selected semantic group."""
+
+        return await self._order_group_action(action, "stop")
+
+    async def hold_position(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Issue a hold-position order to the selected semantic group."""
+
+        return await self._order_group_action(action, "hold_position")
+
+    async def _order_group_action(
+        self,
+        action: SC2CommandAction,
+        method_name: str,
+    ) -> SC2ActionReport:
+        requested = _leading_count(action.subject) or max(1, action.count)
+        units = self._select_group(action.subject)
+        if not units:
+            return _refusal_report(requested, "no_matching_units")
+        issued = 0
+        for unit in units[:requested]:
+            method = getattr(unit, method_name, None)
+            if callable(method) and await self._issue_unit_order(method):
+                issued += 1
+        return _issuance_report(requested, issued, "insufficient_units")
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-ready description of the adapter configuration."""
