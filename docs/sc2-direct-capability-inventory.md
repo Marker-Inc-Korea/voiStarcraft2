@@ -32,3 +32,29 @@ semantic adapter methods, but not a claim that every raw `python-sc2`/s2client
 API has been exposed. Unsupported raw APIs remain out of the LLM surface until
 they have a semantic schema, safety/ownership rules, adapter implementation,
 and focused tests.
+
+## Raw API gap ledger (repository virtualenv)
+
+The installed `python-sc2` package was inspected on 2026-09-28. Its public
+`Unit` command methods include `attack`, `build`, `build_gas`, `gather`,
+`hold_position`, `move`, `patrol`, `repair`, `research`, `return_resource`,
+`smart`, `stop`, `train`, and `warp_in`. The semantic catalog maps the safe
+subset of these methods through validated action types; `build_gas`, explicit
+`train` producer selection, and the complete target/caster matrix for
+`research`, `warp_in`, and `execute_ability` still require runtime proof.
+
+The public `BotAI` control surface also includes `do`, `synchronous_do`,
+`get_available_abilities`, `can_cast`, `can_place`, `can_place_single`,
+`find_placement`, `select_build_worker`, `distribute_workers`, `expand_now`,
+`research`, `train`, `build`, `on_step`, and event callbacks. These are runtime
+coordination or observation APIs, not independently exposed LLM tools. They
+remain **unimplemented as direct MCP capabilities** until each has a bounded
+schema, ownership/parallelism policy, failure semantics, adapter path, and
+focused contract test. Read-only `Unit` properties and calculations are
+likewise not silently advertised as action tools; `sc2.direct.observe` is the
+current structured observation boundary.
+
+This ledger is intentionally an explicit gap report, not a claim of “all SC2
+API support”. The approved “all functions” requirement remains open until the
+gap entries are either implemented and tested or explicitly rejected with a
+user-visible reason.
