@@ -258,6 +258,14 @@ event-loop 내부 async direct executor dispatch, subject ownership/conflict,
 top-level task/build lowering을 검증한다. 최신 전체 집중 묶음은
 `280 passed, 1 skipped, 423 subtests passed`다.
 
+웹 브리지의 game-loop seam과 요청 간 Direct ownership 보존을 별도로 확인했다.
+
+```text
+./.venv/bin/pytest -q tests/test_web_gui.py \\
+  -k 'bridge_ticks_shared_direct_lifecycle_for_game_loop or modulation_requests_share_bridge_direct_ownership_registry'
+2 passed, 542 deselected
+```
+
 전체 저장소 실행도 수행했다.
 
 ```text
