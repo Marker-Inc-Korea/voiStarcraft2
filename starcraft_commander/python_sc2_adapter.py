@@ -215,6 +215,11 @@ class SC2BotAdapterInterface(Protocol):
     async def hold_position(self, action: SC2CommandAction) -> SC2ActionReport:
         """Hold the selected unit group at its current position."""
 
+    def direct_command_evidence(
+        self, lease: Mapping[str, object]
+    ) -> Mapping[str, object]:
+        """Collect conservative completion evidence for one direct lease."""
+
 
 @dataclass
 class PythonSC2BotAdapter:
@@ -622,6 +627,130 @@ class PythonSC2BotAdapter:
         """
 
         return self.state_resolver.resolve(self.bot).to_dict()
+
+    def direct_command_evidence(
+        self, lease: Mapping[str, object]
+    ) -> Mapping[str, object]:
+        """Translate live BotAI observations into lifecycle evidence.
+
+        The lifecycle remains runtime-independent; this adapter is the only
+        layer that knows how to inspect python-sc2 units, structures, and map
+        targets. Evidence is deliberately conservative: an unreadable or
+        ambiguous observation yields no proof and therefore cannot release a
+        Direct lease early. ``order_issued`` is recorded at dispatch by the
+        router because the adapter cannot reconstruct the issuing call after
+        the fact.
+        """
+
+        raw_conditions = lease.get("completion_conditions", ())
+        if not isinstance(raw_conditions, Sequence) or isinstance(
+            raw_conditions, (str, bytes)
+        ):
+            return {}
+        conditions = {str(item).strip().lower() for item in raw_conditions}
+        context = lease.get("command_metadata", {})
+        if not isinstance(context, Mapping):
+            return {}
+        raw_actions = context.get("actions", ())
+        if not isinstance(raw_actions, Sequence) or isinstance(
+            raw_actions, (str, bytes)
+        ):
+            return {}
+        actions = tuple(item for item in raw_actions if isinstance(item, Mapping))
+        if not actions or not conditions:
+            return {}
+
+        try:
+            state = self.state_resolver.resolve(self.bot).to_dict()
+        except Exception:  # noqa: BLE001 - evidence must never break the game loop.
+            state = {}
+        evidence: dict[str, object] = {}
+        if "target_reached" in conditions and self._direct_targets_reached(actions):
+            evidence["target_reached"] = True
+        if "retreat_confirmed" in conditions and self._direct_targets_reached(
+            actions, retreat_only=True
+        ):
+            evidence["retreat_confirmed"] = True
+        if "building_started" in conditions and _direct_building_observed(
+            actions,
+            state,
+            baseline=context.get("baseline"),
+            completed=False,
+        ):
+            evidence["building_started"] = True
+        if "building_completed" in conditions and _direct_building_observed(
+            actions,
+            state,
+            baseline=context.get("baseline"),
+            completed=True,
+        ):
+            evidence["building_completed"] = True
+        if "unit_count_reached" in conditions and _direct_unit_count_reached(
+            actions, state, baseline=context.get("baseline")
+        ):
+            evidence["unit_count_reached"] = True
+        if "enemy_observed" in conditions and _direct_enemy_observed(state):
+            evidence["enemy_observed"] = True
+        if "ability_cast" in conditions and _direct_ability_observed(actions, self):
+            evidence["ability_cast"] = True
+        return evidence
+
+    def _direct_targets_reached(
+        self,
+        actions: Sequence[Mapping[str, object]],
+        *,
+        retreat_only: bool = False,
+    ) -> bool:
+        """Return true only when every requested moving group is at its target."""
+
+        checked = False
+        for action in actions:
+            action_type = str(action.get("action_type", "")).strip().lower()
+            if action_type not in {"move_group", "attack_move"}:
+                continue
+            target = str(action.get("target", "")).strip()
+            is_retreat = target == "self_main"
+            if retreat_only and not is_retreat:
+                continue
+            checked = True
+            try:
+                point = self._resolve_target_point(target)
+                units = self._select_group(str(action.get("subject", "")))
+            except Exception:  # noqa: BLE001 - unresolved runtime data is not proof.
+                return False
+            if point is None or not units:
+                return False
+            raw_count = action.get("count", 0)
+            count = int(raw_count) if isinstance(raw_count, (int, float)) else 0
+            required = len(units) if count <= 0 else min(count, len(units))
+            selected = units[:required]
+            positions = [
+                entity_point
+                for unit in selected
+                if (entity_point := _entity_point(unit)) is not None
+            ]
+            if len(positions) < required or any(
+                position.distance_to(point) > 2.5 for position in positions
+            ):
+                return False
+        return checked
+
+    def direct_command_baseline(
+        self, _plan: Mapping[str, object]
+    ) -> Mapping[str, object]:
+        """Snapshot counts used to prove newly-created units/structures."""
+
+        try:
+            snapshot = self.state_resolver.resolve(self.bot).to_dict()
+        except Exception:  # noqa: BLE001 - unavailable baseline is explicit.
+            return {}
+        return {
+            "own_units": dict(snapshot.get("own_units", {})),
+            "own_structures": dict(snapshot.get("own_structures", {})),
+            "structures_in_progress": dict(
+                snapshot.get("structures_in_progress", {})
+            ),
+        }
 
     async def move_camera(self, action: SC2CommandAction) -> SC2ActionReport:
         """Center the live camera on a resolved semantic target when supported."""
@@ -1930,6 +2059,117 @@ def _is_damaged(entity: object) -> bool:
     percentage = getattr(entity, "health_percentage", None)
     if _is_real_number(percentage):
         return float(percentage) < 1.0
+    return False
+
+
+def _direct_building_observed(
+    actions: Sequence[Mapping[str, object]],
+    state: Mapping[str, object],
+    *,
+    baseline: object,
+    completed: bool,
+) -> bool:
+    """Check that every requested structure crossed the requested boundary."""
+
+    if not isinstance(baseline, Mapping):
+        return False
+    current_ready = state.get("own_structures", {})
+    before_ready = baseline.get("own_structures", {})
+    current_progress = state.get("structures_in_progress", {})
+    before_progress = baseline.get("structures_in_progress", {})
+    if not all(
+        isinstance(value, Mapping)
+        for value in (current_ready, before_ready, current_progress, before_progress)
+    ):
+        return False
+    checked = False
+    for action in actions:
+        if str(action.get("action_type", "")).strip().lower() != "build_structure":
+            continue
+        subject = _normalized_name(action.get("subject", ""))
+        if subject is None:
+            return False
+        checked = True
+        now_ready = int(current_ready.get(subject, 0) or 0)
+        then_ready = int(before_ready.get(subject, 0) or 0)
+        now_progress = int(current_progress.get(subject, 0) or 0)
+        then_progress = int(before_progress.get(subject, 0) or 0)
+        crossed = (
+            now_ready > then_ready
+            if completed
+            else now_ready > then_ready or now_progress > then_progress
+        )
+        if not crossed:
+            return False
+    return checked
+
+
+def _direct_unit_count_reached(
+    actions: Sequence[Mapping[str, object]],
+    state: Mapping[str, object],
+    *,
+    baseline: object,
+) -> bool:
+    """Check that each requested train action added its requested units."""
+
+    if not isinstance(baseline, Mapping):
+        return False
+    current = state.get("own_units", {})
+    before = baseline.get("own_units", {})
+    if not isinstance(current, Mapping) or not isinstance(before, Mapping):
+        return False
+    checked = False
+    for action in actions:
+        if str(action.get("action_type", "")).strip().lower() != "train_unit":
+            continue
+        subject = _normalized_name(action.get("subject", ""))
+        if subject is None:
+            return False
+        requested = int(action.get("count", 0) or 0)
+        if requested <= 0:
+            return False
+        checked = True
+        if int(current.get(subject, 0) or 0) - int(before.get(subject, 0) or 0) < requested:
+            return False
+    return checked
+
+
+def _direct_enemy_observed(state: Mapping[str, object]) -> bool:
+    """Return true only when the state resolver saw at least one enemy entity."""
+
+    for key in ("visible_enemy_units", "visible_enemy_structures"):
+        values = state.get(key, {})
+        if isinstance(values, Mapping) and any(int(value or 0) > 0 for value in values.values()):
+            return True
+    return False
+
+
+def _direct_ability_observed(
+    actions: Sequence[Mapping[str, object]], adapter: PythonSC2BotAdapter
+) -> bool:
+    """Accept explicit runtime ability confirmation, never mere intent."""
+
+    expected = {
+        str(action.get("metadata", {}).get("ability_id") or action.get("metadata", {}).get("ability") or "")
+        .strip()
+        .casefold()
+        for action in actions
+        if str(action.get("action_type", "")).strip().lower() == "execute_ability"
+        and isinstance(action.get("metadata", {}), Mapping)
+    }
+    expected.discard("")
+    if not expected:
+        return False
+    for attr in ("direct_ability_evidence", "ability_cast_observed", "last_ability"):
+        value = getattr(adapter.bot, attr, None)
+        if isinstance(value, Mapping):
+            observed = str(value.get("ability") or value.get("name") or "").casefold()
+            if observed in expected and bool(value.get("confirmed", True)):
+                return True
+        elif isinstance(value, str) and value.casefold() in expected:
+            return True
+        elif value is True and attr != "last_ability":
+            return True
     return False
 
 

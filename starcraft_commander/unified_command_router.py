@@ -745,6 +745,18 @@ def create_command_tool_registry(
         lease = None
         if lifecycle_required:
             subjects = tuple(action.subject for action in plan.actions)
+            command_metadata: dict[str, object] = {
+                "intent_name": plan.intent_name,
+                "actions": [action.to_dict() for action in plan.actions],
+            }
+            baseline_provider = getattr(direct_executor, "direct_command_baseline", None)
+            if callable(baseline_provider):
+                try:
+                    baseline = baseline_provider(plan)
+                except Exception:  # noqa: BLE001 - optional evidence only.
+                    baseline = {}
+                if isinstance(baseline, Mapping):
+                    command_metadata["baseline"] = dict(baseline)
             try:
                 lease = command_lifecycle.pending(
                     command_id=command_id,
@@ -752,6 +764,7 @@ def create_command_tool_registry(
                     ttl_seconds=max(1, ttl_seconds),
                     completion_conditions=conditions,
                     owned_subjects=subjects,
+                    command_metadata=command_metadata,
                 )
             except DirectCommandOwnershipConflict as error:
                 return {
@@ -815,6 +828,14 @@ def create_command_tool_registry(
                 lease = command_lifecycle.mark_dispatched(command_id)
             if value.success and lifecycle_required:
                 lease = command_lifecycle.activate(command_id)
+                # An issued order is immediate evidence.  Keep it in the
+                # lease so a later game-loop tick can combine it with
+                # target/build/ability observations for compound conditions.
+                if "order_issued" in lease.completion_conditions:
+                    lease = command_lifecycle.record_evidence(
+                        command_id,
+                        {"order_issued": True},
+                    )
             if not value.success and lifecycle_required:
                 lease = command_lifecycle.fail(
                     command_id,

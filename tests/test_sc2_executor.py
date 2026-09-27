@@ -613,6 +613,38 @@ class SC2RuntimeExecutorTest(unittest.TestCase):
         self.assertEqual((), executor.direct_lifecycle.active_leases())
         self.assertEqual((), executor.observe_direct_commands(current_frame=8))
 
+    def test_runtime_executor_supplies_adapter_evidence_to_lifecycle(self) -> None:
+        from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
+
+        class EvidenceBot:
+            def direct_command_evidence(self, lease):
+                self.seen_lease = lease
+                return {"target_reached": True}
+
+        bot = EvidenceBot()
+        executor = SC2RuntimeExecutor(
+            bot=bot,
+            direct_lifecycle=DirectCommandLifecycle(game_loops_per_second=1),
+        )
+        executor.direct_lifecycle.dispatch(
+            command_id="arrival",
+            issued_at_frame=1,
+            ttl_seconds=5,
+            completion_conditions=("target_reached",),
+            command_metadata={
+                "actions": [
+                    {
+                        "action_type": "move_group",
+                        "subject": "MARINE",
+                        "target": "enemy_natural",
+                    }
+                ]
+            },
+        )
+        observed = executor.tick_direct_commands(2)
+        self.assertEqual("completed", observed[0]["state"])
+        self.assertEqual("arrival", bot.seen_lease["command_id"])
+
     def test_lifecycle_execute_contract_uses_bound_bot_and_preserves_order(self) -> None:
         class FakeBot:
             def __init__(self) -> None:

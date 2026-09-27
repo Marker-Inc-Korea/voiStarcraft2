@@ -36,6 +36,7 @@ class DirectCommandLease:
     completion_conditions: tuple[str, ...] = ()
     owned_subjects: tuple[str, ...] = ()
     control_owner: str = "direct_sc2"
+    command_metadata: Mapping[str, object] = field(default_factory=dict)
     state: DirectCommandState = DirectCommandState.ACTIVE
     release_reason: str = ""
     evidence: Mapping[str, object] = field(default_factory=dict)
@@ -55,6 +56,7 @@ class DirectCommandLease:
             "completion_conditions": list(self.completion_conditions),
             "owned_subjects": list(self.owned_subjects),
             "control_owner": self.control_owner if self.control_owned else "none",
+            "command_metadata": dict(self.command_metadata),
             "state": self.state.value,
             "control_owned": self.control_owned,
             "release_reason": self.release_reason,
@@ -86,6 +88,7 @@ class DirectCommandLifecycle:
         completion_conditions: tuple[str, ...] = (),
         owned_subjects: Sequence[str] = (),
         control_owner: str = "direct_sc2",
+        command_metadata: Mapping[str, object] | None = None,
     ) -> DirectCommandLease:
         command_id = str(command_id).strip()
         if not command_id:
@@ -113,6 +116,7 @@ class DirectCommandLifecycle:
             completion_conditions=tuple(str(item) for item in completion_conditions),
             owned_subjects=subjects,
             control_owner=str(control_owner or "direct_sc2"),
+            command_metadata=dict(command_metadata or {}),
         )
         self._leases[command_id] = lease
         return lease
@@ -126,6 +130,7 @@ class DirectCommandLifecycle:
         completion_conditions: tuple[str, ...] = (),
         owned_subjects: Sequence[str] = (),
         control_owner: str = "direct_sc2",
+        command_metadata: Mapping[str, object] | None = None,
     ) -> DirectCommandLease:
         """Register a command before an executor dispatches it."""
 
@@ -148,6 +153,7 @@ class DirectCommandLifecycle:
             completion_conditions=tuple(str(item) for item in completion_conditions),
             owned_subjects=subjects,
             control_owner=str(control_owner or "direct_sc2"),
+            command_metadata=dict(command_metadata or {}),
             state=DirectCommandState.PENDING,
         )
         self._leases[command_id] = lease
@@ -183,12 +189,40 @@ class DirectCommandLifecycle:
             DirectCommandState.ACTIVE,
         }:
             return lease
-        evidence_map = dict(evidence or {})
+        # Evidence is cumulative across frames.  This matters for compound
+        # conditions such as ``order_issued`` + ``target_reached``: the
+        # issuance proof must remain true while a later frame supplies the
+        # arrival proof.
+        evidence_map = {**dict(lease.evidence), **dict(evidence or {})}
         if frame >= lease.expires_at_frame:
             return self._replace(lease, DirectCommandState.EXPIRED, "ttl_expired", evidence_map)
         if _conditions_satisfied(lease.completion_conditions, evidence_map):
             return self._replace(lease, DirectCommandState.COMPLETED, "completion_conditions", evidence_map)
         return self._replace(lease, DirectCommandState.ACTIVE, "", evidence_map)
+
+    def record_evidence(
+        self,
+        command_id: str,
+        evidence: Mapping[str, object],
+    ) -> DirectCommandLease:
+        """Persist dispatch/runtime evidence without advancing lifecycle state.
+
+        Dispatch acknowledgements such as ``order_issued`` are facts that may
+        participate in a later compound condition; they do not by themselves
+        release Direct ownership at the moment the order leaves the adapter.
+        The game-loop ``observe`` call is the only boundary that evaluates all
+        completion conditions and changes state.
+        """
+
+        lease = self._require(command_id)
+        if lease.state not in {
+            DirectCommandState.PENDING,
+            DirectCommandState.DISPATCHED,
+            DirectCommandState.ACTIVE,
+        }:
+            return lease
+        merged = {**dict(lease.evidence), **dict(evidence)}
+        return self._replace(lease, lease.state, lease.release_reason, merged)
 
     def active_leases(self) -> tuple[DirectCommandLease, ...]:
         """Return a stable snapshot of leases that still own control.
@@ -297,6 +331,7 @@ class DirectCommandLifecycle:
             completion_conditions=lease.completion_conditions,
             owned_subjects=lease.owned_subjects,
             control_owner=lease.control_owner,
+            command_metadata=lease.command_metadata,
             state=state,
             release_reason=reason,
             evidence=dict(evidence),

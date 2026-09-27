@@ -583,13 +583,55 @@ class SC2RuntimeExecutor:
         seam without creating separate registries that lose squad ownership.
         """
 
+        supplied = evidence_by_command or {}
+        observed_evidence: dict[str, Mapping[str, object]] = {}
+        for lease in self.direct_lifecycle.active_leases():
+            evidence: dict[str, object] = {}
+            provider = getattr(self.bot, "direct_command_evidence", None)
+            if callable(provider):
+                try:
+                    candidate = provider(lease.to_dict())
+                    if isinstance(candidate, Mapping):
+                        evidence.update(candidate)
+                except Exception as error:  # noqa: BLE001 - fail closed.
+                    self._lifecycle_errors.append(
+                        SC2ExecutionError(
+                            message=f"direct evidence provider failed: {error}",
+                            exception_type=type(error).__name__,
+                            metadata={"command_id": lease.command_id},
+                        )
+                    )
+            supplied_evidence = supplied.get(lease.command_id)
+            if isinstance(supplied_evidence, Mapping):
+                evidence.update(supplied_evidence)
+            observed_evidence[lease.command_id] = evidence
         return tuple(
             lease.to_dict()
             for lease in self.direct_lifecycle.observe_all(
                 frame=int(current_frame),
-                evidence_by_command=evidence_by_command,
+                evidence_by_command=observed_evidence,
             )
         )
+
+    def direct_command_baseline(
+        self, plan: SC2ExecutionPlan
+    ) -> Mapping[str, object]:
+        """Capture pre-dispatch runtime counts for completion evidence."""
+
+        provider = getattr(self.bot, "direct_command_baseline", None)
+        if not callable(provider):
+            return {}
+        try:
+            value = provider(plan.to_dict())
+        except Exception as error:  # noqa: BLE001 - baseline is optional evidence.
+            self._lifecycle_errors.append(
+                SC2ExecutionError(
+                    message=f"direct baseline provider failed: {error}",
+                    exception_type=type(error).__name__,
+                )
+            )
+            return {}
+        return dict(value) if isinstance(value, Mapping) else {}
 
     def tick_direct_commands(
         self,

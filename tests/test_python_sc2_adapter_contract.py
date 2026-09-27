@@ -344,6 +344,57 @@ class AdapterContractTest(unittest.TestCase):
             payload["action_methods"],
         )
 
+    def test_direct_command_evidence_proves_arrival_from_live_unit_positions(self) -> None:
+        bot = FakeBotAI(units=[FakeUnit("MARINE", 10.0, 10.0)])
+        adapter = make_adapter(bot)
+        evidence = adapter.direct_command_evidence(
+            {
+                "completion_conditions": ["target_reached"],
+                "command_metadata": {
+                    "actions": [
+                        {
+                            "action_type": "move_group",
+                            "subject": "MARINE",
+                            "target": "self_main",
+                            "count": 1,
+                        }
+                    ]
+                },
+            }
+        )
+        self.assertEqual({"target_reached": True}, evidence)
+
+    def test_direct_command_evidence_requires_observed_build_delta(self) -> None:
+        bot = FakeBotAI()
+        adapter = make_adapter(bot)
+        lease = {
+            "completion_conditions": ["building_started", "building_completed"],
+            "command_metadata": {
+                "baseline": {
+                    "own_structures": {},
+                    "structures_in_progress": {},
+                },
+                "actions": [
+                    {
+                        "action_type": "build_structure",
+                        "subject": "FACTORY",
+                        "target": "self_main",
+                        "count": 1,
+                    }
+                ],
+            },
+        }
+        self.assertEqual({}, adapter.direct_command_evidence(lease))
+        bot.structures.append(FakeUnit("FACTORY", 10.0, 10.0, is_ready=False))
+        started = adapter.direct_command_evidence(lease)
+        self.assertEqual({"building_started": True}, started)
+        bot.structures[0].is_ready = True
+        completed = adapter.direct_command_evidence(lease)
+        self.assertEqual(
+            {"building_started": True, "building_completed": True},
+            completed,
+        )
+
 
 class MoveCameraTest(unittest.TestCase):
     def test_move_camera_invokes_runtime_camera_capability(self) -> None:

@@ -331,6 +331,24 @@ def test_direct_lifecycle_releases_on_completion_expiry_and_cancel() -> None:
     assert cancelled.control_owned
 
 
+def test_direct_lifecycle_retains_dispatch_evidence_until_game_loop_completion() -> None:
+    lifecycle = DirectCommandLifecycle(game_loops_per_second=1)
+    lifecycle.dispatch(
+        command_id="compound",
+        issued_at_frame=10,
+        ttl_seconds=20,
+        completion_conditions=("order_issued", "target_reached"),
+    )
+    active = lifecycle.record_evidence("compound", {"order_issued": True})
+    assert active.state is DirectCommandState.ACTIVE
+    assert active.evidence == {"order_issued": True}
+    completed = lifecycle.observe(
+        "compound", frame=11, evidence={"target_reached": True}
+    )
+    assert completed.state is DirectCommandState.COMPLETED
+    assert completed.evidence == {"order_issued": True, "target_reached": True}
+
+
 def test_direct_lifecycle_records_subject_ownership_and_rejects_overlap() -> None:
     released: list[str] = []
     lifecycle = DirectCommandLifecycle(
