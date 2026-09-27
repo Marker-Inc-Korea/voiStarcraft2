@@ -7,9 +7,10 @@
 
 기준 브랜치는 `codex/llm-command-speedup`, 기준 PR은
 [#187](https://github.com/Marker-Inc-Korea/voiStarcraft2/pull/187)이다. 현재
-working-tree 기준 HEAD는 `ef53ed2`이며, 이번 보강(종료 callback seam,
+현재 구현 기준 HEAD는 `ef53ed2`이며, 이번 보강(종료 callback seam,
 dependent workflow, `enemy_destroyed` evidence, registry lifecycle 공유,
-compact prompt 축소)은 커밋·푸시됐다. GitHub에서 확인한 PR #187은
+compact prompt 축소)은 커밋·푸시됐다. 이후 상태 문서만 갱신한 커밋이
+추가됐지만 실행 코드는 동일하다. GitHub에서 확인한 PR #187은
 `OPEN / BLOCKED`이며, 원격 HEAD `ef53ed2fc05cf6f26d4dcbe6e9fa834e2103e791`의
 최신 hosted 결과는 `ci` run `36325564774`, `final-pre-live` run
 `36325562349`, `pre-live-provenance` run `36325562508`이다.
@@ -284,7 +285,7 @@ Direct release callback, registry lifecycle 공유, build completion 후 depende
 
 ```text
 ./.venv/bin/pytest -q
-173 failed, 2931 passed, 19 skipped, 54 errors, 7148 subtests passed
+173 failed, 2940 passed, 19 skipped, 54 errors, 7148 subtests passed
 ```
 
 전체 실패 결과는 승인된 Direct-only·`runtime_not_attached` 계약과 충돌하는
