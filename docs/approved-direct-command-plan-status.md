@@ -7,17 +7,15 @@
 
 기준 브랜치는 `codex/llm-command-speedup`, 기준 PR은
 [#187](https://github.com/Marker-Inc-Korea/voiStarcraft2/pull/187)이다. 현재
-실행 코드 기준 커밋은 `43a834b`다. 수리 대상 모호성 거부와 live-session
-clarification prompt 전파, semantic Direct capability 확장이 이 커밋에 포함됐다.
-완료된 hosted 검사의 보고 기준은
-동일 실행 코드인 문서 커밋 `64d41a7`로 고정한다. 2026-09-28 KST 확인 시
-PR #187은 `OPEN / BLOCKED`였으며, 해당 snapshot의 결과는
-`ci` run `36351195349`, `final-pre-live` run `36351193937`,
-`pre-live-provenance` run `36351193813`이다. `ci`의
-`unit-contracts (3.10)`, `(3.11)`, `(3.12)`은 모두 실패했고,
-`pre-live-provenance`의 `pre-live-producer-isolation`도 실패했다.
-`event-admission`, `pre-live-build`, `ready-to-merge`는 성공했지만,
-필수 검사가 실패했으므로 CI green이나 merge를 주장하지 않는다. 실제
+실행 코드 기준 커밋은 `7408002`다. 코드 구현 커밋 `43a834b`와 수리 대상
+모호성 거부, live-session clarification prompt 전파, semantic Direct capability
+확장이 이 커밋에 포함됐다. 2026-09-28 KST 확인 시 PR #187은 `OPEN / BLOCKED`였으며,
+최신 Hosted 결과는 `ci` run `36354259831`, `final-pre-live` run `36354258366`,
+`pre-live-provenance` run `36354258288`이다. `ci`의 Python 3.10/3.11/3.12
+unit-contracts는 각각 `173 failed, 2952 passed, 68 skipped, 7158 subtests passed`로
+모두 실패했고, `pre-live-provenance`의 `pre-live-producer-isolation`도 실패했다.
+`pre-live-build`와 `event-admission`은 성공했지만, `final-pre-live`의 후속 검사는
+여러 개 skipped였고 필수 검사가 실패했으므로 CI green이나 merge를 주장하지 않는다. 실제
 StarCraft II Live QA는 완료 증거가 없다. 후속 문서 정정 커밋의 검사는 이
 snapshot과 별개이며, 이 문서의 결과를 후속 커밋의 검사 결과로 간주하지 않는다.
 
@@ -437,12 +435,13 @@ owner가 해당 유닛의 자율제어를 다시 수행하는 연결·Live QA는
 | JEV System 1 라우팅 | 미완료/외부 계약 대기 | #189에 정의 질문과 acceptance criteria만 등록했다. |
 | 기본 MCP의 legacy tactical route 제거 | **완료(코드 경계)** | `include_legacy_tools` opt-in과 `micromachine.operation/ability/emergency` registry entries를 제거했다. 기본 registry와 MCP discovery에는 `micromachine.policy`만 남는다. 저장소 전체의 legacy 문서·테스트 제거까지 완료한 것은 아니다. |
 | 문서화 | 완료(현재 상태 보고) | 이 문서가 승인 원문 기준, 구조, capability, 위치·분대·수리, 병렬·선행조건, lifecycle, legacy 격리, JEV, PR·Live QA를 항목별로 기록한다. |
-| PR 반영 | 부분 완료 | PR #187 작성 및 변경 push 완료, 병합 안 함. `64d41a7` 기준 `ci` run `36351195349`의 Python 3.10/3.11/3.12와 `pre-live-provenance` run `36351193813`의 `pre-live-producer-isolation` 실패. `final-pre-live` 성공은 일부 후속 job이 skipped된 결과로, 전체 검증 완료를 뜻하지 않는다. |
+| PR 반영 | 부분 완료 | PR #187에 `7408002`까지 push 완료, 병합 안 함. 최신 `ci` run `36354259831`의 Python 3.10/3.11/3.12와 `pre-live-provenance` run `36354258288`의 `pre-live-producer-isolation`이 실패했다. `final-pre-live` run `36354258366` 성공은 일부 후속 job이 skipped된 결과로, 전체 검증 완료를 뜻하지 않는다. |
 | 실제 Live QA | 미완료 | 이전 PR 설명에도 실제 StarCraft II Live QA를 실행하지 않았다고 명시되어 있다. |
 
 ## 4. 현재 검증 결과
 
-실행 코드 `43a834b` 기준으로 재실행한 로컬 집중 검증은 다음과 같다. 명령마다
+실행 코드 `43a834b` 기준으로 재실행한 로컬 집중 검증은 다음과 같다. 상태 문서
+커밋 `7408002`는 문서만 갱신했다. 명령마다
 선택한 테스트 집합이 다르므로 수치를 합산하지 않는다.
 
 ```text
@@ -524,7 +523,23 @@ non-macro를 성공/publish로 기대하는 기존 계약과 `runtime_not_attach
 - `tests/test_unified_command_router.py`가 이중 publish를 기대한다는 이전 설명도
   오래된 정보다. 현재 해당 파일은 Direct-only를 기대하고 위 focused 실행에 통과한다.
 
-PR #187의 `64d41a7` snapshot에 대한 hosted 전체 suite 출력은 직접 확인했다.
+PR #187 최신 HEAD `7408002`의 hosted 전체 suite 출력은 직접 확인했다.
+
+```text
+head: 7408002
+ci run: 36354259831
+unit-contracts (3.10): failure — 173 failed, 2952 passed, 68 skipped, 7158 subtests passed
+unit-contracts (3.11): failure — 173 failed, 2952 passed, 68 skipped, 7158 subtests passed
+unit-contracts (3.12): failure — 173 failed, 2952 passed, 68 skipped, 7158 subtests passed
+```
+
+최신 `pre-live-provenance` run `36354258288`은 `pre-live-build: success`,
+`pre-live-producer-isolation: failure`, dependent provenance job `skipped`였다.
+최신 `final-pre-live` run `36354258366`은 `event-admission`과
+`ready-to-merge`가 success였지만 deterministic journeys, browser accessibility,
+build identity, provenance, distribution 등의 후속 job은 skipped였다.
+
+이전 기준 snapshot의 hosted 전체 suite 출력도 변경 이력으로 보존한다.
 
 ```text
 head: 64d41a7
@@ -582,9 +597,7 @@ Live QA는 수행하지 못했다.
 원문 부록은 승인 관련 메시지 8개의 전문을 정확히 보존한다. 본 문서는
 두 계획의 15개 번호 및 추가 승인 요구를 이행 증거와 대조한 보고서이며,
 “승인한 계획이 전부 해결됐다”는 보고서는 아니다.
-현재 구현 보강은 `43a834b`, 계획 대조 문서의 직전 원격 기준은 `64d41a7`이다. 새
-구현 커밋은 이후 push하여 Hosted CI를 다시 확인해야 한다. 원격
-보고 기준 snapshot `64d41a7`에서 `unit-contracts` 3개와 `pre-live-producer-isolation`이
-실패했으므로 PR은 여전히 `BLOCKED`이며 green/merge가 아니다. PR merge는
-하지 않았고, Live QA도 완료되지 않았다. 이후 문서-only 정정 커밋은 실행 코드를
-바꾸지 않으며, 그 커밋의 hosted 검사는 별도 결과다. goal도 active로 유지했다.
+현재 구현 보강은 `43a834b`, 최신 상태 보고는 `7408002`로 커밋·push했다. 최신
+Hosted 결과에서도 `unit-contracts` 3개와 `pre-live-producer-isolation`이 실패했으므로
+PR은 여전히 `BLOCKED`이며 green/merge가 아니다. PR merge는 하지 않았고, Live QA도
+완료되지 않았다. goal도 active로 유지했다.
