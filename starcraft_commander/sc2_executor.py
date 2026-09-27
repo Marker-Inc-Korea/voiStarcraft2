@@ -23,6 +23,7 @@ from starcraft_commander.contracts import (
     SC2ExecutionPlan,
     SC2PlanExecutionResult,
 )
+from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
 
 
 SC2_UNIT_TYPE_IDS: Final[dict[str, str]] = {
@@ -544,6 +545,9 @@ class SC2RuntimeExecutor:
     """Lifecycle-aware async adapter around a python-sc2 ``BotAI``-like runtime."""
 
     bot: object | None = None
+    direct_lifecycle: DirectCommandLifecycle = field(
+        default_factory=DirectCommandLifecycle
+    )
     _started: bool = field(default=False, init=False, repr=False)
     _lifecycle_errors: list[SC2ExecutionError] = field(
         default_factory=list,
@@ -565,6 +569,39 @@ class SC2RuntimeExecutor:
         """Structured lifecycle errors captured without crashing callers."""
 
         return tuple(self._lifecycle_errors)
+
+    def observe_direct_commands(
+        self,
+        *,
+        current_frame: int,
+        evidence_by_command: Mapping[str, Mapping[str, object]] | None = None,
+    ) -> tuple[dict[str, object], ...]:
+        """Tick Direct leases owned by this live runtime executor.
+
+        The executor is the natural lifetime owner for a BotAI match.  Both
+        MCP modulation sessions and the BotAI ``on_step`` callback can use this
+        seam without creating separate registries that lose squad ownership.
+        """
+
+        return tuple(
+            lease.to_dict()
+            for lease in self.direct_lifecycle.observe_all(
+                frame=int(current_frame),
+                evidence_by_command=evidence_by_command,
+            )
+        )
+
+    def tick_direct_commands(
+        self,
+        current_frame: int,
+        evidence_by_command: Mapping[str, Mapping[str, object]] | None = None,
+    ) -> tuple[dict[str, object], ...]:
+        """Concise game-loop callback alias for Direct lifecycle observation."""
+
+        return self.observe_direct_commands(
+            current_frame=current_frame,
+            evidence_by_command=evidence_by_command,
+        )
 
     async def start(self, bot: object | None = None) -> None:
         """Start the executor lifecycle and optionally bind a BotAI-like object.

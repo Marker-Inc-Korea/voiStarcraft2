@@ -593,6 +593,26 @@ class SC2RuntimeExecutorTest(unittest.TestCase):
         self.assertIsInstance(SC2RuntimeExecutor(), SC2RuntimeExecutorInterface)
         self.assertIsInstance(SC2RuntimeExecutor(), SC2ExecutorBoundaryInterface)
 
+    def test_runtime_executor_ticks_shared_direct_lifecycle(self) -> None:
+        from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
+
+        executor = SC2RuntimeExecutor(
+            direct_lifecycle=DirectCommandLifecycle(game_loops_per_second=1)
+        )
+        executor.direct_lifecycle.dispatch(
+            command_id="executor-lease",
+            issued_at_frame=5,
+            ttl_seconds=2,
+            owned_subjects=("1분대",),
+        )
+
+        observed = executor.tick_direct_commands(7)
+
+        self.assertEqual("expired", observed[0]["state"])
+        self.assertFalse(observed[0]["control_owned"])
+        self.assertEqual((), executor.direct_lifecycle.active_leases())
+        self.assertEqual((), executor.observe_direct_commands(current_frame=8))
+
     def test_lifecycle_execute_contract_uses_bound_bot_and_preserves_order(self) -> None:
         class FakeBot:
             def __init__(self) -> None:

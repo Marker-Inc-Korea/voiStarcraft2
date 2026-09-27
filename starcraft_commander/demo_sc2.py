@@ -987,6 +987,20 @@ def run_live(args: argparse.Namespace) -> None:
             while not self.command_queue.empty():
                 command_text = self.command_queue.get_nowait()
                 await _process_and_print(self.session, command_text)
+            # Direct leases are owned by the runtime executor for the whole
+            # match.  Tick them even when no semantic evidence is available so
+            # TTL expiry and release callbacks remain deterministic; a richer
+            # integration may pass evidence_by_command from its adapter.
+            direct_executor = getattr(self.session, "executor", None)
+            tick_direct = getattr(direct_executor, "tick_direct_commands", None)
+            if callable(tick_direct):
+                for lease in tick_direct(iteration):
+                    if not lease.get("control_owned", False):
+                        print(
+                            "[Direct lifecycle] "
+                            f"{lease.get('command_id', '')}:"
+                            f"{lease.get('state', '')}"
+                        )
             if iteration % STANDING_ORDER_TICK_INTERVAL_STEPS == 0:
                 for tick in await self.standing_orders.tick(self):
                     label = STANDING_ORDER_KOREAN_LABELS.get(tick.kind, tick.kind)

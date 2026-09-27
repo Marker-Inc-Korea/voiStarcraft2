@@ -8596,7 +8596,20 @@ class SessionLoopBridge:
         # Modulation requests may create short-lived provider sessions, but a
         # squad lease must survive until a game-loop tick, cancellation,
         # failure, or TTL releases it.
-        self._direct_lifecycle = direct_lifecycle or DirectCommandLifecycle()
+        executor_lifecycle = getattr(
+            getattr(session, "executor", None),
+            "direct_lifecycle",
+            None,
+        )
+        self._direct_lifecycle = (
+            direct_lifecycle
+            or (
+                executor_lifecycle
+                if isinstance(executor_lifecycle, DirectCommandLifecycle)
+                else None
+            )
+            or DirectCommandLifecycle()
+        )
         self._direct_command_registry = (
             direct_command_registry or DirectCommandRegistry()
         )
