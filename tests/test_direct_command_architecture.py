@@ -120,6 +120,52 @@ def test_mcp_capability_catalog_and_direct_tools_are_complete() -> None:
     assert catalog_names <= names
 
 
+def test_mcp_tools_call_executes_async_direct_executor_from_event_loop() -> None:
+    plan = route_policy_vector(
+        _vector(
+            {
+                "goal": "scout",
+                "command_layer": "operation",
+                "operations": [
+                    {
+                        "operation_id": "mcp-scout",
+                        "tactical_task": {
+                            "task_type": "scout_with_units",
+                            "location_intent": "enemy_natural",
+                        },
+                    }
+                ],
+            }
+        ),
+        update_id="mcp-scout",
+        current_frame=22,
+    )
+    server = VoiStarcraftMCPServer(
+        create_command_tool_registry(direct_executor=_RecordingExecutor())
+    )
+
+    async def exercise() -> dict[str, object]:
+        response = await server.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "sc2.direct.execute",
+                    "arguments": plan.tool_calls[0].arguments,
+                },
+            }
+        )
+        assert response is not None
+        return response
+
+    response = asyncio.run(exercise())
+    assert response["result"]["isError"] is False
+    structured = response["result"]["structuredContent"]
+    assert structured["ok"] is True
+    assert structured["result"]["result"]["audit"]["direct_command_lifecycle"]["state"] == "active"
+
+
 def test_call_many_async_runs_independent_tools_in_parallel() -> None:
     started: list[str] = []
 
@@ -182,6 +228,40 @@ def test_named_squad_and_target_pin_registry_rejects_unknown_squads() -> None:
         pass
     else:
         raise AssertionError("unknown squads must not resolve to arbitrary units")
+
+
+def test_mcp_named_squad_resolution_is_strict_when_registry_is_configured() -> None:
+    registry = create_command_tool_registry(
+        command_registry=DirectCommandRegistry(
+            squads=(SquadDefinition("1분대", "4 MARINE"),),
+        )
+    )
+    result = registry.call(
+        "sc2.direct.move_group",
+        {"subject": "없는 분대", "target": "enemy_natural"},
+    )
+    assert result.ok is False
+    assert result.error.startswith("ValueError:unknown_squad:")
+
+
+def test_mcp_target_pin_is_resolved_before_direct_dispatch() -> None:
+    registry = create_command_tool_registry(
+        command_registry=DirectCommandRegistry(
+            target_pins=(TargetPin("입구", "self_ramp"),),
+        )
+    )
+    result = registry.call(
+        "sc2.direct.move_group",
+        {"subject": "available combat units", "target_pin": "입구"},
+    )
+    assert result.ok is False
+    assert result.result["status"] == "runtime_not_attached"
+    unknown = registry.call(
+        "sc2.direct.move_group",
+        {"subject": "available combat units", "target_pin": "없는 핀"},
+    )
+    assert unknown.ok is False
+    assert unknown.error.startswith("KeyError:'unknown target pin:")
 
 
 class _RecordingExecutor:

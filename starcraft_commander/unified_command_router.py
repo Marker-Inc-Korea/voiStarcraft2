@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -186,10 +187,7 @@ class CommanderToolRegistry:
         try:
             value = tool.handler(dict(arguments or {}))
             if inspect.isawaitable(value):
-                raise RuntimeError(
-                    "async tool handler requires call_async; "
-                    f"tool={name}"
-                )
+                value = _run_awaitable_sync(value)
             result = _mapping_result(value)
             ok = result.get("ok", True)
             return ToolExecutionResult(
@@ -531,7 +529,7 @@ def create_command_tool_registry(
     command_lifecycle = lifecycle or DirectCommandLifecycle()
     semantic_registry = command_registry or DirectCommandRegistry()
 
-    def direct_execute(arguments: Mapping[str, object]) -> Mapping[str, object]:
+    async def direct_execute(arguments: Mapping[str, object]) -> Mapping[str, object]:
         if direct_executor is None:
             return {
                 "ok": False,
@@ -548,7 +546,7 @@ def create_command_tool_registry(
         command_id = str(
             arguments.get("command_id")
             or plan.audit.get("command_id")
-            or plan.intent_name
+            or f"direct-{uuid.uuid4().hex}"
         )
         raw_ttl = arguments.get("ttl_seconds")
         if raw_ttl is None:
@@ -605,7 +603,11 @@ def create_command_tool_registry(
             else:
                 value = execute(plan)
             if inspect.isawaitable(value):
-                value = _run_awaitable_sync(value)
+                value = await value
+        except asyncio.CancelledError:
+            if lifecycle_required:
+                command_lifecycle.cancel(command_id, reason="dispatch_cancelled")
+            raise
         except Exception as error:  # noqa: BLE001 - runtime failures are data.
             failed = (
                 command_lifecycle.fail(
@@ -645,12 +647,22 @@ def create_command_tool_registry(
                 "runtime_attached": True,
                 "result": result_document,
             }
-        return _mapping_result(value)
+        # The executor contract carries per-action proof. A truthy object or
+        # {"ok": true} is not evidence that any SC2 action was issued.
+        failed = (
+            command_lifecycle.fail(command_id, reason="invalid_executor_result")
+            if lifecycle_required else None
+        )
+        return {
+            "ok": False,
+            "status": "invalid_executor_result",
+            "lifecycle": failed.to_dict() if failed else {},
+        }
 
-    def direct_observe(arguments: Mapping[str, object]) -> Mapping[str, object]:
+    async def direct_observe(arguments: Mapping[str, object]) -> Mapping[str, object]:
         if direct_executor is None:
             return {"ok": False, "status": "runtime_not_attached"}
-        return direct_execute(
+        return await direct_execute(
             {
                 "plan": SC2ExecutionPlan(
                     intent_name="unified:observe",
@@ -718,7 +730,7 @@ def create_command_tool_registry(
         "additionalProperties": False,
     }
 
-    def one_action_tool(
+    async def one_action_tool(
         action_type: SC2ActionType,
         arguments: Mapping[str, object],
     ) -> Mapping[str, object]:
@@ -726,12 +738,18 @@ def create_command_tool_registry(
         if not isinstance(metadata, Mapping):
             raise ValueError("metadata must be an object.")
         subject = str(arguments.get("subject", ""))
-        target = semantic_registry.resolve_target(str(arguments.get("target", "")))
+        target_pin = str(arguments.get("target_pin", "")).strip()
+        if target_pin:
+            target = semantic_registry.resolve_target_pin(target_pin).target
+        else:
+            target = semantic_registry.resolve_target(str(arguments.get("target", "")))
         metadata_map = dict(metadata)
         try:
             squad = semantic_registry.resolve_squad(subject)
         except KeyError:
             squad = None
+        if squad is None and semantic_registry.has_squads and _looks_like_named_squad(subject):
+            raise ValueError(f"unknown_squad:{subject}")
         if squad is not None:
             subject = squad.unit_query
             metadata_map.setdefault("squad", squad.name)
@@ -751,7 +769,7 @@ def create_command_tool_registry(
             requires_live_sc2=True,
             audit={"source": "mcp", "tool": action_type.value},
         )
-        return direct_execute(
+        return await direct_execute(
             {
                 "plan": plan.to_dict(),
                 "command_id": arguments.get("command_id"),
@@ -766,6 +784,7 @@ def create_command_tool_registry(
         "properties": {
             "subject": {"type": "string", "minLength": 1},
             "target": {"type": "string"},
+            "target_pin": {"type": "string", "minLength": 1},
             "count": {"type": "integer", "minimum": 0},
             "priority": {"type": "integer", "minimum": 0, "maximum": 100},
             "priority_label": {"type": "string"},
@@ -1007,6 +1026,15 @@ def _requires_sequential_call(call: ToolCall) -> bool:
     return False
 
 
+def _looks_like_named_squad(subject: str) -> bool:
+    normalized = " ".join(str(subject).strip().casefold().split())
+    if not normalized:
+        return False
+    if any(token in normalized for token in ("분대", "squad", "army group", "주력", "정찰", "방어")):
+        return True
+    return bool(normalized[0].isdigit() and len(normalized) <= 12)
+
+
 def _call_conflict_key(call: ToolCall) -> tuple[str, str] | None:
     """Return the semantic ownership key for a potentially conflicting call.
 
@@ -1031,9 +1059,11 @@ def _run_awaitable_sync(value: object) -> object:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(value)
-    raise RuntimeError(
-        "async direct SC2 execution must use call_async from an active event loop."
-    )
+    # BotAI's websocket and asyncio primitives belong to their runtime loop.
+    # Never block that loop or move its coroutine to a temporary thread/loop.
+    if inspect.iscoroutine(value):
+        value.close()
+    raise RuntimeError("async tool handler requires call_async in a running event loop")
 
 
 def route_and_execute(

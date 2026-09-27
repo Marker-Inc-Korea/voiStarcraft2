@@ -83,11 +83,25 @@ class DirectCommandRegistry:
         pin = self._pins.get(self._key(target))
         return pin.target if pin is not None else str(target).strip()
 
+    def resolve_target_pin(self, name: str) -> TargetPin:
+        pin = self._pins.get(self._key(name))
+        if pin is None:
+            raise KeyError(f"unknown target pin: {name}")
+        return pin
+
     def list_squads(self) -> tuple[SquadDefinition, ...]:
         return tuple(self._squads.values())
 
     def list_target_pins(self) -> tuple[TargetPin, ...]:
         return tuple(self._pins.values())
+
+    @property
+    def has_squads(self) -> bool:
+        return bool(self._squads)
+
+    @property
+    def has_target_pins(self) -> bool:
+        return bool(self._pins)
 
     def to_dict(self) -> dict[str, object]:
         return {

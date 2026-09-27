@@ -178,8 +178,8 @@ MicroMachine으로 몰래 대체하지 않고 `runtime_not_attached`로 실패�
 | `move_camera` 개별 MCP tool | 완료(계약 범위) | `sc2.direct.move_camera`가 catalog·registry·adapter·executor mapping에 존재한다. 실제 카메라 이동은 SC2 runtime 필요. |
 | Stop/Hold/Retreat direct tool | 완료(계약 범위) / runtime 미검증 | `stop_group`, `hold_position`, 명시적 `sc2.direct.retreat` capability와 MCP tool을 제공한다. Retreat는 adapter 의미상 self-main 이동으로 lower되며 emergency 계획은 Stop/Hold/Move를 사용한다. |
 | 모든 SC2 기능 | 부분 완료(승인 catalog 기준) | raw python-sc2 전체가 아니라 승인된 bounded semantic catalog를 구현했다. catalog의 모든 이름이 registry에 있는 계약 테스트는 통과하지만, raw API 전체 노출 요구는 안전한 범위 밖이다. |
-| semantic 위치와 Map Resolver | 부분 완료 | semantic target alias와 map resolver·placement 검증이 있고 target pin registry를 추가했다. 실제 map 좌표 계산·장애물 검증은 live runtime 증거가 없다. |
-| 분대 registry | 부분 완료 | `DirectCommandRegistry`/`SquadDefinition`으로 이름·unit query를 보존하고 unknown squad를 거부한다. 실제 관찰값 기반 tag 선택과 ownership transfer는 runtime 미검증이다. |
+| semantic 위치와 Map Resolver | 부분 완료 | semantic target alias와 map resolver·placement 검증이 있고 target pin registry/strict pin lookup을 추가했다. 실제 map 좌표 계산·장애물 검증은 live runtime 증거가 없다. |
+| 분대 registry | 부분 완료 | `DirectCommandRegistry`/`SquadDefinition`으로 이름·unit query를 보존하고 configured registry에서 unknown named squad를 거부한다. 실제 관찰값 기반 tag 선택과 ownership transfer는 runtime 미검증이다. |
 | 수리 대상 자동 선택 | 부분 완료 | adapter가 아군 손상 구조물 우선, 손상 유닛 fallback, SCV 선택을 수행한다. 다중 매칭 clarification과 named registry 연동은 미구현이다. |
 | 독립 tool 병렬 실행 | 완료(호출 스케줄러 계약) | `call_many_async()`가 독립 호출을 `asyncio.gather`로 병렬 실행하고, 동일 subject/conflict·emergency·다중 action plan은 순차 처리한다. 실제 SC2 동시성은 runtime 미검증이다. |
 | 선행조건 순차 실행 | 부분 완료 | ordered plan과 다중 action 순차 실행은 구현했다. “건설 완료 관찰 후 생산”을 자동으로 다음 tool에 재개하는 workflow는 아직 없다. |
@@ -200,7 +200,7 @@ MicroMachine으로 몰래 대체하지 않고 `runtime_not_attached`로 실패�
 
 ```text
 ./.venv/bin/pytest -q tests/test_direct_command_architecture.py
-8 passed
+10 passed
 
 python3 -m py_compile starcraft_commander/*.py
 통과
@@ -208,8 +208,9 @@ python3 -m py_compile starcraft_commander/*.py
 
 새 계약 테스트는 Direct-only route, legacy tool opt-in 격리, emergency Stop/Hold/Retreat lowering,
 MCP capability catalog와 모든 catalog tool 등록, 독립 호출 병렬 실행,
-lifecycle completion/TTL/cancel, named squad·target pin unknown rejection을
-검증한다.
+lifecycle completion/TTL/cancel, named squad·target pin unknown rejection,
+event-loop 내부 async direct executor dispatch를 검증한다. 전체 집중 묶음은
+`254 passed, 1 skipped, 308 subtests passed`다.
 
 전체 저장소 실행도 수행했다.
 
