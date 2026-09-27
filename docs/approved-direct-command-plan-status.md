@@ -219,6 +219,18 @@ event-loop 내부 async direct executor dispatch를 검증한다. 전체 집중 
 177 failed, 2908 passed, 19 skipped, 54 errors, 7146 subtests passed
 ```
 
+PR #187의 최신 hosted `unit-contracts` run도 확인했다.
+
+```text
+179 failed, 2916 passed, 68 skipped, 1 warning, 7146 subtests passed
+```
+
+이 hosted 실패에는 승인 구조와 충돌하는 기존 MicroMachine 성공 기대와
+`runtime_not_attached` fail-closed 차이가 포함되어 있다. 별도
+`pre-live-producer-isolation` job은 Direct 변경과 무관한 trusted verifier
+fixture에서 CTest가 `0/10`으로 기록되어 실패했다. 따라서 PR은 CI green이나
+merge 상태가 아니다.
+
 이 결과에는 이번 변경과 무관한 pre-live binary/fixture 오류도 포함된다.
 승인 구조와 직접 충돌하는 legacy 호환성 테스트 묶음은 다음과 같다. 예를 들어
 `tests/test_unified_command_router.py`는 operation·ability를
@@ -254,4 +266,5 @@ Live QA는 수행하지 못했다.
 
 따라서 이번 문서는 승인 계획을 토씨 하나 빠뜨리지 않고 현재 증거와
 대조한 상태 보고서이며, “승인한 계획이 전부 해결됐다”는 보고서는 아니다.
-PR 반영은 완료했지만 PR은 여전히 `BLOCKED`이고, Live QA는 현재 완료되지 않았다.
+PR 반영은 최신 커밋 `6fcdeae`까지 완료했지만 hosted CI 실패로 PR은 여전히
+`BLOCKED`이고, Live QA는 현재 완료되지 않았다.
