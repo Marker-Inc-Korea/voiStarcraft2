@@ -8,14 +8,13 @@
 기준 브랜치는 `codex/llm-command-speedup`, 기준 PR은
 [#187](https://github.com/Marker-Inc-Korea/voiStarcraft2/pull/187)이다. PR #187은
 열려 있지만 현재 GitHub 상태가 `BLOCKED`이다. 마지막 pushed `HEAD`는
-`8d10b66`이고, 해당 head의 최신 hosted run은 `ci` run `36310148484`,
-`final-pre-live` run `36310146662`, `pre-live-provenance` run `36310146758`이다.
+`2e29561`이고, 해당 head의 최신 hosted run은 `ci` run `36319622053`,
+`final-pre-live` run `36319701356`, `pre-live-provenance` run `36319620879`이다.
 `event-admission`, `pre-live-build`, `ready-to-merge`는 성공했고,
 `pre-live-producer-isolation`은 실패했다. `unit-contracts (3.10)`, `(3.11)`,
 `(3.12)`도 완료됐지만 모두 실패했다. 따라서 CI green이나 merge를 주장하지
-않는다. 현재 작업 트리에는 마지막 pushed head 이후 Direct observation
-evidence 연결 변경이 있으며, 이 변경은 아직 새 커밋·hosted run으로 반영되지
-않았다. 실제 StarCraft II Live QA는 완료 증거가 없다.
+않는다. 이 head에는 Direct observation evidence 연결 변경이 커밋·푸시되어
+있다. 실제 StarCraft II Live QA는 완료 증거가 없다.
 
 ## 1. 사용자가 승인한 최종 구조
 
@@ -239,7 +238,7 @@ MicroMachine으로 몰래 대체하지 않고 `runtime_not_attached`로 실패�
 | JEV System 1 라우팅 | 미완료/외부 계약 대기 | #189에 정의 질문과 acceptance criteria만 등록했다. |
 | legacy route 완전 제거 | **완료(코드 경계)** | `include_legacy_tools` opt-in과 `micromachine.operation/ability/emergency` registry entries를 제거했다. 기본 registry와 MCP discovery에는 `micromachine.policy`만 남는다. |
 | 문서화 | 완료(현재 상태 보고) | 이 문서가 승인 원문 기준, 구조, capability, 위치·분대·수리, 병렬·선행조건, lifecycle, legacy 격리, JEV, PR·Live QA를 항목별로 기록한다. |
-| PR 반영 | 부분 완료 | PR #187이 열려 있고 `BLOCKED`다. 최신 pushed branch head의 hosted CI는 아직 결과를 기다리는 중이다. hosted CI green/merge를 주장할 수 없다. |
+| PR 반영 | 부분 완료 | PR #187이 열려 있고 `BLOCKED`다. 최신 head `2e29561`의 hosted `ci` run `36319622053`에서 3개 `unit-contracts` job이 실패했고, `pre-live-producer-isolation`도 실패했다. `event-admission`, `pre-live-build`, `ready-to-merge`는 성공했다. hosted CI green/merge를 주장할 수 없다. |
 | 실제 Live QA | 미완료 | 이전 PR 설명에도 실제 StarCraft II Live QA를 실행하지 않았다고 명시되어 있다. |
 
 ## 4. 현재 검증 결과
@@ -289,6 +288,23 @@ top-level task/build lowering, adapter evidence와 runtime evidence 연결을 �
 PR #187에서 이전에 완료된 hosted `unit-contracts` run도 확인했다.
 
 ```text
+head: 2e29561
+ci run: 36319622053
+173 failed, 2936 passed, 68 skipped, 7148 subtests passed
+```
+
+최신 hosted `pre-live-provenance` run도 확인했다.
+
+```text
+run: 36319620879
+pre-live-build: success
+pre-live-producer-isolation: failure
+trusted verifier CTest: passed=0, total=10, failures=10, returncode=0
+```
+
+이전 hosted `unit-contracts` run 기록은 다음과 같다.
+
+```text
 179 failed, 2916 passed, 68 skipped, 1 warning, 7146 subtests passed
 ```
 
@@ -332,8 +348,7 @@ Live QA는 수행하지 못했다.
 
 따라서 이번 문서는 승인 계획을 토씨 하나 빠뜨리지 않고 현재 증거와
 대조한 상태 보고서이며, “승인한 계획이 전부 해결됐다”는 보고서는 아니다.
-현재 변경은 집중 테스트·문서 대조까지 끝났고 아직 이 문서 작성 시점에는
-`8d10b66` 이후 변경을 커밋·푸시하지 않았다. 따라서 새 hosted CI 결과는
-아직 없으며, 이전 실패 이력 때문에 PR이 자동으로 green/merge됐다고 주장하지
-않는다. 커밋·푸시 후 새 CI를 확인하고, 그 결과를 이 문서에 다시 기록해야
-한다. Live QA는 현재 완료되지 않았다.
+현재 변경은 집중 테스트·문서 대조를 마치고 `2e29561`로 커밋·푸시했다.
+최신 hosted 결과도 확인했지만 `unit-contracts` 3개와
+`pre-live-producer-isolation`이 실패했으므로 PR은 여전히 `BLOCKED`이며
+green/merge가 아니다. Live QA는 현재 완료되지 않았다.
