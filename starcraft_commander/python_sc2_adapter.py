@@ -691,9 +691,29 @@ class PythonSC2BotAdapter:
             evidence["unit_count_reached"] = True
         if "enemy_observed" in conditions and _direct_enemy_observed(state):
             evidence["enemy_observed"] = True
+        if "enemy_destroyed" in conditions and _direct_enemy_destroyed_observed(
+            actions,
+            state,
+            baseline=context.get("baseline"),
+            adapter=self,
+        ):
+            evidence["enemy_destroyed"] = True
         if "ability_cast" in conditions and _direct_ability_observed(actions, self):
             evidence["ability_cast"] = True
         return evidence
+
+    def resume_micromachine(self, lease: Mapping[str, object]) -> object:
+        """Delegate Direct terminal release to an optional host runtime seam.
+
+        The adapter never invents MicroMachine state.  A live BotAI wrapper
+        may expose ``resume_micromachine(lease)``; otherwise this is an
+        intentional no-op, leaving the integration fail-closed and auditable.
+        """
+
+        callback = getattr(self.bot, "resume_micromachine", None)
+        if callable(callback):
+            return callback(lease)
+        return None
 
     def _direct_targets_reached(
         self,
@@ -749,6 +769,9 @@ class PythonSC2BotAdapter:
             "own_structures": dict(snapshot.get("own_structures", {})),
             "structures_in_progress": dict(
                 snapshot.get("structures_in_progress", {})
+            ),
+            "visible_enemy_structures": dict(
+                snapshot.get("visible_enemy_structures", {})
             ),
         }
 
@@ -2142,6 +2165,51 @@ def _direct_enemy_observed(state: Mapping[str, object]) -> bool:
         if isinstance(values, Mapping) and any(int(value or 0) > 0 for value in values.values()):
             return True
     return False
+
+
+def _direct_enemy_destroyed_observed(
+    actions: Sequence[Mapping[str, object]],
+    state: Mapping[str, object],
+    *,
+    baseline: object,
+    adapter: PythonSC2BotAdapter,
+) -> bool:
+    """Prove an enemy structure destruction without guessing through fog.
+
+    A runtime may expose an explicit destruction receipt; that is preferred.
+    The fallback accepts a visible-structure count decrease only when both the
+    baseline and current state are complete observations and the Direct plan
+    actually contains an attack/ability action.  Missing or partial vision is
+    never treated as destruction.
+    """
+
+    for attr in (
+        "direct_enemy_destroyed_evidence",
+        "enemy_destroyed_observed",
+    ):
+        value = getattr(adapter.bot, attr, None)
+        if value is True:
+            return True
+        if isinstance(value, Mapping) and bool(value.get("confirmed", False)):
+            return True
+    if not isinstance(baseline, Mapping):
+        return False
+    before = baseline.get("visible_enemy_structures")
+    current = state.get("visible_enemy_structures")
+    if not isinstance(before, Mapping) or not isinstance(current, Mapping):
+        return False
+    if not bool(state.get("observation_complete", False)):
+        return False
+    relevant = {
+        str(action.get("action_type", "")).strip().lower()
+        for action in actions
+        if isinstance(action, Mapping)
+    }
+    if not relevant.intersection({"attack_move", "execute_ability"}):
+        return False
+    before_total = sum(int(value or 0) for value in before.values())
+    current_total = sum(int(value or 0) for value in current.values())
+    return before_total > 0 and current_total < before_total
 
 
 def _direct_ability_observed(

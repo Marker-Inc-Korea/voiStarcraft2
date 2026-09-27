@@ -1001,6 +1001,16 @@ def run_live(args: argparse.Namespace) -> None:
                             f"{lease.get('command_id', '')}:"
                             f"{lease.get('state', '')}"
                         )
+            drain_workflows = getattr(
+                direct_executor, "drain_completed_workflows", None
+            )
+            if callable(drain_workflows):
+                for result in await drain_workflows(current_frame=iteration):
+                    print(
+                        "[Direct workflow] "
+                        f"{result.plan.intent_name}:"
+                        f"{'completed' if result.success else 'failed'}"
+                    )
             if iteration % STANDING_ORDER_TICK_INTERVAL_STEPS == 0:
                 for tick in await self.standing_orders.tick(self):
                     label = STANDING_ORDER_KOREAN_LABELS.get(tick.kind, tick.kind)

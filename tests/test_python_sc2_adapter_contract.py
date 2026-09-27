@@ -395,6 +395,31 @@ class AdapterContractTest(unittest.TestCase):
             completed,
         )
 
+    def test_direct_command_evidence_proves_visible_enemy_structure_destruction(self) -> None:
+        enemy = FakeUnit("BARRACKS", 80.0, 80.0)
+        bot = FakeBotAI()
+        bot.enemy_structures = FakeUnitGroup([enemy])
+        adapter = make_adapter(bot)
+        lease = {
+            "completion_conditions": ["enemy_destroyed"],
+            "command_metadata": {
+                "baseline": {"visible_enemy_structures": {"BARRACKS": 1}},
+                "actions": [
+                    {
+                        "action_type": "attack_move",
+                        "subject": "MARINE",
+                        "target": "enemy_main",
+                    }
+                ],
+            },
+        }
+        self.assertEqual({}, adapter.direct_command_evidence(lease))
+        bot.enemy_structures = FakeUnitGroup([])
+        self.assertEqual(
+            {"enemy_destroyed": True},
+            adapter.direct_command_evidence(lease),
+        )
+
 
 class MoveCameraTest(unittest.TestCase):
     def test_move_camera_invokes_runtime_camera_capability(self) -> None:

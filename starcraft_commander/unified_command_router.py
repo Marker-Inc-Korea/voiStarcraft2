@@ -434,6 +434,52 @@ def build_direct_plan_from_vector(
                 )
             )
 
+    # A build followed by training is a cross-frame workflow, not two
+    # immediate orders.  Keep the build in the parent plan and attach the
+    # training action as a dependent plan that the runtime scheduler releases
+    # only after ``building_completed`` evidence.  This preserves the
+    # approved ``build -> completion observation -> train`` ordering while
+    # leaving independent combat actions eligible for the parent dispatch.
+    dependent_plans: list[dict[str, object]] = []
+    build_indices = {
+        index
+        for index, action in enumerate(actions)
+        if action.action_type is SC2ActionType.BUILD_STRUCTURE
+    }
+    train_indices = {
+        index
+        for index, action in enumerate(actions)
+        if action.action_type is SC2ActionType.TRAIN_UNIT
+    }
+    if build_indices and train_indices:
+        train_actions = tuple(actions[index] for index in sorted(train_indices))
+        actions = [
+            action
+            for index, action in enumerate(actions)
+            if index not in train_indices
+        ]
+        dependent_plan = SC2ExecutionPlan(
+            intent_name="unified:dependent:train_after_build",
+            priority="high",
+            ordered_actions=train_actions,
+            constraints=tuple(item.key for item in vector.constraints),
+            requires_live_sc2=True,
+            notes=(
+                "Dependent Direct workflow step; dispatched after building_completed.",
+            ),
+            audit={
+                "source": "unified_command_router",
+                "completion_conditions": ["order_issued"],
+                "ttl_seconds": vector.ttl_seconds,
+            },
+        )
+        dependent_plans.append(
+            {
+                "resume_on": ["building_completed"],
+                "plan": dependent_plan.to_dict(),
+            }
+        )
+
     if vector.override_level.value == "emergency" or any(
         (
             vector.emergency.cancel_attacks,
@@ -475,6 +521,25 @@ def build_direct_plan_from_vector(
 
     if not actions:
         return None
+    completion_conditions = list(
+        tuple(
+            condition
+            for operation in vector.operations
+            for condition in operation.lifetime.completion_conditions
+        )
+        or vector.lifetime.completion_conditions
+        or ("order_issued",)
+    )
+    if dependent_plans:
+        completion_conditions = ["building_completed"]
+    audit: dict[str, object] = {
+        "source": "unified_command_router",
+        "command_id": vector.goal or "direct-command",
+        "ttl_seconds": vector.ttl_seconds,
+        "completion_conditions": completion_conditions,
+    }
+    if dependent_plans:
+        audit["dependent_plans"] = dependent_plans
     return SC2ExecutionPlan(
         intent_name=f"unified:{vector.command_layer.value}:{task.task_type or 'policy'}",
         priority="urgent" if vector.override_level.value == "emergency" else "high",
@@ -482,20 +547,7 @@ def build_direct_plan_from_vector(
         constraints=tuple(item.key for item in vector.constraints),
         requires_live_sc2=True,
         notes=tuple(notes),
-        audit={
-            "source": "unified_command_router",
-            "command_id": vector.goal or "direct-command",
-            "ttl_seconds": vector.ttl_seconds,
-            "completion_conditions": list(
-                tuple(
-                    condition
-                    for operation in vector.operations
-                    for condition in operation.lifetime.completion_conditions
-                )
-                or vector.lifetime.completion_conditions
-                or ("order_issued",)
-            ),
-        },
+        audit=audit,
     )
 
 
@@ -652,36 +704,40 @@ def _direct_unit_subject(unit_type: str) -> str:
     """Convert provider Terran tokens to the adapter's semantic unit names."""
 
     normalized = str(unit_type or "").strip().upper()
+    if normalized.startswith("TERRAN_"):
+        normalized = normalized.removeprefix("TERRAN_")
     aliases = {
-        "TERRAN_SCV": "SCV",
-        "TERRAN_MARINE": "MARINE",
-        "TERRAN_HELLION": "HELLION",
+        "SCV": "SCV",
+        "MARINE": "MARINE",
+        "HELLION": "HELLION",
         # Brood War terminology is accepted at the semantic boundary but
         # python-sc2's Terran equivalent is the Hellion unit.
-        "TERRAN_VULTURE": "HELLION",
-        "TERRAN_GHOST": "GHOST",
+        "VULTURE": "HELLION",
+        "GHOST": "GHOST",
     }
-    return aliases.get(normalized, str(unit_type or "available combat units"))
+    return aliases.get(normalized, normalized or "available combat units")
 
 
 def _direct_structure_subject(building_type: str) -> str:
     """Convert provider Terran structure tokens to adapter names."""
 
     normalized = str(building_type or "").strip().upper()
+    if normalized.startswith("TERRAN_"):
+        normalized = normalized.removeprefix("TERRAN_")
     aliases = {
-        "TERRAN_SUPPLYDEPOT": "SUPPLYDEPOT",
-        "TERRAN_COMMANDCENTER": "COMMANDCENTER",
-        "TERRAN_REFINERY": "REFINERY",
-        "TERRAN_BARRACKS": "BARRACKS",
-        "TERRAN_FACTORY": "FACTORY",
-        "TERRAN_STARPORT": "STARPORT",
-        "TERRAN_ENGINEERINGBAY": "ENGINEERINGBAY",
-        "TERRAN_ARMORY": "ARMORY",
-        "TERRAN_GHOSTACADEMY": "GHOSTACADEMY",
-        "TERRAN_FUSIONCORE": "FUSIONCORE",
-        "TERRAN_BUNKER": "BUNKER",
+        "SUPPLYDEPOT": "SUPPLYDEPOT",
+        "COMMANDCENTER": "COMMANDCENTER",
+        "REFINERY": "REFINERY",
+        "BARRACKS": "BARRACKS",
+        "FACTORY": "FACTORY",
+        "STARPORT": "STARPORT",
+        "ENGINEERINGBAY": "ENGINEERINGBAY",
+        "ARMORY": "ARMORY",
+        "GHOSTACADEMY": "GHOSTACADEMY",
+        "FUSIONCORE": "FUSIONCORE",
+        "BUNKER": "BUNKER",
     }
-    return aliases.get(normalized, str(building_type or ""))
+    return aliases.get(normalized, normalized)
 
 
 def create_command_tool_registry(
@@ -700,7 +756,20 @@ def create_command_tool_registry(
         value = micromachine_publish(arguments)
         return _mapping_result(value)
 
-    command_lifecycle = lifecycle or DirectCommandLifecycle()
+    # A live runtime executor owns the match-lifetime lifecycle.  Reusing it
+    # here keeps registry dispatch, game-loop observation, ownership release,
+    # and dependent workflows on one lease registry.  Callers can still pass
+    # an explicit lifecycle to share a different integration-owned registry.
+    executor_lifecycle = getattr(direct_executor, "direct_lifecycle", None)
+    if lifecycle is not None:
+        command_lifecycle = lifecycle
+        bind_lifecycle = getattr(direct_executor, "bind_direct_lifecycle", None)
+        if callable(bind_lifecycle) and executor_lifecycle is not command_lifecycle:
+            bind_lifecycle(command_lifecycle)
+    elif isinstance(executor_lifecycle, DirectCommandLifecycle):
+        command_lifecycle = executor_lifecycle
+    else:
+        command_lifecycle = DirectCommandLifecycle()
     semantic_registry = command_registry or DirectCommandRegistry()
 
     async def direct_execute(arguments: Mapping[str, object]) -> Mapping[str, object]:
@@ -836,6 +905,42 @@ def create_command_tool_registry(
                         command_id,
                         {"order_issued": True},
                     )
+                dependent_plans = arguments.get(
+                    "dependent_plans",
+                    plan.audit.get("dependent_plans", ()),
+                )
+                if isinstance(dependent_plans, Sequence) and not isinstance(
+                    dependent_plans, (str, bytes)
+                ) and dependent_plans:
+                    register_workflow = getattr(
+                        direct_executor, "register_dependent_plans", None
+                    )
+                    if not callable(register_workflow):
+                        lease = command_lifecycle.fail(
+                            command_id,
+                            reason="direct_workflow_scheduler_missing",
+                        )
+                        return {
+                            "ok": False,
+                            "status": "direct_workflow_scheduler_missing",
+                            "runtime_attached": True,
+                            "lifecycle": lease.to_dict(),
+                        }
+                    try:
+                        register_workflow(command_id, dependent_plans)
+                    except Exception as error:  # noqa: BLE001 - workflow is data.
+                        lease = command_lifecycle.fail(
+                            command_id,
+                            reason="invalid_dependent_workflow",
+                            evidence={"error": f"{type(error).__name__}:{error}"},
+                        )
+                        return {
+                            "ok": False,
+                            "status": "invalid_dependent_workflow",
+                            "runtime_attached": True,
+                            "lifecycle": lease.to_dict(),
+                            "error": f"{type(error).__name__}:{error}",
+                        }
             if not value.success and lifecycle_required:
                 lease = command_lifecycle.fail(
                     command_id,
@@ -930,6 +1035,7 @@ def create_command_tool_registry(
             "current_frame": {"type": "integer", "minimum": 0},
             "ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 900},
             "completion_conditions": {"type": "array", "items": {"type": "string"}},
+            "dependent_plans": {"type": "array", "items": {"type": "object"}},
         },
         "required": ["plan"],
         "additionalProperties": False,
@@ -981,6 +1087,7 @@ def create_command_tool_registry(
                 "current_frame": arguments.get("current_frame", 0),
                 "ttl_seconds": arguments.get("ttl_seconds"),
                 "completion_conditions": arguments.get("completion_conditions"),
+                "dependent_plans": arguments.get("dependent_plans"),
             }
         )
 

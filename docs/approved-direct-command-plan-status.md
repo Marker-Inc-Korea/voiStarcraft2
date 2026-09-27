@@ -6,17 +6,17 @@
 보고하는 것이다.
 
 기준 브랜치는 `codex/llm-command-speedup`, 기준 PR은
-[#187](https://github.com/Marker-Inc-Korea/voiStarcraft2/pull/187)이다. PR #187은
-열려 있지만 현재 GitHub 상태가 `BLOCKED`이다. Direct 구현과 마지막 상태
-구현 기준 pushed commit은 `d1b695f`이고, 그 구현 head의 최신 hosted run은
-`ci` run `36320112887`, `final-pre-live` run `36320110460`,
-`pre-live-provenance` run `36320110347`이다. 이후 문서 상태만 갱신한
-커밋도 같은 브랜치에 푸시했으며 구현 코드는 바뀌지 않았다.
+[#187](https://github.com/Marker-Inc-Korea/voiStarcraft2/pull/187)이다. 현재
+working-tree 기준 HEAD는 `a41fccf`이고, 이번 보강(종료 callback seam,
+dependent workflow, `enemy_destroyed` evidence, registry lifecycle 공유,
+compact prompt 축소)은 아직 커밋되지 않았다. GitHub에서 확인한 PR #187은
+`OPEN / BLOCKED`이며, 원격 HEAD `a41fccf2d255b41c9ffe69d17f01edd06907eded`의
+최신 hosted 결과는 `ci` run `36320835292`, `final-pre-live` run
+`36320833369`, `pre-live-provenance` run `36320833361`이다.
 `event-admission`, `pre-live-build`, `ready-to-merge`는 성공했고,
-`pre-live-producer-isolation`은 실패했다. `unit-contracts (3.10)`, `(3.11)`,
-`(3.12)`도 완료됐지만 모두 실패했다. 따라서 CI green이나 merge를 주장하지
-않는다. 이 head에는 Direct observation evidence 연결 변경이 커밋·푸시되어
-있다. 실제 StarCraft II Live QA는 완료 증거가 없다.
+`pre-live-producer-isolation`과 `unit-contracts (3.10)`, `(3.11)`, `(3.12)`은
+실패했다. 따라서 CI green이나 merge를 주장하지 않는다. 실제 StarCraft II
+Live QA는 완료 증거가 없다.
 
 ## 1. 사용자가 승인한 최종 구조
 
@@ -152,7 +152,10 @@ pending -> dispatched -> active -> completed / expired / cancelled / failed
 ```
 
 완료조건에는 유닛 수 충족, 건설 시작, 건설 완료, 명령 발행, 목표 도착,
-적 발견, 후퇴 확인, 능력 사용 완료, 사용자 취소, TTL 만료가 포함된다.
+적 발견, 적 구조물 파괴 확인, 후퇴 확인, 능력 사용 완료, 사용자 취소,
+TTL 만료가 포함된다. `enemy_destroyed`는 명시적 runtime receipt 또는
+완전한 시야에서 baseline 대비 visible enemy structure 감소가 확인될 때만
+참으로 기록하며, fog/불완전 관찰에서는 추측하지 않는다.
 
 Direct 명령이 완료·취소·실패·TTL 만료되면 해당 분대의 Direct 제어권을
 해제하고 기본 MicroMachine 자율제어가 재개되어야 한다. 런타임이 없을 때는
@@ -182,8 +185,8 @@ MicroMachine으로 몰래 대체하지 않고 `runtime_not_attached`로 실패�
 | 1 | `operation / micro / emergency`에서 MicroMachine publish 제거 | 완료(코드 경계) | non-macro route는 `sc2.direct.execute`만 만든다. live session도 non-macro를 publish하지 않는다. |
 | 2 | 이동·공격·정찰·방어·재집결·건설·생산·일꾼·수리·능력·카메라·게임상태·Stop/Hold/Retreat를 Direct MCP tool로 등록 | 부분 완료 | semantic registry와 MCP tool/adapter 매핑은 있다. top-level tactical task와 `building_tasks` lowering도 추가했다. raw python-sc2 전체 API와 명시적 repair/worker 자연어 필드의 전체 연결은 미완료다. |
 | 3 | 모든 Direct 명령에 `command_id`, 대상 분대, 발행 프레임, 만료 프레임, 완료조건 부착 | 부분 완료 | lifecycle lease가 command/frame/TTL/conditions와 `owned_subjects`를 보유한다. 실제 unit tag로 확정되는 것은 아니다. |
-| 4 | 게임 루프가 매 프레임 목표 도착·건설·파괴·능력·후퇴·TTL을 확인 | 부분 완료(코드+fake contract) | `SC2RuntimeExecutor`가 match-lifetime Direct lifecycle owner가 되고 `tick_direct_commands()`를 제공하며, live demo `BotAI.on_step`이 이를 매 frame 호출한다. `PythonSC2BotAdapter.direct_command_evidence()`가 baseline과 현재 관찰값으로 목표 도착·건설 시작/완료·유닛 수·적 발견·후퇴를 보수적으로 공급하고, runtime이 노출한 능력 확인도 받는다. 실제 SC2 Live QA와 파괴/능력의 게임별 관찰 증거는 아직 없다. |
-| 5 | 완료·취소·만료 시 Direct 제어권 해제 후 MicroMachine 재개 | 부분 완료 | terminal state에서 `control_owned=false`, release callback과 ownership registry가 있고 callback seam이 terminal lease를 반환한다. 실제 game-loop가 MicroMachine owner를 다시 호출하는 연결·Live QA는 없다. |
+| 4 | 게임 루프가 매 프레임 목표 도착·건설·파괴·능력·후퇴·TTL을 확인 | 부분 완료(코드+fake contract) | `SC2RuntimeExecutor`가 match-lifetime Direct lifecycle owner가 되고 `tick_direct_commands()`를 제공하며, live demo `BotAI.on_step`이 이를 매 frame 호출한다. `PythonSC2BotAdapter.direct_command_evidence()`가 baseline과 현재 관찰값으로 목표 도착·건설 시작/완료·유닛 수·적 발견·적 구조물 파괴·후퇴를 보수적으로 공급하고, runtime이 노출한 능력 확인도 받는다. 실제 SC2 Live QA와 파괴/능력의 게임별 관찰 증거는 아직 없다. |
+| 5 | 완료·취소·만료 시 Direct 제어권 해제 후 MicroMachine 재개 | 부분 완료 | terminal state에서 `control_owned=false`, release callback과 ownership registry가 있고, `SC2RuntimeExecutor`가 명시 callback 또는 adapter/BotAI의 `resume_micromachine(lease)` seam을 호출한다. dependent workflow 중간에는 재개를 보류하고 마지막 단계 뒤 한 번만 release한다. 실제 game-loop가 MicroMachine owner를 다시 호출하는 연결·Live QA는 없다. |
 | 6 | 독립 Direct 병렬, 동일 분대 충돌·emergency 순차 | 완료(스케줄러 계약) | `call_many_async`가 independent gather를 사용하며 emergency/복합 plan을 순차화한다. embedded plan subject와 lifecycle subject overlap을 deterministic하게 거부한다. 실제 SC2 동시성은 Live QA 대상이다. |
 | 7 | runtime 미연결은 `runtime_not_attached`로 fail-closed | 완료(코드 경계) | executor/BotAI 부재 시 Direct 실패를 반환하고 MicroMachine으로 우회 publish하지 않는다. |
 
@@ -196,9 +199,9 @@ MicroMachine으로 몰래 대체하지 않고 `runtime_not_attached`로 실패�
 | 3 | 자연어 squad registry | 부분 완료 | named squad와 unknown rejection, unit query 보존이 있다. live observation의 안정적 tag selection과 mixed squad ownership은 미완료다. |
 | 4 | semantic 위치·relative anchor·target pin 통합 | 부분 완료 | map resolver/placement metadata와 target-pin registry가 있다. controller click UI, 좌표 변환 저장, live obstacle/threat validation 증거는 없다. |
 | 5 | repair target 자동 선택·모호하면 재질문 | 부분 완료 | 손상 구조물 우선·유닛 fallback·SCV 선택 adapter가 있다. 다중 매칭 clarification UI/재질문은 없다. “마린 한 기 치료해”는 별도 heal capability가 필요하다. |
-| 6 | lifecycle `pending → dispatched → active → terminal` | 부분 완료(코드+fake contract) | state transition, cumulative evidence/TTL/cancel/fail, subject lease와 release callback, action context·baseline 보존, active lease snapshot·batch observation callback seam이 있다. BotAI adapter가 조건별 evidence를 공급하지만 실제 게임 관찰과 dependent workflow resume는 없다. |
+| 6 | lifecycle `pending → dispatched → active → terminal` | 부분 완료(코드+fake contract) | state transition, cumulative evidence/TTL/cancel/fail, subject lease와 release callback, action context·baseline 보존, active lease snapshot·batch observation callback seam이 있다. BotAI adapter가 조건별 evidence를 공급하고, registry가 runtime executor의 lifecycle을 공유한다. 실제 게임 관찰은 없다. |
 | 7 | Direct 종료 후 MicroMachine 기본 AI 복귀 | 부분 완료 | lease terminal ownership 해제는 코드로 명시됐지만 game-loop 재개 증거는 없다. |
-| 8 | 독립 병렬, 선행조건 순차(건설→완성 관찰→생산) | 부분 완료 | 병렬/충돌/ordered plan 순차 실행은 있다. 건설 완료 observation 후 후속 train 자동 재개 workflow는 없다. |
+| 8 | 독립 병렬, 선행조건 순차(건설→완성 관찰→생산) | 부분 완료(코드+fake contract) | 병렬/충돌/ordered plan 순차 실행과 `SC2RuntimeExecutor.register_dependent_plans()`/`drain_completed_workflows()`가 있다. registry 실제 경로도 runtime executor lifecycle을 공유해 `building_completed` 관찰 뒤 train을 지연 dispatch하며, 중간 MicroMachine resume을 보류한다. 실제 SC2 건설 완료 관찰은 Live QA가 필요하다. |
 
 ### 추가 승인: “모든 SC2 API tool calling”
 
@@ -231,16 +234,16 @@ MicroMachine으로 몰래 대체하지 않고 `runtime_not_attached`로 실패�
 | 분대 registry | 부분 완료 | `DirectCommandRegistry`/`SquadDefinition`으로 이름·unit query를 보존하고 configured registry에서 unknown named squad를 거부한다. 실제 관찰값 기반 tag 선택과 ownership transfer는 runtime 미검증이다. |
 | 수리 대상 자동 선택 | 부분 완료 | adapter가 아군 손상 구조물 우선, 손상 유닛 fallback, SCV 선택을 수행한다. 다중 매칭 clarification과 named registry 연동은 미구현이다. |
 | 독립 tool 병렬 실행 | 완료(호출 스케줄러 계약) | `call_many_async()`가 독립 호출을 `asyncio.gather`로 병렬 실행하고, 동일 subject/conflict·emergency·다중 action plan은 순차 처리한다. 실제 SC2 동시성은 runtime 미검증이다. |
-| 선행조건 순차 실행 | 부분 완료 | ordered plan과 다중 action 순차 실행은 구현했다. “건설 완료 관찰 후 생산”을 자동으로 다음 tool에 재개하는 workflow는 아직 없다. |
-| 완료·취소·TTL lifecycle | 부분 완료(코드+fake contract) | `DirectCommandLifecycle`가 pending/dispatched/active/complete/expired/cancelled/failed 계약 상태와 cumulative completion evidence·TTL을 보유하며 MCP/session/웹 브리지/`SC2RuntimeExecutor` lifetime registry에 연결됐다. lease가 원래 action context와 baseline을 보존하고, adapter evidence watcher가 목표 도착·건설·유닛 수·적 발견·후퇴·runtime 능력 확인을 공급한다. `active_leases()`/`observe_all()`이 여러 lease를 frame tick으로 관찰하고 terminal lease를 재관찰하지 않는다. live demo `on_step`은 TTL과 evidence tick을 실제 호출하지만 실제 Live QA와 dependent workflow 자동 재개는 미검증이다. |
-| Direct 제어권 반환 후 MicroMachine 재개 | 부분 완료 | terminal lease에서 `control_owned=false`가 되고 session/웹 브리지의 `observe_direct_command()`/`observe_direct_commands()`/`tick_direct_commands()`/`cancel_direct_command()`가 ownership 해제와 game-loop callback seam을 제공한다. 실제 MicroMachine game-loop가 자동으로 재개되는 연결과 watcher 증거는 없다. |
+| 선행조건 순차 실행 | 부분 완료 | ordered plan과 다중 action 순차 실행, runtime executor dependent workflow가 구현됐다. `create_command_tool_registry(direct_executor=...)` 경로의 lifecycle 공유와 build→completion evidence→train 지연 dispatch를 계약 테스트로 고정했다. 실제 SC2 건설 완료 관찰은 없다. |
+| 완료·취소·TTL lifecycle | 부분 완료(코드+fake contract) | `DirectCommandLifecycle`가 pending/dispatched/active/complete/expired/cancelled/failed 계약 상태와 cumulative completion evidence·TTL을 보유하며 MCP/session/웹 브리지/`SC2RuntimeExecutor` lifetime registry에 연결됐다. lease가 원래 action context와 baseline을 보존하고, adapter evidence watcher가 목표 도착·건설·유닛 수·적 발견·적 구조물 파괴·후퇴·runtime 능력 확인을 공급한다. `active_leases()`/`observe_all()`이 여러 lease를 frame tick으로 관찰하고 terminal lease를 재관찰하지 않는다. live demo `on_step`은 TTL/evidence tick과 dependent workflow drain을 호출하지만 실제 Live QA는 없다. |
+| Direct 제어권 반환 후 MicroMachine 재개 | 부분 완료 | terminal lease에서 `control_owned=false`가 되고 session/웹 브리지의 `observe_direct_command()`/`observe_direct_commands()`/`tick_direct_commands()`/`cancel_direct_command()`와 executor release callback seam이 ownership 해제를 제공한다. dependent workflow 마지막 단계 뒤 release를 보장하는 fake contract도 있다. 실제 MicroMachine game-loop가 자동으로 재개되는 연결과 Live QA 증거는 없다. |
 | runtime 미연결 fail-closed | 완료(코드 경계) | Direct executor가 없거나 BotAI가 없으면 `runtime_not_attached`를 반환하고 non-macro는 MicroMachine으로 우회 publish하지 않는다. |
 | SC2 상태 관찰 | 부분 완료 | `observe` adapter/state resolver와 executor audit가 있고 lifecycle evidence 입력 및 batch observation seam이 있다. 실제 BotAI 조건별 evidence 수집·completion watcher 연결은 미완료다. |
 | 카메라 이동 | 부분 완료 | adapter/map resolver/MCP tool은 연결됐다. 실제 SC2 camera API 성공은 live runtime 미검증이다. |
 | JEV System 1 라우팅 | 미완료/외부 계약 대기 | #189에 정의 질문과 acceptance criteria만 등록했다. |
 | legacy route 완전 제거 | **완료(코드 경계)** | `include_legacy_tools` opt-in과 `micromachine.operation/ability/emergency` registry entries를 제거했다. 기본 registry와 MCP discovery에는 `micromachine.policy`만 남는다. |
 | 문서화 | 완료(현재 상태 보고) | 이 문서가 승인 원문 기준, 구조, capability, 위치·분대·수리, 병렬·선행조건, lifecycle, legacy 격리, JEV, PR·Live QA를 항목별로 기록한다. |
-| PR 반영 | 부분 완료 | PR #187이 열려 있고 `BLOCKED`다. 구현 head `d1b695f`의 hosted `ci` run `36320112887`에서 3개 `unit-contracts` job이 실패했고, `pre-live-producer-isolation`도 실패했다. `event-admission`, `pre-live-build`, `ready-to-merge`는 성공했다. hosted CI green/merge를 주장할 수 없다. |
+| PR 반영 | 부분 완료 | PR #187이 열려 있고 `BLOCKED`다. 원격 HEAD `a41fccf`의 hosted `ci` run `36320835292`에서 3개 `unit-contracts` job이 실패했고, `pre-live-producer-isolation`도 실패했다. `event-admission`, `pre-live-build`, `ready-to-merge`는 성공했다. hosted CI green/merge를 주장할 수 없다. |
 | 실제 Live QA | 미완료 | 이전 PR 설명에도 실제 StarCraft II Live QA를 실행하지 않았다고 명시되어 있다. |
 
 ## 4. 현재 검증 결과
@@ -255,7 +258,7 @@ MicroMachine으로 몰래 대체하지 않고 `runtime_not_attached`로 실패�
   tests/test_python_sc2_adapter_contract.py \
   tests/test_llm_interpreter.py \
   tests/test_architecture_docs.py
-285 passed, 1 skipped, 423 subtests passed
+380 passed, 1 skipped, 575 subtests passed
 
 python3 -m py_compile starcraft_commander/*.py
 통과
@@ -265,7 +268,9 @@ python3 -m py_compile starcraft_commander/*.py
 MCP capability catalog와 모든 catalog tool 등록, 독립 호출 병렬 실행,
 lifecycle completion/TTL/cancel, named squad·target pin unknown rejection,
 event-loop 내부 async direct executor dispatch, subject ownership/conflict,
-top-level task/build lowering, adapter evidence와 runtime evidence 연결을 검증한다.
+top-level task/build lowering, adapter evidence와 runtime evidence 연결,
+Direct release callback, registry lifecycle 공유, build completion 후 dependent train,
+중간 MicroMachine resume 보류, `enemy_destroyed` evidence를 검증한다.
 
 웹 브리지의 game-loop seam과 요청 간 Direct ownership 보존을 별도로 확인했다.
 
@@ -326,6 +331,7 @@ MicroMachine에 publish한 뒤 성공으로 간주한다. 새 계약은 이를 �
 expectation과 `runtime_not_attached` fail-closed 계약의 차이다. Stop/Hold
 action 집합은 관련 contract test에 반영했다.
 
+`python3 -m py_compile starcraft_commander/*.py`와 `git diff --check`도 통과했다.
 실제 StarCraft II BotAI가 이 환경에 연결되지 않았으므로 action issuance,
 map collision, camera, lifecycle observation, MicroMachine 재개를 증명하는
 Live QA는 수행하지 못했다.
@@ -339,7 +345,7 @@ Live QA는 수행하지 못했다.
    Direct-only route, bounded semantic MCP catalog, move camera,
    Stop/Hold/Retreat, fail-closed runtime, independent-call parallel scheduler,
    same-subject/emergency/ordered-plan serialization, named squad·target pin
-   registry 초안, lifecycle lease 상태·completion·TTL·cancel, active lease batch observation callback seam, 현재 상태 문서화.
+   registry 초안, lifecycle lease 상태·completion·TTL·cancel, active lease batch observation callback seam, runtime lifecycle 공유, dependent workflow dispatch seam, 현재 상태 문서화.
 2. **부분 해결**: 실제 named squad의 live unit-tag resolution, target pin의
    live map 좌표·장애물 검증, 수리 모호성 clarification, 건설 완료 관찰 후
    생산 재개, 실제 BotAI evidence watcher와 MicroMachine game-loop ownership
@@ -350,8 +356,7 @@ Live QA는 수행하지 못했다.
 
 따라서 이번 문서는 승인 계획을 토씨 하나 빠뜨리지 않고 현재 증거와
 대조한 상태 보고서이며, “승인한 계획이 전부 해결됐다”는 보고서는 아니다.
-현재 구현 변경은 집중 테스트·문서 대조를 마치고 `d1b695f`로 커밋·푸시했으며,
-후속 문서 상태 커밋도 같은 브랜치에 푸시했다.
-최신 hosted 결과도 확인했지만 `unit-contracts` 3개와
+현재 구현 보강은 working tree에서 집중 테스트·문서 대조를 마쳤지만 아직
+커밋·푸시하지 않았다. 원격 최신 hosted 결과에서도 `unit-contracts` 3개와
 `pre-live-producer-isolation`이 실패했으므로 PR은 여전히 `BLOCKED`이며
-green/merge가 아니다. Live QA는 현재 완료되지 않았다.
+green/merge가 아니다. PR merge는 하지 않았고, Live QA도 완료되지 않았다.

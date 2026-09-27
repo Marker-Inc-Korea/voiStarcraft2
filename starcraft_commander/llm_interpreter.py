@@ -975,13 +975,13 @@ def build_compact_policy_modulation_system_prompt() -> str:
     """Render the low-latency semantic parser prompt for Responses providers."""
 
     return (
-        "Convert one StarCraft II commander utterance into forced-tool compact "
+        "Convert StarCraft II commander utterance into forced-tool compact "
         "semantic command(s). Never emit the full manager DSL; Python expands "
         "prerequisites, TTL, biases, squad scope, and production plans.\n"
         "Rules:\n"
         "1. Resolve Korean/English units, counts, locations, routes, targets, "
         "abilities, and placement. Never output coordinates, tags, clicks, API "
-        "calls, or raw SC2 commands.\n"
+        "calls, or SC2 commands.\n"
         "2. command_layer: macro=production/tech/building; operation=intermediate "
         "squad tactics; micro=ability; emergency=interrupt.\n"
         "3. task_type: sustain_production=production; "
@@ -5685,6 +5685,7 @@ def _compact_command_layer(
         "defend_with_units",
         "harass_with_units",
         "regroup_with_units",
+        "train_unit",
     }:
         return "operation"
     if task_type in {

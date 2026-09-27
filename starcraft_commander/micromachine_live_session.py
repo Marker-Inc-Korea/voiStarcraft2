@@ -892,6 +892,7 @@ class MicroMachineLiveTextSession:
         include_direct_tool: bool = True,
         direct_lifecycle: DirectCommandLifecycle | None = None,
         direct_command_registry: DirectCommandRegistry | None = None,
+        on_direct_release: Callable[[object], object] | None = None,
     ) -> None:
         self.backend = backend
         self.provider = provider
@@ -909,6 +910,24 @@ class MicroMachineLiveTextSession:
             direct_lifecycle = shared_lifecycle
         self.direct_lifecycle = direct_lifecycle or DirectCommandLifecycle()
         self.direct_command_registry = direct_command_registry or DirectCommandRegistry()
+        self.on_direct_release = on_direct_release
+        self._previous_direct_release = self.direct_lifecycle.on_release
+        if on_direct_release is not None:
+            self.direct_lifecycle.on_release = self._handle_direct_release
+
+    def _handle_direct_release(self, lease: object) -> None:
+        """Forward terminal Direct release to the live MicroMachine host.
+
+        A session may share the executor's lifecycle.  Chaining the existing
+        listener keeps executor ownership and session-level resumption hooks
+        both observable without creating a second lease registry.
+        """
+
+        if self._previous_direct_release is not None:
+            self._previous_direct_release(lease)
+        callback = self.on_direct_release
+        if callback is not None:
+            callback(lease)
 
     def submit_text(
         self,

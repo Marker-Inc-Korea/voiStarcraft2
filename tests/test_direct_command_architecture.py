@@ -120,6 +120,121 @@ def test_top_level_operation_tasks_and_one_off_build_lower_to_direct_actions() -
     assert route.direct_plan.actions[1].metadata["building_type"] == "TERRAN_FACTORY"
 
 
+def test_build_then_train_lowers_to_cross_frame_dependent_workflow() -> None:
+    route = route_policy_vector(
+        _vector(
+            {
+                "goal": "build barracks then train marine",
+                "command_layer": "operation",
+                "building_tasks": [
+                    {
+                        "building_type": "TERRAN_BARRACKS",
+                        "placement_intent": "self_main_safe_macro",
+                        "anchor": "self_main",
+                    }
+                ],
+                "tactical_task": {
+                    "task_type": "train_unit",
+                    "production_targets": ["TERRAN_MARINE"],
+                },
+            }
+        )
+    )
+    assert route.direct_plan is not None
+    assert [action.action_type.value for action in route.direct_plan.actions] == [
+        "build_structure"
+    ]
+    dependent = route.direct_plan.audit["dependent_plans"]
+    assert dependent[0]["resume_on"] == ["building_completed"]
+    assert dependent[0]["plan"]["ordered_actions"][0]["action_type"] == "train_unit"
+    assert dependent[0]["plan"]["ordered_actions"][0]["subject"] == "MARINE"
+
+
+def test_registry_shares_runtime_executor_lifecycle_for_dependent_workflow() -> None:
+    from starcraft_commander.sc2_executor import SC2RuntimeExecutor
+
+    class WorkflowBot:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        async def build_structure(self, action):
+            self.calls.append(("build", action.subject))
+            return True
+
+        async def train_unit(self, action):
+            self.calls.append(("train", action.subject))
+            return True
+
+    bot = WorkflowBot()
+    executor = SC2RuntimeExecutor(bot=bot)
+    registry = create_command_tool_registry(direct_executor=executor)
+    vector = _vector(
+        {
+            "goal": "build barracks then train marine",
+            "command_layer": "operation",
+            "building_tasks": [
+                {
+                    "building_type": "TERRAN_BARRACKS",
+                    "placement_intent": "self_main_safe_macro",
+                    "anchor": "self_main",
+                }
+            ],
+            "tactical_task": {
+                "task_type": "train_unit",
+                "production_targets": ["TERRAN_MARINE"],
+            },
+        }
+    )
+    route = route_policy_vector(vector, update_id="registry-workflow", current_frame=1)
+
+    result = registry.call("sc2.direct.execute", route.tool_calls[0].arguments)
+
+    assert result.ok is True
+    assert bot.calls == [("build", "BARRACKS")]
+    parent = executor.direct_lifecycle.get("registry-workflow")
+    assert parent is not None
+    assert parent.control_owned is True
+    assert executor._dependent_workflows["registry-workflow"]
+
+    observed = executor.tick_direct_commands(
+        2,
+        {"registry-workflow": {"building_completed": True}},
+    )
+    assert observed[0]["state"] == "completed"
+    assert asyncio.run(executor.drain_completed_workflows(current_frame=2))
+    assert bot.calls == [("build", "BARRACKS"), ("train", "MARINE")]
+
+
+def test_registry_binds_explicit_lifecycle_to_runtime_executor() -> None:
+    from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
+    from starcraft_commander.sc2_executor import SC2RuntimeExecutor
+
+    class Bot:
+        async def move_group(self, _action):
+            return True
+
+    executor = SC2RuntimeExecutor(bot=Bot())
+    lifecycle = DirectCommandLifecycle(game_loops_per_second=1)
+    registry = create_command_tool_registry(
+        direct_executor=executor,
+        lifecycle=lifecycle,
+    )
+
+    result = registry.call(
+        "sc2.direct.move_group",
+        {
+            "subject": "scout",
+            "target": "enemy_natural",
+            "command_id": "explicit-shared-lifecycle",
+            "current_frame": 3,
+        },
+    )
+
+    assert result.ok is True
+    assert executor.direct_lifecycle is lifecycle
+    assert lifecycle.get("explicit-shared-lifecycle") is not None
+
+
 def test_nested_ability_operation_is_not_misclassified_as_attack_move() -> None:
     route = route_policy_vector(
         _vector(
@@ -491,6 +606,34 @@ def test_live_session_direct_tick_is_game_loop_callback_seam() -> None:
     assert tick[0]["control_owned"] is False
     assert released == ["session-lease"]
     assert session.observe_direct_commands(current_frame=99) == ()
+
+
+def test_live_session_direct_release_callback_is_micro_resume_seam() -> None:
+    released: list[tuple[str, str]] = []
+    lifecycle = DirectCommandLifecycle(game_loops_per_second=1)
+    session = MicroMachineLiveTextSession(
+        MicroMachineInMemoryBlackboard(),
+        StaticJsonPolicyModulationProvider(
+            {"goal": "observe", "command_layer": "macro"}
+        ),
+        direct_lifecycle=lifecycle,
+        on_direct_release=lambda lease: released.append(
+            (lease.command_id, lease.release_reason)
+        ),
+    )
+    lifecycle.dispatch(
+        command_id="resume-session",
+        issued_at_frame=4,
+        ttl_seconds=2,
+        completion_conditions=("target_reached",),
+    )
+
+    session.tick_direct_commands(
+        5,
+        {"resume-session": {"target_reached": True}},
+    )
+
+    assert released == [("resume-session", "completion_conditions")]
 
 
 def test_named_squad_and_target_pin_registry_rejects_unknown_squads() -> None:

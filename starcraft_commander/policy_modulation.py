@@ -92,6 +92,7 @@ MICROMACHINE_TACTICAL_TASK_TYPES: Final[frozenset[str]] = frozenset(
         "defend_with_units",
         "harass_with_units",
         "regroup_with_units",
+        "train_unit",
         "sustain_production",
         "tech_transition",
         "expand_or_land_command_center",
@@ -165,6 +166,7 @@ MICROMACHINE_COMPLETION_CONDITIONS: Final[frozenset[str]] = frozenset(
         "order_issued",
         "target_reached",
         "enemy_observed",
+        "enemy_destroyed",
         "retreat_confirmed",
         "ability_cast",
         "cancelled_by_user",
@@ -2262,6 +2264,7 @@ def _infer_command_layer(vector: PolicyModulationVector) -> CommandLayer:
         "defend_with_units",
         "harass_with_units",
         "regroup_with_units",
+        "train_unit",
     }:
         return CommandLayer.OPERATION
     if vector.tactical_task.task_type in {
@@ -2305,6 +2308,7 @@ def _infer_tactical_operation_layer(
         "defend_with_units",
         "harass_with_units",
         "regroup_with_units",
+        "train_unit",
     }:
         return CommandLayer.OPERATION
     if task_type in {
