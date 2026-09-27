@@ -232,7 +232,7 @@ MicroMachine으로 몰래 대체하지 않고 `runtime_not_attached`로 실패�
 | JEV System 1 라우팅 | 미완료/외부 계약 대기 | #189에 정의 질문과 acceptance criteria만 등록했다. |
 | legacy route 완전 제거 | **완료(코드 경계)** | `include_legacy_tools` opt-in과 `micromachine.operation/ability/emergency` registry entries를 제거했다. 기본 registry와 MCP discovery에는 `micromachine.policy`만 남는다. |
 | 문서화 | 완료(현재 상태 보고) | 이 문서가 승인 원문 기준, 구조, capability, 위치·분대·수리, 병렬·선행조건, lifecycle, legacy 격리, JEV, PR·Live QA를 항목별로 기록한다. |
-| PR 반영 | 부분 완료 | PR #187이 열려 있고 `BLOCKED`다. 이전 hosted 검증 head는 `c117892`였으며, 현재 작업 트리에는 아직 커밋·push하지 않은 후속 Direct/lifecycle/documentation 변경이 있다. hosted CI green/merge를 주장할 수 없다. |
+| PR 반영 | 부분 완료 | PR #187이 열려 있고 `BLOCKED`다. 최신 pushed head는 `f3ecfd7`이며, 이 head의 hosted CI는 아직 결과를 기다리는 중이다. hosted CI green/merge를 주장할 수 없다. |
 | 실제 Live QA | 미완료 | 이전 PR 설명에도 실제 StarCraft II Live QA를 실행하지 않았다고 명시되어 있다. |
 
 ## 4. 현재 검증 결과
@@ -241,7 +241,7 @@ MicroMachine으로 몰래 대체하지 않고 `runtime_not_attached`로 실패�
 
 ```text
 ./.venv/bin/pytest -q tests/test_direct_command_architecture.py
-17 passed
+18 passed
 
 python3 -m py_compile starcraft_commander/*.py
 통과
@@ -307,6 +307,6 @@ Live QA는 수행하지 못했다.
 
 따라서 이번 문서는 승인 계획을 토씨 하나 빠뜨리지 않고 현재 증거와
 대조한 상태 보고서이며, “승인한 계획이 전부 해결됐다”는 보고서는 아니다.
-PR 반영은 hosted head `c117892`까지 확인했지만 현재 후속 변경은 아직
-커밋·push하지 않았다. hosted CI 실패로 PR은 여전히 `BLOCKED`이고, Live QA는
-현재 완료되지 않았다.
+PR 반영은 최신 pushed head `f3ecfd7`까지 완료했다. 새 hosted CI 결과를
+기다리는 중이며, 이전 실패 이력 때문에 PR이 자동으로 green/merge됐다고
+주장하지 않는다. Live QA는 현재 완료되지 않았다.
