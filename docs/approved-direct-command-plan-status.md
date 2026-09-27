@@ -7,8 +7,8 @@
 
 기준 브랜치는 `codex/llm-command-speedup`, 기준 PR은
 [#187](https://github.com/Marker-Inc-Korea/voiStarcraft2/pull/187)이다. PR #187은
-열려 있지만 현재 GitHub 상태가 `BLOCKED`이다. 이 문서 갱신 시점의 pushed
-head는 `fe7826bfae6db7d849b3a404f5aec8a34b7e36b7`이며, `event-admission`,
+열려 있지만 현재 GitHub 상태가 `BLOCKED`이다. 이 문서가 속한 현재 pushed
+`HEAD`는 이 문서와 구현을 포함한 현재 branch head이며, `event-admission`,
 `pre-live-build`, `ready-to-merge`는 성공했고 `pre-live-producer-isolation`은
 실패했다. `unit-contracts (3.10)`, `(3.11)`, `(3.12)`는 아직 진행 중이므로
 CI green이나 merge를 주장하지 않는다. 실제 StarCraft II Live QA는 완료 증거가
