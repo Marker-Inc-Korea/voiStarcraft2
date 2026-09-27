@@ -796,6 +796,12 @@ def create_command_tool_registry(
             list_capabilities,
         ),
         ToolSpec(
+            "sc2.direct.registry",
+            "List named squads and semantic target pins available to Direct SC2 tools.",
+            {"type": "object", "additionalProperties": False},
+            lambda _arguments: {"ok": True, "registry": semantic_registry.to_dict()},
+        ),
+        ToolSpec(
             "sc2.direct.assign_workers",
             "Assign workers to a semantic resource target through python-sc2.",
             action_schema,

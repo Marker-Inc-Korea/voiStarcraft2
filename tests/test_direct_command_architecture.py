@@ -83,6 +83,7 @@ def test_mcp_capability_catalog_and_direct_tools_are_complete() -> None:
     names = {tool.name for tool in registry.list_tools()}
     assert {
         "sc2.direct.capabilities",
+        "sc2.direct.registry",
         "sc2.direct.move_camera",
         "sc2.direct.stop_group",
         "sc2.direct.hold_position",
