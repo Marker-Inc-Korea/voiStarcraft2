@@ -7,8 +7,9 @@
 
 기준 브랜치는 `codex/llm-command-speedup`, 기준 PR은
 [#187](https://github.com/Marker-Inc-Korea/voiStarcraft2/pull/187)이다. 현재
-실행 코드 기준 커밋은 `6520abe`다. 수리 대상 모호성 거부와 live-session
-clarification prompt 전파가 이 커밋에 포함됐다. 완료된 hosted 검사의 보고 기준은
+실행 코드 기준 커밋은 `43a834b`다. 수리 대상 모호성 거부와 live-session
+clarification prompt 전파, semantic Direct capability 확장이 이 커밋에 포함됐다.
+완료된 hosted 검사의 보고 기준은
 동일 실행 코드인 문서 커밋 `64d41a7`로 고정한다. 2026-09-28 KST 확인 시
 PR #187은 `OPEN / BLOCKED`였으며, 해당 snapshot의 결과는
 `ci` run `36351195349`, `final-pre-live` run `36351193937`,
@@ -80,19 +81,24 @@ Direct 실행과 MicroMachine publish를 동시에 하는 것은 승인된 최�
 
 현재 구현은 raw python-sc2 객체 전체를 무제한으로 노출하지 않고, 검증 가능한
 semantic capability catalog를 MCP로 공개한다. 이것은 구현 안전장치이지,
-사용자가 승인한 “sc2api에 있는 모든 기능” 요구를 12개로 축소한 승인이
+사용자가 승인한 “sc2api에 있는 모든 기능” 요구를 현재의 bounded catalog로 축소한 승인이
 아니다. 각 도구는 입력 schema, semantic subject/target, 런타임 필요 여부,
 성공·부분 성공·거부 결과를 갖고, 임의의 메서드명이나 raw unit tag를 LLM이
 직접 호출하지 않는다.
 
-현재 등록된 1차 capability 목록은 다음이다. 이 목록 밖의 SC2 API 기능은
+현재 등록된 semantic capability 목록은 다음이다. 이 목록 밖의 SC2 API 기능은
 아직 미완료로 판정한다.
 
 - 일꾼 자원 배정
+- 명시적 자원 채취
 - 구조물 건설
 - 유닛 생산
+- 업그레이드 연구
+- 워프인 생산
 - 분대 이동
 - 분대 공격 이동
+- 분대 순찰
+- 자원 반납
 - 수리
 - 유닛 능력 사용
 - 게임 상태 관찰
@@ -209,8 +215,10 @@ live session도 non-macro를 blackboard에 publish하지 않는다.
 >    - 게임 상태 관찰
 >    - Stop/Hold/Retreat
 
-- 이동·공격: `move_group`/`attack_move` 등록. 정찰·방어·재집결은 tactical task lowering으로 연결되며 별도 전 기능 도구가 아니다.
+- 이동·공격·순찰: `move_group`/`attack_move`/`patrol` 등록. 정찰·방어·재집결은 tactical task lowering으로 연결되며 별도 전 기능 도구가 아니다.
 - 건설·생산·일꾼 배정·수리: 각 semantic tool과 adapter 등록. repair/worker 자연어 요청부터 실행까지의 전체 연결은 미완료.
+- 명시적 자원 채취·자원 반납: `gather_resource`/`return_resource`와 adapter의 `Unit.gather`/`Unit.return_resource` 호출을 등록했다. 실제 게임 검증은 미완료.
+- 업그레이드 연구·워프인: `research_upgrade`/`warp_in`과 adapter의 `Unit.research`/`Unit.warp_in` 호출을 등록했다. 업그레이드·프로토스 구조물의 실제 런타임 검증은 미완료.
 - 능력 사용: `execute_ability` 등록. 모든 ability의 target/caster/효과 확인을 입증한 것은 아니다.
 - 카메라 이동: `move_camera` 등록 및 fake runtime 호출 검증. 실제 카메라 검증 없음.
 - 게임 상태 관찰: `observe`/state resolver 등록. 실제 게임 관찰 QA 없음.
@@ -382,9 +390,9 @@ owner가 해당 유닛의 자율제어를 다시 수행하는 연결·Live QA는
 
 > 오케이 지금 계획에 하나더 추가해서 sc2 api에있는 모든 기능들 tool calling할수있도록 mcp로 만들어두고, micro 명령에서 바로 쓸 수있도록 만드는 계획까지 추가해서 문서화 시키고,  goal 만들어서 구현진행하자.
 
-- 모든 SC2 API의 MCP tool calling 및 micro 직접 사용: **미완료**. 현재 12개
+- 모든 SC2 API의 MCP tool calling 및 micro 직접 사용: **미완료**. 현재 17개
   semantic capability만 공개한다. 전체 API inventory·지원/미지원 분류·구현이 필요하다.
-- 해당 계획 문서화: **완료(원문 및 현황 문서)**. 위 요구를 12개로 축소 승인받은
+- 해당 계획 문서화: **완료(원문 및 현황 문서)**. 위 요구를 17개로 축소 승인받은
   것으로 취급하지 않는다. 기존 구현 작업은 진행됐으나 전체 구현 완료가 아니다.
 - goal 생성 및 구현 진행: **goal은 active**, 구현 일부 진행. 현재 goal 조회로
   active 상태를 확인했으며, 전체 계획이 해결되지 않았으므로 complete로 바꾸지 않았다.
@@ -415,7 +423,7 @@ owner가 해당 유닛의 자율제어를 다시 수행하는 연결·Live QA는
 | semantic MCP tool registry | 완료(계약 범위) | `tools/list`, `tools/call`, `voiStarcraft2/tools/call_many`, capability list, registry list, lifecycle, 직접 semantic action tool이 registry와 MCP server에 등록되어 있다. |
 | `move_camera` 개별 MCP tool | 완료(계약 범위) | `sc2.direct.move_camera`가 catalog·registry·adapter·executor mapping에 존재한다. 실제 카메라 이동은 SC2 runtime 필요. |
 | Stop/Hold/Retreat direct tool | 완료(계약 범위) / runtime 미검증 | `stop_group`, `hold_position`, 명시적 `sc2.direct.retreat` capability와 MCP tool을 제공한다. Retreat는 adapter 의미상 self-main 이동으로 lower되며 emergency 계획은 Stop/Hold/Move를 사용한다. |
-| 모든 SC2 기능을 MCP tool calling으로 노출 | **미완료** | 현재 bounded semantic catalog의 이름·schema·registry·MCP 호출은 구현했다. 이것은 사용자 승인 범위를 축소한 것이 아니며, raw `python-sc2`/s2client 전체 기능을 노출한 것은 아니다. |
+| 모든 SC2 기능을 MCP tool calling으로 노출 | **미완료** | 현재 17개 bounded semantic capability의 이름·schema·registry·MCP 호출과 fake adapter 계약은 구현했다. 이것은 사용자 승인 범위를 축소한 것이 아니며, raw `python-sc2`/s2client 전체 기능을 노출한 것은 아니다. |
 | semantic 위치와 Map Resolver | 부분 완료 | semantic target alias와 map resolver·placement 검증이 있고 target pin registry/strict pin lookup을 추가했다. 실제 map 좌표 계산·장애물 검증은 live runtime 증거가 없고, 컨트롤러에서 사용자가 찍는 target-pin UX도 아직 없다. |
 | 분대 registry | 부분 완료 | `DirectCommandRegistry`/`SquadDefinition`으로 이름·unit query를 보존하고 configured registry에서 unknown named squad를 거부한다. 실제 관찰값 기반 tag 선택과 ownership transfer는 runtime 미검증이다. |
 | 수리 대상 자동 선택 | 부분 완료 | adapter의 손상 구조물 우선·명시적 유닛명 fallback·worker 선택, 모호성 거부 및 live-session clarification 전파를 구현했다. 실제 UI 재질문/답변 대상 선택, 공간적 이름 매칭, 기계/생체 구분·heal 경로는 미완료다. |
@@ -434,8 +442,8 @@ owner가 해당 유닛의 자율제어를 다시 수행하는 연결·Live QA는
 
 ## 4. 현재 검증 결과
 
-실행 코드 `6520abe` 기준으로 재실행한 로컬 검증은 다음과 같다. 이후 변경은
-이 보고서뿐이다. 명령마다 선택한 테스트 집합이 다르므로 수치를 합산하지 않는다.
+실행 코드 `43a834b` 기준으로 재실행한 로컬 집중 검증은 다음과 같다. 명령마다
+선택한 테스트 집합이 다르므로 수치를 합산하지 않는다.
 
 ```text
 ./.venv/bin/pytest -q \
@@ -445,7 +453,7 @@ owner가 해당 유닛의 자율제어를 다시 수행하는 연결·Live QA는
   tests/test_python_sc2_adapter_contract.py \
   tests/test_llm_interpreter.py \
   tests/test_architecture_docs.py
-295 passed, 1 skipped, 423 subtests passed
+174 passed, 1 skipped, 303 subtests passed
 
 ./.venv/bin/python -m py_compile starcraft_commander/*.py
 통과
@@ -461,6 +469,8 @@ event-loop 내부 async direct executor dispatch, subject ownership/conflict,
 top-level task/build lowering, adapter evidence와 runtime evidence 연결,
 Direct release callback, registry lifecycle 공유, build completion 후 dependent train,
 중간 MicroMachine resume 보류, `enemy_destroyed` evidence를 검증한다.
+이번 확장 계약은 `gather_resource`, `research_upgrade`, `warp_in`, `patrol`,
+`return_resource`의 adapter 호출과 MCP 등록을 추가로 검증한다.
 
 웹 브리지의 game-loop seam과 요청 간 Direct ownership 보존을 별도로 확인했다.
 
@@ -556,7 +566,8 @@ Live QA는 수행하지 못했다.
 항목을 구분하면 다음과 같다.
 
 1. **코드로 해결됨**: macro-only MicroMachine route, operation/micro/emergency
-   Direct-only route, bounded semantic MCP catalog, move camera,
+   Direct-only route, bounded semantic MCP catalog(현재 17개 semantic capability),
+   move camera,
    Stop/Hold/Retreat, fail-closed runtime, independent-call parallel scheduler,
    same-subject/emergency/ordered-plan serialization, named squad·target pin
    registry 초안, lifecycle lease 상태·completion·TTL·cancel, active lease batch observation callback seam, runtime lifecycle 공유, dependent workflow dispatch seam, 현재 상태 문서화.
@@ -571,7 +582,8 @@ Live QA는 수행하지 못했다.
 원문 부록은 승인 관련 메시지 8개의 전문을 정확히 보존한다. 본 문서는
 두 계획의 15개 번호 및 추가 승인 요구를 이행 증거와 대조한 보고서이며,
 “승인한 계획이 전부 해결됐다”는 보고서는 아니다.
-현재 구현 보강은 `6520abe`, 계획 대조 문서는 `64d41a7`로 커밋·푸시했다. 원격
+현재 구현 보강은 `43a834b`, 계획 대조 문서의 직전 원격 기준은 `64d41a7`이다. 새
+구현 커밋은 이후 push하여 Hosted CI를 다시 확인해야 한다. 원격
 보고 기준 snapshot `64d41a7`에서 `unit-contracts` 3개와 `pre-live-producer-isolation`이
 실패했으므로 PR은 여전히 `BLOCKED`이며 green/merge가 아니다. PR merge는
 하지 않았고, Live QA도 완료되지 않았다. 이후 문서-only 정정 커밋은 실행 코드를
