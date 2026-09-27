@@ -304,6 +304,17 @@ hold_position
   time with the supported-value listing (strict validation, no silent
   defaults or pass-through).
 
+### Direct Ownership Contract
+
+`DirectCommandLifecycle` records both semantic `owned_subjects` and, when a
+live python-sc2 adapter can observe them, concrete positive `owned_unit_tags`.
+The adapter binds semantic squad selection to the current tag set before MCP
+lease admission. A second pending, dispatched, or active lease that overlaps a
+tag is rejected with `direct_control_conflict`; after terminal completion,
+expiry, cancellation, or failure the tags become available again. Raw tags are
+never accepted as an LLM/MCP selector, and a missing or partially tagged live
+selection fails closed instead of reserving an incomplete group.
+
 ### Observation Channel
 
 `observe` results are stored on `SC2PlanExecutionResult.audit["observations"]`

@@ -461,7 +461,7 @@ owner가 해당 유닛의 자율제어를 다시 수행하는 연결·Live QA는
   tests/test_python_sc2_adapter_contract.py \
   tests/test_llm_interpreter.py \
   tests/test_architecture_docs.py
-175 passed, 1 skipped, 305 subtests passed
+180 passed, 1 skipped, 305 subtests passed
 
 ./.venv/bin/python -m py_compile starcraft_commander/*.py
 통과
@@ -472,7 +472,8 @@ git diff --check
 
 새 계약 테스트는 Direct-only route, 기본 legacy tool 비노출, emergency Stop/Hold/Retreat lowering,
 MCP capability catalog와 모든 catalog tool 등록, 독립 호출 병렬 실행,
-lifecycle completion/TTL/cancel, named squad·target pin unknown rejection,
+concrete unit-tag ownership binding and conflict rejection, lifecycle
+completion/TTL/cancel, named squad·target pin unknown rejection,
 event-loop 내부 async direct executor dispatch, subject ownership/conflict,
 top-level task/build lowering, adapter evidence와 runtime evidence 연결,
 Direct release callback, registry lifecycle 공유, build completion 후 dependent train,
