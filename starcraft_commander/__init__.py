@@ -38,6 +38,7 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "SC2RuntimeExecutorInterface": "starcraft_commander.sc2_executor",
     "build_sc2_execution_plan": "starcraft_commander.sc2_executor",
     "DirectCommandLifecycle": "starcraft_commander.direct_command_lifecycle",
+    "DirectCommandOwnershipConflict": "starcraft_commander.direct_command_lifecycle",
     "DirectCommandLease": "starcraft_commander.direct_command_lifecycle",
     "DirectCommandState": "starcraft_commander.direct_command_lifecycle",
     "DirectCommandRegistry": "starcraft_commander.direct_command_registry",

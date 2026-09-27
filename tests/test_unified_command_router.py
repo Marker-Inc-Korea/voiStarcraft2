@@ -49,12 +49,12 @@ def test_macro_routes_only_to_micromachine_policy() -> None:
     assert route.direct_plan is None
 
 
-def test_operation_routes_to_micromachine_and_direct_sc2() -> None:
+def test_operation_routes_to_direct_sc2_only() -> None:
     route = route_policy_vector(
         vector(
             {
                 "goal": "squad attack",
-                    "command_layer": "operation",
+                "command_layer": "operation",
                 "operations": [
                     {
                         "operation_id": "op-1",
@@ -81,10 +81,7 @@ def test_operation_routes_to_micromachine_and_direct_sc2() -> None:
     )
 
     assert route.micro_kind.value == "operation"
-    assert [call.name for call in route.tool_calls] == [
-        "micromachine.operation",
-        "sc2.direct.execute",
-    ]
+    assert [call.name for call in route.tool_calls] == ["sc2.direct.execute"]
     assert route.direct_plan is not None
     assert route.direct_plan.actions[0].action_type is SC2ActionType.ATTACK_MOVE
 
@@ -180,7 +177,7 @@ def test_mcp_lists_and_calls_composable_tools() -> None:
     tool_names = {
         item["name"] for item in listed["result"]["tools"]  # type: ignore[index]
     }
-    assert "micromachine.operation" in tool_names
+    assert "micromachine.operation" not in tool_names
     assert "sc2.direct.execute_ability" in tool_names
     assert called["result"]["structuredContent"]["results"][0]["ok"] is False  # type: ignore[index]
 
@@ -198,16 +195,12 @@ def test_live_session_exposes_unified_route_without_double_publish() -> None:
         update_id="unified-live-1",
     )
 
-    assert result.ok is True
+    assert result.ok is False
     assert result.unified_route is not None
     assert result.unified_route["micro_kind"] == "micro"
-    assert [item["name"] for item in result.tool_results] == [
-        "micromachine.ability",
-        "sc2.direct.execute",
-    ]
-    assert result.tool_results[0]["result"]["update_id"] == "unified-live-1"
-    assert result.tool_results[1]["result"]["status"] == "runtime_not_attached"
-    assert len(backend.update_archive) == 1
+    assert [item["name"] for item in result.tool_results] == ["sc2.direct.execute"]
+    assert result.tool_results[0]["result"]["status"] == "runtime_not_attached"
+    assert len(backend.update_archive) == 0
 
 
 class RecordingDirectExecutor:
@@ -244,7 +237,7 @@ def test_route_and_execute_reports_direct_execution_evidence() -> None:
         update_id="op-2",
     )
 
-    direct = route["tool_results"][1]
+    direct = route["tool_results"][0]
     assert direct["ok"] is True
     assert direct["result"]["status"] == "executed"
     assert direct["result"]["result"]["audit"]["evidence"] == "recording-runtime"

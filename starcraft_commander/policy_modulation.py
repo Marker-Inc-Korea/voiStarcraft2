@@ -2273,6 +2273,10 @@ def _infer_command_layer(vector: PolicyModulationVector) -> CommandLayer:
         # defense, rally, or placement context may accompany the standing
         # order without turning it into a finite army operation.
         return CommandLayer.MACRO
+    # A concrete building request is a finite action, not a standing
+    # production bias. It must cross the Direct SC2 boundary.
+    if vector.building_tasks:
+        return CommandLayer.OPERATION
     if (
         vector.route_intent.route_type
         or vector.route_intent.avoid_enemy_strength

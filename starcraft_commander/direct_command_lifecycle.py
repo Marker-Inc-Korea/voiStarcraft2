@@ -11,7 +11,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Mapping
+from collections.abc import Callable, Mapping, Sequence
+
+
+class DirectCommandOwnershipConflict(ValueError):
+    """Raised when a live direct lease already owns a requested subject."""
 
 
 class DirectCommandState(str, Enum):
@@ -30,6 +34,8 @@ class DirectCommandLease:
     issued_at_frame: int
     expires_at_frame: int
     completion_conditions: tuple[str, ...] = ()
+    owned_subjects: tuple[str, ...] = ()
+    control_owner: str = "direct_sc2"
     state: DirectCommandState = DirectCommandState.ACTIVE
     release_reason: str = ""
     evidence: Mapping[str, object] = field(default_factory=dict)
@@ -47,6 +53,8 @@ class DirectCommandLease:
             "issued_at_frame": self.issued_at_frame,
             "expires_at_frame": self.expires_at_frame,
             "completion_conditions": list(self.completion_conditions),
+            "owned_subjects": list(self.owned_subjects),
+            "control_owner": self.control_owner if self.control_owned else "none",
             "state": self.state.value,
             "control_owned": self.control_owned,
             "release_reason": self.release_reason,
@@ -57,10 +65,16 @@ class DirectCommandLease:
 class DirectCommandLifecycle:
     """In-memory authoritative lease registry used by direct tool calls."""
 
-    def __init__(self, *, game_loops_per_second: float = 22.4) -> None:
+    def __init__(
+        self,
+        *,
+        game_loops_per_second: float = 22.4,
+        on_release: Callable[[DirectCommandLease], object] | None = None,
+    ) -> None:
         if game_loops_per_second <= 0:
             raise ValueError("game_loops_per_second must be positive")
         self.game_loops_per_second = float(game_loops_per_second)
+        self.on_release = on_release
         self._leases: dict[str, DirectCommandLease] = {}
 
     def dispatch(
@@ -70,6 +84,8 @@ class DirectCommandLifecycle:
         issued_at_frame: int,
         ttl_seconds: int,
         completion_conditions: tuple[str, ...] = (),
+        owned_subjects: Sequence[str] = (),
+        control_owner: str = "direct_sc2",
     ) -> DirectCommandLease:
         command_id = str(command_id).strip()
         if not command_id:
@@ -79,6 +95,12 @@ class DirectCommandLifecycle:
         expires = issued_at_frame + max(
             1, round(ttl_seconds * self.game_loops_per_second)
         )
+        subjects = _normalize_subjects(owned_subjects)
+        conflicts = self._conflicting_subjects(command_id, subjects)
+        if conflicts:
+            raise DirectCommandOwnershipConflict(
+                f"subjects already owned: {', '.join(conflicts)}"
+            )
         # The externally visible lease is active once the direct executor has
         # accepted the plan.  ``PENDING`` and ``DISPATCHED`` remain explicit
         # contract states for integrations that model the hand-off in finer
@@ -89,6 +111,8 @@ class DirectCommandLifecycle:
             issued_at_frame=issued_at_frame,
             expires_at_frame=expires,
             completion_conditions=tuple(str(item) for item in completion_conditions),
+            owned_subjects=subjects,
+            control_owner=str(control_owner or "direct_sc2"),
         )
         self._leases[command_id] = lease
         return lease
@@ -100,6 +124,8 @@ class DirectCommandLifecycle:
         issued_at_frame: int,
         ttl_seconds: int,
         completion_conditions: tuple[str, ...] = (),
+        owned_subjects: Sequence[str] = (),
+        control_owner: str = "direct_sc2",
     ) -> DirectCommandLease:
         """Register a command before an executor dispatches it."""
 
@@ -109,11 +135,19 @@ class DirectCommandLifecycle:
         if issued_at_frame < 0 or ttl_seconds < 1:
             raise ValueError("issued_at_frame must be non-negative and ttl positive")
         expires = issued_at_frame + max(1, round(ttl_seconds * self.game_loops_per_second))
+        subjects = _normalize_subjects(owned_subjects)
+        conflicts = self._conflicting_subjects(command_id, subjects)
+        if conflicts:
+            raise DirectCommandOwnershipConflict(
+                f"subjects already owned: {', '.join(conflicts)}"
+            )
         lease = DirectCommandLease(
             command_id=command_id,
             issued_at_frame=issued_at_frame,
             expires_at_frame=expires,
             completion_conditions=tuple(str(item) for item in completion_conditions),
+            owned_subjects=subjects,
+            control_owner=str(control_owner or "direct_sc2"),
             state=DirectCommandState.PENDING,
         )
         self._leases[command_id] = lease
@@ -210,15 +244,44 @@ class DirectCommandLifecycle:
             issued_at_frame=lease.issued_at_frame,
             expires_at_frame=lease.expires_at_frame,
             completion_conditions=lease.completion_conditions,
+            owned_subjects=lease.owned_subjects,
+            control_owner=lease.control_owner,
             state=state,
             release_reason=reason,
             evidence=dict(evidence),
         )
         self._leases[lease.command_id] = updated
+        if lease.control_owned and not updated.control_owned and self.on_release is not None:
+            self.on_release(updated)
         return updated
+
+    def _conflicting_subjects(
+        self, command_id: str, subjects: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        requested = set(subjects)
+        if not requested:
+            return ()
+        owned: set[str] = set()
+        for existing_id, lease in self._leases.items():
+            if existing_id != command_id and lease.state in {
+                DirectCommandState.PENDING,
+                DirectCommandState.DISPATCHED,
+                DirectCommandState.ACTIVE,
+            }:
+                owned.update(lease.owned_subjects)
+        return tuple(sorted(requested.intersection(owned)))
 
 
 def _conditions_satisfied(conditions: tuple[str, ...], evidence: Mapping[str, object]) -> bool:
     if not conditions:
         return False
     return all(bool(evidence.get(condition)) for condition in conditions)
+
+
+def _normalize_subjects(values: Sequence[str]) -> tuple[str, ...]:
+    normalized = {
+        " ".join(str(value).strip().casefold().split())
+        for value in values
+        if str(value).strip()
+    }
+    return tuple(sorted(normalized))

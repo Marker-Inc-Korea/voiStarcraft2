@@ -6,9 +6,8 @@ the single execution boundary after validation:
 * ``macro`` publishes manager weights to MicroMachine only.
 * every other layer is ``micro`` and is classified as operation, ability, or
   emergency.
-* micro routes may include both the existing MicroMachine tool and a direct
-  SC2 tool. Direct execution is reported honestly when no live BotAI runtime
-  is attached.
+* non-macro routes use the direct SC2 tool surface only. Direct execution is
+  reported honestly when no live BotAI runtime is attached.
 
 The registry is deliberately dependency-light so the same tools can be used by
 the web cockpit, tests, or the stdio MCP server.
@@ -34,6 +33,7 @@ from starcraft_commander.contracts import (
 )
 from starcraft_commander.direct_command_lifecycle import (
     DirectCommandLifecycle,
+    DirectCommandOwnershipConflict,
 )
 from starcraft_commander.direct_command_registry import DirectCommandRegistry
 from starcraft_commander.policy_modulation import (
@@ -276,14 +276,13 @@ class CommanderToolRegistry:
                 await flush()
                 results.append(await self.call_async(call.name, call.arguments))
             else:
-                conflict_key = _call_conflict_key(call)
-                if conflict_key is not None and conflict_key in batch_keys:
+                conflict_keys = _call_conflict_keys(call)
+                if conflict_keys.intersection(batch_keys):
                     await flush()
                     results.append(await self.call_async(call.name, call.arguments))
                 else:
                     batch.append(call)
-                    if conflict_key is not None:
-                        batch_keys.add(conflict_key)
+                    batch_keys.update(conflict_keys)
         await flush()
         return tuple(results)
 
@@ -384,47 +383,56 @@ def build_direct_plan_from_vector(
         "Direct execution requires an attached python-sc2 BotAI runtime.",
     ]
     for operation in vector.operations:
-        task = operation.tactical_task
-        target = task.location_intent or operation.scope.location_intent or "enemy_natural"
-        requirements = operation.composition_requirements or vector.composition_requirements
-        if requirements:
-            for requirement in requirements:
-                action_type = _operation_action_type(task.task_type)
-                actions.append(
-                    SC2CommandAction(
-                        action_type=action_type,
-                        subject=_direct_unit_subject(requirement.unit_type),
-                        target=target,
-                        count=requirement.count,
-                        priority=int(max(1.0, task.priority) * 100),
-                        metadata={"operation_id": operation.operation_id},
-                    )
-                )
-        else:
-            actions.append(
-                SC2CommandAction(
-                    action_type=_operation_action_type(task.task_type),
-                    subject="available combat units",
-                    target=target,
-                    count=max(1, operation.scope.min_units or task.min_units or 1),
-                    priority=int(max(1.0, task.priority) * 100),
-                    metadata={"operation_id": operation.operation_id},
-                )
-            )
+        _append_task_actions(
+            actions,
+            operation.tactical_task,
+            scope=operation.scope,
+            requirements=operation.composition_requirements or vector.composition_requirements,
+            metadata={"operation_id": operation.operation_id},
+        )
 
     task = vector.tactical_task
-    if task.task_type == "execute_ability":
-        units = task.unit_classes or vector.scope.unit_classes or ("available combat units",)
-        actions.append(
-            SC2CommandAction(
-                action_type=SC2ActionType.EXECUTE_ABILITY,
-                subject=_direct_unit_subject(units[0]),
-                target=task.location_intent,
-                count=max(1, vector.scope.min_units or task.min_units or 1),
-                priority=int(max(1.0, task.priority) * 100),
-                metadata={"ability": task.ability},
-            )
+    if not vector.operations:
+        _append_task_actions(
+            actions,
+            task,
+            scope=vector.scope,
+            requirements=vector.composition_requirements,
+            metadata={"source": "tactical_task"},
         )
+
+    # Building tasks are explicit one-off actions, unlike the standing
+    # production/tech biases carried by the macro vector.
+    for building in vector.building_tasks:
+        target = building.placement_intent or building.anchor or "self_main"
+        metadata: dict[str, object] = {
+            "building_type": building.building_type,
+            "placement_intent": building.placement_intent,
+            "anchor": building.anchor,
+            "offset_direction": building.offset_direction,
+            "allow_nearest_valid_fallback": building.allow_nearest_valid_fallback,
+            "placement_policy": {
+                "placement_intent": building.placement_intent,
+                "anchor": building.anchor,
+                "anchor_target": building.anchor,
+                "offset_direction": building.offset_direction,
+                "allow_nearest_valid_fallback": building.allow_nearest_valid_fallback,
+            },
+        }
+        if building.target_position:
+            metadata["target_position"] = list(building.target_position)
+            target = "explicit_coordinate"
+        for _ in range(building.count):
+            actions.append(
+                SC2CommandAction(
+                    action_type=SC2ActionType.BUILD_STRUCTURE,
+                    subject=_direct_structure_subject(building.building_type),
+                    target=target,
+                    count=1,
+                    priority=100,
+                    metadata=metadata,
+                )
+            )
 
     if vector.override_level.value == "emergency" or any(
         (
@@ -438,7 +446,7 @@ def build_direct_plan_from_vector(
                 SC2CommandAction(
                     action_type=SC2ActionType.STOP_GROUP,
                     subject="available combat units",
-                    count=1,
+                    count=0,
                     priority=100,
                     metadata={"emergency": True},
                 )
@@ -448,7 +456,7 @@ def build_direct_plan_from_vector(
                 SC2CommandAction(
                     action_type=SC2ActionType.HOLD_POSITION,
                     subject="available combat units",
-                    count=1,
+                    count=0,
                     priority=100,
                     metadata={"emergency": True},
                 )
@@ -459,7 +467,7 @@ def build_direct_plan_from_vector(
                     action_type=SC2ActionType.MOVE_GROUP,
                     subject="available combat units",
                     target="self_main",
-                    count=1,
+                    count=0,
                     priority=100,
                     metadata={"emergency": True, "retreat": True},
                 )
@@ -479,12 +487,157 @@ def build_direct_plan_from_vector(
             "command_id": vector.goal or "direct-command",
             "ttl_seconds": vector.ttl_seconds,
             "completion_conditions": list(
-                vector.operations[0].lifetime.completion_conditions
-                if vector.operations
-                else ("order_issued",)
+                tuple(
+                    condition
+                    for operation in vector.operations
+                    for condition in operation.lifetime.completion_conditions
+                )
+                or vector.lifetime.completion_conditions
+                or ("order_issued",)
             ),
         },
     )
+
+
+def _append_task_actions(
+    actions: list[SC2CommandAction],
+    task: object,
+    *,
+    scope: object,
+    requirements: Sequence[object],
+    metadata: Mapping[str, object],
+) -> None:
+    """Lower one validated tactical task without leaking manager-only fields."""
+
+    task_type = str(getattr(task, "task_type", "") or "")
+    target = str(
+        getattr(task, "location_intent", "")
+        or getattr(scope, "location_intent", "")
+        or "enemy_natural"
+    )
+    priority = int(max(1.0, float(getattr(task, "priority", 0.0) or 0.0)) * 100)
+    min_units = int(
+        getattr(scope, "min_units", 0) or getattr(task, "min_units", 0) or 1
+    )
+    if task_type == "execute_ability":
+        units = (
+            tuple(getattr(task, "unit_classes", ()))
+            or tuple(getattr(scope, "unit_classes", ()))
+            or ("available combat units",)
+        )
+        actions.append(
+            SC2CommandAction(
+                action_type=SC2ActionType.EXECUTE_ABILITY,
+                subject=_direct_unit_subject(units[0]),
+                target=target,
+                count=min_units,
+                priority=priority,
+                metadata={**metadata, "ability": getattr(task, "ability", "")},
+            )
+        )
+        return
+
+    direct_action_types = {
+        "assign_workers": SC2ActionType.ASSIGN_WORKERS,
+        "build_structure": SC2ActionType.BUILD_STRUCTURE,
+        "train_unit": SC2ActionType.TRAIN_UNIT,
+        "repair": SC2ActionType.REPAIR,
+        "move_group": SC2ActionType.MOVE_GROUP,
+        "attack_move": SC2ActionType.ATTACK_MOVE,
+        "move_camera": SC2ActionType.MOVE_CAMERA,
+        "observe": SC2ActionType.OBSERVE,
+        "stop_group": SC2ActionType.STOP_GROUP,
+        "hold_position": SC2ActionType.HOLD_POSITION,
+    }
+    if task_type in direct_action_types:
+        unit_classes = tuple(getattr(task, "unit_classes", ()))
+        production_targets = tuple(getattr(task, "production_targets", ()))
+        subject = _direct_unit_subject(unit_classes[0]) if unit_classes else "available combat units"
+        action_metadata = dict(metadata)
+        if task_type == "build_structure" and production_targets:
+            subject = _direct_structure_subject(production_targets[0])
+            action_metadata.setdefault("building_type", subject)
+        elif task_type == "train_unit" and production_targets:
+            subject = _direct_unit_subject(production_targets[0])
+            action_metadata.setdefault(
+                "producer",
+                {
+                    "SCV": "COMMANDCENTER",
+                    "MARINE": "BARRACKS",
+                    "MARAUDER": "BARRACKS",
+                    "REAPER": "BARRACKS",
+                    "GHOST": "BARRACKS",
+                    "HELLION": "FACTORY",
+                    "SIEGETANK": "FACTORY",
+                    "CYCLONE": "FACTORY",
+                    "THOR": "FACTORY",
+                    "MEDIVAC": "STARPORT",
+                    "VIKINGFIGHTER": "STARPORT",
+                    "LIBERATOR": "STARPORT",
+                    "BANSHEE": "STARPORT",
+                    "RAVEN": "STARPORT",
+                    "BATTLECRUISER": "STARPORT",
+                }.get(subject, ""),
+            )
+        elif task_type == "assign_workers":
+            subject = "SCV"
+        elif task_type == "repair":
+            subject = "SCV"
+        count = 0 if task_type in {"observe", "move_camera"} else min_units
+        actions.append(
+            SC2CommandAction(
+                action_type=direct_action_types[task_type],
+                subject=subject,
+                target=target,
+                count=count,
+                priority=priority,
+                metadata=action_metadata,
+            )
+        )
+        return
+
+    action_type = _operation_action_type(task_type)
+    composition = tuple(requirements)
+    if composition:
+        for requirement in composition:
+            actions.append(
+                SC2CommandAction(
+                    action_type=action_type,
+                    subject=_direct_unit_subject(getattr(requirement, "unit_type", "")),
+                    target=target,
+                    count=int(getattr(requirement, "count", 1)),
+                    priority=priority,
+                    metadata=dict(metadata),
+                )
+            )
+        return
+    # Tasks without a recognized tactical kind are not executable direct
+    # actions; they remain macro/manager concerns and must not become a fake
+    # attack order.
+    if task_type in {
+        "scout_with_units",
+        "pressure_with_main_army",
+        "defend_with_units",
+        "harass_with_units",
+        "regroup_with_units",
+    }:
+        unit_classes = tuple(getattr(task, "unit_classes", ())) or tuple(
+            getattr(scope, "unit_classes", ())
+        )
+        actions.append(
+            SC2CommandAction(
+                action_type=action_type,
+                subject=(
+                    _direct_unit_subject(unit_classes[0])
+                    if unit_classes
+                    else "available combat units"
+                ),
+                target=target,
+                count=min_units,
+                priority=priority,
+                metadata=dict(metadata),
+            )
+        )
 
 
 def _operation_action_type(task_type: str) -> SC2ActionType:
@@ -502,11 +655,33 @@ def _direct_unit_subject(unit_type: str) -> str:
     aliases = {
         "TERRAN_SCV": "SCV",
         "TERRAN_MARINE": "MARINE",
-        "TERRAN_HELLION": "VULTURE",
-        "TERRAN_VULTURE": "VULTURE",
+        "TERRAN_HELLION": "HELLION",
+        # Brood War terminology is accepted at the semantic boundary but
+        # python-sc2's Terran equivalent is the Hellion unit.
+        "TERRAN_VULTURE": "HELLION",
         "TERRAN_GHOST": "GHOST",
     }
     return aliases.get(normalized, str(unit_type or "available combat units"))
+
+
+def _direct_structure_subject(building_type: str) -> str:
+    """Convert provider Terran structure tokens to adapter names."""
+
+    normalized = str(building_type or "").strip().upper()
+    aliases = {
+        "TERRAN_SUPPLYDEPOT": "SUPPLYDEPOT",
+        "TERRAN_COMMANDCENTER": "COMMANDCENTER",
+        "TERRAN_REFINERY": "REFINERY",
+        "TERRAN_BARRACKS": "BARRACKS",
+        "TERRAN_FACTORY": "FACTORY",
+        "TERRAN_STARPORT": "STARPORT",
+        "TERRAN_ENGINEERINGBAY": "ENGINEERINGBAY",
+        "TERRAN_ARMORY": "ARMORY",
+        "TERRAN_GHOSTACADEMY": "GHOSTACADEMY",
+        "TERRAN_FUSIONCORE": "FUSIONCORE",
+        "TERRAN_BUNKER": "BUNKER",
+    }
+    return aliases.get(normalized, str(building_type or ""))
 
 
 def create_command_tool_registry(
@@ -516,7 +691,6 @@ def create_command_tool_registry(
     direct_bot: object | None = None,
     lifecycle: DirectCommandLifecycle | None = None,
     command_registry: DirectCommandRegistry | None = None,
-    include_legacy_tools: bool = False,
 ) -> CommanderToolRegistry:
     """Create the built-in MicroMachine and direct SC2 tool set."""
 
@@ -570,12 +744,22 @@ def create_command_tool_registry(
         # exits above intentionally create no lease and no ownership.
         lease = None
         if lifecycle_required:
-            lease = command_lifecycle.pending(
-                command_id=command_id,
-                issued_at_frame=int(arguments.get("current_frame", 0)),
-                ttl_seconds=max(1, ttl_seconds),
-                completion_conditions=conditions,
-            )
+            subjects = tuple(action.subject for action in plan.actions)
+            try:
+                lease = command_lifecycle.pending(
+                    command_id=command_id,
+                    issued_at_frame=int(arguments.get("current_frame", 0)),
+                    ttl_seconds=max(1, ttl_seconds),
+                    completion_conditions=conditions,
+                    owned_subjects=subjects,
+                )
+            except DirectCommandOwnershipConflict as error:
+                return {
+                    "ok": False,
+                    "status": "direct_control_conflict",
+                    "runtime_attached": True,
+                    "reason": str(error),
+                }
         execute = getattr(direct_executor, "execute", None)
         try:
             if not callable(execute):
@@ -928,27 +1112,6 @@ def create_command_tool_registry(
             ),
         ),
     ]
-    if include_legacy_tools:
-        tools[1:1] = [
-            ToolSpec(
-                "micromachine.operation",
-                "[Legacy compatibility only] Publish a squad operation to MicroMachine.",
-                schema,
-                publish,
-            ),
-            ToolSpec(
-                "micromachine.ability",
-                "[Legacy compatibility only] Publish an ability policy to MicroMachine.",
-                schema,
-                publish,
-            ),
-            ToolSpec(
-                "micromachine.emergency",
-                "[Legacy compatibility only] Publish an emergency override to MicroMachine.",
-                schema,
-                publish,
-            ),
-        ]
     return CommanderToolRegistry(tuple(tools))
 
 
@@ -1014,6 +1177,7 @@ def _requires_sequential_call(call: ToolCall) -> bool:
         "sc2.direct.execute_ability",
         "sc2.direct.stop_group",
         "sc2.direct.hold_position",
+        "sc2.direct.retreat",
         "sc2.direct.lifecycle",
     }:
         return True
@@ -1022,6 +1186,12 @@ def _requires_sequential_call(call: ToolCall) -> bool:
         if isinstance(plan, Mapping):
             actions = plan.get("ordered_actions", plan.get("actions", ()))
             if isinstance(actions, Sequence) and len(actions) > 1:
+                return True
+            if isinstance(actions, Sequence) and any(
+                isinstance(action, Mapping)
+                and bool((action.get("metadata") or {}).get("emergency"))
+                for action in actions
+            ):
                 return True
     return False
 
@@ -1043,11 +1213,29 @@ def _call_conflict_key(call: ToolCall) -> tuple[str, str] | None:
     remain eligible for one parallel batch.
     """
 
+    keys = _call_conflict_keys(call)
+    return next(iter(keys), None)
+
+
+def _call_conflict_keys(call: ToolCall) -> set[tuple[str, str]]:
+    """Return every semantic ownership key embedded in a direct call."""
+
+    keys: set[tuple[str, str]] = set()
     if call.name.startswith("sc2.direct."):
         subject = str(call.arguments.get("subject", "")).strip().casefold()
         if subject:
-            return ("subject", subject)
-    return None
+            keys.add(("subject", subject))
+        if call.name == "sc2.direct.execute" and not subject:
+            plan = call.arguments.get("plan")
+            if isinstance(plan, Mapping):
+                actions = plan.get("ordered_actions", plan.get("actions", ()))
+                subjects = {
+                    str(action.get("subject", "")).strip().casefold()
+                    for action in actions
+                    if isinstance(action, Mapping) and str(action.get("subject", "")).strip()
+                }
+                keys.update(("subject", subject) for subject in subjects)
+    return keys
 
 
 def _run_awaitable_sync(value: object) -> object:
@@ -1086,7 +1274,9 @@ def route_and_execute(
     return {
         "route": route.to_dict(),
         "tool_results": [result.to_dict() for result in results],
-        "ok": all(result.ok and result.result.get("ok", True) for result in results),
+        "ok": bool(results) and all(
+            result.ok and result.result.get("ok", True) for result in results
+        ),
     }
 
 

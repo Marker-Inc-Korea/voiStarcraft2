@@ -1099,7 +1099,7 @@ class MicroMachineLiveTextSession:
                     ),
                     consumption_status=LiveModulationConsumptionStatus.NOT_PUBLISHED,
                     command_queue=direct_queue,
-                    unified_route=direct_route.get("route"),
+                    unified_route=direct_route.get("unified_route"),
                     tool_results=tool_results,
                 )
             compile_result, command_queue = _reduce_live_command_queue(
@@ -1214,6 +1214,8 @@ class MicroMachineLiveTextSession:
             include_direct_tool=self.include_direct_tool,
         )
         return {
+            # ``LiveTextModulationResult`` exposes this field as
+            # ``unified_route``; retain the canonical router payload here.
             "unified_route": routed.get("route"),
             "tool_results": routed.get("tool_results", ()),
         }

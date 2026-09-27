@@ -672,10 +672,16 @@ class PythonSC2BotAdapter:
         action: SC2CommandAction,
         method_name: str,
     ) -> SC2ActionReport:
-        requested = _leading_count(action.subject) or max(1, action.count)
         units = self._select_group(action.subject)
         if not units:
+            requested = _leading_count(action.subject) or max(1, action.count)
             return _refusal_report(requested, "no_matching_units")
+        # A zero count is the explicit semantic “whole selected group” form
+        # used by emergency Stop/Hold/Retreat lowering. Ordinary calls keep
+        # their bounded default of one unit.
+        requested = _leading_count(action.subject) or (
+            len(units) if action.count <= 0 else max(1, action.count)
+        )
         issued = 0
         for unit in units[:requested]:
             method = getattr(unit, method_name, None)
@@ -1040,13 +1046,14 @@ class PythonSC2BotAdapter:
         surfaces the shortfall as a partial application.
         """
 
-        requested = _leading_count(action.subject)
         position = self._resolve_target_point(action.target)
+        selected = self._select_group(action.subject)
+        requested = _leading_count(action.subject) or len(selected)
         if position is None:
             return _refusal_report(requested, "unresolvable_target")
         destination = _game_point(position)
         issued = 0
-        for unit in self._select_group(action.subject):
+        for unit in selected[:requested]:
             order_method = getattr(unit, order_name, None)
             if not callable(order_method):
                 continue
