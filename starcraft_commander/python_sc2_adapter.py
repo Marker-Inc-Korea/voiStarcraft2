@@ -561,7 +561,25 @@ class PythonSC2BotAdapter:
 
         if action.count <= 0:
             return _refusal_report(action.count, "non_positive_count")
-        target_unit = self._find_damaged_repair_target(action.target)
+        candidates = self._find_damaged_repair_targets(action.target)
+        if len(candidates) > 1:
+            alternatives = tuple(
+                self._repair_candidate_label(candidate)
+                for candidate in candidates
+            )
+            return _refusal_report(
+                action.count,
+                "ambiguous_repair_target",
+                audit={
+                    "clarification_required": True,
+                    "alternatives": list(alternatives),
+                    "clarification_prompt": (
+                        "여러 손상 대상이 일치했습니다. 다음 중 어느 대상을 "
+                        f"수리할까요: {', '.join(alternatives)}?"
+                    ),
+                },
+            )
+        target_unit = candidates[0] if candidates else None
         if target_unit is None:
             return _refusal_report(action.count, "no_damaged_repair_target")
         issued = 0
@@ -1319,8 +1337,14 @@ class PythonSC2BotAdapter:
             return None
         return _nearest_entity(candidates, anchor)
 
-    def _find_damaged_repair_target(self, target: str) -> object | None:
-        """Find the first damaged own structure (then unit) matching loosely."""
+    def _find_damaged_repair_targets(self, target: str) -> tuple[object, ...]:
+        """Find all matching damaged own structures, then units.
+
+        A named repair request must not silently choose one of several live
+        entities. Structures retain priority over units, matching the user
+        contract; callers decide whether a single candidate is safe to issue
+        or whether clarification is required.
+        """
 
         normalized_target = _normalized_name(target)
         generic = (
@@ -1329,21 +1353,41 @@ class PythonSC2BotAdapter:
             else False
         )
         structures = _materialize(getattr(self.bot, "structures", None))
+        structure_matches: list[object] = []
         for structure in structures:
             if not _is_damaged(structure):
                 continue
             if generic or _loose_name_match(
                 _entity_type_name(structure), normalized_target
             ):
-                return structure
+                structure_matches.append(structure)
+        if structure_matches:
+            return tuple(structure_matches)
         if generic:
-            return None
+            return ()
+        unit_matches: list[object] = []
         for unit in _materialize(getattr(self.bot, "units", None)):
             if not _is_damaged(unit):
                 continue
             if _loose_name_match(_entity_type_name(unit), normalized_target):
-                return unit
-        return None
+                unit_matches.append(unit)
+        return tuple(unit_matches)
+
+    def _find_damaged_repair_target(self, target: str) -> object | None:
+        """Backward-compatible single-target helper for adapter integrations."""
+
+        candidates = self._find_damaged_repair_targets(target)
+        return candidates[0] if len(candidates) == 1 else None
+
+    @staticmethod
+    def _repair_candidate_label(candidate: object) -> str:
+        """Return a deterministic human-readable repair candidate label."""
+
+        name = _entity_type_name(candidate) or "unknown"
+        point = _entity_point(candidate)
+        if point is None:
+            return name
+        return f"{name} ({point.x:g}, {point.y:g})"
 
 
 class MissingPythonSC2Error(RuntimeError):

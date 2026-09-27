@@ -1877,6 +1877,33 @@ class RepairTest(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual([("repair", worker, depot)], bot.issued)
 
+    def test_ambiguous_repair_target_requires_clarification(self) -> None:
+        front_bunker = FakeUnit("Bunker", 20, 12, health=60.0, health_max=100.0)
+        natural_bunker = FakeUnit("Bunker", 40, 30, health=70.0, health_max=100.0)
+        worker = FakeUnit("SCV", 10, 10)
+        bot = FakeBotAI(
+            workers=[worker],
+            structures=[front_bunker, natural_bunker],
+        )
+        adapter = make_adapter(bot)
+
+        result = run(
+            adapter.repair(
+                action(SC2ActionType.REPAIR, "SCV", target="bunker", count=1)
+            )
+        )
+
+        self.assertIsInstance(result, SC2ActionReport)
+        self.assertFalse(result)
+        self.assertEqual("ambiguous_repair_target", result.detail)
+        self.assertEqual([], bot.issued)
+        self.assertTrue(result.audit["clarification_required"])
+        self.assertEqual(
+            ["BUNKER (20, 12)", "BUNKER (40, 30)"],
+            result.audit["alternatives"],
+        )
+        self.assertIn("여러 손상 대상", result.audit["clarification_prompt"])
+
     def test_repairs_damaged_own_unit_when_no_structure_matches(self) -> None:
         # The damaged own-unit fallback scan: a Hellion at 40/90 health is a
         # valid named repair target even with healthy structures around.

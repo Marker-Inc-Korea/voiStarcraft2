@@ -81,6 +81,43 @@ class LiveModulationConsumptionStatus(str, Enum):
     CONSUMED = "consumed"
 
 
+def _direct_clarification_prompt(
+    tool_results: Sequence[Mapping[str, object]],
+) -> str:
+    """Extract a runtime clarification prompt from a refused Direct action.
+
+    Runtime adapters report ambiguity in the per-action report audit. Keep
+    that signal on the live text boundary so the UI can ask the user again
+    instead of presenting a safe refusal as an opaque Direct failure.
+    """
+
+    for tool_result in tool_results:
+        outer = tool_result.get("result")
+        if not isinstance(outer, Mapping):
+            continue
+        execution = outer.get("result")
+        if not isinstance(execution, Mapping):
+            continue
+        execution_audit = execution.get("audit")
+        if not isinstance(execution_audit, Mapping):
+            continue
+        reports = execution_audit.get("action_reports")
+        if not isinstance(reports, Mapping):
+            continue
+        for report in reports.values():
+            if not isinstance(report, Mapping):
+                continue
+            report_audit = report.get("audit")
+            if not isinstance(report_audit, Mapping):
+                continue
+            if report_audit.get("clarification_required") is not True:
+                continue
+            prompt = str(report_audit.get("clarification_prompt", "")).strip()
+            if prompt:
+                return prompt
+    return ""
+
+
 class LiveCommandCategory(str, Enum):
     """Coarse live-command class used by the reducer before blackboard publish."""
 
@@ -1088,6 +1125,12 @@ class MicroMachineLiveTextSession:
                     published_payload={},
                 )
                 tool_results = tuple(direct_route.get("tool_results", ()))
+                direct_clarification_prompt = _direct_clarification_prompt(tool_results)
+                if direct_clarification_prompt:
+                    compile_result = replace(
+                        compile_result,
+                        clarification_prompt=direct_clarification_prompt,
+                    )
                 direct_ok = bool(tool_results) and all(
                     bool(item.get("ok")) for item in tool_results
                 )
@@ -1107,12 +1150,16 @@ class MicroMachineLiveTextSession:
                 return LiveTextModulationResult(
                     command_text=text,
                     status=(
-                        LiveModulationStatus.DIRECT_EXECUTED
-                        if direct_ok
+                        LiveModulationStatus.CLARIFICATION_REQUIRED
+                        if direct_clarification_prompt
                         else (
-                            LiveModulationStatus.DIRECT_PLANNED
-                            if not self.include_direct_tool
-                            else LiveModulationStatus.DIRECT_FAILED
+                            LiveModulationStatus.DIRECT_EXECUTED
+                            if direct_ok
+                            else (
+                                LiveModulationStatus.DIRECT_PLANNED
+                                if not self.include_direct_tool
+                                else LiveModulationStatus.DIRECT_FAILED
+                            )
                         )
                     ),
                     current_frame=frame,
