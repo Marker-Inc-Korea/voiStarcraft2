@@ -8,9 +8,10 @@
 기준 브랜치는 `codex/llm-command-speedup`, 기준 PR은
 [#187](https://github.com/Marker-Inc-Korea/voiStarcraft2/pull/187)이다. PR #187은
 열려 있지만 현재 GitHub 상태가 `BLOCKED`이다. Direct 구현과 마지막 상태
-문서 커밋이 포함된 pushed `HEAD`는 `d1b695f`이고, 해당 head의 최신 hosted
-run은 `ci` run `36320112887`, `final-pre-live` run `36320110460`,
-`pre-live-provenance` run `36320110347`이다.
+구현 기준 pushed commit은 `d1b695f`이고, 그 구현 head의 최신 hosted run은
+`ci` run `36320112887`, `final-pre-live` run `36320110460`,
+`pre-live-provenance` run `36320110347`이다. 이후 문서 상태만 갱신한
+커밋도 같은 브랜치에 푸시했으며 구현 코드는 바뀌지 않았다.
 `event-admission`, `pre-live-build`, `ready-to-merge`는 성공했고,
 `pre-live-producer-isolation`은 실패했다. `unit-contracts (3.10)`, `(3.11)`,
 `(3.12)`도 완료됐지만 모두 실패했다. 따라서 CI green이나 merge를 주장하지
@@ -239,7 +240,7 @@ MicroMachine으로 몰래 대체하지 않고 `runtime_not_attached`로 실패�
 | JEV System 1 라우팅 | 미완료/외부 계약 대기 | #189에 정의 질문과 acceptance criteria만 등록했다. |
 | legacy route 완전 제거 | **완료(코드 경계)** | `include_legacy_tools` opt-in과 `micromachine.operation/ability/emergency` registry entries를 제거했다. 기본 registry와 MCP discovery에는 `micromachine.policy`만 남는다. |
 | 문서화 | 완료(현재 상태 보고) | 이 문서가 승인 원문 기준, 구조, capability, 위치·분대·수리, 병렬·선행조건, lifecycle, legacy 격리, JEV, PR·Live QA를 항목별로 기록한다. |
-| PR 반영 | 부분 완료 | PR #187이 열려 있고 `BLOCKED`다. 최신 head `d1b695f`의 hosted `ci` run `36320112887`에서 3개 `unit-contracts` job이 실패했고, `pre-live-producer-isolation`도 실패했다. `event-admission`, `pre-live-build`, `ready-to-merge`는 성공했다. hosted CI green/merge를 주장할 수 없다. |
+| PR 반영 | 부분 완료 | PR #187이 열려 있고 `BLOCKED`다. 구현 head `d1b695f`의 hosted `ci` run `36320112887`에서 3개 `unit-contracts` job이 실패했고, `pre-live-producer-isolation`도 실패했다. `event-admission`, `pre-live-build`, `ready-to-merge`는 성공했다. hosted CI green/merge를 주장할 수 없다. |
 | 실제 Live QA | 미완료 | 이전 PR 설명에도 실제 StarCraft II Live QA를 실행하지 않았다고 명시되어 있다. |
 
 ## 4. 현재 검증 결과
@@ -349,7 +350,8 @@ Live QA는 수행하지 못했다.
 
 따라서 이번 문서는 승인 계획을 토씨 하나 빠뜨리지 않고 현재 증거와
 대조한 상태 보고서이며, “승인한 계획이 전부 해결됐다”는 보고서는 아니다.
-현재 변경은 집중 테스트·문서 대조를 마치고 `d1b695f`로 커밋·푸시했다.
+현재 구현 변경은 집중 테스트·문서 대조를 마치고 `d1b695f`로 커밋·푸시했으며,
+후속 문서 상태 커밋도 같은 브랜치에 푸시했다.
 최신 hosted 결과도 확인했지만 `unit-contracts` 3개와
 `pre-live-producer-isolation`이 실패했으므로 PR은 여전히 `BLOCKED`이며
 green/merge가 아니다. Live QA는 현재 완료되지 않았다.
