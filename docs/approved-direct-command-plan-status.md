@@ -251,8 +251,8 @@ python3 -m py_compile starcraft_commander/*.py
 MCP capability catalog와 모든 catalog tool 등록, 독립 호출 병렬 실행,
 lifecycle completion/TTL/cancel, named squad·target pin unknown rejection,
 event-loop 내부 async direct executor dispatch, subject ownership/conflict,
-top-level task/build lowering을 검증한다. 현재 전체 집중 묶음은
-`266 passed, 1 skipped, 308 subtests passed`다.
+top-level task/build lowering을 검증한다. 최신 전체 집중 묶음은
+`277 passed, 1 skipped, 423 subtests passed`다.
 
 전체 저장소 실행도 수행했다.
 
