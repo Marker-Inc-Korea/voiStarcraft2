@@ -108,17 +108,29 @@ class FakeUnit:
     def gather(self, target):
         return self._record("gather", target)
 
+    def return_resource(self):
+        return self._record("return_resource", None)
+
     def move(self, point):
         return self._record("move", point)
 
     def attack(self, point):
         return self._record("attack", point)
 
+    def patrol(self, point):
+        return self._record("patrol", point)
+
     def repair(self, target):
         return self._record("repair", target)
 
     def train(self, type_id):
         return self._record("train", type_id)
+
+    def research(self, upgrade):
+        return self._record("research", upgrade)
+
+    def warp_in(self, type_id, point):
+        return self._record("warp_in", (type_id, point))
 
 
 class FakeUnitGroup(list):
@@ -234,6 +246,7 @@ FAKE_UNIT_TYPE_IDS = {
     "COMMANDCENTER": "TYPE:COMMANDCENTER",
     "FACTORY": "TYPE:FACTORY",
     "REFINERY": "TYPE:REFINERY",
+    "ZEALOT": "TYPE:ZEALOT",
 }
 
 
@@ -290,10 +303,15 @@ class AdapterContractTest(unittest.TestCase):
         self.assertEqual(
             (
                 "assign_workers",
+                "gather_resource",
                 "build_structure",
                 "train_unit",
+                "research_upgrade",
+                "warp_in",
                 "move_group",
                 "attack_move",
+                "patrol",
+                "return_resource",
                 "repair",
                 "execute_ability",
                 "observe",
@@ -1672,6 +1690,64 @@ class TrainUnitTest(unittest.TestCase):
                 )
                 self.assertFalse(result)
                 self.assertEqual([], bot.issued)
+
+
+class ExpandedPythonSC2SurfaceTest(unittest.TestCase):
+    def test_explicit_gather_resource_uses_unit_gather(self) -> None:
+        worker = FakeUnit("SCV")
+        mineral = FakeUnit("MineralField", 11, 11)
+        bot = FakeBotAI(workers=[worker], mineral_fields=[mineral])
+        adapter = make_adapter(bot)
+        result = run(adapter.gather_resource(action(
+            SC2ActionType.GATHER_RESOURCE, "SCV", target="minerals", count=1
+        )))
+        self.assertTrue(result)
+        self.assertEqual([("gather", worker, mineral)], bot.issued)
+
+    def test_research_upgrade_calls_research_on_matching_structure(self) -> None:
+        researcher = FakeUnit("EngineeringBay")
+        bot = FakeBotAI(structures=[researcher])
+        bot.upgrade_id_resolver = lambda name: f"UPGRADE:{name}"
+        adapter = make_adapter(bot)
+        result = run(adapter.research_upgrade(action(
+            SC2ActionType.RESEARCH_UPGRADE,
+            "Terran Infantry Weapons Level 1",
+            count=1,
+            metadata={"researcher": "ENGINEERINGBAY"},
+        )))
+        self.assertTrue(result)
+        self.assertEqual(
+            [("research", researcher, "UPGRADE:Terran Infantry Weapons Level 1")],
+            bot.issued,
+        )
+
+    def test_warp_in_resolves_target_and_calls_warp_in(self) -> None:
+        gate = FakeUnit("WarpGate")
+        bot = FakeBotAI(structures=[gate])
+        adapter = make_adapter(bot)
+        result = run(adapter.warp_in(action(
+            SC2ActionType.WARP_IN, "ZEALOT", target="self_main", count=1
+        )))
+        self.assertTrue(result)
+        self.assertEqual(1, len(bot.issued))
+        self.assertEqual("warp_in", bot.issued[0][0])
+        self.assertEqual("TYPE:ZEALOT", bot.issued[0][2][0])
+
+    def test_patrol_and_return_resource_use_explicit_unit_methods(self) -> None:
+        worker = FakeUnit("SCV")
+        marine = FakeUnit("Marine", 10, 10)
+        bot = FakeBotAI(workers=[worker], units=[worker, marine])
+        adapter = make_adapter(bot)
+        patrol = run(adapter.patrol(action(
+            SC2ActionType.PATROL, "MARINE", target="self_ramp", count=1
+        )))
+        returned = run(adapter.return_resource(action(
+            SC2ActionType.RETURN_RESOURCE, "SCV", count=1
+        )))
+        self.assertTrue(patrol)
+        self.assertTrue(returned)
+        self.assertEqual("patrol", bot.issued[0][0])
+        self.assertEqual("return_resource", bot.issued[1][0])
 
 
 class MoveAndAttackGroupTest(unittest.TestCase):

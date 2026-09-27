@@ -1474,10 +1474,15 @@ def _missing_runtime_result(
 def _method_name_for_action(action_type: SC2ActionType) -> str:
     return {
         SC2ActionType.ASSIGN_WORKERS: "assign_workers",
+        SC2ActionType.GATHER_RESOURCE: "gather_resource",
         SC2ActionType.BUILD_STRUCTURE: "build_structure",
         SC2ActionType.TRAIN_UNIT: "train_unit",
+        SC2ActionType.RESEARCH_UPGRADE: "research_upgrade",
+        SC2ActionType.WARP_IN: "warp_in",
         SC2ActionType.MOVE_GROUP: "move_group",
         SC2ActionType.ATTACK_MOVE: "attack_move",
+        SC2ActionType.PATROL: "patrol",
+        SC2ActionType.RETURN_RESOURCE: "return_resource",
         SC2ActionType.REPAIR: "repair",
         SC2ActionType.EXECUTE_ABILITY: "execute_ability",
         SC2ActionType.OBSERVE: "observe",

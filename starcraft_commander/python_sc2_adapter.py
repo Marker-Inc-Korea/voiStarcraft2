@@ -4,9 +4,9 @@ This is the handoff Step 2 bridge between planned semantic commands and a
 live python-sc2 ``BotAI`` runtime. ``SC2RuntimeExecutor.execute`` dispatches
 every planned :class:`SC2CommandAction` by calling the method named after its
 ``action_type`` on the bound runtime adapter, so :class:`PythonSC2BotAdapter`
-implements exactly those seven method names and translates them into
-duck-typed BotAI operations: worker gather, build, train, move, attack-move,
-repair, and state observation. Bot objects are never isinstance-checked
+implements the bounded semantic method set and translates it into duck-typed
+BotAI operations: resource transfer, construction, production, research,
+movement, patrol, repair, abilities, and state observation. Bot objects are never isinstance-checked
 against python-sc2 types and python-sc2 itself is only lazy-imported inside
 functions, so this module stays importable without StarCraft II, python-sc2,
 faster-whisper, or sounddevice installed.
@@ -60,10 +60,15 @@ from starcraft_commander.state_resolver import (
 
 SC2_ADAPTER_ACTION_METHOD_NAMES: Final[tuple[str, ...]] = (
     "assign_workers",
+    "gather_resource",
     "build_structure",
     "train_unit",
+    "research_upgrade",
+    "warp_in",
     "move_group",
     "attack_move",
+    "patrol",
+    "return_resource",
     "repair",
     "execute_ability",
     "observe",
@@ -185,17 +190,32 @@ class SC2BotAdapterInterface(Protocol):
     async def assign_workers(self, action: SC2CommandAction) -> SC2ActionReport:
         """Send workers to gather the requested resource near the main base."""
 
+    async def gather_resource(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Gather a resource through the explicit python-sc2 gather surface."""
+
     async def build_structure(self, action: SC2CommandAction) -> bool | SC2ActionReport:
         """Place one structure near the resolved semantic map target."""
 
     async def train_unit(self, action: SC2CommandAction) -> SC2ActionReport:
         """Queue unit training on ready idle producers of the planned type."""
 
+    async def research_upgrade(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Research one upgrade on a matching ready idle structure."""
+
+    async def warp_in(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Warp in units through ready structures at a semantic target."""
+
     async def move_group(self, action: SC2CommandAction) -> SC2ActionReport:
         """Move the selected unit group to the resolved semantic map target."""
 
     async def attack_move(self, action: SC2CommandAction) -> SC2ActionReport:
         """Attack-move the selected unit group to the resolved map target."""
+
+    async def patrol(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Patrol the selected unit group to a resolved semantic target."""
+
+    async def return_resource(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Return carried resources with selected workers."""
 
     async def repair(self, action: SC2CommandAction) -> SC2ActionReport:
         """Send workers to repair the first damaged matching own entity."""
@@ -283,6 +303,11 @@ class PythonSC2BotAdapter:
             if await self._issue_unit_order(gather, target_unit):
                 issued += 1
         return _issuance_report(action.count, issued, "insufficient_workers")
+
+    async def gather_resource(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Issue the explicit gather action while sharing worker selection rules."""
+
+        return await self.assign_workers(action)
 
     async def build_structure(self, action: SC2CommandAction) -> bool | SC2ActionReport:
         """Build ``action.subject`` near the resolved semantic map target.
@@ -538,6 +563,59 @@ class PythonSC2BotAdapter:
                 break
         return _issuance_report(action.count, issued, detail)
 
+    async def research_upgrade(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Research an upgrade on ready idle structures exposing ``research``."""
+
+        if action.count <= 0:
+            return _refusal_report(action.count, "non_positive_count")
+        upgrade = self._resolve_upgrade(action.subject)
+        if upgrade is None:
+            return _refusal_report(action.count, "unresolvable_upgrade")
+        researcher_name = _normalized_name(action.metadata.get("researcher"))
+        structures = [
+            structure
+            for structure in self._ready_idle_structures()
+            if callable(getattr(structure, "research", None))
+            and (
+                researcher_name is None
+                or _entity_type_name(structure) == researcher_name
+            )
+        ]
+        if not structures:
+            return _refusal_report(action.count, "no_ready_idle_researcher")
+        issued = 0
+        for structure in structures:
+            if issued >= action.count:
+                break
+            if await self._issue_unit_order(structure.research, upgrade):
+                issued += 1
+        return _issuance_report(action.count, issued, "insufficient_researchers")
+
+    async def warp_in(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Warp in units through ready structures at a validated point."""
+
+        if action.count <= 0:
+            return _refusal_report(action.count, "non_positive_count")
+        type_id = self._resolve_unit_type(action.subject)
+        position = self._resolve_target_point(action.target)
+        if position is None:
+            return _refusal_report(action.count, "unresolvable_target")
+        structures = [
+            structure
+            for structure in self._ready_idle_structures()
+            if callable(getattr(structure, "warp_in", None))
+        ]
+        if not structures:
+            return _refusal_report(action.count, "no_ready_warp_structure")
+        issued = 0
+        destination = _game_point(position)
+        for structure in structures:
+            if issued >= action.count:
+                break
+            if await self._issue_unit_order(structure.warp_in, type_id, destination):
+                issued += 1
+        return _issuance_report(action.count, issued, "insufficient_warp_structures")
+
     async def move_group(self, action: SC2CommandAction) -> SC2ActionReport:
         """Move the unit group selected by ``action.subject`` to the target."""
 
@@ -547,6 +625,27 @@ class PythonSC2BotAdapter:
         """Attack-move the selected unit group to the resolved map target."""
 
         return await self._order_group(action, "attack")
+
+    async def patrol(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Patrol the selected unit group to the resolved map target."""
+
+        return await self._order_group(action, "patrol")
+
+    async def return_resource(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Return carried resources with selected workers."""
+
+        units = self._select_group(action.subject or "SCV")
+        requested = _leading_count(action.subject) or (
+            len(units) if action.count <= 0 else max(1, action.count)
+        )
+        if not units:
+            return _refusal_report(requested, "no_matching_workers")
+        issued = 0
+        for unit in units[:requested]:
+            method = getattr(unit, "return_resource", None)
+            if callable(method) and await self._issue_unit_order(method):
+                issued += 1
+        return _issuance_report(requested, issued, "insufficient_workers")
 
     async def repair(self, action: SC2CommandAction) -> SC2ActionReport:
         """Send up to ``action.count`` workers to repair the matched target.
@@ -1168,6 +1267,23 @@ class PythonSC2BotAdapter:
             if value is not None:
                 return value
         return None
+
+    def _resolve_upgrade(self, upgrade_name: str) -> object | None:
+        """Resolve a python-sc2 ``UpgradeId`` without importing it eagerly."""
+
+        normalized = re.sub(r"[^A-Za-z0-9]+", "", str(upgrade_name)).upper()
+        if not normalized:
+            return None
+        bot_resolver = getattr(self.bot, "upgrade_id_resolver", None)
+        if callable(bot_resolver):
+            resolved = bot_resolver(upgrade_name)
+            if resolved is not None:
+                return resolved
+        try:
+            from sc2.ids.upgrade_id import UpgradeId
+        except ImportError:
+            return upgrade_name if str(upgrade_name).isupper() else None
+        return getattr(UpgradeId, normalized, None)
 
     async def _is_affordable(self, type_id: object) -> bool:
         """Check ``bot.can_afford`` when present; refuse only explicit ``no``."""

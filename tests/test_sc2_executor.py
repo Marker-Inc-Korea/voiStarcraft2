@@ -105,10 +105,15 @@ class StarCraftCommanderPackageSurfaceTest(unittest.TestCase):
             frozenset(
                 {
                     "assign_workers",
+                    "gather_resource",
                     "train_unit",
                     "build_structure",
+                    "research_upgrade",
+                    "warp_in",
                     "move_group",
                     "attack_move",
+                    "patrol",
+                    "return_resource",
                     "repair",
                     "execute_ability",
                     "observe",

@@ -77,10 +77,15 @@ class SC2Capability:
 
 SC2_CAPABILITY_CATALOG: Final[tuple[SC2Capability, ...]] = (
     SC2Capability("sc2.direct.assign_workers", SC2ActionType.ASSIGN_WORKERS, "Assign workers to minerals or completed gas.", "economy"),
+    SC2Capability("sc2.direct.gather_resource", SC2ActionType.GATHER_RESOURCE, "Gather a semantic resource with selected workers.", "economy"),
     SC2Capability("sc2.direct.build_structure", SC2ActionType.BUILD_STRUCTURE, "Build one semantic structure at a validated location.", "construction", supports_parallel=False),
     SC2Capability("sc2.direct.train_unit", SC2ActionType.TRAIN_UNIT, "Queue semantic unit production.", "production", supports_parallel=False),
+    SC2Capability("sc2.direct.research_upgrade", SC2ActionType.RESEARCH_UPGRADE, "Research one validated upgrade.", "research", supports_parallel=False),
+    SC2Capability("sc2.direct.warp_in", SC2ActionType.WARP_IN, "Warp in a semantic unit at a validated target.", "production", supports_parallel=False),
     SC2Capability("sc2.direct.move_group", SC2ActionType.MOVE_GROUP, "Move a named or typed squad to a semantic target.", "operation"),
     SC2Capability("sc2.direct.attack_move", SC2ActionType.ATTACK_MOVE, "Attack-move a squad to a semantic target.", "operation"),
+    SC2Capability("sc2.direct.patrol", SC2ActionType.PATROL, "Patrol a named or typed squad to a semantic target.", "operation"),
+    SC2Capability("sc2.direct.return_resource", SC2ActionType.RETURN_RESOURCE, "Return carried resources with selected workers.", "economy", supports_parallel=False),
     SC2Capability("sc2.direct.repair", SC2ActionType.REPAIR, "Repair a matching damaged friendly target.", "support", supports_parallel=False),
     SC2Capability("sc2.direct.execute_ability", SC2ActionType.EXECUTE_ABILITY, "Use one validated unit ability.", "micro", supports_parallel=False),
     SC2Capability("sc2.direct.observe", SC2ActionType.OBSERVE, "Read the structured live game state.", "observation", supports_parallel=True),
@@ -591,11 +596,16 @@ def _append_task_actions(
 
     direct_action_types = {
         "assign_workers": SC2ActionType.ASSIGN_WORKERS,
+        "gather_resource": SC2ActionType.GATHER_RESOURCE,
         "build_structure": SC2ActionType.BUILD_STRUCTURE,
         "train_unit": SC2ActionType.TRAIN_UNIT,
+        "research_upgrade": SC2ActionType.RESEARCH_UPGRADE,
+        "warp_in": SC2ActionType.WARP_IN,
         "repair": SC2ActionType.REPAIR,
         "move_group": SC2ActionType.MOVE_GROUP,
         "attack_move": SC2ActionType.ATTACK_MOVE,
+        "patrol": SC2ActionType.PATROL,
+        "return_resource": SC2ActionType.RETURN_RESOURCE,
         "move_camera": SC2ActionType.MOVE_CAMERA,
         "observe": SC2ActionType.OBSERVE,
         "stop_group": SC2ActionType.STOP_GROUP,
@@ -631,7 +641,9 @@ def _append_task_actions(
                     "BATTLECRUISER": "STARPORT",
                 }.get(subject, ""),
             )
-        elif task_type == "assign_workers":
+        elif task_type in {"assign_workers", "gather_resource"}:
+            subject = "SCV"
+        elif task_type == "return_resource":
             subject = "SCV"
         elif task_type == "repair":
             subject = "SCV"
@@ -1167,6 +1179,12 @@ def create_command_tool_registry(
             action_tool(SC2ActionType.ASSIGN_WORKERS),
         ),
         ToolSpec(
+            "sc2.direct.gather_resource",
+            "Gather a semantic resource through python-sc2.",
+            action_schema,
+            action_tool(SC2ActionType.GATHER_RESOURCE),
+        ),
+        ToolSpec(
             "sc2.direct.build_structure",
             "Build one semantic structure through python-sc2.",
             action_schema,
@@ -1179,6 +1197,24 @@ def create_command_tool_registry(
             action_tool(SC2ActionType.TRAIN_UNIT),
         ),
         ToolSpec(
+            "sc2.direct.research_upgrade",
+            "Research one semantic upgrade through python-sc2.",
+            {
+                **action_schema,
+                "properties": {
+                    **action_schema["properties"],
+                    "metadata": {"type": "object"},
+                },
+            },
+            action_tool(SC2ActionType.RESEARCH_UPGRADE),
+        ),
+        ToolSpec(
+            "sc2.direct.warp_in",
+            "Warp in semantic units through python-sc2.",
+            action_schema,
+            action_tool(SC2ActionType.WARP_IN),
+        ),
+        ToolSpec(
             "sc2.direct.move_group",
             "Move a semantic squad through python-sc2.",
             action_schema,
@@ -1189,6 +1225,18 @@ def create_command_tool_registry(
             "Attack-move a semantic squad through python-sc2.",
             action_schema,
             action_tool(SC2ActionType.ATTACK_MOVE),
+        ),
+        ToolSpec(
+            "sc2.direct.patrol",
+            "Patrol a semantic squad through python-sc2.",
+            action_schema,
+            action_tool(SC2ActionType.PATROL),
+        ),
+        ToolSpec(
+            "sc2.direct.return_resource",
+            "Return carried resources with selected workers through python-sc2.",
+            action_schema,
+            action_tool(SC2ActionType.RETURN_RESOURCE),
         ),
         ToolSpec(
             "sc2.direct.repair",

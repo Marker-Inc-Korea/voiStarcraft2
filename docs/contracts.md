@@ -226,10 +226,15 @@ The stable public SC2 action type name set is:
 | Action type | Semantic contract |
 | --- | --- |
 | `assign_workers` | Assign worker units to a resource, base, or economy role. |
+| `gather_resource` | Explicitly gather a semantic resource with selected workers. |
 | `build_structure` | Request construction of an SC2 structure at a semantic target alias. |
 | `train_unit` | Request production of one or more units from the appropriate producer. |
+| `research_upgrade` | Research one validated upgrade on a ready structure. |
+| `warp_in` | Warp in a semantic unit at a validated target. |
 | `move_group` | Move a named or resolved unit group to a semantic map target. |
 | `attack_move` | Issue combat movement toward a defensive or offensive target. |
+| `patrol` | Patrol a named or resolved unit group to a semantic map target. |
+| `return_resource` | Return carried resources with selected workers. |
 | `repair` | Assign repair workers to a damaged unit or structure target. |
 | `execute_ability` | Use a semantic unit ability such as Stim, Siege, or Yamato through the live SC2 adapter. |
 | `observe` | Read or summarize visible runtime state without issuing a mutating order. |
@@ -275,9 +280,10 @@ adapter. `PythonSC2BotAdapter` therefore implements the semantic action type
 names as methods:
 
 ```text
-assign_workers   build_structure   train_unit   move_group
-attack_move      repair            execute_ability   observe   move_camera
-stop_group       hold_position
+assign_workers   gather_resource   build_structure   train_unit
+research_upgrade warp_in           move_group         attack_move
+patrol           return_resource   repair             execute_ability
+observe          move_camera       stop_group         hold_position
 ```
 
 - Counted methods return `SC2ActionReport` (partial issuance is never collapsed
