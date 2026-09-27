@@ -190,6 +190,57 @@ class DirectCommandLifecycle:
             return self._replace(lease, DirectCommandState.COMPLETED, "completion_conditions", evidence_map)
         return self._replace(lease, DirectCommandState.ACTIVE, "", evidence_map)
 
+    def active_leases(self) -> tuple[DirectCommandLease, ...]:
+        """Return a stable snapshot of leases that still own control.
+
+        The snapshot is intentionally detached from the internal dictionary so
+        a release callback can safely call back into the lifecycle while a game
+        loop is observing commands.  Terminal leases are not returned and are
+        therefore never re-observed by a subsequent frame tick.
+        """
+
+        active_states = {
+            DirectCommandState.PENDING,
+            DirectCommandState.DISPATCHED,
+            DirectCommandState.ACTIVE,
+        }
+        return tuple(
+            lease
+            for lease in tuple(self._leases.values())
+            if lease.state in active_states
+        )
+
+    def observe_all(
+        self,
+        *,
+        frame: int,
+        evidence_by_command: Mapping[str, Mapping[str, object]] | None = None,
+    ) -> tuple[DirectCommandLease, ...]:
+        """Observe every active lease once for a game-loop frame.
+
+        ``evidence_by_command`` may contain an evidence mapping for each
+        command id.  Commands without evidence are still observed, which
+        makes TTL expiry deterministic even when the runtime has no fresh
+        semantic observation for that command.  Iteration uses a stable
+        snapshot, so completion/release callbacks cannot mutate the collection
+        being traversed.
+        """
+
+        if frame < 0:
+            raise ValueError("frame must be non-negative")
+        evidence_map = evidence_by_command or {}
+        observed: list[DirectCommandLease] = []
+        for lease in self.active_leases():
+            evidence = evidence_map.get(lease.command_id, {})
+            observed.append(
+                self.observe(
+                    lease.command_id,
+                    frame=frame,
+                    evidence=evidence,
+                )
+            )
+        return tuple(observed)
+
     def cancel(self, command_id: str, *, reason: str = "cancelled_by_user") -> DirectCommandLease:
         lease = self._require(command_id)
         if lease.state not in {

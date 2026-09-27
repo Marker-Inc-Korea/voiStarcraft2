@@ -1242,6 +1242,41 @@ class MicroMachineLiveTextSession:
         )
         return lease.to_dict()
 
+    def observe_direct_commands(
+        self,
+        *,
+        current_frame: int,
+        evidence_by_command: Mapping[str, Mapping[str, object]] | None = None,
+    ) -> tuple[dict[str, object], ...]:
+        """Observe all active Direct leases for one BotAI game-loop tick.
+
+        A live ``BotAI.on_step`` callback can collect semantic evidence for
+        the current frame and pass it keyed by ``command_id``.  Leases with no
+        evidence are still ticked so TTL expiry occurs automatically.  The
+        lifecycle owns terminal transitions and invokes its configured release
+        callback; this method only exposes the resulting audit dictionaries to
+        the caller.
+        """
+
+        frame = _non_negative_int("current_frame", current_frame)
+        leases = self.direct_lifecycle.observe_all(
+            frame=frame,
+            evidence_by_command=evidence_by_command,
+        )
+        return tuple(lease.to_dict() for lease in leases)
+
+    # ``tick_direct_commands`` is a concise callback seam for integrations
+    # whose game-loop naming is not tied to the text-session terminology.
+    def tick_direct_commands(
+        self,
+        current_frame: int,
+        evidence_by_command: Mapping[str, Mapping[str, object]] | None = None,
+    ) -> tuple[dict[str, object], ...]:
+        return self.observe_direct_commands(
+            current_frame=current_frame,
+            evidence_by_command=evidence_by_command,
+        )
+
     def cancel_direct_command(
         self,
         command_id: str,

@@ -382,6 +382,99 @@ def test_pending_failure_also_notifies_release_listener() -> None:
     assert released == [("pending-failure", "dispatch_error")]
 
 
+def test_observe_all_ticks_multiple_leases_and_skips_terminal_leases() -> None:
+    released: list[tuple[str, str]] = []
+    lifecycle = DirectCommandLifecycle(
+        game_loops_per_second=1,
+        on_release=lambda lease: released.append(
+            (lease.command_id, lease.release_reason)
+        ),
+    )
+    lifecycle.dispatch(
+        command_id="complete-me",
+        issued_at_frame=10,
+        ttl_seconds=20,
+        completion_conditions=("arrived",),
+        owned_subjects=("scout",),
+    )
+    lifecycle.dispatch(
+        command_id="expire-me",
+        issued_at_frame=10,
+        ttl_seconds=2,
+        owned_subjects=("attack",),
+    )
+
+    first = lifecycle.active_leases()
+    assert [lease.command_id for lease in first] == ["complete-me", "expire-me"]
+    tick = lifecycle.observe_all(
+        frame=12,
+        evidence_by_command={"complete-me": {"arrived": True}},
+    )
+    assert [lease.state for lease in tick] == [
+        DirectCommandState.COMPLETED,
+        DirectCommandState.EXPIRED,
+    ]
+    assert lifecycle.active_leases() == ()
+    assert released == [
+        ("complete-me", "completion_conditions"),
+        ("expire-me", "ttl_expired"),
+    ]
+
+    # A later frame cannot re-observe terminal leases or fire callbacks again.
+    assert lifecycle.observe_all(frame=99) == ()
+    assert released == [
+        ("complete-me", "completion_conditions"),
+        ("expire-me", "ttl_expired"),
+    ]
+
+
+def test_observe_all_releases_subject_for_reacquisition() -> None:
+    lifecycle = DirectCommandLifecycle(game_loops_per_second=1)
+    lifecycle.dispatch(
+        command_id="first-owner",
+        issued_at_frame=0,
+        ttl_seconds=2,
+        completion_conditions=("done",),
+        owned_subjects=("1분대",),
+    )
+    lifecycle.observe_all(frame=1, evidence_by_command={"first-owner": {"done": True}})
+    replacement = lifecycle.dispatch(
+        command_id="replacement-owner",
+        issued_at_frame=1,
+        ttl_seconds=2,
+        owned_subjects=("1분대",),
+    )
+    assert replacement.control_owned is True
+
+
+def test_live_session_direct_tick_is_game_loop_callback_seam() -> None:
+    released: list[str] = []
+    lifecycle = DirectCommandLifecycle(
+        game_loops_per_second=1,
+        on_release=lambda lease: released.append(lease.command_id),
+    )
+    session = MicroMachineLiveTextSession(
+        MicroMachineInMemoryBlackboard(),
+        StaticJsonPolicyModulationProvider({"goal": "observe", "command_layer": "macro"}),
+        direct_lifecycle=lifecycle,
+    )
+    lifecycle.dispatch(
+        command_id="session-lease",
+        issued_at_frame=4,
+        ttl_seconds=2,
+        completion_conditions=("target_reached",),
+        owned_subjects=("scout",),
+    )
+    tick = session.tick_direct_commands(
+        5,
+        {"session-lease": {"target_reached": True}},
+    )
+    assert tick[0]["state"] == "completed"
+    assert tick[0]["control_owned"] is False
+    assert released == ["session-lease"]
+    assert session.observe_direct_commands(current_frame=99) == ()
+
+
 def test_named_squad_and_target_pin_registry_rejects_unknown_squads() -> None:
     registry = DirectCommandRegistry(
         squads=(SquadDefinition("1분대", "4 MARINE"),),
