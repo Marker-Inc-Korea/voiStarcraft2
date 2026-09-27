@@ -234,6 +234,8 @@ The stable public SC2 action type name set is:
 | `execute_ability` | Use a semantic unit ability such as Stim, Siege, or Yamato through the live SC2 adapter. |
 | `observe` | Read or summarize visible runtime state without issuing a mutating order. |
 | `move_camera` | Move the player's camera to a resolved semantic map target without issuing unit orders. |
+| `stop_group` | Immediately stop a named or resolved unit group. |
+| `hold_position` | Hold a named or resolved unit group at its current position. |
 
 These names are the public API vocabulary for command plans, logs, UI adapters,
 and fake BotAI-style tests. They must remain semantic action categories; callers
@@ -269,12 +271,13 @@ semantics and invariants.
 
 `SC2RuntimeExecutor.execute(plan)` dispatches every planned `SC2CommandAction`
 by calling the method named after its `action_type` on the bound runtime
-adapter. `PythonSC2BotAdapter` therefore implements exactly the nine semantic
-action type names as methods:
+adapter. `PythonSC2BotAdapter` therefore implements the semantic action type
+names as methods:
 
 ```text
 assign_workers   build_structure   train_unit   move_group
 attack_move      repair            execute_ability   observe   move_camera
+stop_group       hold_position
 ```
 
 - Counted methods return `SC2ActionReport` (partial issuance is never collapsed
