@@ -7,12 +7,12 @@
 
 기준 브랜치는 `codex/llm-command-speedup`, 기준 PR은
 [#187](https://github.com/Marker-Inc-Korea/voiStarcraft2/pull/187)이다. 현재
-working-tree 기준 HEAD는 `a41fccf`이고, 이번 보강(종료 callback seam,
+working-tree 기준 HEAD는 `ef53ed2`이며, 이번 보강(종료 callback seam,
 dependent workflow, `enemy_destroyed` evidence, registry lifecycle 공유,
-compact prompt 축소)은 아직 커밋되지 않았다. GitHub에서 확인한 PR #187은
-`OPEN / BLOCKED`이며, 원격 HEAD `a41fccf2d255b41c9ffe69d17f01edd06907eded`의
-최신 hosted 결과는 `ci` run `36320835292`, `final-pre-live` run
-`36320833369`, `pre-live-provenance` run `36320833361`이다.
+compact prompt 축소)은 커밋·푸시됐다. GitHub에서 확인한 PR #187은
+`OPEN / BLOCKED`이며, 원격 HEAD `ef53ed2fc05cf6f26d4dcbe6e9fa834e2103e791`의
+최신 hosted 결과는 `ci` run `36325564774`, `final-pre-live` run
+`36325562349`, `pre-live-provenance` run `36325562508`이다.
 `event-admission`, `pre-live-build`, `ready-to-merge`는 성공했고,
 `pre-live-producer-isolation`과 `unit-contracts (3.10)`, `(3.11)`, `(3.12)`은
 실패했다. 따라서 CI green이나 merge를 주장하지 않는다. 실제 StarCraft II
@@ -243,7 +243,7 @@ MicroMachine으로 몰래 대체하지 않고 `runtime_not_attached`로 실패�
 | JEV System 1 라우팅 | 미완료/외부 계약 대기 | #189에 정의 질문과 acceptance criteria만 등록했다. |
 | legacy route 완전 제거 | **완료(코드 경계)** | `include_legacy_tools` opt-in과 `micromachine.operation/ability/emergency` registry entries를 제거했다. 기본 registry와 MCP discovery에는 `micromachine.policy`만 남는다. |
 | 문서화 | 완료(현재 상태 보고) | 이 문서가 승인 원문 기준, 구조, capability, 위치·분대·수리, 병렬·선행조건, lifecycle, legacy 격리, JEV, PR·Live QA를 항목별로 기록한다. |
-| PR 반영 | 부분 완료 | PR #187이 열려 있고 `BLOCKED`다. 원격 HEAD `a41fccf`의 hosted `ci` run `36320835292`에서 3개 `unit-contracts` job이 실패했고, `pre-live-producer-isolation`도 실패했다. `event-admission`, `pre-live-build`, `ready-to-merge`는 성공했다. hosted CI green/merge를 주장할 수 없다. |
+| PR 반영 | 부분 완료 | PR #187이 열려 있고 `BLOCKED`다. 원격 HEAD `ef53ed2`의 hosted `ci` run `36325564774`에서 3개 `unit-contracts` job이 실패했고, `pre-live-producer-isolation`도 실패했다. `event-admission`, `pre-live-build`, `ready-to-merge`는 성공했다. hosted CI green/merge를 주장할 수 없다. |
 | 실제 Live QA | 미완료 | 이전 PR 설명에도 실제 StarCraft II Live QA를 실행하지 않았다고 명시되어 있다. |
 
 ## 4. 현재 검증 결과
@@ -292,30 +292,24 @@ Direct release callback, registry lifecycle 공유, build completion 후 depende
 포함되어 있어 PR green 증거가 아니다. 따라서 전체 suite를 통과했다고 보고하지
 않으며, 승인 구조를 직접 검증하는 위 집중 묶음을 별도 기준으로 유지한다.
 
-PR #187에서 이전에 완료된 hosted `unit-contracts` run도 확인했다.
+PR #187의 최신 hosted `unit-contracts` run도 확인했다.
 
 ```text
-head: d1b695f
-ci run: 36320112887
-173 failed, 2936 passed, 68 skipped, 7148 subtests passed
+head: ef53ed2
+ci run: 36325564774
+173 failed, 2945 passed, 68 skipped, 1 warning, 7148 subtests passed
 ```
 
 최신 hosted `pre-live-provenance` run도 확인했다.
 
 ```text
-run: 36320110347
+run: 36325562508
 pre-live-build: success
 pre-live-producer-isolation: failure
 trusted verifier CTest: passed=0, total=10, failures=10, returncode=0
 ```
 
-이전 hosted `unit-contracts` run 기록은 다음과 같다.
-
-```text
-179 failed, 2916 passed, 68 skipped, 1 warning, 7146 subtests passed
-```
-
-이 이전 hosted 실패에는 승인 구조와 충돌하는 기존 MicroMachine 성공 기대와
+hosted 실패에는 승인 구조와 충돌하는 기존 MicroMachine 성공 기대와
 `runtime_not_attached` fail-closed 차이가 포함되어 있다. 별도
 `pre-live-producer-isolation` job은 Direct 변경과 무관한 trusted verifier
 fixture에서 CTest가 `0/10`으로 기록되어 실패했다. 현재 head에서도 이 job은
@@ -356,7 +350,7 @@ Live QA는 수행하지 못했다.
 
 따라서 이번 문서는 승인 계획을 토씨 하나 빠뜨리지 않고 현재 증거와
 대조한 상태 보고서이며, “승인한 계획이 전부 해결됐다”는 보고서는 아니다.
-현재 구현 보강은 working tree에서 집중 테스트·문서 대조를 마쳤지만 아직
-커밋·푸시하지 않았다. 원격 최신 hosted 결과에서도 `unit-contracts` 3개와
+현재 구현 보강은 집중 테스트·문서 대조 후 `ef53ed2`로 커밋·푸시했다. 원격
+최신 hosted 결과에서도 `unit-contracts` 3개와
 `pre-live-producer-isolation`이 실패했으므로 PR은 여전히 `BLOCKED`이며
 green/merge가 아니다. PR merge는 하지 않았고, Live QA도 완료되지 않았다.
