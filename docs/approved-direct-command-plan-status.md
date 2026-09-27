@@ -177,21 +177,21 @@ MicroMachine으로 몰래 대체하지 않고 `runtime_not_attached`로 실패�
 | semantic MCP tool registry | 완료(계약 범위) | `tools/list`, `tools/call`, `voiStarcraft2/tools/call_many`, capability list, registry list, lifecycle, 직접 semantic action tool이 registry와 MCP server에 등록되어 있다. |
 | `move_camera` 개별 MCP tool | 완료(계약 범위) | `sc2.direct.move_camera`가 catalog·registry·adapter·executor mapping에 존재한다. 실제 카메라 이동은 SC2 runtime 필요. |
 | Stop/Hold/Retreat direct tool | 완료(계약 범위) / runtime 미검증 | `stop_group`, `hold_position`, 명시적 `sc2.direct.retreat` capability와 MCP tool을 제공한다. Retreat는 adapter 의미상 self-main 이동으로 lower되며 emergency 계획은 Stop/Hold/Move를 사용한다. |
-| 모든 SC2 기능 | 부분 완료(승인 catalog 기준) | raw python-sc2 전체가 아니라 승인된 bounded semantic catalog를 구현했다. catalog의 모든 이름이 registry에 있는 계약 테스트는 통과하지만, raw API 전체 노출 요구는 안전한 범위 밖이다. |
-| semantic 위치와 Map Resolver | 부분 완료 | semantic target alias와 map resolver·placement 검증이 있고 target pin registry/strict pin lookup을 추가했다. 실제 map 좌표 계산·장애물 검증은 live runtime 증거가 없다. |
+| 모든 SC2 기능을 MCP tool calling으로 노출 | 부분 완료(승인 catalog 기준) | 승인된 bounded semantic catalog의 이름·schema·registry·MCP 호출은 구현했다. 그러나 raw `python-sc2`/s2client 전체 기능을 노출한 것은 아니므로 “SC2 API 모두” 요구는 미완료다. |
+| semantic 위치와 Map Resolver | 부분 완료 | semantic target alias와 map resolver·placement 검증이 있고 target pin registry/strict pin lookup을 추가했다. 실제 map 좌표 계산·장애물 검증은 live runtime 증거가 없고, 컨트롤러에서 사용자가 찍는 target-pin UX도 아직 없다. |
 | 분대 registry | 부분 완료 | `DirectCommandRegistry`/`SquadDefinition`으로 이름·unit query를 보존하고 configured registry에서 unknown named squad를 거부한다. 실제 관찰값 기반 tag 선택과 ownership transfer는 runtime 미검증이다. |
 | 수리 대상 자동 선택 | 부분 완료 | adapter가 아군 손상 구조물 우선, 손상 유닛 fallback, SCV 선택을 수행한다. 다중 매칭 clarification과 named registry 연동은 미구현이다. |
 | 독립 tool 병렬 실행 | 완료(호출 스케줄러 계약) | `call_many_async()`가 독립 호출을 `asyncio.gather`로 병렬 실행하고, 동일 subject/conflict·emergency·다중 action plan은 순차 처리한다. 실제 SC2 동시성은 runtime 미검증이다. |
 | 선행조건 순차 실행 | 부분 완료 | ordered plan과 다중 action 순차 실행은 구현했다. “건설 완료 관찰 후 생산”을 자동으로 다음 tool에 재개하는 workflow는 아직 없다. |
 | 완료·취소·TTL lifecycle | 부분 완료 | `DirectCommandLifecycle`가 pending/dispatched/active/complete/expired/cancelled/failed 계약 상태와 completion evidence·TTL을 보유하며 MCP/session registry에 연결됐다. executor가 성공 시 active, 거부·예외 시 failed로 전이한다. 실패 상태의 runtime watcher와 자동 polling은 미검증이다. |
-| Direct 제어권 반환 | 부분 완료 | terminal lease에서 `control_owned=false`가 되고 session의 `observe_direct_command()`/`cancel_direct_command()`가 ownership 해제를 제공한다. 실제 MicroMachine game-loop 재개 증거는 없다. |
+| Direct 제어권 반환 후 MicroMachine 재개 | 부분 완료 | terminal lease에서 `control_owned=false`가 되고 session의 `observe_direct_command()`/`cancel_direct_command()`가 ownership 해제를 제공한다. 실제 MicroMachine game-loop가 자동으로 재개되는 연결과 watcher 증거는 없다. |
 | runtime 미연결 fail-closed | 완료(코드 경계) | Direct executor가 없거나 BotAI가 없으면 `runtime_not_attached`를 반환하고 non-macro는 MicroMachine으로 우회 publish하지 않는다. |
 | SC2 상태 관찰 | 부분 완료 | `observe` adapter/state resolver와 executor audit가 있고 lifecycle evidence 입력이 있다. 자동 completion watcher 연결은 미완료다. |
 | 카메라 이동 | 부분 완료 | adapter/map resolver/MCP tool은 연결됐다. 실제 SC2 camera API 성공은 live runtime 미검증이다. |
 | JEV System 1 라우팅 | 미완료/외부 계약 대기 | #189에 정의 질문과 acceptance criteria만 등록했다. |
-| legacy route 격리 | 완료(기본 경계) | `micromachine.operation/ability/emergency` tool은 기본 registry에 없고 `include_legacy_tools=True`에서만 명시적으로 노출된다. 라우터는 non-macro에서 이를 호출하지 않는다. |
+| legacy route 완전 제거 | **미완료(승인 요구와 불일치)** | 라우터는 non-macro에서 legacy tool을 호출하지 않고 기본 registry에도 숨기지만, `include_legacy_tools=True`이면 `micromachine.operation/ability/emergency`가 여전히 노출된다. 사용자가 요구한 “legacy 모두 제거”를 충족하려면 이 opt-in 경로 자체를 삭제해야 한다. |
 | 문서화 | 완료(현재 상태 보고) | 이 문서가 승인 원문 기준, 구조, capability, 위치·분대·수리, 병렬·선행조건, lifecycle, legacy 격리, JEV, PR·Live QA를 항목별로 기록한다. |
-| PR 반영 | 부분 완료 | PR #187이 열려 있고 `BLOCKED`다. 구현 커밋 `33f451c`와 최신 상태 보고 커밋을 원격 branch에 push했고, 원격 PR head가 최신 커밋을 가리키는 것을 확인했다. |
+| PR 반영 | 부분 완료 | PR #187이 열려 있고 `BLOCKED`다. 최신 구현 커밋 `180a951`을 원격 branch에 push했고 PR head가 이를 가리킨다. hosted CI는 현재 실행 중이므로 green/merge를 주장할 수 없다. |
 | 실제 Live QA | 미완료 | 이전 PR 설명에도 실제 StarCraft II Live QA를 실행하지 않았다고 명시되어 있다. |
 
 ## 4. 현재 검증 결과
@@ -206,7 +206,7 @@ python3 -m py_compile starcraft_commander/*.py
 통과
 ```
 
-새 계약 테스트는 Direct-only route, legacy tool opt-in 격리, emergency Stop/Hold/Retreat lowering,
+새 계약 테스트는 Direct-only route, 기본 legacy tool 비노출, emergency Stop/Hold/Retreat lowering,
 MCP capability catalog와 모든 catalog tool 등록, 독립 호출 병렬 실행,
 lifecycle completion/TTL/cancel, named squad·target pin unknown rejection,
 event-loop 내부 async direct executor dispatch를 검증한다. 전체 집중 묶음은
@@ -242,12 +242,14 @@ Live QA는 수행하지 못했다.
    Direct-only route, bounded semantic MCP catalog, move camera,
    Stop/Hold/Retreat, fail-closed runtime, independent-call parallel scheduler,
    same-subject/emergency/ordered-plan serialization, named squad·target pin
-   registry 초안, lifecycle lease 상태·completion·TTL·cancel, 문서화.
+   registry 초안, lifecycle lease 상태·completion·TTL·cancel, 현재 상태 문서화.
 2. **부분 해결**: 실제 named squad의 live unit-tag resolution, target pin의
    live map 좌표·장애물 검증, 수리 모호성 clarification, 건설 완료 관찰 후
    생산 재개, lifecycle 자동 watcher와 MicroMachine game-loop ownership
    재개.
-3. **외부 의존으로 미해결**: JEV System 1 계약(#189), 실제 SC2 Live QA,
+3. **명시적으로 미완료 또는 외부 의존**: raw SC2 API 전체 tool화, legacy
+   tool 완전 제거, 사용자용 target-pin UI, 자동 lifecycle watcher와 실제
+   MicroMachine game-loop 복귀, JEV System 1 계약(#189), 실제 SC2 Live QA,
    GitHub에서 PR #187의 차단 상태 해소.
 
 따라서 이번 문서는 승인 계획을 토씨 하나 빠뜨리지 않고 현재 증거와
