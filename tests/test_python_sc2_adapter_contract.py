@@ -37,6 +37,7 @@ from starcraft_commander.sc2_executor import (
     SC2RuntimeExecutor,
     SC2_STRUCTURE_TYPE_IDS,
 )
+from starcraft_commander.unified_command_router import create_command_tool_registry
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -1824,6 +1825,76 @@ class MoveAndAttackGroupTest(unittest.TestCase):
             [("move", marine, MapPoint(90.0, 90.0)) for marine in marines[:2]],
             bot.issued,
         )
+
+    def test_explicit_count_caps_group_without_counted_subject(self) -> None:
+        bot, _, marines = self.make_army_bot()
+        adapter = make_adapter(bot)
+        result = run(adapter.move_group(action(
+            SC2ActionType.MOVE_GROUP, "MARINE", target="enemy_main", count=2,
+        )))
+        self.assertTrue(result)
+        self.assertEqual([order[1] for order in bot.issued], marines[:2])
+
+    def test_bound_group_tracks_original_tags_across_observation_reordering(self) -> None:
+        bot, _, marines = self.make_army_bot()
+        for index, unit in enumerate(bot.units, start=1):
+            unit.tag = index
+        executor = SC2RuntimeExecutor(bot=make_adapter(bot))
+        registry = create_command_tool_registry(direct_executor=executor)
+        result = registry.call("sc2.direct.move_group", {
+            "subject": "MARINE", "target": "enemy_main", "count": 2,
+            "command_id": "tagged-move", "completion_conditions": ["target_reached"],
+        })
+        self.assertTrue(result.ok, result.to_dict())
+        lease = executor.direct_lifecycle.get("tagged-move")
+        self.assertEqual((3, 4), lease.owned_unit_tags)
+        self.assertEqual(marines[:2], [order[1] for order in bot.issued])
+
+        # A fresh observation puts an unassigned same-type unit first at the
+        # destination. That must not stand in for either assigned marine.
+        marines[2].position = FakePoint(90, 90)
+        bot.units = FakeUnitGroup([marines[2], marines[0], marines[1]])
+        tick = executor.tick_direct_commands(1)
+        self.assertEqual("active", tick[0]["state"])
+        marines[0].position = FakePoint(90, 90)
+        marines[1].position = FakePoint(90, 90)
+        self.assertEqual("completed", executor.tick_direct_commands(2)[0]["state"])
+
+    def test_mcp_alias_overlap_rejected_before_any_second_order(self) -> None:
+        bot, _, marines = self.make_army_bot()
+        for index, unit in enumerate(bot.units, start=1):
+            unit.tag = index
+        executor = SC2RuntimeExecutor(bot=make_adapter(bot))
+        registry = create_command_tool_registry(direct_executor=executor)
+        first = registry.call("sc2.direct.move_group", {
+            "subject": "MARINE", "target": "enemy_main", "count": 2,
+            "command_id": "typed", "completion_conditions": ["target_reached"],
+        })
+        self.assertTrue(first.ok)
+        issued_before = list(bot.issued)
+        second = registry.call("sc2.direct.attack_move", {
+            "subject": "available combat units", "target": "enemy_main",
+            "command_id": "generic",
+        })
+        self.assertFalse(second.ok)
+        self.assertEqual("direct_control_conflict", second.result["status"])
+        self.assertEqual(issued_before, bot.issued)
+        self.assertIsNone(executor.direct_lifecycle.get("generic"))
+
+    def test_mcp_unit_tag_metadata_cannot_override_runtime_selection(self) -> None:
+        bot, _, marines = self.make_army_bot()
+        for index, unit in enumerate(bot.units, start=1):
+            unit.tag = index
+        executor = SC2RuntimeExecutor(bot=make_adapter(bot))
+        registry = create_command_tool_registry(direct_executor=executor)
+        result = registry.call("sc2.direct.move_group", {
+            "subject": "2 Marines", "target": "enemy_main",
+            "command_id": "no-forged-tags",
+            "metadata": {"_direct_unit_tags": [1, 2], "_direct_requested_count": 2},
+        })
+        self.assertTrue(result.ok)
+        self.assertEqual(marines[:2], [order[1] for order in bot.issued])
+        self.assertEqual((3, 4), executor.direct_lifecycle.get("no-forged-tags").owned_unit_tags)
 
     def test_counted_type_phrase_never_substitutes_other_unit_types(self) -> None:
         # "6 Marines" with a mixed army must select only Marines, never

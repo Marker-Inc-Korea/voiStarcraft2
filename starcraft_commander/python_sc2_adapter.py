@@ -41,7 +41,7 @@ import inspect
 import math
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Final, Protocol, runtime_checkable
 
 from starcraft_commander.contracts import SC2ActionReport, SC2CommandAction
@@ -239,6 +239,9 @@ class SC2BotAdapterInterface(Protocol):
     async def hold_position(self, action: SC2CommandAction) -> SC2ActionReport:
         """Hold the selected unit group at its current position."""
 
+    def bind_direct_action(self, action: SC2CommandAction) -> SC2CommandAction:
+        """Pin current live unit tags before a Direct lease is admitted."""
+
     def direct_command_evidence(
         self, lease: Mapping[str, object]
     ) -> Mapping[str, object]:
@@ -298,7 +301,7 @@ class PythonSC2BotAdapter:
         if target_unit is None:
             return _refusal_report(action.count, "no_gather_target")
         issued = 0
-        for worker in self._worker_pool():
+        for worker in self._action_units(action, workers=True):
             if issued >= action.count:
                 break
             gather = getattr(worker, "gather", None)
@@ -643,10 +646,8 @@ class PythonSC2BotAdapter:
     async def return_resource(self, action: SC2CommandAction) -> SC2ActionReport:
         """Return carried resources with selected workers."""
 
-        units = self._select_group(action.subject or "SCV")
-        requested = _leading_count(action.subject) or (
-            len(units) if action.count <= 0 else max(1, action.count)
-        )
+        units = self._action_units(action)
+        requested = self._group_requested_count(action, units)
         if not units:
             return _refusal_report(requested, "no_matching_workers")
         issued = 0
@@ -691,7 +692,7 @@ class PythonSC2BotAdapter:
         if target_unit is None:
             return _refusal_report(action.count, "no_damaged_repair_target")
         issued = 0
-        for worker in self._worker_pool():
+        for worker in self._action_units(action, workers=True):
             if issued >= action.count:
                 break
             repair_order = getattr(worker, "repair", None)
@@ -720,7 +721,7 @@ class PythonSC2BotAdapter:
         ability = self._resolve_ability(ability_name)
         if ability is None:
             return _refusal_report(action.count, "unresolvable_ability")
-        units = self._select_group(action.subject)
+        units = self._action_units(action)
         if not units:
             return _refusal_report(action.count, "no_matching_caster")
         target = None
@@ -861,14 +862,29 @@ class PythonSC2BotAdapter:
             checked = True
             try:
                 point = self._resolve_target_point(target)
-                units = self._select_group(str(action.get("subject", "")))
+                metadata = action.get("metadata", {})
+                if isinstance(metadata, Mapping) and "_direct_unit_tags" in metadata:
+                    tags = metadata["_direct_unit_tags"]
+                    units = self._units_by_tags(tags)
+                    # Death/disappearance cannot be proved as arrival, nor
+                    # can a newly-created same-type unit replace the assignee.
+                    if not tags or len(units) != len(tags):
+                        return False
+                else:
+                    units = self._select_group(str(action.get("subject", "")))
             except Exception:  # noqa: BLE001 - unresolved runtime data is not proof.
                 return False
             if point is None or not units:
                 return False
             raw_count = action.get("count", 0)
             count = int(raw_count) if isinstance(raw_count, (int, float)) else 0
-            required = len(units) if count <= 0 else min(count, len(units))
+            required = _leading_count(str(action.get("subject", ""))) or (
+                len(units) if count <= 0 else count
+            )
+            if isinstance(metadata, Mapping) and "_direct_requested_count" in metadata:
+                required = int(metadata["_direct_requested_count"])
+            if len(units) < required:
+                return False
             selected = units[:required]
             positions = [
                 entity_point
@@ -950,16 +966,14 @@ class PythonSC2BotAdapter:
         action: SC2CommandAction,
         method_name: str,
     ) -> SC2ActionReport:
-        units = self._select_group(action.subject)
+        units = self._action_units(action)
         if not units:
             requested = _leading_count(action.subject) or max(1, action.count)
             return _refusal_report(requested, "no_matching_units")
         # A zero count is the explicit semantic “whole selected group” form
         # used by emergency Stop/Hold/Retreat lowering. Ordinary calls keep
         # their bounded default of one unit.
-        requested = _leading_count(action.subject) or (
-            len(units) if action.count <= 0 else max(1, action.count)
-        )
+        requested = self._group_requested_count(action, units)
         issued = 0
         for unit in units[:requested]:
             method = getattr(unit, method_name, None)
@@ -1342,8 +1356,10 @@ class PythonSC2BotAdapter:
         """
 
         position = self._resolve_target_point(action.target)
-        selected = self._select_group(action.subject)
-        requested = _leading_count(action.subject) or len(selected)
+        selected = self._action_units(action)
+        requested = self._group_requested_count(action, selected, default_all=True)
+        if not selected:
+            return _refusal_report(requested, "no_matching_units")
         if position is None:
             return _refusal_report(requested, "unresolvable_target")
         destination = _game_point(position)
@@ -1355,6 +1371,80 @@ class PythonSC2BotAdapter:
             if await self._issue_unit_order(order_method, destination):
                 issued += 1
         return _issuance_report(requested, issued, "insufficient_units")
+
+    def bind_direct_action(self, action: SC2CommandAction) -> SC2CommandAction:
+        """Pin controlled units from the current own-unit observation, without I/O.
+
+        Called before lease admission, so the complete plan's tag union is
+        reserved before any asynchronous order issuance. Internal binding
+        metadata is always rebuilt; callers cannot choose raw tags through MCP.
+        Producer/build actions still use their existing semantic reservation.
+        """
+
+        metadata = {
+            key: value for key, value in action.metadata.items()
+            if key not in {"_direct_unit_tags", "_direct_requested_count"}
+        }
+        clean = replace(action, metadata=metadata)
+        worker_actions = {"assign_workers", "gather_resource", "repair"}
+        group_actions = {
+            "move_group", "attack_move", "smart", "patrol", "stop_group",
+            "hold_position", "return_resource", "execute_ability",
+        }
+        kind = action.action_type.value
+        if kind not in worker_actions | group_actions:
+            return clean
+        pool = self._worker_pool() if kind in worker_actions else self._select_group(action.subject)
+        requested = (
+            action.count if kind in worker_actions or kind == "execute_ability"
+            else self._group_requested_count(
+                clean,
+                pool,
+                default_all=kind in {"move_group", "attack_move", "smart", "patrol"},
+            )
+        )
+        selected = pool[:max(0, requested)]
+        tags = tuple(getattr(unit, "tag", None) for unit in selected)
+        # Offline fakes may omit python-sc2's tag attribute entirely. In that
+        # case retain semantic ownership; a partially tagged live selection is
+        # unsafe and must fail closed rather than reserve only some units.
+        if tags and all(tag is None for tag in tags):
+            return clean
+        if any(type(tag) is not int or tag <= 0 for tag in tags) or len(set(tags)) != len(tags):
+            raise ValueError("direct_unit_binding_requires_unique_positive_tags")
+        return replace(clean, metadata={
+            **metadata, "_direct_unit_tags": tags, "_direct_requested_count": requested,
+        })
+
+    def _units_by_tags(self, tags: Sequence[int]) -> list[object]:
+        # python-sc2 recreates Unit objects on every observation. Retain tags,
+        # not old Unit instances, and resolve only within current own entities.
+        entities = (
+            _materialize(getattr(self.bot, "units", None))
+            + _materialize(getattr(self.bot, "workers", None))
+        )
+        by_tag = {getattr(unit, "tag", None): unit for unit in entities}
+        return [by_tag[tag] for tag in tags if tag in by_tag]
+
+    def _action_units(self, action: SC2CommandAction, *, workers: bool = False) -> list[object]:
+        if "_direct_unit_tags" in action.metadata:
+            return self._units_by_tags(action.metadata["_direct_unit_tags"])
+        return self._worker_pool() if workers else self._select_group(action.subject)
+
+    @staticmethod
+    def _group_requested_count(
+        action: SC2CommandAction,
+        units: Sequence[object],
+        *,
+        default_all: bool = False,
+    ) -> int:
+        if "_direct_requested_count" in action.metadata:
+            return int(action.metadata["_direct_requested_count"])
+        if _leading_count(action.subject) is not None:
+            return _leading_count(action.subject) or 0
+        if default_all and action.count in {0, 1}:
+            return len(units)
+        return len(units) if action.count == 0 else action.count
 
     def _select_group(self, subject: str) -> list[object]:
         """Select own units for a group order from a subject or free text.

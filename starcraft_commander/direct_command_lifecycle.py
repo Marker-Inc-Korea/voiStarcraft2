@@ -40,6 +40,7 @@ class DirectCommandLease:
     state: DirectCommandState = DirectCommandState.ACTIVE
     release_reason: str = ""
     evidence: Mapping[str, object] = field(default_factory=dict)
+    owned_unit_tags: tuple[int, ...] = ()
 
     @property
     def control_owned(self) -> bool:
@@ -55,6 +56,7 @@ class DirectCommandLease:
             "expires_at_frame": self.expires_at_frame,
             "completion_conditions": list(self.completion_conditions),
             "owned_subjects": list(self.owned_subjects),
+            "owned_unit_tags": list(self.owned_unit_tags),
             "control_owner": self.control_owner if self.control_owned else "none",
             "command_metadata": dict(self.command_metadata),
             "state": self.state.value,
@@ -89,6 +91,7 @@ class DirectCommandLifecycle:
         owned_subjects: Sequence[str] = (),
         control_owner: str = "direct_sc2",
         command_metadata: Mapping[str, object] | None = None,
+        owned_unit_tags: Sequence[int] = (),
     ) -> DirectCommandLease:
         command_id = str(command_id).strip()
         if not command_id:
@@ -99,6 +102,8 @@ class DirectCommandLifecycle:
             1, round(ttl_seconds * self.game_loops_per_second)
         )
         subjects = _normalize_subjects(owned_subjects)
+        tags = _normalize_unit_tags(owned_unit_tags)
+        self._check_unit_ownership(command_id, tags)
         conflicts = self._conflicting_subjects(command_id, subjects)
         if conflicts:
             raise DirectCommandOwnershipConflict(
@@ -115,6 +120,7 @@ class DirectCommandLifecycle:
             expires_at_frame=expires,
             completion_conditions=tuple(str(item) for item in completion_conditions),
             owned_subjects=subjects,
+            owned_unit_tags=tags,
             control_owner=str(control_owner or "direct_sc2"),
             command_metadata=dict(command_metadata or {}),
         )
@@ -131,6 +137,7 @@ class DirectCommandLifecycle:
         owned_subjects: Sequence[str] = (),
         control_owner: str = "direct_sc2",
         command_metadata: Mapping[str, object] | None = None,
+        owned_unit_tags: Sequence[int] = (),
     ) -> DirectCommandLease:
         """Register a command before an executor dispatches it."""
 
@@ -141,6 +148,8 @@ class DirectCommandLifecycle:
             raise ValueError("issued_at_frame must be non-negative and ttl positive")
         expires = issued_at_frame + max(1, round(ttl_seconds * self.game_loops_per_second))
         subjects = _normalize_subjects(owned_subjects)
+        tags = _normalize_unit_tags(owned_unit_tags)
+        self._check_unit_ownership(command_id, tags)
         conflicts = self._conflicting_subjects(command_id, subjects)
         if conflicts:
             raise DirectCommandOwnershipConflict(
@@ -152,6 +161,7 @@ class DirectCommandLifecycle:
             expires_at_frame=expires,
             completion_conditions=tuple(str(item) for item in completion_conditions),
             owned_subjects=subjects,
+            owned_unit_tags=tags,
             control_owner=str(control_owner or "direct_sc2"),
             command_metadata=dict(command_metadata or {}),
             state=DirectCommandState.PENDING,
@@ -330,6 +340,7 @@ class DirectCommandLifecycle:
             expires_at_frame=lease.expires_at_frame,
             completion_conditions=lease.completion_conditions,
             owned_subjects=lease.owned_subjects,
+            owned_unit_tags=lease.owned_unit_tags,
             control_owner=lease.control_owner,
             command_metadata=lease.command_metadata,
             state=state,
@@ -344,11 +355,37 @@ class DirectCommandLifecycle:
                 DirectCommandState.DISPATCHED,
                 DirectCommandState.ACTIVE,
             }
-            and not updated.control_owned
+            and state in {
+                DirectCommandState.COMPLETED,
+                DirectCommandState.EXPIRED,
+                DirectCommandState.CANCELLED,
+                DirectCommandState.FAILED,
+            }
             and self.on_release is not None
         ):
             self.on_release(updated)
         return updated
+
+    def unit_owner(self, unit_tag: int) -> str | None:
+        """Return the reservation owner, including in-flight pending dispatches."""
+
+        for lease in self.active_leases():
+            if unit_tag in lease.owned_unit_tags:
+                return lease.command_id
+        return None
+
+    def _check_unit_ownership(self, command_id: str, tags: tuple[int, ...]) -> None:
+        # Reusing an active id must not silently replace its reservation (or
+        # evade collision checks by masquerading as that command).
+        active = self.active_leases()
+        if any(lease.command_id == command_id for lease in active):
+            raise DirectCommandOwnershipConflict(f"command already active: {command_id}")
+        requested = set(tags)
+        conflicts = sorted({
+            tag for lease in active for tag in lease.owned_unit_tags if tag in requested
+        })
+        if conflicts:
+            raise DirectCommandOwnershipConflict(f"unit tags already owned: {conflicts}")
 
     def _conflicting_subjects(
         self, command_id: str, subjects: tuple[str, ...]
@@ -371,6 +408,12 @@ def _conditions_satisfied(conditions: tuple[str, ...], evidence: Mapping[str, ob
     if not conditions:
         return False
     return all(bool(evidence.get(condition)) for condition in conditions)
+
+
+def _normalize_unit_tags(values: Sequence[int]) -> tuple[int, ...]:
+    if any(type(value) is not int or value <= 0 for value in values):
+        raise ValueError("unit tags must be positive integers")
+    return tuple(sorted(set(values)))
 
 
 def _normalize_subjects(values: Sequence[str]) -> tuple[str, ...]:

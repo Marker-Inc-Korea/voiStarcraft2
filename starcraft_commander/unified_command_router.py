@@ -800,6 +800,31 @@ def create_command_tool_registry(
                 "reason": "The SC2 executor has no bound BotAI runtime.",
             }
         plan = execution_plan_from_mapping(arguments.get("plan"))
+        # A live python-sc2 adapter may resolve semantic squads to the exact
+        # unit tags visible in this frame. Bind before lease admission so the
+        # lifecycle reserves the same concrete units that the executor will
+        # command; raw tags are never accepted from MCP arguments.
+        bind_action = getattr(getattr(direct_executor, "bot", None), "bind_direct_action", None)
+        if callable(bind_action):
+            try:
+                bound_actions = tuple(bind_action(action) for action in plan.actions)
+            except Exception as error:  # noqa: BLE001 - binding is a structured refusal.
+                return {
+                    "ok": False,
+                    "status": "direct_unit_binding_failed",
+                    "runtime_attached": True,
+                    "reason": f"{type(error).__name__}:{error}",
+                }
+            if bound_actions != plan.actions:
+                plan = SC2ExecutionPlan(
+                    intent_name=plan.intent_name,
+                    priority=plan.priority,
+                    ordered_actions=bound_actions,
+                    constraints=plan.constraints,
+                    requires_live_sc2=plan.requires_live_sc2,
+                    notes=plan.notes,
+                    audit=plan.audit,
+                )
         command_id = str(
             arguments.get("command_id")
             or plan.audit.get("command_id")
@@ -828,6 +853,12 @@ def create_command_tool_registry(
         lease = None
         if lifecycle_required:
             subjects = tuple(action.subject for action in plan.actions)
+            owned_unit_tags = tuple(
+                tag
+                for action in plan.actions
+                for tag in action.metadata.get("_direct_unit_tags", ())
+                if type(tag) is int and tag > 0
+            )
             command_metadata: dict[str, object] = {
                 "intent_name": plan.intent_name,
                 "actions": [action.to_dict() for action in plan.actions],
@@ -847,6 +878,7 @@ def create_command_tool_registry(
                     ttl_seconds=max(1, ttl_seconds),
                     completion_conditions=conditions,
                     owned_subjects=subjects,
+                    owned_unit_tags=owned_unit_tags,
                     command_metadata=command_metadata,
                 )
             except DirectCommandOwnershipConflict as error:

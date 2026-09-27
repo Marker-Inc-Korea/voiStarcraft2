@@ -497,6 +497,38 @@ def test_direct_lifecycle_records_subject_ownership_and_rejects_overlap() -> Non
     assert released == ["first"]
 
 
+def test_direct_lifecycle_reserves_concrete_unit_tags_and_releases_them() -> None:
+    lifecycle = DirectCommandLifecycle(game_loops_per_second=1)
+    lifecycle.pending(
+        command_id="tagged-first",
+        issued_at_frame=1,
+        ttl_seconds=10,
+        owned_unit_tags=(101, 102),
+    )
+    assert lifecycle.unit_owner(101) == "tagged-first"
+    try:
+        lifecycle.pending(
+            command_id="tagged-conflict",
+            issued_at_frame=1,
+            ttl_seconds=10,
+            owned_unit_tags=(102, 103),
+        )
+    except DirectCommandOwnershipConflict:
+        pass
+    else:
+        raise AssertionError("overlapping concrete unit tags must be rejected")
+
+    lifecycle.cancel("tagged-first")
+    assert lifecycle.unit_owner(101) is None
+    lifecycle.pending(
+        command_id="tagged-reacquired",
+        issued_at_frame=2,
+        ttl_seconds=10,
+        owned_unit_tags=(101,),
+    )
+    assert lifecycle.unit_owner(101) == "tagged-reacquired"
+
+
 def test_pending_failure_also_notifies_release_listener() -> None:
     released: list[tuple[str, str]] = []
     lifecycle = DirectCommandLifecycle(

@@ -233,9 +233,14 @@ adapter contract tests. 테스트명의 “complete”는 현재 catalog 안의 
 
 > 3. 각 Direct 명령에 `command_id`, 대상 분대, 발행 프레임, 만료 프레임, 완료조건을 붙입니다.
 
-`DirectCommandLease`에 명령 ID·frame·TTL·완료조건·`owned_subjects`가 있다.
-대상은 semantic subject이며 실제 unit tag에 고정된 소유권은 미완료다.
-증거: `test_direct_lifecycle_records_subject_ownership_and_rejects_overlap`.
+`DirectCommandLease`에 명령 ID·frame·TTL·완료조건·`owned_subjects`가 있고, live
+python-sc2 Unit에 tag가 있으면 dispatch 전에 현재 선택된 `owned_unit_tags`를
+고정한다. 같은 tag의 중복 lease는 거부하고, 종료 후에만 재점유할 수 있다.
+tag가 없는 offline fake는 semantic subject ownership으로만 동작한다. 실제 Live
+unit tag ownership은 게임에서 아직 검증하지 않았다.
+증거: `test_direct_lifecycle_records_subject_ownership_and_rejects_overlap`,
+`test_direct_lifecycle_reserves_concrete_unit_tags_and_releases_them`,
+`test_bound_group_tracks_original_tags_across_observation_reordering`.
 
 #### A4 — 부분 완료(코드+fake contract)
 
@@ -314,7 +319,9 @@ Macro bias”는 계획 본문의 기준이지만 번호 1의 원문은 아니�
 > 3. 자연어용 squad registry 추가
 
 `DirectCommandRegistry`/`SquadDefinition`은 이름과 unit query를 보존하고,
-registry가 설정된 경로에서는 unknown named squad를 거부한다.
+registry가 설정된 경로에서는 unknown named squad를 거부한다. live adapter는
+dispatch 시 semantic selection을 현재 unit tag 집합으로 pin하고 해당 tag가
+아닌 새 관찰 unit을 완료 판정에 사용하지 않는다.
 `1분대`, `방어 분대`, `정찰 분대`, `주력 분대`를 안정적인 실제 tag 집합에
 연결하고 혼합 분대의 소유권을 이전하는 기능은 미완료다.
 증거: `test_named_squad_and_target_pin_registry_rejects_unknown_squads`,
