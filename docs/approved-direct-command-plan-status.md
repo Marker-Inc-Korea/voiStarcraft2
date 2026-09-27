@@ -7,13 +7,14 @@
 
 기준 브랜치는 `codex/llm-command-speedup`, 기준 PR은
 [#187](https://github.com/Marker-Inc-Korea/voiStarcraft2/pull/187)이다. 현재
-실행 코드 기준 커밋은 `ebebb8e`다. 코드 구현 커밋 `43a834b`와 수리 대상
+실행 코드 기준 커밋은 `838dd59`다. 코드 구현 커밋 `43a834b`와 수리 대상
 모호성 거부, live-session clarification prompt 전파, semantic Direct capability
 확장이 이 커밋에 포함됐다. 2026-09-28 KST 확인 시 PR #187은 `OPEN / BLOCKED`였으며,
-최신 완료 Hosted 결과는 `ebebb8e` 기준 `ci` run `36357092784`, `final-pre-live` run
-`36357091851`, `pre-live-provenance` run `36357091902`이다. `ci`의 Python
-3.10/3.11/3.12 unit-contracts는 각각 `173 failed, 2953 passed, 68 skipped, 7160
-subtests passed`로 모두 실패했고, `pre-live-provenance`의
+최신 완료 Hosted 결과는 `838dd59` 기준 `ci` run `36359440567`, 문서 후속 HEAD
+`05bc190` 기준 `final-pre-live` run `36359526751`, `pre-live-provenance` run
+`36359526765`이다. `ci`의 Python 3.10/3.11/3.12 unit-contracts는 각각
+`173 failed, 2958 passed, 68 skipped, 7160 subtests passed`로 모두 실패했고,
+`pre-live-provenance`의
 `pre-live-producer-isolation`도 실패했다.
 `pre-live-build`와 `event-admission`은 성공했지만, `final-pre-live`의 후속 검사는
 여러 개 skipped였고 필수 검사가 실패했으므로 CI green이나 merge를 주장하지 않는다. 실제
@@ -444,12 +445,12 @@ owner가 해당 유닛의 자율제어를 다시 수행하는 연결·Live QA는
 | JEV System 1 라우팅 | 미완료/외부 계약 대기 | #189에 정의 질문과 acceptance criteria만 등록했다. |
 | 기본 MCP의 legacy tactical route 제거 | **완료(코드 경계)** | `include_legacy_tools` opt-in과 `micromachine.operation/ability/emergency` registry entries를 제거했다. 기본 registry와 MCP discovery에는 `micromachine.policy`만 남는다. 저장소 전체의 legacy 문서·테스트 제거까지 완료한 것은 아니다. |
 | 문서화 | 완료(현재 상태 보고) | 이 문서가 승인 원문 기준, 구조, capability, 위치·분대·수리, 병렬·선행조건, lifecycle, legacy 격리, JEV, PR·Live QA를 항목별로 기록한다. |
-| PR 반영 | 부분 완료 | 코드 검증 대상은 `ebebb8e`이고, 그 뒤의 PR HEAD 변경은 상태·inventory 문서만 갱신했다. PR #187은 병합하지 않았다. 최신 완료 `ci` run `36357092784`의 Python 3.10/3.11/3.12와 `pre-live-provenance` run `36357091902`의 `pre-live-producer-isolation`이 실패했다. `final-pre-live` run `36357091851` 성공은 일부 후속 job이 skipped된 결과로, 전체 검증 완료를 뜻하지 않는다. |
+| PR 반영 | 부분 완료 | 코드 검증 대상은 `838dd59`이고, 그 뒤의 최신 PR HEAD 변경은 계약·상태 문서만 갱신했다. PR #187은 병합하지 않았다. 최신 완료 `ci` run `36359440567`의 Python 3.10/3.11/3.12와 `pre-live-provenance` run `36359526765`의 `pre-live-producer-isolation`이 실패했다. `final-pre-live` run `36359526751` 성공은 일부 후속 job이 skipped된 결과로, 전체 검증 완료를 뜻하지 않는다. |
 | 실제 Live QA | 미완료 | 이전 PR 설명에도 실제 StarCraft II Live QA를 실행하지 않았다고 명시되어 있다. |
 
 ## 4. 현재 검증 결과
 
-실행 코드 `ebebb8e` 기준으로 재실행한 로컬 집중 검증은 다음과 같다. 상태 문서
+실행 코드 `838dd59` 기준으로 재실행한 로컬 집중 검증은 다음과 같다. 상태 문서
 커밋 `7408002`는 문서만 갱신했다. 명령마다
 선택한 테스트 집합이 다르므로 수치를 합산하지 않는다.
 
@@ -533,19 +534,19 @@ non-macro를 성공/publish로 기대하는 기존 계약과 `runtime_not_attach
 - `tests/test_unified_command_router.py`가 이중 publish를 기대한다는 이전 설명도
   오래된 정보다. 현재 해당 파일은 Direct-only를 기대하고 위 focused 실행에 통과한다.
 
-PR #187 최신 완료 HEAD `ebebb8e`의 hosted 전체 suite 출력은 직접 확인했다.
+PR #187 코드 변경 최신 완료 HEAD `838dd59`의 hosted 전체 suite 출력은 직접 확인했다.
 
 ```text
-head: ebebb8e
-ci run: 36357092784
-unit-contracts (3.10): failure — 173 failed, 2953 passed, 68 skipped, 7160 subtests passed
-unit-contracts (3.11): failure — 173 failed, 2953 passed, 68 skipped, 7160 subtests passed
-unit-contracts (3.12): failure — 173 failed, 2953 passed, 68 skipped, 7160 subtests passed
+head: 838dd59
+ci run: 36359440567
+unit-contracts (3.10): failure — 173 failed, 2958 passed, 68 skipped, 7160 subtests passed
+unit-contracts (3.11): failure — 173 failed, 2958 passed, 68 skipped, 7160 subtests passed
+unit-contracts (3.12): failure — 173 failed, 2958 passed, 68 skipped, 7160 subtests passed
 ```
 
-최신 `pre-live-provenance` run `36357091902`은 `pre-live-build: success`,
+최신 `pre-live-provenance` run `36359526765`은 `pre-live-build: success`,
 `pre-live-producer-isolation: failure`, dependent provenance job `skipped`였다.
-최신 `final-pre-live` run `36357091851`은 `event-admission`과
+최신 `final-pre-live` run `36359526751`은 `event-admission`과
 `ready-to-merge`가 success였지만 deterministic journeys, browser accessibility,
 build identity, provenance, distribution 등의 후속 job은 skipped였다.
 
@@ -607,7 +608,7 @@ Live QA는 수행하지 못했다.
 원문 부록은 승인 관련 메시지 8개의 전문을 정확히 보존한다. 본 문서는
 두 계획의 15개 번호 및 추가 승인 요구를 이행 증거와 대조한 보고서이며,
 “승인한 계획이 전부 해결됐다”는 보고서는 아니다.
-현재 구현 보강은 `43a834b`, 최신 실행 코드는 `ebebb8e`이며 이 상태 보고는 최신
+현재 구현 보강은 `43a834b`와 `838dd59`, 최신 실행 코드는 `838dd59`이며 이 상태 보고는 최신
 Hosted 결과를 반영한다. `unit-contracts` 3개와 `pre-live-producer-isolation`이 실패했으므로
 PR은 여전히 `BLOCKED`이며 green/merge가 아니다. PR merge는 하지 않았고, Live QA도
 완료되지 않았다. goal도 active로 유지했다.
