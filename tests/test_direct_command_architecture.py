@@ -54,6 +54,22 @@ def test_non_macro_route_is_direct_only() -> None:
     assert [call.name for call in route.tool_calls] == ["sc2.direct.execute"]
 
 
+def test_legacy_micromachine_tactical_tools_are_opt_in_only() -> None:
+    default_names = {tool.name for tool in create_command_tool_registry().list_tools()}
+    assert not default_names.intersection(
+        {"micromachine.operation", "micromachine.ability", "micromachine.emergency"}
+    )
+    compatibility_names = {
+        tool.name
+        for tool in create_command_tool_registry(include_legacy_tools=True).list_tools()
+    }
+    assert {
+        "micromachine.operation",
+        "micromachine.ability",
+        "micromachine.emergency",
+    } <= compatibility_names
+
+
 def test_emergency_lowers_stop_hold_and_retreat_actions() -> None:
     route = route_policy_vector(
         _vector(
@@ -206,3 +222,43 @@ def test_live_session_keeps_direct_lease_for_observation_and_cancel() -> None:
     assert result.ok is True
     assert result.command_queue["direct_control_owner"] == "direct_sc2"
     assert session.cancel_direct_command("scout-1")["control_owned"] is False
+
+
+def test_direct_executor_attaches_active_lease_and_runtime_failure_releases() -> None:
+    registry = create_command_tool_registry(direct_executor=_RecordingExecutor())
+    plan = route_policy_vector(
+        _vector(
+            {
+                "goal": "attack",
+                "command_layer": "operation",
+                "operations": [
+                    {
+                        "operation_id": "attack-lease",
+                        "tactical_task": {
+                            "task_type": "pressure_with_main_army",
+                            "location_intent": "enemy_natural",
+                        },
+                    }
+                ],
+            }
+        ),
+        update_id="attack-lease",
+        current_frame=12,
+    )
+    result = registry.call("sc2.direct.execute", plan.tool_calls[0].arguments)
+    assert result.ok is True
+    lease = result.result["result"]["audit"]["direct_command_lifecycle"]
+    assert lease["state"] == "active"
+    assert lease["control_owned"] is True
+
+    class _BrokenExecutor:
+        bot = object()
+
+        async def execute(self, _plan):
+            raise RuntimeError("socket closed")
+
+    broken = create_command_tool_registry(direct_executor=_BrokenExecutor())
+    failed = broken.call("sc2.direct.execute", plan.tool_calls[0].arguments)
+    assert failed.ok is False
+    assert failed.result["lifecycle"]["state"] == "failed"
+    assert failed.result["lifecycle"]["control_owned"] is False

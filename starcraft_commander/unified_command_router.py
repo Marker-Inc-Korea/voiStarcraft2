@@ -518,6 +518,7 @@ def create_command_tool_registry(
     direct_bot: object | None = None,
     lifecycle: DirectCommandLifecycle | None = None,
     command_registry: DirectCommandRegistry | None = None,
+    include_legacy_tools: bool = False,
 ) -> CommanderToolRegistry:
     """Create the built-in MicroMachine and direct SC2 tool set."""
 
@@ -544,53 +545,98 @@ def create_command_tool_registry(
                 "reason": "The SC2 executor has no bound BotAI runtime.",
             }
         plan = execution_plan_from_mapping(arguments.get("plan"))
-        execute = getattr(direct_executor, "execute", None)
-        if not callable(execute):
-            execute = getattr(direct_executor, "execute_plan", None)
-            if callable(execute) and direct_bot is not None:
-                value = execute(direct_bot, plan)
-            else:
-                return {
-                    "ok": False,
-                    "status": "direct_executor_missing_capability",
-                    "reason": (
-                        "The attached direct executor exposes neither execute "
-                        "nor execute_plan."
-                    ),
-                }
-        else:
-            value = execute(plan)
-        if inspect.isawaitable(value):
-            value = _run_awaitable_sync(value)
-        if isinstance(value, SC2PlanExecutionResult):
-            audit = dict(value.to_dict().get("audit", {}))
-            command_id = str(
-                arguments.get("command_id")
-                or plan.audit.get("command_id")
-                or plan.intent_name
-            )
-            raw_ttl = arguments.get("ttl_seconds")
-            if raw_ttl is None:
-                raw_ttl = plan.audit.get("ttl_seconds", 120)
-            ttl_seconds = int(raw_ttl)
-            raw_conditions = arguments.get(
-                "completion_conditions",
-                plan.audit.get("completion_conditions", ("order_issued",)),
-            )
-            conditions = tuple(str(item) for item in raw_conditions) if isinstance(raw_conditions, Sequence) and not isinstance(raw_conditions, (str, bytes)) else ("order_issued",)
-            lease = command_lifecycle.dispatch(
+        command_id = str(
+            arguments.get("command_id")
+            or plan.audit.get("command_id")
+            or plan.intent_name
+        )
+        raw_ttl = arguments.get("ttl_seconds")
+        if raw_ttl is None:
+            raw_ttl = plan.audit.get("ttl_seconds", 120)
+        ttl_seconds = int(raw_ttl)
+        raw_conditions = arguments.get(
+            "completion_conditions",
+            plan.audit.get("completion_conditions", ("order_issued",)),
+        )
+        conditions = (
+            tuple(str(item) for item in raw_conditions)
+            if isinstance(raw_conditions, Sequence)
+            and not isinstance(raw_conditions, (str, bytes))
+            else ("order_issued",)
+        )
+        lifecycle_required = bool(plan.actions) and not all(
+            action.action_type is SC2ActionType.OBSERVE for action in plan.actions
+        )
+        # Register before dispatch so a game-loop observer can see the full
+        # pending -> dispatched -> active transition.  Runtime-not-attached
+        # exits above intentionally create no lease and no ownership.
+        lease = None
+        if lifecycle_required:
+            lease = command_lifecycle.pending(
                 command_id=command_id,
                 issued_at_frame=int(arguments.get("current_frame", 0)),
                 ttl_seconds=max(1, ttl_seconds),
                 completion_conditions=conditions,
             )
-            if not value.success:
+        execute = getattr(direct_executor, "execute", None)
+        try:
+            if not callable(execute):
+                execute = getattr(direct_executor, "execute_plan", None)
+                if callable(execute) and direct_bot is not None:
+                    value = execute(direct_bot, plan)
+                else:
+                    failed = (
+                        command_lifecycle.fail(
+                            command_id,
+                            reason="direct_executor_missing_capability",
+                        )
+                        if lifecycle_required
+                        else None
+                    )
+                    return {
+                        "ok": False,
+                        "status": "direct_executor_missing_capability",
+                        "reason": (
+                            "The attached direct executor exposes neither execute "
+                            "nor execute_plan."
+                        ),
+                        "lifecycle": failed.to_dict() if failed else {},
+                    }
+            else:
+                value = execute(plan)
+            if inspect.isawaitable(value):
+                value = _run_awaitable_sync(value)
+        except Exception as error:  # noqa: BLE001 - runtime failures are data.
+            failed = (
+                command_lifecycle.fail(
+                    command_id,
+                    reason="direct_execution_exception",
+                    evidence={"error": f"{type(error).__name__}:{error}"},
+                )
+                if lifecycle_required
+                else None
+            )
+            return {
+                "ok": False,
+                "status": "direct_execution_failed",
+                "runtime_attached": True,
+                "lifecycle": failed.to_dict() if failed else {},
+                "error": f"{type(error).__name__}:{error}",
+            }
+        if isinstance(value, SC2PlanExecutionResult):
+            audit = dict(value.to_dict().get("audit", {}))
+            if lifecycle_required:
+                lease = command_lifecycle.mark_dispatched(command_id)
+            if value.success and lifecycle_required:
+                lease = command_lifecycle.activate(command_id)
+            if not value.success and lifecycle_required:
                 lease = command_lifecycle.fail(
                     command_id,
                     reason="direct_plan_refused",
                     evidence=audit,
                 )
-            audit["direct_command_lifecycle"] = lease.to_dict()
+            if lease is not None:
+                audit["direct_command_lifecycle"] = lease.to_dict()
             result_document = value.to_dict()
             result_document["audit"] = audit
             return {
@@ -736,28 +782,10 @@ def create_command_tool_registry(
         action_type: SC2ActionType,
     ) -> Callable[[Mapping[str, object]], object]:
         return lambda arguments: one_action_tool(action_type, arguments)
-    tools = (
+    tools = [
         ToolSpec(
             "micromachine.policy",
             "Publish macro manager weights and policy to MicroMachine.",
-            schema,
-            publish,
-        ),
-        ToolSpec(
-            "micromachine.operation",
-            "Publish a squad operation to MicroMachine operation ownership.",
-            schema,
-            publish,
-        ),
-        ToolSpec(
-            "micromachine.ability",
-            "Publish a bounded ability policy to MicroMachine.",
-            schema,
-            publish,
-        ),
-        ToolSpec(
-            "micromachine.emergency",
-            "Publish an emergency retreat or stop override to MicroMachine.",
             schema,
             publish,
         ),
@@ -880,8 +908,29 @@ def create_command_tool_registry(
                 {**dict(arguments), "target": arguments.get("target", "self_main")},
             ),
         ),
-    )
-    return CommanderToolRegistry(tools)
+    ]
+    if include_legacy_tools:
+        tools[1:1] = [
+            ToolSpec(
+                "micromachine.operation",
+                "[Legacy compatibility only] Publish a squad operation to MicroMachine.",
+                schema,
+                publish,
+            ),
+            ToolSpec(
+                "micromachine.ability",
+                "[Legacy compatibility only] Publish an ability policy to MicroMachine.",
+                schema,
+                publish,
+            ),
+            ToolSpec(
+                "micromachine.emergency",
+                "[Legacy compatibility only] Publish an emergency override to MicroMachine.",
+                schema,
+                publish,
+            ),
+        ]
+    return CommanderToolRegistry(tuple(tools))
 
 
 def execution_plan_from_mapping(value: object) -> SC2ExecutionPlan:
