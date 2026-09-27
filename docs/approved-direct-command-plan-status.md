@@ -7,8 +7,12 @@
 
 기준 브랜치는 `codex/llm-command-speedup`, 기준 PR은
 [#187](https://github.com/Marker-Inc-Korea/voiStarcraft2/pull/187)이다. PR #187은
-열려 있지만 현재 GitHub 상태가 `BLOCKED`이고, 실제 StarCraft II Live QA는
-완료 증거가 없다.
+열려 있지만 현재 GitHub 상태가 `BLOCKED`이다. 이 문서 갱신 시점의 pushed
+head는 `fe7826bfae6db7d849b3a404f5aec8a34b7e36b7`이며, `event-admission`,
+`pre-live-build`, `ready-to-merge`는 성공했고 `pre-live-producer-isolation`은
+실패했다. `unit-contracts (3.10)`, `(3.11)`, `(3.12)`는 아직 진행 중이므로
+CI green이나 merge를 주장하지 않는다. 실제 StarCraft II Live QA는 완료 증거가
+없다.
 
 ## 1. 사용자가 승인한 최종 구조
 
@@ -261,17 +265,17 @@ top-level task/build lowering을 검증한다. 최신 전체 집중 묶음은
 177 failed, 2908 passed, 19 skipped, 54 errors, 7146 subtests passed
 ```
 
-PR #187의 최신 hosted `unit-contracts` run도 확인했다.
+PR #187에서 이전에 완료된 hosted `unit-contracts` run도 확인했다.
 
 ```text
 179 failed, 2916 passed, 68 skipped, 1 warning, 7146 subtests passed
 ```
 
-이 hosted 실패에는 승인 구조와 충돌하는 기존 MicroMachine 성공 기대와
+이 이전 hosted 실패에는 승인 구조와 충돌하는 기존 MicroMachine 성공 기대와
 `runtime_not_attached` fail-closed 차이가 포함되어 있다. 별도
 `pre-live-producer-isolation` job은 Direct 변경과 무관한 trusted verifier
-fixture에서 CTest가 `0/10`으로 기록되어 실패했다. 따라서 PR은 CI green이나
-merge 상태가 아니다.
+fixture에서 CTest가 `0/10`으로 기록되어 실패했다. 현재 head에서도 이 job은
+실패 상태이며, 따라서 PR은 CI green이나 merge 상태가 아니다.
 
 이 결과에는 이번 변경과 무관한 pre-live binary/fixture 오류도 포함된다.
 승인 구조와 직접 충돌하는 legacy 호환성 테스트 묶음은 다음과 같다. 예를 들어
