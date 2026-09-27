@@ -95,6 +95,7 @@ semantic capability catalog를 MCP로 공개한다. 이것은 구현 안전장�
 - 워프인 생산
 - 분대 이동
 - 분대 공격 이동
+- context-aware Smart 명령
 - 분대 순찰
 - 자원 반납
 - 수리
@@ -388,9 +389,9 @@ owner가 해당 유닛의 자율제어를 다시 수행하는 연결·Live QA는
 
 > 오케이 지금 계획에 하나더 추가해서 sc2 api에있는 모든 기능들 tool calling할수있도록 mcp로 만들어두고, micro 명령에서 바로 쓸 수있도록 만드는 계획까지 추가해서 문서화 시키고,  goal 만들어서 구현진행하자.
 
-- 모든 SC2 API의 MCP tool calling 및 micro 직접 사용: **미완료**. 현재 17개
+- 모든 SC2 API의 MCP tool calling 및 micro 직접 사용: **미완료**. 현재 18개
   semantic capability만 공개한다. 전체 API inventory·지원/미지원 분류·구현이 필요하다.
-- 해당 계획 문서화: **완료(원문 및 현황 문서)**. 위 요구를 17개로 축소 승인받은
+- 해당 계획 문서화: **완료(원문 및 현황 문서)**. 위 요구를 18개로 축소 승인받은
   것으로 취급하지 않는다. 기존 구현 작업은 진행됐으나 전체 구현 완료가 아니다.
 - goal 생성 및 구현 진행: **goal은 active**, 구현 일부 진행. 현재 goal 조회로
   active 상태를 확인했으며, 전체 계획이 해결되지 않았으므로 complete로 바꾸지 않았다.
@@ -421,7 +422,7 @@ owner가 해당 유닛의 자율제어를 다시 수행하는 연결·Live QA는
 | semantic MCP tool registry | 완료(계약 범위) | `tools/list`, `tools/call`, `voiStarcraft2/tools/call_many`, capability list, registry list, lifecycle, 직접 semantic action tool이 registry와 MCP server에 등록되어 있다. |
 | `move_camera` 개별 MCP tool | 완료(계약 범위) | `sc2.direct.move_camera`가 catalog·registry·adapter·executor mapping에 존재한다. 실제 카메라 이동은 SC2 runtime 필요. |
 | Stop/Hold/Retreat direct tool | 완료(계약 범위) / runtime 미검증 | `stop_group`, `hold_position`, 명시적 `sc2.direct.retreat` capability와 MCP tool을 제공한다. Retreat는 adapter 의미상 self-main 이동으로 lower되며 emergency 계획은 Stop/Hold/Move를 사용한다. |
-| 모든 SC2 기능을 MCP tool calling으로 노출 | **미완료** | 현재 17개 bounded semantic capability의 이름·schema·registry·MCP 호출과 fake adapter 계약은 구현했다. 이것은 사용자 승인 범위를 축소한 것이 아니며, raw `python-sc2`/s2client 전체 기능을 노출한 것은 아니다. |
+| 모든 SC2 기능을 MCP tool calling으로 노출 | **미완료** | 현재 18개 bounded semantic capability의 이름·schema·registry·MCP 호출과 fake adapter 계약은 구현했다. 이것은 사용자 승인 범위를 축소한 것이 아니며, raw `python-sc2`/s2client 전체 기능을 노출한 것은 아니다. |
 | semantic 위치와 Map Resolver | 부분 완료 | semantic target alias와 map resolver·placement 검증이 있고 target pin registry/strict pin lookup을 추가했다. 실제 map 좌표 계산·장애물 검증은 live runtime 증거가 없고, 컨트롤러에서 사용자가 찍는 target-pin UX도 아직 없다. |
 | 분대 registry | 부분 완료 | `DirectCommandRegistry`/`SquadDefinition`으로 이름·unit query를 보존하고 configured registry에서 unknown named squad를 거부한다. 실제 관찰값 기반 tag 선택과 ownership transfer는 runtime 미검증이다. |
 | 수리 대상 자동 선택 | 부분 완료 | adapter의 손상 구조물 우선·명시적 유닛명 fallback·worker 선택, 모호성 거부 및 live-session clarification 전파를 구현했다. 실제 UI 재질문/답변 대상 선택, 공간적 이름 매칭, 기계/생체 구분·heal 경로는 미완료다. |
@@ -581,7 +582,7 @@ Live QA는 수행하지 못했다.
 항목을 구분하면 다음과 같다.
 
 1. **코드로 해결됨**: macro-only MicroMachine route, operation/micro/emergency
-   Direct-only route, bounded semantic MCP catalog(현재 17개 semantic capability),
+   Direct-only route, bounded semantic MCP catalog(현재 18개 semantic capability),
    move camera,
    Stop/Hold/Retreat, fail-closed runtime, independent-call parallel scheduler,
    same-subject/emergency/ordered-plan serialization, named squad·target pin

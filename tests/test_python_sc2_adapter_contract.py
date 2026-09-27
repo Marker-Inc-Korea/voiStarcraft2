@@ -117,6 +117,9 @@ class FakeUnit:
     def attack(self, point):
         return self._record("attack", point)
 
+    def smart(self, point):
+        return self._record("smart", point)
+
     def patrol(self, point):
         return self._record("patrol", point)
 
@@ -310,6 +313,7 @@ class AdapterContractTest(unittest.TestCase):
                 "warp_in",
                 "move_group",
                 "attack_move",
+                "smart",
                 "patrol",
                 "return_resource",
                 "repair",
@@ -1748,6 +1752,16 @@ class ExpandedPythonSC2SurfaceTest(unittest.TestCase):
         self.assertTrue(returned)
         self.assertEqual("patrol", bot.issued[0][0])
         self.assertEqual("return_resource", bot.issued[1][0])
+
+    def test_smart_uses_explicit_unit_smart_method(self) -> None:
+        marine = FakeUnit("Marine", 10, 10)
+        bot = FakeBotAI(units=[marine])
+        adapter = make_adapter(bot)
+        result = run(adapter.smart(action(
+            SC2ActionType.SMART, "MARINE", target="self_ramp", count=1
+        )))
+        self.assertTrue(result)
+        self.assertEqual("smart", bot.issued[0][0])
 
 
 class MoveAndAttackGroupTest(unittest.TestCase):

@@ -1481,6 +1481,7 @@ def _method_name_for_action(action_type: SC2ActionType) -> str:
         SC2ActionType.WARP_IN: "warp_in",
         SC2ActionType.MOVE_GROUP: "move_group",
         SC2ActionType.ATTACK_MOVE: "attack_move",
+        SC2ActionType.SMART: "smart",
         SC2ActionType.PATROL: "patrol",
         SC2ActionType.RETURN_RESOURCE: "return_resource",
         SC2ActionType.REPAIR: "repair",

@@ -112,6 +112,7 @@ class StarCraftCommanderPackageSurfaceTest(unittest.TestCase):
                     "warp_in",
                     "move_group",
                     "attack_move",
+                    "smart",
                     "patrol",
                     "return_resource",
                     "repair",

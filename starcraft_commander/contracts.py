@@ -24,6 +24,7 @@ class SC2ActionType(str, Enum):
     WARP_IN = "warp_in"
     MOVE_GROUP = "move_group"
     ATTACK_MOVE = "attack_move"
+    SMART = "smart"
     PATROL = "patrol"
     RETURN_RESOURCE = "return_resource"
     REPAIR = "repair"

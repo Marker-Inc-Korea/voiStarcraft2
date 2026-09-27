@@ -16,6 +16,7 @@ made safe and testable.
 | `sc2.direct.warp_in` | `warp_in` | warp structure/type/placement resolver | contract tests; Live QA pending |
 | `sc2.direct.move_group` | `move_group` | semantic squad selection | contract tests; Live QA pending |
 | `sc2.direct.attack_move` | `attack_move` | semantic squad selection | contract tests; Live QA pending |
+| `sc2.direct.smart` | `smart` | semantic squad selection and target resolver | contract tests; Live QA pending |
 | `sc2.direct.patrol` | `patrol` | semantic squad selection | contract tests; Live QA pending |
 | `sc2.direct.return_resource` | `return_resource` | semantic worker selection | contract tests; Live QA pending |
 | `sc2.direct.repair` | `repair` | damaged-own-target resolver + SCV selection | contract tests; ambiguity UX pending |

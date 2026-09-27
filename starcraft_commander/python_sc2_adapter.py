@@ -67,6 +67,7 @@ SC2_ADAPTER_ACTION_METHOD_NAMES: Final[tuple[str, ...]] = (
     "warp_in",
     "move_group",
     "attack_move",
+    "smart",
     "patrol",
     "return_resource",
     "repair",
@@ -210,6 +211,9 @@ class SC2BotAdapterInterface(Protocol):
 
     async def attack_move(self, action: SC2CommandAction) -> SC2ActionReport:
         """Attack-move the selected unit group to the resolved map target."""
+
+    async def smart(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Issue context-aware ``Unit.smart`` orders to a semantic target."""
 
     async def patrol(self, action: SC2CommandAction) -> SC2ActionReport:
         """Patrol the selected unit group to a resolved semantic target."""
@@ -625,6 +629,11 @@ class PythonSC2BotAdapter:
         """Attack-move the selected unit group to the resolved map target."""
 
         return await self._order_group(action, "attack")
+
+    async def smart(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Issue context-aware smart orders to the resolved semantic target."""
+
+        return await self._order_group(action, "smart")
 
     async def patrol(self, action: SC2CommandAction) -> SC2ActionReport:
         """Patrol the selected unit group to the resolved map target."""

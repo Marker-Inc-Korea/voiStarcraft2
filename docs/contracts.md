@@ -233,6 +233,7 @@ The stable public SC2 action type name set is:
 | `warp_in` | Warp in a semantic unit at a validated target. |
 | `move_group` | Move a named or resolved unit group to a semantic map target. |
 | `attack_move` | Issue combat movement toward a defensive or offensive target. |
+| `smart` | Issue context-aware orders to a semantic target. |
 | `patrol` | Patrol a named or resolved unit group to a semantic map target. |
 | `return_resource` | Return carried resources with selected workers. |
 | `repair` | Assign repair workers to a damaged unit or structure target. |
@@ -282,8 +283,9 @@ names as methods:
 ```text
 assign_workers   gather_resource   build_structure   train_unit
 research_upgrade warp_in           move_group         attack_move
-patrol           return_resource   repair             execute_ability
-observe          move_camera       stop_group         hold_position
+smart            patrol             return_resource   repair
+execute_ability  observe            move_camera       stop_group
+hold_position
 ```
 
 - Counted methods return `SC2ActionReport` (partial issuance is never collapsed

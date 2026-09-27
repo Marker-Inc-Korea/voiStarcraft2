@@ -84,6 +84,7 @@ SC2_CAPABILITY_CATALOG: Final[tuple[SC2Capability, ...]] = (
     SC2Capability("sc2.direct.warp_in", SC2ActionType.WARP_IN, "Warp in a semantic unit at a validated target.", "production", supports_parallel=False),
     SC2Capability("sc2.direct.move_group", SC2ActionType.MOVE_GROUP, "Move a named or typed squad to a semantic target.", "operation"),
     SC2Capability("sc2.direct.attack_move", SC2ActionType.ATTACK_MOVE, "Attack-move a squad to a semantic target.", "operation"),
+    SC2Capability("sc2.direct.smart", SC2ActionType.SMART, "Issue context-aware smart orders to a semantic target.", "operation"),
     SC2Capability("sc2.direct.patrol", SC2ActionType.PATROL, "Patrol a named or typed squad to a semantic target.", "operation"),
     SC2Capability("sc2.direct.return_resource", SC2ActionType.RETURN_RESOURCE, "Return carried resources with selected workers.", "economy", supports_parallel=False),
     SC2Capability("sc2.direct.repair", SC2ActionType.REPAIR, "Repair a matching damaged friendly target.", "support", supports_parallel=False),
@@ -604,6 +605,7 @@ def _append_task_actions(
         "repair": SC2ActionType.REPAIR,
         "move_group": SC2ActionType.MOVE_GROUP,
         "attack_move": SC2ActionType.ATTACK_MOVE,
+        "smart": SC2ActionType.SMART,
         "patrol": SC2ActionType.PATROL,
         "return_resource": SC2ActionType.RETURN_RESOURCE,
         "move_camera": SC2ActionType.MOVE_CAMERA,
@@ -1225,6 +1227,12 @@ def create_command_tool_registry(
             "Attack-move a semantic squad through python-sc2.",
             action_schema,
             action_tool(SC2ActionType.ATTACK_MOVE),
+        ),
+        ToolSpec(
+            "sc2.direct.smart",
+            "Issue a context-aware smart order to a semantic squad through python-sc2.",
+            action_schema,
+            action_tool(SC2ActionType.SMART),
         ),
         ToolSpec(
             "sc2.direct.patrol",
