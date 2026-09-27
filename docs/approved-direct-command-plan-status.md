@@ -190,7 +190,7 @@ MicroMachine으로 몰래 대체하지 않고 `runtime_not_attached`로 실패�
 | 카메라 이동 | 부분 완료 | adapter/map resolver/MCP tool은 연결됐다. 실제 SC2 camera API 성공은 live runtime 미검증이다. |
 | JEV System 1 라우팅 | 미완료/외부 계약 대기 | #189에 정의 질문과 acceptance criteria만 등록했다. |
 | 문서화 | 완료(현재 상태 보고) | 이 문서가 승인 원문 기준, 구조, capability, 위치·분대·수리, 병렬·선행조건, lifecycle, JEV, PR·Live QA를 항목별로 기록한다. |
-| PR 반영 | 부분 완료 | PR #187이 열려 있으나 `BLOCKED`이며, 이번 변경은 아직 커밋·푸시되지 않았다. |
+| PR 반영 | 부분 완료 | PR #187이 열려 있고 `BLOCKED`다. 구현 커밋 `33f451c`와 최신 상태 보고 커밋을 원격 branch에 push했고, 원격 PR head가 최신 커밋을 가리키는 것을 확인했다. |
 | 실제 Live QA | 미완료 | 이전 PR 설명에도 실제 StarCraft II Live QA를 실행하지 않았다고 명시되어 있다. |
 
 ## 4. 현재 검증 결과
@@ -199,7 +199,7 @@ MicroMachine으로 몰래 대체하지 않고 `runtime_not_attached`로 실패�
 
 ```text
 ./.venv/bin/pytest -q tests/test_direct_command_architecture.py
-5 passed
+7 passed
 
 python3 -m py_compile starcraft_commander/*.py
 통과
@@ -246,8 +246,8 @@ Live QA는 수행하지 못했다.
    생산 재개, lifecycle 자동 watcher와 MicroMachine game-loop ownership
    재개.
 3. **외부 의존으로 미해결**: JEV System 1 계약(#189), 실제 SC2 Live QA,
-   PR #187에 대한 commit/push 및 GitHub 차단 해소.
+   GitHub에서 PR #187의 차단 상태 해소.
 
 따라서 이번 문서는 승인 계획을 토씨 하나 빠뜨리지 않고 현재 증거와
 대조한 상태 보고서이며, “승인한 계획이 전부 해결됐다”는 보고서는 아니다.
-PR 반영과 Live QA는 현재 완료되지 않았다.
+PR 반영은 완료했지만 PR은 여전히 `BLOCKED`이고, Live QA는 현재 완료되지 않았다.
