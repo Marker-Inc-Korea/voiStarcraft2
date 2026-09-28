@@ -10,10 +10,10 @@ made safe and testable.
 | --- | --- | --- | --- |
 | `sc2.direct.assign_workers` | `assign_workers` | worker/resource resolver | contract tests; Live QA pending |
 | `sc2.direct.gather_resource` | `gather_resource` | explicit worker gather resolver | contract tests; Live QA pending |
-| `sc2.direct.build_structure` | `build_structure` | placement/map resolver | contract tests; Live QA pending |
-| `sc2.direct.train_unit` | `train_unit` | producer/type resolver | contract tests; Live QA pending |
-| `sc2.direct.research_upgrade` | `research_upgrade` | upgrade/researcher resolver | contract tests; Live QA pending |
-| `sc2.direct.warp_in` | `warp_in` | warp structure/type/placement resolver | contract tests; Live QA pending |
+| `sc2.direct.build_structure` | `build_structure` | placement/map resolver + pinned builder tag | adapter and MCP lease contract tests; Live QA pending |
+| `sc2.direct.train_unit` | `train_unit` | producer/type resolver + pinned producer tag | adapter and MCP lease contract tests; Live QA pending |
+| `sc2.direct.research_upgrade` | `research_upgrade` | upgrade/researcher resolver + pinned structure tag | adapter contract tests; Live QA pending |
+| `sc2.direct.warp_in` | `warp_in` | warp structure/type/placement resolver + pinned structure tag | adapter contract tests; Live QA pending |
 | `sc2.direct.move_group` | `move_group` | semantic squad selection | contract tests; Live QA pending |
 | `sc2.direct.attack_move` | `attack_move` | semantic squad selection | contract tests; Live QA pending |
 | `sc2.direct.smart` | `smart` | semantic squad selection and target resolver | contract tests; Live QA pending |
@@ -32,6 +32,21 @@ semantic adapter methods, but not a claim that every raw `python-sc2`/s2client
 API has been exposed. Unsupported raw APIs remain out of the LLM surface until
 they have a semantic schema, safety/ownership rules, adapter implementation,
 and focused tests.
+
+## Concrete producer/build ownership evidence
+
+The Direct MCP admission path calls the adapter's `bind_direct_action()` before
+creating a lease. Builder workers and production/research/warp structures with
+live positive tags are therefore recorded in `owned_unit_tags`; the adapter
+dispatches the order back to those exact tags rather than falling back to
+`BotAI.build()` or a reordered producer collection. A dependent `build ->
+building_completed -> train` workflow rebinds its child plan on the later
+observation frame and records the current producer tag in the child lease.
+
+The contract is covered by
+`RegistryConcreteOwnershipIntegrationTest` and the adapter reorder tests. It
+is still fake-runtime evidence: actual SC2 observation churn, construction
+completion, and producer behavior require Live QA.
 
 ## Raw API gap ledger (repository virtualenv)
 
