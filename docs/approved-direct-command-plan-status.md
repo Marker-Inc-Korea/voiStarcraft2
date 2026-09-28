@@ -15,12 +15,13 @@ tag ownership을 adapter dispatch와 dependent workflow child lease까지 확장
 clarification prompt 전파, semantic Direct capability 확장, live unit-tag pin이
 포함돼 있다. 2026-09-28 KST 확인 시 PR #187은 `OPEN / BLOCKED`다.
 
-실행 코드 `2c6a841` 기준 최신 Hosted `ci` 결과는 run `36402267857`다.
-동일 PR HEAD의 최신 pre-live 결과는 `pre-live-provenance` run `36402266813`,
-`final-pre-live` run `36402266834`이다. `36402266813`은
+실행 코드 `2c6a841` 기준 최신 Hosted `ci` 결과는 run `36403412568`다.
+문서 갱신 commit `4c00c98`에서 확인한 최신 pre-live 결과는
+`pre-live-provenance` run `36403410273`, `final-pre-live` run `36403410317`이다.
+`36403410273`은
 `pre-live-build`가 실행 중/후속 상태가 결정되지 않은 시점에
 `pre-live-producer-isolation`이 실패했으며, 실패 로그의 trusted MicroMachine
-CTest는 `passed=0, total=10, failures=10`이었다. `36402266834`의
+CTest는 `passed=0, total=10, failures=10`이었다. `36403410317`의
 `final-pre-live`는 `event-admission`과 `ready-to-merge`만 실제 실행되어
 success였고 build identity, provenance, deterministic journeys, browser
 accessibility, distribution 등 후속 job은 skipped였다. 따라서 전체 CI
@@ -457,7 +458,7 @@ bind하고 lease에 기록한다. “SCV로 팩토리 짓고 탱크 생산해”
 | JEV System 1 라우팅 | 미완료/외부 계약 대기 | #189에 정의 질문과 acceptance criteria만 등록했다. |
 | 기본 MCP의 legacy tactical route 제거 | **완료(코드 경계)** | `include_legacy_tools` opt-in과 `micromachine.operation/ability/emergency` registry entries를 제거했다. 기본 registry와 MCP discovery에는 `micromachine.policy`만 남는다. 저장소 전체의 legacy 문서·테스트 제거까지 완료한 것은 아니다. |
 | 문서화 | 완료(현재 상태 보고) | 이 문서가 승인 원문 기준, 구조, capability, 위치·분대·수리, 병렬·선행조건, lifecycle, legacy 격리, JEV, PR·Live QA를 항목별로 기록한다. |
-| PR 반영 | 부분 완료 | 검증 대상 실행 코드 commit은 `2c6a841`다(이후 문서 갱신 commit은 별도). PR #187은 병합하지 않았다. 최신 코드 `ci` run `36402267857`은 Python 3.10/3.11에서 `173 failed, 2967 passed, 68 skipped, 7164 subtests passed`, Python 3.12에서 `174 failed, 2966 passed, 68 skipped, 1 warning, 7164 subtests passed`로 실패했다. `pre-live-provenance` run `36402266813`의 `pre-live-producer-isolation`은 trusted MicroMachine CTest `0/10`으로 실패했다. `final-pre-live` run `36402266834`의 success는 `event-admission`·`ready-to-merge`만 실행되고 후속 job이 skipped된 결과로, 전체 검증 완료를 뜻하지 않는다. |
+| PR 반영 | 부분 완료 | 검증 대상 실행 코드 commit은 `2c6a841`다(이후 문서 갱신 commit은 별도). PR #187은 병합하지 않았다. 최신 확인 `ci` run `36403412568`은 Python 3.10/3.11/3.12 모두 `173 failed, 2967 passed, 68 skipped, 7164 subtests passed`로 실패했고, Python 3.12에는 warning 1개가 있었다. `pre-live-provenance` run `36403410273`의 `pre-live-producer-isolation`은 trusted MicroMachine CTest `0/10`으로 실패했다. `final-pre-live` run `36403410317`의 success는 `event-admission`·`ready-to-merge`만 실행되고 후속 job이 skipped된 결과로, 전체 검증 완료를 뜻하지 않는다. |
 | 실제 Live QA | 미완료 | 이전 PR 설명에도 실제 StarCraft II Live QA를 실행하지 않았다고 명시되어 있다. |
 
 ## 4. 현재 검증 결과
@@ -555,10 +556,10 @@ non-macro를 성공/publish로 기대하는 기존 계약과 `runtime_not_attach
 - `tests/test_unified_command_router.py`가 이중 publish를 기대한다는 이전 설명도
   오래된 정보다. 현재 해당 파일은 Direct-only를 기대하고 위 focused 실행에 통과한다.
 
-PR #187 실행 코드 `2c6a841`의 hosted 전체 suite는 최신 run `36402267857`이 완료됐고,
-Python 3.10/3.11/3.12 모두 실패했다. Python 3.10/3.11은
-`173 failed, 2967 passed, 68 skipped, 7164 subtests passed`, Python 3.12는
-`174 failed, 2966 passed, 68 skipped, 1 warning, 7164 subtests passed`였다. 실패는 주로 runtime이 연결되지 않은
+PR #187 실행 코드 `2c6a841`의 hosted 전체 suite는 문서 갱신 commit `4c00c98`에서
+확인한 최신 run `36403412568`이 완료됐고, Python 3.10/3.11/3.12 모두 실패했다.
+세 버전 모두 `173 failed, 2967 passed, 68 skipped, 7164 subtests passed`였고
+Python 3.12에는 warning 1개가 있었다. 실패는 주로 runtime이 연결되지 않은
 live-session/web GUI 테스트가 기존처럼 MicroMachine publish 성공을 기대해
 `runtime_not_attached`/`direct_failed`가 된 것이다. 새 concrete ownership 테스트는 설치된
 python-sc2의 `Point2` 표현과 미설치 환경의 tuple 표현을 타입이 아닌 좌표값으로
@@ -566,17 +567,17 @@ python-sc2의 `Point2` 표현과 미설치 환경의 tuple 표현을 타입이 �
 통과했지만 전체 legacy/live-session suite의 기존 기대 충돌은 남아 있다.
 
 ```text
-head: 2c6a841
-ci run: 36402267857
+head: 2c6a841 (검증 대상 실행 코드; PR 문서 HEAD는 4c00c98)
+ci run: 36403412568
 unit-contracts (3.10): failure — 173 failed, 2967 passed, 68 skipped, 7164 subtests passed
 unit-contracts (3.11): failure — 173 failed, 2967 passed, 68 skipped, 7164 subtests passed
-unit-contracts (3.12): failure — 174 failed, 2966 passed, 68 skipped, 1 warning, 7164 subtests passed
+unit-contracts (3.12): failure — 173 failed, 2967 passed, 68 skipped, 1 warning, 7164 subtests passed
 ```
 
-최신 코드 기준 `pre-live-provenance` run `36402266813`은
+최신 확인 기준 `pre-live-provenance` run `36403410273`은
 `pre-live-producer-isolation: failure`였고, 실패 로그는 trusted MicroMachine
 CTest `passed=0, total=10, failures=10` 및 `ctest did not report an exact 10/10
-pass`를 기록했다. `final-pre-live` run `36402266834`은 `event-admission`과
+pass`를 기록했다. `final-pre-live` run `36403410317`은 `event-admission`과
 `ready-to-merge`가 success였지만 deterministic journeys, browser accessibility,
 build identity, provenance, distribution 등의 후속 job은 skipped였다.
 
