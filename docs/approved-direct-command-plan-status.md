@@ -7,19 +7,21 @@
 
 기준 브랜치는 `codex/llm-command-speedup`, 기준 PR은
 [#187](https://github.com/Marker-Inc-Korea/voiStarcraft2/pull/187)이다. 현재
-실행 코드 기준 커밋은 `090a51c`다. 이 커밋은 live SC2 unit tag가 고정된 Direct
+현재 PR HEAD/문서 커밋은 `5db950d`이고, 실행 코드 기준 커밋은 `090a51c`다.
+`5db950d`는 상태 문서만 갱신한 `[skip ci]` 커밋이다. `090a51c`는 live SC2 unit tag가 고정된 Direct
 lease의 실제 tag 집합을 ownership authority로 사용하도록 보강했다. 앞선 코드
 구현 커밋 `43a834b`·`838dd59`에는 수리 대상 모호성 거부, live-session
 clarification prompt 전파, semantic Direct capability 확장, live unit-tag pin이
 포함돼 있다. 2026-09-28 KST 확인 시 PR #187은 `OPEN / BLOCKED`다.
 
-`090a51c` 기준 최신 Hosted 결과는 `ci` run `36360261599`,
-`pre-live-provenance` run `36360260468`, `final-pre-live` run `36360260462`다.
+실행 코드 `090a51c` 기준 최신 Hosted `ci` 결과는 run `36360261599`다.
+문서 커밋 `5db950d`의 PR HEAD 기준 최신 pre-live 결과는
+`pre-live-provenance` run `36368234767`, `final-pre-live` run `36368234734`다.
 `ci`의 Python 3.10/3.11/3.12 unit-contracts는 각각
 `173 failed, 2958 passed, 68 skipped, 7160 subtests passed`로 모두 실패했다.
-`pre-live-provenance`는 `pre-live-build: success`였지만
+`36368234767`의 `pre-live-build: success`였지만
 `pre-live-producer-isolation: failure`였고 dependent `pre-live-provenance` job은
-skipped였다. `final-pre-live`는 `event-admission`과 `ready-to-merge`만 실제
+skipped였다. `36368234734`의 `final-pre-live`는 `event-admission`과 `ready-to-merge`만 실제
 실행되어 success였으며 build identity, provenance, deterministic journeys,
 browser accessibility, distribution 등 후속 job은 skipped였다. 따라서 전체 CI
 green·merge 가능·실게임 검증을 주장하지 않는다. 실제 StarCraft II Live QA는
@@ -449,7 +451,7 @@ owner가 해당 유닛의 자율제어를 다시 수행하는 연결·Live QA는
 | JEV System 1 라우팅 | 미완료/외부 계약 대기 | #189에 정의 질문과 acceptance criteria만 등록했다. |
 | 기본 MCP의 legacy tactical route 제거 | **완료(코드 경계)** | `include_legacy_tools` opt-in과 `micromachine.operation/ability/emergency` registry entries를 제거했다. 기본 registry와 MCP discovery에는 `micromachine.policy`만 남는다. 저장소 전체의 legacy 문서·테스트 제거까지 완료한 것은 아니다. |
 | 문서화 | 완료(현재 상태 보고) | 이 문서가 승인 원문 기준, 구조, capability, 위치·분대·수리, 병렬·선행조건, lifecycle, legacy 격리, JEV, PR·Live QA를 항목별로 기록한다. |
-| PR 반영 | 부분 완료 | 실행 코드와 문서 기준은 `090a51c`다. PR #187은 병합하지 않았다. 최신 `ci` run `36360261599`의 Python 3.10/3.11/3.12와 `pre-live-provenance` run `36360260468`의 `pre-live-producer-isolation`이 실패했다. `final-pre-live` run `36360260462` 성공은 `event-admission`·`ready-to-merge`만 실행되고 후속 job이 skipped된 결과로, 전체 검증 완료를 뜻하지 않는다. |
+| PR 반영 | 부분 완료 | 실행 코드는 `090a51c`, 현재 PR HEAD/상태 문서는 `5db950d`다. PR #187은 병합하지 않았다. 최신 코드 `ci` run `36360261599`의 Python 3.10/3.11/3.12와 PR HEAD `pre-live-provenance` run `36368234767`의 `pre-live-producer-isolation`이 실패했다. `final-pre-live` run `36368234734` 성공은 `event-admission`·`ready-to-merge`만 실행되고 후속 job이 skipped된 결과로, 전체 검증 완료를 뜻하지 않는다. |
 | 실제 Live QA | 미완료 | 이전 PR 설명에도 실제 StarCraft II Live QA를 실행하지 않았다고 명시되어 있다. |
 
 ## 4. 현재 검증 결과
@@ -539,7 +541,7 @@ non-macro를 성공/publish로 기대하는 기존 계약과 `runtime_not_attach
 - `tests/test_unified_command_router.py`가 이중 publish를 기대한다는 이전 설명도
   오래된 정보다. 현재 해당 파일은 Direct-only를 기대하고 위 focused 실행에 통과한다.
 
-PR #187 코드 변경 최신 HEAD `090a51c`의 hosted 전체 suite 출력은 직접 확인했다.
+PR #187 실행 코드 `090a51c`의 hosted 전체 suite 출력은 직접 확인했다.
 
 ```text
 head: 090a51c
@@ -549,11 +551,25 @@ unit-contracts (3.11): failure — 173 failed, 2958 passed, 68 skipped, 7160 sub
 unit-contracts (3.12): failure — 173 failed, 2958 passed, 68 skipped, 7160 subtests passed
 ```
 
-최신 `pre-live-provenance` run `36360260468`은 `pre-live-build: success`,
+최신 코드 기준 `pre-live-provenance` run `36360260468`은 `pre-live-build: success`,
 `pre-live-producer-isolation: failure`, dependent provenance job `skipped`였다.
-최신 `final-pre-live` run `36360260462`은 `event-admission`과
+최신 코드 기준 `final-pre-live` run `36360260462`은 `event-admission`과
 `ready-to-merge`가 success였지만 deterministic journeys, browser accessibility,
 build identity, provenance, distribution 등의 후속 job은 skipped였다.
+
+현재 PR HEAD `5db950d`에 대한 후속 pre-live 결과도 확인했다.
+
+```text
+pre-live-provenance run: 36368234767
+pre-live-build: success
+pre-live-producer-isolation: failure
+pre-live-provenance dependent job: skipped
+
+final-pre-live run: 36368234734
+event-admission: success
+ready-to-merge: success
+후속 build/provenance/deterministic/browser/distribution jobs: skipped
+```
 
 이전 기준 snapshot의 hosted 전체 suite 출력도 변경 이력으로 보존한다.
 
@@ -613,7 +629,7 @@ Live QA는 수행하지 못했다.
 원문 부록은 승인 관련 메시지 8개의 전문을 정확히 보존한다. 본 문서는
 두 계획의 15개 번호 및 추가 승인 요구를 이행 증거와 대조한 보고서이며,
 “승인한 계획이 전부 해결됐다”는 보고서는 아니다.
-현재 구현 보강은 `43a834b`, `838dd59`, `090a51c`, 최신 실행 코드는 `090a51c`이며 이 상태 보고는 최신
+현재 구현 보강은 `43a834b`, `838dd59`, `090a51c`, 최신 실행 코드는 `090a51c`이며 문서 HEAD는 `5db950d`다. 이 상태 보고는 최신
 Hosted 결과를 반영한다. `unit-contracts` 3개와 `pre-live-producer-isolation`이 실패했으므로
 PR은 여전히 `BLOCKED`이며 green/merge가 아니다. PR merge는 하지 않았고, Live QA도
 완료되지 않았다. goal도 active로 유지했다.
