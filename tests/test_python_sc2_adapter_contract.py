@@ -1365,6 +1365,86 @@ class BuildStructureTest(unittest.TestCase):
         self.assertEqual([], expand_now_calls)
         self.assertEqual([], bot.build_calls)
 
+    def test_bound_expansion_never_delegates_worker_selection_to_expand_now(self) -> None:
+        class Builder(FakeUnit):
+            def build(self, type_id, point):
+                return self._record("build", (type_id, point))
+
+        builder = Builder("SCV", 10, 10)
+        builder.tag = 511
+        replacement = Builder("SCV", 12, 12)
+        replacement.tag = 512
+        bot = FakeBotAI(workers=[builder, replacement])
+        expanded = []
+
+        async def expand_now():
+            expanded.append(True)
+
+        bot.expand_now = expand_now
+        adapter = make_adapter(bot)
+        bound = adapter.bind_direct_action(action(
+            SC2ActionType.BUILD_STRUCTURE, "COMMANDCENTER",
+            target="self_natural", metadata={"source_structure": "Command Center"},
+        ))
+        bot.workers = FakeUnitGroup([replacement, builder])
+
+        result = run(adapter.build_structure(bound))
+
+        self.assertTrue(result)
+        self.assertEqual([], expanded)
+        self.assertEqual([], bot.build_calls)
+        self.assertEqual(1, len(bot.issued))
+        self.assertIs(builder, bot.issued[0][1])
+        self.assertEqual((30.0, 30.0), point_xy(bot.issued[0][2][1]))
+
+    def test_bound_builder_missing_or_incapable_never_selects_another_worker(self) -> None:
+        for missing in (False, True):
+            with self.subTest(missing=missing):
+                builder = FakeUnit("SCV", 10, 10)
+                builder.tag = 521
+                bot = FakeBotAI(workers=[builder])
+                adapter = make_adapter(bot)
+                bound = adapter.bind_direct_action(action(
+                    SC2ActionType.BUILD_STRUCTURE, "SUPPLYDEPOT", target="self_ramp",
+                ))
+                replacement = FakeUnit("SCV", 10, 10)
+                replacement.tag = 522
+                replacement.build = lambda type_id, point: replacement._record(
+                    "build", (type_id, point)
+                )
+                bot.workers = FakeUnitGroup([replacement] if missing else [replacement, builder])
+                bot.units = bot.workers
+
+                result = run(adapter.build_structure(bound))
+
+                self.assertFalse(result)
+                self.assertEqual([], bot.issued)
+                self.assertEqual([], bot.build_calls)
+
+    def test_bound_gas_build_uses_only_pinned_worker_and_refuses_missing_capability(self) -> None:
+        for capable in (False, True):
+            with self.subTest(capable=capable):
+                builder = FakeUnit("SCV", 10, 10)
+                builder.tag = 531
+                replacement = FakeUnit("SCV", 10, 10)
+                replacement.tag = 532
+                if capable:
+                    builder.build_gas = lambda geyser: builder._record("build_gas", geyser)
+                replacement.build_gas = lambda geyser: replacement._record("build_gas", geyser)
+                geyser = FakeUnit("VespeneGeyser", 12, 10)
+                bot = FakeBotAI(workers=[builder, replacement], geysers=[geyser])
+                adapter = make_adapter(bot)
+                bound = adapter.bind_direct_action(action(
+                    SC2ActionType.BUILD_STRUCTURE, "REFINERY", target="main geyser",
+                ))
+                bot.workers = FakeUnitGroup([replacement, builder])
+
+                result = run(adapter.build_structure(bound))
+
+                self.assertEqual(capable, bool(result))
+                self.assertEqual([], bot.build_calls)
+                self.assertEqual([("build_gas", builder, geyser)] if capable else [], bot.issued)
+
     def test_command_center_refuses_occupied_expansion(self) -> None:
         bot = FakeBotAI(structures=[FakeUnit("Command Center", 30.0, 30.0)])
         adapter = make_adapter(bot)
@@ -2003,10 +2083,10 @@ class RegistryConcreteOwnershipIntegrationTest(unittest.TestCase):
         parent = executor.direct_lifecycle.get("concrete-workflow")
         self.assertIsNotNone(parent)
         self.assertEqual((831,), parent.owned_unit_tags)
-        self.assertEqual(
-            ("build", builder, ("TYPE:BARRACKS", (10.0, 10.0))),
-            bot.issued[0],
-        )
+        self.assertEqual("build", bot.issued[0][0])
+        self.assertIs(builder, bot.issued[0][1])
+        self.assertEqual("TYPE:BARRACKS", bot.issued[0][2][0])
+        self.assertEqual((10.0, 10.0), point_xy(bot.issued[0][2][1]))
 
         # A new observation places another Barracks first. The dependent
         # production lease must bind that current producer, not stale tag 832
@@ -2024,12 +2104,13 @@ class RegistryConcreteOwnershipIntegrationTest(unittest.TestCase):
         child = executor.direct_lifecycle.get("concrete-workflow:step:0")
         self.assertIsNotNone(child)
         self.assertEqual((833,), child.owned_unit_tags)
+        self.assertEqual("build", bot.issued[0][0])
+        self.assertIs(builder, bot.issued[0][1])
+        self.assertEqual("TYPE:BARRACKS", bot.issued[0][2][0])
+        self.assertEqual((10.0, 10.0), point_xy(bot.issued[0][2][1]))
         self.assertEqual(
-            [
-                ("build", builder, ("TYPE:BARRACKS", (10.0, 10.0))),
-                ("train", replacement_producer, "TYPE:MARINE"),
-            ],
-            bot.issued,
+            ("train", replacement_producer, "TYPE:MARINE"),
+            bot.issued[1],
         )
 
 

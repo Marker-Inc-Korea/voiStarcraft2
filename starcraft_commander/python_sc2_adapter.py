@@ -322,7 +322,8 @@ class PythonSC2BotAdapter:
         ``action.subject`` is a python-sc2 ``UnitTypeId`` name string such as
         ``SUPPLYDEPOT``. Explicitly unaffordable builds are refused. EXPAND
         plans (planner metadata ``source_structure == 'Command Center'``)
-        prefer ``await bot.expand_now()`` when the bot provides it. Gas
+        prefer ``await bot.expand_now()`` only for unbound compatibility
+        actions. Direct leases always use their pinned builder. Gas
         structures (Refinery) require a geyser *unit* in real python-sc2, so
         they are built through ``worker.build_gas`` (or ``bot.build`` with the
         geyser unit) on the nearest free geyser, refusing honestly when no
@@ -400,7 +401,7 @@ class PythonSC2BotAdapter:
                     ),
                 )
             expand_now = getattr(self.bot, "expand_now", None)
-            if callable(expand_now):
+            if callable(expand_now) and "_direct_unit_tags" not in action.metadata:
                 return await _call_bot_operation(expand_now)
         build = getattr(self.bot, "build", None)
         has_pinned_builder = "_direct_unit_tags" in action.metadata
@@ -1405,7 +1406,8 @@ class PythonSC2BotAdapter:
         Called before lease admission, so the complete plan's tag union is
         reserved before any asynchronous order issuance. Internal binding
         metadata is always rebuilt; callers cannot choose raw tags through MCP.
-        Producer/build actions still use their existing semantic reservation.
+        Builder workers and producer/research/warp structures use the same
+        concrete reservation as squad actions when runtime tags are present.
         """
 
         metadata = {
@@ -1426,7 +1428,7 @@ class PythonSC2BotAdapter:
             return clean
         if kind in worker_actions:
             pool = self._worker_pool()
-            requested = action.count
+            requested = 1 if kind == "build_structure" else action.count
         elif kind in producer_actions:
             pool = self._producer_candidates(clean, kind)
             # A train/warp count is the number of orders, while a research
