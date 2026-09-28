@@ -851,8 +851,30 @@ class SC2RuntimeExecutor:
             execution_plan_from_mapping,
         )
 
-        plan = execution_plan_from_mapping(payload["plan"])
         child_id = f"{parent_id}:step:{step_index}"
+        try:
+            plan = execution_plan_from_mapping(payload["plan"])
+            # Dependent steps are dispatched on a later game-loop frame. Rebind
+            # the semantic action against the current observation before
+            # admitting its child lease, just as the MCP entry point does for
+            # the parent. python-sc2 recreates Unit objects between
+            # observations, so the child must reserve the current concrete
+            # producer tags rather than inherit stale instances or a
+            # type-only subject.
+            plan = self._bind_direct_plan(plan)
+        except Exception as error:  # noqa: BLE001 - workflow failures are data.
+            self._lifecycle_errors.append(
+                SC2ExecutionError(
+                    message=f"dependent workflow binding failed: {error}",
+                    exception_type=type(error).__name__,
+                    metadata={"command_id": child_id},
+                )
+            )
+            deferred = self._deferred_workflow_releases.pop(parent_id, None)
+            self._workflow_remaining.pop(parent_id, None)
+            if deferred is not None:
+                self._emit_direct_release(deferred)
+            return ()
         conditions_raw = plan.audit.get("completion_conditions", ("order_issued",))
         conditions = (
             tuple(str(item) for item in conditions_raw)
@@ -865,7 +887,17 @@ class SC2RuntimeExecutor:
             issued_at_frame=max(0, int(current_frame)),
             ttl_seconds=max(1, int(plan.audit.get("ttl_seconds", 120))),
             completion_conditions=conditions,
-            owned_subjects=tuple(action.subject for action in plan.actions),
+            owned_subjects=tuple(
+                action.subject
+                for action in plan.actions
+                if not action.metadata.get("_direct_unit_tags")
+            ),
+            owned_unit_tags=tuple(
+                tag
+                for action in plan.actions
+                for tag in action.metadata.get("_direct_unit_tags", ())
+                if type(tag) is int and tag > 0
+            ),
             command_metadata={
                 "intent_name": plan.intent_name,
                 "actions": [action.to_dict() for action in plan.actions],
@@ -901,6 +933,25 @@ class SC2RuntimeExecutor:
             self.direct_lifecycle.fail(child_id, reason="dependent_plan_refused")
         results.append(result)
         return tuple(results)
+
+    def _bind_direct_plan(self, plan: SC2ExecutionPlan) -> SC2ExecutionPlan:
+        """Bind every action in a plan to the current runtime observation."""
+
+        binder = getattr(self.bot, "bind_direct_action", None)
+        if not callable(binder):
+            return plan
+        bound_actions = tuple(binder(action) for action in plan.actions)
+        if bound_actions == plan.actions:
+            return plan
+        return SC2ExecutionPlan(
+            intent_name=plan.intent_name,
+            priority=plan.priority,
+            ordered_actions=bound_actions,
+            constraints=plan.constraints,
+            requires_live_sc2=plan.requires_live_sc2,
+            notes=plan.notes,
+            audit=plan.audit,
+        )
 
     def tick_direct_commands(
         self,

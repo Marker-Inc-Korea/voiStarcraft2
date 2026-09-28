@@ -403,7 +403,8 @@ class PythonSC2BotAdapter:
             if callable(expand_now):
                 return await _call_bot_operation(expand_now)
         build = getattr(self.bot, "build", None)
-        if not callable(build):
+        has_pinned_builder = "_direct_unit_tags" in action.metadata
+        if not callable(build) and not has_pinned_builder:
             detail = "missing_build_capability"
             return _refusal_report(
                 1,
@@ -450,11 +451,48 @@ class PythonSC2BotAdapter:
                     failure_reason=placement.detail,
                 ),
             )
-        built = await _call_bot_operation(
-            build,
-            type_id,
-            near=_game_point(placement.position),
-        )
+        destination = _game_point(placement.position)
+        pinned_builders = self._action_units(action, workers=True)
+        if "_direct_unit_tags" in action.metadata:
+            # A live lease must command the exact worker admitted into the
+            # ownership registry. Falling back to BotAI.build() here would let
+            # python-sc2 silently select a different SCV after observation
+            # reorder, defeating concrete tag ownership.
+            if not pinned_builders:
+                detail = "pinned_builder_missing"
+                return _refusal_report(
+                    1,
+                    detail,
+                    audit=_build_placement_audit(
+                        action,
+                        placement_policy=audit_policy,
+                        anchor_resolution=anchor_resolution,
+                        search_result=placement,
+                        failure_reason=detail,
+                    ),
+                )
+            builder = pinned_builders[0]
+            build_order = getattr(builder, "build", None)
+            if not callable(build_order):
+                detail = "missing_pinned_builder_capability"
+                return _refusal_report(
+                    1,
+                    detail,
+                    audit=_build_placement_audit(
+                        action,
+                        placement_policy=audit_policy,
+                        anchor_resolution=anchor_resolution,
+                        search_result=placement,
+                        failure_reason=detail,
+                    ),
+                )
+            built = await self._issue_unit_order(build_order, type_id, destination)
+        else:
+            built = await _call_bot_operation(
+                build,
+                type_id,
+                near=destination,
+            )
         audit = _build_placement_audit(
             action,
             placement_policy=audit_policy,
@@ -499,10 +537,15 @@ class PythonSC2BotAdapter:
                 1,
                 "invalid_refinery_target: no_free_geyser_near_anchor",
             )
-        for worker in self._worker_pool():
+        workers = self._action_units(action, workers=True)
+        if not workers and "_direct_unit_tags" not in action.metadata:
+            workers = self._worker_pool()
+        for worker in workers:
             build_gas = getattr(worker, "build_gas", None)
             if callable(build_gas):
                 return await self._issue_unit_order(build_gas, geyser)
+        if "_direct_unit_tags" in action.metadata:
+            return _refusal_report(1, "missing_pinned_builder_capability")
         build = getattr(self.bot, "build", None)
         if not callable(build):
             return False
@@ -544,11 +587,7 @@ class PythonSC2BotAdapter:
         if producer_name is None:
             return _refusal_report(action.count, "missing_producer_metadata")
         type_id = self._resolve_unit_type(action.subject)
-        producers = [
-            structure
-            for structure in self._ready_idle_structures()
-            if _entity_type_name(structure) == producer_name
-        ]
+        producers = self._producer_structures(action, producer_name)
         if not producers:
             return _refusal_report(action.count, "no_ready_idle_producer")
         issued = 0
@@ -579,15 +618,7 @@ class PythonSC2BotAdapter:
         if upgrade is None:
             return _refusal_report(action.count, "unresolvable_upgrade")
         researcher_name = _normalized_name(action.metadata.get("researcher"))
-        structures = [
-            structure
-            for structure in self._ready_idle_structures()
-            if callable(getattr(structure, "research", None))
-            and (
-                researcher_name is None
-                or _entity_type_name(structure) == researcher_name
-            )
-        ]
+        structures = self._research_structures(action, researcher_name)
         if not structures:
             return _refusal_report(action.count, "no_ready_idle_researcher")
         issued = 0
@@ -607,11 +638,7 @@ class PythonSC2BotAdapter:
         position = self._resolve_target_point(action.target)
         if position is None:
             return _refusal_report(action.count, "unresolvable_target")
-        structures = [
-            structure
-            for structure in self._ready_idle_structures()
-            if callable(getattr(structure, "warp_in", None))
-        ]
+        structures = self._warp_structures(action)
         if not structures:
             return _refusal_report(action.count, "no_ready_warp_structure")
         issued = 0
@@ -1386,23 +1413,36 @@ class PythonSC2BotAdapter:
             if key not in {"_direct_unit_tags", "_direct_requested_count"}
         }
         clean = replace(action, metadata=metadata)
-        worker_actions = {"assign_workers", "gather_resource", "repair"}
+        worker_actions = {
+            "assign_workers", "gather_resource", "repair", "build_structure",
+        }
+        producer_actions = {"train_unit", "research_upgrade", "warp_in"}
         group_actions = {
             "move_group", "attack_move", "smart", "patrol", "stop_group",
             "hold_position", "return_resource", "execute_ability",
         }
         kind = action.action_type.value
-        if kind not in worker_actions | group_actions:
+        if kind not in worker_actions | producer_actions | group_actions:
             return clean
-        pool = self._worker_pool() if kind in worker_actions else self._select_group(action.subject)
-        requested = (
-            action.count if kind in worker_actions or kind == "execute_ability"
-            else self._group_requested_count(
+        if kind in worker_actions:
+            pool = self._worker_pool()
+            requested = action.count
+        elif kind in producer_actions:
+            pool = self._producer_candidates(clean, kind)
+            # A train/warp count is the number of orders, while a research
+            # command is normally one order. Reserve only the producers that
+            # can participate in this command, but never a zero-sized lease.
+            requested = min(max(1, action.count), len(pool))
+        elif kind == "execute_ability":
+            pool = self._select_group(action.subject)
+            requested = action.count
+        else:
+            pool = self._select_group(action.subject)
+            requested = self._group_requested_count(
                 clean,
                 pool,
                 default_all=kind in {"move_group", "attack_move", "smart", "patrol"},
             )
-        )
         selected = pool[:max(0, requested)]
         tags = tuple(getattr(unit, "tag", None) for unit in selected)
         # Offline fakes may omit python-sc2's tag attribute entirely. In that
@@ -1425,6 +1465,110 @@ class PythonSC2BotAdapter:
         )
         by_tag = {getattr(unit, "tag", None): unit for unit in entities}
         return [by_tag[tag] for tag in tags if tag in by_tag]
+
+    def _structures_by_tags(self, tags: Sequence[int]) -> list[object]:
+        """Resolve pinned producer structures from the current observation."""
+
+        by_tag = {
+            getattr(structure, "tag", None): structure
+            for structure in _materialize(getattr(self.bot, "structures", None))
+        }
+        return [by_tag[tag] for tag in tags if tag in by_tag]
+
+    def _producer_candidates(
+        self,
+        action: SC2CommandAction,
+        kind: str,
+    ) -> list[object]:
+        """Return the exact producer pool eligible for one direct action."""
+
+        if kind == "train_unit":
+            producer_name = _normalized_name(action.metadata.get("producer"))
+            if producer_name is None:
+                return []
+            return [
+                structure
+                for structure in self._ready_idle_structures()
+                if _entity_type_name(structure) == producer_name
+            ]
+        if kind == "research_upgrade":
+            researcher_name = _normalized_name(action.metadata.get("researcher"))
+            return [
+                structure
+                for structure in self._ready_idle_structures()
+                if callable(getattr(structure, "research", None))
+                and (
+                    researcher_name is None
+                    or _entity_type_name(structure) == researcher_name
+                )
+            ]
+        if kind == "warp_in":
+            return [
+                structure
+                for structure in self._ready_idle_structures()
+                if callable(getattr(structure, "warp_in", None))
+            ]
+        return []
+
+    def _producer_structures(
+        self,
+        action: SC2CommandAction,
+        producer_name: str,
+    ) -> list[object]:
+        """Resolve train producers, honoring the live tag pin when present."""
+
+        candidates = (
+            self._structures_by_tags(action.metadata["_direct_unit_tags"])
+            if "_direct_unit_tags" in action.metadata
+            else self._ready_idle_structures()
+        )
+        return [
+            structure
+            for structure in candidates
+            if _entity_type_name(structure) == producer_name
+            and _truthy_flag(structure, "is_ready", default=True)
+            and _truthy_flag(structure, "is_idle", default=True)
+        ]
+
+    def _research_structures(
+        self,
+        action: SC2CommandAction,
+        researcher_name: str | None,
+    ) -> list[object]:
+        """Resolve research structures, honoring the live tag pin."""
+
+        candidates = (
+            self._structures_by_tags(action.metadata["_direct_unit_tags"])
+            if "_direct_unit_tags" in action.metadata
+            else self._ready_idle_structures()
+        )
+        return [
+            structure
+            for structure in candidates
+            if callable(getattr(structure, "research", None))
+            and _truthy_flag(structure, "is_ready", default=True)
+            and _truthy_flag(structure, "is_idle", default=True)
+            and (
+                researcher_name is None
+                or _entity_type_name(structure) == researcher_name
+            )
+        ]
+
+    def _warp_structures(self, action: SC2CommandAction) -> list[object]:
+        """Resolve warp structures, honoring the live tag pin."""
+
+        candidates = (
+            self._structures_by_tags(action.metadata["_direct_unit_tags"])
+            if "_direct_unit_tags" in action.metadata
+            else self._ready_idle_structures()
+        )
+        return [
+            structure
+            for structure in candidates
+            if callable(getattr(structure, "warp_in", None))
+            and _truthy_flag(structure, "is_ready", default=True)
+            and _truthy_flag(structure, "is_idle", default=True)
+        ]
 
     def _action_units(self, action: SC2CommandAction, *, workers: bool = False) -> list[object]:
         if "_direct_unit_tags" in action.metadata:
