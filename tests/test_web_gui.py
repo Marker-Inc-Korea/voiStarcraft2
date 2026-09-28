@@ -30,6 +30,10 @@ from urllib.parse import quote
 from starcraft_commander.micromachine_bridge import (
     MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
 )
+from starcraft_commander.direct_command_lifecycle import (
+    DirectCommandLifecycle,
+)
+from starcraft_commander.contracts import SC2PlanExecutionResult
 from starcraft_commander.micromachine_terran_capabilities import (
     TERRAN_UNIT_FAMILIES,
 )
@@ -1453,6 +1457,10 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "latest_request",
             "정책 적용",
             "명령 해석 중",
+            "명령 기록",
+            "실행 상태",
+            "queue-status",
+            "최신 명령 우선 처리",
             "commandIdentity",
             'status: "queued"',
             'consumption_status: "pending_compile"',
@@ -1496,6 +1504,9 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "latest_request",
             "명령 해석 중",
             "SC2 실행 대기",
+            "명령 기록",
+            "실행 상태",
+            "queue-status",
             "commandIdentity",
             'status: "queued"',
             'consumption_status: "pending_compile"',
@@ -1508,6 +1519,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertNotIn("cockpit-back", page)
         self.assertNotIn("전체 조종석", page)
         self.assertNotIn("window.open(", page)
+        self.assertNotIn("MyProxy가 명령을 해석하고 있습니다", page)
 
     def test_all_controller_routes_serve_the_same_compact_page(self):
         pages = []
@@ -11654,6 +11666,91 @@ class SessionLoopBridgeTest(unittest.TestCase):
         bridge = SessionLoopBridge(session=session)
         self.assertIsInstance(bridge, WebGuiBridgeInterface)
 
+    def test_bridge_ticks_shared_direct_lifecycle_for_game_loop(self):
+        session, _bot = build_dry_run_session()
+        lifecycle = DirectCommandLifecycle(game_loops_per_second=1)
+        bridge = SessionLoopBridge(
+            session=session,
+            direct_lifecycle=lifecycle,
+        )
+        lifecycle.dispatch(
+            command_id="bridge-direct",
+            issued_at_frame=10,
+            ttl_seconds=2,
+            completion_conditions=("target_reached",),
+            owned_subjects=("scout",),
+        )
+
+        observed = bridge.tick_direct_commands(
+            11,
+            {"bridge-direct": {"target_reached": True}},
+        )
+
+        self.assertEqual(1, len(observed))
+        self.assertEqual("completed", observed[0]["state"])
+        self.assertFalse(observed[0]["control_owned"])
+        self.assertEqual((), lifecycle.active_leases())
+        self.assertEqual((), bridge.observe_direct_commands(current_frame=99))
+
+    def test_modulation_requests_share_bridge_direct_ownership_registry(self):
+        class RecordingExecutor:
+            bot = object()
+
+            async def execute(self, plan):
+                return SC2PlanExecutionResult(
+                    plan=plan,
+                    attempted_actions=plan.actions,
+                    applied_actions=plan.actions,
+                    audit={"evidence": "bridge-test"},
+                )
+
+        class Session:
+            def __init__(self):
+                self.executor = RecordingExecutor()
+
+            async def process_text(self, _text):
+                return ()
+
+        bridge = SessionLoopBridge(
+            session=Session(),
+            direct_lifecycle=DirectCommandLifecycle(game_loops_per_second=1),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            provider_output = {
+                "goal": "scout",
+                "command_layer": "operation",
+                "operations": [
+                    {
+                        "operation_id": "bridge-scout",
+                        "tactical_task": {
+                            "task_type": "scout_with_units",
+                            "unit_classes": ["TERRAN_MARINE"],
+                            "location_intent": "enemy_natural",
+                        },
+                    }
+                ],
+            }
+            first = bridge._publish_micromachine_modulation(
+                "정찰 분대를 보내",
+                blackboard_dir=directory,
+                provider_output=provider_output,
+                current_frame=10,
+                update_id="bridge-scout-1",
+            )
+            second = bridge._publish_micromachine_modulation(
+                "정찰 분대를 다시 보내",
+                blackboard_dir=directory,
+                provider_output={**provider_output, "goal": "scout-again"},
+                current_frame=11,
+                update_id="bridge-scout-2",
+            )
+
+        self.assertTrue(first["ok"], first)
+        self.assertEqual("direct_executed", first["status"])
+        self.assertFalse(second["ok"], second)
+        self.assertEqual("direct_failed", second["status"])
+        self.assertEqual("direct_control_conflict", second["tool_results"][0]["result"]["status"])
+
     def test_web_event_journal_is_monotonic_bounded_and_redacted(self):
         journal = web_gui._WebEventJournal(retention=2)
         secret = "sk-" + "journal-secret-value-123456789"
@@ -14592,6 +14689,88 @@ class SessionLoopBridgeTest(unittest.TestCase):
             }
             self.assertEqual("superseded", stream["slow-normal"]["status"])
             self.assertEqual("published", stream["urgent-retreat"]["status"])
+
+    def test_micromachine_new_background_command_bypasses_blocked_normal(self):
+        first_started = threading.Event()
+        release_first = threading.Event()
+
+        class FirstRequestOnlyBlockingControl(FakePolicyModulationLLMControl):
+            def __init__(self):
+                self._lock = threading.Lock()
+                self._calls = 0
+
+            def propose_policy_modulation(self, request):
+                with self._lock:
+                    self._calls += 1
+                    call = self._calls
+                if call == 1:
+                    first_started.set()
+                    if not release_first.wait(2):
+                        raise TimeoutError("first request was not released")
+                return super().propose_policy_modulation(request)
+
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(
+            session=session,
+            llm_control=FirstRequestOnlyBlockingControl(),
+        )
+        bridge.start()
+        self.addCleanup(bridge.stop)
+        self.addCleanup(release_first.set)
+
+        with tempfile.TemporaryDirectory() as directory:
+            first = bridge.submit_micromachine_modulation_background(
+                "오래된 수비 명령",
+                blackboard_dir=directory,
+                current_frame=10,
+                update_id="slow-normal",
+            )
+            self.assertEqual("queued", first["status"])
+            self.assertTrue(first_started.wait(1))
+
+            latest = bridge.submit_micromachine_modulation_background(
+                "최신 압박 명령",
+                blackboard_dir=directory,
+                current_frame=11,
+                update_id="latest-normal",
+            )
+            self.assertEqual("queued", latest["status"])
+
+            deadline = time.monotonic() + 3
+            published = {}
+            while time.monotonic() < deadline:
+                path = os.path.join(directory, "latest_modulation.json")
+                if os.path.isfile(path):
+                    with open(path, encoding="utf-8") as handle:
+                        published = json.load(handle)
+                    if published.get("update_id") == "latest-normal":
+                        break
+                time.sleep(0.02)
+
+            self.assertEqual("latest-normal", published.get("update_id"))
+            release_first.set()
+
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                with bridge._micromachine_request_lock:
+                    if not bridge._micromachine_requests:
+                        break
+                time.sleep(0.02)
+
+            archive_path = os.path.join(directory, "modulation_updates.jsonl")
+            with open(archive_path, encoding="utf-8") as handle:
+                archive_ids = [
+                    json.loads(line)["update_id"]
+                    for line in handle
+                    if line.strip()
+                ]
+            self.assertEqual(["latest-normal"], archive_ids)
+
+            status = bridge.micromachine_status(blackboard_dir=directory)
+            self.assertEqual(
+                "latest-normal",
+                status["latest_request"]["update_id"],
+            )
 
     def test_async_publish_refreshes_frame_after_delayed_llm_compile(self):
         started = threading.Event()

@@ -15,6 +15,7 @@ from starcraft_commander.micromachine_bridge import (
     MicroMachineTelemetry,
 )
 from starcraft_commander.micromachine_live_session import (
+    _direct_clarification_prompt,
     KeywordPolicyModulationProvider,
     LiveModulationConsumptionStatus,
     LiveModulationStatus,
@@ -36,6 +37,87 @@ from starcraft_commander.policy_modulation import PolicyOverrideLevel
 from starcraft_commander.policy_modulation_provider import (
     PolicyModulationCompileStatus,
 )
+
+
+def test_direct_runtime_clarification_is_extracted_from_action_report() -> None:
+    prompt = _direct_clarification_prompt(
+        (
+            {
+                "name": "sc2.direct.execute",
+                "ok": False,
+                "result": {
+                    "status": "direct_action_refused",
+                    "result": {
+                        "audit": {
+                            "action_reports": {
+                                "0": {
+                                    "audit": {
+                                        "clarification_required": True,
+                                        "clarification_prompt": "어느 벙커를 수리할까요?",
+                                    }
+                                }
+                            }
+                        }
+                    },
+                },
+            },
+        )
+    )
+    assert prompt == "어느 벙커를 수리할까요?"
+
+
+def test_direct_runtime_clarification_becomes_live_session_status() -> None:
+    class ClarifyingSession(MicroMachineLiveTextSession):
+        def _unified_route_result(
+            self,
+            vector,
+            *,
+            update_id,
+            current_frame,
+            published_payload,
+        ):
+            return {
+                "unified_route": {"layer": "micro"},
+                "tool_results": [
+                    {
+                        "name": "sc2.direct.execute",
+                        "ok": False,
+                        "result": {
+                            "status": "direct_action_refused",
+                            "result": {
+                                "audit": {
+                                    "action_reports": {
+                                        "0": {
+                                            "audit": {
+                                                "clarification_required": True,
+                                                "clarification_prompt": "어느 벙커를 수리할까요?",
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                        },
+                    }
+                ],
+            }
+
+    result = ClarifyingSession(
+        MicroMachineInMemoryBlackboard(),
+        StaticJsonPolicyModulationProvider(
+            {
+                "goal": "정찰",
+                "command_layer": "operation",
+                "tactical_task": {
+                    "task_type": "scout_with_units",
+                    "location_intent": "enemy_main",
+                },
+            }
+        ),
+    ).submit_text("정찰해", current_frame=10, update_id="clarify-repair")
+
+    assert result.status is LiveModulationStatus.CLARIFICATION_REQUIRED
+    assert result.ok is False
+    assert result.compile_result.clarification_prompt == "어느 벙커를 수리할까요?"
 
 
 class AutoConsumingBlackboard(MicroMachineInMemoryBlackboard):

@@ -91,6 +91,15 @@ DETERMINISTIC_PRE_LIVE_JOURNEY_ADAPTER_PATCH_FILE="${REPO_ROOT}/integrations/mic
 PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0078-production-path-journey-review-closure.patch"
 UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0079-until-completed-submission-deadline.patch"
 EXACT_OPERATION_POLICY_LIFETIME_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0080-exact-operation-policy-lifetime.patch"
+BOUNDED_BUILDING_FALLBACK_LOOP_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0081-bounded-building-fallback-loop.patch"
+QA_GAME_END_TRIGGER_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0082-qa-game-end-trigger.patch"
+EXPLICIT_WORKER_PRODUCTION_SUBMIT_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0083-explicit-worker-production-submit.patch"
+RAW_SC2_QA_OBSERVATIONS_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0084-raw-sc2-qa-observations.patch"
+OPERATION_COMPLETION_CONDITIONS_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0085-operation-completion-conditions-are-conjunctive.patch"
+RETREAT_COMPLETION_EVIDENCE_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0086-retreat-completion-evidence.patch"
+EXPLICIT_REGROUP_OPERATION_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0087-explicit-regroup-operation.patch"
+IGNORE_STALE_SQUAD_UNITS_DURING_TRANSFER_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0088-ignore-stale-squad-units-during-transfer.patch"
+TRANSFER_PROJECTION_PRECOMMIT_STAGING_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0089-transfer-projection-precommit-staging.patch"
 S2CLIENT_PATCH_FILE="${REPO_ROOT}/integrations/micromachine/patches/0001-s2client-macos-launchservices.patch"
 BLACKBOARD_HEADER_FILE="${REPO_ROOT}/integrations/micromachine/voi_policy_blackboard.hpp"
 HOOK_MANIFEST_FILE="${REPO_ROOT}/integrations/micromachine/HOOK_MANIFEST.json"
@@ -426,14 +435,23 @@ fi
 mkdir -p "${ROOT_DIR}"
 require_disposable_checkout_mutation "${S2CLIENT_DIR}" "${ROOT_DIR}" "mutate"
 require_disposable_checkout_mutation "${MICROMACHINE_DIR}" "${ROOT_DIR}" "mutate"
+if [[ "${VOI_BUILD_FRESH_ONLY:-0}" == "1" ]] \
+  && { [[ -e "${S2CLIENT_DIR}" ]] || [[ -e "${MICROMACHINE_DIR}" ]]; }; then
+  echo "Fresh-only build requires two unused checkout paths." >&2
+  exit 2
+fi
 
 prepare_git_checkout "${S2CLIENT_DIR}" "${ROOT_DIR}" https://github.com/Blizzard/s2client-api s2client-api
 git -C "${S2CLIENT_DIR}" fetch --tags
-git -C "${S2CLIENT_DIR}" reset --hard
-safe_clean_git_checkout "${S2CLIENT_DIR}" "${ROOT_DIR}"
+if [[ "${VOI_BUILD_FRESH_ONLY:-0}" != "1" ]]; then
+  git -C "${S2CLIENT_DIR}" reset --hard
+  safe_clean_git_checkout "${S2CLIENT_DIR}" "${ROOT_DIR}"
+fi
 git -C "${S2CLIENT_DIR}" checkout "${S2CLIENT_COMMIT}"
-git -C "${S2CLIENT_DIR}" reset --hard "${S2CLIENT_COMMIT}"
-safe_clean_git_checkout "${S2CLIENT_DIR}" "${ROOT_DIR}"
+if [[ "${VOI_BUILD_FRESH_ONLY:-0}" != "1" ]]; then
+  git -C "${S2CLIENT_DIR}" reset --hard "${S2CLIENT_COMMIT}"
+  safe_clean_git_checkout "${S2CLIENT_DIR}" "${ROOT_DIR}"
+fi
 git -C "${S2CLIENT_DIR}" submodule update --init --recursive
 git -C "${S2CLIENT_DIR}" apply --check --ignore-space-change --whitespace=nowarn "${S2CLIENT_PATCH_FILE}"
 git -C "${S2CLIENT_DIR}" apply --ignore-space-change --whitespace=nowarn "${S2CLIENT_PATCH_FILE}"
@@ -444,11 +462,15 @@ git -C "${S2CLIENT_DIR}" apply --ignore-space-change --whitespace=nowarn "${S2CL
 
 prepare_git_checkout "${MICROMACHINE_DIR}" "${ROOT_DIR}" https://github.com/RaphaelRoyerRivard/MicroMachine MicroMachine
 git -C "${MICROMACHINE_DIR}" fetch --tags
-git -C "${MICROMACHINE_DIR}" reset --hard
-safe_clean_git_checkout "${MICROMACHINE_DIR}" "${ROOT_DIR}"
+if [[ "${VOI_BUILD_FRESH_ONLY:-0}" != "1" ]]; then
+  git -C "${MICROMACHINE_DIR}" reset --hard
+  safe_clean_git_checkout "${MICROMACHINE_DIR}" "${ROOT_DIR}"
+fi
 git -C "${MICROMACHINE_DIR}" checkout "${MICROMACHINE_COMMIT}"
-git -C "${MICROMACHINE_DIR}" reset --hard "${MICROMACHINE_COMMIT}"
-safe_clean_git_checkout "${MICROMACHINE_DIR}" "${ROOT_DIR}"
+if [[ "${VOI_BUILD_FRESH_ONLY:-0}" != "1" ]]; then
+  git -C "${MICROMACHINE_DIR}" reset --hard "${MICROMACHINE_COMMIT}"
+  safe_clean_git_checkout "${MICROMACHINE_DIR}" "${ROOT_DIR}"
+fi
 git -C "${MICROMACHINE_DIR}" submodule update --init --recursive
 # The upstream MicroMachine commit contains a legacy non-UTF-8 comment divider
 # in BuildingManager.cpp. Normalize it before applying our UTF-8 patch bundle so
@@ -614,7 +636,29 @@ git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whi
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${EXACT_OPERATION_POLICY_LIFETIME_PATCH_FILE}"
 git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${EXACT_OPERATION_POLICY_LIFETIME_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${BOUNDED_BUILDING_FALLBACK_LOOP_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${BOUNDED_BUILDING_FALLBACK_LOOP_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${QA_GAME_END_TRIGGER_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${QA_GAME_END_TRIGGER_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${EXPLICIT_WORKER_PRODUCTION_SUBMIT_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${EXPLICIT_WORKER_PRODUCTION_SUBMIT_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${RAW_SC2_QA_OBSERVATIONS_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${RAW_SC2_QA_OBSERVATIONS_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${OPERATION_COMPLETION_CONDITIONS_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${OPERATION_COMPLETION_CONDITIONS_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${RETREAT_COMPLETION_EVIDENCE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${RETREAT_COMPLETION_EVIDENCE_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${EXPLICIT_REGROUP_OPERATION_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${EXPLICIT_REGROUP_OPERATION_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${IGNORE_STALE_SQUAD_UNITS_DURING_TRANSFER_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${IGNORE_STALE_SQUAD_UNITS_DURING_TRANSFER_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --check --ignore-space-change --whitespace=nowarn "${TRANSFER_PROJECTION_PRECOMMIT_STAGING_PATCH_FILE}"
+git -C "${MICROMACHINE_DIR}" apply --recount --ignore-space-change --whitespace=nowarn "${TRANSFER_PROJECTION_PRECOMMIT_STAGING_PATCH_FILE}"
 cp "${BLACKBOARD_HEADER_FILE}" "${MICROMACHINE_DIR}/src/voi_policy_blackboard.hpp"
+cp "${REPO_ROOT}/integrations/micromachine/voi_qa_observation.hpp" \
+  "${MICROMACHINE_DIR}/src/voi_qa_observation.hpp"
+cp "${REPO_ROOT}/integrations/micromachine/voi_operation_completion.hpp" \
+  "${MICROMACHINE_DIR}/src/voi_operation_completion.hpp"
 
 require_secure_build_root \
   "${MICROMACHINE_BUILD_DIR}" \
@@ -658,6 +702,15 @@ run_build_identity \
   --micromachine-production-path-journey-review-closure-patch "${PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE}" \
   --micromachine-until-completed-submission-deadline-patch "${UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH_FILE}" \
   --micromachine-exact-operation-policy-lifetime-patch "${EXACT_OPERATION_POLICY_LIFETIME_PATCH_FILE}" \
+  --micromachine-qa-game-end-trigger-patch "${QA_GAME_END_TRIGGER_PATCH_FILE}" \
+  --micromachine-bounded-building-fallback-loop-patch "${BOUNDED_BUILDING_FALLBACK_LOOP_PATCH_FILE}" \
+  --micromachine-explicit-worker-production-submit-patch "${EXPLICIT_WORKER_PRODUCTION_SUBMIT_PATCH_FILE}" \
+  --micromachine-raw-sc2-qa-observations-patch "${RAW_SC2_QA_OBSERVATIONS_PATCH_FILE}" \
+  --micromachine-operation-completion-conditions-patch "${OPERATION_COMPLETION_CONDITIONS_PATCH_FILE}" \
+  --micromachine-retreat-completion-evidence-patch "${RETREAT_COMPLETION_EVIDENCE_PATCH_FILE}" \
+  --micromachine-explicit-regroup-operation-patch "${EXPLICIT_REGROUP_OPERATION_PATCH_FILE}" \
+  --micromachine-ignore-stale-squad-units-during-transfer-patch "${IGNORE_STALE_SQUAD_UNITS_DURING_TRANSFER_PATCH_FILE}" \
+  --micromachine-transfer-projection-precommit-staging-patch "${TRANSFER_PROJECTION_PRECOMMIT_STAGING_PATCH_FILE}" \
   --hook-manifest "${HOOK_MANIFEST_FILE}" \
   --write-embedded-identity-header \
   --initialize-source-attestation
@@ -764,6 +817,15 @@ run_build_identity \
   --micromachine-production-path-journey-review-closure-patch "${PRODUCTION_PATH_JOURNEY_REVIEW_CLOSURE_PATCH_FILE}" \
   --micromachine-until-completed-submission-deadline-patch "${UNTIL_COMPLETED_SUBMISSION_DEADLINE_PATCH_FILE}" \
   --micromachine-exact-operation-policy-lifetime-patch "${EXACT_OPERATION_POLICY_LIFETIME_PATCH_FILE}" \
+  --micromachine-qa-game-end-trigger-patch "${QA_GAME_END_TRIGGER_PATCH_FILE}" \
+  --micromachine-bounded-building-fallback-loop-patch "${BOUNDED_BUILDING_FALLBACK_LOOP_PATCH_FILE}" \
+  --micromachine-explicit-worker-production-submit-patch "${EXPLICIT_WORKER_PRODUCTION_SUBMIT_PATCH_FILE}" \
+  --micromachine-raw-sc2-qa-observations-patch "${RAW_SC2_QA_OBSERVATIONS_PATCH_FILE}" \
+  --micromachine-operation-completion-conditions-patch "${OPERATION_COMPLETION_CONDITIONS_PATCH_FILE}" \
+  --micromachine-retreat-completion-evidence-patch "${RETREAT_COMPLETION_EVIDENCE_PATCH_FILE}" \
+  --micromachine-explicit-regroup-operation-patch "${EXPLICIT_REGROUP_OPERATION_PATCH_FILE}" \
+  --micromachine-ignore-stale-squad-units-during-transfer-patch "${IGNORE_STALE_SQUAD_UNITS_DURING_TRANSFER_PATCH_FILE}" \
+  --micromachine-transfer-projection-precommit-staging-patch "${TRANSFER_PROJECTION_PRECOMMIT_STAGING_PATCH_FILE}" \
   --s2client-patch "${S2CLIENT_PATCH_FILE}" \
   --hook-manifest "${HOOK_MANIFEST_FILE}" \
   --finalize-build-attestation \

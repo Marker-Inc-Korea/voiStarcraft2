@@ -44,6 +44,9 @@ class CommandLayer(str, Enum):
 
     MACRO = "macro"
     OPERATION = "operation"
+    # "operation" is the stable wire value for the user's intermediate
+    # squad-tactics layer; keep the alias so the conceptual layer is explicit.
+    INTERMEDIATE = "operation"
     MICRO = "micro"
     EMERGENCY = "emergency"
 
@@ -88,6 +91,8 @@ MICROMACHINE_TACTICAL_TASK_TYPES: Final[frozenset[str]] = frozenset(
         "pressure_with_main_army",
         "defend_with_units",
         "harass_with_units",
+        "regroup_with_units",
+        "train_unit",
         "sustain_production",
         "tech_transition",
         "expand_or_land_command_center",
@@ -161,6 +166,7 @@ MICROMACHINE_COMPLETION_CONDITIONS: Final[frozenset[str]] = frozenset(
         "order_issued",
         "target_reached",
         "enemy_observed",
+        "enemy_destroyed",
         "retreat_confirmed",
         "ability_cast",
         "cancelled_by_user",
@@ -312,6 +318,8 @@ MICROMACHINE_CANONICAL_TASK_TOKEN_ALIASES: Final[dict[str, str]] = {
     "refinery": "TERRAN_REFINERY",
     "gas": "TERRAN_REFINERY",
     "가스": "TERRAN_REFINERY",
+    "정제소": "TERRAN_REFINERY",
+    "가스터빈": "TERRAN_REFINERY",
     "barracks": "TERRAN_BARRACKS",
     "rax": "TERRAN_BARRACKS",
     "병영": "TERRAN_BARRACKS",
@@ -2255,6 +2263,8 @@ def _infer_command_layer(vector: PolicyModulationVector) -> CommandLayer:
         "pressure_with_main_army",
         "defend_with_units",
         "harass_with_units",
+        "regroup_with_units",
+        "train_unit",
     }:
         return CommandLayer.OPERATION
     if vector.tactical_task.task_type in {
@@ -2266,6 +2276,10 @@ def _infer_command_layer(vector: PolicyModulationVector) -> CommandLayer:
         # defense, rally, or placement context may accompany the standing
         # order without turning it into a finite army operation.
         return CommandLayer.MACRO
+    # A concrete building request is a finite action, not a standing
+    # production bias. It must cross the Direct SC2 boundary.
+    if vector.building_tasks:
+        return CommandLayer.OPERATION
     if (
         vector.route_intent.route_type
         or vector.route_intent.avoid_enemy_strength
@@ -2293,6 +2307,8 @@ def _infer_tactical_operation_layer(
         "pressure_with_main_army",
         "defend_with_units",
         "harass_with_units",
+        "regroup_with_units",
+        "train_unit",
     }:
         return CommandLayer.OPERATION
     if task_type in {

@@ -105,13 +105,22 @@ class StarCraftCommanderPackageSurfaceTest(unittest.TestCase):
             frozenset(
                 {
                     "assign_workers",
+                    "gather_resource",
                     "train_unit",
                     "build_structure",
+                    "research_upgrade",
+                    "warp_in",
                     "move_group",
                     "attack_move",
+                    "smart",
+                    "patrol",
+                    "return_resource",
                     "repair",
+                    "execute_ability",
                     "observe",
                     "move_camera",
+                    "stop_group",
+                    "hold_position",
                 },
             ),
             SC2_ACTION_TYPES,
@@ -132,6 +141,7 @@ class StarCraftCommanderPackageSurfaceTest(unittest.TestCase):
                 "SUMMARIZE_STATE": ("observe",),
                 "DEFEND": ("attack_move",),
                 "REPAIR": ("repair",),
+                "EXECUTE_ABILITY": ("execute_ability",),
                 "EXPAND": ("build_structure",),
                 "HARASS": ("attack_move",),
                 "MOVE_CAMERA": ("move_camera",),
@@ -588,6 +598,245 @@ class SC2RuntimeExecutorTest(unittest.TestCase):
     def test_runtime_executor_implements_interface(self) -> None:
         self.assertIsInstance(SC2RuntimeExecutor(), SC2RuntimeExecutorInterface)
         self.assertIsInstance(SC2RuntimeExecutor(), SC2ExecutorBoundaryInterface)
+
+    def test_runtime_executor_ticks_shared_direct_lifecycle(self) -> None:
+        from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
+
+        executor = SC2RuntimeExecutor(
+            direct_lifecycle=DirectCommandLifecycle(game_loops_per_second=1)
+        )
+        executor.direct_lifecycle.dispatch(
+            command_id="executor-lease",
+            issued_at_frame=5,
+            ttl_seconds=2,
+            owned_subjects=("1분대",),
+        )
+
+        observed = executor.tick_direct_commands(7)
+
+        self.assertEqual("expired", observed[0]["state"])
+        self.assertFalse(observed[0]["control_owned"])
+        self.assertEqual((), executor.direct_lifecycle.active_leases())
+        self.assertEqual((), executor.observe_direct_commands(current_frame=8))
+
+    def test_runtime_executor_supplies_adapter_evidence_to_lifecycle(self) -> None:
+        from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
+
+        class EvidenceBot:
+            def direct_command_evidence(self, lease):
+                self.seen_lease = lease
+                return {"target_reached": True}
+
+        bot = EvidenceBot()
+        executor = SC2RuntimeExecutor(
+            bot=bot,
+            direct_lifecycle=DirectCommandLifecycle(game_loops_per_second=1),
+        )
+        executor.direct_lifecycle.dispatch(
+            command_id="arrival",
+            issued_at_frame=1,
+            ttl_seconds=5,
+            completion_conditions=("target_reached",),
+            command_metadata={
+                "actions": [
+                    {
+                        "action_type": "move_group",
+                        "subject": "MARINE",
+                        "target": "enemy_natural",
+                    }
+                ]
+            },
+        )
+        observed = executor.tick_direct_commands(2)
+        self.assertEqual("completed", observed[0]["state"])
+        self.assertEqual("arrival", bot.seen_lease["command_id"])
+
+    def test_terminal_direct_release_calls_host_micromachine_resume_seam(self) -> None:
+        from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
+
+        class ResumeBot:
+            def __init__(self) -> None:
+                self.released = []
+
+            def resume_micromachine(self, lease):
+                self.released.append((lease.command_id, lease.release_reason))
+
+        bot = ResumeBot()
+        executor = SC2RuntimeExecutor(
+            bot=bot,
+            direct_lifecycle=DirectCommandLifecycle(game_loops_per_second=1),
+        )
+        executor.direct_lifecycle.dispatch(
+            command_id="resume-me",
+            issued_at_frame=1,
+            ttl_seconds=5,
+            completion_conditions=("target_reached",),
+        )
+
+        observed = executor.tick_direct_commands(
+            2,
+            {"resume-me": {"target_reached": True}},
+        )
+
+        self.assertEqual("completed", observed[0]["state"])
+        self.assertEqual([("resume-me", "completion_conditions")], bot.released)
+
+    def test_release_callback_failure_is_recorded_without_breaking_tick(self) -> None:
+        from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
+
+        def broken(_lease):
+            raise RuntimeError("micro runtime unavailable")
+
+        executor = SC2RuntimeExecutor(
+            direct_lifecycle=DirectCommandLifecycle(game_loops_per_second=1),
+            on_direct_release=broken,
+        )
+        executor.direct_lifecycle.dispatch(
+            command_id="callback-failure",
+            issued_at_frame=0,
+            ttl_seconds=2,
+            completion_conditions=("done",),
+        )
+        observed = executor.tick_direct_commands(
+            1,
+            {"callback-failure": {"done": True}},
+        )
+
+        self.assertEqual("completed", observed[0]["state"])
+        self.assertTrue(
+            any("direct release callback failed" in error.message for error in executor.lifecycle_errors)
+        )
+
+    def test_dependent_workflow_waits_for_parent_completion_before_training(self) -> None:
+        from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
+
+        class WorkflowBot:
+            def __init__(self) -> None:
+                self.calls = []
+
+            async def build_structure(self, action):
+                self.calls.append(("build", action.subject))
+                return True
+
+            async def train_unit(self, action):
+                self.calls.append(("train", action.subject))
+                return True
+
+        bot = WorkflowBot()
+        releases = []
+        executor = SC2RuntimeExecutor(
+            bot=bot,
+            direct_lifecycle=DirectCommandLifecycle(game_loops_per_second=1),
+            on_direct_release=lambda lease: releases.append(lease.command_id),
+        )
+        executor.direct_lifecycle.dispatch(
+            command_id="factory-first",
+            issued_at_frame=1,
+            ttl_seconds=10,
+            completion_conditions=("building_completed",),
+            command_metadata={
+                "actions": [
+                    {
+                        "action_type": "build_structure",
+                        "subject": "FACTORY",
+                        "target": "self_main",
+                    }
+                ]
+            },
+        )
+        train_plan = SC2ExecutionPlan(
+            intent_name="workflow:train",
+            ordered_actions=(
+                SC2CommandAction(
+                    SC2ActionType.TRAIN_UNIT,
+                    subject="SIEGETANK",
+                    count=1,
+                ),
+            ),
+            audit={"completion_conditions": ["order_issued"]},
+        )
+        executor.register_dependent_plans(
+            "factory-first",
+            [{"resume_on": "building_completed", "plan": train_plan.to_dict()}],
+        )
+
+        # The train action must not run before the building completion tick.
+        assert bot.calls == []
+        observed = executor.tick_direct_commands(
+            2,
+            {"factory-first": {"building_completed": True}},
+        )
+        assert observed[0]["state"] == "completed"
+        assert bot.calls == []
+        assert releases == []
+
+        results = asyncio.run(executor.drain_completed_workflows(current_frame=2))
+        assert len(results) == 1
+        assert results[0].success is True
+        assert bot.calls == [("train", "SIEGETANK")]
+        assert executor.direct_lifecycle.get("factory-first:step:0").control_owned
+        executor.tick_direct_commands(3, {"factory-first:step:0": {"order_issued": True}})
+        assert releases == ["factory-first"]
+
+    def test_dependent_workflow_does_not_resume_after_parent_ttl_or_failure(self) -> None:
+        from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
+
+        class WorkflowBot:
+            def __init__(self) -> None:
+                self.calls = []
+
+            async def train_unit(self, action):
+                self.calls.append(action.subject)
+                return True
+
+        train_plan = SC2ExecutionPlan(
+            intent_name="workflow:train",
+            ordered_actions=(
+                SC2CommandAction(SC2ActionType.TRAIN_UNIT, subject="MARINE"),
+            ),
+            audit={"completion_conditions": ["order_issued"]},
+        )
+        releases: list[tuple[str, str]] = []
+        bot = WorkflowBot()
+        executor = SC2RuntimeExecutor(
+            bot=bot,
+            direct_lifecycle=DirectCommandLifecycle(
+                game_loops_per_second=1,
+                on_release=lambda lease: releases.append(
+                    (lease.command_id, lease.release_reason)
+                ),
+            ),
+        )
+        executor.direct_lifecycle.dispatch(
+            command_id="expiring-build",
+            issued_at_frame=0,
+            ttl_seconds=1,
+            completion_conditions=("building_completed",),
+        )
+        executor.register_dependent_plans(
+            "expiring-build",
+            [{"resume_on": "building_completed", "plan": train_plan.to_dict()}],
+        )
+        observed = executor.tick_direct_commands(1)
+        assert observed[0]["state"] == "expired"
+        assert asyncio.run(executor.drain_completed_workflows(current_frame=1)) == ()
+        assert bot.calls == []
+        assert releases == [("expiring-build", "ttl_expired")]
+
+        executor.direct_lifecycle.dispatch(
+            command_id="failed-build",
+            issued_at_frame=2,
+            ttl_seconds=5,
+            completion_conditions=("building_completed",),
+        )
+        executor.register_dependent_plans(
+            "failed-build",
+            [{"resume_on": "building_completed", "plan": train_plan.to_dict()}],
+        )
+        executor.direct_lifecycle.fail("failed-build", reason="build_refused")
+        assert asyncio.run(executor.drain_completed_workflows(current_frame=2)) == ()
+        assert bot.calls == []
+        assert releases[-1] == ("failed-build", "build_refused")
 
     def test_lifecycle_execute_contract_uses_bound_bot_and_preserves_order(self) -> None:
         class FakeBot:

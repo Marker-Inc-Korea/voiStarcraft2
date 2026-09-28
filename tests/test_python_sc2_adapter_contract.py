@@ -37,6 +37,11 @@ from starcraft_commander.sc2_executor import (
     SC2RuntimeExecutor,
     SC2_STRUCTURE_TYPE_IDS,
 )
+from starcraft_commander.policy_modulation import PolicyModulationVector
+from starcraft_commander.unified_command_router import (
+    create_command_tool_registry,
+    route_policy_vector,
+)
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -108,17 +113,32 @@ class FakeUnit:
     def gather(self, target):
         return self._record("gather", target)
 
+    def return_resource(self):
+        return self._record("return_resource", None)
+
     def move(self, point):
         return self._record("move", point)
 
     def attack(self, point):
         return self._record("attack", point)
 
+    def smart(self, point):
+        return self._record("smart", point)
+
+    def patrol(self, point):
+        return self._record("patrol", point)
+
     def repair(self, target):
         return self._record("repair", target)
 
     def train(self, type_id):
         return self._record("train", type_id)
+
+    def research(self, upgrade):
+        return self._record("research", upgrade)
+
+    def warp_in(self, type_id, point):
+        return self._record("warp_in", (type_id, point))
 
 
 class FakeUnitGroup(list):
@@ -234,6 +254,7 @@ FAKE_UNIT_TYPE_IDS = {
     "COMMANDCENTER": "TYPE:COMMANDCENTER",
     "FACTORY": "TYPE:FACTORY",
     "REFINERY": "TYPE:REFINERY",
+    "ZEALOT": "TYPE:ZEALOT",
 }
 
 
@@ -290,13 +311,22 @@ class AdapterContractTest(unittest.TestCase):
         self.assertEqual(
             (
                 "assign_workers",
+                "gather_resource",
                 "build_structure",
                 "train_unit",
+                "research_upgrade",
+                "warp_in",
                 "move_group",
                 "attack_move",
+                "smart",
+                "patrol",
+                "return_resource",
                 "repair",
+                "execute_ability",
                 "observe",
                 "move_camera",
+                "stop_group",
+                "hold_position",
             ),
             SC2_ADAPTER_ACTION_METHOD_NAMES,
         )
@@ -339,6 +369,82 @@ class AdapterContractTest(unittest.TestCase):
         self.assertEqual(
             list(SC2_ADAPTER_ACTION_METHOD_NAMES),
             payload["action_methods"],
+        )
+
+    def test_direct_command_evidence_proves_arrival_from_live_unit_positions(self) -> None:
+        bot = FakeBotAI(units=[FakeUnit("MARINE", 10.0, 10.0)])
+        adapter = make_adapter(bot)
+        evidence = adapter.direct_command_evidence(
+            {
+                "completion_conditions": ["target_reached"],
+                "command_metadata": {
+                    "actions": [
+                        {
+                            "action_type": "move_group",
+                            "subject": "MARINE",
+                            "target": "self_main",
+                            "count": 1,
+                        }
+                    ]
+                },
+            }
+        )
+        self.assertEqual({"target_reached": True}, evidence)
+
+    def test_direct_command_evidence_requires_observed_build_delta(self) -> None:
+        bot = FakeBotAI()
+        adapter = make_adapter(bot)
+        lease = {
+            "completion_conditions": ["building_started", "building_completed"],
+            "command_metadata": {
+                "baseline": {
+                    "own_structures": {},
+                    "structures_in_progress": {},
+                },
+                "actions": [
+                    {
+                        "action_type": "build_structure",
+                        "subject": "FACTORY",
+                        "target": "self_main",
+                        "count": 1,
+                    }
+                ],
+            },
+        }
+        self.assertEqual({}, adapter.direct_command_evidence(lease))
+        bot.structures.append(FakeUnit("FACTORY", 10.0, 10.0, is_ready=False))
+        started = adapter.direct_command_evidence(lease)
+        self.assertEqual({"building_started": True}, started)
+        bot.structures[0].is_ready = True
+        completed = adapter.direct_command_evidence(lease)
+        self.assertEqual(
+            {"building_started": True, "building_completed": True},
+            completed,
+        )
+
+    def test_direct_command_evidence_proves_visible_enemy_structure_destruction(self) -> None:
+        enemy = FakeUnit("BARRACKS", 80.0, 80.0)
+        bot = FakeBotAI()
+        bot.enemy_structures = FakeUnitGroup([enemy])
+        adapter = make_adapter(bot)
+        lease = {
+            "completion_conditions": ["enemy_destroyed"],
+            "command_metadata": {
+                "baseline": {"visible_enemy_structures": {"BARRACKS": 1}},
+                "actions": [
+                    {
+                        "action_type": "attack_move",
+                        "subject": "MARINE",
+                        "target": "enemy_main",
+                    }
+                ],
+            },
+        }
+        self.assertEqual({}, adapter.direct_command_evidence(lease))
+        bot.enemy_structures = FakeUnitGroup([])
+        self.assertEqual(
+            {"enemy_destroyed": True},
+            adapter.direct_command_evidence(lease),
         )
 
 
@@ -788,6 +894,31 @@ class BuildStructureTest(unittest.TestCase):
         )
         self.assertEqual(["TYPE:SUPPLYDEPOT"], bot.can_afford_calls)
 
+    def test_bound_builder_tag_is_the_only_worker_that_receives_build_order(self) -> None:
+        class BuilderUnit(FakeUnit):
+            def build(self, type_id, point):
+                return self._record("build", (type_id, point))
+
+        builder = BuilderUnit("SCV", 10, 10)
+        builder.tag = 501
+        bot = FakeBotAI(workers=[builder])
+        adapter = make_adapter(bot)
+        original = action(
+            SC2ActionType.BUILD_STRUCTURE,
+            "SUPPLYDEPOT",
+            target="self_ramp",
+            metadata={"source_structure": "Supply Depot"},
+        )
+        bound = adapter.bind_direct_action(original)
+        self.assertEqual((501,), bound.metadata["_direct_unit_tags"])
+
+        result = run(adapter.build_structure(bound))
+
+        self.assertTrue(result)
+        self.assertEqual([], bot.build_calls)
+        self.assertEqual("build", bot.issued[0][0])
+        self.assertIs(builder, bot.issued[0][1])
+
     def test_ramp_build_falls_back_to_main_base_when_ramp_not_visible(self) -> None:
         bot = FakeBotAI(
             workers=[FakeUnit("SCV")],
@@ -1234,6 +1365,86 @@ class BuildStructureTest(unittest.TestCase):
         self.assertEqual([], expand_now_calls)
         self.assertEqual([], bot.build_calls)
 
+    def test_bound_expansion_never_delegates_worker_selection_to_expand_now(self) -> None:
+        class Builder(FakeUnit):
+            def build(self, type_id, point):
+                return self._record("build", (type_id, point))
+
+        builder = Builder("SCV", 10, 10)
+        builder.tag = 511
+        replacement = Builder("SCV", 12, 12)
+        replacement.tag = 512
+        bot = FakeBotAI(workers=[builder, replacement])
+        expanded = []
+
+        async def expand_now():
+            expanded.append(True)
+
+        bot.expand_now = expand_now
+        adapter = make_adapter(bot)
+        bound = adapter.bind_direct_action(action(
+            SC2ActionType.BUILD_STRUCTURE, "COMMANDCENTER",
+            target="self_natural", metadata={"source_structure": "Command Center"},
+        ))
+        bot.workers = FakeUnitGroup([replacement, builder])
+
+        result = run(adapter.build_structure(bound))
+
+        self.assertTrue(result)
+        self.assertEqual([], expanded)
+        self.assertEqual([], bot.build_calls)
+        self.assertEqual(1, len(bot.issued))
+        self.assertIs(builder, bot.issued[0][1])
+        self.assertEqual((30.0, 30.0), point_xy(bot.issued[0][2][1]))
+
+    def test_bound_builder_missing_or_incapable_never_selects_another_worker(self) -> None:
+        for missing in (False, True):
+            with self.subTest(missing=missing):
+                builder = FakeUnit("SCV", 10, 10)
+                builder.tag = 521
+                bot = FakeBotAI(workers=[builder])
+                adapter = make_adapter(bot)
+                bound = adapter.bind_direct_action(action(
+                    SC2ActionType.BUILD_STRUCTURE, "SUPPLYDEPOT", target="self_ramp",
+                ))
+                replacement = FakeUnit("SCV", 10, 10)
+                replacement.tag = 522
+                replacement.build = lambda type_id, point: replacement._record(
+                    "build", (type_id, point)
+                )
+                bot.workers = FakeUnitGroup([replacement] if missing else [replacement, builder])
+                bot.units = bot.workers
+
+                result = run(adapter.build_structure(bound))
+
+                self.assertFalse(result)
+                self.assertEqual([], bot.issued)
+                self.assertEqual([], bot.build_calls)
+
+    def test_bound_gas_build_uses_only_pinned_worker_and_refuses_missing_capability(self) -> None:
+        for capable in (False, True):
+            with self.subTest(capable=capable):
+                builder = FakeUnit("SCV", 10, 10)
+                builder.tag = 531
+                replacement = FakeUnit("SCV", 10, 10)
+                replacement.tag = 532
+                if capable:
+                    builder.build_gas = lambda geyser: builder._record("build_gas", geyser)
+                replacement.build_gas = lambda geyser: replacement._record("build_gas", geyser)
+                geyser = FakeUnit("VespeneGeyser", 12, 10)
+                bot = FakeBotAI(workers=[builder, replacement], geysers=[geyser])
+                adapter = make_adapter(bot)
+                bound = adapter.bind_direct_action(action(
+                    SC2ActionType.BUILD_STRUCTURE, "REFINERY", target="main geyser",
+                ))
+                bot.workers = FakeUnitGroup([replacement, builder])
+
+                result = run(adapter.build_structure(bound))
+
+                self.assertEqual(capable, bool(result))
+                self.assertEqual([], bot.build_calls)
+                self.assertEqual([("build_gas", builder, geyser)] if capable else [], bot.issued)
+
     def test_command_center_refuses_occupied_expansion(self) -> None:
         bot = FakeBotAI(structures=[FakeUnit("Command Center", 30.0, 30.0)])
         adapter = make_adapter(bot)
@@ -1437,6 +1648,27 @@ class TrainUnitTest(unittest.TestCase):
             bot.issued,
         )
 
+    def test_bound_producer_tag_survives_structure_observation_reordering(self) -> None:
+        original = FakeUnit("Barracks")
+        replacement = FakeUnit("Barracks")
+        original.tag = 601
+        replacement.tag = 602
+        bot = FakeBotAI(structures=[original, replacement])
+        adapter = make_adapter(bot)
+        bound = adapter.bind_direct_action(action(
+            SC2ActionType.TRAIN_UNIT,
+            "MARINE",
+            count=1,
+            metadata={"producer": "BARRACKS"},
+        ))
+        self.assertEqual((601,), bound.metadata["_direct_unit_tags"])
+        bot.structures = FakeUnitGroup([replacement, original])
+
+        result = run(adapter.train_unit(bound))
+
+        self.assertTrue(result)
+        self.assertEqual([("train", original, "TYPE:MARINE")], bot.issued)
+
     def test_caps_orders_at_requested_count(self) -> None:
         bot = FakeBotAI(structures=[FakeUnit("Barracks"), FakeUnit("Barracks")])
         adapter = make_adapter(bot)
@@ -1595,6 +1827,293 @@ class TrainUnitTest(unittest.TestCase):
                 self.assertEqual([], bot.issued)
 
 
+class ExpandedPythonSC2SurfaceTest(unittest.TestCase):
+    def test_explicit_gather_resource_uses_unit_gather(self) -> None:
+        worker = FakeUnit("SCV")
+        mineral = FakeUnit("MineralField", 11, 11)
+        bot = FakeBotAI(workers=[worker], mineral_fields=[mineral])
+        adapter = make_adapter(bot)
+        result = run(adapter.gather_resource(action(
+            SC2ActionType.GATHER_RESOURCE, "SCV", target="minerals", count=1
+        )))
+        self.assertTrue(result)
+        self.assertEqual([("gather", worker, mineral)], bot.issued)
+
+    def test_research_upgrade_calls_research_on_matching_structure(self) -> None:
+        researcher = FakeUnit("EngineeringBay")
+        bot = FakeBotAI(structures=[researcher])
+        bot.upgrade_id_resolver = lambda name: f"UPGRADE:{name}"
+        adapter = make_adapter(bot)
+        result = run(adapter.research_upgrade(action(
+            SC2ActionType.RESEARCH_UPGRADE,
+            "Terran Infantry Weapons Level 1",
+            count=1,
+            metadata={"researcher": "ENGINEERINGBAY"},
+        )))
+        self.assertTrue(result)
+        self.assertEqual(
+            [("research", researcher, "UPGRADE:Terran Infantry Weapons Level 1")],
+            bot.issued,
+        )
+
+    def test_bound_research_and_warp_structure_tags_survive_reordering(self) -> None:
+        researcher = FakeUnit("EngineeringBay")
+        replacement_researcher = FakeUnit("EngineeringBay")
+        researcher.tag = 701
+        replacement_researcher.tag = 702
+        bot = FakeBotAI(structures=[researcher, replacement_researcher])
+        bot.upgrade_id_resolver = lambda name: f"UPGRADE:{name}"
+        adapter = make_adapter(bot)
+        research_bound = adapter.bind_direct_action(action(
+            SC2ActionType.RESEARCH_UPGRADE,
+            "Terran Infantry Weapons Level 1",
+            metadata={"researcher": "ENGINEERINGBAY"},
+        ))
+        self.assertEqual((701,), research_bound.metadata["_direct_unit_tags"])
+        bot.structures = FakeUnitGroup([replacement_researcher, researcher])
+        research_result = run(adapter.research_upgrade(research_bound))
+        self.assertTrue(research_result)
+        self.assertIs(researcher, bot.issued[0][1])
+
+        gate = FakeUnit("WarpGate")
+        replacement_gate = FakeUnit("WarpGate")
+        gate.tag = 703
+        replacement_gate.tag = 704
+        bot = FakeBotAI(structures=[gate, replacement_gate])
+        adapter = make_adapter(bot)
+        warp_bound = adapter.bind_direct_action(action(
+            SC2ActionType.WARP_IN,
+            "ZEALOT",
+            target="self_main",
+            metadata={},
+        ))
+        self.assertEqual((703,), warp_bound.metadata["_direct_unit_tags"])
+        bot.structures = FakeUnitGroup([replacement_gate, gate])
+        warp_result = run(adapter.warp_in(warp_bound))
+        self.assertTrue(warp_result)
+        self.assertIs(gate, bot.issued[0][1])
+
+
+    def test_warp_in_resolves_target_and_calls_warp_in(self) -> None:
+        gate = FakeUnit("WarpGate")
+        bot = FakeBotAI(structures=[gate])
+        adapter = make_adapter(bot)
+        result = run(adapter.warp_in(action(
+            SC2ActionType.WARP_IN, "ZEALOT", target="self_main", count=1
+        )))
+        self.assertTrue(result)
+        self.assertEqual(1, len(bot.issued))
+        self.assertEqual("warp_in", bot.issued[0][0])
+        self.assertEqual("TYPE:ZEALOT", bot.issued[0][2][0])
+
+    def test_patrol_and_return_resource_use_explicit_unit_methods(self) -> None:
+        worker = FakeUnit("SCV")
+        marine = FakeUnit("Marine", 10, 10)
+        bot = FakeBotAI(workers=[worker], units=[worker, marine])
+        adapter = make_adapter(bot)
+        patrol = run(adapter.patrol(action(
+            SC2ActionType.PATROL, "MARINE", target="self_ramp", count=1
+        )))
+        returned = run(adapter.return_resource(action(
+            SC2ActionType.RETURN_RESOURCE, "SCV", count=1
+        )))
+        self.assertTrue(patrol)
+        self.assertTrue(returned)
+        self.assertEqual("patrol", bot.issued[0][0])
+        self.assertEqual("return_resource", bot.issued[1][0])
+
+    def test_smart_uses_explicit_unit_smart_method(self) -> None:
+        marine = FakeUnit("Marine", 10, 10)
+        bot = FakeBotAI(units=[marine])
+        adapter = make_adapter(bot)
+        result = run(adapter.smart(action(
+            SC2ActionType.SMART, "MARINE", target="self_ramp", count=1
+        )))
+        self.assertTrue(result)
+        self.assertEqual("smart", bot.issued[0][0])
+
+
+class RegistryConcreteOwnershipIntegrationTest(unittest.TestCase):
+    """Keep MCP admission, concrete tag binding, and adapter dispatch aligned."""
+
+    def test_mcp_build_lease_owns_pinned_builder_tag_until_completion(self) -> None:
+        class BuilderUnit(FakeUnit):
+            def build(self, type_id, point):
+                return self._record("build", (type_id, point))
+
+        builder = BuilderUnit("SCV", 10.0, 10.0)
+        builder.tag = 811
+        bot = FakeBotAI(workers=[builder])
+        executor = SC2RuntimeExecutor(bot=make_adapter(bot))
+        registry = create_command_tool_registry(direct_executor=executor)
+
+        first = registry.call(
+            "sc2.direct.build_structure",
+            {
+                "subject": "SUPPLYDEPOT",
+                "target": "self_ramp",
+                "metadata": {"source_structure": "Supply Depot"},
+                "command_id": "mcp-build-lease",
+                "current_frame": 10,
+                "completion_conditions": ["building_completed"],
+            },
+        )
+
+        self.assertTrue(first.ok)
+        lifecycle = first.result["result"]["audit"]["direct_command_lifecycle"]
+        self.assertEqual([811], lifecycle["owned_unit_tags"])
+        self.assertEqual("active", lifecycle["state"])
+        self.assertIs(builder, bot.issued[0][1])
+
+        conflict = registry.call(
+            "sc2.direct.build_structure",
+            {
+                "subject": "SUPPLYDEPOT",
+                "target": "self_ramp",
+                "metadata": {"source_structure": "Supply Depot"},
+                "command_id": "mcp-build-conflict",
+                "current_frame": 11,
+            },
+        )
+        self.assertFalse(conflict.ok)
+        self.assertEqual("direct_control_conflict", conflict.result["status"])
+
+        completed = registry.call(
+            "sc2.direct.lifecycle",
+            {
+                "command_id": "mcp-build-lease",
+                "action": "observe",
+                "current_frame": 11,
+                "evidence": {"building_completed": True},
+            },
+        )
+        self.assertTrue(completed.ok)
+        self.assertEqual("completed", completed.result["status"])
+        self.assertIsNone(executor.direct_lifecycle.unit_owner(811))
+
+        reacquired = registry.call(
+            "sc2.direct.build_structure",
+            {
+                "subject": "SUPPLYDEPOT",
+                "target": "self_ramp",
+                "metadata": {"source_structure": "Supply Depot"},
+                "command_id": "mcp-build-reacquired",
+                "current_frame": 12,
+            },
+        )
+        self.assertTrue(reacquired.ok)
+        self.assertEqual(
+            [811],
+            reacquired.result["result"]["audit"]["direct_command_lifecycle"][
+                "owned_unit_tags"
+            ],
+        )
+
+    def test_mcp_train_lease_owns_pinned_producer_tag(self) -> None:
+        producer = FakeUnit("Barracks")
+        producer.tag = 821
+        bot = FakeBotAI(structures=[producer])
+        executor = SC2RuntimeExecutor(bot=make_adapter(bot))
+        registry = create_command_tool_registry(direct_executor=executor)
+
+        result = registry.call(
+            "sc2.direct.train_unit",
+            {
+                "subject": "MARINE",
+                "count": 1,
+                "metadata": {"producer": "BARRACKS"},
+                "command_id": "mcp-train-lease",
+                "current_frame": 20,
+                "completion_conditions": ["order_issued"],
+            },
+        )
+
+        self.assertTrue(result.ok)
+        lifecycle = result.result["result"]["audit"]["direct_command_lifecycle"]
+        self.assertEqual([821], lifecycle["owned_unit_tags"])
+        self.assertEqual("active", lifecycle["state"])
+        self.assertEqual([("train", producer, "TYPE:MARINE")], bot.issued)
+
+        observed = executor.tick_direct_commands(current_frame=21)
+        self.assertEqual("completed", observed[0]["state"])
+        self.assertIsNone(executor.direct_lifecycle.unit_owner(821))
+
+    def test_dependent_train_rebinds_current_producer_tag_after_build_completion(self) -> None:
+        class BuilderUnit(FakeUnit):
+            def build(self, type_id, point):
+                return self._record("build", (type_id, point))
+
+        builder = BuilderUnit("SCV", 10.0, 10.0)
+        builder.tag = 831
+        original_producer = FakeUnit("Barracks")
+        replacement_producer = FakeUnit("Barracks")
+        original_producer.tag = 832
+        replacement_producer.tag = 833
+        bot = FakeBotAI(
+            workers=[builder],
+            structures=[original_producer, replacement_producer],
+        )
+        executor = SC2RuntimeExecutor(bot=make_adapter(bot))
+        registry = create_command_tool_registry(direct_executor=executor)
+        route = route_policy_vector(
+            PolicyModulationVector.from_mapping(
+                {
+                    "goal": "build barracks then train marine",
+                    "command_layer": "operation",
+                    "building_tasks": [
+                        {
+                            "building_type": "TERRAN_BARRACKS",
+                            "placement_intent": "self_main_safe_macro",
+                            "anchor": "self_main",
+                        }
+                    ],
+                    "tactical_task": {
+                        "task_type": "train_unit",
+                        "production_targets": ["TERRAN_MARINE"],
+                    },
+                }
+            ),
+            update_id="concrete-workflow",
+            current_frame=30,
+        )
+
+        result = registry.call("sc2.direct.execute", route.tool_calls[0].arguments)
+
+        self.assertTrue(result.ok)
+        parent = executor.direct_lifecycle.get("concrete-workflow")
+        self.assertIsNotNone(parent)
+        self.assertEqual((831,), parent.owned_unit_tags)
+        self.assertEqual("build", bot.issued[0][0])
+        self.assertIs(builder, bot.issued[0][1])
+        self.assertEqual("TYPE:BARRACKS", bot.issued[0][2][0])
+        self.assertEqual((10.0, 10.0), point_xy(bot.issued[0][2][1]))
+
+        # A new observation places another Barracks first. The dependent
+        # production lease must bind that current producer, not stale tag 832
+        # or a semantic-only MARINE subject.
+        bot.structures = FakeUnitGroup([replacement_producer, original_producer])
+        observed = executor.tick_direct_commands(
+            31,
+            {"concrete-workflow": {"building_completed": True}},
+        )
+        self.assertEqual("completed", observed[0]["state"])
+        self.assertEqual(
+            1,
+            len(asyncio.run(executor.drain_completed_workflows(current_frame=31))),
+        )
+        child = executor.direct_lifecycle.get("concrete-workflow:step:0")
+        self.assertIsNotNone(child)
+        self.assertEqual((833,), child.owned_unit_tags)
+        self.assertEqual("build", bot.issued[0][0])
+        self.assertIs(builder, bot.issued[0][1])
+        self.assertEqual("TYPE:BARRACKS", bot.issued[0][2][0])
+        self.assertEqual((10.0, 10.0), point_xy(bot.issued[0][2][1]))
+        self.assertEqual(
+            ("train", replacement_producer, "TYPE:MARINE"),
+            bot.issued[1],
+        )
+
+
 class MoveAndAttackGroupTest(unittest.TestCase):
     def make_army_bot(self):
         workers = [FakeUnit("SCV", 10, 10), FakeUnit("SCV", 11, 10)]
@@ -1655,6 +2174,76 @@ class MoveAndAttackGroupTest(unittest.TestCase):
             [("move", marine, MapPoint(90.0, 90.0)) for marine in marines[:2]],
             bot.issued,
         )
+
+    def test_explicit_count_caps_group_without_counted_subject(self) -> None:
+        bot, _, marines = self.make_army_bot()
+        adapter = make_adapter(bot)
+        result = run(adapter.move_group(action(
+            SC2ActionType.MOVE_GROUP, "MARINE", target="enemy_main", count=2,
+        )))
+        self.assertTrue(result)
+        self.assertEqual([order[1] for order in bot.issued], marines[:2])
+
+    def test_bound_group_tracks_original_tags_across_observation_reordering(self) -> None:
+        bot, _, marines = self.make_army_bot()
+        for index, unit in enumerate(bot.units, start=1):
+            unit.tag = index
+        executor = SC2RuntimeExecutor(bot=make_adapter(bot))
+        registry = create_command_tool_registry(direct_executor=executor)
+        result = registry.call("sc2.direct.move_group", {
+            "subject": "MARINE", "target": "enemy_main", "count": 2,
+            "command_id": "tagged-move", "completion_conditions": ["target_reached"],
+        })
+        self.assertTrue(result.ok, result.to_dict())
+        lease = executor.direct_lifecycle.get("tagged-move")
+        self.assertEqual((3, 4), lease.owned_unit_tags)
+        self.assertEqual(marines[:2], [order[1] for order in bot.issued])
+
+        # A fresh observation puts an unassigned same-type unit first at the
+        # destination. That must not stand in for either assigned marine.
+        marines[2].position = FakePoint(90, 90)
+        bot.units = FakeUnitGroup([marines[2], marines[0], marines[1]])
+        tick = executor.tick_direct_commands(1)
+        self.assertEqual("active", tick[0]["state"])
+        marines[0].position = FakePoint(90, 90)
+        marines[1].position = FakePoint(90, 90)
+        self.assertEqual("completed", executor.tick_direct_commands(2)[0]["state"])
+
+    def test_mcp_alias_overlap_rejected_before_any_second_order(self) -> None:
+        bot, _, marines = self.make_army_bot()
+        for index, unit in enumerate(bot.units, start=1):
+            unit.tag = index
+        executor = SC2RuntimeExecutor(bot=make_adapter(bot))
+        registry = create_command_tool_registry(direct_executor=executor)
+        first = registry.call("sc2.direct.move_group", {
+            "subject": "MARINE", "target": "enemy_main", "count": 2,
+            "command_id": "typed", "completion_conditions": ["target_reached"],
+        })
+        self.assertTrue(first.ok)
+        issued_before = list(bot.issued)
+        second = registry.call("sc2.direct.attack_move", {
+            "subject": "available combat units", "target": "enemy_main",
+            "command_id": "generic",
+        })
+        self.assertFalse(second.ok)
+        self.assertEqual("direct_control_conflict", second.result["status"])
+        self.assertEqual(issued_before, bot.issued)
+        self.assertIsNone(executor.direct_lifecycle.get("generic"))
+
+    def test_mcp_unit_tag_metadata_cannot_override_runtime_selection(self) -> None:
+        bot, _, marines = self.make_army_bot()
+        for index, unit in enumerate(bot.units, start=1):
+            unit.tag = index
+        executor = SC2RuntimeExecutor(bot=make_adapter(bot))
+        registry = create_command_tool_registry(direct_executor=executor)
+        result = registry.call("sc2.direct.move_group", {
+            "subject": "2 Marines", "target": "enemy_main",
+            "command_id": "no-forged-tags",
+            "metadata": {"_direct_unit_tags": [1, 2], "_direct_requested_count": 2},
+        })
+        self.assertTrue(result.ok)
+        self.assertEqual(marines[:2], [order[1] for order in bot.issued])
+        self.assertEqual((3, 4), executor.direct_lifecycle.get("no-forged-tags").owned_unit_tags)
 
     def test_counted_type_phrase_never_substitutes_other_unit_types(self) -> None:
         # "6 Marines" with a mixed army must select only Marines, never
@@ -1797,6 +2386,33 @@ class RepairTest(unittest.TestCase):
         )
         self.assertTrue(result)
         self.assertEqual([("repair", worker, depot)], bot.issued)
+
+    def test_ambiguous_repair_target_requires_clarification(self) -> None:
+        front_bunker = FakeUnit("Bunker", 20, 12, health=60.0, health_max=100.0)
+        natural_bunker = FakeUnit("Bunker", 40, 30, health=70.0, health_max=100.0)
+        worker = FakeUnit("SCV", 10, 10)
+        bot = FakeBotAI(
+            workers=[worker],
+            structures=[front_bunker, natural_bunker],
+        )
+        adapter = make_adapter(bot)
+
+        result = run(
+            adapter.repair(
+                action(SC2ActionType.REPAIR, "SCV", target="bunker", count=1)
+            )
+        )
+
+        self.assertIsInstance(result, SC2ActionReport)
+        self.assertFalse(result)
+        self.assertEqual("ambiguous_repair_target", result.detail)
+        self.assertEqual([], bot.issued)
+        self.assertTrue(result.audit["clarification_required"])
+        self.assertEqual(
+            ["BUNKER (20, 12)", "BUNKER (40, 30)"],
+            result.audit["alternatives"],
+        )
+        self.assertIn("여러 손상 대상", result.audit["clarification_prompt"])
 
     def test_repairs_damaged_own_unit_when_no_structure_matches(self) -> None:
         # The damaged own-unit fallback scan: a Hellion at 40/90 health is a

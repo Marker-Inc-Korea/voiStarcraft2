@@ -9,7 +9,7 @@ real runtime code can pass a python-sc2 ``BotAI``-like object to
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final, Protocol, runtime_checkable
 
@@ -23,6 +23,8 @@ from starcraft_commander.contracts import (
     SC2ExecutionPlan,
     SC2PlanExecutionResult,
 )
+from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
+from starcraft_commander.direct_command_lifecycle import DirectCommandLease
 
 
 SC2_UNIT_TYPE_IDS: Final[dict[str, str]] = {
@@ -249,6 +251,7 @@ SC2_INTENT_ACTION_TYPE_MAP: Final[dict[str, tuple[str, ...]]] = {
     "SUMMARIZE_STATE": ("observe",),
     "DEFEND": ("attack_move",),
     "REPAIR": ("repair",),
+    "EXECUTE_ABILITY": ("execute_ability",),
     "EXPAND": ("build_structure",),
     "HARASS": ("attack_move",),
     "MOVE_CAMERA": ("move_camera",),
@@ -543,7 +546,36 @@ class SC2RuntimeExecutor:
     """Lifecycle-aware async adapter around a python-sc2 ``BotAI``-like runtime."""
 
     bot: object | None = None
+    direct_lifecycle: DirectCommandLifecycle = field(
+        default_factory=DirectCommandLifecycle
+    )
+    on_direct_release: Callable[[DirectCommandLease], object] | None = None
     _started: bool = field(default=False, init=False, repr=False)
+    _previous_direct_release: Callable[[DirectCommandLease], object] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _dependent_workflows: dict[str, tuple[Mapping[str, object], ...]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _ready_workflows: list[tuple[str, int, Mapping[str, object]]] = field(
+        default_factory=list,
+        init=False,
+        repr=False,
+    )
+    _deferred_workflow_releases: dict[str, DirectCommandLease] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _workflow_remaining: dict[str, int] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
     _lifecycle_errors: list[SC2ExecutionError] = field(
         default_factory=list,
         init=False,
@@ -552,6 +584,102 @@ class SC2RuntimeExecutor:
 
     def __post_init__(self) -> None:
         self._started = self.bot is not None
+        # The runtime executor owns the match-lifetime lifecycle.  Install one
+        # wrapper at construction time so terminal completion/cancel/expiry
+        # can hand control back to a host MicroMachine integration without
+        # requiring every caller to remember to wire the callback manually.
+        # Preserve a callback supplied by an embedding integration and invoke
+        # it before the executor's explicit/auto-discovered resume seam.
+        self._previous_direct_release = self.direct_lifecycle.on_release
+        self.direct_lifecycle.on_release = self._handle_direct_release
+
+    def _handle_direct_release(self, lease: DirectCommandLease) -> None:
+        """Notify release listeners and, when available, resume MicroMachine.
+
+        ``SC2RuntimeExecutor`` cannot manufacture a MicroMachine runtime.  It
+        therefore only calls an explicitly supplied ``on_direct_release``
+        callback, or a BotAI adapter method named ``resume_micromachine``.  A
+        missing seam is a no-op; a callback failure is recorded as structured
+        lifecycle evidence and does not break the game loop.
+        """
+
+        dependent_steps = self._dependent_workflows.get(lease.command_id, ())
+        if (
+            lease.release_reason == "completion_conditions"
+            and dependent_steps
+        ):
+            # Keep Direct ownership logically continuous across a dependent
+            # workflow.  The parent lease is terminal, but MicroMachine must
+            # not reacquire its subjects in the frame between build completion
+            # and the queued train step.
+            self._deferred_workflow_releases[lease.command_id] = lease
+            return
+        if dependent_steps:
+            # Cancellation, failure, and TTL expiry abort the remaining
+            # workflow rather than leaving a stale train step queued.
+            self._dependent_workflows.pop(lease.command_id, None)
+            self._workflow_remaining.pop(lease.command_id, None)
+            self._ready_workflows = [
+                item for item in self._ready_workflows if item[0] != lease.command_id
+            ]
+
+        workflow_parent = lease.command_metadata.get("workflow_parent")
+        if isinstance(workflow_parent, str) and workflow_parent:
+            remaining = self._workflow_remaining.get(workflow_parent, 1) - 1
+            self._workflow_remaining[workflow_parent] = remaining
+            if remaining > 0:
+                return
+            parent_lease = self._deferred_workflow_releases.pop(workflow_parent, None)
+            self._workflow_remaining.pop(workflow_parent, None)
+            if parent_lease is not None:
+                self._finish_workflow_release(parent_lease)
+            return
+
+        self._emit_direct_release(lease)
+
+    def _emit_direct_release(self, lease: DirectCommandLease) -> None:
+        """Invoke preserved and configured terminal-release listeners."""
+
+        callbacks: list[Callable[[DirectCommandLease], object]] = []
+        if self._previous_direct_release is not None:
+            callbacks.append(self._previous_direct_release)
+        callback = self.on_direct_release
+        if callback is None:
+            candidate = getattr(self.bot, "resume_micromachine", None)
+            if callable(candidate):
+                callback = candidate
+        if callback is not None and callback not in callbacks:
+            callbacks.append(callback)
+        for listener in callbacks:
+            try:
+                listener(lease)
+            except Exception as error:  # noqa: BLE001 - release is fail-closed.
+                self._lifecycle_errors.append(
+                    SC2ExecutionError(
+                        message=f"direct release callback failed: {error}",
+                        exception_type=type(error).__name__,
+                        metadata={
+                            "command_id": lease.command_id,
+                            "release_reason": lease.release_reason,
+                        },
+                    )
+                )
+
+    def _finish_workflow_release(self, lease: DirectCommandLease) -> None:
+        """Propagate a completed dependent release through nested parents."""
+
+        parent_id = lease.command_metadata.get("workflow_parent")
+        if not isinstance(parent_id, str) or not parent_id:
+            self._emit_direct_release(lease)
+            return
+        remaining = self._workflow_remaining.get(parent_id, 1) - 1
+        self._workflow_remaining[parent_id] = remaining
+        if remaining > 0:
+            return
+        self._workflow_remaining.pop(parent_id, None)
+        parent_lease = self._deferred_workflow_releases.pop(parent_id, None)
+        if parent_lease is not None:
+            self._finish_workflow_release(parent_lease)
 
     @property
     def is_started(self) -> bool:
@@ -564,6 +692,311 @@ class SC2RuntimeExecutor:
         """Structured lifecycle errors captured without crashing callers."""
 
         return tuple(self._lifecycle_errors)
+
+    def bind_direct_lifecycle(self, lifecycle: DirectCommandLifecycle) -> None:
+        """Share an integration-owned lease registry with this executor.
+
+        Live sessions may construct their lifecycle before they construct the
+        MCP registry.  Rebinding preserves the lifecycle's existing release
+        listener (for example, the session callback) and installs the
+        executor's workflow/resume wrapper on the shared registry.
+        """
+
+        if not isinstance(lifecycle, DirectCommandLifecycle):
+            raise TypeError("lifecycle must be a DirectCommandLifecycle")
+        if lifecycle is self.direct_lifecycle:
+            return
+        self.direct_lifecycle = lifecycle
+        self._previous_direct_release = lifecycle.on_release
+        lifecycle.on_release = self._handle_direct_release
+
+    def observe_direct_commands(
+        self,
+        *,
+        current_frame: int,
+        evidence_by_command: Mapping[str, Mapping[str, object]] | None = None,
+    ) -> tuple[dict[str, object], ...]:
+        """Tick Direct leases owned by this live runtime executor.
+
+        The executor is the natural lifetime owner for a BotAI match.  Both
+        MCP modulation sessions and the BotAI ``on_step`` callback can use this
+        seam without creating separate registries that lose squad ownership.
+        """
+
+        supplied = evidence_by_command or {}
+        observed_evidence: dict[str, Mapping[str, object]] = {}
+        for lease in self.direct_lifecycle.active_leases():
+            evidence: dict[str, object] = {}
+            provider = getattr(self.bot, "direct_command_evidence", None)
+            if callable(provider):
+                try:
+                    candidate = provider(lease.to_dict())
+                    if isinstance(candidate, Mapping):
+                        evidence.update(candidate)
+                except Exception as error:  # noqa: BLE001 - fail closed.
+                    self._lifecycle_errors.append(
+                        SC2ExecutionError(
+                            message=f"direct evidence provider failed: {error}",
+                            exception_type=type(error).__name__,
+                            metadata={"command_id": lease.command_id},
+                        )
+                    )
+            supplied_evidence = supplied.get(lease.command_id)
+            if isinstance(supplied_evidence, Mapping):
+                evidence.update(supplied_evidence)
+            observed_evidence[lease.command_id] = evidence
+        return tuple(
+            lease.to_dict()
+            for lease in self.direct_lifecycle.observe_all(
+                frame=int(current_frame),
+                evidence_by_command=observed_evidence,
+            )
+        )
+
+    def direct_command_baseline(
+        self, plan: SC2ExecutionPlan
+    ) -> Mapping[str, object]:
+        """Capture pre-dispatch runtime counts for completion evidence."""
+
+        provider = getattr(self.bot, "direct_command_baseline", None)
+        if not callable(provider):
+            return {}
+        try:
+            value = provider(plan.to_dict())
+        except Exception as error:  # noqa: BLE001 - baseline is optional evidence.
+            self._lifecycle_errors.append(
+                SC2ExecutionError(
+                    message=f"direct baseline provider failed: {error}",
+                    exception_type=type(error).__name__,
+                )
+            )
+            return {}
+        return dict(value) if isinstance(value, Mapping) else {}
+
+    def register_dependent_plans(
+        self,
+        parent_command_id: str,
+        dependent_plans: Sequence[Mapping[str, object]],
+    ) -> None:
+        """Register plans that may run only after a parent lease completes.
+
+        Each item is ``{"resume_on": "building_completed", "plan": {...}}``.
+        The plan is parsed immediately so malformed workflow payloads fail at
+        dispatch time, never half-way through a live game.  The next step is
+        scheduled by :meth:`tick_direct_commands`; callers must await
+        :meth:`drain_completed_workflows` from their game-loop callback.
+        """
+
+        parent_id = str(parent_command_id).strip()
+        if not parent_id:
+            raise ValueError("parent_command_id must be non-empty")
+        lease = self.direct_lifecycle.get(parent_id)
+        if lease is None or not lease.control_owned:
+            raise ValueError("parent direct lease must own control")
+        normalized: list[Mapping[str, object]] = []
+        for item in dependent_plans:
+            if not isinstance(item, Mapping):
+                raise ValueError("dependent workflow steps must be objects")
+            resume_on = item.get("resume_on", "building_completed")
+            if isinstance(resume_on, str):
+                resume_conditions = (resume_on,)
+            elif isinstance(resume_on, Sequence) and not isinstance(
+                resume_on, (str, bytes)
+            ):
+                resume_conditions = tuple(str(value) for value in resume_on)
+            else:
+                raise ValueError("dependent workflow resume_on must be a string or list")
+            if not resume_conditions or any(not condition.strip() for condition in resume_conditions):
+                raise ValueError("dependent workflow resume_on cannot be empty")
+            raw_plan = item.get("plan", item)
+            if not isinstance(raw_plan, Mapping):
+                raise ValueError("dependent workflow plan must be an object")
+            # Import lazily to avoid the sc2_executor <-> unified router cycle.
+            from starcraft_commander.unified_command_router import (
+                execution_plan_from_mapping,
+            )
+
+            parsed = execution_plan_from_mapping(raw_plan)
+            normalized.append(
+                {
+                    "resume_on": list(resume_conditions),
+                    "plan": parsed.to_dict(),
+                }
+            )
+        self._dependent_workflows[parent_id] = tuple(normalized)
+        self._workflow_remaining[parent_id] = len(normalized)
+
+    async def drain_completed_workflows(
+        self,
+        *,
+        current_frame: int = 0,
+    ) -> tuple[SC2PlanExecutionResult, ...]:
+        """Execute the next ready dependent step in deterministic order.
+
+        A dependent step receives its own lifecycle lease.  If that step has
+        more dependent plans, they are registered only after the step is
+        successfully dispatched, preserving ``build -> observe completion ->
+        train`` ordering across multiple frames.
+        """
+
+        if self.bot is None:
+            return ()
+        results: list[SC2PlanExecutionResult] = []
+        # At most one ready step is run per drain call.  This prevents a chain
+        # from skipping its own completion observation in the same frame.
+        if not self._ready_workflows:
+            return ()
+        parent_id, step_index, payload = self._ready_workflows.pop(0)
+        from starcraft_commander.unified_command_router import (
+            execution_plan_from_mapping,
+        )
+
+        child_id = f"{parent_id}:step:{step_index}"
+        try:
+            plan = execution_plan_from_mapping(payload["plan"])
+            # Dependent steps are dispatched on a later game-loop frame. Rebind
+            # the semantic action against the current observation before
+            # admitting its child lease, just as the MCP entry point does for
+            # the parent. python-sc2 recreates Unit objects between
+            # observations, so the child must reserve the current concrete
+            # producer tags rather than inherit stale instances or a
+            # type-only subject.
+            plan = self._bind_direct_plan(plan)
+        except Exception as error:  # noqa: BLE001 - workflow failures are data.
+            self._lifecycle_errors.append(
+                SC2ExecutionError(
+                    message=f"dependent workflow binding failed: {error}",
+                    exception_type=type(error).__name__,
+                    metadata={"command_id": child_id},
+                )
+            )
+            deferred = self._deferred_workflow_releases.pop(parent_id, None)
+            self._workflow_remaining.pop(parent_id, None)
+            if deferred is not None:
+                self._emit_direct_release(deferred)
+            return ()
+        conditions_raw = plan.audit.get("completion_conditions", ("order_issued",))
+        conditions = (
+            tuple(str(item) for item in conditions_raw)
+            if isinstance(conditions_raw, Sequence)
+            and not isinstance(conditions_raw, (str, bytes))
+            else ("order_issued",)
+        )
+        lease = self.direct_lifecycle.pending(
+            command_id=child_id,
+            issued_at_frame=max(0, int(current_frame)),
+            ttl_seconds=max(1, int(plan.audit.get("ttl_seconds", 120))),
+            completion_conditions=conditions,
+            owned_subjects=tuple(
+                action.subject
+                for action in plan.actions
+                if not action.metadata.get("_direct_unit_tags")
+            ),
+            owned_unit_tags=tuple(
+                tag
+                for action in plan.actions
+                for tag in action.metadata.get("_direct_unit_tags", ())
+                if type(tag) is int and tag > 0
+            ),
+            command_metadata={
+                "intent_name": plan.intent_name,
+                "actions": [action.to_dict() for action in plan.actions],
+                "workflow_parent": parent_id,
+                "workflow_step": step_index,
+            },
+        )
+        try:
+            result = await self._execute_with_bot(self.bot, plan)
+        except Exception as error:  # noqa: BLE001 - workflow failures are data.
+            self.direct_lifecycle.fail(
+                child_id,
+                reason="dependent_workflow_exception",
+                evidence={"error": f"{type(error).__name__}:{error}"},
+            )
+            return ()
+        if result.success:
+            self.direct_lifecycle.mark_dispatched(child_id)
+            active = self.direct_lifecycle.activate(child_id)
+            if "order_issued" in active.completion_conditions:
+                self.direct_lifecycle.record_evidence(child_id, {"order_issued": True})
+            nested = plan.audit.get("dependent_plans", ())
+            if isinstance(nested, Sequence) and not isinstance(nested, (str, bytes)):
+                try:
+                    self.register_dependent_plans(child_id, nested)
+                except Exception as error:  # noqa: BLE001 - workflow is data.
+                    self.direct_lifecycle.fail(
+                        child_id,
+                        reason="invalid_dependent_workflow",
+                        evidence={"error": f"{type(error).__name__}:{error}"},
+                    )
+        else:
+            self.direct_lifecycle.fail(child_id, reason="dependent_plan_refused")
+        results.append(result)
+        return tuple(results)
+
+    def _bind_direct_plan(self, plan: SC2ExecutionPlan) -> SC2ExecutionPlan:
+        """Bind every action in a plan to the current runtime observation."""
+
+        binder = getattr(self.bot, "bind_direct_action", None)
+        if not callable(binder):
+            return plan
+        bound_actions = tuple(binder(action) for action in plan.actions)
+        if bound_actions == plan.actions:
+            return plan
+        return SC2ExecutionPlan(
+            intent_name=plan.intent_name,
+            priority=plan.priority,
+            ordered_actions=bound_actions,
+            constraints=plan.constraints,
+            requires_live_sc2=plan.requires_live_sc2,
+            notes=plan.notes,
+            audit=plan.audit,
+        )
+
+    def tick_direct_commands(
+        self,
+        current_frame: int,
+        evidence_by_command: Mapping[str, Mapping[str, object]] | None = None,
+    ) -> tuple[dict[str, object], ...]:
+        """Concise game-loop callback alias for Direct lifecycle observation."""
+
+        before = {
+            lease.command_id: lease
+            for lease in self.direct_lifecycle.active_leases()
+        }
+        observed = self.observe_direct_commands(
+            current_frame=current_frame,
+            evidence_by_command=evidence_by_command,
+        )
+        for item in observed:
+            command_id = str(item.get("command_id", ""))
+            previous = before.get(command_id)
+            if previous is None or item.get("state") != "completed":
+                continue
+            evidence = item.get("evidence", {})
+            if not isinstance(evidence, Mapping):
+                evidence = {}
+            steps = self._dependent_workflows.pop(command_id, ())
+            matched_steps: list[tuple[str, int, Mapping[str, object]]] = []
+            for index, step in enumerate(steps):
+                resume_on = step.get("resume_on", ())
+                if isinstance(resume_on, str):
+                    resume_on = (resume_on,)
+                if any(bool(evidence.get(str(condition))) for condition in resume_on):
+                    matched_steps.append((command_id, index, step))
+            if matched_steps:
+                # Only steps whose resume condition was actually observed
+                # participate in the final release count.  Unmatched
+                # alternatives must not leave the parent lease deferred
+                # forever.
+                self._workflow_remaining[command_id] = len(matched_steps)
+                self._ready_workflows.extend(matched_steps)
+            elif steps:
+                deferred = self._deferred_workflow_releases.pop(command_id, None)
+                self._workflow_remaining.pop(command_id, None)
+                if deferred is not None:
+                    self._emit_direct_release(deferred)
+        return observed
 
     async def start(self, bot: object | None = None) -> None:
         """Start the executor lifecycle and optionally bind a BotAI-like object.
@@ -1092,11 +1525,20 @@ def _missing_runtime_result(
 def _method_name_for_action(action_type: SC2ActionType) -> str:
     return {
         SC2ActionType.ASSIGN_WORKERS: "assign_workers",
+        SC2ActionType.GATHER_RESOURCE: "gather_resource",
         SC2ActionType.BUILD_STRUCTURE: "build_structure",
         SC2ActionType.TRAIN_UNIT: "train_unit",
+        SC2ActionType.RESEARCH_UPGRADE: "research_upgrade",
+        SC2ActionType.WARP_IN: "warp_in",
         SC2ActionType.MOVE_GROUP: "move_group",
         SC2ActionType.ATTACK_MOVE: "attack_move",
+        SC2ActionType.SMART: "smart",
+        SC2ActionType.PATROL: "patrol",
+        SC2ActionType.RETURN_RESOURCE: "return_resource",
         SC2ActionType.REPAIR: "repair",
+        SC2ActionType.EXECUTE_ABILITY: "execute_ability",
         SC2ActionType.OBSERVE: "observe",
         SC2ActionType.MOVE_CAMERA: "move_camera",
+        SC2ActionType.STOP_GROUP: "stop_group",
+        SC2ActionType.HOLD_POSITION: "hold_position",
     }[action_type]

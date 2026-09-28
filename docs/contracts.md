@@ -226,13 +226,22 @@ The stable public SC2 action type name set is:
 | Action type | Semantic contract |
 | --- | --- |
 | `assign_workers` | Assign worker units to a resource, base, or economy role. |
+| `gather_resource` | Explicitly gather a semantic resource with selected workers. |
 | `build_structure` | Request construction of an SC2 structure at a semantic target alias. |
 | `train_unit` | Request production of one or more units from the appropriate producer. |
+| `research_upgrade` | Research one validated upgrade on a ready structure. |
+| `warp_in` | Warp in a semantic unit at a validated target. |
 | `move_group` | Move a named or resolved unit group to a semantic map target. |
 | `attack_move` | Issue combat movement toward a defensive or offensive target. |
+| `smart` | Issue context-aware orders to a semantic target. |
+| `patrol` | Patrol a named or resolved unit group to a semantic map target. |
+| `return_resource` | Return carried resources with selected workers. |
 | `repair` | Assign repair workers to a damaged unit or structure target. |
+| `execute_ability` | Use a semantic unit ability such as Stim, Siege, or Yamato through the live SC2 adapter. |
 | `observe` | Read or summarize visible runtime state without issuing a mutating order. |
 | `move_camera` | Move the player's camera to a resolved semantic map target without issuing unit orders. |
+| `stop_group` | Immediately stop a named or resolved unit group. |
+| `hold_position` | Hold a named or resolved unit group at its current position. |
 
 These names are the public API vocabulary for command plans, logs, UI adapters,
 and fake BotAI-style tests. They must remain semantic action categories; callers
@@ -268,12 +277,15 @@ semantics and invariants.
 
 `SC2RuntimeExecutor.execute(plan)` dispatches every planned `SC2CommandAction`
 by calling the method named after its `action_type` on the bound runtime
-adapter. `PythonSC2BotAdapter` therefore implements exactly the eight semantic
-action type names as methods:
+adapter. `PythonSC2BotAdapter` therefore implements the semantic action type
+names as methods:
 
 ```text
-assign_workers   build_structure   train_unit   move_group
-attack_move      repair            observe       move_camera
+assign_workers   gather_resource   build_structure   train_unit
+research_upgrade warp_in           move_group         attack_move
+smart            patrol             return_resource   repair
+execute_ability  observe            move_camera       stop_group
+hold_position
 ```
 
 - Counted methods return `SC2ActionReport` (partial issuance is never collapsed
@@ -291,6 +303,17 @@ attack_move      repair            observe       move_camera
 - Unknown plan targets and unknown priorities are rejected at construction
   time with the supported-value listing (strict validation, no silent
   defaults or pass-through).
+
+### Direct Ownership Contract
+
+`DirectCommandLifecycle` records both semantic `owned_subjects` and, when a
+live python-sc2 adapter can observe them, concrete positive `owned_unit_tags`.
+The adapter binds semantic squad selection to the current tag set before MCP
+lease admission. A second pending, dispatched, or active lease that overlaps a
+tag is rejected with `direct_control_conflict`; after terminal completion,
+expiry, cancellation, or failure the tags become available again. Raw tags are
+never accepted as an LLM/MCP selector, and a missing or partially tagged live
+selection fails closed instead of reserving an incomplete group.
 
 ### Observation Channel
 

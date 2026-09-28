@@ -44,6 +44,7 @@ from starcraft_commander.llm_interpreter import (
     build_combo_tool_input_schema,
     build_compact_policy_modulation_system_prompt,
     build_compact_policy_modulation_tool_input_schema,
+    build_live_compact_policy_modulation_tool_input_schema,
     build_intent_tool_definition,
     build_intent_tool_input_schema,
     build_llm_system_prompt,
@@ -260,6 +261,16 @@ def _responses_tool_response(input_payload):
             }
         ]
     }
+
+
+def _walk_mappings(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _walk_mappings(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_mappings(child)
 
 
 def _make_llm_interpreter(*outcomes):
@@ -521,7 +532,7 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         call = fake_client.calls[0]
         self.assertEqual(DEFAULT_MYPROXY_MODEL, call["model"])
         self.assertEqual({"effort": "low"}, call["reasoning"])
-        self.assertEqual(512, call["max_output_tokens"])
+        self.assertEqual(DEFAULT_LLM_MAX_TOKENS, call["max_output_tokens"])
         self.assertEqual(
             {
                 "type": "function",
@@ -550,10 +561,34 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
             commands_schema["items"]["properties"],
         )
         self.assertNotIn("modulation", compact_schema["properties"])
+        self.assertFalse(
+            any("description" in node for node in _walk_mappings(compact_schema))
+        )
         self.assertIn(
             "compact semantic command",
             call["instructions"],
         )
+
+    def test_myproxy_policy_modulation_respects_custom_output_budget(self) -> None:
+        payload = {
+            "status": "clarification_required",
+            "assistant_message": "작전 병력 배분을 지정해 주세요.",
+            "clarification_prompt": "각 분대에 어떤 병력을 배정할까요?",
+        }
+        fake_client = FakeResponsesClient(_responses_tool_response(payload))
+        interpreter = LLMCommandInterpreter(
+            provider="myproxy",
+            model=DEFAULT_MYPROXY_MODEL,
+            max_tokens=2048,
+            client_factory=lambda: fake_client,
+        )
+
+        output = interpreter.propose_policy_modulation(
+            types.SimpleNamespace(command_text="병력을 두 분대로 나눠 공격해")
+        )
+
+        self.assertEqual("clarification_required", output["status"])
+        self.assertEqual(2048, fake_client.calls[0]["max_output_tokens"])
 
     def test_myproxy_compact_schema_is_strict_provider_compatible(self) -> None:
         schema = build_compact_policy_modulation_tool_input_schema()
@@ -580,6 +615,23 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
         for unsupported_keyword in ('"allOf"', '"if"', '"then"', '"oneOf"'):
             with self.subTest(keyword=unsupported_keyword):
                 self.assertNotIn(unsupported_keyword, encoded)
+
+    def test_live_compact_schema_preserves_contract_without_descriptions(self) -> None:
+        full = build_compact_policy_modulation_tool_input_schema()
+        live = build_live_compact_policy_modulation_tool_input_schema()
+
+        self.assertEqual(full["required"], live["required"])
+        self.assertEqual(
+            full["properties"]["commands"]["anyOf"][1]["type"],
+            live["properties"]["commands"]["anyOf"][1]["type"],
+        )
+        self.assertFalse(
+            any("description" in node for node in _walk_mappings(live))
+        )
+        self.assertLess(
+            len(json.dumps(live, ensure_ascii=False)),
+            len(json.dumps(full, ensure_ascii=False)),
+        )
 
     def test_non_strict_responses_schemas_are_declared_non_strict(self) -> None:
         fake_client = FakeResponsesClient(
@@ -5195,6 +5247,32 @@ class LLMAvailabilityTest(unittest.TestCase):
                 "model and base URL must be configured",
             ):
                 interpreter._build_client()
+
+    def test_local_llm_control_reuses_provider_client(self) -> None:
+        clients = []
+
+        def build_client(**_kwargs):
+            client = object()
+            clients.append(client)
+            return client
+
+        with mock.patch(
+            "starcraft_commander.llm_interpreter.require_openai",
+            return_value=types.SimpleNamespace(OpenAI=build_client),
+        ), mock.patch.dict(
+            os.environ,
+            {
+                OPENAI_API_KEY_ENV_VAR: "openai-test-key",
+                OPENAI_API_KEY_REAL_ENV_VAR: "",
+            },
+            clear=False,
+        ):
+            control = LocalLLMControl(provider="openai", model="gpt-test")
+            first = control._build_current_interpreter()._build_client()
+            second = control._build_current_interpreter()._build_client()
+
+        self.assertIs(first, second)
+        self.assertEqual(1, len(clients))
 
     def test_injected_client_factory_is_always_available(self) -> None:
         interpreter = LLMCommandInterpreter(client_factory=FakeAnthropicClient)

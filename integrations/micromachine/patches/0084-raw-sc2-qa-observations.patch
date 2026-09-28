@@ -1,0 +1,26 @@
+diff --git a/src/GameCommander.cpp b/src/GameCommander.cpp
+--- a/src/GameCommander.cpp
++++ b/src/GameCommander.cpp
+@@ -1,5 +1,6 @@
+ #include "GameCommander.h"
+ #include "CCBot.h"
+ #include "Util.h"
+ #include "voi_runtime_identity.hpp"
++#include "voi_qa_observation.hpp"
+ 
+@@ -1246,7 +1247,17 @@ void GameCommander::writeVoiTelemetry()
+     if (m_voiPolicyActive) {
+         payload << "\"" << updateId << "\"";
+     }
+-    payload << "],\"last_failure\":null}\n";
++    payload << "],\"last_failure\":null";
++    const char * qaObservation = std::getenv("VOI_QA_RAW_OBSERVATION");
++    if (qaObservation != nullptr && std::string(qaObservation) == "1"
++        && m_bot.Observation()->GetGameLoop() % 16 == 0)
++    {
++        payload << ",\"sc2_observation\":"
++            << voiQaObservationJson(*m_bot.Observation());
++    }
++    payload << "}\n";
+ 
+     const std::string telemetryPath = std::string(sharedDir) + "/latest_telemetry.json";

@@ -605,6 +605,10 @@ _TACTICAL_TASK_TYPE_ALIASES = {
     "defend": "defend_with_units",
     "defense": "defend_with_units",
     "defend_with_units": "defend_with_units",
+    "regroup": "regroup_with_units",
+    "regrouping": "regroup_with_units",
+    "rally_back": "regroup_with_units",
+    "regroup_with_units": "regroup_with_units",
     "sustain": "sustain_production",
     "sustain_production": "sustain_production",
     "continuous_production": "sustain_production",
@@ -1071,6 +1075,8 @@ _CANONICAL_MICROMACHINE_KEY_ALIASES = {
     "gas": "TERRAN_REFINERY",
     "vespene": "TERRAN_REFINERY",
     "가스": "TERRAN_REFINERY",
+    "정제소": "TERRAN_REFINERY",
+    "가스터빈": "TERRAN_REFINERY",
     "베스핀가스": "TERRAN_REFINERY",
     "barracks": "TERRAN_BARRACKS",
     "rax": "TERRAN_BARRACKS",
@@ -1899,6 +1905,7 @@ def _normalize_micromachine_composition_and_roles(
         "scout_with_units",
         "defend_with_units",
         "harass_with_units",
+        "regroup_with_units",
     }:
         for key in merged_roles:
             unit_type, role = key
@@ -2558,6 +2565,34 @@ def _repair_micromachine_tactical_task_defaults(payload: dict[str, object]) -> N
         _set_float_at_least(combat, "preserve_army_bias", 0.35)
         _set_float_at_least(squad, "harassment_bias", 0.75)
         _set_float_at_least(squad, "split_army_bias", 0.45)
+        return
+
+    if task_type == "regroup_with_units":
+        scope = _ensure_micromachine_domain_dict(payload, "scope")
+        location = _first_non_empty_text(
+            tactical_task.get("location_intent"),
+            scope.get("location_intent"),
+            "home",
+        )
+        tactical_task["location_intent"] = location
+        _set_if_empty(scope, "location_intent", location)
+        _set_if_empty(scope, "army_group", "regroup")
+        _copy_or_default_unit_classes(
+            scope,
+            tactical_task,
+            default=("TERRAN_MARINE", "TERRAN_MARAUDER", "TERRAN_SIEGETANK"),
+        )
+        _set_if_zero_or_empty(scope, "min_units", 1)
+        _set_if_zero_or_empty(tactical_task, "min_units", 1)
+        _set_if_zero_or_empty(tactical_task, "duration_seconds", 180)
+        _set_if_zero_or_empty(tactical_task, "priority", 0.95)
+        tactical_task["allow_partial"] = True
+        combat = _ensure_micromachine_domain_dict(payload, "combat")
+        squad = _ensure_micromachine_domain_dict(payload, "squad")
+        _set_float_at_least(combat, "preserve_army_bias", 0.9)
+        _set_float_at_least(combat, "retreat_patience_bias", 0.9)
+        _set_float_at_least(squad, "regroup_bias", 0.95)
+        _set_float_at_least(squad, "defense_bias", 0.35)
         return
 
     if task_type == "expand_or_land_command_center":

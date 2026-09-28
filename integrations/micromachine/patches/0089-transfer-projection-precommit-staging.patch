@@ -1,0 +1,68 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -7195,8 +7195,63 @@ void CombatCommander::updateVoiOperations()
+ 			{
+ 				runtimeBlocker =
+ 					transactionPlan.blocker;
+ 			}
++		const VoiOperationState sourceProjectionSnapshot =
++			*source;
++		const VoiOperationState destinationProjectionSnapshot =
++			*destination;
++		const auto stageTransferProjection =
++			[](
++				VoiOperationState & existing,
++				const VoiOperationState & requested,
++				const VoiOperationTransferSelectionIdentity<
++					sc2::Tag> & selection)
++			{
++				existing.policyUpdateId =
++					requested.policyUpdateId;
++				existing.editAction =
++					requested.editAction;
++				existing.editCounterpartOperationId =
++					requested.editCounterpartOperationId;
++				existing.editUnitSelection =
++					requested.editUnitSelection;
++				existing.editBeforeComposition =
++					requested.editBeforeComposition;
++				existing.editAfterComposition =
++					requested.editAfterComposition;
++				existing.editExplicitOverride =
++					requested.editExplicitOverride;
++				existing.editConfirmationPolicy =
++					requested.editConfirmationPolicy;
++				existing.editBeforeCount =
++					requested.editBeforeCount;
++				existing.editAfterCount =
++					requested.editAfterCount;
++				existing.editResolution = "pending";
++				existing.editBlocker.clear();
++				existing.editRequestedGeneration =
++					requested.generation;
++				existing.editSelectionIdentity =
++					selection;
++				existing.editSelectionAcknowledgement =
++					VoiOperationTransferSelectionAcknowledgement<
++						sc2::Tag>();
++			};
+ 		if (runtimeBlocker.empty())
+ 		{
++			stageTransferProjection(
++				*source,
++				*sourceRequested,
++				plannedSelection->second);
++			stageTransferProjection(
++				*destination,
++				destinationRequested,
++				plannedSelection->second);
++			// Validate against the admitted request's capacity, not the
++			// previous generation's limit. Ownership stays pre-commit.
++			destination->maxUnits =
++				destinationRequested.maxUnits;
+ 			updateVoiBattlefieldProjection();
++			*source = sourceProjectionSnapshot;
++			*destination = destinationProjectionSnapshot;
+ 			const auto canonicalValidation =
+				voiValidateBattlefieldTransferMutation(

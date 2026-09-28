@@ -1,0 +1,202 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -1858,6 +1858,6 @@ CCPosition voiResolveOperationTarget(
+ 		return voiObservedEnemyCombatTarget(bot);
+ 	}
+-	if (taskType == "defend")
++	if (taskType == "defend" || taskType == "regroup")
+ 	{
+ 		// Unknown defensive semantics fail closed at home. They must never
+ 		// inherit the offensive enemy-location fallback.
+@@ -1898,7 +1898,8 @@ std::string voiResolveOperationTargetEvidence(
+ 	const bool selfTarget =
+ 		selfMainTarget
+ 		|| selfRampTarget
+-		|| (taskType == "defend"
++		|| ((taskType == "defend"
++				|| taskType == "regroup")
+ 			&& explicitTarget == CCPosition());
+ 	if (voiIsSelfNaturalLocationIntent(locationIntent))
+ 	{
+@@ -2071,6 +2072,7 @@ std::string voiCanonicalOperationTaskType(const std::string & taskType)
+ 	if (taskType == "pressure_with_main_army") return "attack";
+ 	if (taskType == "defend_with_units") return "defend";
+ 	if (taskType == "harass_with_units") return "harass";
++	if (taskType == "regroup_with_units") return "regroup";
+ 	return taskType;
+ }
+ 
+@@ -2081,6 +2083,7 @@ int voiOperationSquadOrderType(const std::string & taskType)
+ 	if (taskType == "defend") return SquadOrderTypes::Defend;
+ 	if (taskType == "harass") return SquadOrderTypes::Harass;
+ 	if (taskType == "attack") return SquadOrderTypes::Attack;
++	if (taskType == "regroup") return SquadOrderTypes::Regroup;
+ 	return SquadOrderTypes::Idle;
+ }
+ 
+@@ -4198,39 +4198,71 @@ void CombatCommander::observeVoiOperations()
+ 		bool objectiveCompleted = false;
+ 		if (!operation.standing
+ 			&& operation.lifetimeMode != "until_cancelled")
+ 		{
++			if (operation.taskType == "regroup")
++			{
++				// Regroup completion requires the explicit Regroup squad
++				// order and a subsequent SC2 movement/engagement effect.
++				bool regroupEffectObserved = false;
++				for (const auto & entry : operation.familyEvidenceByKey)
++				{
++					const auto evidence = voiSelectFamilyEffectTelemetry(
++						operation.generation, entry.second);
++					if (evidence.policyUpdateId != operation.policyUpdateId
++						|| evidence.operationGeneration != operation.generation
++						|| evidence.requiredEffect != "movement_or_engagement"
++						|| (evidence.effectKind != "movement"
++							&& evidence.effectKind != "engagement")
++						|| evidence.submittedFrame < operation.issuedAtFrame
++						|| evidence.effectFrame < evidence.submittedFrame
++						|| evidence.effectFrame > currentFrame
++						|| evidence.submittedCount <= 0)
++					{
++						continue;
++					}
++					for (const auto tag : observedTags)
++						regroupEffectObserved =
++							regroupEffectObserved
++							|| (evidence.submittedUnitTags.count(tag) > 0
++								&& evidence.effectUnitTags.count(tag) > 0);
++				}
++				objectiveCompleted =
++					operation.squadOrderType == SquadOrderTypes::Regroup
++					&& operation.submissionObserved
++					&& regroupEffectObserved;
++			}
+-			if (!operation.completionConditions.empty())
++			else if (!operation.completionConditions.empty())
+ 		{
+ 				bool abilityObserved = false;
+ 				for (const auto & entry : operation.familyEvidenceByKey)
+ 				{
+ 					const auto evidence = voiSelectFamilyEffectTelemetry(
+ 						operation.generation, entry.second);
+ 					if (evidence.policyUpdateId != operation.policyUpdateId
+ 						|| evidence.operationGeneration != operation.generation
+ 						|| evidence.requiredEffect != "ability_state_or_effect"
+ 						|| evidence.effectKind != "ability_state"
+ 						|| evidence.submittedFrame < operation.issuedAtFrame
+ 						|| evidence.effectFrame < evidence.submittedFrame
+ 						|| evidence.effectFrame > currentFrame
+ 						|| evidence.submittedCount <= 0)
+ 					{
+ 						continue;
+ 					}
+ 					for (const auto tag : observedTags)
+ 						abilityObserved = abilityObserved
+ 							|| (evidence.submittedUnitTags.count(tag) > 0
+ 								&& evidence.effectUnitTags.count(tag) > 0);
+ 				}
+ 				objectiveCompleted =
+ 					voiOperationObjectivesSatisfied(
+ 						operation.completionConditions,
+ 						{operation.submissionObserved, targetReached,
+ 							observedEnemy, abilityObserved,
+ 							operation.retreatConfirmed});
+ 			}
+ 			else if (operation.taskType == "scout"
+ 				|| operation.taskType == "defend")
+ 			{
+ 				objectiveCompleted = targetReached;
+ 			}
+@@ -5567,7 +5571,8 @@ void CombatCommander::updateVoiOperations()
+ 		else if (requested.taskType != "scout"
+ 			&& requested.taskType != "attack"
+ 			&& requested.taskType != "defend"
+-			&& requested.taskType != "harass")
++			&& requested.taskType != "harass"
++			&& requested.taskType != "regroup")
+ 		{
+ 			requested.status = "BLOCKED";
+ 			requested.blockedReason =
+diff --git a/src/voi_pre_live_journey_adapter.hpp b/src/voi_pre_live_journey_adapter.hpp
+--- a/src/voi_pre_live_journey_adapter.hpp
++++ b/src/voi_pre_live_journey_adapter.hpp
+@@ -229,6 +229,10 @@ class VoiPreLiveJourneyAdapter
+ 		{
+ 			return "squad_order:harass";
+ 		}
++		if (operation.taskType == "regroup_with_units")
++		{
++			return "squad_order:regroup";
++		}
+ 		if (operation.taskType == "pressure_with_main_army")
+ 		{
+ 			return "squad_order:attack";
+@@ -251,6 +255,10 @@ class VoiPreLiveJourneyAdapter
+ 		{
+ 			return "harass";
+ 		}
++		if (operation.taskType == "regroup_with_units")
++		{
++			return "regroup";
++		}
+ 		if (operation.taskType == "pressure_with_main_army")
+ 		{
+ 			return "attack";
+@@ -279,5 +287,10 @@ class VoiPreLiveJourneyAdapter
+ 			targetY = 72.0;
+ 		}
++		else if (locationIntent == "home")
++		{
++			targetX = 16.0;
++			targetY = 16.0;
++		}
+ 		else if (locationIntent == "self_main")
+ 		{
+ 			targetX = 16.0;
+@@ -344,6 +357,10 @@ class VoiPreLiveJourneyAdapter
+ 		{
+ 			return 8.0;
+ 		}
++		if (orderKind == "regroup")
++		{
++			return 8.0;
++		}
+ 		if (orderKind == "idle")
+ 		{
+ 			return 0.0;
+diff --git a/src/main.cpp b/src/main.cpp
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -347,6 +347,10 @@ class VoiMicroMachinePreLiveProductionExecutor
+ 		{
+ 			orderType = SquadOrderTypes::Retreat;
+ 		}
++		else if (orderKind == "regroup")
++		{
++			orderType = SquadOrderTypes::Regroup;
++		}
+ 		else if (orderKind == "idle")
+ 		{
+ 			orderType = SquadOrderTypes::Idle;
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -1,3 +1,4 @@
++#include <cstdlib>
+ #include <initializer_list>
+ #include <sstream>
+ #include "ProductionManager.h"
+@@ -3599,7 +3600,11 @@ void ProductionManager::putImportantBuildOrderItemsInQueue()
+ 		m_bot.Commander().getVoiPolicyFloat("economy.supply_buffer_bias", 0.0f));
+ 	const bool explicitVoiSupplyRequest = m_bot.Commander().isVoiPolicyActive() && explicitVoiSupplyBias > 0.25f;
+ 	const bool criticalSupplyNeed = supplyWithAdditionalSupplyDepot - m_bot.GetCurrentSupply() <= 2;
+-	if(m_bot.GetCurrentSupply() + getSupplyNeedsFromProductionBuildings() + finishedBaseCount > supplyWithAdditionalSupplyDepot
++	const bool disableProactiveSupplyRecovery =
++		std::getenv("VOI_QA_DISABLE_PROACTIVE_SUPPLY_RECOVERY") != nullptr
++		&& std::string(std::getenv("VOI_QA_DISABLE_PROACTIVE_SUPPLY_RECOVERY")) == "1";
++	if(!disableProactiveSupplyRecovery
++		&& m_bot.GetCurrentSupply() + getSupplyNeedsFromProductionBuildings() + finishedBaseCount > supplyWithAdditionalSupplyDepot
+ 		&& supplyWithAdditionalSupplyDepot < 200
+ 		&& !m_bot.Strategy().isWorkerRushed()
+ 		&& (!reserveVoiExpandCommandCenter || explicitVoiSupplyRequest || criticalSupplyNeed))

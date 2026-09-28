@@ -83,6 +83,8 @@ from starcraft_commander.contextual_transfer import (
     ContextualTransferRequest,
     prepare_contextual_transfer,
 )
+from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
+from starcraft_commander.direct_command_registry import DirectCommandRegistry
 from starcraft_commander.micromachine_tactical_evidence import (
     classify_micromachine_tactical_evidence,
     normalize_tactical_effect_tags,
@@ -3377,6 +3379,7 @@ def _micromachine_status_payload(
     blackboard_dir: str = "",
     compile_result: object | None = None,
     result_stream: Sequence[Mapping[str, object]] = (),
+    include_evidence: bool = True,
     previous_battlefield_identity: (
         BattlefieldProjectionIdentity | Mapping[str, object] | None
     ) = None,
@@ -3412,10 +3415,14 @@ def _micromachine_status_payload(
     )
     consumption_status = _micromachine_consumption_status(latest, telemetry)
     update_id = str(latest.get("update_id", "") or "") if latest else ""
-    evidence_log_snippets = _micromachine_recent_tactical_log_snippets(
-        blackboard_dir,
-        update_id=update_id,
-        limit=None,
+    evidence_log_snippets = (
+        _micromachine_recent_tactical_log_snippets(
+            blackboard_dir,
+            update_id=update_id,
+            limit=None,
+        )
+        if include_evidence
+        else []
     )
     log_snippets = evidence_log_snippets[-8:]
     intervention_compile_result = _micromachine_compile_result_for_update(
@@ -3540,6 +3547,7 @@ def _micromachine_status_with_runtime_gate(
     *,
     runtime_snapshot: Mapping[str, object] | None,
     blackboard_dir: str,
+    include_evidence: bool = True,
 ) -> dict[str, object]:
     """Attach runtime metadata and fail closed when telemetry is detached."""
 
@@ -3587,6 +3595,7 @@ def _micromachine_status_with_runtime_gate(
             and not isinstance(result.get("modulation_results"), (str, bytes))
             else ()
         ),
+        include_evidence=include_evidence,
     )
     result.update(rebuilt)
     result["operation_registry_authoritative"] = False
@@ -4780,8 +4789,11 @@ _MICROMACHINE_LANGUAGE_LABELS: Final[Mapping[str, str]] = {
 }
 """Language labels passed to the LLM policy modulation context."""
 
-_MICROMACHINE_RECENT_COMMAND_LIMIT: Final[int] = 8
-"""Maximum recent commands retained per blackboard for LLM context."""
+_MICROMACHINE_RECENT_COMMAND_LIMIT: Final[int] = 40
+"""Maximum recent commands retained per blackboard for the commander UI."""
+
+_MICROMACHINE_CONTEXT_COMMAND_LIMIT: Final[int] = 8
+"""Maximum recent commands sent back to the LLM as context."""
 
 _MICROMACHINE_RECENT_COMMAND_TEXT_LIMIT: Final[int] = 500
 """Maximum text stored for one recent commander-context field."""
@@ -5015,13 +5027,20 @@ def _micromachine_recent_command_entry(
 
 
 class _MicroMachineRequestSupersededError(RuntimeError):
-    """Raised when an emergency command supersedes unpublished queued work."""
+    """Raised when a newer command supersedes unpublished queued work."""
 
-    def __init__(self, request_id: str, replacement_update_id: str) -> None:
+    def __init__(
+        self,
+        request_id: str,
+        replacement_update_id: str,
+        *,
+        reason: str = "newer command",
+    ) -> None:
         self.request_id = request_id
         self.replacement_update_id = replacement_update_id
+        self.reason = reason
         super().__init__(
-            f"MicroMachine request {request_id} was superseded by emergency "
+            f"MicroMachine request {request_id} was superseded by {reason} "
             f"request {replacement_update_id}."
         )
 
@@ -5054,8 +5073,10 @@ class _MicroMachineModulationRequest:
     update_id: str | None
     future: concurrent.futures.Future[Mapping[str, object]]
     cancel_event: threading.Event
+    executor_future: concurrent.futures.Future[object] | None = None
     deadline_monotonic: float | None = None
     emergency: bool = False
+    supersede_older: bool = False
     emergency_epoch: int = 0
     accepted_at_unix_ns: int = 0
     acceptance_ordinal: int = 0
@@ -8541,11 +8562,13 @@ class _BattlefieldProjectionCursor:
 class SessionLoopBridge:
     """Default web GUI bridge owning one daemon asyncio loop thread.
 
-    Submitted texts are drained strictly sequentially through the injected
-    session's ``process_text`` coroutine, so two browser submissions can never
-    interleave half-executed plans. Every resulting outcome — including honest
-    blocked/clarification ones — is recorded into the history store; a session
-    exception becomes a recorded ``blocked`` outcome instead of a silent drop.
+    Legacy commander texts are drained strictly sequentially through the
+    injected session's ``process_text`` coroutine. MicroMachine background
+    requests use a bounded latest-intent lane so one blocked provider call
+    cannot hold newer commands indefinitely. Every resulting outcome —
+    including honest blocked/clarification ones — is recorded into the history
+    store; a session exception becomes a recorded ``blocked`` outcome instead
+    of a silent drop.
     """
 
     def __init__(
@@ -8555,6 +8578,8 @@ class SessionLoopBridge:
         state_resolver: SC2StateResolverInterface = DEFAULT_SC2_STATE_RESOLVER,
         llm_control: object | None = None,
         micromachine_blackboard_dir: str = "",
+        direct_lifecycle: DirectCommandLifecycle | None = None,
+        direct_command_registry: DirectCommandRegistry | None = None,
     ) -> None:
         if not callable(getattr(session, "process_text", None)):
             raise TypeError("Session loop bridge session must implement process_text().")
@@ -8567,6 +8592,27 @@ class SessionLoopBridge:
         if not callable(getattr(state_resolver, "resolve", None)):
             raise TypeError("Session loop bridge state_resolver must implement resolve().")
         self._session = session
+        # Keep Direct ownership for the lifetime of the bridge/game session.
+        # Modulation requests may create short-lived provider sessions, but a
+        # squad lease must survive until a game-loop tick, cancellation,
+        # failure, or TTL releases it.
+        executor_lifecycle = getattr(
+            getattr(session, "executor", None),
+            "direct_lifecycle",
+            None,
+        )
+        self._direct_lifecycle = (
+            direct_lifecycle
+            or (
+                executor_lifecycle
+                if isinstance(executor_lifecycle, DirectCommandLifecycle)
+                else None
+            )
+            or DirectCommandLifecycle()
+        )
+        self._direct_command_registry = (
+            direct_command_registry or DirectCommandRegistry()
+        )
         self._history = store
         self._state_resolver = state_resolver
         self._llm_control = llm_control
@@ -8607,6 +8653,9 @@ class SessionLoopBridge:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._queue: "asyncio.PriorityQueue[tuple[int, int, object]]" | None = None
         self._micromachine_normal_executor: (
+            concurrent.futures.ThreadPoolExecutor | None
+        ) = None
+        self._micromachine_sync_executor: (
             concurrent.futures.ThreadPoolExecutor | None
         ) = None
         self._micromachine_emergency_executor: (
@@ -8794,23 +8843,30 @@ class SessionLoopBridge:
                 request_blackboard,
                 (0, ""),
             )[0]
-            if request.emergency:
-                for pending_id, pending in tuple(
-                    self._micromachine_requests.items()
-                ):
+            if request.supersede_older or request.emergency:
+                for pending_id, pending in tuple(self._micromachine_requests.items()):
                     if (
                         pending_id == update_id
                         or pending.publish_committed
-                        or os.path.realpath(pending.blackboard_dir)
-                        != request_blackboard
+                        or os.path.realpath(pending.blackboard_dir) != request_blackboard
+                        or (pending.emergency and not request.emergency)
                     ):
                         continue
+                    # A blackboard has one authoritative latest intent. Do not let
+                    # slow LLM calls serialize stale commands behind the live one.
                     pending.cancel_event.set()
+                    if pending.executor_future is not None:
+                        pending.executor_future.cancel()
                     if not pending.future.done():
                         pending.future.set_exception(
                             _MicroMachineRequestSupersededError(
                                 pending_id,
                                 update_id,
+                                reason=(
+                                    "emergency"
+                                    if request.emergency
+                                    else "newer"
+                                ),
                             )
                         )
             self._micromachine_requests[update_id] = request
@@ -8918,6 +8974,37 @@ class SessionLoopBridge:
     def micromachine_blackboard_dir(self) -> str:
         return self._micromachine_blackboard_dir
 
+    def observe_direct_commands(
+        self,
+        *,
+        current_frame: int,
+        evidence_by_command: Mapping[str, Mapping[str, object]] | None = None,
+    ) -> tuple[dict[str, object], ...]:
+        """Tick bridge-owned Direct leases from a live game-loop callback."""
+
+        frame = int(current_frame)
+        if frame < 0:
+            raise ValueError("current_frame must be non-negative")
+        return tuple(
+            lease.to_dict()
+            for lease in self._direct_lifecycle.observe_all(
+                frame=frame,
+                evidence_by_command=evidence_by_command,
+            )
+        )
+
+    def tick_direct_commands(
+        self,
+        current_frame: int,
+        evidence_by_command: Mapping[str, Mapping[str, object]] | None = None,
+    ) -> tuple[dict[str, object], ...]:
+        """Concise alias for BotAI/game-loop integrations."""
+
+        return self.observe_direct_commands(
+            current_frame=current_frame,
+            evidence_by_command=evidence_by_command,
+        )
+
     def configure_llm(self, provider: str, api_key: str, model: str = "") -> Mapping[str, object]:
         control = self._llm_control
         configure = getattr(control, "configure", None)
@@ -8969,6 +9056,7 @@ class SessionLoopBridge:
                 cleaned,
                 provider_output,
             ),
+            supersede_older=False,
         )
         self._accept_micromachine_request(request)
         try:
@@ -9178,6 +9266,7 @@ class SessionLoopBridge:
                 cleaned,
                 provider_output,
             ),
+            supersede_older=True,
         )
 
         def observe_background_result(
@@ -9246,6 +9335,20 @@ class SessionLoopBridge:
 
         future.add_done_callback(observe_background_result)
         self._accept_micromachine_request(request)
+        self._remember_micromachine_command(
+            root,
+            cleaned,
+            {
+                "status": "queued",
+                "update_id": resolved_update_id,
+                "consumption_status": "pending_compile",
+                "compile_result": {
+                    "status": "queued",
+                    "update_id": resolved_update_id,
+                    "command_text": cleaned,
+                },
+            },
+        )
         metadata = _micromachine_compile_result_metadata(root, resolved_update_id)
         return {
             "accepted": True,
@@ -9333,9 +9436,13 @@ class SessionLoopBridge:
                 self._micromachine_request_lock,
                 self._micromachine_emergency_epochs,
             )
+        direct_executor = getattr(self._session, "executor", None)
         result = MicroMachineLiveTextSession(
             backend,
             provider,
+            direct_executor=direct_executor,
+            direct_lifecycle=self._direct_lifecycle,
+            direct_command_registry=self._direct_command_registry,
         ).submit_text(
             text,
             current_frame=current_frame,
@@ -9411,6 +9518,8 @@ class SessionLoopBridge:
                 "consumed",
                 "command_queue",
                 "intervention",
+                "unified_route",
+                "tool_results",
                 "blackboard_scope_id",
                 "result_id",
                 "battlefield_session_epoch",
@@ -9443,16 +9552,23 @@ class SessionLoopBridge:
             payload["persistence_warnings"] = list(persistence_warnings)
         return payload
 
-    def micromachine_status(self, *, blackboard_dir: str = "") -> Mapping[str, object]:
+    def micromachine_status(
+        self,
+        *,
+        blackboard_dir: str = "",
+        lightweight: bool = False,
+    ) -> Mapping[str, object]:
         return self._micromachine_status(
             blackboard_dir=blackboard_dir,
             runtime_instance_id="",
+            lightweight=lightweight,
         )
 
     def micromachine_status_detached(
         self,
         *,
         blackboard_dir: str = "",
+        lightweight: bool = False,
     ) -> Mapping[str, object]:
         """Build detached status without granting telemetry epoch authority."""
 
@@ -9460,6 +9576,7 @@ class SessionLoopBridge:
             blackboard_dir=blackboard_dir,
             runtime_instance_id="",
             operation_registry_authoritative_override=False,
+            lightweight=lightweight,
         )
 
     def micromachine_status_for_runtime(
@@ -9468,6 +9585,7 @@ class SessionLoopBridge:
         blackboard_dir: str = "",
         runtime_instance_id: str,
         telemetry_document: Mapping[str, object],
+        lightweight: bool = False,
     ) -> Mapping[str, object]:
         """Build status from the exact telemetry document validated by launcher."""
 
@@ -9488,6 +9606,7 @@ class SessionLoopBridge:
             blackboard_dir=blackboard_dir,
             runtime_instance_id=instance_id,
             validated_runtime_telemetry=telemetry,
+            lightweight=lightweight,
         )
 
     def _micromachine_status(
@@ -9497,6 +9616,7 @@ class SessionLoopBridge:
         runtime_instance_id: str,
         validated_runtime_telemetry: MicroMachineTelemetry | None = None,
         operation_registry_authoritative_override: bool | None = None,
+        lightweight: bool = False,
     ) -> Mapping[str, object]:
         from starcraft_commander.micromachine_runtime import (
             MicroMachineFilesystemBlackboard,
@@ -9513,8 +9633,12 @@ class SessionLoopBridge:
             if runtime_instance_id
             else backend.read_latest_telemetry()
         )
-        telemetry_archive = backend.read_recent_telemetry_archive(
-            pending_family_effects_only=True,
+        telemetry_archive = (
+            ()
+            if lightweight
+            else backend.read_recent_telemetry_archive(
+                pending_family_effects_only=True,
+            )
         )
         if runtime_instance_id:
             if telemetry is None:
@@ -9610,6 +9734,7 @@ class SessionLoopBridge:
                 compile_result=compile_result,
                 result_stream=compile_result_stream,
                 battlefield_projection=battlefield_projection,
+                include_evidence=not lightweight,
             )
             if operation_registry_authoritative_override is not None:
                 status_payload["operation_registry_authoritative"] = (
@@ -9645,11 +9770,79 @@ class SessionLoopBridge:
             **status_payload,
         }
         payload["modulation_results"] = compile_result_stream
+        self._hydrate_micromachine_recent_commands(
+            root,
+            compile_result_stream,
+        )
         public_payload = _public_micromachine_runtime_payload(payload)
         if not isinstance(public_payload, Mapping):
             return {}
         result = dict(public_payload)
         self._update_micromachine_recent_lifecycle(root, result)
+        with self._micromachine_request_lock:
+            pending_requests = [
+                request
+                for request in self._micromachine_requests.values()
+                if os.path.realpath(request.blackboard_dir) == os.path.realpath(root)
+                and not request.publish_committed
+                and not request.cancel_event.is_set()
+                and not request.future.done()
+            ]
+        result["pending_request_count"] = len(pending_requests)
+        result["queued_request_count"] = sum(
+            1
+            for request in pending_requests
+            if request.future.running() is False
+        )
+        if pending_requests:
+            latest_pending = max(
+                pending_requests,
+                key=lambda request: (
+                    request.acceptance_ordinal,
+                    request.accepted_at_unix_ns,
+                ),
+            )
+            latest_pending_id = str(latest_pending.update_id or "")
+            active_update = result.get("update")
+            active_update_id = (
+                str(active_update.get("update_id", "") or "")
+                if isinstance(active_update, Mapping)
+                else ""
+            )
+            result["latest_request"] = {
+                "update_id": latest_pending_id,
+                "status": (
+                    "compiling"
+                    if latest_pending.future.running()
+                    else "queued"
+                ),
+                "source": "commander",
+                "command_text": latest_pending.text,
+                "consumption_status": "pending_compile",
+                "active_update_id": active_update_id,
+                "is_active_update": False,
+                "refusal_reason": "",
+                "clarification_prompt": "",
+                "duration_ms": None,
+                "command_queue": {
+                    "active_command_id": latest_pending_id,
+                    "update_id": latest_pending_id,
+                    "action": (
+                        "compiling_latest"
+                        if latest_pending.future.running()
+                        else "queued_latest"
+                    ),
+                    "pending_count": len(pending_requests),
+                },
+            }
+            result["latest_request_consumption_status"] = "pending_compile"
+        with self._micromachine_recent_commands_lock:
+            recent_commands = self._micromachine_recent_commands.get(root)
+            result["recent_commands"] = (
+                json.loads(json.dumps(list(recent_commands), ensure_ascii=False))
+                if recent_commands is not None
+                else []
+            )
         return result
 
     def _run_loop(self) -> None:
@@ -9661,12 +9854,19 @@ class SessionLoopBridge:
             asyncio.PriorityQueue()
         )
         normal_executor: concurrent.futures.ThreadPoolExecutor | None = None
+        sync_executor: concurrent.futures.ThreadPoolExecutor | None = None
         emergency_executor: concurrent.futures.ThreadPoolExecutor | None = None
         active = False
         try:
             normal_executor = concurrent.futures.ThreadPoolExecutor(
-                max_workers=1,
+                # Bounded overlap lets the newest command bypass one blocked
+                # provider call without creating unbounded work.
+                max_workers=2,
                 thread_name_prefix="voi-mm-normal",
+            )
+            sync_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="voi-mm-sync",
             )
             emergency_executor = concurrent.futures.ThreadPoolExecutor(
                 max_workers=1,
@@ -9677,6 +9877,7 @@ class SessionLoopBridge:
                     self._loop = loop
                     self._queue = queue
                     self._micromachine_normal_executor = normal_executor
+                    self._micromachine_sync_executor = sync_executor
                     self._micromachine_emergency_executor = emergency_executor
                     self._lifecycle_state = _BRIDGE_LIFECYCLE_RUNNING
                     active = True
@@ -9686,6 +9887,8 @@ class SessionLoopBridge:
         finally:
             if normal_executor is not None:
                 normal_executor.shutdown(wait=True)
+            if sync_executor is not None:
+                sync_executor.shutdown(wait=True)
             if emergency_executor is not None:
                 emergency_executor.shutdown(wait=True)
             self._terminate_pending_micromachine_requests(
@@ -9696,6 +9899,7 @@ class SessionLoopBridge:
                     self._loop = None
                     self._queue = None
                     self._micromachine_normal_executor = None
+                    self._micromachine_sync_executor = None
                     self._micromachine_emergency_executor = None
                 if self._thread is threading.current_thread():
                     self._thread = None
@@ -9706,7 +9910,7 @@ class SessionLoopBridge:
             loop.close()
 
     async def _drain_commands(self) -> None:
-        """Drain normal work serially while dispatching emergency work immediately."""
+        """Dispatch legacy work serially and bounded MicroMachine work concurrently."""
 
         queue = self._queue
         assert queue is not None  # Set by _run_loop before _ready fires.
@@ -9715,10 +9919,17 @@ class SessionLoopBridge:
             if item is _STOP_SENTINEL:
                 return
             if isinstance(item, _MicroMachineModulationRequest):
+                if item.cancel_event.is_set() or item.future.cancelled():
+                    self._forget_micromachine_request(item)
+                    continue
                 executor = (
                     self._micromachine_emergency_executor
                     if item.emergency
-                    else self._micromachine_normal_executor
+                    else (
+                        self._micromachine_normal_executor
+                        if item.supersede_older
+                        else self._micromachine_sync_executor
+                    )
                 )
                 if executor is None:
                     if not item.future.done():
@@ -9729,7 +9940,14 @@ class SessionLoopBridge:
                         )
                     self._forget_micromachine_request(item)
                     continue
-                executor.submit(self._process_one_micromachine_request, item)
+                executor_future = executor.submit(
+                    self._process_one_micromachine_request,
+                    item,
+                )
+                with self._micromachine_request_lock:
+                    item.executor_future = executor_future
+                    if item.cancel_event.is_set() or item.future.cancelled():
+                        executor_future.cancel()
                 continue
             if isinstance(item, _CorrelatedWebCommand):
                 await self._process_one(
@@ -9883,13 +10101,21 @@ class SessionLoopBridge:
             has_history = bool(self._micromachine_recent_commands.get(key))
         if has_history:
             try:
-                self.micromachine_status(blackboard_dir=blackboard_dir)
+                self.micromachine_status(
+                    blackboard_dir=blackboard_dir,
+                    lightweight=True,
+                )
             except Exception:
                 pass
         with self._micromachine_recent_commands_lock:
             history = self._micromachine_recent_commands.get(key)
             context["recent_commands"] = (
-                json.loads(json.dumps(list(history), ensure_ascii=False))
+                json.loads(
+                    json.dumps(
+                        list(history)[-_MICROMACHINE_CONTEXT_COMMAND_LIMIT:],
+                        ensure_ascii=False,
+                    )
+                )
                 if history is not None
                 else []
             )
@@ -9908,7 +10134,63 @@ class SessionLoopBridge:
                 key,
                 deque(maxlen=_MICROMACHINE_RECENT_COMMAND_LIMIT),
             )
-            history.append(entry)
+            update_id = str(entry.get("update_id", "") or "")
+            existing_index = next(
+                (
+                    index
+                    for index, existing in enumerate(history)
+                    if str(existing.get("update_id", "") or "") == update_id
+                ),
+                None,
+            )
+            if existing_index is None:
+                history.append(entry)
+            else:
+                merged = dict(history[existing_index])
+                merged.update(entry)
+                history[existing_index] = merged
+
+    def _hydrate_micromachine_recent_commands(
+        self,
+        blackboard_dir: str,
+        result_stream: Sequence[Mapping[str, object]],
+    ) -> None:
+        """Restore bounded chat history after a controller refresh."""
+
+        key = os.path.realpath(blackboard_dir)
+        with self._micromachine_recent_commands_lock:
+            history = self._micromachine_recent_commands.setdefault(
+                key,
+                deque(maxlen=_MICROMACHINE_RECENT_COMMAND_LIMIT),
+            )
+            by_update_id = {
+                str(entry.get("update_id", "") or ""): index
+                for index, entry in enumerate(history)
+                if str(entry.get("update_id", "") or "")
+            }
+            for item in result_stream[-_MICROMACHINE_RECENT_COMMAND_LIMIT:]:
+                if not isinstance(item, Mapping):
+                    continue
+                compile_result = _mapping_child(item, "compile_result")
+                command_text = str(
+                    item.get("command_text")
+                    or compile_result.get("command_text")
+                    or ""
+                ).strip()
+                if not command_text:
+                    continue
+                entry = _micromachine_recent_command_entry(command_text, item)
+                update_id = str(entry.get("update_id", "") or "")
+                if not update_id:
+                    continue
+                existing_index = by_update_id.get(update_id)
+                if existing_index is None:
+                    history.append(entry)
+                    by_update_id[update_id] = len(history) - 1
+                    continue
+                existing = dict(history[existing_index])
+                existing.update(entry)
+                history[existing_index] = existing
 
     def _update_micromachine_recent_lifecycle(
         self,
@@ -11734,13 +12016,25 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             and runtime_instance_id
             and callable(runtime_status_fn)
         ):
-            payload = dict(
-                runtime_status_fn(
-                    blackboard_dir=blackboard_dir,
-                    runtime_instance_id=runtime_instance_id,
-                    telemetry_document=validated_telemetry_document,
+            try:
+                payload = dict(
+                    runtime_status_fn(
+                        blackboard_dir=blackboard_dir,
+                        runtime_instance_id=runtime_instance_id,
+                        telemetry_document=validated_telemetry_document,
+                        lightweight=read_only,
+                    )
                 )
-            )
+            except TypeError as error:
+                if "lightweight" not in str(error):
+                    raise
+                payload = dict(
+                    runtime_status_fn(
+                        blackboard_dir=blackboard_dir,
+                        runtime_instance_id=runtime_instance_id,
+                        telemetry_document=validated_telemetry_document,
+                    )
+                )
         elif runtime_claims_current_telemetry:
             runtime_snapshot = dict(runtime_snapshot)
             runtime_snapshot["telemetry_current_for_process"] = False
@@ -11781,15 +12075,24 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 status_builder = (
                     detached_status_fn if use_detached else status_fn
                 )
-                payload = dict(
-                    status_builder(blackboard_dir=blackboard_dir)
-                )
+                try:
+                    payload = dict(
+                        status_builder(
+                            blackboard_dir=blackboard_dir,
+                            lightweight=read_only,
+                        )
+                    )
+                except TypeError as error:
+                    if "lightweight" not in str(error):
+                        raise
+                    payload = dict(status_builder(blackboard_dir=blackboard_dir))
         return _micromachine_status_with_runtime_gate(
             payload,
             runtime_snapshot=runtime_snapshot,
             blackboard_dir=str(
                 payload.get("blackboard_dir", blackboard_dir) or ""
             ),
+            include_evidence=not read_only,
         )
 
     def _write_sse_event(self, event: Mapping[str, object]) -> None:

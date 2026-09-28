@@ -4,9 +4,9 @@ This is the handoff Step 2 bridge between planned semantic commands and a
 live python-sc2 ``BotAI`` runtime. ``SC2RuntimeExecutor.execute`` dispatches
 every planned :class:`SC2CommandAction` by calling the method named after its
 ``action_type`` on the bound runtime adapter, so :class:`PythonSC2BotAdapter`
-implements exactly those seven method names and translates them into
-duck-typed BotAI operations: worker gather, build, train, move, attack-move,
-repair, and state observation. Bot objects are never isinstance-checked
+implements the bounded semantic method set and translates it into duck-typed
+BotAI operations: resource transfer, construction, production, research,
+movement, patrol, repair, abilities, and state observation. Bot objects are never isinstance-checked
 against python-sc2 types and python-sc2 itself is only lazy-imported inside
 functions, so this module stays importable without StarCraft II, python-sc2,
 faster-whisper, or sounddevice installed.
@@ -41,7 +41,7 @@ import inspect
 import math
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Final, Protocol, runtime_checkable
 
 from starcraft_commander.contracts import SC2ActionReport, SC2CommandAction
@@ -60,13 +60,22 @@ from starcraft_commander.state_resolver import (
 
 SC2_ADAPTER_ACTION_METHOD_NAMES: Final[tuple[str, ...]] = (
     "assign_workers",
+    "gather_resource",
     "build_structure",
     "train_unit",
+    "research_upgrade",
+    "warp_in",
     "move_group",
     "attack_move",
+    "smart",
+    "patrol",
+    "return_resource",
     "repair",
+    "execute_ability",
     "observe",
     "move_camera",
+    "stop_group",
+    "hold_position",
 )
 """The semantic action methods ``SC2RuntimeExecutor`` dispatches to."""
 
@@ -182,11 +191,20 @@ class SC2BotAdapterInterface(Protocol):
     async def assign_workers(self, action: SC2CommandAction) -> SC2ActionReport:
         """Send workers to gather the requested resource near the main base."""
 
+    async def gather_resource(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Gather a resource through the explicit python-sc2 gather surface."""
+
     async def build_structure(self, action: SC2CommandAction) -> bool | SC2ActionReport:
         """Place one structure near the resolved semantic map target."""
 
     async def train_unit(self, action: SC2CommandAction) -> SC2ActionReport:
         """Queue unit training on ready idle producers of the planned type."""
+
+    async def research_upgrade(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Research one upgrade on a matching ready idle structure."""
+
+    async def warp_in(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Warp in units through ready structures at a semantic target."""
 
     async def move_group(self, action: SC2CommandAction) -> SC2ActionReport:
         """Move the selected unit group to the resolved semantic map target."""
@@ -194,14 +212,40 @@ class SC2BotAdapterInterface(Protocol):
     async def attack_move(self, action: SC2CommandAction) -> SC2ActionReport:
         """Attack-move the selected unit group to the resolved map target."""
 
+    async def smart(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Issue context-aware ``Unit.smart`` orders to a semantic target."""
+
+    async def patrol(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Patrol the selected unit group to a resolved semantic target."""
+
+    async def return_resource(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Return carried resources with selected workers."""
+
     async def repair(self, action: SC2CommandAction) -> SC2ActionReport:
         """Send workers to repair the first damaged matching own entity."""
+
+    async def execute_ability(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Issue one semantic unit ability through the live BotAI runtime."""
 
     async def observe(self, action: SC2CommandAction) -> Mapping[str, object]:
         """Return a JSON-ready commander state snapshot observation."""
 
     async def move_camera(self, action: SC2CommandAction) -> SC2ActionReport:
         """Move the live camera to the resolved semantic map target."""
+
+    async def stop_group(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Stop the selected unit group immediately."""
+
+    async def hold_position(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Hold the selected unit group at its current position."""
+
+    def bind_direct_action(self, action: SC2CommandAction) -> SC2CommandAction:
+        """Pin current live unit tags before a Direct lease is admitted."""
+
+    def direct_command_evidence(
+        self, lease: Mapping[str, object]
+    ) -> Mapping[str, object]:
+        """Collect conservative completion evidence for one direct lease."""
 
 
 @dataclass
@@ -257,7 +301,7 @@ class PythonSC2BotAdapter:
         if target_unit is None:
             return _refusal_report(action.count, "no_gather_target")
         issued = 0
-        for worker in self._worker_pool():
+        for worker in self._action_units(action, workers=True):
             if issued >= action.count:
                 break
             gather = getattr(worker, "gather", None)
@@ -267,13 +311,19 @@ class PythonSC2BotAdapter:
                 issued += 1
         return _issuance_report(action.count, issued, "insufficient_workers")
 
+    async def gather_resource(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Issue the explicit gather action while sharing worker selection rules."""
+
+        return await self.assign_workers(action)
+
     async def build_structure(self, action: SC2CommandAction) -> bool | SC2ActionReport:
         """Build ``action.subject`` near the resolved semantic map target.
 
         ``action.subject`` is a python-sc2 ``UnitTypeId`` name string such as
         ``SUPPLYDEPOT``. Explicitly unaffordable builds are refused. EXPAND
         plans (planner metadata ``source_structure == 'Command Center'``)
-        prefer ``await bot.expand_now()`` when the bot provides it. Gas
+        prefer ``await bot.expand_now()`` only for unbound compatibility
+        actions. Direct leases always use their pinned builder. Gas
         structures (Refinery) require a geyser *unit* in real python-sc2, so
         they are built through ``worker.build_gas`` (or ``bot.build`` with the
         geyser unit) on the nearest free geyser, refusing honestly when no
@@ -351,10 +401,11 @@ class PythonSC2BotAdapter:
                     ),
                 )
             expand_now = getattr(self.bot, "expand_now", None)
-            if callable(expand_now):
+            if callable(expand_now) and "_direct_unit_tags" not in action.metadata:
                 return await _call_bot_operation(expand_now)
         build = getattr(self.bot, "build", None)
-        if not callable(build):
+        has_pinned_builder = "_direct_unit_tags" in action.metadata
+        if not callable(build) and not has_pinned_builder:
             detail = "missing_build_capability"
             return _refusal_report(
                 1,
@@ -401,11 +452,48 @@ class PythonSC2BotAdapter:
                     failure_reason=placement.detail,
                 ),
             )
-        built = await _call_bot_operation(
-            build,
-            type_id,
-            near=_game_point(placement.position),
-        )
+        destination = _game_point(placement.position)
+        pinned_builders = self._action_units(action, workers=True)
+        if "_direct_unit_tags" in action.metadata:
+            # A live lease must command the exact worker admitted into the
+            # ownership registry. Falling back to BotAI.build() here would let
+            # python-sc2 silently select a different SCV after observation
+            # reorder, defeating concrete tag ownership.
+            if not pinned_builders:
+                detail = "pinned_builder_missing"
+                return _refusal_report(
+                    1,
+                    detail,
+                    audit=_build_placement_audit(
+                        action,
+                        placement_policy=audit_policy,
+                        anchor_resolution=anchor_resolution,
+                        search_result=placement,
+                        failure_reason=detail,
+                    ),
+                )
+            builder = pinned_builders[0]
+            build_order = getattr(builder, "build", None)
+            if not callable(build_order):
+                detail = "missing_pinned_builder_capability"
+                return _refusal_report(
+                    1,
+                    detail,
+                    audit=_build_placement_audit(
+                        action,
+                        placement_policy=audit_policy,
+                        anchor_resolution=anchor_resolution,
+                        search_result=placement,
+                        failure_reason=detail,
+                    ),
+                )
+            built = await self._issue_unit_order(build_order, type_id, destination)
+        else:
+            built = await _call_bot_operation(
+                build,
+                type_id,
+                near=destination,
+            )
         audit = _build_placement_audit(
             action,
             placement_policy=audit_policy,
@@ -450,10 +538,15 @@ class PythonSC2BotAdapter:
                 1,
                 "invalid_refinery_target: no_free_geyser_near_anchor",
             )
-        for worker in self._worker_pool():
+        workers = self._action_units(action, workers=True)
+        if not workers and "_direct_unit_tags" not in action.metadata:
+            workers = self._worker_pool()
+        for worker in workers:
             build_gas = getattr(worker, "build_gas", None)
             if callable(build_gas):
                 return await self._issue_unit_order(build_gas, geyser)
+        if "_direct_unit_tags" in action.metadata:
+            return _refusal_report(1, "missing_pinned_builder_capability")
         build = getattr(self.bot, "build", None)
         if not callable(build):
             return False
@@ -495,11 +588,7 @@ class PythonSC2BotAdapter:
         if producer_name is None:
             return _refusal_report(action.count, "missing_producer_metadata")
         type_id = self._resolve_unit_type(action.subject)
-        producers = [
-            structure
-            for structure in self._ready_idle_structures()
-            if _entity_type_name(structure) == producer_name
-        ]
+        producers = self._producer_structures(action, producer_name)
         if not producers:
             return _refusal_report(action.count, "no_ready_idle_producer")
         issued = 0
@@ -521,6 +610,47 @@ class PythonSC2BotAdapter:
                 break
         return _issuance_report(action.count, issued, detail)
 
+    async def research_upgrade(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Research an upgrade on ready idle structures exposing ``research``."""
+
+        if action.count <= 0:
+            return _refusal_report(action.count, "non_positive_count")
+        upgrade = self._resolve_upgrade(action.subject)
+        if upgrade is None:
+            return _refusal_report(action.count, "unresolvable_upgrade")
+        researcher_name = _normalized_name(action.metadata.get("researcher"))
+        structures = self._research_structures(action, researcher_name)
+        if not structures:
+            return _refusal_report(action.count, "no_ready_idle_researcher")
+        issued = 0
+        for structure in structures:
+            if issued >= action.count:
+                break
+            if await self._issue_unit_order(structure.research, upgrade):
+                issued += 1
+        return _issuance_report(action.count, issued, "insufficient_researchers")
+
+    async def warp_in(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Warp in units through ready structures at a validated point."""
+
+        if action.count <= 0:
+            return _refusal_report(action.count, "non_positive_count")
+        type_id = self._resolve_unit_type(action.subject)
+        position = self._resolve_target_point(action.target)
+        if position is None:
+            return _refusal_report(action.count, "unresolvable_target")
+        structures = self._warp_structures(action)
+        if not structures:
+            return _refusal_report(action.count, "no_ready_warp_structure")
+        issued = 0
+        destination = _game_point(position)
+        for structure in structures:
+            if issued >= action.count:
+                break
+            if await self._issue_unit_order(structure.warp_in, type_id, destination):
+                issued += 1
+        return _issuance_report(action.count, issued, "insufficient_warp_structures")
+
     async def move_group(self, action: SC2CommandAction) -> SC2ActionReport:
         """Move the unit group selected by ``action.subject`` to the target."""
 
@@ -530,6 +660,30 @@ class PythonSC2BotAdapter:
         """Attack-move the selected unit group to the resolved map target."""
 
         return await self._order_group(action, "attack")
+
+    async def smart(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Issue context-aware smart orders to the resolved semantic target."""
+
+        return await self._order_group(action, "smart")
+
+    async def patrol(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Patrol the selected unit group to the resolved map target."""
+
+        return await self._order_group(action, "patrol")
+
+    async def return_resource(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Return carried resources with selected workers."""
+
+        units = self._action_units(action)
+        requested = self._group_requested_count(action, units)
+        if not units:
+            return _refusal_report(requested, "no_matching_workers")
+        issued = 0
+        for unit in units[:requested]:
+            method = getattr(unit, "return_resource", None)
+            if callable(method) and await self._issue_unit_order(method):
+                issued += 1
+        return _issuance_report(requested, issued, "insufficient_workers")
 
     async def repair(self, action: SC2CommandAction) -> SC2ActionReport:
         """Send up to ``action.count`` workers to repair the matched target.
@@ -544,11 +698,29 @@ class PythonSC2BotAdapter:
 
         if action.count <= 0:
             return _refusal_report(action.count, "non_positive_count")
-        target_unit = self._find_damaged_repair_target(action.target)
+        candidates = self._find_damaged_repair_targets(action.target)
+        if len(candidates) > 1:
+            alternatives = tuple(
+                self._repair_candidate_label(candidate)
+                for candidate in candidates
+            )
+            return _refusal_report(
+                action.count,
+                "ambiguous_repair_target",
+                audit={
+                    "clarification_required": True,
+                    "alternatives": list(alternatives),
+                    "clarification_prompt": (
+                        "여러 손상 대상이 일치했습니다. 다음 중 어느 대상을 "
+                        f"수리할까요: {', '.join(alternatives)}?"
+                    ),
+                },
+            )
+        target_unit = candidates[0] if candidates else None
         if target_unit is None:
             return _refusal_report(action.count, "no_damaged_repair_target")
         issued = 0
-        for worker in self._worker_pool():
+        for worker in self._action_units(action, workers=True):
             if issued >= action.count:
                 break
             repair_order = getattr(worker, "repair", None)
@@ -557,6 +729,49 @@ class PythonSC2BotAdapter:
             if await self._issue_unit_order(repair_order, target_unit):
                 issued += 1
         return _issuance_report(action.count, issued, "insufficient_workers")
+
+    async def execute_ability(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Issue a bounded ability call on the selected live units.
+
+        ``ability_id`` may be injected by tests or a runtime adapter. A string
+        is resolved through python-sc2's ``AbilityId`` when that package exists.
+        """
+
+        if action.count <= 0:
+            return _refusal_report(action.count, "non_positive_count")
+        ability_name = str(
+            action.metadata.get("ability_id")
+            or action.metadata.get("ability")
+            or ""
+        ).strip()
+        if not ability_name:
+            return _refusal_report(action.count, "missing_ability")
+        ability = self._resolve_ability(ability_name)
+        if ability is None:
+            return _refusal_report(action.count, "unresolvable_ability")
+        units = self._action_units(action)
+        if not units:
+            return _refusal_report(action.count, "no_matching_caster")
+        target = None
+        target_name = str(action.target or "").strip()
+        if target_name:
+            target_point = self._resolve_target_point(target_name)
+            if target_point is not None:
+                target = _game_point(target_point)
+        issued = 0
+        for unit in units[: action.count]:
+            use_ability = getattr(unit, "use_ability", None)
+            caller = use_ability if callable(use_ability) else unit
+            if not callable(caller):
+                continue
+            applied = (
+                await self._issue_unit_order(caller, ability, target)
+                if target is not None
+                else await self._issue_unit_order(caller, ability)
+            )
+            if applied:
+                issued += 1
+        return _issuance_report(action.count, issued, "insufficient_casters")
 
     async def observe(self, action: SC2CommandAction) -> Mapping[str, object]:
         """Resolve and return the commander state snapshot as a mapping.
@@ -567,6 +782,168 @@ class PythonSC2BotAdapter:
         """
 
         return self.state_resolver.resolve(self.bot).to_dict()
+
+    def direct_command_evidence(
+        self, lease: Mapping[str, object]
+    ) -> Mapping[str, object]:
+        """Translate live BotAI observations into lifecycle evidence.
+
+        The lifecycle remains runtime-independent; this adapter is the only
+        layer that knows how to inspect python-sc2 units, structures, and map
+        targets. Evidence is deliberately conservative: an unreadable or
+        ambiguous observation yields no proof and therefore cannot release a
+        Direct lease early. ``order_issued`` is recorded at dispatch by the
+        router because the adapter cannot reconstruct the issuing call after
+        the fact.
+        """
+
+        raw_conditions = lease.get("completion_conditions", ())
+        if not isinstance(raw_conditions, Sequence) or isinstance(
+            raw_conditions, (str, bytes)
+        ):
+            return {}
+        conditions = {str(item).strip().lower() for item in raw_conditions}
+        context = lease.get("command_metadata", {})
+        if not isinstance(context, Mapping):
+            return {}
+        raw_actions = context.get("actions", ())
+        if not isinstance(raw_actions, Sequence) or isinstance(
+            raw_actions, (str, bytes)
+        ):
+            return {}
+        actions = tuple(item for item in raw_actions if isinstance(item, Mapping))
+        if not actions or not conditions:
+            return {}
+
+        try:
+            state = self.state_resolver.resolve(self.bot).to_dict()
+        except Exception:  # noqa: BLE001 - evidence must never break the game loop.
+            state = {}
+        evidence: dict[str, object] = {}
+        if "target_reached" in conditions and self._direct_targets_reached(actions):
+            evidence["target_reached"] = True
+        if "retreat_confirmed" in conditions and self._direct_targets_reached(
+            actions, retreat_only=True
+        ):
+            evidence["retreat_confirmed"] = True
+        if "building_started" in conditions and _direct_building_observed(
+            actions,
+            state,
+            baseline=context.get("baseline"),
+            completed=False,
+        ):
+            evidence["building_started"] = True
+        if "building_completed" in conditions and _direct_building_observed(
+            actions,
+            state,
+            baseline=context.get("baseline"),
+            completed=True,
+        ):
+            evidence["building_completed"] = True
+        if "unit_count_reached" in conditions and _direct_unit_count_reached(
+            actions, state, baseline=context.get("baseline")
+        ):
+            evidence["unit_count_reached"] = True
+        if "enemy_observed" in conditions and _direct_enemy_observed(state):
+            evidence["enemy_observed"] = True
+        if "enemy_destroyed" in conditions and _direct_enemy_destroyed_observed(
+            actions,
+            state,
+            baseline=context.get("baseline"),
+            adapter=self,
+        ):
+            evidence["enemy_destroyed"] = True
+        if "ability_cast" in conditions and _direct_ability_observed(actions, self):
+            evidence["ability_cast"] = True
+        return evidence
+
+    def resume_micromachine(self, lease: Mapping[str, object]) -> object:
+        """Delegate Direct terminal release to an optional host runtime seam.
+
+        The adapter never invents MicroMachine state.  A live BotAI wrapper
+        may expose ``resume_micromachine(lease)``; otherwise this is an
+        intentional no-op, leaving the integration fail-closed and auditable.
+        """
+
+        callback = getattr(self.bot, "resume_micromachine", None)
+        if callable(callback):
+            return callback(lease)
+        return None
+
+    def _direct_targets_reached(
+        self,
+        actions: Sequence[Mapping[str, object]],
+        *,
+        retreat_only: bool = False,
+    ) -> bool:
+        """Return true only when every requested moving group is at its target."""
+
+        checked = False
+        for action in actions:
+            action_type = str(action.get("action_type", "")).strip().lower()
+            if action_type not in {"move_group", "attack_move"}:
+                continue
+            target = str(action.get("target", "")).strip()
+            is_retreat = target == "self_main"
+            if retreat_only and not is_retreat:
+                continue
+            checked = True
+            try:
+                point = self._resolve_target_point(target)
+                metadata = action.get("metadata", {})
+                if isinstance(metadata, Mapping) and "_direct_unit_tags" in metadata:
+                    tags = metadata["_direct_unit_tags"]
+                    units = self._units_by_tags(tags)
+                    # Death/disappearance cannot be proved as arrival, nor
+                    # can a newly-created same-type unit replace the assignee.
+                    if not tags or len(units) != len(tags):
+                        return False
+                else:
+                    units = self._select_group(str(action.get("subject", "")))
+            except Exception:  # noqa: BLE001 - unresolved runtime data is not proof.
+                return False
+            if point is None or not units:
+                return False
+            raw_count = action.get("count", 0)
+            count = int(raw_count) if isinstance(raw_count, (int, float)) else 0
+            required = _leading_count(str(action.get("subject", ""))) or (
+                len(units) if count <= 0 else count
+            )
+            if isinstance(metadata, Mapping) and "_direct_requested_count" in metadata:
+                required = int(metadata["_direct_requested_count"])
+            if len(units) < required:
+                return False
+            selected = units[:required]
+            positions = [
+                entity_point
+                for unit in selected
+                if (entity_point := _entity_point(unit)) is not None
+            ]
+            if len(positions) < required or any(
+                position.distance_to(point) > 2.5 for position in positions
+            ):
+                return False
+        return checked
+
+    def direct_command_baseline(
+        self, _plan: Mapping[str, object]
+    ) -> Mapping[str, object]:
+        """Snapshot counts used to prove newly-created units/structures."""
+
+        try:
+            snapshot = self.state_resolver.resolve(self.bot).to_dict()
+        except Exception:  # noqa: BLE001 - unavailable baseline is explicit.
+            return {}
+        return {
+            "own_units": dict(snapshot.get("own_units", {})),
+            "own_structures": dict(snapshot.get("own_structures", {})),
+            "structures_in_progress": dict(
+                snapshot.get("structures_in_progress", {})
+            ),
+            "visible_enemy_structures": dict(
+                snapshot.get("visible_enemy_structures", {})
+            ),
+        }
 
     async def move_camera(self, action: SC2CommandAction) -> SC2ActionReport:
         """Center the live camera on a resolved semantic target when supported."""
@@ -601,6 +978,36 @@ class PythonSC2BotAdapter:
                     moved = await _call_bot_operation(method, destination)
                     return _issuance_report(1, 1 if moved else 0, "camera_refused")
         return _refusal_report(1, "missing_camera_capability")
+
+    async def stop_group(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Issue a stop order to the selected semantic group."""
+
+        return await self._order_group_action(action, "stop")
+
+    async def hold_position(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Issue a hold-position order to the selected semantic group."""
+
+        return await self._order_group_action(action, "hold_position")
+
+    async def _order_group_action(
+        self,
+        action: SC2CommandAction,
+        method_name: str,
+    ) -> SC2ActionReport:
+        units = self._action_units(action)
+        if not units:
+            requested = _leading_count(action.subject) or max(1, action.count)
+            return _refusal_report(requested, "no_matching_units")
+        # A zero count is the explicit semantic “whole selected group” form
+        # used by emergency Stop/Hold/Retreat lowering. Ordinary calls keep
+        # their bounded default of one unit.
+        requested = self._group_requested_count(action, units)
+        issued = 0
+        for unit in units[:requested]:
+            method = getattr(unit, method_name, None)
+            if callable(method) and await self._issue_unit_order(method):
+                issued += 1
+        return _issuance_report(requested, issued, "insufficient_units")
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-ready description of the adapter configuration."""
@@ -867,6 +1274,68 @@ class PythonSC2BotAdapter:
                 f"Unknown python-sc2 UnitTypeId name: {type_name!r}."
             ) from error
 
+    def _resolve_ability(self, ability_name: str) -> object | None:
+        """Resolve a semantic ability name without importing python-sc2 eagerly."""
+
+        normalized = re.sub(r"[^A-Za-z0-9]+", "_", ability_name).strip("_").upper()
+        aliases = {
+            "STIM": "EFFECT_STIM",
+            "STIMPACK": "EFFECT_STIM",
+            "SIEGE": "SIEGEMODE_SIEGEMODE",
+            "SIEGEMODE": "SIEGEMODE_SIEGEMODE",
+            "UNSIEGE": "UNSIEGE_UNSIEGE",
+            "YAMATO": "YAMATO_YAMATO",
+            "TACTICAL_NUKE": "TACNUKE_CALLDOWN",
+            "NUKE": "TACNUKE_CALLDOWN",
+        }
+        candidates = tuple(
+            dict.fromkeys(
+                (
+                    ability_name,
+                    normalized,
+                    aliases.get(normalized, ""),
+                )
+            )
+        )
+        bot_resolver = getattr(self.bot, "ability_id_resolver", None)
+        if callable(bot_resolver):
+            for candidate in candidates:
+                if not candidate:
+                    continue
+                resolved = bot_resolver(candidate)
+                if resolved is not None:
+                    return resolved
+        try:
+            from sc2.ids.ability_id import AbilityId
+        except ImportError:
+            return aliases.get(normalized) if normalized in aliases else (
+                ability_name if ability_name.isupper() else None
+            )
+        for candidate in candidates:
+            if not candidate:
+                continue
+            value = getattr(AbilityId, candidate, None)
+            if value is not None:
+                return value
+        return None
+
+    def _resolve_upgrade(self, upgrade_name: str) -> object | None:
+        """Resolve a python-sc2 ``UpgradeId`` without importing it eagerly."""
+
+        normalized = re.sub(r"[^A-Za-z0-9]+", "", str(upgrade_name)).upper()
+        if not normalized:
+            return None
+        bot_resolver = getattr(self.bot, "upgrade_id_resolver", None)
+        if callable(bot_resolver):
+            resolved = bot_resolver(upgrade_name)
+            if resolved is not None:
+                return resolved
+        try:
+            from sc2.ids.upgrade_id import UpgradeId
+        except ImportError:
+            return upgrade_name if str(upgrade_name).isupper() else None
+        return getattr(UpgradeId, normalized, None)
+
     async def _is_affordable(self, type_id: object) -> bool:
         """Check ``bot.can_afford`` when present; refuse only explicit ``no``."""
 
@@ -914,19 +1383,214 @@ class PythonSC2BotAdapter:
         surfaces the shortfall as a partial application.
         """
 
-        requested = _leading_count(action.subject)
         position = self._resolve_target_point(action.target)
+        selected = self._action_units(action)
+        requested = self._group_requested_count(action, selected, default_all=True)
+        if not selected:
+            return _refusal_report(requested, "no_matching_units")
         if position is None:
             return _refusal_report(requested, "unresolvable_target")
         destination = _game_point(position)
         issued = 0
-        for unit in self._select_group(action.subject):
+        for unit in selected[:requested]:
             order_method = getattr(unit, order_name, None)
             if not callable(order_method):
                 continue
             if await self._issue_unit_order(order_method, destination):
                 issued += 1
         return _issuance_report(requested, issued, "insufficient_units")
+
+    def bind_direct_action(self, action: SC2CommandAction) -> SC2CommandAction:
+        """Pin controlled units from the current own-unit observation, without I/O.
+
+        Called before lease admission, so the complete plan's tag union is
+        reserved before any asynchronous order issuance. Internal binding
+        metadata is always rebuilt; callers cannot choose raw tags through MCP.
+        Builder workers and producer/research/warp structures use the same
+        concrete reservation as squad actions when runtime tags are present.
+        """
+
+        metadata = {
+            key: value for key, value in action.metadata.items()
+            if key not in {"_direct_unit_tags", "_direct_requested_count"}
+        }
+        clean = replace(action, metadata=metadata)
+        worker_actions = {
+            "assign_workers", "gather_resource", "repair", "build_structure",
+        }
+        producer_actions = {"train_unit", "research_upgrade", "warp_in"}
+        group_actions = {
+            "move_group", "attack_move", "smart", "patrol", "stop_group",
+            "hold_position", "return_resource", "execute_ability",
+        }
+        kind = action.action_type.value
+        if kind not in worker_actions | producer_actions | group_actions:
+            return clean
+        if kind in worker_actions:
+            pool = self._worker_pool()
+            requested = 1 if kind == "build_structure" else action.count
+        elif kind in producer_actions:
+            pool = self._producer_candidates(clean, kind)
+            # A train/warp count is the number of orders, while a research
+            # command is normally one order. Reserve only the producers that
+            # can participate in this command, but never a zero-sized lease.
+            requested = min(max(1, action.count), len(pool))
+        elif kind == "execute_ability":
+            pool = self._select_group(action.subject)
+            requested = action.count
+        else:
+            pool = self._select_group(action.subject)
+            requested = self._group_requested_count(
+                clean,
+                pool,
+                default_all=kind in {"move_group", "attack_move", "smart", "patrol"},
+            )
+        selected = pool[:max(0, requested)]
+        tags = tuple(getattr(unit, "tag", None) for unit in selected)
+        # Offline fakes may omit python-sc2's tag attribute entirely. In that
+        # case retain semantic ownership; a partially tagged live selection is
+        # unsafe and must fail closed rather than reserve only some units.
+        if tags and all(tag is None for tag in tags):
+            return clean
+        if any(type(tag) is not int or tag <= 0 for tag in tags) or len(set(tags)) != len(tags):
+            raise ValueError("direct_unit_binding_requires_unique_positive_tags")
+        return replace(clean, metadata={
+            **metadata, "_direct_unit_tags": tags, "_direct_requested_count": requested,
+        })
+
+    def _units_by_tags(self, tags: Sequence[int]) -> list[object]:
+        # python-sc2 recreates Unit objects on every observation. Retain tags,
+        # not old Unit instances, and resolve only within current own entities.
+        entities = (
+            _materialize(getattr(self.bot, "units", None))
+            + _materialize(getattr(self.bot, "workers", None))
+        )
+        by_tag = {getattr(unit, "tag", None): unit for unit in entities}
+        return [by_tag[tag] for tag in tags if tag in by_tag]
+
+    def _structures_by_tags(self, tags: Sequence[int]) -> list[object]:
+        """Resolve pinned producer structures from the current observation."""
+
+        by_tag = {
+            getattr(structure, "tag", None): structure
+            for structure in _materialize(getattr(self.bot, "structures", None))
+        }
+        return [by_tag[tag] for tag in tags if tag in by_tag]
+
+    def _producer_candidates(
+        self,
+        action: SC2CommandAction,
+        kind: str,
+    ) -> list[object]:
+        """Return the exact producer pool eligible for one direct action."""
+
+        if kind == "train_unit":
+            producer_name = _normalized_name(action.metadata.get("producer"))
+            if producer_name is None:
+                return []
+            return [
+                structure
+                for structure in self._ready_idle_structures()
+                if _entity_type_name(structure) == producer_name
+            ]
+        if kind == "research_upgrade":
+            researcher_name = _normalized_name(action.metadata.get("researcher"))
+            return [
+                structure
+                for structure in self._ready_idle_structures()
+                if callable(getattr(structure, "research", None))
+                and (
+                    researcher_name is None
+                    or _entity_type_name(structure) == researcher_name
+                )
+            ]
+        if kind == "warp_in":
+            return [
+                structure
+                for structure in self._ready_idle_structures()
+                if callable(getattr(structure, "warp_in", None))
+            ]
+        return []
+
+    def _producer_structures(
+        self,
+        action: SC2CommandAction,
+        producer_name: str,
+    ) -> list[object]:
+        """Resolve train producers, honoring the live tag pin when present."""
+
+        candidates = (
+            self._structures_by_tags(action.metadata["_direct_unit_tags"])
+            if "_direct_unit_tags" in action.metadata
+            else self._ready_idle_structures()
+        )
+        return [
+            structure
+            for structure in candidates
+            if _entity_type_name(structure) == producer_name
+            and _truthy_flag(structure, "is_ready", default=True)
+            and _truthy_flag(structure, "is_idle", default=True)
+        ]
+
+    def _research_structures(
+        self,
+        action: SC2CommandAction,
+        researcher_name: str | None,
+    ) -> list[object]:
+        """Resolve research structures, honoring the live tag pin."""
+
+        candidates = (
+            self._structures_by_tags(action.metadata["_direct_unit_tags"])
+            if "_direct_unit_tags" in action.metadata
+            else self._ready_idle_structures()
+        )
+        return [
+            structure
+            for structure in candidates
+            if callable(getattr(structure, "research", None))
+            and _truthy_flag(structure, "is_ready", default=True)
+            and _truthy_flag(structure, "is_idle", default=True)
+            and (
+                researcher_name is None
+                or _entity_type_name(structure) == researcher_name
+            )
+        ]
+
+    def _warp_structures(self, action: SC2CommandAction) -> list[object]:
+        """Resolve warp structures, honoring the live tag pin."""
+
+        candidates = (
+            self._structures_by_tags(action.metadata["_direct_unit_tags"])
+            if "_direct_unit_tags" in action.metadata
+            else self._ready_idle_structures()
+        )
+        return [
+            structure
+            for structure in candidates
+            if callable(getattr(structure, "warp_in", None))
+            and _truthy_flag(structure, "is_ready", default=True)
+            and _truthy_flag(structure, "is_idle", default=True)
+        ]
+
+    def _action_units(self, action: SC2CommandAction, *, workers: bool = False) -> list[object]:
+        if "_direct_unit_tags" in action.metadata:
+            return self._units_by_tags(action.metadata["_direct_unit_tags"])
+        return self._worker_pool() if workers else self._select_group(action.subject)
+
+    @staticmethod
+    def _group_requested_count(
+        action: SC2CommandAction,
+        units: Sequence[object],
+        *,
+        default_all: bool = False,
+    ) -> int:
+        if "_direct_requested_count" in action.metadata:
+            return int(action.metadata["_direct_requested_count"])
+        if _leading_count(action.subject) is not None:
+            return _leading_count(action.subject) or 0
+        if default_all and action.count in {0, 1}:
+            return len(units)
+        return len(units) if action.count == 0 else action.count
 
     def _select_group(self, subject: str) -> list[object]:
         """Select own units for a group order from a subject or free text.
@@ -1034,8 +1698,14 @@ class PythonSC2BotAdapter:
             return None
         return _nearest_entity(candidates, anchor)
 
-    def _find_damaged_repair_target(self, target: str) -> object | None:
-        """Find the first damaged own structure (then unit) matching loosely."""
+    def _find_damaged_repair_targets(self, target: str) -> tuple[object, ...]:
+        """Find all matching damaged own structures, then units.
+
+        A named repair request must not silently choose one of several live
+        entities. Structures retain priority over units, matching the user
+        contract; callers decide whether a single candidate is safe to issue
+        or whether clarification is required.
+        """
 
         normalized_target = _normalized_name(target)
         generic = (
@@ -1044,21 +1714,41 @@ class PythonSC2BotAdapter:
             else False
         )
         structures = _materialize(getattr(self.bot, "structures", None))
+        structure_matches: list[object] = []
         for structure in structures:
             if not _is_damaged(structure):
                 continue
             if generic or _loose_name_match(
                 _entity_type_name(structure), normalized_target
             ):
-                return structure
+                structure_matches.append(structure)
+        if structure_matches:
+            return tuple(structure_matches)
         if generic:
-            return None
+            return ()
+        unit_matches: list[object] = []
         for unit in _materialize(getattr(self.bot, "units", None)):
             if not _is_damaged(unit):
                 continue
             if _loose_name_match(_entity_type_name(unit), normalized_target):
-                return unit
-        return None
+                unit_matches.append(unit)
+        return tuple(unit_matches)
+
+    def _find_damaged_repair_target(self, target: str) -> object | None:
+        """Backward-compatible single-target helper for adapter integrations."""
+
+        candidates = self._find_damaged_repair_targets(target)
+        return candidates[0] if len(candidates) == 1 else None
+
+    @staticmethod
+    def _repair_candidate_label(candidate: object) -> str:
+        """Return a deterministic human-readable repair candidate label."""
+
+        name = _entity_type_name(candidate) or "unknown"
+        point = _entity_point(candidate)
+        if point is None:
+            return name
+        return f"{name} ({point.x:g}, {point.y:g})"
 
 
 class MissingPythonSC2Error(RuntimeError):
@@ -1797,6 +2487,162 @@ def _is_damaged(entity: object) -> bool:
     percentage = getattr(entity, "health_percentage", None)
     if _is_real_number(percentage):
         return float(percentage) < 1.0
+    return False
+
+
+def _direct_building_observed(
+    actions: Sequence[Mapping[str, object]],
+    state: Mapping[str, object],
+    *,
+    baseline: object,
+    completed: bool,
+) -> bool:
+    """Check that every requested structure crossed the requested boundary."""
+
+    if not isinstance(baseline, Mapping):
+        return False
+    current_ready = state.get("own_structures", {})
+    before_ready = baseline.get("own_structures", {})
+    current_progress = state.get("structures_in_progress", {})
+    before_progress = baseline.get("structures_in_progress", {})
+    if not all(
+        isinstance(value, Mapping)
+        for value in (current_ready, before_ready, current_progress, before_progress)
+    ):
+        return False
+    checked = False
+    for action in actions:
+        if str(action.get("action_type", "")).strip().lower() != "build_structure":
+            continue
+        subject = _normalized_name(action.get("subject", ""))
+        if subject is None:
+            return False
+        checked = True
+        now_ready = int(current_ready.get(subject, 0) or 0)
+        then_ready = int(before_ready.get(subject, 0) or 0)
+        now_progress = int(current_progress.get(subject, 0) or 0)
+        then_progress = int(before_progress.get(subject, 0) or 0)
+        crossed = (
+            now_ready > then_ready
+            if completed
+            else now_ready > then_ready or now_progress > then_progress
+        )
+        if not crossed:
+            return False
+    return checked
+
+
+def _direct_unit_count_reached(
+    actions: Sequence[Mapping[str, object]],
+    state: Mapping[str, object],
+    *,
+    baseline: object,
+) -> bool:
+    """Check that each requested train action added its requested units."""
+
+    if not isinstance(baseline, Mapping):
+        return False
+    current = state.get("own_units", {})
+    before = baseline.get("own_units", {})
+    if not isinstance(current, Mapping) or not isinstance(before, Mapping):
+        return False
+    checked = False
+    for action in actions:
+        if str(action.get("action_type", "")).strip().lower() != "train_unit":
+            continue
+        subject = _normalized_name(action.get("subject", ""))
+        if subject is None:
+            return False
+        requested = int(action.get("count", 0) or 0)
+        if requested <= 0:
+            return False
+        checked = True
+        if int(current.get(subject, 0) or 0) - int(before.get(subject, 0) or 0) < requested:
+            return False
+    return checked
+
+
+def _direct_enemy_observed(state: Mapping[str, object]) -> bool:
+    """Return true only when the state resolver saw at least one enemy entity."""
+
+    for key in ("visible_enemy_units", "visible_enemy_structures"):
+        values = state.get(key, {})
+        if isinstance(values, Mapping) and any(int(value or 0) > 0 for value in values.values()):
+            return True
+    return False
+
+
+def _direct_enemy_destroyed_observed(
+    actions: Sequence[Mapping[str, object]],
+    state: Mapping[str, object],
+    *,
+    baseline: object,
+    adapter: PythonSC2BotAdapter,
+) -> bool:
+    """Prove an enemy structure destruction without guessing through fog.
+
+    A runtime may expose an explicit destruction receipt; that is preferred.
+    The fallback accepts a visible-structure count decrease only when both the
+    baseline and current state are complete observations and the Direct plan
+    actually contains an attack/ability action.  Missing or partial vision is
+    never treated as destruction.
+    """
+
+    for attr in (
+        "direct_enemy_destroyed_evidence",
+        "enemy_destroyed_observed",
+    ):
+        value = getattr(adapter.bot, attr, None)
+        if value is True:
+            return True
+        if isinstance(value, Mapping) and bool(value.get("confirmed", False)):
+            return True
+    if not isinstance(baseline, Mapping):
+        return False
+    before = baseline.get("visible_enemy_structures")
+    current = state.get("visible_enemy_structures")
+    if not isinstance(before, Mapping) or not isinstance(current, Mapping):
+        return False
+    if not bool(state.get("observation_complete", False)):
+        return False
+    relevant = {
+        str(action.get("action_type", "")).strip().lower()
+        for action in actions
+        if isinstance(action, Mapping)
+    }
+    if not relevant.intersection({"attack_move", "execute_ability"}):
+        return False
+    before_total = sum(int(value or 0) for value in before.values())
+    current_total = sum(int(value or 0) for value in current.values())
+    return before_total > 0 and current_total < before_total
+
+
+def _direct_ability_observed(
+    actions: Sequence[Mapping[str, object]], adapter: PythonSC2BotAdapter
+) -> bool:
+    """Accept explicit runtime ability confirmation, never mere intent."""
+
+    expected = {
+        str(action.get("metadata", {}).get("ability_id") or action.get("metadata", {}).get("ability") or "")
+        .strip()
+        .casefold()
+        for action in actions
+        if str(action.get("action_type", "")).strip().lower() == "execute_ability"
+        and isinstance(action.get("metadata", {}), Mapping)
+    }
+    expected.discard("")
+    if not expected:
+        return False
+    for attr in ("direct_ability_evidence", "ability_cast_observed", "last_ability"):
+        value = getattr(adapter.bot, attr, None)
+        if isinstance(value, Mapping):
+            observed = str(value.get("ability") or value.get("name") or "").casefold()
+            if observed in expected and bool(value.get("confirmed", True)):
+                return True
+        elif isinstance(value, str) and value.casefold() in expected:
+            return True
+        elif value is True and attr != "last_ability":
+            return True
     return False
 
 
