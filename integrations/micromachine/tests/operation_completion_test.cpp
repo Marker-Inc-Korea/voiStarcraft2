@@ -8,6 +8,9 @@ int main()
     const VoiOperationCompletionObservation cast{true, true, false, true, false};
     const VoiOperationCompletionObservation seen{true, true, true, true, false};
     const VoiOperationCompletionObservation retreat{true, false, false, false, true};
+    const VoiOperationCompletionObservation build{true, false, false, false, false, true};
+    const VoiOperationCompletionObservation units{true, false, false, false, false, false, true};
+    const VoiOperationCompletionObservation destroyed{true, false, false, false, false, false, false, true};
     int failed = 0;
     auto check = [&](bool condition, const char * label) {
         if (!condition)
@@ -30,7 +33,13 @@ int main()
           "Expiry-only orders must not auto-complete");
     check(!voiOperationObjectivesSatisfied("", seen), "Empty contract fails closed");
     check(!voiOperationObjectivesSatisfied("building_completed", seen),
-          "Unsupported objective fails closed");
+          "Unobserved building completion must fail");
+    check(voiOperationObjectivesSatisfied("building_completed", build),
+          "Observed building completion should satisfy the objective");
+    check(voiOperationObjectivesSatisfied("unit_count_reached", units),
+          "Observed unit count should satisfy the objective");
+    check(voiOperationObjectivesSatisfied("enemy_destroyed", destroyed),
+          "Observed enemy destruction should satisfy the objective");
     check(!voiOperationObjectivesSatisfied("target_reached,unknown", seen),
           "Unknown clause must not be ignored");
     check(voiOperationObjectivesSatisfied("target_reached,cancelled_by_user", moved),

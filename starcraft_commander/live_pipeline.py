@@ -18,10 +18,12 @@ target listing, and skipped runtime work is never narrated as success.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import re
 import time
-from collections.abc import Mapping
+import uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Final, Literal
 
@@ -49,6 +51,10 @@ from starcraft_commander.contracts import (
     SC2CommandAction,
     SC2ExecutionPlan,
     SC2PlanExecutionResult,
+)
+from starcraft_commander.direct_command_lifecycle import (
+    DirectCommandLifecycle,
+    DirectCommandOwnershipConflict,
 )
 from starcraft_commander.feasibility import (
     DEFAULT_SC2_FEASIBILITY_VALIDATOR,
@@ -2746,6 +2752,11 @@ class SC2CommandSession:
       upgraded to treat those constraints as enforced (full execution)
       instead of disclosing them as dropped. Sessions WITHOUT a controller
       keep today's honest ``지속 생산 미지원`` disclosure.
+    - ``direct_lifecycle`` (a
+      :class:`~starcraft_commander.direct_command_lifecycle.DirectCommandLifecycle`)
+      shares MCP-style concrete ownership admission with text/live execution.
+      The live demo supplies the executor's match-lifetime registry; callers
+      that use a custom executor may opt into the same seam explicitly.
     """
 
     interpreter: CommandInterpreterInterface = DEFAULT_COMMAND_INTERPRETER
@@ -2756,6 +2767,7 @@ class SC2CommandSession:
     narrator: SC2NarratorInterface = DEFAULT_SC2_NARRATOR
     event_memory: object | None = None
     standing_orders: object | None = None
+    direct_lifecycle: DirectCommandLifecycle | None = None
     _pending_camera_base_clarification: str | None = field(
         default=None,
         init=False,
@@ -2808,6 +2820,15 @@ class SC2CommandSession:
                         "narrator",
                         SC2KoreanNarrator(enforced_constraints=enforced),
                     )
+        if self.direct_lifecycle is not None:
+            if not isinstance(self.direct_lifecycle, DirectCommandLifecycle):
+                raise TypeError(
+                    "SC2 command session direct_lifecycle must be a "
+                    "DirectCommandLifecycle or None."
+                )
+            bind_lifecycle = getattr(self.executor, "bind_direct_lifecycle", None)
+            if callable(bind_lifecycle):
+                bind_lifecycle(self.direct_lifecycle)
 
     async def process_text(self, command_text: str) -> tuple[SC2CommandOutcome, ...]:
         """Process one commander utterance into one outcome per command part.
@@ -2981,6 +3002,43 @@ class SC2CommandSession:
             )
         return (self._finalize_clarification(interpretation),)
 
+    def tick_direct_commands(
+        self,
+        current_frame: int,
+        evidence_by_command: Mapping[str, Mapping[str, object]] | None = None,
+    ) -> tuple[dict[str, object], ...]:
+        """Advance the same Direct lease registry used by text admissions."""
+
+        tick = getattr(self.executor, "tick_direct_commands", None)
+        if callable(tick) and (
+            self.direct_lifecycle is None
+            or getattr(self.executor, "direct_lifecycle", None)
+            is self.direct_lifecycle
+        ):
+            return tuple(tick(current_frame, evidence_by_command))
+        if self.direct_lifecycle is None:
+            return ()
+        return tuple(
+            lease.to_dict()
+            for lease in self.direct_lifecycle.observe_all(
+                frame=int(current_frame),
+                evidence_by_command=evidence_by_command,
+            )
+        )
+
+    def cancel_direct_command(
+        self,
+        command_id: str,
+        *,
+        reason: str = "cancelled_by_user",
+    ) -> dict[str, object]:
+        """Cancel a text-session Direct lease and release its ownership."""
+
+        lifecycle = self.direct_lifecycle
+        if lifecycle is None:
+            raise KeyError(f"unknown direct command: {command_id}")
+        return lifecycle.cancel(command_id, reason=reason).to_dict()
+
     def _plan_llm_combo_parts(self, command_text: str) -> _ValidatedComboPlan | None:
         """Return a runtime-normalized LLM ComboPlan if one is available."""
 
@@ -3125,7 +3183,7 @@ class SC2CommandSession:
                 prepared.state,
             )
         execution_started_at = time.perf_counter()
-        execution_result = await self.executor.execute(prepared.plan)
+        execution_result = await self._execute_direct_with_lifecycle(prepared.plan)
         finished_at = time.perf_counter()
         post_execution_failure = _combo_step_post_execution_failure(
             prepared,
@@ -3602,8 +3660,150 @@ class SC2CommandSession:
     ) -> SC2CommandOutcome:
         """Execute one already-preflighted intent and record the outcome."""
 
-        execution_result = await self.executor.execute(prepared.plan)
+        execution_result = await self._execute_direct_with_lifecycle(prepared.plan)
         return self._finalize_execution_result(prepared, execution_result)
+
+    async def _execute_direct_with_lifecycle(
+        self,
+        plan: SC2ExecutionPlan,
+    ) -> SC2PlanExecutionResult:
+        """Execute a text/live Direct plan through the shared lease boundary.
+
+        The MCP router already performs this admission.  A live text session
+        calls the executor directly, so an explicitly lifecycle-enabled
+        session must reserve concrete units before issuing the same plan and
+        release them only from the shared game-loop observer.
+        """
+
+        lifecycle = self.direct_lifecycle
+        if lifecycle is None or _plan_is_read_only(plan):
+            return await self.executor.execute(plan)
+        # Mirror the MCP boundary: do not create ownership for a command that
+        # cannot reach an attached live runtime in the first place.
+        if hasattr(self.executor, "bot") and getattr(self.executor, "bot") is None:
+            return await self.executor.execute(plan)
+
+        try:
+            bound_plan = _bind_session_direct_plan(self.executor, plan)
+        except Exception as error:  # noqa: BLE001 - binding is a structured refusal.
+            return SC2PlanExecutionResult(
+                plan=plan,
+                attempted_actions=plan.actions,
+                skipped_actions=plan.actions,
+                errors=(f"direct_unit_binding_failed:{type(error).__name__}:{error}",),
+                audit={
+                    "direct_unit_binding_failed": True,
+                    "error": f"{type(error).__name__}:{error}",
+                },
+            )
+        command_id = str(
+            bound_plan.audit.get("command_id")
+            or f"text-direct-{uuid.uuid4().hex}"
+        )
+        ttl_seconds = _positive_int(bound_plan.audit.get("ttl_seconds"), 120)
+        completion_conditions = _completion_conditions_for_plan(bound_plan)
+        subjects = tuple(
+            action.subject
+            for action in bound_plan.actions
+            if not action.metadata.get("_direct_unit_tags")
+        )
+        owned_unit_tags = tuple(
+            tag
+            for action in bound_plan.actions
+            for tag in action.metadata.get("_direct_unit_tags", ())
+            if type(tag) is int and tag > 0
+        )
+        metadata = {
+            "source": "sc2_command_session",
+            "intent_name": bound_plan.intent_name,
+            "actions": [action.to_dict() for action in bound_plan.actions],
+        }
+        baseline_provider = getattr(self.executor, "direct_command_baseline", None)
+        if callable(baseline_provider):
+            try:
+                baseline = baseline_provider(bound_plan)
+            except Exception:  # noqa: BLE001 - baseline is optional evidence.
+                baseline = {}
+            if isinstance(baseline, Mapping):
+                metadata["baseline"] = dict(baseline)
+        current_frame = _session_current_frame(self)
+        try:
+            lifecycle.pending(
+                command_id=command_id,
+                issued_at_frame=current_frame,
+                ttl_seconds=ttl_seconds,
+                completion_conditions=completion_conditions,
+                owned_subjects=subjects,
+                owned_unit_tags=owned_unit_tags,
+                command_metadata=metadata,
+            )
+        except DirectCommandOwnershipConflict as error:
+            rejection = self.narrator.narrate_rejection(
+                f"direct_control_conflict: {error}"
+            )
+            return SC2PlanExecutionResult(
+                plan=bound_plan,
+                attempted_actions=bound_plan.actions,
+                skipped_actions=bound_plan.actions,
+                errors=(f"direct_control_conflict: {error}",),
+                audit={
+                    "direct_command_lifecycle": {
+                        "command_id": command_id,
+                        "state": "conflict",
+                        "control_owned": False,
+                    },
+                    "direct_control_conflict": True,
+                    "narration": rejection.response_text,
+                },
+            )
+        try:
+            result = await self.executor.execute(bound_plan)
+        except asyncio.CancelledError:
+            lifecycle.cancel(command_id, reason="dispatch_cancelled")
+            raise
+        except Exception as error:  # noqa: BLE001 - lifecycle must release on failure.
+            lease = lifecycle.fail(
+                command_id,
+                reason="direct_execution_exception",
+                evidence={"error": f"{type(error).__name__}:{error}"},
+            )
+            return SC2PlanExecutionResult(
+                plan=bound_plan,
+                attempted_actions=bound_plan.actions,
+                skipped_actions=bound_plan.actions,
+                errors=(f"{type(error).__name__}:{error}",),
+                audit={"direct_command_lifecycle": lease.to_dict()},
+            )
+        if not isinstance(result, SC2PlanExecutionResult):
+            lease = lifecycle.fail(command_id, reason="invalid_executor_result")
+            return SC2PlanExecutionResult(
+                plan=bound_plan,
+                attempted_actions=bound_plan.actions,
+                skipped_actions=bound_plan.actions,
+                errors=("invalid_executor_result",),
+                audit={"direct_command_lifecycle": lease.to_dict()},
+            )
+        lease = lifecycle.mark_dispatched(command_id)
+        if result.success:
+            lease = lifecycle.activate(command_id)
+            if "order_issued" in lease.completion_conditions:
+                lease = lifecycle.record_evidence(command_id, {"order_issued": True})
+        else:
+            lease = lifecycle.fail(
+                command_id,
+                reason="direct_execution_failed",
+                evidence={"execution_success": False},
+            )
+        audit = dict(result.audit)
+        audit["direct_command_lifecycle"] = lease.to_dict()
+        return SC2PlanExecutionResult(
+            plan=result.plan,
+            attempted_actions=result.attempted_actions,
+            applied_actions=result.applied_actions,
+            skipped_actions=result.skipped_actions,
+            errors=result.errors,
+            audit=audit,
+        )
 
     def _finalize_execution_result(
         self,
@@ -3831,6 +4031,94 @@ async def process_commander_text(
     """Process one commander utterance through an existing session."""
 
     return await session.process_text(text)
+
+
+def _plan_is_read_only(plan: SC2ExecutionPlan) -> bool:
+    """Return whether a plan contains only query/observation actions."""
+
+    return bool(plan.actions) and all(
+        action.action_type in {
+            SC2ActionType.OBSERVE,
+            SC2ActionType.QUERY_ABILITY,
+            SC2ActionType.QUERY_PLACEMENT,
+            SC2ActionType.QUERY_UNIT,
+            SC2ActionType.QUERY_GAME,
+            SC2ActionType.QUERY_MAP,
+        }
+        for action in plan.actions
+    )
+
+
+def _positive_int(value: object, default: int) -> int:
+    """Coerce bounded lifecycle durations without accepting booleans."""
+
+    if type(value) is int and value > 0:
+        return value
+    return default
+
+
+def _completion_conditions_for_plan(plan: SC2ExecutionPlan) -> tuple[str, ...]:
+    """Read a plan's lifecycle conditions, with the direct-order default."""
+
+    raw = plan.audit.get("completion_conditions", ("order_issued",))
+    if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+        conditions = tuple(str(item).strip() for item in raw if str(item).strip())
+        if conditions:
+            return conditions
+    return ("order_issued",)
+
+
+def _bind_session_direct_plan(
+    executor: object,
+    plan: SC2ExecutionPlan,
+) -> SC2ExecutionPlan:
+    """Bind concrete runtime identities before a text-session lease admission."""
+
+    binder = getattr(executor, "bind_direct_plan", None)
+    if callable(binder):
+        return binder(plan, runtime=getattr(executor, "bot", None))
+    bot = getattr(executor, "bot", None)
+    bind_action = getattr(bot, "bind_direct_action", None)
+    if not callable(bind_action):
+        return plan
+    actions = tuple(
+        action
+        if action.metadata.get("_direct_unit_tags")
+        else bind_action(action)
+        for action in plan.actions
+    )
+    if actions == plan.actions:
+        return plan
+    return SC2ExecutionPlan(
+        intent_name=plan.intent_name,
+        priority=plan.priority,
+        ordered_actions=actions,
+        constraints=plan.constraints,
+        requires_live_sc2=plan.requires_live_sc2,
+        notes=plan.notes,
+        audit=plan.audit,
+    )
+
+
+def _session_current_frame(session: SC2CommandSession) -> int:
+    """Resolve a non-negative game-loop frame for text-session admission."""
+
+    try:
+        state = session._resolve_state()
+    except Exception:  # noqa: BLE001 - frame lookup is advisory only.
+        state = None
+    if state is not None and type(getattr(state, "game_loop", None)) is int:
+        return max(0, state.game_loop)
+    runtime = getattr(session.executor, "bot", None)
+    for candidate in (runtime, getattr(runtime, "bot", None)):
+        value = getattr(candidate, "game_loop", None)
+        if type(value) is int:
+            return max(0, value)
+        nested_state = getattr(candidate, "state", None)
+        value = getattr(nested_state, "game_loop", None)
+        if type(value) is int:
+            return max(0, value)
+    return 0
 
 
 def _payload_document(payload: object) -> dict[str, object] | None:

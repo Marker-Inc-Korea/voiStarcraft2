@@ -81,6 +81,13 @@ SC2_ACTION_TYPE_KOREAN_LABELS: Final[dict[SC2ActionType, str]] = {
     SC2ActionType.REPAIR: "수리",
     SC2ActionType.OBSERVE: "정찰",
     SC2ActionType.MOVE_CAMERA: "카메라 이동",
+    SC2ActionType.QUERY_ABILITY: "능력 확인",
+    SC2ActionType.BUILD_GAS: "가스 건설",
+    SC2ActionType.DISTRIBUTE_WORKERS: "일꾼 재배치",
+    SC2ActionType.EXPAND_NOW: "확장",
+    SC2ActionType.QUERY_PLACEMENT: "배치 확인",
+    SC2ActionType.QUERY_GAME: "게임 정보 확인",
+    SC2ActionType.QUERY_MAP: "지도 정보 확인",
 }
 """Korean labels for semantic action types, used in error narration."""
 
@@ -604,6 +611,13 @@ _SC2_ACTION_LINE_RENDERERS: Final[
     SC2ActionType.REPAIR: _repair_line,
     SC2ActionType.OBSERVE: _observe_line,
     SC2ActionType.MOVE_CAMERA: _move_camera_line,
+    SC2ActionType.QUERY_ABILITY: _observe_line,
+    SC2ActionType.BUILD_GAS: _build_structure_line,
+    SC2ActionType.DISTRIBUTE_WORKERS: _assign_workers_line,
+    SC2ActionType.EXPAND_NOW: _build_structure_line,
+    SC2ActionType.QUERY_PLACEMENT: _observe_line,
+    SC2ActionType.QUERY_GAME: _observe_line,
+    SC2ActionType.QUERY_MAP: _observe_line,
 }
 """One Korean line renderer per stable semantic SC2 action type."""
 

@@ -84,7 +84,12 @@ from starcraft_commander.contextual_transfer import (
     prepare_contextual_transfer,
 )
 from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
-from starcraft_commander.direct_command_registry import DirectCommandRegistry
+from starcraft_commander.direct_command_registry import DirectCommandRegistry, TargetPin
+from starcraft_commander.sc2_executor import (
+    SC2_SEMANTIC_TARGET_NAMES,
+    resolve_sc2_target_name,
+)
+from starcraft_commander.unified_command_router import SC2_CAPABILITY_CATALOG
 from starcraft_commander.micromachine_tactical_evidence import (
     classify_micromachine_tactical_evidence,
     normalize_tactical_effect_tags,
@@ -186,12 +191,6 @@ def _default_sc2_install_path() -> str:
 DEFAULT_SC2_INSTALL_PATH: Final[str] = _default_sc2_install_path()
 """Environment-aware StarCraft II install path used by auto live launch."""
 
-DEFAULT_LIVE_MAP: Final[str] = "AcropolisLE"
-"""Default map for opt-in legacy python-sc2 auto-launch sessions."""
-
-DEFAULT_LIVE_DIFFICULTY: Final[str] = "easy"
-"""Default difficulty for opt-in legacy python-sc2 auto-launch sessions."""
-
 DEFAULT_MICROMACHINE_LIVE_ENEMY_DIFFICULTY: Final[int] = 10
 """Default maximum enemy difficulty for UI-triggered manual MicroMachine live QA."""
 
@@ -200,13 +199,6 @@ _MICROMACHINE_ENEMY_DIFFICULTY_MAX: Final[int] = 10
 
 COMMAND_MODE_MICROMACHINE: Final[str] = "micromachine"
 """Default cockpit mode: publish text/voice intent to MicroMachine DSL blackboard."""
-
-COMMAND_MODE_LEGACY_COMMANDER: Final[str] = "legacy_commander"
-"""Compatibility mode: route chat through the legacy python-sc2 commander."""
-
-_LOCAL_URL_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"https?://127\.0\.0\.1:\d+(?:/[^\s]*)?"
-)
 
 _MICROMACHINE_SCOPE_UNIT_CLASSES: Final[frozenset[str]] = frozenset(
     {
@@ -282,19 +274,6 @@ _MICROMACHINE_PROVIDER_VECTOR_WRAPPER_KEYS: Final[tuple[str, ...]] = (
     "vector",
 )
 """Provider wrapper keys whose nested vector must receive UI scope overrides."""
-
-
-def _api_key_env_var_for_provider(provider: str) -> str:
-    """Return the child-process env var used by one supported provider."""
-
-    normalized = provider.strip().lower()
-    if normalized == "anthropic":
-        return "ANTHROPIC_API_KEY"
-    if normalized == "gemini":
-        return "GEMINI_API_KEY"
-    if normalized == "grok":
-        return "XAI_API_KEY"
-    return "OPENAI_API_KEY"
 
 
 def _build_llm_setup_failure_response(
@@ -415,13 +394,13 @@ def _clean_blackboard_dir(value: str, fallback: str) -> str:
 
 
 def _normalize_runtime_mode(value: str) -> str:
-    """Return the only two runtime modes accepted by the local cockpit."""
-
-    return (
-        COMMAND_MODE_LEGACY_COMMANDER
-        if str(value).strip() == COMMAND_MODE_LEGACY_COMMANDER
-        else COMMAND_MODE_MICROMACHINE
-    )
+    """Return the single supported runtime mode."""
+    normalized = str(value).strip()
+    if normalized and normalized != COMMAND_MODE_MICROMACHINE:
+        raise ValueError(
+            f"unsupported runtime mode: {normalized}; only micromachine is supported"
+        )
+    return COMMAND_MODE_MICROMACHINE
 
 
 def _require_micromachine_enemy_difficulty(
@@ -547,6 +526,18 @@ def _micromachine_compile_result_is_newer(
 ) -> bool:
     if current is None:
         return True
+    # A stale normal request may finish after an emergency Direct command has
+    # committed.  Keep its terminal receipt in per-request history, but never
+    # let that superseded result replace the authoritative latest result.
+    candidate_status = str(candidate.get("status", "") or "").strip().lower()
+    current_queue = current.get("command_queue")
+    current_layer = (
+        str(current_queue.get("command_layer", "") or "").strip().lower()
+        if isinstance(current_queue, Mapping)
+        else ""
+    )
+    if candidate_status == "superseded" and current_layer == "emergency":
+        return False
     candidate_order = _micromachine_compile_result_order(candidate)
     current_order = _micromachine_compile_result_order(current)
     if candidate_order != current_order:
@@ -4652,6 +4643,86 @@ MAX_COMMAND_BODY_BYTES: Final[int] = 64 * 1024
 MAX_WEB_REQUEST_ID_CHARS: Final[int] = 128
 """Upper bound for browser-generated command correlation identities."""
 
+MAX_DIRECT_TARGET_PIN_NAME_CHARS: Final[int] = 128
+"""Upper bound for a user-facing semantic target-pin label."""
+
+_DIRECT_TARGET_PIN_RAW_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "tag",
+        "tags",
+        "unit_tag",
+        "unit_tags",
+        "target_tag",
+        "target_unit_tag",
+        "target_unit_tags",
+        "x",
+        "y",
+        "target_x",
+        "target_y",
+        "coordinate",
+        "coordinates",
+        "position",
+        "point",
+    }
+)
+"""Metadata keys that would smuggle raw runtime identity into a target pin."""
+
+
+def _validate_direct_target_pin(
+    name: object,
+    target: object,
+    metadata: object = None,
+) -> TargetPin:
+    """Validate one semantic target pin at the HTTP/bridge boundary.
+
+    Pins are labels for map semantics, never a second transport for runtime
+    unit tags or coordinates.  Canonicalising aliases here keeps controller
+    and MCP clients on the same vocabulary while the live resolver remains
+    responsible for checking whether the target is currently derivable.
+    """
+
+    normalized_name = str(name).strip() if isinstance(name, str) else ""
+    if not normalized_name:
+        raise ValueError("target pin name is required")
+    if len(normalized_name) > MAX_DIRECT_TARGET_PIN_NAME_CHARS:
+        raise ValueError(
+            f"target pin name must be at most {MAX_DIRECT_TARGET_PIN_NAME_CHARS} characters"
+        )
+    if not isinstance(target, str) or not target.strip():
+        raise ValueError("target pin target must be a non-empty semantic target string")
+    canonical_target = resolve_sc2_target_name(target.strip())
+    if canonical_target not in SC2_SEMANTIC_TARGET_NAMES:
+        supported = ", ".join(sorted(SC2_SEMANTIC_TARGET_NAMES))
+        raise ValueError(
+            f"unsupported semantic target {target!r}; supported targets: {supported}"
+        )
+    if metadata is None:
+        metadata_map: dict[str, object] = {}
+    elif isinstance(metadata, Mapping):
+        metadata_map = dict(metadata)
+    else:
+        raise ValueError("target pin metadata must be a JSON object")
+
+    def check_keys(value: object, path: str = "metadata") -> None:
+        if isinstance(value, Mapping):
+            for key, child in value.items():
+                key_text = str(key).strip().casefold()
+                if key_text in _DIRECT_TARGET_PIN_RAW_KEYS:
+                    raise ValueError(
+                        f"{path}.{key} cannot contain raw unit tags or coordinates"
+                    )
+                check_keys(child, f"{path}.{key}")
+        elif isinstance(value, (list, tuple)):
+            for index, child in enumerate(value):
+                check_keys(child, f"{path}[{index}]")
+
+    check_keys(metadata_map)
+    return TargetPin(
+        name=normalized_name,
+        target=canonical_target,
+        metadata=metadata_map,
+    )
+
 _BRIDGE_THREAD_NAME: Final[str] = "voiStarcraft2-web-gui-session-loop"
 """Daemon thread name for the bridge's asyncio loop (asserted clean in tests)."""
 
@@ -4965,6 +5036,20 @@ def _micromachine_recent_command_entry(
         and not isinstance(raw_operations, (str, bytes, bytearray))
         else []
     )
+    category = _micromachine_recent_context_text(
+        command_queue.get("category", "")
+    )
+    if not category:
+        layer = _micromachine_recent_context_text(
+            command_queue.get("command_layer", "")
+        )
+        if layer in {"operation", "micro", "emergency"}:
+            category = "direct_operation"
+    reducer_action = _micromachine_recent_context_text(
+        command_queue.get("action", "")
+    )
+    if not reducer_action and category == "direct_operation":
+        reducer_action = "direct_execute"
     return {
         "command_text": _micromachine_recent_context_text(
             command_text,
@@ -4981,12 +5066,8 @@ def _micromachine_recent_command_entry(
         "command_layer": _micromachine_recent_context_text(
             vector.get("command_layer", "")
         ),
-        "category": _micromachine_recent_context_text(
-            command_queue.get("category", "")
-        ),
-        "reducer_action": _micromachine_recent_context_text(
-            command_queue.get("action", "")
-        ),
+        "category": category,
+        "reducer_action": reducer_action,
         "goal": _micromachine_recent_context_text(
             vector.get("goal", ""),
             max_chars=_MICROMACHINE_RECENT_COMMAND_TEXT_LIMIT,
@@ -5152,6 +5233,65 @@ class _GuardedMicroMachineBackend:
 
     def __getattr__(self, name: str) -> object:
         return getattr(self._backend, name)
+
+
+class _GuardedDirectExecutor:
+    """Apply the request supersession gate to Direct-only dispatch."""
+
+    def __init__(
+        self,
+        executor: object,
+        request: _MicroMachineModulationRequest,
+        coordinator_lock: threading.Lock,
+        emergency_epochs: dict[str, tuple[int, str]],
+    ) -> None:
+        self._executor = executor
+        self._request = request
+        self._coordinator_lock = coordinator_lock
+        self._emergency_epochs = emergency_epochs
+
+    def _check_current(self) -> str:
+        request = self._request
+        with self._coordinator_lock:
+            blackboard_key = os.path.realpath(request.blackboard_dir)
+            epoch, emergency_id = self._emergency_epochs.get(
+                blackboard_key,
+                (0, ""),
+            )
+            if request.cancel_event.is_set():
+                raise _MicroMachinePublishCancelledError(
+                    f"MicroMachine request {request.update_id or '<pending>'} was cancelled."
+                )
+            if not request.emergency and request.emergency_epoch != epoch:
+                request.cancel_event.set()
+                raise _MicroMachineRequestSupersededError(
+                    request.update_id or "<pending>",
+                    emergency_id or "<emergency>",
+                )
+            return blackboard_key
+
+    def execute(self, *args, **kwargs):
+        blackboard_key = self._check_current()
+        result = self._executor.execute(*args, **kwargs)
+        success = bool(getattr(result, "success", False))
+        if isinstance(result, Mapping):
+            success = bool(result.get("ok") or result.get("success"))
+        if success:
+            with self._coordinator_lock:
+                self._request.publish_committed = True
+                if self._request.emergency:
+                    epoch, _previous = self._emergency_epochs.get(
+                        blackboard_key,
+                        (0, ""),
+                    )
+                    self._emergency_epochs[blackboard_key] = (
+                        epoch + 1,
+                        self._request.update_id or "",
+                    )
+        return result
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._executor, name)
 
 
 def _micromachine_request_is_emergency(
@@ -5373,7 +5513,6 @@ class WebGuiBridgeInterface(Protocol):
 
     def configure_llm(self, provider: str, api_key: str, model: str = "") -> Mapping[str, object]:
         """Configure local process-memory LLM credentials."""
-
 
 class _SimpleHistory:
     """Minimal thread-safe in-memory outcome history store.
@@ -7788,171 +7927,6 @@ class _OperationSemanticTimelineReducer:
         return result
 
 
-class _LiveLaunchManager:
-    """Start one legacy python-sc2 live process and expose safe metadata."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._process: subprocess.Popen[str] | None = None
-        self._status = "idle"
-        self._url = ""
-        self._error = ""
-        self._last_line = ""
-        self._redactions: tuple[str, ...] = ()
-        self._provider = ""
-        self._api_key = ""
-        self._model = ""
-
-    def configure(self, provider: str, api_key: str, model: str) -> None:
-        """Store process-local launch credentials for an explicit UI start."""
-
-        with self._lock:
-            self._provider = provider.strip().lower()
-            self._api_key = api_key.strip()
-            self._model = model.strip()
-            self._redactions = (self._api_key,) if self._api_key else ()
-            if self._status == "blocked":
-                self._status = "idle"
-                self._error = ""
-
-    def start(
-        self,
-        provider: str = "",
-        api_key: str = "",
-        model: str = "",
-    ) -> dict[str, object]:
-        """Start the legacy live demo process once, passing the key only via env."""
-
-        with self._lock:
-            if provider or api_key or model:
-                self._provider = provider.strip().lower()
-                self._api_key = api_key.strip()
-                self._model = model.strip()
-                self._redactions = (self._api_key,) if self._api_key else ()
-            provider = self._provider
-            api_key = self._api_key
-            model = self._model
-            if not provider or not api_key:
-                self._status = "blocked"
-                self._error = (
-                    "Legacy python-sc2 실행에는 먼저 LLM 키 설정이 필요합니다."
-                )
-                self._last_line = ""
-                return self._snapshot_unlocked()
-            if self._process is not None and self._process.poll() is None:
-                return self._snapshot_unlocked()
-            self._status = "starting"
-            self._url = ""
-            self._error = ""
-            self._last_line = ""
-            env = os.environ.copy()
-            sc2_root = env.get("SC2_ROOT", "").strip()
-            if sc2_root:
-                env["SC2PATH"] = os.path.abspath(os.path.expanduser(sc2_root))
-            else:
-                env["SC2PATH"] = env.get("SC2PATH", DEFAULT_SC2_INSTALL_PATH)
-            env[_api_key_env_var_for_provider(provider)] = api_key
-            argv = [
-                sys.executable,
-                "-u",
-                "-m",
-                "starcraft_commander.demo_sc2",
-                "--map",
-                DEFAULT_LIVE_MAP,
-                "--difficulty",
-                DEFAULT_LIVE_DIFFICULTY,
-                "--gui",
-                "0",
-                "--llm-provider",
-                provider,
-                "--llm-model",
-                model,
-            ]
-            try:
-                self._process = subprocess.Popen(
-                    argv,
-                    cwd=os.getcwd(),
-                    env=env,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                )
-            except OSError as error:
-                self._status = "failed"
-                self._error = _redact_sensitive_text(
-                    error,
-                    redactions=self._redactions,
-                    normalize_whitespace=True,
-                )
-                self._process = None
-                return self._snapshot_unlocked()
-            threading.Thread(
-                target=self._read_output,
-                name="voiStarcraft2-live-launch-reader",
-                daemon=True,
-            ).start()
-            return self._snapshot_unlocked()
-
-    def snapshot(self) -> dict[str, object]:
-        """Return safe live startup metadata without secrets."""
-
-        with self._lock:
-            process = self._process
-            if process is not None and process.poll() is not None and not self._url:
-                self._status = "failed" if process.returncode else "stopped"
-                if not self._error:
-                    self._error = self._last_line or f"process exited {process.returncode}"
-            return _redact_json_ready(
-                {
-                    "enabled": True,
-                    "status": self._status,
-                    "url": self._url,
-                    "error": self._error,
-                    "pid": process.pid if process is not None else None,
-                    "last_line": self._last_line,
-                },
-                redactions=self._redactions,
-            )  # type: ignore[return-value]
-
-    def _snapshot_unlocked(self) -> dict[str, object]:
-        process = self._process
-        return _redact_json_ready(
-            {
-                "enabled": True,
-                "status": self._status,
-                "url": self._url,
-                "error": self._error,
-                "pid": process.pid if process is not None else None,
-                "last_line": self._last_line,
-            },
-            redactions=self._redactions,
-        )  # type: ignore[return-value]
-
-    def _read_output(self) -> None:
-        process = self._process
-        if process is None or process.stdout is None:
-            return
-        for line in process.stdout:
-            clean = _redact_sensitive_text(
-                line.strip(),
-                redactions=self._redactions,
-                normalize_whitespace=True,
-            )
-            if not clean:
-                continue
-            with self._lock:
-                self._last_line = clean
-                match = _LOCAL_URL_PATTERN.search(clean)
-                if match:
-                    self._url = match.group(0)
-                    self._status = "ready"
-        with self._lock:
-            if not self._url and self._process is process:
-                self._status = "failed"
-                self._error = self._last_line or "live process exited before GUI URL"
-
-
 @dataclass(frozen=True)
 class _MicroMachineTelemetryFileIdentity:
     device: int
@@ -8613,6 +8587,7 @@ class SessionLoopBridge:
         self._direct_command_registry = (
             direct_command_registry or DirectCommandRegistry()
         )
+        self._direct_registry_lock = threading.RLock()
         self._history = store
         self._state_resolver = state_resolver
         self._llm_control = llm_control
@@ -8647,6 +8622,7 @@ class SessionLoopBridge:
             tuple[str, str]
         ] = deque()
         self._micromachine_emergency_epochs: dict[str, tuple[int, str]] = {}
+        self._micromachine_emergency_frames: dict[str, int] = {}
         self._micromachine_acceptance_ordinals: dict[str, int] = {}
         self._queue_sequence = 0
         self._thread: threading.Thread | None = None
@@ -8843,6 +8819,43 @@ class SessionLoopBridge:
                 request_blackboard,
                 (0, ""),
             )[0]
+            if request.emergency:
+                # Reserve the emergency epoch at acceptance time.  Direct
+                # requests execute outside the blackboard writer, so waiting
+                # until a publish callback would leave a stale normal action
+                # able to reach the adapter first.
+                self._micromachine_emergency_epochs[request_blackboard] = (
+                    request.emergency_epoch + 1,
+                    update_id,
+                )
+                self._micromachine_emergency_frames[request_blackboard] = int(
+                    request.current_frame or 0
+                )
+            else:
+                # A normal request accepted while an emergency is still
+                # running remains stale until that emergency reaches a
+                # terminal result.  Give it the pre-emergency epoch so the
+                # guarded Direct executor refuses dispatch.
+                emergency_pending = any(
+                    pending.emergency
+                    and not pending.future.done()
+                    and not pending.cancel_event.is_set()
+                    and os.path.realpath(pending.blackboard_dir)
+                    == request_blackboard
+                    for pending in self._micromachine_requests.values()
+                )
+                if emergency_pending:
+                    request.emergency_epoch = max(0, request.emergency_epoch - 1)
+                emergency_frame = self._micromachine_emergency_frames.get(
+                    request_blackboard,
+                    0,
+                )
+                if (
+                    emergency_frame > 0
+                    and request.current_frame is not None
+                    and request.current_frame < emergency_frame
+                ):
+                    request.emergency_epoch = max(0, request.emergency_epoch - 1)
             if request.supersede_older or request.emergency:
                 for pending_id, pending in tuple(self._micromachine_requests.items()):
                     if (
@@ -8970,6 +8983,42 @@ class SessionLoopBridge:
         if callable(snapshot):
             return dict(snapshot())
         return {"provider": "", "model": "", "configured": False, "key_present": False}
+
+    def direct_capabilities_snapshot(self) -> Mapping[str, object]:
+        """Return the bounded semantic Direct SC2 catalog for cockpit clients."""
+
+        with self._direct_registry_lock:
+            registry = self._direct_command_registry.to_dict()
+        return {
+            "capabilities": [item.to_dict() for item in SC2_CAPABILITY_CATALOG],
+            "registry": registry,
+        }
+
+    def direct_registry_snapshot(self) -> Mapping[str, object]:
+        """Return named squads and target pins without exposing raw runtime tags."""
+
+        with self._direct_registry_lock:
+            return self._direct_command_registry.to_dict()
+
+    def register_direct_target_pin(
+        self,
+        name: str,
+        target: str,
+        metadata: Mapping[str, object] | None = None,
+    ) -> Mapping[str, object]:
+        """Register one user-facing semantic target pin for Direct commands.
+
+        The cockpit may save a controller-selected label (for example
+        ``front choke``) together with semantic target metadata.  The live map
+        resolver still validates the target at dispatch time; this method never
+        accepts raw unit tags or silently turns an unknown target into a
+        coordinate.
+        """
+
+        pin = _validate_direct_target_pin(name, target, metadata)
+        with self._direct_registry_lock:
+            self._direct_command_registry.register_target_pin(pin)
+            return pin.to_dict()
 
     def micromachine_blackboard_dir(self) -> str:
         return self._micromachine_blackboard_dir
@@ -9381,6 +9430,7 @@ class SessionLoopBridge:
         publish_frame_resolver: Callable[[], int | None] | None = None,
         update_id: str | None = None,
         request: _MicroMachineModulationRequest | None = None,
+        publish_non_macro_projection: bool = False,
     ) -> Mapping[str, object]:
         from starcraft_commander.micromachine_live_session import (
             KeywordPolicyModulationProvider,
@@ -9437,12 +9487,20 @@ class SessionLoopBridge:
                 self._micromachine_emergency_epochs,
             )
         direct_executor = getattr(self._session, "executor", None)
+        if request is not None and direct_executor is not None:
+            direct_executor = _GuardedDirectExecutor(
+                direct_executor,
+                request,
+                self._micromachine_request_lock,
+                self._micromachine_emergency_epochs,
+            )
         result = MicroMachineLiveTextSession(
             backend,
             provider,
             direct_executor=direct_executor,
             direct_lifecycle=self._direct_lifecycle,
             direct_command_registry=self._direct_command_registry,
+            publish_non_macro_projection=publish_non_macro_projection,
         ).submit_text(
             text,
             current_frame=current_frame,
@@ -10074,6 +10132,7 @@ class SessionLoopBridge:
                     current_frame=preparation.current_frame,
                     update_id=contract.request_id,
                     request=request,
+                    publish_non_macro_projection=True,
                 )
             )
             payload["contextual_transfer"] = {
@@ -10972,6 +11031,12 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/llm":
             self._handle_llm_status()
             return
+        if path == "/api/direct/capabilities":
+            self._handle_direct_capabilities()
+            return
+        if path == "/api/direct/registry":
+            self._handle_direct_registry()
+            return
         if path == "/api/live/status":
             self._handle_live_status()
             return
@@ -10994,6 +11059,9 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/llm":
             self._handle_llm_configure()
+            return
+        if path == "/api/direct/registry/target-pin":
+            self._handle_direct_target_pin()
             return
         if path == "/api/runtime/start":
             self._handle_runtime_start()
@@ -12189,20 +12257,15 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         except Exception as error:  # noqa: BLE001 - surfaced honestly as 500.
             self._send_internal_error(error)
             return
-        legacy_operation_id = str(
-            document.get("operation_id", "")
-            or web_request_id
-            or f"legacy-{uuid.uuid4().hex}"
-        )
         self.server.publish_event(  # type: ignore[attr-defined]
             "command_received",
             {
                 "command_text": text.strip(),
                 "status": "received",
-                "mode": COMMAND_MODE_LEGACY_COMMANDER,
+                "mode": "direct",
                 "request_id": web_request_id,
             },
-            operation_id=legacy_operation_id,
+            operation_id=str(document.get("operation_id", "") or web_request_id or uuid.uuid4().hex),
             generation=max(0, _web_event_int(document.get("generation"), 0)),
         )
         self._send_json(HTTPStatus.ACCEPTED, {"accepted": True})
@@ -12212,6 +12275,91 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, dict(self._bridge.llm_settings_snapshot()))
         except Exception as error:  # noqa: BLE001 - surfaced honestly.
             self._send_internal_error(error)
+
+    def _handle_direct_capabilities(self) -> None:
+        snapshot = getattr(self._bridge, "direct_capabilities_snapshot", None)
+        if not callable(snapshot):
+            self._send_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {"available": False, "error": "Direct capability catalog is disabled."},
+            )
+            return
+        try:
+            payload = dict(snapshot())
+        except Exception as error:  # noqa: BLE001 - surfaced honestly.
+            self._send_internal_error(error)
+            return
+        payload["available"] = True
+        self._send_json(HTTPStatus.OK, payload)
+
+    def _handle_direct_registry(self) -> None:
+        snapshot = getattr(self._bridge, "direct_registry_snapshot", None)
+        if not callable(snapshot):
+            self._send_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {"available": False, "error": "Direct command registry is disabled."},
+            )
+            return
+        try:
+            payload = dict(snapshot())
+        except Exception as error:  # noqa: BLE001 - surfaced honestly.
+            self._send_internal_error(error)
+            return
+        payload["available"] = True
+        self._send_json(HTTPStatus.OK, payload)
+
+    def _handle_direct_target_pin(self) -> None:
+        """Register a controller-selected semantic target pin.
+
+        The endpoint intentionally accepts only semantic names and metadata;
+        raw coordinates and unit tags are rejected before they reach the
+        registry or any live SC2 adapter.
+        """
+
+        body = self._read_request_body()
+        if body is None:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "error": "target pin JSON 본문을 읽을 수 없습니다."},
+            )
+            return
+        try:
+            document = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "error": "target pin 본문이 올바른 UTF-8 JSON이 아닙니다."},
+            )
+            return
+        if not isinstance(document, Mapping):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "error": "target pin 본문은 JSON 객체여야 합니다."},
+            )
+            return
+        register = getattr(self._bridge, "register_direct_target_pin", None)
+        if not callable(register):
+            self._send_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {"accepted": False, "error": "Direct target-pin registry is disabled."},
+            )
+            return
+        try:
+            pin = register(
+                document.get("name", ""),
+                document.get("target", ""),
+                document.get("metadata", {}),
+            )
+        except (KeyError, ValueError, TypeError) as error:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "error": str(error)},
+            )
+            return
+        except Exception as error:  # noqa: BLE001 - surfaced as honest 500.
+            self._send_internal_error(error)
+            return
+        self._send_json(HTTPStatus.CREATED, {"accepted": True, "target_pin": dict(pin)})
 
     def _handle_llm_configure(self) -> None:
         body = self._read_request_body()
@@ -12250,52 +12398,20 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             self._send_json(status, payload)
             return
         response = dict(snapshot)
-        launcher = getattr(self.server, "live_launcher", None)  # type: ignore[attr-defined]
-        if launcher is not None:
-            launcher.configure(provider, api_key, model)
-        if bool(getattr(self.server, "auto_launch_live", False)):  # type: ignore[attr-defined]
-            if launcher is not None:
-                response["live_start"] = _public_runtime_launcher_payload(
-                    launcher.start()
-                )
         self._send_json(HTTPStatus.OK, response)
 
     def _handle_live_status(self) -> None:
-        launcher = getattr(self.server, "live_launcher", None)  # type: ignore[attr-defined]
-        if launcher is None:
-            self._send_json(
-                HTTPStatus.OK,
-                {"enabled": False, "status": "disabled", "url": "", "error": ""},
-            )
-            return
         self._send_json(
-            HTTPStatus.OK,
-            _public_runtime_launcher_payload(launcher.snapshot()),
+            HTTPStatus.GONE,
+            {"enabled": False, "status": "removed", "error": "legacy live launcher removed"},
         )
 
     def _handle_runtime_status(self) -> None:
         params = parse_qs(urlsplit(self.path).query)
-        mode = _normalize_runtime_mode(params.get("mode", [""])[0] or "")
-        if mode == COMMAND_MODE_LEGACY_COMMANDER:
-            launcher = getattr(self.server, "live_launcher", None)  # type: ignore[attr-defined]
-            if launcher is None:
-                self._send_json(
-                    HTTPStatus.OK,
-                    {
-                        "enabled": False,
-                        "mode": mode,
-                        "status": "disabled",
-                        "url": "",
-                        "error": "",
-                    },
-                )
-                return
-            payload = dict(launcher.snapshot())
-            payload["mode"] = mode
-            self._send_json(
-                HTTPStatus.OK,
-                _public_runtime_launcher_payload(payload),
-            )
+        try:
+            mode = _normalize_runtime_mode(params.get("mode", [""])[0] or "")
+        except ValueError as error:
+            self._send_json(HTTPStatus.GONE, {"enabled": False, "status": "removed", "error": str(error)})
             return
         launcher = getattr(self.server, "micromachine_launcher", None)  # type: ignore[attr-defined]
         if launcher is None:
@@ -12342,33 +12458,10 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 {"accepted": False, "error": "runtime start 본문은 JSON 객체여야 합니다."},
             )
             return
-        mode = _normalize_runtime_mode(str(document.get("mode", "") or ""))
-        if mode == COMMAND_MODE_LEGACY_COMMANDER:
-            launcher = getattr(self.server, "live_launcher", None)  # type: ignore[attr-defined]
-            if launcher is None:
-                self._send_json(
-                    HTTPStatus.SERVICE_UNAVAILABLE,
-                    {
-                        "accepted": False,
-                        "enabled": False,
-                        "mode": mode,
-                        "status": "disabled",
-                        "error": "Legacy launcher is disabled.",
-                    },
-                )
-                return
-            payload = dict(launcher.start())
-            payload["accepted"] = payload.get("status") != "blocked"
-            payload["mode"] = mode
-            status = (
-                HTTPStatus.CONFLICT
-                if payload.get("status") == "blocked"
-                else HTTPStatus.ACCEPTED
-            )
-            self._send_json(
-                status,
-                _public_runtime_launcher_payload(payload),
-            )
+        try:
+            mode = _normalize_runtime_mode(str(document.get("mode", "") or ""))
+        except ValueError as error:
+            self._send_json(HTTPStatus.GONE, {"accepted": False, "status": "removed", "error": str(error)})
             return
         launcher = getattr(self.server, "micromachine_launcher", None)  # type: ignore[attr-defined]
         if launcher is None:
@@ -12923,6 +13016,8 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     "사용 가능한 경로: GET /, GET /api/state, "
                     "GET /api/history?after=N, GET /api/events, "
                     "GET/POST /api/llm, "
+                    "GET /api/direct/capabilities, GET /api/direct/registry, "
+                    "POST /api/direct/registry/target-pin, "
                     "POST /api/command, GET /api/runtime/status, "
                     "POST /api/runtime/start, GET /api/micromachine/status, "
                     "POST /api/micromachine/modulate, "
@@ -13000,7 +13095,6 @@ class WebGuiServer:
         port: int = DEFAULT_WEB_GUI_PORT,
         host: str = WEB_GUI_HOST,
         auth_token: str = "",
-        auto_launch_live: bool = False,
     ) -> None:
         if not isinstance(bridge, WebGuiBridgeInterface):
             raise TypeError(
@@ -13025,9 +13119,7 @@ class WebGuiServer:
         self._requested_port = port
         self._host = cleaned_host
         self._auth_token = cleaned_token
-        self._auto_launch_live = bool(auto_launch_live)
         self._event_journal = _WebEventJournal()
-        self._live_launcher = _LiveLaunchManager()
         self._micromachine_launcher = _MicroMachineLaunchManager()
         self._lifecycle_lock = threading.Lock()
         self._http: _BridgedThreadingHTTPServer | None = None
@@ -13097,8 +13189,6 @@ class WebGuiServer:
                 self._auth_token,
                 self._event_journal,
             )
-            self._http.auto_launch_live = self._auto_launch_live  # type: ignore[attr-defined]
-            self._http.live_launcher = self._live_launcher  # type: ignore[attr-defined]
             self._http.micromachine_launcher = self._micromachine_launcher  # type: ignore[attr-defined]
             self._thread = threading.Thread(
                 target=self._http.serve_forever,
@@ -13139,7 +13229,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
             "voiStarcraft2 커맨더 로컬 웹 GUI. "
             "--dry-run은 내장 가짜 BotAI로 전체 파이프라인을 실행합니다. "
             "MicroMachine 조작은 blackboard live session/soak 경로를 사용하고, "
-            "python-sc2 demo는 legacy compatibility mode입니다."
+            "Direct SC2 명령은 연결된 runtime에서 실행합니다."
         ),
     )
     parser.add_argument(
@@ -13165,14 +13255,6 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--token",
         default="",
         help="auth token required when exposing the web GUI beyond localhost",
-    )
-    parser.add_argument(
-        "--auto-launch-legacy-live",
-        action="store_true",
-        help=(
-            "after LLM setup, auto-start the legacy python-sc2 demo live GUI. "
-            "Disabled by default so it is not confused with MicroMachine."
-        ),
     )
     parser.add_argument("--micromachine-script", default="", help=argparse.SUPPRESS)
     parser.add_argument("--micromachine-cwd", default="", help=argparse.SUPPRESS)
@@ -13200,7 +13282,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "'python -m starcraft_commander.web_gui --dry-run', "
             "MicroMachine은 integrations/micromachine scripts와 "
             "blackboard live session을 사용하세요. "
-            "이전 python-sc2 demo는 legacy commander mode로만 사용하세요."
+            "Direct SC2 명령은 연결된 runtime에서만 실행됩니다."
         )
         return 2
 
@@ -13230,7 +13312,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         port=args.port,
         host=args.host,
         auth_token=args.token,
-        auto_launch_live=args.auto_launch_legacy_live,
     )
     server.configure_micromachine_runtime(
         script_path=args.micromachine_script,

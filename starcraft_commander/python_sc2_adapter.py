@@ -44,7 +44,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Final, Protocol, runtime_checkable
 
-from starcraft_commander.contracts import SC2ActionReport, SC2CommandAction
+from starcraft_commander.contracts import SC2ActionReport, SC2ActionType, SC2CommandAction
 from starcraft_commander.map_resolver import (
     MapPoint,
     SC2MapResolverInterface,
@@ -76,6 +76,14 @@ SC2_ADAPTER_ACTION_METHOD_NAMES: Final[tuple[str, ...]] = (
     "move_camera",
     "stop_group",
     "hold_position",
+    "query_ability",
+    "query_placement",
+    "query_unit",
+    "query_game",
+    "query_map",
+    "build_gas",
+    "distribute_workers",
+    "expand_now",
 )
 """The semantic action methods ``SC2RuntimeExecutor`` dispatches to."""
 
@@ -160,6 +168,64 @@ SC2_TOWNHALL_TYPE_NAMES: Final[frozenset[str]] = frozenset(
 )
 """Normalized townhall names used to validate expansion occupancy."""
 
+SC2_QUERY_UNIT_METHODS: Final[frozenset[str]] = frozenset(
+    {
+        "calculate_speed",
+        "distance_to",
+        "distance_to_squared",
+        "target_in_range",
+        "in_ability_cast_range",
+        "is_facing",
+        "is_using_ability",
+        "has_buff",
+        "calculate_damage_vs_target",
+        "calculate_dps_vs_target",
+    }
+)
+"""Public read-only Unit calculations/predicates allowed at the MCP boundary."""
+
+SC2_QUERY_UNIT_TARGET_QUERIES: Final[frozenset[str]] = frozenset(
+    {
+        "distance_to",
+        "distance_to_squared",
+        "target_in_range",
+        "in_ability_cast_range",
+        "is_facing",
+        "calculate_damage_vs_target",
+        "calculate_dps_vs_target",
+    }
+)
+
+SC2_QUERY_GAME_METHODS: Final[frozenset[str]] = frozenset(
+    {
+        "can_afford",
+        "calculate_cost",
+        "calculate_unit_value",
+        "calculate_supply_cost",
+        "can_feed",
+        "already_pending",
+        "already_pending_upgrade",
+        "structure_type_build_progress",
+        "tech_requirement_progress",
+        "worker_en_route_to_build",
+    }
+)
+"""Allowlisted read-only BotAI game calculations exposed through MCP."""
+
+SC2_QUERY_MAP_METHODS: Final[frozenset[str]] = frozenset(
+    {
+        "get_next_expansion",
+        "get_terrain_height",
+        "get_terrain_z_height",
+        "has_creep",
+        "in_map_bounds",
+        "in_pathing_grid",
+        "in_placement_grid",
+        "is_visible",
+    }
+)
+"""Allowlisted read-only BotAI map queries exposed through MCP."""
+
 PYTHON_SC2_UNIT_TYPE_HINT: Final[str] = (
     "python-sc2 (importable package 'sc2') is required to resolve UnitTypeId "
     "names. Install it with: pip install 'voiStarcraft2[sc2]' (or: pip install "
@@ -238,6 +304,30 @@ class SC2BotAdapterInterface(Protocol):
 
     async def hold_position(self, action: SC2CommandAction) -> SC2ActionReport:
         """Hold the selected unit group at its current position."""
+
+    async def query_ability(self, action: SC2CommandAction) -> Mapping[str, object]:
+        """Read caster ability availability without issuing an order."""
+
+    async def query_placement(self, action: SC2CommandAction) -> Mapping[str, object]:
+        """Validate a semantic structure placement without issuing a build order."""
+
+    async def query_unit(self, action: SC2CommandAction) -> Mapping[str, object]:
+        """Evaluate a bounded public Unit calculation without issuing an order."""
+
+    async def query_game(self, action: SC2CommandAction) -> Mapping[str, object]:
+        """Evaluate an allowlisted BotAI game query without issuing an order."""
+
+    async def query_map(self, action: SC2CommandAction) -> Mapping[str, object]:
+        """Evaluate an allowlisted BotAI map query without issuing an order."""
+
+    async def build_gas(self, action: SC2CommandAction) -> bool | SC2ActionReport:
+        """Build one refinery on an explicit semantic geyser with a pinned worker."""
+
+    async def distribute_workers(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Ask BotAI to rebalance workers between minerals and completed gas."""
+
+    async def expand_now(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Expand at a validated semantic expansion anchor."""
 
     def bind_direct_action(self, action: SC2CommandAction) -> SC2CommandAction:
         """Pin current live unit tags before a Direct lease is admitted."""
@@ -322,8 +412,10 @@ class PythonSC2BotAdapter:
         ``action.subject`` is a python-sc2 ``UnitTypeId`` name string such as
         ``SUPPLYDEPOT``. Explicitly unaffordable builds are refused. EXPAND
         plans (planner metadata ``source_structure == 'Command Center'``)
-        prefer ``await bot.expand_now()`` only for unbound compatibility
-        actions. Direct leases always use their pinned builder. Gas
+        use the exact pinned builder on the Direct path. The python-sc2
+        ``BotAI.expand_now`` convenience method is intentionally not used:
+        it silently selects a worker and discards the underlying build result.
+        Gas
         structures (Refinery) require a geyser *unit* in real python-sc2, so
         they are built through ``worker.build_gas`` (or ``bot.build`` with the
         geyser unit) on the nearest free geyser, refusing honestly when no
@@ -400,11 +492,8 @@ class PythonSC2BotAdapter:
                         failure_reason=command_center_rejection,
                     ),
                 )
-            expand_now = getattr(self.bot, "expand_now", None)
-            if callable(expand_now) and "_direct_unit_tags" not in action.metadata:
-                return await _call_bot_operation(expand_now)
-        build = getattr(self.bot, "build", None)
         has_pinned_builder = "_direct_unit_tags" in action.metadata
+        build = getattr(self.bot, "build", None)
         if not callable(build) and not has_pinned_builder:
             detail = "missing_build_capability"
             return _refusal_report(
@@ -487,7 +576,12 @@ class PythonSC2BotAdapter:
                         failure_reason=detail,
                     ),
                 )
-            built = await self._issue_unit_order(build_order, type_id, destination)
+            built = await self._issue_unit_order(
+                build_order,
+                type_id,
+                destination,
+                none_is_success=False,
+            )
         else:
             built = await _call_bot_operation(
                 build,
@@ -989,6 +1083,676 @@ class PythonSC2BotAdapter:
 
         return await self._order_group_action(action, "hold_position")
 
+    async def query_ability(self, action: SC2CommandAction) -> Mapping[str, object]:
+        """Return per-caster availability from python-sc2 read-only APIs.
+
+        ``get_available_abilities`` is used for the cheap batch availability
+        view, while ``can_cast`` is consulted when present to account for
+        target/energy/cooldown constraints. No unit is reserved or ordered.
+        """
+
+        ability_name = str(
+            action.metadata.get("ability_id")
+            or action.metadata.get("ability")
+            or ""
+        ).strip()
+        if not ability_name:
+            return {"ok": False, "error": "missing_ability"}
+        ability = self._resolve_ability(ability_name)
+        if ability is None:
+            return {"ok": False, "error": "unresolvable_ability", "ability": ability_name}
+        units = self._action_units(action)
+        if not units:
+            return {
+                "ok": False,
+                "error": "no_matching_caster",
+                "ability": ability_name,
+                "casters": [],
+            }
+
+        available_by_unit: dict[int, bool] = {}
+        get_available = getattr(self.bot, "get_available_abilities", None)
+        if callable(get_available):
+            raw = get_available(units)
+            if inspect.isawaitable(raw):
+                raw = await raw
+            if isinstance(raw, Sequence):
+                for unit, abilities in zip(units, raw):
+                    tag = _entity_tag(unit)
+                    if tag is None:
+                        continue
+                    try:
+                        available_by_unit[tag] = any(
+                            _ability_matches(candidate, ability, ability_name)
+                            for candidate in abilities
+                        )
+                    except TypeError:
+                        available_by_unit[tag] = False
+
+        target = None
+        if action.target:
+            point = self._resolve_target_point(action.target)
+            if point is not None:
+                target = _game_point(point)
+        can_cast = getattr(self.bot, "can_cast", None)
+        casters: list[dict[str, object]] = []
+        for unit in units:
+            tag = _entity_tag(unit)
+            if tag is None:
+                continue
+            allowed = available_by_unit.get(tag)
+            if callable(can_cast):
+                try:
+                    result = can_cast(unit, ability, target=target)
+                    if inspect.isawaitable(result):
+                        result = await result
+                    allowed = bool(result)
+                except (TypeError, AttributeError):
+                    # Older python-sc2 forks may not accept target as a
+                    # keyword; keep the batch result rather than guessing.
+                    try:
+                        result = can_cast(unit, ability)
+                        if inspect.isawaitable(result):
+                            result = await result
+                        allowed = bool(result)
+                    except Exception:  # noqa: BLE001 - query is fail-closed.
+                        allowed = False
+                except Exception:  # noqa: BLE001 - query is fail-closed.
+                    allowed = False
+            # Concrete tags are internal ownership/dispatch identities and
+            # must never cross the semantic MCP/UI boundary.
+            casters.append(
+                {
+                    "unit_type": _entity_type_name(unit),
+                    "can_cast": bool(allowed),
+                }
+            )
+        return {
+            "ability": ability_name,
+            "casters": casters,
+            "available_count": sum(1 for item in casters if item["can_cast"]),
+            "queried_count": len(casters),
+        }
+
+    async def query_placement(self, action: SC2CommandAction) -> Mapping[str, object]:
+        """Return bounded placement feasibility without issuing a build order.
+
+        ``find_placement`` is preferred when available and its result is
+        checked with ``can_place``/``can_place_single``. Older python-sc2
+        forks use the deterministic bounded candidate ring instead. This
+        method never calls ``build``, ``build_gas``, ``expand_now``, or any
+        unit-order method.
+        """
+
+        structure_name = str(action.subject or "").strip()
+        if not structure_name:
+            return {"ok": False, "error": "missing_structure"}
+        try:
+            type_id = self._resolve_unit_type(structure_name)
+        except (MissingPythonSC2Error, ValueError, KeyError) as error:
+            return {
+                "ok": False,
+                "error": "unresolvable_structure",
+                "structure": structure_name,
+                "detail": str(error),
+            }
+
+        placement_policy = action.metadata.get("placement_policy")
+        policy = placement_policy if isinstance(placement_policy, Mapping) else None
+        center = self._resolve_anchor_point(policy) if policy is not None else None
+        center = center or self._resolve_target_point(action.target)
+        if center is None:
+            return {"ok": False, "error": "unresolvable_target", "target": action.target}
+        radius = _placement_search_radius(policy)
+        find_placement = getattr(self.bot, "find_placement", None)
+        can_place_methods = tuple(
+            name for name in ("can_place", "can_place_single", "can_build")
+            if callable(getattr(self.bot, name, None))
+        )
+        if not callable(find_placement) and not can_place_methods:
+            return {
+                "ok": False,
+                "error": "missing_placement_capability",
+                "structure": structure_name,
+                "target": action.target,
+            }
+
+        if callable(find_placement):
+            destination = _game_point(center)
+            attempts = (
+                ((type_id,), {"near": destination, "max_distance": radius,
+                              "random_alternative": False}),
+                ((type_id, destination), {}),
+            )
+            for args, kwargs in attempts:
+                try:
+                    found = find_placement(*args, **kwargs)
+                except TypeError:
+                    continue
+                if inspect.isawaitable(found):
+                    found = await found
+                point = _entity_point(found)
+                if point is None:
+                    continue
+                if center.distance_to(point) > radius:
+                    return {
+                        "ok": False,
+                        "error": "placement_out_of_bounds",
+                        "structure": structure_name,
+                        "target": action.target,
+                        "search_radius": radius,
+                    }
+                allowed = await _optional_buildability_check(self.bot, type_id, point)
+                if allowed is False:
+                    return {
+                        "ok": False,
+                        "error": "can_place_rejected",
+                        "structure": structure_name,
+                        "target": action.target,
+                        "selected_tile": point.to_dict(),
+                        "search_radius": radius,
+                        "source": "find_placement",
+                    }
+                return {
+                    "ok": True,
+                    "status": "selected",
+                    "structure": structure_name,
+                    "target": action.target,
+                    "selected_tile": point.to_dict(),
+                    "search_radius": radius,
+                    "checked_count": 1,
+                    "source": "find_placement",
+                }
+
+            # A failed find_placement result is not permission to guess a
+            # tile. Without an independent can_place predicate we must fail
+            # closed instead of treating an unchecked candidate as valid.
+            if not can_place_methods:
+                return {
+                    "ok": False,
+                    "error": "no_safe_placement",
+                    "structure": structure_name,
+                    "target": action.target,
+                    "search_radius": radius,
+                    "checked_count": 0,
+                    "source": "find_placement",
+                }
+
+        checked = 0
+        rejection_reasons: list[str] = []
+        for candidate in _build_placement_candidates(center, radius):
+            checked += 1
+            allowed = await _optional_buildability_check(self.bot, type_id, candidate)
+            if allowed is False:
+                rejection_reasons.append(
+                    f"point({candidate.x:g}, {candidate.y:g}):can_place_rejected"
+                )
+                continue
+            return {
+                "ok": True,
+                "status": "selected",
+                "structure": structure_name,
+                "target": action.target,
+                "selected_tile": candidate.to_dict(),
+                "search_radius": radius,
+                "checked_count": checked,
+                "source": "bounded_can_place_search",
+            }
+        return {
+            "ok": False,
+            "error": "no_safe_placement",
+            "structure": structure_name,
+            "target": action.target,
+            "search_radius": radius,
+            "checked_count": checked,
+            "rejection_reasons": rejection_reasons[:8],
+        }
+
+    async def query_unit(self, action: SC2CommandAction) -> Mapping[str, object]:
+        """Evaluate one bounded public ``python-sc2 Unit`` query.
+
+        The query name is an allowlisted semantic value, never a method name
+        supplied by the caller.  Unit selection is resolved from the current
+        own/enemy observation and an ambiguous target is refused rather than
+        guessed.  This method only reads Unit state; it never calls an order
+        method and therefore remains safe for parallel, lease-free execution.
+        """
+
+        metadata = action.metadata
+        query = str(metadata.get("query", "") or "").strip()
+        if query not in SC2_QUERY_UNIT_METHODS:
+            return {
+                "ok": False,
+                "error": "unsupported_query",
+                "query": query,
+                "allowed_queries": sorted(SC2_QUERY_UNIT_METHODS),
+            }
+        units, subject_error = self._query_units(action.subject)
+        if subject_error:
+            return {"ok": False, "error": subject_error, "subject": action.subject}
+        if not units:
+            return {
+                "ok": False,
+                "error": "no_matching_units",
+                "subject": action.subject,
+            }
+
+        requires_target = query in SC2_QUERY_UNIT_TARGET_QUERIES
+        target: object | None = None
+        if requires_target:
+            target_name = str(action.target or metadata.get("target_subject", "") or "").strip()
+            if not target_name:
+                return {"ok": False, "error": "missing_target", "query": query}
+            target, target_error = self._query_target(target_name, query=query)
+            if target_error:
+                return {
+                    "ok": False,
+                    "error": target_error,
+                    "target": target_name,
+                    "query": query,
+                }
+
+        ability_name = str(metadata.get("ability", "") or "").strip()
+        buff_name = str(metadata.get("buff", "") or "").strip()
+        if query in {"in_ability_cast_range", "is_using_ability"} and not ability_name:
+            return {"ok": False, "error": "missing_ability", "query": query}
+        if query == "has_buff" and not buff_name:
+            return {"ok": False, "error": "missing_buff", "query": query}
+        bonus_distance = _bounded_query_float(metadata.get("bonus_distance", 0.0))
+        if bonus_distance is None:
+            return {"ok": False, "error": "invalid_bonus_distance", "query": query}
+        resolved_ability = self._resolve_ability(ability_name) if ability_name else None
+        if query in {"in_ability_cast_range", "is_using_ability"} and resolved_ability is None:
+            return {"ok": False, "error": "unresolvable_ability", "ability": ability_name}
+        resolved_buff = self._resolve_buff(buff_name) if buff_name else None
+        if query == "has_buff" and resolved_buff is None:
+            return {"ok": False, "error": "unresolvable_buff", "buff": buff_name}
+
+        values: list[dict[str, object]] = []
+        for unit in units:
+            method = getattr(unit, query, None)
+            if not callable(method):
+                return {
+                    "ok": False,
+                    "error": "missing_query_capability",
+                    "query": query,
+                    "subject": action.subject,
+                }
+            try:
+                if query == "calculate_speed":
+                    value = method()
+                elif query in {"distance_to", "distance_to_squared"}:
+                    value = method(target)
+                elif query == "target_in_range":
+                    value = method(target, bonus_distance=bonus_distance)
+                elif query == "is_facing":
+                    value = method(target)
+                elif query == "in_ability_cast_range":
+                    value = method(resolved_ability, target, bonus_distance=bonus_distance)
+                elif query == "is_using_ability":
+                    value = method(resolved_ability)
+                elif query == "has_buff":
+                    value = method(resolved_buff)
+                elif query in {"calculate_damage_vs_target", "calculate_dps_vs_target"}:
+                    ignore_armor = metadata.get("ignore_armor", False)
+                    include_overkill = metadata.get("include_overkill_damage", True)
+                    if type(ignore_armor) is not bool or type(include_overkill) is not bool:
+                        return {
+                            "ok": False,
+                            "error": "invalid_query_boolean",
+                            "query": query,
+                        }
+                    value = method(
+                        target,
+                        ignore_armor=ignore_armor,
+                        include_overkill_damage=include_overkill,
+                    )
+                else:  # pragma: no cover - allowlist and dispatch stay in sync.
+                    return {"ok": False, "error": "unsupported_query", "query": query}
+            except (TypeError, AttributeError, ValueError, KeyError) as error:
+                return {
+                    "ok": False,
+                    "error": "query_failed",
+                    "query": query,
+                    "detail": f"{type(error).__name__}:{error}",
+                }
+            json_value = _json_query_value(value)
+            if not _query_result_is_finite(value):
+                return {
+                    "ok": False,
+                    "error": "non_finite_query_result",
+                    "query": query,
+                }
+            values.append(
+                {
+                    "unit_type": _entity_type_name(unit),
+                    "value": json_value,
+                }
+            )
+        return {
+            "ok": True,
+            "query": query,
+            "subject": action.subject,
+            "target": action.target,
+            "results": values,
+        }
+
+    async def query_game(self, action: SC2CommandAction) -> Mapping[str, object]:
+        """Evaluate one allowlisted read-only ``BotAI`` game query.
+
+        The public action carries a semantic subject and a finite query name;
+        it never carries an arbitrary python-sc2 method.  Querying is kept
+        lease-free and does not call an order surface, even when a BotAI
+        implementation happens to expose similarly named helpers.
+        """
+
+        metadata = action.metadata
+        query = str(metadata.get("query", "") or "").strip()
+        if query not in SC2_QUERY_GAME_METHODS:
+            return {
+                "ok": False,
+                "error": "unsupported_query",
+                "query": query,
+                "allowed_queries": sorted(SC2_QUERY_GAME_METHODS),
+            }
+
+        method = getattr(self.bot, query, None)
+        if not callable(method):
+            return {"ok": False, "error": "missing_query_capability", "query": query}
+
+        subject = str(action.subject or "").strip()
+        if not subject:
+            return {"ok": False, "error": "missing_subject", "query": query}
+
+        # UpgradeId is required by already_pending_upgrade.  For the one
+        # query that may legitimately address either a unit or an upgrade,
+        # callers can make the semantic kind explicit; defaulting to a unit
+        # keeps the common production/cost path deterministic.
+        subject_kind = str(metadata.get("subject_kind", "") or "").strip().casefold()
+        if subject_kind not in {"", "unit", "upgrade"}:
+            return {
+                "ok": False,
+                "error": "invalid_subject_kind",
+                "subject_kind": subject_kind,
+            }
+        if query == "already_pending_upgrade":
+            if subject_kind not in {"", "upgrade"}:
+                return {
+                    "ok": False,
+                    "error": "invalid_subject_kind",
+                    "query": query,
+                    "subject_kind": subject_kind,
+                }
+            needs_upgrade = True
+        else:
+            # The remaining BotAI helpers in this finite surface accept a
+            # UnitTypeId. Do not silently pass an UpgradeId to can_feed,
+            # calculate_supply_cost, or structure/progress helpers.
+            if subject_kind == "upgrade":
+                return {
+                    "ok": False,
+                    "error": "invalid_subject_kind",
+                    "query": query,
+                    "subject_kind": subject_kind,
+                }
+            needs_upgrade = False
+        try:
+            resolved = (
+                self._resolve_upgrade(subject)
+                if needs_upgrade
+                else self._resolve_unit_type(subject)
+            )
+        except Exception as error:  # noqa: BLE001 - query boundary fails closed.
+            return {
+                "ok": False,
+                "error": "unresolvable_subject",
+                "query": query,
+                "subject": subject,
+                "detail": str(error),
+            }
+        if resolved is None:
+            return {
+                "ok": False,
+                "error": "unresolvable_subject",
+                "query": query,
+                "subject": subject,
+            }
+
+        try:
+            if query == "can_afford":
+                check_supply_cost = metadata.get("check_supply_cost", True)
+                if type(check_supply_cost) is not bool:
+                    return {
+                        "ok": False,
+                        "error": "invalid_query_boolean",
+                        "query": query,
+                    }
+                value = (
+                    method(resolved)
+                    if check_supply_cost
+                    else method(resolved, check_supply_cost=False)
+                )
+            else:
+                value = method(resolved)
+            if inspect.isawaitable(value):
+                value = await value
+        except Exception as error:  # noqa: BLE001 - query boundary fails closed.
+            return {
+                "ok": False,
+                "error": "query_failed",
+                "query": query,
+                "subject": subject,
+                "detail": f"{type(error).__name__}:{error}",
+            }
+
+        if not _query_result_is_finite(value):
+            return {
+                "ok": False,
+                "error": "non_finite_query_result",
+                "query": query,
+                "subject": subject,
+            }
+        return {
+            "ok": True,
+            "query": query,
+            "subject": subject,
+            "subject_kind": "upgrade" if needs_upgrade else "unit",
+            "value": _json_query_value(value),
+        }
+
+    async def query_map(self, action: SC2CommandAction) -> Mapping[str, object]:
+        """Evaluate one finite read-only BotAI map query."""
+
+        metadata = action.metadata
+        query = str(metadata.get("query", "") or "").strip()
+        if query not in SC2_QUERY_MAP_METHODS:
+            return {
+                "ok": False,
+                "error": "unsupported_query",
+                "query": query,
+                "allowed_queries": sorted(SC2_QUERY_MAP_METHODS),
+            }
+        method = getattr(self.bot, query, None)
+        if not callable(method):
+            return {"ok": False, "error": "missing_query_capability", "query": query}
+        effective_target = str(
+            action.target or metadata.get("target_subject", "") or ""
+        ).strip()
+        try:
+            if query == "get_next_expansion":
+                value = method()
+            else:
+                if not effective_target:
+                    return {"ok": False, "error": "missing_target", "query": query}
+                point = self._resolve_target_point(effective_target)
+                if point is None:
+                    return {
+                        "ok": False,
+                        "error": "unresolvable_target",
+                        "query": query,
+                        "target": effective_target,
+                    }
+                value = method(_game_point(point))
+            if inspect.isawaitable(value):
+                value = await value
+        except Exception as error:  # noqa: BLE001 - query boundary fails closed.
+            return {
+                "ok": False,
+                "error": "query_failed",
+                "query": query,
+                "detail": f"{type(error).__name__}:{error}",
+            }
+        if not _query_result_is_finite(value):
+            return {"ok": False, "error": "non_finite_query_result", "query": query}
+        return {
+            "ok": True,
+            "query": query,
+            "target": effective_target,
+            "value": _json_query_value(value),
+        }
+
+    def _query_units(self, subject: str) -> tuple[list[object], str]:
+        """Resolve a semantic own/enemy unit subject for a read-only query."""
+
+        normalized = " ".join(str(subject or "").strip().casefold().split())
+        if not normalized:
+            return [], "missing_subject"
+        enemy = normalized.startswith("enemy ") or normalized.startswith("enemy_")
+        pool = _unique_entities(
+            (
+                _materialize(getattr(self.bot, "enemy_units", None))
+                + _materialize(getattr(self.bot, "enemy_structures", None))
+            )
+            if enemy
+            else (
+                _materialize(getattr(self.bot, "units", None))
+                + _materialize(getattr(self.bot, "structures", None))
+            )
+        )
+        query_subject = normalized
+        for prefix in ("enemy ", "enemy_", "self ", "self_", "own ", "own_", "friendly ", "friendly_"):
+            if query_subject.startswith(prefix):
+                query_subject = query_subject[len(prefix):]
+                break
+        query_subject = query_subject.replace("_", " ")
+        selected = self._select_query_entities(pool, query_subject)
+        if not selected:
+            return [], "no_matching_units"
+        requested = _leading_count(query_subject)
+        if requested is not None:
+            selected = selected[:requested]
+        return selected, ""
+
+    @staticmethod
+    def _select_query_entities(pool: Sequence[object], subject: str) -> list[object]:
+        normalized = _normalized_name(subject)
+        if normalized is None:
+            return []
+        typed = [entity for entity in pool if _entity_type_name(entity) == normalized]
+        if typed:
+            return typed
+        token = _unit_type_token(subject)
+        if token is not None:
+            return [entity for entity in pool if _entity_type_name(entity) == token]
+        return [
+            entity
+            for entity in pool
+            if _loose_name_match(_entity_type_name(entity), normalized)
+        ]
+
+    def _query_target(self, target_name: str, *, query: str) -> tuple[object | None, str]:
+        """Resolve one semantic Unit target, or a map point for cast range."""
+
+        normalized = " ".join(target_name.casefold().split())
+        enemy = normalized.startswith("enemy ") or normalized.startswith("enemy_")
+        pool = _unique_entities(
+            (
+                _materialize(getattr(self.bot, "enemy_units", None))
+                + _materialize(getattr(self.bot, "enemy_structures", None))
+            )
+            if enemy
+            else (
+                _materialize(getattr(self.bot, "units", None))
+                + _materialize(getattr(self.bot, "structures", None))
+            )
+        )
+        subject = normalized
+        for prefix in ("enemy ", "enemy_", "self ", "self_", "own ", "own_", "friendly ", "friendly_"):
+            if subject.startswith(prefix):
+                subject = subject[len(prefix):]
+                break
+        subject = subject.replace("_", " ")
+        candidates = self._select_query_entities(pool, subject)
+        if len(candidates) == 1:
+            return candidates[0], ""
+        if len(candidates) > 1:
+            return None, "ambiguous_target"
+        if query in {"distance_to", "distance_to_squared", "in_ability_cast_range"}:
+            point = self._resolve_target_point(target_name)
+            if point is not None:
+                return _game_point(point), ""
+        return None, "no_matching_target"
+
+    async def build_gas(self, action: SC2CommandAction) -> bool | SC2ActionReport:
+        """Build a refinery only on an explicit semantic geyser with pinned worker."""
+        if not _is_gas_semantic_target(action):
+            return _refusal_report(1, "invalid_refinery_target: target_is_not_geyser")
+        try:
+            type_id = self._resolve_unit_type("REFINERY")
+        except (MissingPythonSC2Error, ValueError, KeyError) as error:
+            return _refusal_report(1, f"unresolvable_refinery:{error}")
+        if not await self._is_affordable(type_id):
+            return _refusal_report(1, "unaffordable")
+        if "_direct_unit_tags" not in action.metadata:
+            return _refusal_report(1, "pinned_worker_required")
+        return await self._build_gas_structure(action, type_id)
+
+    async def distribute_workers(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Rebalance workers using a bounded mineral-to-gas resource ratio."""
+        method = getattr(self.bot, "distribute_workers", None)
+        if not callable(method):
+            return _refusal_report(1, "missing_distribute_workers_capability")
+        try:
+            ratio = float(action.metadata.get("resource_ratio", 2.0))
+        except (TypeError, ValueError):
+            return _refusal_report(1, "invalid_resource_ratio")
+        if not math.isfinite(ratio) or not 0.0 <= ratio <= 10.0:
+            return _refusal_report(1, "invalid_resource_ratio")
+        applied = await _call_bot_operation(method, ratio)
+        return _issuance_report(1, 1 if applied else 0, "distribute_workers_refused")
+
+    async def expand_now(self, action: SC2CommandAction) -> SC2ActionReport:
+        """Build a town hall at a validated anchor with a pinned worker.
+
+        ``BotAI.expand_now`` is a convenience API that chooses an arbitrary
+        worker and returns ``None`` even when ``BotAI.build`` refused the
+        order. Direct commands cannot use that lossy surface. They are
+        lowered into the same pinned ``build_structure`` path used by the
+        planner, so ownership, placement, and the issued-order result remain
+        auditable.
+        """
+        target = str(action.target or "").strip()
+        if not target or target.startswith("enemy"):
+            return _refusal_report(1, "invalid_expansion_target")
+        position = self._resolve_target_point(target)
+        if position is None:
+            return _refusal_report(1, "unresolvable_expansion_target")
+        validated, reason = self._validate_command_center_position(position)
+        if validated is None:
+            return _refusal_report(1, reason or "invalid_expansion_target")
+        try:
+            self._resolve_unit_type(action.subject or "COMMANDCENTER")
+        except (MissingPythonSC2Error, ValueError, KeyError) as error:
+            return _refusal_report(1, f"unresolvable_expansion_type:{error}")
+        if "_direct_unit_tags" not in action.metadata:
+            return _refusal_report(1, "pinned_builder_required")
+        lowered = replace(
+            action,
+            action_type=SC2ActionType.BUILD_STRUCTURE,
+            metadata={**dict(action.metadata), "source_structure": "Command Center"},
+        )
+        return await self.build_structure(lowered)
+
     async def _order_group_action(
         self,
         action: SC2CommandAction,
@@ -1319,6 +2083,23 @@ class PythonSC2BotAdapter:
                 return value
         return None
 
+    def _resolve_buff(self, buff_name: str) -> object | None:
+        """Resolve a semantic buff name without exposing ``BuffId`` methods."""
+
+        normalized = re.sub(r"[^A-Za-z0-9]+", "_", buff_name).strip("_").upper()
+        if not normalized:
+            return None
+        resolver = getattr(self.bot, "buff_id_resolver", None)
+        if callable(resolver):
+            resolved = resolver(buff_name)
+            if resolved is not None:
+                return resolved
+        try:
+            from sc2.ids.buff_id import BuffId
+        except ImportError:
+            return normalized if normalized.isupper() else None
+        return getattr(BuffId, normalized, None)
+
     def _resolve_upgrade(self, upgrade_name: str) -> object | None:
         """Resolve a python-sc2 ``UpgradeId`` without importing it eagerly."""
 
@@ -1353,6 +2134,7 @@ class PythonSC2BotAdapter:
         self,
         order_method: Callable[..., object],
         *args: object,
+        none_is_success: bool = True,
     ) -> bool:
         """Issue one unit order, preferring ``bot.do`` collection when present."""
 
@@ -1360,7 +2142,7 @@ class PythonSC2BotAdapter:
         if inspect.isawaitable(command):
             command = await command
         if command is None:
-            return True
+            return none_is_success
         if not command:
             return False
         do = getattr(self.bot, "do", None)
@@ -1417,6 +2199,7 @@ class PythonSC2BotAdapter:
         clean = replace(action, metadata=metadata)
         worker_actions = {
             "assign_workers", "gather_resource", "repair", "build_structure",
+            "build_gas", "expand_now",
         }
         producer_actions = {"train_unit", "research_upgrade", "warp_in"}
         group_actions = {
@@ -1428,7 +2211,7 @@ class PythonSC2BotAdapter:
             return clean
         if kind in worker_actions:
             pool = self._worker_pool()
-            requested = 1 if kind == "build_structure" else action.count
+            requested = 1 if kind in {"build_structure", "expand_now"} else action.count
         elif kind in producer_actions:
             pool = self._producer_candidates(clean, kind)
             # A train/warp count is the number of orders, while a research
@@ -2129,6 +2912,22 @@ def _materialize(value: object) -> list[object]:
     return list(value)
 
 
+def _unique_entities(entities: Sequence[object]) -> list[object]:
+    """Deduplicate a combined units/structures observation by tag or identity."""
+
+    seen: set[object] = set()
+    result: list[object] = []
+    for entity in entities:
+        key: object = _entity_tag(entity)
+        if key is None:
+            key = id(entity)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(entity)
+    return result
+
+
 def _normalized_name(value: object) -> str | None:
     """Uppercase a name, dropping whitespace and underscores, for matching."""
 
@@ -2185,6 +2984,106 @@ def _unit_type_token(subject: str) -> str | None:
     if normalized.endswith("S") and normalized[:-1] in _KNOWN_UNIT_TYPE_NAMES:
         return normalized[:-1]
     return None
+
+
+def _entity_tag(entity: object) -> int | None:
+    """Return a positive python-sc2 unit tag when available."""
+
+    raw = getattr(entity, "tag", None)
+    return raw if type(raw) is int and raw > 0 else None
+
+
+def _bounded_query_float(value: object) -> float | None:
+    """Coerce a finite non-negative query distance within a safe bound."""
+
+    if type(value) is bool or not isinstance(value, (int, float)):
+        return None
+    result = float(value)
+    if not math.isfinite(result) or result < 0.0 or result > 1000.0:
+        return None
+    return result
+
+
+def _json_query_value(value: object) -> object:
+    """Convert query output into JSON-safe scalar, point, and cost values."""
+
+    if isinstance(value, Mapping):
+        return {str(key): _json_query_value(item) for key, item in value.items()}
+    if isinstance(value, (str, bool, int)) or value is None:
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    # Point2 subclasses tuple: inspect coordinates before the sequence case
+    # so real python-sc2 points and test doubles have the same object shape.
+    point_x = getattr(value, "x", None)
+    point_y = getattr(value, "y", None)
+    if (
+        type(point_x) in (int, float)
+        and not isinstance(point_x, bool)
+        and type(point_y) in (int, float)
+        and not isinstance(point_y, bool)
+    ):
+        return {"x": _json_query_value(point_x), "y": _json_query_value(point_y)}
+    if isinstance(value, (tuple, list)):
+        return [_json_query_value(item) for item in value]
+    # python-sc2's Cost is a small dataclass with stable public scalar fields.
+    # Preserve that useful structure instead of leaking its repr as text.
+    cost_fields = ("minerals", "vespene", "time")
+    if all(hasattr(value, field) for field in cost_fields[:2]):
+        return {
+            field: _json_query_value(getattr(value, field, None))
+            for field in cost_fields
+            if hasattr(value, field)
+        }
+    return str(value)
+
+
+def _query_result_is_finite(value: object) -> bool:
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if isinstance(value, Mapping):
+        return all(_query_result_is_finite(item) for item in value.values())
+    if isinstance(value, (tuple, list)):
+        return all(_query_result_is_finite(item) for item in value)
+    point_x = getattr(value, "x", None)
+    point_y = getattr(value, "y", None)
+    if point_x is not None or point_y is not None:
+        return (
+            type(point_x) in (int, float)
+            and not isinstance(point_x, bool)
+            and math.isfinite(float(point_x))
+            and type(point_y) in (int, float)
+            and not isinstance(point_y, bool)
+            and math.isfinite(float(point_y))
+        )
+    if all(hasattr(value, field) for field in ("minerals", "vespene")):
+        return all(
+            _query_result_is_finite(getattr(value, field, None))
+            for field in ("minerals", "vespene", "time")
+            if hasattr(value, field)
+        )
+    return True
+
+
+def _ability_matches(candidate: object, resolved: object, requested: str) -> bool:
+    """Match AbilityId-like values across python-sc2 forks and test doubles."""
+
+    if candidate == resolved:
+        return True
+    values = {
+        str(candidate).strip().casefold(),
+        str(getattr(candidate, "name", "")).strip().casefold(),
+        str(getattr(candidate, "value", "")).strip().casefold(),
+        str(requested).strip().casefold(),
+    }
+    return bool(
+        values.intersection(
+            {
+                str(resolved).strip().casefold(),
+                str(getattr(resolved, "name", "")).strip().casefold(),
+            }
+        )
+    )
 
 
 @dataclass(frozen=True)

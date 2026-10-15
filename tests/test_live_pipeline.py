@@ -13,6 +13,7 @@ import unittest
 from types import SimpleNamespace
 
 from starcraft_commander.contracts import SC2ExecutionPlan, SC2PlanExecutionResult
+from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
 from starcraft_commander.event_memory import CommanderEventMemory
 from starcraft_commander.feasibility import DEFAULT_SC2_FEASIBILITY_VALIDATOR
 from starcraft_commander.live_pipeline import (
@@ -4878,6 +4879,57 @@ class LivePipelineIntegrationTest(unittest.IsolatedAsyncioTestCase):
         orders = StandingOrderController()
         session = make_session(bot, event_memory=memory, standing_orders=orders)
         return session, memory, orders
+
+    async def test_explicit_text_session_uses_shared_direct_lifecycle(self) -> None:
+        bot = LivePipelineFakeBot()
+        lifecycle = DirectCommandLifecycle(game_loops_per_second=1)
+        executor = SC2RuntimeExecutor(
+            bot=PythonSC2BotAdapter(bot=bot),
+            direct_lifecycle=lifecycle,
+        )
+        session = SC2CommandSession(
+            executor=executor,
+            direct_lifecycle=lifecycle,
+        )
+
+        outcome = (await session.process_text("SCV 찍어"))[0]
+
+        self.assertEqual("executed", outcome.status)
+        self.assertIsNotNone(outcome.execution_result)
+        lifecycle_audit = outcome.execution_result.audit[
+            "direct_command_lifecycle"
+        ]
+        self.assertEqual("active", lifecycle_audit["state"])
+        self.assertTrue(lifecycle_audit["control_owned"])
+        self.assertEqual(1, len(lifecycle.active_leases()))
+
+        observed = session.tick_direct_commands(1)
+
+        self.assertEqual("completed", observed[0]["state"])
+        self.assertFalse(observed[0]["control_owned"])
+        self.assertEqual((), lifecycle.active_leases())
+
+    async def test_text_direct_failure_releases_shared_lease(self) -> None:
+        bot = LivePipelineFakeBot(supports_build=False)
+        lifecycle = DirectCommandLifecycle(game_loops_per_second=1)
+        executor = SC2RuntimeExecutor(
+            bot=PythonSC2BotAdapter(bot=bot),
+            direct_lifecycle=lifecycle,
+        )
+        session = SC2CommandSession(
+            executor=executor,
+            direct_lifecycle=lifecycle,
+        )
+
+        outcome = (await session.process_text("본진에 보급고 지어"))[0]
+
+        self.assertEqual("blocked", outcome.status)
+        lifecycle_audit = outcome.execution_result.audit[
+            "direct_command_lifecycle"
+        ]
+        self.assertEqual("failed", lifecycle_audit["state"])
+        self.assertFalse(lifecycle_audit["control_owned"])
+        self.assertEqual((), lifecycle.active_leases())
 
     async def test_continuous_train_with_controller_is_executed_with_suffix(self) -> None:
         # With a standing-order controller the continuous-production

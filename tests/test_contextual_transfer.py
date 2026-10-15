@@ -21,12 +21,11 @@ from starcraft_commander.micromachine_battlefield_projection import (
     BattlefieldProjectionIdentity,
     battlefield_overview_fingerprint,
 )
-from starcraft_commander.micromachine_live_session import (
-    MicroMachineLiveTextSession,
-    StaticJsonPolicyModulationProvider,
-)
 from starcraft_commander.micromachine_runtime import (
     MicroMachineFilesystemBlackboard,
+)
+from starcraft_commander.policy_modulation_provider import (
+    compile_policy_modulation_provider_output,
 )
 from starcraft_commander.web_gui import (
     SessionLoopBridge,
@@ -278,16 +277,17 @@ def _request(status, *, request_id="voi-ctx-request-charlie"):
 
 def _initialize_blackboard(root):
     backend = MicroMachineFilesystemBlackboard(root)
-    result = MicroMachineLiveTextSession(
-        backend,
-        StaticJsonPolicyModulationProvider(_initial_provider_output()),
-    ).submit_text(
-        "initialize operations",
+    compiled = compile_policy_modulation_provider_output(
+        _initial_provider_output()
+    )
+    assert compiled.ok, compiled.to_dict()
+    assert compiled.vector is not None
+    update = backend.publish_vector(
+        compiled.vector,
         current_frame=100,
         update_id="contextual-transfer-initial",
     )
-    assert result.ok, result.to_dict()
-    return backend, result.update
+    return backend, update
 
 
 def _archive_count(backend):
@@ -301,9 +301,18 @@ class ContextualTransferAdmissionTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tempdir.cleanup)
-        self.backend, update = _initialize_blackboard(self.tempdir.name)
-        assert update is not None
-        self.vector = update.vector.to_dict()
+        # Admission consumes an existing semantic projection, not a new live
+        # command. Build its input directly so these schema/identity/safety
+        # checks do not depend on the removed non-macro publication route.
+        compiled = compile_policy_modulation_provider_output(
+            _initial_provider_output()
+        )
+        self.assertTrue(compiled.ok, compiled.to_dict())
+        assert compiled.vector is not None
+        self.vector = compiled.vector.to_dict()
+        for operation in self.vector["operations"]:
+            operation["generation"] = 1
+            operation["issued_at_frame"] = 100
         self.status = _status(self.tempdir.name)
         self.request = _request(self.status)
 

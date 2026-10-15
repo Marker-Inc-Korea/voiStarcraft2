@@ -242,11 +242,46 @@ The stable public SC2 action type name set is:
 | `move_camera` | Move the player's camera to a resolved semantic map target without issuing unit orders. |
 | `stop_group` | Immediately stop a named or resolved unit group. |
 | `hold_position` | Hold a named or resolved unit group at its current position. |
+| `query_ability` | Read caster ability availability and target/cooldown feasibility without issuing an order; responses expose semantic unit types, never raw tags. |
+| `query_placement` | Validate a semantic structure placement and return a bounded candidate without issuing a build order. |
+| `query_unit` | Evaluate a bounded public Unit calculation or predicate without issuing an order. |
+| `query_game` | Evaluate an allowlisted BotAI game calculation (cost, affordability, pending/progress) without issuing an order; `already_pending_upgrade` uses an `UpgradeId`, while unit-only queries reject an explicit upgrade subject. |
+| `query_map` | Read allowlisted terrain, visibility, creep, pathing/placement-grid predicates at a semantic map target, or get the next expansion without a target; no orders or ownership leases. |
+| `build_gas` | Build one refinery at an explicit semantic geyser using a pinned worker. |
+| `distribute_workers` | Rebalance workers using a bounded resource ratio through BotAI. |
+| `expand_now` | Expand at a validated semantic own expansion anchor. |
 
 These names are the public API vocabulary for command plans, logs, UI adapters,
 and fake BotAI-style tests. They must remain semantic action categories; callers
 must not depend on python-sc2 method names, ToyCraft executor action labels, or
 mouse-click automation details.
+
+For provider-generated Direct tickets, `tactical_task.target` carries a named
+entity or resource (for example `front bunker` or `gas`). The router preserves
+that field as the SC2 action target; `location_intent` remains the map-oriented
+vocabulary for movement and placement.
+
+The MCP catalog additionally exposes `sc2.direct.retreat` as a semantic alias
+lowered to `move_group`; it is not a separate `SC2_ACTION_TYPES` value.
+
+### Direct registry HTTP boundary
+
+The local companion controller exposes a read-only registry view and one
+semantic write path:
+
+| Method | Path | Contract |
+| --- | --- | --- |
+| `GET` | `/api/direct/capabilities` | Returns the bounded capability catalog and current named registry. |
+| `GET` | `/api/direct/registry` | Returns named squads and target pins without raw runtime identities. |
+| `POST` | `/api/direct/registry/target-pin` | Accepts `{name, target, metadata?}` and returns `201` with the canonical pin. |
+
+`target` must resolve through the SC2 semantic target vocabulary. Aliases are
+canonicalised before storage. Metadata is recursively checked so coordinates,
+positions, unit tags, and nested equivalents cannot cross the UI boundary.
+Unknown targets, malformed JSON, duplicate names, and raw identity metadata are
+rejected with `400`; a missing registry writer returns `503`. The endpoint stores
+semantic intent only. Live map visibility, coordinate resolution, buildability,
+and unit-tag binding remain runtime adapter evidence.
 
 ## SC2 Readiness Boundary
 
@@ -255,7 +290,9 @@ future backend may implement `ToyCraftExecutorInterface`, but it must preserve
 the typed Intent DSL, validator gate, execution result shape, narration inputs,
 and no-mutation rejection safety invariant. Phase 0 does not implement SC2 API
 calls, BWAPI, voice input, hidden autonomous build-order control, or live
-opponent modeling.
+opponent modeling. This Phase 0 statement scopes the legacy `toycraft_commander`
+boundary; the live semantic SC2 adapter and bounded MCP catalog are documented
+in the `SC2 Live Contracts Summary` below.
 
 ## SC2 Live Contracts Summary
 
@@ -266,7 +303,7 @@ semantics and invariants.
 | Contract | Module | Summary |
 | --- | --- | --- |
 | `SC2CommanderState` | `state_resolver.py` | Frozen semantic snapshot resolved from BotAI observations: minerals, vespene, supply, own/enemy unit and structure counts (UPPERCASE space-free type names), idle workers, army count, game time. `SC2StateResolver.resolve(bot)` never raises; degraded fields are recorded in `observation_notes`, and `observation_complete` is false whenever any note exists. |
-| `MapTargetResolution` | `map_resolver.py` | Outcome of resolving one semantic map target to a `MapPoint`. Available resolutions carry a position and nothing else; unavailable resolutions carry a reason and the currently available alternatives, never a position. Covers `self_main`, `self_ramp`, `self_natural`, `enemy_main`, `enemy_ramp`, `enemy_front`, `enemy_natural`, `enemy_mineral_line` plus best-effort `self_mineral_line` and `self_geyser`. |
+| `MapTargetResolution` | `map_resolver.py` | Outcome of resolving one semantic map target to a `MapPoint`. Available resolutions carry a position and nothing else; unavailable resolutions carry a reason and the currently available alternatives, never a position. Covers core targets (`self_main`, `self_ramp`, `self_natural`, `enemy_main`, `enemy_ramp`, `enemy_front`, `enemy_natural`, `enemy_mineral_line`) and best-effort targets (`self_choke`, `self_third`, `self_mineral_line`, `self_geyser`, `enemy_choke`, `enemy_third`, `scout_location`, `last_seen_enemy_area`). |
 | `MapGeometryInference` | `map_resolver.py` | Auditable map-geometry snapshot built from start locations, expansion/base anchors, ramps, mineral patches, and geysers. Every observation or base cluster carries deterministic `confidence`, `visibility`, and `source` metadata for API/report/debug evidence. |
 | `SC2FeasibilityResult` | `feasibility.py` | Gate verdict for one intent against `SC2CommanderState`. Executable results carry no reasons; rejected results carry at least one reason code, at least one Korean reason, and a non-empty Korean actionable alternative. Unknown state (`None`) or incomplete observation rejects mutating intents; only `SUMMARIZE_STATE` stays executable. |
 | `SC2NarrationResponse` | `narrator.py` | One Korean commander-facing narration with status `executed`, `partially_executed`, `blocked`, or `read_only`, plus structured detail lines. Skipped or partially issued work is never narrated as success; unenforced plan constraints are disclosed. |
@@ -285,7 +322,9 @@ assign_workers   gather_resource   build_structure   train_unit
 research_upgrade warp_in           move_group         attack_move
 smart            patrol             return_resource   repair
 execute_ability  observe            move_camera       stop_group
-hold_position
+hold_position      query_ability       query_placement  query_unit
+query_game         query_map            build_gas            distribute_workers
+expand_now
 ```
 
 - Counted methods return `SC2ActionReport` (partial issuance is never collapsed
@@ -321,3 +360,24 @@ selection fails closed instead of reserving an incomplete group.
 keyed by action index, alongside `audit["action_reports"]` for per-action
 adapter reports. The narrator reads state summaries from this audit channel;
 no component smuggles observations through narration prose.
+
+### System 1 → JEV Authorization Contract
+
+`starcraft_commander/jev_router.py` is an optional, transport-independent
+authorization seam. It never replaces deterministic local lowering:
+`route_policy_vector()` first builds the bounded route, then an injected JEV
+endpoint may return only `allow` or `deny` for an eligible command layer.
+
+- Requests include the protocol version, request id, command layer, validated
+  policy vector, already-lowered route, eligible layers, and the exact local
+  tool names (`sc2.direct.execute` or `micromachine.policy`).
+- Responses are a strict envelope containing only `protocol_version`,
+  `request_id`, `decision`, optional `reason`, and object-valued `audit`.
+  Raw SC2 methods, tool calls, plans, and replacement policy vectors are
+  rejected.
+- Endpoint absence preserves the local route. Ineligible layers do not call
+  the endpoint. Transport failures and bounded sync/async timeouts retry at
+  most three times and fail closed through `route_policy_vector_with_jev()`.
+- This is a repository contract plus fake-endpoint evidence, not an external
+  JEV deployment. Transport, authentication, operational schema, and live
+  endpoint acceptance remain tracked by issue #189.

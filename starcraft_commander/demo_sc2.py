@@ -193,6 +193,12 @@ class DemoUnit:
     def repair(self, target: object) -> tuple[str, str, object]:
         return self._record("repair", target)
 
+    def build(self, type_id: object, point: object) -> tuple[str, str, object]:
+        return self._record("build", (type_id, point))
+
+    def build_gas(self, geyser: object) -> tuple[str, str, object]:
+        return self._record("build_gas", geyser)
+
     def train(self, type_id: object) -> tuple[str, str, object]:
         return self._record("train", type_id)
 
@@ -213,7 +219,8 @@ class DemoFakeBotAI:
     """Scripted BotAI-like fake with a plausible early Terran start state.
 
     The state is intentionally honest: 400 minerals, supply 20/21, twelve SCVs,
-    six Marines, and one Command Center, so the MVP compound demo command
+    six Marines, two Siege Tanks, and one Command Center, so the MVP compound
+    demo command
     ("마린 6기 입구로 보내고 SCV 계속 찍어") can actually execute both parts.
     Map attributes (start location, ramps, expansions, mineral fields, geysers)
     are complete so the semantic map resolver derives every target, and the
@@ -261,8 +268,8 @@ class DemoFakeBotAI:
             )
         )
 
-        # Own forces: 12 SCVs (two idle), 6 Marines, and one finished
-        # Command Center. The Marines record move/attack orders so the MVP
+        # Own forces: 12 SCVs (two idle), 6 Marines, 2 Siege Tanks, and one
+        # finished Command Center. The Marines record move/attack orders so the MVP
         # demo command can execute its ramp-defense part in dry-run mode.
         workers = [
             DemoUnit("SCV", 26.0 + index * 0.5, 28.0, is_idle=index < 2)
@@ -271,9 +278,15 @@ class DemoFakeBotAI:
         marines = [
             DemoUnit("Marine", 33.0 + index * 0.5, 31.0) for index in range(6)
         ]
+        siege_tanks = [
+            DemoUnit("SiegeTank", 35.0 + index * 1.5, 33.0)
+            for index in range(2)
+        ]
         self.workers = DemoUnitGroup(workers)
-        self.units = DemoUnitGroup((*workers, *marines))
+        self.units = DemoUnitGroup((*workers, *marines, *siege_tanks))
         self.structures = DemoUnitGroup((DemoUnit("CommandCenter", 30.0, 30.0),))
+        for tag, unit in enumerate((*self.units, *self.structures), start=1):
+            unit.tag = tag
         self.enemy_units = DemoUnitGroup()
         self.enemy_structures = DemoUnitGroup()
 
@@ -290,7 +303,6 @@ class DemoFakeBotAI:
         # Recorders for tests and demo transparency.
         self.issued_commands: list[object] = []
         self.build_calls: list[tuple[object, object]] = []
-        self.expand_calls = 0
 
     def unit_type_id_resolver(self, type_name: str) -> str:
         """Resolve UnitTypeId names offline: the name itself is the id."""
@@ -306,13 +318,9 @@ class DemoFakeBotAI:
         self.issued_commands.append(command)
         return None
 
-    async def build(self, type_id: object, near: object = None) -> None:
+    async def build(self, type_id: object, near: object = None) -> bool:
         self.build_calls.append((type_id, near))
-        return None
-
-    async def expand_now(self) -> None:
-        self.expand_calls += 1
-        return None
+        return True
 
 
 def build_llm_interpreter(
@@ -383,8 +391,10 @@ def build_dry_run_session(
 
     bot = DemoFakeBotAI()
     adapter = PythonSC2BotAdapter(bot=bot)
+    executor = SC2RuntimeExecutor(bot=adapter)
     session_kwargs: dict[str, object] = {
-        "executor": SC2RuntimeExecutor(bot=adapter),
+        "executor": executor,
+        "direct_lifecycle": executor.direct_lifecycle,
         "event_memory": CommanderEventMemory(),
         "standing_orders": StandingOrderController(),
     }
@@ -800,7 +810,6 @@ def _run_dry_run_gui(
         port=args.gui,
         host=args.gui_host,
         auth_token=args.gui_token,
-        auto_launch_live=bool(args.llm),
     )
     bridge.start()
     try:
@@ -914,10 +923,12 @@ def run_live(args: argparse.Namespace) -> None:
 
         async def on_start(self) -> None:
             adapter = PythonSC2BotAdapter(bot=self)
+            executor = SC2RuntimeExecutor(bot=adapter)
             session_kwargs: dict[str, object] = {
-                "executor": SC2RuntimeExecutor(bot=adapter),
+                "executor": executor,
                 "event_memory": self.event_memory,
                 "standing_orders": self.standing_orders,
+                "direct_lifecycle": executor.direct_lifecycle,
             }
             if interpreter is not None:
                 session_kwargs["interpreter"] = interpreter
@@ -984,6 +995,16 @@ def run_live(args: argparse.Namespace) -> None:
         async def on_step(self, iteration: int) -> None:
             if self.session is None:
                 return
+            # python-sc2's authoritative frame is ``bot.state.game_loop``.
+            # ``iteration`` is a callback counter in some adapters/fakes and
+            # must not silently shorten Direct TTLs or complete conditions.
+            state = getattr(self, "state", None)
+            raw_game_loop = getattr(state, "game_loop", None)
+            current_frame = (
+                raw_game_loop
+                if type(raw_game_loop) is int and raw_game_loop >= 0
+                else iteration
+            )
             while not self.command_queue.empty():
                 command_text = self.command_queue.get_nowait()
                 await _process_and_print(self.session, command_text)
@@ -994,7 +1015,7 @@ def run_live(args: argparse.Namespace) -> None:
             direct_executor = getattr(self.session, "executor", None)
             tick_direct = getattr(direct_executor, "tick_direct_commands", None)
             if callable(tick_direct):
-                for lease in tick_direct(iteration):
+                for lease in tick_direct(current_frame):
                     if not lease.get("control_owned", False):
                         print(
                             "[Direct lifecycle] "
@@ -1005,7 +1026,7 @@ def run_live(args: argparse.Namespace) -> None:
                 direct_executor, "drain_completed_workflows", None
             )
             if callable(drain_workflows):
-                for result in await drain_workflows(current_frame=iteration):
+                for result in await drain_workflows(current_frame=current_frame):
                     print(
                         "[Direct workflow] "
                         f"{result.plan.intent_name}:"

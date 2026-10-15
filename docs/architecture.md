@@ -170,8 +170,9 @@ This path does not call python-sc2, s2client-api, raw unit tags, keyboard hooks,
 mouse automation, OCR, or screen scraping. The compact page has no legacy mode
 selector, LLM settings panel, operation-card board, four-lane dashboard,
 strategy briefing panel, or Tactical Radio/TTS surface. The old
-`/api/command`, `/api/llm`, and legacy runtime branches remain compatibility
-infrastructure, not selectable product UI.
+`/api/command` and `/api/llm` remain session/configuration APIs, not selectable
+product modes. The legacy runtime launcher, mode and auto-launch CLI option
+have been removed; old live-status and legacy runtime requests return 410.
 
 Runtime bootstrap is deliberately asymmetric. The installed macOS app hosts
 one WebKit controller window, obtains native proof that the SC2 process, API

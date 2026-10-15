@@ -633,6 +633,28 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
             len(json.dumps(full, ensure_ascii=False)),
         )
 
+    def test_all_policy_schemas_advertise_the_same_bounded_query_enums(self) -> None:
+        from starcraft_commander.policy_modulation import (
+            MICROMACHINE_GAME_QUERIES,
+            MICROMACHINE_MAP_QUERIES,
+            MICROMACHINE_UNIT_QUERIES,
+        )
+
+        expected = MICROMACHINE_UNIT_QUERIES | MICROMACHINE_GAME_QUERIES | MICROMACHINE_MAP_QUERIES
+        for build in (
+            build_compact_policy_modulation_tool_input_schema,
+            build_live_compact_policy_modulation_tool_input_schema,
+            build_policy_modulation_tool_input_schema,
+        ):
+            with self.subTest(schema=build.__name__):
+                queries = [node["query"] for node in _walk_mappings(build()) if "query" in node]
+                self.assertTrue(queries)
+                for query in queries:
+                    enum = query.get("enum")
+                    if enum is None:
+                        enum = query["anyOf"][0]["enum"]
+                    self.assertEqual(expected, set(enum))
+
     def test_non_strict_responses_schemas_are_declared_non_strict(self) -> None:
         fake_client = FakeResponsesClient(
             _responses_tool_response(
@@ -2581,7 +2603,10 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
             )
         )
 
-        self.assertLess(compact_size, 15000)
+        # The bounded read-only query capabilities add finite enums to
+        # the compact wire contract while remaining materially smaller than
+        # the full DSL.
+        self.assertLess(compact_size, 17000)
         self.assertLess(compact_size, full_size // 2)
 
     def test_myproxy_compacts_recent_context_to_latest_command_per_layer(self) -> None:
@@ -4325,6 +4350,12 @@ class LLMCommandInterpreterResolveTest(unittest.TestCase):
             schema["properties"]["modulation"]["properties"]["tactical_task"]["properties"][
                 "task_type"
             ]["enum"],
+        )
+        self.assertIn(
+            "target",
+            schema["properties"]["modulation"]["properties"]["tactical_task"][
+                "properties"
+            ],
         )
         ability_enum = set(
             schema["properties"]["modulation"]["properties"]["tactical_task"]["properties"][

@@ -33,6 +33,14 @@ class SC2ActionType(str, Enum):
     MOVE_CAMERA = "move_camera"
     STOP_GROUP = "stop_group"
     HOLD_POSITION = "hold_position"
+    QUERY_ABILITY = "query_ability"
+    QUERY_PLACEMENT = "query_placement"
+    BUILD_GAS = "build_gas"
+    DISTRIBUTE_WORKERS = "distribute_workers"
+    EXPAND_NOW = "expand_now"
+    QUERY_UNIT = "query_unit"
+    QUERY_GAME = "query_game"
+    QUERY_MAP = "query_map"
 
 
 # The direct MCP surface is intentionally semantic and finite.  Keeping the

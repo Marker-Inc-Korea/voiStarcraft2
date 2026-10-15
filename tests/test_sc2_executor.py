@@ -121,6 +121,14 @@ class StarCraftCommanderPackageSurfaceTest(unittest.TestCase):
                     "move_camera",
                     "stop_group",
                     "hold_position",
+                    "query_ability",
+                    "query_placement",
+                    "query_unit",
+                    "query_game",
+                    "query_map",
+                    "build_gas",
+                    "distribute_workers",
+                    "expand_now",
                 },
             ),
             SC2_ACTION_TYPES,
@@ -707,6 +715,64 @@ class SC2RuntimeExecutorTest(unittest.TestCase):
             any("direct release callback failed" in error.message for error in executor.lifecycle_errors)
         )
 
+    def test_async_release_callback_is_drained_without_leaking_coroutine(self) -> None:
+        from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
+
+        released: list[str] = []
+
+        async def resume(lease):
+            released.append(lease.command_id)
+
+        executor = SC2RuntimeExecutor(
+            direct_lifecycle=DirectCommandLifecycle(game_loops_per_second=1),
+            on_direct_release=resume,
+        )
+        executor.direct_lifecycle.dispatch(
+            command_id="async-release",
+            issued_at_frame=0,
+            ttl_seconds=2,
+            completion_conditions=("done",),
+        )
+
+        observed = executor.tick_direct_commands(
+            1,
+            {"async-release": {"done": True}},
+        )
+
+        self.assertEqual("completed", observed[0]["state"])
+        self.assertEqual(["async-release"], released)
+        self.assertEqual((), executor.lifecycle_errors)
+
+    def test_async_release_callback_is_owned_and_drained_on_running_loop(self) -> None:
+        from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
+
+        async def scenario() -> None:
+            released: list[str] = []
+
+            async def resume(lease):
+                await asyncio.sleep(0)
+                released.append(lease.command_id)
+
+            executor = SC2RuntimeExecutor(
+                direct_lifecycle=DirectCommandLifecycle(game_loops_per_second=1),
+                on_direct_release=resume,
+            )
+            executor.direct_lifecycle.dispatch(
+                command_id="running-loop-release",
+                issued_at_frame=0,
+                ttl_seconds=2,
+                completion_conditions=("done",),
+            )
+            executor.tick_direct_commands(
+                1,
+                {"running-loop-release": {"done": True}},
+            )
+            self.assertEqual([], released)
+            await executor.drain_direct_release_callbacks()
+            self.assertEqual(["running-loop-release"], released)
+
+        asyncio.run(scenario())
+
     def test_dependent_workflow_waits_for_parent_completion_before_training(self) -> None:
         from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
 
@@ -895,6 +961,40 @@ class SC2RuntimeExecutorTest(unittest.TestCase):
             [action.action_type.value for action in result.attempted_actions],
         )
         json.dumps(result.to_dict())
+
+    def test_execute_binds_direct_actions_before_dispatch(self) -> None:
+        class BindingBot:
+            def __init__(self) -> None:
+                self.bound = []
+                self.received = None
+
+            def bind_direct_action(self, action):
+                self.bound.append(action.action_type.value)
+                return SC2CommandAction(
+                    action_type=action.action_type,
+                    subject=action.subject,
+                    target=action.target,
+                    count=action.count,
+                    metadata={"_direct_unit_tags": (701,)},
+                )
+
+            async def train_unit(self, action):
+                self.received = action
+                return SC2ActionReport(
+                    applied=True,
+                    requested_count=1,
+                    issued_count=1,
+                )
+
+        bot = BindingBot()
+        plan = SC2ExecutionPlan(
+            intent="binding",
+            actions=(SC2CommandAction(SC2ActionType.TRAIN_UNIT, subject="MARINE"),),
+        )
+        result = asyncio.run(SC2RuntimeExecutor(bot=bot).execute(plan))
+        self.assertTrue(result.success)
+        self.assertEqual(["train_unit"], bot.bound)
+        self.assertEqual((701,), bot.received.metadata["_direct_unit_tags"])
 
     def test_lifecycle_execute_without_bound_bot_returns_structured_failure(self) -> None:
         plan = build_sc2_execution_plan(TrainWorkerIntent(count=1))

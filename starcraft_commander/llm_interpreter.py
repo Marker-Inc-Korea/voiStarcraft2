@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import threading
@@ -46,6 +47,8 @@ from starcraft_commander.policy_modulation import (
     MICROMACHINE_CANONICAL_TASK_TOKEN_ALIASES,
     MICROMACHINE_COMMAND_LAYERS,
     MICROMACHINE_DOCTRINES,
+    MICROMACHINE_DIRECT_TASK_TYPES,
+    MICROMACHINE_DIRECT_EMERGENCY_TASK_TYPES,
     MICROMACHINE_OPERATION_CONFIRMATION_POLICIES,
     MICROMACHINE_OPERATION_EDIT_ACTIONS,
     MICROMACHINE_ROUTE_INTENTS,
@@ -53,6 +56,9 @@ from starcraft_commander.policy_modulation import (
     MICROMACHINE_TACTICAL_TASK_TYPES,
     MICROMACHINE_TARGET_INTENTS,
     MICROMACHINE_UNIT_ROLES,
+    MICROMACHINE_UNIT_QUERIES,
+    MICROMACHINE_GAME_QUERIES,
+    MICROMACHINE_MAP_QUERIES,
 )
 from starcraft_commander.policy_modulation_provider import (
     PolicyModulationCompileStatus,
@@ -91,6 +97,7 @@ from toycraft_commander.interpreter import (
     is_unanchored_relative_build_placement,
     is_unanchored_relative_action_target,
 )
+
 
 __all__ = [
     "ANTHROPIC_API_KEY_ENV_VAR",
@@ -618,6 +625,10 @@ def _bias_map_property(description: str) -> dict[str, object]:
 
 _COMPACT_POLICY_LOCATION_INTENTS: Final[tuple[str, ...]] = (
     "",
+    "minerals",
+    "gas",
+    "vespene",
+    "self_geyser",
     "home",
     "natural",
     "enemy_main",
@@ -691,23 +702,17 @@ def build_compact_policy_modulation_tool_input_schema() -> dict[str, object]:
         "properties": {
             "unit_type": {
                 "type": "string",
-                "description": (
-                    "Terran unit token or common Korean/English unit name."
-                ),
+                "description": "Unit token or Korean/English name.",
             },
             "count": {"type": "integer", "minimum": 1, "maximum": 200},
             "role": nullable(
                 {
                     "type": "string",
-                    "description": (
-                        "Optional semantic role such as scout or siege_support."
-                    ),
                 }
             ),
             "ability_policy": nullable(
                 {
                     "type": "string",
-                    "description": "Optional semantic ability policy.",
                 }
             ),
         },
@@ -719,26 +724,20 @@ def build_compact_policy_modulation_tool_input_schema() -> dict[str, object]:
         "properties": {
             "building_type": {
                 "type": "string",
-                "description": (
-                    "Terran building/add-on token or common Korean/English name."
-                ),
             },
             "placement_intent": nullable(
                 {
                     "type": "string",
-                    "description": "Semantic placement such as self_main_ramp.",
                 }
             ),
             "anchor": nullable(
                 {
                     "type": "string",
-                    "description": "Semantic anchor such as self_main or self_natural.",
                 }
             ),
             "offset_direction": nullable(
                 {
                     "type": "string",
-                    "description": "Semantic direction such as inside, left, or right.",
                 }
             ),
             "count": nullable(
@@ -795,6 +794,8 @@ def build_compact_policy_modulation_tool_input_schema() -> dict[str, object]:
                 "type": "string",
                 "enum": sorted(MICROMACHINE_TACTICAL_TASK_TYPES),
             },
+            "target": nullable({"type": "string", "maxLength": 160}),
+            "count": nullable({"type": "integer", "minimum": 1, "maximum": 200}),
             "doctrine": nullable(
                 {
                     "type": "string",
@@ -814,9 +815,6 @@ def build_compact_policy_modulation_tool_input_schema() -> dict[str, object]:
                     "maxItems": 24,
                     "items": {
                         "type": "string",
-                        "description": (
-                            "Unit, building, add-on, upgrade, or nuke token."
-                        ),
                     },
                 }
             ),
@@ -850,6 +848,24 @@ def build_compact_policy_modulation_tool_input_schema() -> dict[str, object]:
                     "enum": sorted(MICROMACHINE_TACTICAL_ABILITIES),
                 }
             ),
+            "query": nullable(
+                {
+                    "type": "string",
+                    "enum": sorted(
+                        MICROMACHINE_UNIT_QUERIES
+                        | MICROMACHINE_GAME_QUERIES
+                        | MICROMACHINE_MAP_QUERIES
+                    ),
+                }
+            ),
+            "subject_kind": nullable({"type": "string", "enum": ["unit", "upgrade"]}),
+            "check_supply_cost": nullable({"type": "boolean"}),
+            "buff": nullable({"type": "string", "maxLength": 160}),
+            "bonus_distance": nullable(
+                {"type": "number", "minimum": 0, "maximum": 1000}
+            ),
+            "ignore_armor": nullable({"type": "boolean"}),
+            "include_overkill_damage": nullable({"type": "boolean"}),
             "building_tasks": nullable(
                 {
                     "type": "array",
@@ -891,6 +907,8 @@ def build_compact_policy_modulation_tool_input_schema() -> dict[str, object]:
             "goal",
             "command_layer",
             "task_type",
+            "target",
+            "count",
             "doctrine",
             "unit_requests",
             "production_targets",
@@ -899,6 +917,13 @@ def build_compact_policy_modulation_tool_input_schema() -> dict[str, object]:
             "route_type",
             "target_type",
             "ability",
+            "query",
+            "subject_kind",
+            "check_supply_cost",
+            "buff",
+            "bonus_distance",
+            "ignore_armor",
+            "include_overkill_damage",
             "building_tasks",
             "standing_order",
             "allow_partial",
@@ -928,10 +953,6 @@ def build_compact_policy_modulation_tool_input_schema() -> dict[str, object]:
                     "minItems": 1,
                     "maxItems": 16,
                     "items": command_schema,
-                    "description": (
-                        "Independent commands that must remain simultaneous rather "
-                        "than superseding each other."
-                    ),
                 }
             ),
         },
@@ -975,53 +996,39 @@ def build_compact_policy_modulation_system_prompt() -> str:
     """Render the low-latency semantic parser prompt for Responses providers."""
 
     return (
-        "Convert StarCraft II commander utterance into forced-tool compact "
-        "semantic command(s). Never emit the full manager DSL; Python expands "
-        "prerequisites, TTL, biases, squad scope, and production plans.\n"
-        "Rules:\n"
-        "1. Resolve Korean/English units, counts, locations, routes, targets, "
-        "abilities, and placement. Never output coordinates, tags, clicks, API "
-        "calls, or SC2 commands.\n"
-        "2. command_layer: macro=production/tech/building; operation=intermediate "
-        "squad tactics; micro=ability; emergency=interrupt.\n"
-        "3. task_type: sustain_production=production; "
-        "tech_transition=prerequisites/buildings; "
-        "expand_or_land_command_center=expansion; scout_with_units=scouting; "
-        "pressure_with_main_army=attack; harass_with_units=economy raid; "
-        "defend_with_units=defense; regroup_with_units=regroup; "
-        "execute_ability=ability. Emergency may leave it empty.\n"
-        "4. Put explicit unit/counts in unit_requests. 'SCV 생산해' and "
-        "'마린 6기 생산해' are macro sustain_production, never squad operations. "
-        "Use production_targets for units/buildings/upgrades and let Python add "
-        "the tech chain. '가스터빈'/'가스 터빈'/'정제소' mean TERRAN_REFINERY; "
-        "use macro tech_transition + building_tasks, default count 1.\n"
-        "5. For a Ghost tactical nuke use micro + execute_ability + "
-        "ability=tactical_nuke + location_intent. For flank/alternate-route "
-        "orders use flank_left or flank_right and preserve explicit direction.\n"
-        "6. Use commands[] when one utterance creates independent forces. Give "
-        "each item a stable operation_id and reuse it for follow-up changes. "
-        "For macro and micro, set operation_action=null and operation ids=null. "
-        "transfer uses operation_id=destination, "
-        "source_operation_id=source, unit_requests=moved force, and "
-        "explicit_override=true only for explicit reassignment. reinforce counts "
-        "are additive; resize counts are final; retarget preserves force. A scoped "
-        "cancel such as 'recon-alpha 정찰만 취소해' must use operation_action=cancel "
-        "with operation_id=recon-alpha, not a global emergency. Use command for "
-        "single-command output.\n"
-        "7. Read commander_context.active_operations for every active operation "
-        "identity and commander_context.recent_commands for bounded layer history. "
-        "Resolve follow-ups such as "
-        "'그 병력', '왼쪽으로', or '더 강하게' into a complete command while "
-        "preserving the existing operation_id and compatible macro/operation/micro "
-        "layers. A new command only supersedes its own layer; only an unscoped "
-        "emergency interrupts all layers.\n"
-        "8. Set standing_order=true for '계속', '게임 내내', '끝까지', or "
-        "until-cancelled intent. Explicit completion intent such as "
-        "'완료될 때까지' or 'until completed' is bounded, not standing. "
-        "Otherwise Python selects a bounded lifecycle.\n"
-        "9. assistant_message is natural text in response_language describing "
-        "the action; do not claim success before runtime confirmation.\n"
-        f"10. {LLM_PROMPT_INJECTION_GUARD}"
+        "Parse SC2 compact semantic command(s); never DSL, "
+        "coordinates, tags, clicks or API calls.\n"
+        "macro=standing economy/production/tech bias; operation=one-shot Direct "
+        "or squad action; micro=execute_ability; emergency=interrupt.\n"
+        "intermediate. For macro and micro, set operation_action=null.\n"
+        "Macro uses sustain_production/tech_transition/expand_or_land_command_center. "
+        "One-shot examples: 팩토리 지어=build_structure, 마린 6기 생산해=train_unit "
+        "count=6, SCV 3기 가스=assign_workers target=gas count=3, 벙커 수리=repair "
+        "target=bunker; 계속 마린 생산=macro.\n"
+        "Direct types: assign_workers,gather_resource,build_structure,train_unit,"
+        "research_upgrade,warp_in,move_group,attack_move,smart,patrol,return_resource,"
+        "repair,observe,move_camera,stop_group,hold_position,query_ability,"
+        "query_placement,build_gas,distribute_workers,expand_now,query_game,query_map,query_unit. "
+        "Queries are read-only: query_unit=unit calculations; "
+        "query_game=cost/progress with one semantic production target; "
+        "query_map=terrain/visibility/pathing/creep at a semantic target, or "
+        "get_next_expansion without one. Use semantic production/resource/location "
+        "fields; target=repair entity/resource; location_intent=map target; count=exact. "
+        "Ask for missing targets.\n"
+        "Abilities use execute_ability + ability; tactical_nuke needs Ghost, "
+        "TERRAN_NUKE and location_intent. Query availability with query_ability. "
+        "build_gas uses self_geyser; 가스터빈/정제소=TERRAN_REFINERY. Preserve "
+        "flank_left/right, not just aggression. stop_group/hold_position are emergency.\n"
+        "Squad scout/attack/defend/harass use scout_with_units/pressure_with_main_army/"
+        "defend_with_units/harass_with_units. Use commands[] for independent squads, "
+        "stable operation_id and operation_action=create. Reuse known ids for edits: "
+        "reinforce adds counts, resize replaces counts, retarget keeps force, transfer "
+        "uses destination/source ids and explicit_override only when requested. Scoped "
+        "cancel preserves other operations.\n"
+        "standing_order=true for 계속/게임 내내/끝까지/until cancelled, not 완료될 때까지/"
+        "until completed. Preserve compatible layers; assistant_message matches "
+        "response_language and never claims execution before runtime confirmation.\n"
+        f"{LLM_PROMPT_INJECTION_GUARD}"
     )
 
 
@@ -1213,12 +1220,38 @@ def build_policy_modulation_tool_input_schema() -> dict[str, object]:
                     "still resolves availability, caster, and concrete target."
                 ),
             },
+            "query": {
+                "type": "string",
+                "enum": sorted(
+                    MICROMACHINE_UNIT_QUERIES
+                    | MICROMACHINE_GAME_QUERIES
+                    | MICROMACHINE_MAP_QUERIES
+                ),
+            },
+            "subject_kind": {"type": "string", "enum": ["unit", "upgrade"]},
+            "check_supply_cost": {"type": "boolean"},
+            "buff": {"type": "string", "maxLength": 160},
+            "bonus_distance": {"type": "number", "minimum": 0, "maximum": 1000},
+            "ignore_armor": {"type": "boolean"},
+            "include_overkill_damage": {"type": "boolean"},
             "unit_classes": {"type": "array", "items": {"type": "string"}},
             "production_targets": {"type": "array", "items": {"type": "string"}},
+            "target": {
+                "type": "string",
+                "maxLength": 160,
+                "description": (
+                    "Named semantic entity or resource target for Direct repair, "
+                    "worker assignment, or gathering tickets."
+                ),
+            },
             "location_intent": {
                 "type": "string",
                 "enum": [
                     "",
+                    "minerals",
+                    "gas",
+                    "vespene",
+                    "self_geyser",
                     "home",
                     "natural",
                     "enemy_main",
@@ -1791,7 +1824,10 @@ def build_policy_modulation_system_prompt() -> str:
         "deterministic reducer preserves the prior task, units, route, and "
         "target. A genuinely new operation or ability must emit a complete new "
         "tactical_task so that it supersedes the previous command in that same "
-        "layer.\n"
+        "layer. Read commander_context.active_direct_commands when present: "
+        "these are authoritative Direct leases that are not published to "
+        "MicroMachine; preserve their semantic ownership and completion context "
+        "without inventing raw unit tags or coordinates.\n"
         "9. Biases are bounded floats. Positive values increase preference, "
         "negative values reduce preference. Do not pretend that a bias directly "
         "clicks or commands a unit.\n"
@@ -3483,6 +3519,7 @@ def _compact_recent_policy_command(value: Mapping[str, object]) -> dict[str, obj
             task.get("type", task.get("task_type", "")) or ""
         ).strip(),
         "ability": str(task.get("ability", "") or "").strip(),
+        "target": str(task.get("target", "") or "").strip()[:160],
         "unit_classes": list(_compact_string_tokens(units))[:8],
         "min_units": _bounded_compact_context_int(
             task_count.get("min", task.get("min_units", 0))
@@ -3764,7 +3801,10 @@ def _compact_policy_modulation_semantic_error(
             operation_action = str(
                 command_value.get("operation_action", "") or ""
             ).strip()
-            if command_layer == "operation" and not operation_action:
+            direct_ticket = (
+                command_value.get("task_type") in MICROMACHINE_DIRECT_TASK_TYPES
+            )
+            if command_layer == "operation" and not operation_action and not direct_ticket:
                 return (
                     f"{command_path} is missing required semantic property "
                     "'operation_action'."
@@ -3777,7 +3817,11 @@ def _compact_policy_modulation_semantic_error(
                     f"{command_path}.operation_action is only valid for the "
                     "operation or emergency command layer."
                 )
-            if command_layer == "emergency" and operation_action != "transfer":
+            if (
+                command_layer == "emergency"
+                and operation_action != "transfer"
+                and not direct_ticket
+            ):
                 return (
                     f"{command_path}.command_layer=emergency supports "
                     "operation_action=transfer only."
@@ -4036,6 +4080,8 @@ def _lower_compact_policy_modulation_tool_input(
     command = tool_input.get("command")
     if status != "compiled" or not isinstance(command, Mapping):
         return tool_input
+    if command.get("task_type") in MICROMACHINE_DIRECT_TASK_TYPES - {"execute_ability"}:
+        return _lower_compact_direct_ticket(tool_input, command, command_text)
     command, operation_error = _resolve_compact_operation_command(
         command,
         command_text=command_text,
@@ -4471,6 +4517,15 @@ def _lower_compact_policy_modulation_tool_input(
                 {
                     "task_type": task_type,
                     "ability": ability,
+                    "query": str(command.get("query", "") or "").strip(),
+                    "buff": str(command.get("buff", "") or "").strip(),
+                    "bonus_distance": command.get("bonus_distance") or 0.0,
+                    "ignore_armor": command.get("ignore_armor")
+                    if type(command.get("ignore_armor")) is bool
+                    else False,
+                    "include_overkill_damage": command.get("include_overkill_damage")
+                    if type(command.get("include_overkill_damage")) is bool
+                    else True,
                     "unit_classes": requested_unit_types,
                     "production_targets": production_plan_targets,
                     "location_intent": location_intent,
@@ -4616,6 +4671,165 @@ def _lower_compact_policy_modulation_tool_input(
         "status": "compiled",
         "assistant_message": tool_input.get("assistant_message", ""),
         "modulation": modulation,
+    }
+
+
+def _lower_compact_direct_ticket(
+    tool_input: Mapping[str, object],
+    command: Mapping[str, object],
+    command_text: str,
+) -> Mapping[str, object]:
+    """Preserve a one-shot Direct request without adding macro prerequisites.
+
+    Actor selection, resource/entity target, and production output are distinct
+    fields. In particular a repair ticket must not turn its worker into a
+    production request, or silently substitute an attack when incomplete.
+    """
+
+    task_type = str(command["task_type"])
+    expected_layer = (
+        "emergency"
+        if task_type in MICROMACHINE_DIRECT_EMERGENCY_TASK_TYPES
+        else "operation"
+    )
+    refusal = ""
+    if command.get("command_layer") != expected_layer:
+        refusal = f"Direct {task_type} requires command_layer={expected_layer}."
+    elif command.get("standing_order"):
+        refusal = "Direct tickets are one-shot; use macro policy for standing intent."
+    elif any(command.get(key) for key in (
+        "operation_action", "operation_id", "source_operation_id", "building_tasks",
+        "doctrine", "route_type", "target_type", "emergency_actions",
+    )):
+        refusal = "Direct single tickets cannot discard operation edits or extra actions."
+
+    unit_requests = _lower_compact_unit_requests(
+        command.get("unit_requests"), task_type=task_type, ability=""
+    )
+    unit_types = tuple(dict.fromkeys(item["unit_type"] for item in unit_requests))
+    if len(unit_types) > 1:
+        refusal = "Direct single tickets require one actor type; split mixed selections."
+    selected_count = sum(int(item["count"]) for item in unit_requests)
+    count = command.get("count") or selected_count or 1
+    production_targets = [
+        _canonical_compact_task_token(item)
+        for item in _compact_string_tokens(command.get("production_targets"))
+    ]
+    output_tasks = {
+        "build_structure",
+        "query_placement",
+        "train_unit",
+        "warp_in",
+        "research_upgrade",
+        "query_game",
+    }
+    if task_type in output_tasks and len(production_targets) != 1:
+        refusal = "Direct production/query tickets require exactly one output token."
+    elif task_type not in output_tasks and production_targets:
+        refusal = "Direct actor tickets must not contain production targets."
+    target = str(command.get("target") or "").strip()
+    location = str(command.get("location_intent") or "").strip()
+    if task_type == "repair" and not target:
+        refusal = "Direct repair requires a named target."
+    elif task_type in {"assign_workers", "gather_resource"}:
+        target = target or location
+        if target.casefold() not in {"mineral", "minerals", "gas", "vespene"}:
+            refusal = "Direct worker tickets require a mineral or gas resource."
+    elif task_type in {"move_group", "attack_move", "smart", "patrol", "move_camera", "build_structure", "query_placement", "warp_in", "expand_now", "build_gas"} and not location:
+        refusal = "Direct movement/placement requires location_intent."
+    elif task_type == "query_unit":
+        query = str(command.get("query", "") or "").strip()
+        if query not in MICROMACHINE_UNIT_QUERIES:
+            refusal = "Direct query_unit requires a supported read-only query."
+        elif query in {
+            "distance_to",
+            "distance_to_squared",
+            "target_in_range",
+            "in_ability_cast_range",
+            "is_facing",
+            "calculate_damage_vs_target",
+            "calculate_dps_vs_target",
+        } and not target:
+            refusal = "Direct target-dependent query_unit requires target."
+        elif query == "has_buff" and not str(command.get("buff", "") or "").strip():
+            refusal = "Direct has_buff query_unit requires buff."
+        elif query in {"in_ability_cast_range", "is_using_ability"} and not str(
+            command.get("ability", "") or ""
+        ).strip():
+            refusal = "Direct ability query_unit requires ability."
+        elif command.get("bonus_distance") is not None and (
+            type(command.get("bonus_distance")) not in (int, float)
+            or isinstance(command.get("bonus_distance"), bool)
+            or not math.isfinite(float(command.get("bonus_distance")))
+            or not 0.0 <= float(command.get("bonus_distance")) <= 1000.0
+        ):
+            refusal = "Direct query_unit bonus_distance must be a finite number from 0 to 1000."
+        elif command.get("ignore_armor") is not None and type(command.get("ignore_armor")) is not bool:
+            refusal = "Direct query_unit ignore_armor must be a boolean."
+        elif command.get("include_overkill_damage") is not None and type(
+            command.get("include_overkill_damage")
+        ) is not bool:
+            refusal = "Direct query_unit include_overkill_damage must be a boolean."
+    elif task_type == "query_game":
+        query = str(command.get("query", "") or "").strip()
+        if query not in MICROMACHINE_GAME_QUERIES:
+            refusal = "Direct query_game requires a supported read-only query."
+        elif not production_targets or len(production_targets) != 1:
+            refusal = "Direct query_game requires exactly one semantic subject."
+        elif command.get("subject_kind") not in {None, "", "unit", "upgrade"}:
+            refusal = "Direct query_game subject_kind must be unit or upgrade."
+        elif command.get("check_supply_cost") is not None and type(
+            command.get("check_supply_cost")
+        ) is not bool:
+            refusal = "Direct query_game check_supply_cost must be a boolean."
+    elif task_type == "query_map":
+        query = str(command.get("query", "") or "").strip()
+        if query not in MICROMACHINE_MAP_QUERIES:
+            refusal = "Direct query_map requires a supported read-only query."
+        elif query != "get_next_expansion" and not (target or location):
+            refusal = "Direct query_map requires a semantic target."
+    if refusal:
+        return {
+            "status": "refused",
+            "assistant_message": tool_input.get("assistant_message", ""),
+            "refusal_reason": refusal,
+        }
+    allow_partial = command.get("allow_partial")
+    return {
+        "status": "compiled",
+        "assistant_message": tool_input.get("assistant_message", ""),
+        "modulation": {
+            "goal": command.get("goal") or command_text,
+            "source": "llm",
+            "command_layer": expected_layer,
+            "override_level": "emergency" if expected_layer == "emergency" else "directive",
+            "ttl_seconds": 45 if expected_layer == "emergency" else 300,
+            "tactical_task": {
+                "task_type": task_type,
+                "ability": command.get("ability") or "",
+                "query": str(command.get("query", "") or "").strip(),
+                "subject_kind": str(command.get("subject_kind", "") or "").strip(),
+                "check_supply_cost": command.get("check_supply_cost")
+                if type(command.get("check_supply_cost")) is bool
+                else True,
+                "buff": str(command.get("buff", "") or "").strip(),
+                "bonus_distance": command.get("bonus_distance") or 0.0,
+                "ignore_armor": command.get("ignore_armor")
+                if type(command.get("ignore_armor")) is bool
+                else False,
+                "include_overkill_damage": command.get("include_overkill_damage")
+                if type(command.get("include_overkill_damage")) is bool
+                else True,
+                "unit_classes": list(unit_types),
+                "production_targets": production_targets,
+                "target": target,
+                "location_intent": location,
+                "min_units": count,
+                "max_units": count,
+                "allow_partial": allow_partial if type(allow_partial) is bool else False,
+            },
+            "tags": ["llm_compact_semantic", "direct_ticket"],
+        },
     }
 
 

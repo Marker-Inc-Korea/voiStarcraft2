@@ -210,6 +210,58 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       background: rgba(12, 39, 45, 0.88);
       font-weight: 800;
     }
+    .direct-registry {
+      display: grid;
+      gap: 8px;
+    }
+    .direct-registry-controls {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+      gap: 8px;
+    }
+    .direct-registry input,
+    .direct-registry select {
+      min-width: 0;
+      min-height: 38px;
+      border: 1px solid rgba(101, 243, 223, 0.28);
+      border-radius: 10px;
+      padding: 0 9px;
+      color: #d8e9e6;
+      background: rgba(7, 25, 31, 0.86);
+    }
+    .direct-registry button {
+      min-height: 38px;
+      border: 1px solid rgba(101, 243, 223, 0.34);
+      border-radius: 10px;
+      padding: 0 11px;
+      color: #071319;
+      background: var(--cyan);
+      font-weight: 900;
+    }
+    .direct-registry-note,
+    .direct-registry-status {
+      margin: 0;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+    .direct-registry-status[data-tone="danger"] { color: var(--danger); }
+    .direct-registry-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .direct-registry-list li {
+      padding: 5px 8px;
+      border: 1px solid rgba(101, 243, 223, 0.18);
+      border-radius: 999px;
+      color: #d8e9e6;
+      background: rgba(15, 48, 55, 0.68);
+      font-size: 11px;
+    }
     .captions {
       min-height: 0;
       padding: 12px;
@@ -319,6 +371,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       .shell { padding: 10px; }
       .topbar { align-items: center; }
       .status-pill { max-width: 135px; }
+      .direct-registry-controls { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -346,6 +399,26 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       </div>
   </section>
 
+    <section class="panel direct-registry" aria-labelledby="direct-registry-label">
+      <span id="direct-registry-label" class="label">Direct semantic pin</span>
+      <div class="direct-registry-controls">
+        <input id="target-pin-name" type="text" maxlength="128"
+               placeholder="핀 이름 · 예: 앞마당 입구" aria-label="semantic pin 이름">
+        <select id="target-pin-target" aria-label="semantic target">
+          <option value="enemy_natural">enemy_natural · 적 앞마당</option>
+          <option value="enemy_main">enemy_main · 적 본진</option>
+          <option value="enemy_front">enemy_front · 적 전방</option>
+          <option value="self_ramp">self_ramp · 우리 입구</option>
+          <option value="self_main">self_main · 우리 본진</option>
+          <option value="self_natural">self_natural · 우리 앞마당</option>
+        </select>
+        <button id="target-pin-save" type="button">핀 저장</button>
+      </div>
+      <p class="direct-registry-note">좌표와 유닛 태그는 받지 않고, 검증된 semantic target만 저장합니다.</p>
+      <p id="target-pin-status" class="direct-registry-status" aria-live="polite"></p>
+      <ul id="target-pin-list" class="direct-registry-list" aria-label="저장된 semantic pin"></ul>
+    </section>
+
     <section class="panel chat" aria-labelledby="chat-label">
       <span id="chat-label" class="label">명령 기록</span>
       <ol id="chat-list" class="chat-list" aria-live="polite"></ol>
@@ -364,7 +437,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
               title="음성 명령" aria-label="음성 명령" aria-pressed="false">◉</button>
       <button class="send-button" type="submit">전송</button>
       <button id="retreat-button" class="retreat-button" type="button">긴급 전군 후퇴</button>
-      <p id="command-feedback" class="command-feedback">명령을 입력하면 최신 명령부터 처리합니다.</p>
+      <p id="command-feedback" class="command-feedback" aria-live="assertive" aria-atomic="true">명령을 입력하면 최신 명령부터 처리합니다.</p>
     </form>
   </main>
   <script>
@@ -396,6 +469,10 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
   var voiceSessionGeneration = 0;
   var activeVoiceSessionGeneration = 0;
   var NATIVE_SC2_LAUNCH_TIMEOUT_MS = 185000;
+  var semanticPinTargets = [
+    "enemy_natural", "enemy_main", "enemy_front", "self_ramp",
+    "self_main", "self_natural"
+  ];
 
   function endpoint(path, values) {
     var query = new URLSearchParams(values || {});
@@ -433,6 +510,10 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
   function setFeedback(text, failed) {
     var node = document.getElementById("command-feedback");
     node.textContent = text;
+    // The feedback line starts hidden so it does not reserve space in the
+    // compact dock.  Any live result (especially a clarification request)
+    // must make it visible when it has something to say.
+    node.style.display = text ? "block" : "none";
     node.style.color = failed ? "var(--danger)" : "var(--muted)";
   }
 
@@ -486,6 +567,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       "병력 배정": "병력 배정됨",
       "SC2 실행": "SC2 명령 실행됨",
       "효과 확인": "SC2 효과 확인됨",
+      "확인 필요": "추가 확인 필요 · 답변을 입력하세요",
       "실행 확인 중": "SC2 실행 확인 중",
       "차단": "실행 차단됨",
       "취소": "취소됨",
@@ -745,7 +827,33 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     );
   }
 
+  function operationClarificationPrompt(operation) {
+    operation = operation || {};
+    var latestRequest = operation.latest_request || {};
+    var compileResult = operation.compile_result || {};
+    var commandQueue = operation.command_queue || {};
+    var latestQueue = latestRequest.command_queue || {};
+    var update = operation.update || {};
+    var candidates = [
+      operation.clarification_prompt,
+      latestRequest.clarification_prompt,
+      compileResult.clarification_prompt,
+      commandQueue.clarification_prompt,
+      latestQueue.clarification_prompt,
+      update.clarification_prompt,
+      operation.intervention && operation.intervention.clarification_prompt
+    ];
+    for (var index = 0; index < candidates.length; index += 1) {
+      var prompt = String(candidates[index] || "").trim();
+      if (prompt) { return prompt; }
+    }
+    return "";
+  }
+
   function operationStage(operation, runtimeStatus) {
+    if (operationClarificationPrompt(operation)) {
+      return "확인 필요";
+    }
     var intervention = operation.intervention || {};
     var execution = intervention.command_execution || {};
     var update = operation.update || {};
@@ -858,7 +966,6 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     var latestRequest = data.latest_request || {};
     var latestQueue = latestRequest.command_queue || {};
     var compileResult = data.compile_result || {};
-    var compileQueue = compileResult.command_queue || {};
     var intervention = data.intervention || {};
     var updateId = String(
       latestRequest.update_id ||
@@ -866,10 +973,16 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       intervention.latest_update_id ||
       ""
     );
+    var scopedCompileResult = (
+      !updateId ||
+      !compileResult.update_id ||
+      String(compileResult.update_id) === updateId
+    ) ? compileResult : {};
+    var compileQueue = scopedCompileResult.command_queue || {};
     var commandText = String(
       latestRequest.command_text ||
       latestQueue.command_text ||
-      compileResult.command_text ||
+      scopedCompileResult.command_text ||
       compileQueue.command_text ||
       vector.goal ||
       intervention.goal ||
@@ -882,6 +995,16 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
     if (matchingOperation) {
       return Object.assign({}, matchingOperation, {
         command_text: matchingOperation.command_text || commandText,
+        compile_result: matchingOperation.compile_result || scopedCompileResult,
+        command_queue: matchingOperation.command_queue || (
+          Object.keys(latestQueue).length ? latestQueue : compileQueue
+        ),
+        clarification_prompt: (
+          matchingOperation.clarification_prompt ||
+          latestRequest.clarification_prompt ||
+          scopedCompileResult.clarification_prompt ||
+          ""
+        ),
         latest_request: matchingOperation.latest_request || latestRequest,
         consumption_status: (
           matchingOperation.consumption_status ||
@@ -902,8 +1025,15 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       update_id: updateId,
       command_text: commandText,
       update: update,
+      compile_result: scopedCompileResult,
+      command_queue: Object.keys(latestQueue).length ? latestQueue : compileQueue,
       latest_request: latestRequest,
       intervention: intervention,
+      clarification_prompt: String(
+        latestRequest.clarification_prompt ||
+        scopedCompileResult.clarification_prompt ||
+        ""
+      ),
       consumption_status: (
         data.consumption_status ||
         latestRequest.consumption_status ||
@@ -943,6 +1073,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
         : latestRuntimeStatus
     );
     var stage = operationStage(operation, operationRuntimeStatus);
+    var clarificationPrompt = operationClarificationPrompt(operation);
     var composition = operationComposition(operation);
     var selectedUpdateId = commandIdentity(operation);
     if (
@@ -964,6 +1095,7 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
       operation.operation_console_execution_owner_update_id || "",
       stage,
       operation.consumption_status || "",
+      clarificationPrompt,
       data.runtime_attached === true
     ].join("|");
     if (signature !== lastOperationSignature) {
@@ -975,8 +1107,10 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
         ? ""
         : " 현재 게임 연결을 기다리는 중입니다.";
       appendCaption(
-        stage + ": " + goal + " · " + composition + " · " +
-          queueSummary(data) + suffix,
+        stage === "확인 필요"
+          ? "확인 필요: " + clarificationPrompt
+          : stage + ": " + goal + " · " + composition + " · " +
+            queueSummary(data) + suffix,
         tone,
         signature
       );
@@ -984,13 +1118,25 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
         chatCard(
           selectedUpdateId,
           "assistant",
-          stage === "차단"
-            ? "명령을 실행하지 못했습니다."
-            : stage + " · " + composition,
+          stage === "확인 필요"
+            ? clarificationPrompt
+            : stage === "차단"
+              ? "명령을 실행하지 못했습니다."
+              : stage + " · " + composition,
           chatState(stage) + " · " + queueSummary(data)
         );
       }
-      if (stage === "효과 확인" || stage === "SC2 실행") {
+      if (stage === "확인 필요") {
+        setFeedback("확인이 필요합니다: " + clarificationPrompt, false);
+        var clarificationInput = document.getElementById("command-input");
+        if (
+          clarificationInput &&
+          typeof clarificationInput.focus === "function" &&
+          document.activeElement !== clarificationInput
+        ) {
+          clarificationInput.focus();
+        }
+      } else if (stage === "효과 확인" || stage === "SC2 실행") {
         setFeedback("명령이 SC2 런타임에 적용되었습니다.", false);
       } else if (stage === "SC2 실행 대기") {
         setFeedback(
@@ -1075,6 +1221,64 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
   function refreshAll() {
     refreshRuntime();
     refreshOperation();
+    refreshDirectRegistry();
+  }
+
+  function directRegistryStatus(message, danger) {
+    var node = document.getElementById("target-pin-status");
+    if (!node) { return; }
+    node.textContent = String(message || "");
+    node.dataset.tone = danger ? "danger" : "";
+  }
+
+  function renderDirectRegistry(registry) {
+    var list = document.getElementById("target-pin-list");
+    if (!list) { return; }
+    while (list.firstChild) { list.removeChild(list.firstChild); }
+    var pins = registry && Array.isArray(registry.target_pins)
+      ? registry.target_pins : [];
+    pins.forEach(function(pin) {
+      var item = document.createElement("li");
+      item.textContent = String(pin.name || "") + " · " + String(pin.target || "");
+      list.appendChild(item);
+    });
+  }
+
+  function refreshDirectRegistry() {
+    if (!document.getElementById("target-pin-list")) { return Promise.resolve(); }
+    return fetch(endpoint("/api/direct/registry"))
+      .then(parseJsonResponse)
+      .then(function(data) {
+        renderDirectRegistry(data);
+        return data;
+      })
+      .catch(function(error) {
+        directRegistryStatus("핀 목록 확인 실패: " + error.message, true);
+      });
+  }
+
+  function saveDirectTargetPin() {
+    var nameNode = document.getElementById("target-pin-name");
+    var targetNode = document.getElementById("target-pin-target");
+    if (!nameNode || !targetNode) { return Promise.resolve(); }
+    var name = String(nameNode.value || "").trim();
+    var target = String(targetNode.value || "").trim();
+    if (!name || semanticPinTargets.indexOf(target) === -1) {
+      directRegistryStatus("핀 이름과 semantic target을 선택하세요.", true);
+      return Promise.resolve();
+    }
+    directRegistryStatus("semantic pin을 저장하는 중입니다.", false);
+    return fetch(endpoint("/api/direct/registry/target-pin"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name, target: target, metadata: { source: "controller" } })
+    }).then(parseJsonResponse).then(function(data) {
+      nameNode.value = "";
+      directRegistryStatus("저장됨 · " + String(data.target_pin.target || target), false);
+      return refreshDirectRegistry();
+    }).catch(function(error) {
+      directRegistryStatus("핀 저장 실패: " + error.message, true);
+    });
   }
 
   var pendingNativeSC2Launches = {};
@@ -1519,6 +1723,10 @@ _COMPANION_PAGE_TEMPLATE = """<!doctype html>
 
   document.getElementById("runtime-start").addEventListener("click", startRuntime);
   document.getElementById("runtime-refresh").addEventListener("click", refreshAll);
+  var targetPinSaveButton = document.getElementById("target-pin-save");
+  if (targetPinSaveButton) {
+    targetPinSaveButton.addEventListener("click", saveDirectTargetPin);
+  }
   document.getElementById("retreat-button").addEventListener("click", function() {
     submitCommandWithRuntime("긴급 전군 즉시 후퇴해");
   });

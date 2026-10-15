@@ -18,13 +18,14 @@ from starcraft_commander.contracts import (
     SC2ActionReport,
     SC2ActionType,
     SC2CommandAction,
-    SC2CommandPlan,
+    SC2CommandPlan,  # noqa: F401 - retained as a compatibility re-export
     SC2ExecutionError,
     SC2ExecutionPlan,
     SC2PlanExecutionResult,
 )
 from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
 from starcraft_commander.direct_command_lifecycle import DirectCommandLease
+from starcraft_commander.direct_release import DirectReleaseListeners, same_callback
 
 
 SC2_UNIT_TYPE_IDS: Final[dict[str, str]] = {
@@ -96,6 +97,9 @@ SC2_TARGET_ALIASES: Final[dict[str, str]] = {
     # Player-side ToyCraft canonical map locations.
     "main": "self_main",
     "base": "self_main",
+    "home": "self_main",
+    "our home": "self_main",
+    "defense": "self_main",
     "main base": "self_main",
     "main base fallback": "self_main",
     "our main": "self_main",
@@ -191,7 +195,6 @@ SC2_TARGET_ALIASES: Final[dict[str, str]] = {
     "상대 초크": "enemy_choke",
     "상대초크": "enemy_choke",
     "enemy front": "enemy_front",
-    "enemy_front": "enemy_front",
     "적 입구": "enemy_front",
     "적입구": "enemy_front",
     "상대 입구": "enemy_front",
@@ -551,8 +554,7 @@ class SC2RuntimeExecutor:
     )
     on_direct_release: Callable[[DirectCommandLease], object] | None = None
     _started: bool = field(default=False, init=False, repr=False)
-    _previous_direct_release: Callable[[DirectCommandLease], object] | None = field(
-        default=None,
+    _release_listeners: DirectReleaseListeners = field(
         init=False,
         repr=False,
     )
@@ -590,7 +592,9 @@ class SC2RuntimeExecutor:
         # requiring every caller to remember to wire the callback manually.
         # Preserve a callback supplied by an embedding integration and invoke
         # it before the executor's explicit/auto-discovered resume seam.
-        self._previous_direct_release = self.direct_lifecycle.on_release
+        self._release_listeners = DirectReleaseListeners.preserving(
+            self.direct_lifecycle.on_release
+        )
         self.direct_lifecycle.on_release = self._handle_direct_release
 
     def _handle_direct_release(self, lease: DirectCommandLease) -> None:
@@ -640,30 +644,31 @@ class SC2RuntimeExecutor:
     def _emit_direct_release(self, lease: DirectCommandLease) -> None:
         """Invoke preserved and configured terminal-release listeners."""
 
-        callbacks: list[Callable[[DirectCommandLease], object]] = []
-        if self._previous_direct_release is not None:
-            callbacks.append(self._previous_direct_release)
         callback = self.on_direct_release
         if callback is None:
             candidate = getattr(self.bot, "resume_micromachine", None)
             if callable(candidate):
                 callback = candidate
-        if callback is not None and callback not in callbacks:
-            callbacks.append(callback)
-        for listener in callbacks:
-            try:
-                listener(lease)
-            except Exception as error:  # noqa: BLE001 - release is fail-closed.
-                self._lifecycle_errors.append(
-                    SC2ExecutionError(
-                        message=f"direct release callback failed: {error}",
-                        exception_type=type(error).__name__,
-                        metadata={
-                            "command_id": lease.command_id,
-                            "release_reason": lease.release_reason,
-                        },
-                    )
-                )
+        self._release_listeners.emit(lease, (callback,) if callback is not None else ())
+
+    def add_direct_release_listener(
+        self, callback: Callable[[DirectCommandLease], object]
+    ) -> DirectReleaseListeners:
+        """Register behind the workflow gate, never outside the executor wrapper."""
+
+        self._release_listeners.add(callback)
+        return self._release_listeners
+
+    @property
+    def direct_release_listeners(self) -> DirectReleaseListeners:
+        """Shared notification registry for sessions using this executor."""
+
+        return self._release_listeners
+
+    async def drain_direct_release_callbacks(self) -> None:
+        """Await async host notifications scheduled by synchronous frame ticks."""
+
+        await self._release_listeners.drain()
 
     def _finish_workflow_release(self, lease: DirectCommandLease) -> None:
         """Propagate a completed dependent release through nested parents."""
@@ -691,7 +696,7 @@ class SC2RuntimeExecutor:
     def lifecycle_errors(self) -> tuple[SC2ExecutionError, ...]:
         """Structured lifecycle errors captured without crashing callers."""
 
-        return tuple(self._lifecycle_errors)
+        return (*self._lifecycle_errors, *self._release_listeners.errors)
 
     def bind_direct_lifecycle(self, lifecycle: DirectCommandLifecycle) -> None:
         """Share an integration-owned lease registry with this executor.
@@ -706,8 +711,20 @@ class SC2RuntimeExecutor:
             raise TypeError("lifecycle must be a DirectCommandLifecycle")
         if lifecycle is self.direct_lifecycle:
             return
+        if (
+            self.direct_lifecycle.active_leases()
+            or self._deferred_workflow_releases
+            or self._release_listeners.has_pending
+        ):
+            raise ValueError("cannot rebind a lifecycle with active Direct work")
+        previous_listeners = self._release_listeners
+        if same_callback(self.direct_lifecycle.on_release, self._handle_direct_release):
+            self.direct_lifecycle.on_release = self._release_listeners.emit
+        self._lifecycle_errors.extend(previous_listeners.errors)
         self.direct_lifecycle = lifecycle
-        self._previous_direct_release = lifecycle.on_release
+        self._release_listeners = DirectReleaseListeners.preserving(lifecycle.on_release)
+        for callback in previous_listeners.callbacks:
+            self._release_listeners.add(callback)
         lifecycle.on_release = self._handle_direct_release
 
     def observe_direct_commands(
@@ -882,7 +899,7 @@ class SC2RuntimeExecutor:
             and not isinstance(conditions_raw, (str, bytes))
             else ("order_issued",)
         )
-        lease = self.direct_lifecycle.pending(
+        self.direct_lifecycle.pending(
             command_id=child_id,
             issued_at_frame=max(0, int(current_frame)),
             ttl_seconds=max(1, int(plan.audit.get("ttl_seconds", 120))),
@@ -934,13 +951,27 @@ class SC2RuntimeExecutor:
         results.append(result)
         return tuple(results)
 
-    def _bind_direct_plan(self, plan: SC2ExecutionPlan) -> SC2ExecutionPlan:
+    def _bind_direct_plan(
+        self,
+        plan: SC2ExecutionPlan,
+        *,
+        runtime: object | None = None,
+    ) -> SC2ExecutionPlan:
         """Bind every action in a plan to the current runtime observation."""
 
-        binder = getattr(self.bot, "bind_direct_action", None)
+        binder = getattr(runtime if runtime is not None else self.bot, "bind_direct_action", None)
         if not callable(binder):
             return plan
-        bound_actions = tuple(binder(action) for action in plan.actions)
+        # MCP admission may already have pinned the exact tags used by the
+        # lease. Do not re-resolve those actions against a reordered live pool;
+        # preserve the lease identity and let the adapter refuse if a pinned
+        # entity disappeared before issuance.
+        bound_actions = tuple(
+            action
+            if action.metadata.get("_direct_unit_tags")
+            else binder(action)
+            for action in plan.actions
+        )
         if bound_actions == plan.actions:
             return plan
         return SC2ExecutionPlan(
@@ -952,6 +983,21 @@ class SC2RuntimeExecutor:
             notes=plan.notes,
             audit=plan.audit,
         )
+
+    def bind_direct_plan(
+        self,
+        plan: SC2ExecutionPlan,
+        *,
+        runtime: object | None = None,
+    ) -> SC2ExecutionPlan:
+        """Expose concrete Direct binding for non-MCP live command seams.
+
+        MCP admission binds before reserving a lease.  Text/live sessions use
+        the executor boundary directly, so they need the same explicit seam
+        in order to reserve the exact unit tags that will be commanded.
+        """
+
+        return self._bind_direct_plan(plan, runtime=runtime)
 
     def tick_direct_commands(
         self,
@@ -1006,6 +1052,7 @@ class SC2RuntimeExecutor:
         """
 
         self._lifecycle_errors.clear()
+        self._release_listeners.errors.clear()
         if bot is not None:
             self.bot = bot
         self._started = True
@@ -1024,11 +1071,17 @@ class SC2RuntimeExecutor:
                 self._started,
                 self._drain_lifecycle_errors(),
             )
-        return await self._execute_with_bot(self.bot, plan)
+        # Text/live-pipeline callers use this boundary directly rather than
+        # going through the MCP registry. Bind concrete worker/producer tags at
+        # this last safe point as well, so those callers cannot silently fall
+        # back to BotAI's arbitrary unit selection.
+        bound_plan = self._bind_direct_plan(plan, runtime=self.bot)
+        return await self._execute_with_bot(self.bot, bound_plan)
 
     async def close(self) -> None:
         """Close the executor lifecycle while preserving structured errors."""
 
+        await self.drain_direct_release_callbacks()
         await _call_optional_lifecycle_hook(
             self.bot,
             ("on_end", "close", "stop"),
@@ -1043,7 +1096,8 @@ class SC2RuntimeExecutor:
     ) -> SC2PlanExecutionResult:
         """Apply a planned command sequence to a live SC2 runtime adapter."""
 
-        return await self._execute_with_bot(bot, plan)
+        bound_plan = self._bind_direct_plan(plan, runtime=bot)
+        return await self._execute_with_bot(bot, bound_plan)
 
     async def _execute_with_bot(
         self,
@@ -1128,8 +1182,9 @@ class SC2RuntimeExecutor:
     def _drain_lifecycle_errors(self) -> tuple[SC2ExecutionError, ...]:
         """Consume captured lifecycle errors so they are reported exactly once."""
 
-        drained = tuple(self._lifecycle_errors)
+        drained = self.lifecycle_errors
         self._lifecycle_errors.clear()
+        self._release_listeners.errors.clear()
         return drained
 
 
@@ -1419,7 +1474,9 @@ async def _apply_action(bot: object, action: SC2CommandAction) -> _SC2ActionAppl
     if isinstance(result, SC2ActionReport):
         return _SC2ActionApplication(applied=result.applied, report=result)
     if isinstance(result, Mapping):
-        return _SC2ActionApplication(applied=True, observation=result)
+        ok_value = result.get("ok", True)
+        applied = ok_value if isinstance(ok_value, bool) else True
+        return _SC2ActionApplication(applied=applied, observation=result)
     if result is None:
         return _SC2ActionApplication(applied=True)
     return _SC2ActionApplication(applied=bool(result))
@@ -1541,4 +1598,12 @@ def _method_name_for_action(action_type: SC2ActionType) -> str:
         SC2ActionType.MOVE_CAMERA: "move_camera",
         SC2ActionType.STOP_GROUP: "stop_group",
         SC2ActionType.HOLD_POSITION: "hold_position",
+        SC2ActionType.QUERY_ABILITY: "query_ability",
+        SC2ActionType.QUERY_PLACEMENT: "query_placement",
+        SC2ActionType.BUILD_GAS: "build_gas",
+        SC2ActionType.DISTRIBUTE_WORKERS: "distribute_workers",
+        SC2ActionType.EXPAND_NOW: "expand_now",
+        SC2ActionType.QUERY_UNIT: "query_unit",
+        SC2ActionType.QUERY_GAME: "query_game",
+        SC2ActionType.QUERY_MAP: "query_map",
     }[action_type]

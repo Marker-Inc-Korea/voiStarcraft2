@@ -22,7 +22,7 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Final
+from typing import Final
 
 from starcraft_commander.contracts import (
     SC2_DIRECT_ACTION_TYPES,
@@ -36,6 +36,7 @@ from starcraft_commander.direct_command_lifecycle import (
     DirectCommandOwnershipConflict,
 )
 from starcraft_commander.direct_command_registry import DirectCommandRegistry
+from starcraft_commander.sc2_api_inventory import inspect_python_sc2_surface
 from starcraft_commander.policy_modulation import (
     CommandLayer,
     PolicyModulationVector,
@@ -93,6 +94,14 @@ SC2_CAPABILITY_CATALOG: Final[tuple[SC2Capability, ...]] = (
     SC2Capability("sc2.direct.move_camera", SC2ActionType.MOVE_CAMERA, "Move the camera to a semantic target.", "observation"),
     SC2Capability("sc2.direct.stop_group", SC2ActionType.STOP_GROUP, "Stop a named or typed squad.", "emergency", supports_parallel=False),
     SC2Capability("sc2.direct.hold_position", SC2ActionType.HOLD_POSITION, "Hold a named or typed squad in place.", "emergency", supports_parallel=False),
+    SC2Capability("sc2.direct.query_ability", SC2ActionType.QUERY_ABILITY, "Read caster ability availability without issuing an order.", "observation", supports_parallel=True),
+    SC2Capability("sc2.direct.query_placement", SC2ActionType.QUERY_PLACEMENT, "Validate a semantic structure placement without issuing a build order.", "observation", supports_parallel=True),
+    SC2Capability("sc2.direct.build_gas", SC2ActionType.BUILD_GAS, "Build one refinery on an explicit semantic geyser with a pinned worker.", "construction", supports_parallel=False),
+    SC2Capability("sc2.direct.distribute_workers", SC2ActionType.DISTRIBUTE_WORKERS, "Rebalance workers across minerals and completed gas.", "economy", supports_parallel=False),
+    SC2Capability("sc2.direct.expand_now", SC2ActionType.EXPAND_NOW, "Expand at a validated semantic expansion anchor.", "construction", supports_parallel=False),
+    SC2Capability("sc2.direct.query_unit", SC2ActionType.QUERY_UNIT, "Read a bounded public python-sc2 Unit calculation or predicate without issuing an order.", "observation", supports_parallel=True),
+    SC2Capability("sc2.direct.query_game", SC2ActionType.QUERY_GAME, "Read an allowlisted python-sc2 BotAI game calculation without issuing an order.", "observation", supports_parallel=True),
+    SC2Capability("sc2.direct.query_map", SC2ActionType.QUERY_MAP, "Read an allowlisted python-sc2 BotAI map query without issuing an order.", "observation", supports_parallel=True),
     # Retreat is a first-class semantic capability even though python-sc2
     # lowers it to a move order at the adapter boundary.  Keeping the
     # capability name explicit prevents providers from having to invent a
@@ -407,6 +416,56 @@ def build_direct_plan_from_vector(
             metadata={"source": "tactical_task"},
         )
 
+    # Some provider integrations express an operation as a semantic scope
+    # (unit classes + location) without materializing ``tactical_task``.  A
+    # non-macro scope is still an explicit one-shot user action; dropping it
+    # would silently turn an operation into a route with no Direct tool call.
+    # Lower only operation scopes here.  Micro/ability commands without an
+    # ability or action kind remain unexecutable and fail closed instead of
+    # guessing an effect.
+    if not actions and vector.command_layer is CommandLayer.OPERATION:
+        scoped_units = tuple(vector.scope.unit_classes)
+        scoped_target = str(vector.scope.location_intent or "").strip()
+        if scoped_units or scoped_target:
+            target = scoped_target or "enemy_natural"
+            normalized_target = target.casefold()
+            movement_targets = {
+                "home",
+                "self_main",
+                "self_ramp",
+                "self_natural",
+                "self_choke",
+                "self_third",
+                "self_mineral_line",
+                "self_geyser",
+                "rally",
+                "regroup",
+            }
+            action_type = (
+                SC2ActionType.MOVE_GROUP
+                if normalized_target in movement_targets
+                else SC2ActionType.ATTACK_MOVE
+            )
+            count = max(
+                int(vector.scope.min_units or 0),
+                int(vector.scope.max_units or 0),
+                1,
+            )
+            actions.append(
+                SC2CommandAction(
+                    action_type=action_type,
+                    subject=(
+                        _direct_unit_subject(scoped_units[0])
+                        if scoped_units
+                        else "available combat units"
+                    ),
+                    target=target,
+                    count=count,
+                    priority=100,
+                    metadata={"source": "semantic_scope_fallback"},
+                )
+            )
+
     # Building tasks are explicit one-off actions, unlike the standing
     # production/tech biases carried by the macro vector.
     for building in vector.building_tasks:
@@ -568,16 +627,27 @@ def _append_task_actions(
     """Lower one validated tactical task without leaking manager-only fields."""
 
     task_type = str(getattr(task, "task_type", "") or "")
-    target = str(
-        getattr(task, "location_intent", "")
-        or getattr(scope, "location_intent", "")
-        or "enemy_natural"
-    )
+    # Direct repair/worker tickets carry named entities/resources in
+    # ``tactical_task.target``.  Movement and placement continue to use the
+    # map-oriented location intent.  Prefer the explicit entity/resource
+    # target so a repair request cannot accidentally resolve to a map alias.
+    task_target = str(getattr(task, "target", "") or "").strip()
+    if not task_target:
+        task_target = str(getattr(task, "location_intent", "") or "").strip()
+    scope_target = str(getattr(scope, "location_intent", "") or "").strip()
+    # A Direct ticket must carry its semantic target. The historical
+    # enemy_natural fallback is reserved for manager-owned pressure/scout
+    # tasks; guessing it for a one-shot Direct action can issue a valid order
+    # against the wrong object.
+    target = task_target or scope_target
     priority = int(max(1.0, float(getattr(task, "priority", 0.0) or 0.0)) * 100)
     min_units = int(
         getattr(scope, "min_units", 0) or getattr(task, "min_units", 0) or 1
     )
     if task_type == "execute_ability":
+        ability = str(getattr(task, "ability", "") or "").strip()
+        if not ability:
+            return
         units = (
             tuple(getattr(task, "unit_classes", ()))
             or tuple(getattr(scope, "unit_classes", ()))
@@ -590,7 +660,7 @@ def _append_task_actions(
                 target=target,
                 count=min_units,
                 priority=priority,
-                metadata={**metadata, "ability": getattr(task, "ability", "")},
+                metadata={**metadata, "ability": ability},
             )
         )
         return
@@ -612,16 +682,40 @@ def _append_task_actions(
         "observe": SC2ActionType.OBSERVE,
         "stop_group": SC2ActionType.STOP_GROUP,
         "hold_position": SC2ActionType.HOLD_POSITION,
+        "query_ability": SC2ActionType.QUERY_ABILITY,
+        "query_placement": SC2ActionType.QUERY_PLACEMENT,
+        "build_gas": SC2ActionType.BUILD_GAS,
+        "distribute_workers": SC2ActionType.DISTRIBUTE_WORKERS,
+        "expand_now": SC2ActionType.EXPAND_NOW,
+        "query_unit": SC2ActionType.QUERY_UNIT,
+        "query_game": SC2ActionType.QUERY_GAME,
+        "query_map": SC2ActionType.QUERY_MAP,
     }
     if task_type in direct_action_types:
         unit_classes = tuple(getattr(task, "unit_classes", ()))
         production_targets = tuple(getattr(task, "production_targets", ()))
+        if task_type in {"assign_workers", "gather_resource"} and not target:
+            first_target = str(production_targets[0] if production_targets else "").strip()
+            target = (
+                "gas"
+                if first_target.removeprefix("TERRAN_").upper() == "REFINERY"
+                else first_target
+            )
         subject = _direct_unit_subject(unit_classes[0]) if unit_classes else "available combat units"
         action_metadata = dict(metadata)
-        if task_type == "build_structure" and production_targets:
+        if task_type in {"build_structure", "query_placement"}:
+            if not production_targets:
+                return
+            if not target:
+                return
             subject = _direct_structure_subject(production_targets[0])
             action_metadata.setdefault("building_type", subject)
-        elif task_type == "train_unit" and production_targets:
+            action_metadata.setdefault("source_structure", subject)
+        elif task_type in {"train_unit", "warp_in"}:
+            if not production_targets:
+                return
+            if task_type == "warp_in" and not target:
+                return
             subject = _direct_unit_subject(production_targets[0])
             action_metadata.setdefault(
                 "producer",
@@ -643,13 +737,125 @@ def _append_task_actions(
                     "BATTLECRUISER": "STARPORT",
                 }.get(subject, ""),
             )
+            if task_type == "warp_in":
+                action_metadata.pop("producer", None)
+        elif task_type == "research_upgrade":
+            if not production_targets:
+                return
+            subject = str(production_targets[0]).strip()
+            researcher = str(
+                production_targets[1] if len(production_targets) > 1 else ""
+            ).strip()
+            if researcher:
+                action_metadata.setdefault("researcher", _direct_structure_subject(researcher))
+        elif task_type == "query_ability":
+            ability = str(getattr(task, "ability", "") or "").strip()
+            if not ability:
+                return
+            action_metadata["ability"] = ability
+            action_metadata["ability_id"] = ability
+        elif task_type == "query_unit":
+            query = str(getattr(task, "query", "") or "").strip()
+            if not query:
+                return
+            action_metadata["query"] = query
+            for field_name in (
+                "ability",
+                "buff",
+                "bonus_distance",
+                "ignore_armor",
+                "include_overkill_damage",
+            ):
+                value = getattr(task, field_name, None)
+                if value not in (None, ""):
+                    action_metadata[field_name] = value
+            if not target and query in {
+                "distance_to",
+                "distance_to_squared",
+                "target_in_range",
+                "in_ability_cast_range",
+                "is_facing",
+                "calculate_damage_vs_target",
+                "calculate_dps_vs_target",
+            }:
+                return
+        elif task_type == "query_game":
+            query = str(getattr(task, "query", "") or "").strip()
+            if not query:
+                return
+            if not production_targets:
+                return
+            subject_kind = str(getattr(task, "subject_kind", "") or "").strip()
+            # UpgradeId names are not UnitTypeId names. Preserve the semantic
+            # token exactly so the adapter can resolve e.g.
+            # TERRAN_INFANTRYWEAPONSLEVEL1 through UpgradeId. The adapter
+            # rejects an explicit upgrade kind for unit-only game queries.
+            if query == "already_pending_upgrade" or subject_kind == "upgrade":
+                subject = str(production_targets[0]).strip()
+            else:
+                subject = _direct_unit_subject(production_targets[0])
+            if not subject:
+                return
+            action_metadata["query"] = query
+            if subject_kind:
+                action_metadata["subject_kind"] = subject_kind
+            if query == "can_afford":
+                action_metadata["check_supply_cost"] = bool(
+                    getattr(task, "check_supply_cost", True)
+                )
+        elif task_type == "query_map":
+            query = str(getattr(task, "query", "") or "").strip()
+            if not query:
+                return
+            subject = "map"
+            action_metadata["query"] = query
+            if query != "get_next_expansion" and not target:
+                return
         elif task_type in {"assign_workers", "gather_resource"}:
+            # Resource is the semantic target, while SCV is only the worker
+            # subject. Do not substitute a map target or enemy location.
+            if target.casefold() not in {"mineral", "minerals", "gas", "vespene"}:
+                return
             subject = "SCV"
+            action_metadata["resource"] = target.casefold()
         elif task_type == "return_resource":
             subject = "SCV"
         elif task_type == "repair":
+            # Repair target is an entity semantic, not the worker subject.
+            # Providers may carry it as the first production target until the
+            # richer named-target field is available in the wire schema.
+            repair_target = (
+                _direct_structure_subject(production_targets[0])
+                if production_targets
+                else target
+            )
+            if not repair_target:
+                return
+            target = repair_target
             subject = "SCV"
-        count = 0 if task_type in {"observe", "move_camera"} else min_units
+        elif task_type in {"move_group", "attack_move", "smart", "patrol", "move_camera"}:
+            if not target:
+                return
+        elif task_type == "build_gas":
+            if target.casefold() not in {"self_geyser", "geyser", "main_geyser"}:
+                return
+            subject = "SCV"
+        elif task_type == "expand_now":
+            if not target or target.casefold().startswith("enemy"):
+                return
+        elif task_type in {"stop_group", "hold_position", "observe", "distribute_workers"}:
+            # These actions either operate on the selected group, read state,
+            # or rebalance workers and do not need a map target.
+            pass
+        count = 0 if task_type in {
+            "observe",
+            "move_camera",
+            "query_ability",
+            "query_placement",
+            "query_unit",
+            "query_game",
+            "query_map",
+        } else min_units
         actions.append(
             SC2CommandAction(
                 action_type=direct_action_types[task_type],
@@ -664,6 +870,8 @@ def _append_task_actions(
 
     action_type = _operation_action_type(task_type)
     composition = tuple(requirements)
+    if not target:
+        target = "enemy_natural"
     if composition:
         for requirement in composition:
             actions.append(
@@ -845,7 +1053,15 @@ def create_command_tool_registry(
             else ("order_issued",)
         )
         lifecycle_required = bool(plan.actions) and not all(
-            action.action_type is SC2ActionType.OBSERVE for action in plan.actions
+            action.action_type in {
+                SC2ActionType.OBSERVE,
+                SC2ActionType.QUERY_ABILITY,
+                SC2ActionType.QUERY_PLACEMENT,
+                SC2ActionType.QUERY_UNIT,
+                SC2ActionType.QUERY_GAME,
+                SC2ActionType.QUERY_MAP,
+            }
+            for action in plan.actions
         )
         # Register before dispatch so a game-loop observer can see the full
         # pending -> dispatched -> active transition.  Runtime-not-attached
@@ -1069,7 +1285,13 @@ def create_command_tool_registry(
             "capabilities": [capability.to_dict() for capability in SC2_CAPABILITY_CATALOG],
             "action_types": sorted(SC2_DIRECT_ACTION_TYPES),
             "registry": semantic_registry.to_dict(),
+            "api_inventory": inspect_python_sc2_surface().to_dict(),
         }
+
+    def api_inventory(arguments: Mapping[str, object]) -> Mapping[str, object]:
+        """Return the optional python-sc2 surface disposition for audit/UI."""
+
+        return {"ok": True, "inventory": inspect_python_sc2_surface().to_dict()}
 
     schema = {
         "type": "object",
@@ -1104,12 +1326,27 @@ def create_command_tool_registry(
         if not isinstance(metadata, Mapping):
             raise ValueError("metadata must be an object.")
         subject = str(arguments.get("subject", ""))
+        if action_type is SC2ActionType.DISTRIBUTE_WORKERS and not subject.strip():
+            subject = "workers"
+        if action_type is SC2ActionType.EXPAND_NOW and not subject.strip():
+            subject = "COMMANDCENTER"
+        if action_type is SC2ActionType.QUERY_MAP and not subject.strip():
+            subject = "map"
         target_pin = str(arguments.get("target_pin", "")).strip()
         if target_pin:
-            target = semantic_registry.resolve_target_pin(target_pin).target
+            pin = semantic_registry.resolve_target_pin(target_pin)
+            target = pin.target
         else:
+            pin = None
             target = semantic_registry.resolve_target(str(arguments.get("target", "")))
         metadata_map = dict(metadata)
+        if pin is not None:
+            # Preserve the user-facing pin identity and its validated metadata
+            # for the runtime map resolver. Raw coordinates/tags are never
+            # accepted as MCP arguments; a live adapter may still validate the
+            # pin against the current map observation before issuing an order.
+            metadata_map.setdefault("target_pin", pin.name)
+            metadata_map.setdefault("target_pin_metadata", dict(pin.metadata))
         try:
             squad = semantic_registry.resolve_squad(subject)
         except KeyError:
@@ -1208,6 +1445,12 @@ def create_command_tool_registry(
             "List the bounded semantic SC2 capability catalog.",
             {"type": "object", "additionalProperties": False},
             list_capabilities,
+        ),
+        ToolSpec(
+            "sc2.direct.api_inventory",
+            "Report the installed python-sc2 callable surface and every bounded or rejected disposition.",
+            {"type": "object", "additionalProperties": False},
+            api_inventory,
         ),
         ToolSpec(
             "sc2.direct.registry",
@@ -1328,6 +1571,195 @@ def create_command_tool_registry(
             action_tool(SC2ActionType.HOLD_POSITION),
         ),
         ToolSpec(
+            "sc2.direct.query_ability",
+            "Read per-caster ability availability through python-sc2 without issuing an order.",
+            {
+                **action_schema,
+                "properties": {
+                    **action_schema["properties"],
+                    "metadata": {"type": "object", "required": ["ability"]},
+                },
+                "required": ["subject", "metadata"],
+            },
+            action_tool(SC2ActionType.QUERY_ABILITY),
+        ),
+        ToolSpec(
+            "sc2.direct.query_placement",
+            "Validate a semantic structure placement through python-sc2 without issuing an order.",
+            {
+                **action_schema,
+                "properties": {
+                    **action_schema["properties"],
+                    "metadata": {
+                        "type": "object",
+                        "properties": {
+                            "placement_policy": {
+                                "type": "object",
+                                "properties": {
+                                    "radius": {
+                                        "type": "number",
+                                        "exclusiveMinimum": 0,
+                                        "maximum": 20,
+                                    },
+                                },
+                                "additionalProperties": True,
+                            },
+                        },
+                        "additionalProperties": True,
+                    },
+                },
+                "required": ["subject", "target"],
+            },
+            action_tool(SC2ActionType.QUERY_PLACEMENT),
+        ),
+        ToolSpec(
+            "sc2.direct.query_unit",
+            "Read a bounded semantic unit calculation or predicate without issuing an order.",
+            {
+                **action_schema,
+                "properties": {
+                    **action_schema["properties"],
+                    "metadata": {
+                        "type": "object",
+                        "required": ["query"],
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "enum": [
+                                    "calculate_speed",
+                                    "distance_to",
+                                    "distance_to_squared",
+                                    "target_in_range",
+                                    "in_ability_cast_range",
+                                    "is_facing",
+                                    "is_using_ability",
+                                    "has_buff",
+                                    "calculate_damage_vs_target",
+                                    "calculate_dps_vs_target",
+                                ],
+                            },
+                            "ability": {"type": "string"},
+                            "buff": {"type": "string"},
+                            "target_subject": {"type": "string"},
+                            "bonus_distance": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1000,
+                            },
+                            "ignore_armor": {"type": "boolean"},
+                            "include_overkill_damage": {"type": "boolean"},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                "required": ["subject", "metadata"],
+            },
+            action_tool(SC2ActionType.QUERY_UNIT),
+        ),
+        ToolSpec(
+            "sc2.direct.query_game",
+            "Read an allowlisted semantic python-sc2 BotAI game calculation without issuing an order.",
+            {
+                **action_schema,
+                "properties": {
+                    **action_schema["properties"],
+                    "metadata": {
+                        "type": "object",
+                        "required": ["query"],
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "enum": [
+                                    "can_afford",
+                                    "calculate_cost",
+                                    "calculate_unit_value",
+                                    "calculate_supply_cost",
+                                    "can_feed",
+                                    "already_pending",
+                                    "already_pending_upgrade",
+                                    "structure_type_build_progress",
+                                    "tech_requirement_progress",
+                                    "worker_en_route_to_build",
+                                ],
+                            },
+                            "subject_kind": {"type": "string", "enum": ["unit", "upgrade"]},
+                            "check_supply_cost": {"type": "boolean"},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                "required": ["subject", "metadata"],
+            },
+            action_tool(SC2ActionType.QUERY_GAME),
+        ),
+        ToolSpec(
+            "sc2.direct.query_map",
+            "Read an allowlisted semantic python-sc2 BotAI map query without issuing an order.",
+            {
+                **action_schema,
+                "properties": {
+                    **action_schema["properties"],
+                    "metadata": {
+                        "type": "object",
+                        "required": ["query"],
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "enum": [
+                                    "get_next_expansion",
+                                    "get_terrain_height",
+                                    "get_terrain_z_height",
+                                    "has_creep",
+                                    "in_map_bounds",
+                                    "in_pathing_grid",
+                                    "in_placement_grid",
+                                    "is_visible",
+                                ],
+                            },
+                            "target_subject": {"type": "string"},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                # get_next_expansion is a map-level read and needs no unit
+                # subject; one_action_tool supplies the internal ``map``
+                # placeholder when callers omit it.
+                "required": ["metadata"],
+            },
+            action_tool(SC2ActionType.QUERY_MAP),
+        ),
+        ToolSpec(
+            "sc2.direct.build_gas",
+            "Build one refinery on an explicit semantic geyser with a pinned worker.",
+            {**action_schema, "required": ["subject", "target"]},
+            action_tool(SC2ActionType.BUILD_GAS),
+        ),
+        ToolSpec(
+            "sc2.direct.distribute_workers",
+            "Rebalance workers between minerals and completed gas.",
+            {
+                **action_schema,
+                "properties": {
+                    **action_schema["properties"],
+                    "metadata": {
+                        "type": "object",
+                        "properties": {
+                            "resource_ratio": {"type": "number", "minimum": 0, "maximum": 10},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                "required": [],
+            },
+            action_tool(SC2ActionType.DISTRIBUTE_WORKERS),
+        ),
+        ToolSpec(
+        "sc2.direct.expand_now",
+            "Expand at a validated semantic own expansion anchor.",
+            {**action_schema, "required": ["target"]},
+            action_tool(SC2ActionType.EXPAND_NOW),
+        ),
+        ToolSpec(
             "sc2.direct.retreat",
             "Move a semantic squad back to the own main base.",
             action_schema,
@@ -1395,30 +1827,73 @@ def _requires_sequential_call(call: ToolCall) -> bool:
 
     if call.arguments.get("parallel") is False:
         return True
-    if call.name in {
-        "sc2.direct.build_structure",
-        "sc2.direct.train_unit",
-        "sc2.direct.repair",
-        "sc2.direct.execute_ability",
-        "sc2.direct.stop_group",
-        "sc2.direct.hold_position",
-        "sc2.direct.retreat",
-        "sc2.direct.lifecycle",
-    }:
+    if call.name == "sc2.direct.lifecycle":
+        # Lifecycle cancellation/observation mutates the lease registry and
+        # is a control-plane tool rather than an action catalog capability.
+        return True
+    # Keep this policy derived from the same catalog that advertises the MCP
+    # capability.  A hard-coded subset here silently allowed newly added
+    # mutating tools (for example ``research_upgrade`` or ``build_gas``) to
+    # race in a parallel batch even though their catalog entry explicitly
+    # says ``supports_parallel=False``.
+    capability = next(
+        (item for item in SC2_CAPABILITY_CATALOG if item.name == call.name),
+        None,
+    )
+    if capability is not None and (
+        not capability.supports_parallel or capability.category == "emergency"
+    ):
         return True
     if call.name == "sc2.direct.execute":
         plan = call.arguments.get("plan")
-        if isinstance(plan, Mapping):
+        if isinstance(plan, SC2ExecutionPlan):
+            actions = plan.actions
+        elif isinstance(plan, Mapping):
             actions = plan.get("ordered_actions", plan.get("actions", ()))
-            if isinstance(actions, Sequence) and len(actions) > 1:
+        else:
+            actions = ()
+        if isinstance(actions, Sequence):
+            if len(actions) > 1:
                 return True
-            if isinstance(actions, Sequence) and any(
-                isinstance(action, Mapping)
-                and bool((action.get("metadata") or {}).get("emergency"))
-                for action in actions
-            ):
-                return True
+            for action in actions:
+                if _direct_action_requires_sequential(action):
+                    return True
     return False
+
+
+def _direct_action_requires_sequential(action: object) -> bool:
+    """Apply the catalog parallelism policy to one embedded direct action."""
+
+    if isinstance(action, SC2CommandAction):
+        action_type = action.action_type.value
+        metadata = action.metadata
+    elif isinstance(action, Mapping):
+        raw_action_type = action.get("action_type", "")
+        action_type = (
+            raw_action_type.value
+            if isinstance(raw_action_type, SC2ActionType)
+            else str(raw_action_type).strip()
+        )
+        raw_metadata = action.get("metadata", {})
+        metadata = raw_metadata if isinstance(raw_metadata, Mapping) else {}
+    else:
+        return False
+
+    capability = next(
+        (
+            item
+            for item in SC2_CAPABILITY_CATALOG
+            if item.action_type.value == action_type
+        ),
+        None,
+    )
+    return bool(metadata.get("emergency")) or bool(
+        capability is not None
+        and (
+            not capability.supports_parallel
+            or capability.category == "emergency"
+        )
+    )
 
 
 def _looks_like_named_squad(subject: str) -> bool:

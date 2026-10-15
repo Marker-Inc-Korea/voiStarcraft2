@@ -19,6 +19,7 @@ from starcraft_commander.micromachine_live_session import (
     StaticJsonPolicyModulationProvider,
 )
 from starcraft_commander.micromachine_runtime import MicroMachineInMemoryBlackboard
+from starcraft_commander.contracts import SC2ActionType
 from starcraft_commander.policy_modulation import PolicyModulationVector
 from starcraft_commander.unified_command_router import (
     ToolSpec,
@@ -27,7 +28,6 @@ from starcraft_commander.unified_command_router import (
     route_policy_vector,
     SC2_CAPABILITY_CATALOG,
 )
-from starcraft_commander.policy_modulation import PolicyModulationVector
 
 
 def _vector(payload: dict[str, object]) -> PolicyModulationVector:
@@ -53,6 +53,80 @@ def test_non_macro_route_is_direct_only() -> None:
         )
     )
     assert [call.name for call in route.tool_calls] == ["sc2.direct.execute"]
+
+
+def test_operation_scope_without_tactical_task_still_lowers_to_direct_action() -> None:
+    """Provider scope output must not silently produce an empty Direct route."""
+
+    route = route_policy_vector(
+        _vector(
+            {
+                "goal": "main army pressure",
+                "command_layer": "operation",
+                "scope": {
+                    "army_group": "main",
+                    "unit_classes": ["TERRAN_MARINE"],
+                    "location_intent": "enemy_natural",
+                    "min_units": 4,
+                    "max_units": 4,
+                },
+            }
+        )
+    )
+
+    assert route.direct_plan is not None
+    assert [call.name for call in route.tool_calls] == ["sc2.direct.execute"]
+    assert route.direct_plan.actions[0].action_type.value == "attack_move"
+    assert route.direct_plan.actions[0].subject == "MARINE"
+    assert route.direct_plan.actions[0].count == 4
+
+
+def test_operation_scope_self_target_alias_lowers_to_move_group() -> None:
+    """Player-facing self-side aliases must never become attack orders."""
+
+    for target in ("our home", "우리 본진", "base"):
+        route = route_policy_vector(
+            _vector(
+                {
+                    "goal": "regroup at home",
+                    "command_layer": "operation",
+                    "scope": {
+                        "unit_classes": ["TERRAN_MARINE"],
+                        "location_intent": target,
+                        "min_units": 2,
+                    },
+                }
+            )
+        )
+
+        assert route.direct_plan is not None
+        action = route.direct_plan.actions[0]
+        assert action.action_type is SC2ActionType.MOVE_GROUP
+        assert action.target == "home"
+
+
+def test_direct_entity_target_is_preserved_for_repair() -> None:
+    route = route_policy_vector(
+        _vector(
+            {
+                "goal": "repair front bunker",
+                "command_layer": "operation",
+                "tactical_task": {
+                    "task_type": "repair",
+                    "target": "front bunker",
+                    "unit_classes": ["TERRAN_SCV"],
+                    "min_units": 2,
+                },
+            }
+        )
+    )
+
+    assert route.direct_plan is not None
+    action = route.direct_plan.actions[0]
+    assert action.action_type is SC2ActionType.REPAIR
+    assert action.subject == "SCV"
+    assert action.target == "front bunker"
+    assert action.count == 2
 
 
 def test_legacy_micromachine_tactical_tools_are_removed() -> None:
@@ -269,6 +343,14 @@ def test_mcp_capability_catalog_and_direct_tools_are_complete() -> None:
         "sc2.direct.move_camera",
         "sc2.direct.stop_group",
         "sc2.direct.hold_position",
+            "sc2.direct.query_ability",
+            "sc2.direct.query_placement",
+                "sc2.direct.query_unit",
+                "sc2.direct.query_game",
+                "sc2.direct.query_map",
+        "sc2.direct.build_gas",
+        "sc2.direct.distribute_workers",
+        "sc2.direct.expand_now",
         "sc2.direct.retreat",
         "sc2.direct.lifecycle",
     } <= names
@@ -283,6 +365,7 @@ def test_mcp_capability_catalog_and_direct_tools_are_complete() -> None:
     result = asyncio.run(exercise())
     assert result["result"]["capabilities"]
     catalog_names = {item.name for item in SC2_CAPABILITY_CATALOG}
+    assert len(SC2_CAPABILITY_CATALOG) == 26
     assert catalog_names <= names
 
 
@@ -409,6 +492,77 @@ def test_call_many_async_detects_embedded_plan_subject_conflicts() -> None:
     plan = {
         "ordered_actions": [
             {"action_type": "move_group", "subject": "1분대", "count": 1}
+        ]
+    }
+
+    async def exercise():
+        return await registry.call_many_async(
+            [
+                {"name": "sc2.direct.execute", "arguments": {"name": "first", "plan": plan}},
+                {"name": "sc2.direct.execute", "arguments": {"name": "second", "plan": plan}},
+            ]
+        )
+
+    results = asyncio.run(exercise())
+    assert all(item.ok for item in results)
+    assert events == ["start:first", "end:first", "start:second", "end:second"]
+
+
+def test_call_many_async_serializes_every_catalog_mutating_capability() -> None:
+    """Catalog ``supports_parallel`` is the source of scheduling truth."""
+
+    events: list[str] = []
+
+    async def handler(arguments):
+        name = str(arguments["name"])
+        events.append(f"start:{name}")
+        await asyncio.sleep(0)
+        events.append(f"end:{name}")
+        return {"ok": True, "name": name}
+
+    # These used to be absent from the scheduler's hand-maintained list,
+    # allowing independent research/gas calls to race one another. Build the
+    # fixture from the catalog so a future mutating capability cannot silently
+    # bypass this regression.
+    mutating = tuple(
+        item.name for item in SC2_CAPABILITY_CATALOG if not item.supports_parallel
+    ) + ("sc2.direct.lifecycle",)
+    registry = CommanderToolRegistry(
+        [ToolSpec(name, name, {"type": "object"}, handler) for name in mutating]
+    )
+
+    async def exercise():
+        return await registry.call_many_async(
+            [
+                {
+                    "name": name,
+                    "arguments": {"name": name, "subject": name},
+                }
+                for name in mutating
+            ]
+        )
+
+    results = asyncio.run(exercise())
+    assert all(item.ok for item in results)
+    assert events == [event for name in mutating for event in (f"start:{name}", f"end:{name}")]
+
+
+def test_embedded_direct_execute_uses_catalog_parallelism() -> None:
+    events: list[str] = []
+
+    async def handler(arguments):
+        name = str(arguments["name"])
+        events.append(f"start:{name}")
+        await asyncio.sleep(0)
+        events.append(f"end:{name}")
+        return {"ok": True, "name": name}
+
+    registry = CommanderToolRegistry(
+        [ToolSpec("sc2.direct.execute", "execute", {"type": "object"}, handler)]
+    )
+    plan = {
+        "ordered_actions": [
+            {"action_type": "research_upgrade", "subject": "tech", "count": 1}
         ]
     }
 
@@ -668,6 +822,176 @@ def test_live_session_direct_release_callback_is_micro_resume_seam() -> None:
     assert released == [("resume-session", "completion_conditions")]
 
 
+def test_executor_and_session_do_not_double_invoke_shared_release_callback() -> None:
+    from starcraft_commander.sc2_executor import SC2RuntimeExecutor
+
+    released: list[str] = []
+    lifecycle = DirectCommandLifecycle(game_loops_per_second=1)
+
+    def callback(lease):
+        released.append(lease.command_id)
+
+    executor = SC2RuntimeExecutor(
+        direct_lifecycle=lifecycle,
+        on_direct_release=callback,
+    )
+    MicroMachineLiveTextSession(
+        MicroMachineInMemoryBlackboard(),
+        StaticJsonPolicyModulationProvider(
+            {"goal": "observe", "command_layer": "macro"}
+        ),
+        direct_executor=executor,
+        direct_lifecycle=lifecycle,
+        on_direct_release=callback,
+    )
+
+    lifecycle.dispatch(
+        command_id="shared-release",
+        issued_at_frame=0,
+        ttl_seconds=2,
+        completion_conditions=("done",),
+    )
+    lifecycle.observe("shared-release", frame=1, evidence={"done": True})
+
+    assert released == ["shared-release"]
+
+
+def test_session_wraps_existing_callback_once_and_captures_failure() -> None:
+    released: list[str] = []
+
+    def callback(lease):
+        released.append(lease.command_id)
+
+    lifecycle = DirectCommandLifecycle(
+        game_loops_per_second=1,
+        on_release=callback,
+    )
+    session = MicroMachineLiveTextSession(
+        MicroMachineInMemoryBlackboard(),
+        StaticJsonPolicyModulationProvider(
+            {"goal": "observe", "command_layer": "macro"}
+        ),
+        direct_lifecycle=lifecycle,
+        on_direct_release=callback,
+    )
+    lifecycle.dispatch(
+        command_id="existing-release",
+        issued_at_frame=0,
+        ttl_seconds=2,
+        completion_conditions=("done",),
+    )
+
+    session.tick_direct_commands(
+        1,
+        {"existing-release": {"done": True}},
+    )
+
+    assert released == ["existing-release"]
+    assert session.direct_release_errors == ()
+
+
+def test_bound_release_method_is_not_duplicated_when_accessed_twice() -> None:
+    from starcraft_commander.sc2_executor import SC2RuntimeExecutor
+
+    class Host:
+        def __init__(self) -> None:
+            self.released: list[str] = []
+
+        def resume(self, lease):
+            self.released.append(lease.command_id)
+
+    host = Host()
+    lifecycle = DirectCommandLifecycle(game_loops_per_second=1)
+    executor = SC2RuntimeExecutor(
+        direct_lifecycle=lifecycle,
+        on_direct_release=host.resume,
+    )
+    MicroMachineLiveTextSession(
+        MicroMachineInMemoryBlackboard(),
+        StaticJsonPolicyModulationProvider(
+            {"goal": "observe", "command_layer": "macro"}
+        ),
+        direct_executor=executor,
+        direct_lifecycle=lifecycle,
+        on_direct_release=host.resume,
+    )
+    lifecycle.dispatch(
+        command_id="bound-release",
+        issued_at_frame=0,
+        ttl_seconds=2,
+        completion_conditions=("done",),
+    )
+    lifecycle.observe("bound-release", frame=1, evidence={"done": True})
+
+    assert host.released == ["bound-release"]
+
+
+def test_session_release_callback_failure_is_captured() -> None:
+    lifecycle = DirectCommandLifecycle(game_loops_per_second=1)
+
+    def broken(_lease):
+        raise RuntimeError("host unavailable")
+
+    session = MicroMachineLiveTextSession(
+        MicroMachineInMemoryBlackboard(),
+        StaticJsonPolicyModulationProvider(
+            {"goal": "observe", "command_layer": "macro"}
+        ),
+        direct_lifecycle=lifecycle,
+        on_direct_release=broken,
+    )
+    lifecycle.dispatch(
+        command_id="session-callback-failure",
+        issued_at_frame=0,
+        ttl_seconds=2,
+        completion_conditions=("done",),
+    )
+
+    session.tick_direct_commands(
+        1,
+        {"session-callback-failure": {"done": True}},
+    )
+
+    assert "host unavailable" in session.direct_release_errors[0]
+
+
+def test_session_callback_registered_with_executor_waits_for_workflow_gate() -> None:
+    from starcraft_commander.sc2_executor import SC2RuntimeExecutor
+
+    released: list[str] = []
+    lifecycle = DirectCommandLifecycle(game_loops_per_second=1)
+    executor = SC2RuntimeExecutor(direct_lifecycle=lifecycle)
+    MicroMachineLiveTextSession(
+        MicroMachineInMemoryBlackboard(),
+        StaticJsonPolicyModulationProvider(
+            {"goal": "observe", "command_layer": "macro"}
+        ),
+        direct_executor=executor,
+        direct_lifecycle=lifecycle,
+        on_direct_release=lambda lease: released.append(lease.command_id),
+    )
+    lifecycle.dispatch(
+        command_id="build-before-train",
+        issued_at_frame=0,
+        ttl_seconds=10,
+        completion_conditions=("building_completed",),
+    )
+    executor.register_dependent_plans(
+        "build-before-train",
+        ({
+            "resume_on": "building_completed",
+            "plan": {"actions": [{"action_type": "train_unit", "subject": "Marine", "count": 1}]},
+        },),
+    )
+
+    executor.tick_direct_commands(
+        1,
+        {"build-before-train": {"building_completed": True}},
+    )
+
+    assert released == []
+
+
 def test_named_squad_and_target_pin_registry_rejects_unknown_squads() -> None:
     registry = DirectCommandRegistry(
         squads=(SquadDefinition("1분대", "4 MARINE"),),
@@ -700,15 +1024,21 @@ def test_mcp_named_squad_resolution_is_strict_when_registry_is_configured() -> N
 def test_mcp_target_pin_is_resolved_before_direct_dispatch() -> None:
     registry = create_command_tool_registry(
         command_registry=DirectCommandRegistry(
-            target_pins=(TargetPin("입구", "self_ramp"),),
-        )
+            target_pins=(TargetPin("입구", "self_ramp", {"source": "controller"}),),
+        ),
+        direct_executor=_RecordingExecutor(),
     )
     result = registry.call(
         "sc2.direct.move_group",
         {"subject": "available combat units", "target_pin": "입구"},
     )
-    assert result.ok is False
-    assert result.result["status"] == "runtime_not_attached"
+    assert result.ok is True
+    action = result.result["result"]["plan"]["actions"][0]
+    assert action["target"] == "self_ramp"
+    # The validated pin identity survives plan lowering for a live map
+    # resolver, while no raw coordinate or unit tag crosses the MCP boundary.
+    assert action["metadata"]["target_pin"] == "입구"
+    assert action["metadata"]["target_pin_metadata"] == {"source": "controller"}
     unknown = registry.call(
         "sc2.direct.move_group",
         {"subject": "available combat units", "target_pin": "없는 핀"},
@@ -795,3 +1125,46 @@ def test_direct_executor_attaches_active_lease_and_runtime_failure_releases() ->
     assert failed.ok is False
     assert failed.result["lifecycle"]["state"] == "failed"
     assert failed.result["lifecycle"]["control_owned"] is False
+
+
+def test_query_only_direct_action_does_not_create_ownership_lease() -> None:
+    for action_type, subject, metadata in (
+        ("query_unit", "MARINE", {"query": "calculate_speed"}),
+        ("query_game", "MARINE", {"query": "can_afford"}),
+        ("query_map", "map", {"query": "get_next_expansion"}),
+    ):
+        registry = create_command_tool_registry(direct_executor=_RecordingExecutor())
+        result = registry.call(
+            "sc2.direct.execute",
+            {
+                "command_id": f"{action_type}-query",
+                "plan": {
+                    "intent_name": action_type,
+                    "ordered_actions": [
+                        {
+                            "action_type": action_type,
+                            "subject": subject,
+                            "count": 0,
+                            "metadata": metadata,
+                        }
+                    ],
+                },
+            },
+        )
+        assert result.ok is True
+        payload = result.result["result"]
+        assert "direct_command_lifecycle" not in payload["audit"]
+
+
+def test_mcp_api_inventory_exposes_bounded_raw_surface_disposition() -> None:
+    registry = create_command_tool_registry()
+    result = registry.call("sc2.direct.api_inventory", {})
+    assert result.ok is True
+    inventory = result.result["inventory"]
+    assert "do" in inventory["rejected_reasons"]
+    if inventory["package_available"]:
+        assert inventory["classification_complete"] is True
+        assert "do" in inventory["bot_rejected"]
+        assert inventory["bot_unclassified"] == []
+    else:
+        assert inventory["classification_complete"] is False

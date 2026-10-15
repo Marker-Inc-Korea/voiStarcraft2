@@ -10,6 +10,9 @@ struct VoiOperationCompletionObservation
     bool enemyObserved = false;
     bool abilityObserved = false;
     bool retreatConfirmed = false;
+    bool buildingCompleted = false;
+    bool unitCountReached = false;
+    bool enemyDestroyed = false;
 };
 
 inline bool voiOperationObjectivesSatisfied(
@@ -35,6 +38,12 @@ inline bool voiOperationObjectivesSatisfied(
             satisfied = observed.abilityObserved;
         else if (condition == "retreat_confirmed")
             satisfied = observed.retreatConfirmed;
+        else if (condition == "building_completed")
+            satisfied = observed.buildingCompleted;
+        else if (condition == "unit_count_reached")
+            satisfied = observed.unitCountReached;
+        else if (condition == "enemy_destroyed")
+            satisfied = observed.enemyDestroyed;
         else
             return false;
         hasObjective = true;

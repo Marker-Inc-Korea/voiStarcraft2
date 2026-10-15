@@ -13,6 +13,8 @@ from starcraft_commander.policy_modulation_provider import (
     PolicyModulationProviderRequest,
     compile_policy_modulation_from_provider,
 )
+from starcraft_commander.policy_modulation import MICROMACHINE_DIRECT_TASK_TYPES
+from starcraft_commander.unified_command_router import route_policy_vector
 
 
 class CompactLiveCommandBoundaryTests(unittest.TestCase):
@@ -154,6 +156,207 @@ class CompactLiveCommandBoundaryTests(unittest.TestCase):
         self.assertIn("intermediate", prompt)
         self.assertIn("For macro and micro, set operation_action=null", prompt)
         self.assertIn("가스터빈", prompt)
+
+    def test_direct_tickets_lower_through_fake_provider(self):
+        cases = (
+            (
+                "repair",
+                {"target": "front bunker", "count": 2,
+                 "unit_requests": [{"unit_type": "scv", "count": 2}]},
+                "repair", "front bunker", 2,
+            ),
+            (
+                "assign_workers",
+                {"target": "gas", "count": 3,
+                 "unit_requests": [{"unit_type": "scv", "count": 3}]},
+                "assign_workers", "gas", 3,
+            ),
+            (
+                "gather_resource",
+                {"target": "minerals", "count": 4,
+                 "unit_requests": [{"unit_type": "scv", "count": 4}]},
+                "gather_resource", "minerals", 4,
+            ),
+            (
+                "build_structure",
+                {"production_targets": ["TERRAN_BARRACKS"],
+                 "location_intent": "home", "count": 1},
+                "build_structure", "", 1,
+            ),
+            (
+                "train_unit",
+                {"production_targets": ["TERRAN_MARINE"], "count": 6},
+                "train_unit", "", 6,
+            ),
+        )
+        for task_type, fields, expected_type, expected_target, expected_count in cases:
+            with self.subTest(task_type=task_type):
+                command = {
+                    "goal": task_type,
+                    "command_layer": "operation",
+                    "task_type": task_type,
+                    "operation_action": None,
+                    "target": None,
+                    "count": None,
+                    "production_targets": [],
+                    "unit_requests": [],
+                    "location_intent": None,
+                    **fields,
+                }
+                result, _ = self.compile_response(
+                    {"status": "compiled", "assistant_message": "요청을 처리합니다.",
+                     "command": command},
+                    task_type,
+                )
+                self.assertTrue(result.ok, result.to_dict())
+                self.assertEqual("operation", result.vector.command_layer.value)
+                self.assertEqual(expected_type, result.vector.tactical_task.task_type)
+                self.assertEqual(expected_target, result.vector.tactical_task.target)
+                if task_type == "build_structure":
+                    self.assertEqual("home", result.vector.tactical_task.location_intent)
+                self.assertEqual(expected_count, result.vector.tactical_task.min_units)
+
+    def test_all_bounded_direct_tickets_reach_router_from_compact_schema(self):
+        """Every semantic direct task survives provider parsing and lowering."""
+
+        cases = {
+            "assign_workers": {
+                "target": "gas", "unit_requests": [{"unit_type": "scv", "count": 3}],
+            },
+            "gather_resource": {
+                "target": "minerals", "unit_requests": [{"unit_type": "scv", "count": 4}],
+            },
+            "build_structure": {
+                "production_targets": ["TERRAN_BARRACKS"], "location_intent": "home",
+            },
+            "train_unit": {"production_targets": ["TERRAN_MARINE"], "count": 6},
+            "research_upgrade": {
+                "production_targets": ["TERRAN_INFANTRYWEAPONSLEVEL1"],
+            },
+            "warp_in": {
+                "production_targets": ["PROTOSS_ZEALOT"], "location_intent": "home",
+            },
+            "move_group": {
+                "unit_requests": [{"unit_type": "marine", "count": 2}],
+                "location_intent": "enemy_natural",
+            },
+            "attack_move": {
+                "unit_requests": [{"unit_type": "marine", "count": 2}],
+                "location_intent": "enemy_natural",
+            },
+            "smart": {
+                "unit_requests": [{"unit_type": "marine", "count": 2}],
+                "location_intent": "enemy_natural",
+            },
+            "patrol": {
+                "unit_requests": [{"unit_type": "marine", "count": 2}],
+                "location_intent": "enemy_natural",
+            },
+            "return_resource": {
+                "unit_requests": [{"unit_type": "scv", "count": 2}],
+            },
+            "repair": {
+                "target": "front bunker",
+                "unit_requests": [{"unit_type": "scv", "count": 2}],
+            },
+            "observe": {},
+            "move_camera": {"location_intent": "enemy_natural"},
+            "stop_group": {
+                "unit_requests": [{"unit_type": "marine", "count": 2}],
+            },
+            "hold_position": {
+                "unit_requests": [{"unit_type": "marine", "count": 2}],
+            },
+            "query_ability": {
+                "ability": "marine_stimpack",
+                "unit_requests": [{"unit_type": "marine", "count": 2}],
+            },
+            "query_placement": {
+                "production_targets": ["TERRAN_BARRACKS"], "location_intent": "home",
+            },
+            "query_unit": {
+                "query": "calculate_speed",
+                "unit_requests": [{"unit_type": "marine", "count": 1}],
+            },
+            "query_game": {
+                "query": "can_afford",
+                "production_targets": ["TERRAN_MARINE"],
+            },
+            "query_map": {
+                "query": "in_pathing_grid",
+                "location_intent": "home",
+            },
+            "build_gas": {
+                "location_intent": "self_geyser",
+                "unit_requests": [{"unit_type": "scv", "count": 1}],
+            },
+            "distribute_workers": {},
+            "expand_now": {"location_intent": "safe_expansion"},
+        }
+        self.assertEqual(
+            set(cases), MICROMACHINE_DIRECT_TASK_TYPES - {"execute_ability"},
+        )
+        for task_type, fields in cases.items():
+            with self.subTest(task_type=task_type):
+                layer = "emergency" if task_type in {"stop_group", "hold_position"} else "operation"
+                command = {
+                    "goal": task_type,
+                    "command_layer": layer,
+                    "task_type": task_type,
+                    "operation_action": None,
+                    "target": None,
+                    "count": None,
+                    "production_targets": [],
+                    "unit_requests": [],
+                    "location_intent": None,
+                    **fields,
+                }
+                result, _ = self.compile_response(
+                    {
+                        "status": "compiled",
+                        "assistant_message": "요청을 처리합니다.",
+                        "command": command,
+                    },
+                    task_type,
+                )
+                self.assertTrue(result.ok, result.to_dict())
+                self.assertIsNotNone(result.vector)
+                route = route_policy_vector(result.vector)
+                self.assertEqual(["sc2.direct.execute"], [call.name for call in route.tool_calls])
+                self.assertEqual(task_type, result.vector.tactical_task.task_type)
+
+    def test_compact_prompt_names_the_bounded_direct_surface(self):
+        prompt = build_compact_policy_modulation_system_prompt()
+        for task_type in MICROMACHINE_DIRECT_TASK_TYPES:
+            with self.subTest(task_type=task_type):
+                self.assertIn(task_type, prompt)
+
+    def test_compact_execute_ability_reaches_micro_direct_router(self):
+        result, _ = self.compile_response(
+            {
+                "status": "compiled",
+                "assistant_message": "능력을 사용합니다.",
+                "command": {
+                    "goal": "마린 자극제 사용",
+                    "command_layer": "micro",
+                    "task_type": "execute_ability",
+                    "operation_action": None,
+                    "target": None,
+                    "count": 2,
+                    "production_targets": [],
+                    "unit_requests": [{"unit_type": "marine", "count": 2}],
+                    "location_intent": "enemy_natural",
+                    "ability": "marine_stimpack",
+                },
+            },
+            "마린 자극제 사용",
+        )
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIsNotNone(result.vector)
+        self.assertEqual("micro", result.vector.command_layer.value)
+        route = route_policy_vector(result.vector)
+        self.assertEqual(["sc2.direct.execute"], [call.name for call in route.tool_calls])
+        self.assertEqual("execute_ability", result.vector.tactical_task.task_type)
 
 
 if __name__ == "__main__":

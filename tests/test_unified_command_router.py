@@ -6,7 +6,6 @@ import asyncio
 
 from starcraft_commander.contracts import (
     SC2ActionType,
-    SC2CommandAction,
     SC2ExecutionPlan,
     SC2PlanExecutionResult,
 )
@@ -16,7 +15,13 @@ from starcraft_commander.micromachine_live_session import (
     MicroMachineLiveTextSession,
 )
 from starcraft_commander.micromachine_runtime import MicroMachineInMemoryBlackboard
+from starcraft_commander.map_resolver import MapPoint, SC2MapResolver
 from starcraft_commander.policy_modulation import PolicyModulationVector
+from starcraft_commander.policy_modulation_provider import (
+    compile_policy_modulation_provider_output,
+)
+from starcraft_commander.python_sc2_adapter import PythonSC2BotAdapter
+from starcraft_commander.sc2_executor import SC2RuntimeExecutor
 from starcraft_commander.unified_command_router import (
     ToolCall,
     create_command_tool_registry,
@@ -180,6 +185,237 @@ def test_mcp_lists_and_calls_composable_tools() -> None:
     assert "micromachine.operation" not in tool_names
     assert "sc2.direct.execute_ability" in tool_names
     assert called["result"]["structuredContent"]["results"][0]["ok"] is False  # type: ignore[index]
+
+
+def test_mcp_query_game_is_discoverable_and_calls_read_only_action() -> None:
+    """Keep the query_game MCP discovery and call boundary wired together."""
+
+    class _QueryGameExecutor:
+        bot = object()
+
+        def __init__(self) -> None:
+            self.seen_plan: SC2ExecutionPlan | None = None
+
+        async def execute(self, plan: SC2ExecutionPlan) -> SC2PlanExecutionResult:
+            self.seen_plan = plan
+            return SC2PlanExecutionResult(
+                plan=plan,
+                attempted_actions=plan.actions,
+                applied_actions=plan.actions,
+                audit={"evidence": "query-game-test"},
+            )
+
+    executor = _QueryGameExecutor()
+    server = VoiStarcraftMCPServer(
+        create_command_tool_registry(direct_executor=executor)
+    )
+
+    async def exercise() -> tuple[dict[str, object], dict[str, object]]:
+        listed = await server.handle(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        )
+        called = await server.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "sc2.direct.query_game",
+                    "arguments": {
+                        "subject": "TERRAN_MARINE",
+                        "metadata": {
+                            "query": "can_afford",
+                            "subject_kind": "unit",
+                        },
+                    },
+                },
+            }
+        )
+        assert listed is not None
+        assert called is not None
+        return listed, called
+
+    listed, called = asyncio.run(exercise())
+    query_tool = next(
+        item
+        for item in listed["result"]["tools"]  # type: ignore[index]
+        if item["name"] == "sc2.direct.query_game"
+    )
+    query_schema = query_tool["inputSchema"]
+    query_enum = query_schema["properties"]["metadata"]["properties"]["query"]["enum"]
+    assert "can_afford" in query_enum
+    assert "already_pending_upgrade" in query_enum
+
+    assert called["result"]["isError"] is False  # type: ignore[index]
+    structured = called["result"]["structuredContent"]  # type: ignore[index]
+    assert structured["name"] == "sc2.direct.query_game"
+    assert structured["ok"] is True
+    action = executor.seen_plan.actions[0]  # type: ignore[union-attr]
+    assert action.action_type is SC2ActionType.QUERY_GAME
+    assert action.subject == "TERRAN_MARINE"
+    assert action.metadata["query"] == "can_afford"
+    assert "direct_command_lifecycle" not in structured["result"]["result"]["audit"]
+
+
+def test_mcp_query_map_discovery_call_and_fail_closed_targets() -> None:
+    """Exercise the eight-query map MCP surface through a live adapter seam."""
+
+    class _MapBot:
+        def get_next_expansion(self):
+            return MapPoint(42.5, 17.25)
+
+        def get_terrain_height(self, point):
+            return point.x + point.y
+
+        def get_terrain_z_height(self, point):
+            return point.x - point.y
+
+        def has_creep(self, point):
+            return point.x >= 10.0
+
+        def in_map_bounds(self, point):
+            return point.x < 100.0 and point.y < 100.0
+
+        def in_pathing_grid(self, point):
+            return point.x >= 10.0 and point.y >= 10.0
+
+        def in_placement_grid(self, point):
+            return point.x >= 10.0 and point.y >= 10.0
+
+        def is_visible(self, point):
+            return point.x == 10.0 and point.y == 10.0
+
+    adapter = PythonSC2BotAdapter(
+        bot=_MapBot(),
+        map_resolver=SC2MapResolver(
+            positions={"self_main": MapPoint(10.0, 10.0)}
+        ),
+    )
+    server = VoiStarcraftMCPServer(
+        create_command_tool_registry(direct_executor=SC2RuntimeExecutor(bot=adapter))
+    )
+
+    async def exercise() -> tuple[dict[str, object], list[dict[str, object]]]:
+        listed = await server.handle(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        )
+        assert listed is not None
+
+        async def call(arguments: dict[str, object]) -> dict[str, object]:
+            response = await server.handle(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "sc2.direct.query_map",
+                        "arguments": arguments,
+                    },
+                }
+            )
+            assert response is not None
+            return response
+
+        expansion = await call({"metadata": {"query": "get_next_expansion"}})
+        terrain = await call(
+            {
+                "subject": "map",
+                "target": "self_main",
+                "metadata": {"query": "get_terrain_height"},
+            }
+        )
+        pathing = await call(
+            {
+                "subject": "map",
+                "target": "self_main",
+                "metadata": {"query": "in_pathing_grid"},
+            }
+        )
+        unsupported = await call(
+            {
+                "subject": "map",
+                "target": "self_main",
+                "metadata": {"query": "raw_python_method"},
+            }
+        )
+        missing_target = await call(
+            {"subject": "map", "metadata": {"query": "in_pathing_grid"}}
+        )
+        raw_target = await call(
+            {
+                "subject": "map",
+                "target": "1234",
+                "metadata": {"query": "in_pathing_grid"},
+            }
+        )
+        return listed, [expansion, terrain, pathing, unsupported, missing_target, raw_target]
+
+    listed, responses = asyncio.run(exercise())
+    query_tool = next(
+        item
+        for item in listed["result"]["tools"]  # type: ignore[index]
+        if item["name"] == "sc2.direct.query_map"
+    )
+    query_enum = query_tool["inputSchema"]["properties"]["metadata"]["properties"]["query"]["enum"]
+    assert query_enum == [
+        "get_next_expansion",
+        "get_terrain_height",
+        "get_terrain_z_height",
+        "has_creep",
+        "in_map_bounds",
+        "in_pathing_grid",
+        "in_placement_grid",
+        "is_visible",
+    ]
+    assert query_tool["inputSchema"]["required"] == ["metadata"]
+
+    expansion, terrain, pathing, unsupported, missing_target, raw_target = responses
+    for response in (expansion, terrain, pathing):
+        assert response["result"]["isError"] is False  # type: ignore[index]
+        structured = response["result"]["structuredContent"]  # type: ignore[index]
+        assert structured["ok"] is True
+        assert "direct_command_lifecycle" not in structured["result"]["result"]["audit"]
+    expansion_audit = expansion["result"]["structuredContent"]["result"]["result"]["audit"]  # type: ignore[index]
+    terrain_audit = terrain["result"]["structuredContent"]["result"]["result"]["audit"]  # type: ignore[index]
+    pathing_audit = pathing["result"]["structuredContent"]["result"]["result"]["audit"]  # type: ignore[index]
+    assert expansion_audit["observations"]["0"]["query"] == "get_next_expansion"
+    assert terrain_audit["observations"]["0"]["target"] == "self_main"
+    assert pathing_audit["observations"]["0"]["value"] is True
+
+    for response, error_name in (
+        (unsupported, "unsupported_query"),
+        (missing_target, "missing_target"),
+        (raw_target, "unresolvable_target"),
+    ):
+        assert response["result"]["isError"] is True  # type: ignore[index]
+        structured = response["result"]["structuredContent"]  # type: ignore[index]
+        assert structured["ok"] is False
+        audit = structured["result"]["result"]["audit"]
+        assert "direct_command_lifecycle" not in audit
+        observation = audit["observations"]["0"]
+        assert observation["error"] == error_name
+
+
+def test_query_game_upgrade_subject_is_preserved_for_upgrade_id_resolution() -> None:
+    vector = compile_policy_modulation_provider_output(
+        {
+            "goal": "check upgrade progress",
+            "command_layer": "operation",
+            "tactical_task": {
+                "task_type": "query_game",
+                "query": "already_pending_upgrade",
+                "subject_kind": "upgrade",
+                "production_targets": ["TERRAN_INFANTRYWEAPONSLEVEL1"],
+            },
+        }
+    ).vector
+    assert vector is not None
+    route = route_policy_vector(vector, update_id="query-upgrade", current_frame=1)
+    assert route.direct_plan is not None
+    action = route.direct_plan.actions[0]
+    assert action.action_type is SC2ActionType.QUERY_GAME
+    assert action.subject == "TERRAN_INFANTRYWEAPONSLEVEL1"
+    assert action.metadata["subject_kind"] == "upgrade"
 
 
 def test_live_session_exposes_unified_route_without_double_publish() -> None:

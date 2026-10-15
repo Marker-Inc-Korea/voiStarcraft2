@@ -14,15 +14,15 @@ import importlib
 from typing import Any, Final
 
 from starcraft_commander.contracts import (
-    SC2_ACTION_TYPES,
-    SC2_DIRECT_ACTION_TYPES,
-    SC2ActionReport,
-    SC2ActionType,
-    SC2CommandAction,
-    SC2CommandPlan,
-    SC2ExecutionError,
-    SC2ExecutionPlan,
-    SC2PlanExecutionResult,
+    SC2_ACTION_TYPES,  # noqa: F401
+    SC2_DIRECT_ACTION_TYPES,  # noqa: F401
+    SC2ActionReport,  # noqa: F401
+    SC2ActionType,  # noqa: F401
+    SC2CommandAction,  # noqa: F401
+    SC2CommandPlan,  # noqa: F401
+    SC2ExecutionError,  # noqa: F401
+    SC2ExecutionPlan,  # noqa: F401
+    SC2PlanExecutionResult,  # noqa: F401
 )
 
 _LAZY_EXPORTS: Final[dict[str, str]] = {
@@ -41,6 +41,8 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "DirectCommandOwnershipConflict": "starcraft_commander.direct_command_lifecycle",
     "DirectCommandLease": "starcraft_commander.direct_command_lifecycle",
     "DirectCommandState": "starcraft_commander.direct_command_lifecycle",
+    "SC2APISurfaceInventory": "starcraft_commander.sc2_api_inventory",
+    "inspect_python_sc2_surface": "starcraft_commander.sc2_api_inventory",
     "DirectCommandRegistry": "starcraft_commander.direct_command_registry",
     "SquadDefinition": "starcraft_commander.direct_command_registry",
     "TargetPin": "starcraft_commander.direct_command_registry",
@@ -217,6 +219,23 @@ _LAZY_EXPORTS: Final[dict[str, str]] = {
     "create_command_tool_registry": "starcraft_commander.unified_command_router",
     "route_and_execute": "starcraft_commander.unified_command_router",
     "route_policy_vector": "starcraft_commander.unified_command_router",
+    # Optional System 1 -> JEV authorization boundary.  The endpoint remains
+    # injected so importing this package never assumes a transport, auth
+    # provider, or private JEV deployment.
+    "JEV_PROTOCOL_VERSION": "starcraft_commander.jev_router",
+    "JEV_DEFAULT_TIMEOUT_SECONDS": "starcraft_commander.jev_router",
+    "JEV_DEFAULT_RETRIES": "starcraft_commander.jev_router",
+    "JEV_ALLOWED_TOOL_NAMES": "starcraft_commander.jev_router",
+    "JEV_DIRECT_TOOL_NAMES": "starcraft_commander.jev_router",
+    "JEVDecision": "starcraft_commander.jev_router",
+    "JEVEndpoint": "starcraft_commander.jev_router",
+    "JEVError": "starcraft_commander.jev_router",
+    "JEVInvalidDecisionError": "starcraft_commander.jev_router",
+    "JEVRouteDecision": "starcraft_commander.jev_router",
+    "JEVRouteRequest": "starcraft_commander.jev_router",
+    "JEVRouter": "starcraft_commander.jev_router",
+    "JEVUnavailableError": "starcraft_commander.jev_router",
+    "route_policy_vector_with_jev": "starcraft_commander.jev_router",
     "VoiStarcraftMCPServer": "starcraft_commander.mcp_server",
     "StaticJsonPolicyModulationProvider": "starcraft_commander.micromachine_live_session",
     "MicroMachineSoakConfig": "starcraft_commander.micromachine_soak",

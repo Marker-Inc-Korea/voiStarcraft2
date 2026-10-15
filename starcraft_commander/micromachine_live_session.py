@@ -46,6 +46,7 @@ from starcraft_commander.policy_modulation import (
     WorkerModulation,
 )
 from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
+from starcraft_commander.direct_release import DirectReleaseListeners
 from starcraft_commander.direct_command_registry import DirectCommandRegistry
 from starcraft_commander.policy_modulation_provider import (
     PolicyModulationCompileResult,
@@ -930,6 +931,7 @@ class MicroMachineLiveTextSession:
         direct_lifecycle: DirectCommandLifecycle | None = None,
         direct_command_registry: DirectCommandRegistry | None = None,
         on_direct_release: Callable[[object], object] | None = None,
+        publish_non_macro_projection: bool = False,
     ) -> None:
         self.backend = backend
         self.provider = provider
@@ -948,23 +950,39 @@ class MicroMachineLiveTextSession:
         self.direct_lifecycle = direct_lifecycle or DirectCommandLifecycle()
         self.direct_command_registry = direct_command_registry or DirectCommandRegistry()
         self.on_direct_release = on_direct_release
-        self._previous_direct_release = self.direct_lifecycle.on_release
+        # Typed MicroMachine projection endpoints may carry operation-shaped
+        # records that must be persisted as authoritative manager state.  This
+        # is an explicit internal seam; ordinary user/LLM non-macro commands
+        # remain Direct-only and never set it.
+        self.publish_non_macro_projection = bool(publish_non_macro_projection)
+        from starcraft_commander.sc2_executor import SC2RuntimeExecutor
+
+        # Sessions must register BEHIND the runtime workflow gate. Wrapping
+        # its listener here would resume the host between build and train.
+        runtime = direct_executor
+        if runtime is None:
+            runtime = getattr(self.direct_lifecycle.on_release, "__self__", None)
+        if isinstance(runtime, SC2RuntimeExecutor):
+            runtime.bind_direct_lifecycle(self.direct_lifecycle)
+            self._release_listeners = runtime.direct_release_listeners
+        else:
+            self._release_listeners = DirectReleaseListeners.preserving(
+                self.direct_lifecycle.on_release
+            )
+            self.direct_lifecycle.on_release = self._release_listeners.emit
         if on_direct_release is not None:
-            self.direct_lifecycle.on_release = self._handle_direct_release
+            self._release_listeners.add(on_direct_release)
 
-    def _handle_direct_release(self, lease: object) -> None:
-        """Forward terminal Direct release to the live MicroMachine host.
+    @property
+    def direct_release_errors(self) -> tuple[str, ...]:
+        """Return callback failures captured without breaking the game loop."""
 
-        A session may share the executor's lifecycle.  Chaining the existing
-        listener keeps executor ownership and session-level resumption hooks
-        both observable without creating a second lease registry.
-        """
+        return tuple(error.message for error in self._release_listeners.errors)
 
-        if self._previous_direct_release is not None:
-            self._previous_direct_release(lease)
-        callback = self.on_direct_release
-        if callback is not None:
-            callback(lease)
+    async def drain_direct_release_callbacks(self) -> None:
+        """Await async release callbacks before closing a standalone host."""
+
+        await self._release_listeners.drain()
 
     def submit_text(
         self,
@@ -1003,6 +1021,17 @@ class MicroMachineLiveTextSession:
         if commander_context is not None:
             context.update(dict(commander_context))
         context["bridge_status"] = self.bridge_status.value
+        # Direct commands intentionally never publish to the MicroMachine
+        # blackboard.  Keep their authoritative lifecycle state visible to
+        # the next provider request through a separate context field so a
+        # follow-up can reason about ownership, completion conditions, and
+        # expiry without reintroducing tactical MicroMachine publication.
+        active_direct_commands = tuple(
+            _safe_direct_lease_context(lease)
+            for lease in self.direct_lifecycle.active_leases()
+        )
+        if active_direct_commands:
+            context["active_direct_commands"] = list(active_direct_commands)
         if previous_update is not None:
             context["active_micromachine_standing_orders"] = (
                 _standing_order_context(previous_update)
@@ -1117,7 +1146,10 @@ class MicroMachineLiveTextSession:
                     telemetry=telemetry_before,
                     incoming_update_id=effective_update_id,
                 )
-            if compile_result.vector.command_layer is not CommandLayer.MACRO:
+            if (
+                compile_result.vector.command_layer is not CommandLayer.MACRO
+                and not self.publish_non_macro_projection
+            ):
                 direct_route = self._unified_route_result(
                     compile_result.vector,
                     update_id=effective_update_id,
@@ -1232,6 +1264,20 @@ class MicroMachineLiveTextSession:
             current_frame=frame,
             bridge_status=self.bridge_status,
         )
+        route_result = (
+            {}
+            if self.publish_non_macro_projection
+            else self._unified_route_result(
+                compile_result.vector,
+                update_id=update.update_id,
+                current_frame=frame,
+                published_payload={
+                    "ok": True,
+                    "status": LiveModulationStatus.PUBLISHED.value,
+                    "update_id": update.update_id,
+                },
+            )
+        )
         return LiveTextModulationResult(
             command_text=text,
             status=LiveModulationStatus.PUBLISHED,
@@ -1245,16 +1291,7 @@ class MicroMachineLiveTextSession:
                 telemetry_before,
             ),
             command_queue=command_queue,
-            **self._unified_route_result(
-                compile_result.vector,
-                update_id=update.update_id,
-                current_frame=frame,
-                published_payload={
-                    "ok": True,
-                    "status": LiveModulationStatus.PUBLISHED.value,
-                    "update_id": update.update_id,
-                },
-            ),
+            **route_result,
         )
 
     def _unified_route_result(
@@ -1307,11 +1344,17 @@ class MicroMachineLiveTextSession:
         MicroMachine policy path is eligible again on the next macro command.
         """
 
-        lease = self.direct_lifecycle.observe(
-            command_id,
-            frame=current_frame,
-            evidence=evidence or {},
-        )
+        runtime_tick = self._shared_executor_tick()
+        if runtime_tick is not None:
+            runtime_tick(
+                current_frame,
+                {command_id: dict(evidence or {})},
+            )
+            lease = self.direct_lifecycle.get(command_id)
+            if lease is None:
+                raise KeyError(f"unknown direct command: {command_id}")
+            return lease.to_dict()
+        lease = self.direct_lifecycle.observe(command_id, frame=current_frame, evidence=evidence or {})
         return lease.to_dict()
 
     def observe_direct_commands(
@@ -1331,11 +1374,18 @@ class MicroMachineLiveTextSession:
         """
 
         frame = _non_negative_int("current_frame", current_frame)
-        leases = self.direct_lifecycle.observe_all(
-            frame=frame,
-            evidence_by_command=evidence_by_command,
-        )
+        runtime_tick = self._shared_executor_tick()
+        if runtime_tick is not None:
+            return tuple(runtime_tick(frame, evidence_by_command or {}))
+        leases = self.direct_lifecycle.observe_all(frame=frame, evidence_by_command=evidence_by_command)
         return tuple(lease.to_dict() for lease in leases)
+
+    def _shared_executor_tick(self) -> Callable[..., object] | None:
+        """Return the executor tick only when this session shares its lifecycle."""
+
+        tick = getattr(self.direct_executor, "tick_direct_commands", None)
+        shared = getattr(self.direct_executor, "direct_lifecycle", None)
+        return tick if callable(tick) and shared is self.direct_lifecycle else None
 
     # ``tick_direct_commands`` is a concise callback seam for integrations
     # whose game-loop naming is not tied to the text-session terminology.
@@ -3629,6 +3679,48 @@ def _standing_order_context(update: MicroMachineBlackboardUpdate) -> dict[str, o
         "operations": [operation.to_dict() for operation in vector.operations],
         "tags": list(vector.tags),
     }
+
+
+def _safe_direct_lease_context(lease: object) -> dict[str, object]:
+    """Expose Direct follow-up state without leaking runtime-only identifiers."""
+
+    raw = lease.to_dict() if callable(getattr(lease, "to_dict", None)) else {}
+    if not isinstance(raw, Mapping):
+        return {}
+    # Unit tags and runtime binding metadata are adapter-private.  The
+    # provider needs lifecycle/semantic ownership state, never raw SC2 ids.
+    result = {
+        key: value
+        for key, value in raw.items()
+        if key not in {"owned_unit_tags", "command_metadata"}
+    }
+    metadata = raw.get("command_metadata")
+    if isinstance(metadata, Mapping):
+        safe_metadata = {
+            key: value
+            for key, value in metadata.items()
+            if key not in {"baseline", "actions"}
+        }
+        actions = metadata.get("actions")
+        if isinstance(actions, Sequence) and not isinstance(actions, (str, bytes)):
+            safe_actions: list[dict[str, object]] = []
+            for action in actions:
+                if not isinstance(action, Mapping):
+                    continue
+                safe_action = dict(action)
+                action_metadata = safe_action.get("metadata")
+                if isinstance(action_metadata, Mapping):
+                    safe_action["metadata"] = {
+                        key: value
+                        for key, value in action_metadata.items()
+                        if key != "_direct_unit_tags"
+                    }
+                safe_actions.append(safe_action)
+            if safe_actions:
+                safe_metadata["actions"] = safe_actions
+        if safe_metadata:
+            result["command_metadata"] = safe_metadata
+    return result
 
 
 def _recent_command_context(

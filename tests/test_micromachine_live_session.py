@@ -14,12 +14,14 @@ from starcraft_commander.micromachine_bridge import (
     MicroMachineBridgeFailureMode,
     MicroMachineTelemetry,
 )
+from starcraft_commander.contracts import SC2PlanExecutionResult
+from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
 from starcraft_commander.micromachine_live_session import (
     _direct_clarification_prompt,
     KeywordPolicyModulationProvider,
     LiveModulationConsumptionStatus,
     LiveModulationStatus,
-    MicroMachineLiveTextSession,
+    MicroMachineLiveTextSession as _ProductionMicroMachineLiveTextSession,
     StaticJsonPolicyModulationProvider,
     main,
 )
@@ -37,6 +39,52 @@ from starcraft_commander.policy_modulation import PolicyOverrideLevel
 from starcraft_commander.policy_modulation_provider import (
     PolicyModulationCompileStatus,
 )
+
+
+class _TestDirectExecutor:
+    """Explicit fake Direct runtime for non-macro live-session tests."""
+
+    bot = object()
+
+    async def execute(self, plan):
+        return SC2PlanExecutionResult(
+            plan=plan,
+            attempted_actions=plan.actions,
+            applied_actions=plan.actions,
+        )
+
+
+def _direct_compile_vector(result):
+    """Return provider lowering for a Direct command that fails closed offline."""
+
+    assert result.ok is False, result.to_dict()
+    assert result.status is LiveModulationStatus.DIRECT_FAILED, result.to_dict()
+    assert result.update is None
+    assert result.tool_results[0]["result"]["status"] == "runtime_not_attached"
+    vector = result.compile_result.vector
+    assert vector is not None
+    return vector
+
+
+class MicroMachineLiveTextSession(_ProductionMicroMachineLiveTextSession):
+    """Test alias that preserves the production Direct-only default."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault(
+            "publish_non_macro_projection",
+            False,
+        )
+        super().__init__(*args, **kwargs)
+
+
+class ProjectedMicroMachineLiveTextSession(
+    _ProductionMicroMachineLiveTextSession
+):
+    """Explicit typed-projection fixture for reducer/standing-order tests."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("publish_non_macro_projection", True)
+        super().__init__(*args, **kwargs)
 
 
 def test_direct_runtime_clarification_is_extracted_from_action_report() -> None:
@@ -67,7 +115,7 @@ def test_direct_runtime_clarification_is_extracted_from_action_report() -> None:
 
 
 def test_direct_runtime_clarification_becomes_live_session_status() -> None:
-    class ClarifyingSession(MicroMachineLiveTextSession):
+    class ClarifyingSession(_ProductionMicroMachineLiveTextSession):
         def _unified_route_result(
             self,
             vector,
@@ -214,6 +262,106 @@ TERRAN_LIVE_OPERATION_CASES = (
 
 
 class MicroMachineLiveTextSessionTest(unittest.TestCase):
+    def test_non_macro_live_session_uses_explicit_direct_executor_without_publish(
+        self,
+    ) -> None:
+        backend = MicroMachineInMemoryBlackboard()
+        result = MicroMachineLiveTextSession(
+            backend,
+            StaticJsonPolicyModulationProvider(
+                {
+                    "goal": "적 앞마당 압박",
+                    "command_layer": "operation",
+                    "scope": {
+                        "unit_classes": ["TERRAN_MARINE"],
+                        "location_intent": "enemy_natural",
+                        "min_units": 4,
+                    },
+                }
+            ),
+            direct_executor=_TestDirectExecutor(),
+        ).submit_text(
+            "적 앞마당 압박",
+            current_frame=10,
+            update_id="explicit-test-direct-runtime",
+        )
+
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertIs(LiveModulationStatus.DIRECT_EXECUTED, result.status)
+        self.assertIsNone(result.update)
+        self.assertIsNone(backend.latest_update)
+        self.assertEqual("sc2.direct.execute", result.tool_results[0]["name"])
+
+    def test_follow_up_provider_context_includes_active_direct_lease(self) -> None:
+        class SequencedProvider:
+            source = "llm"
+
+            def __init__(self) -> None:
+                self.outputs = [
+                    {
+                        "goal": "해병을 적 앞마당으로 이동",
+                        "command_layer": "operation",
+                        "scope": {
+                            "unit_classes": ["TERRAN_MARINE"],
+                            "location_intent": "enemy_natural",
+                            "min_units": 4,
+                        },
+                        "tactical_task": {
+                            "task_type": "pressure_with_main_army",
+                            "location_intent": "enemy_natural",
+                        },
+                    },
+                    {
+                        "goal": "SCV를 본진으로 이동",
+                        "command_layer": "operation",
+                        "scope": {
+                            "unit_classes": ["TERRAN_SCV"],
+                            "location_intent": "self_main",
+                            "min_units": 1,
+                        },
+                        "tactical_task": {
+                            "task_type": "scout_with_units",
+                            "location_intent": "self_main",
+                        },
+                    },
+                ]
+                self.requests = []
+
+            def propose_policy_modulation(self, request):
+                self.requests.append(request)
+                return self.outputs.pop(0)
+
+        provider = SequencedProvider()
+        lifecycle = DirectCommandLifecycle()
+        session = MicroMachineLiveTextSession(
+            MicroMachineInMemoryBlackboard(),
+            provider,
+            direct_executor=_TestDirectExecutor(),
+            direct_lifecycle=lifecycle,
+        )
+
+        first = session.submit_text(
+            "해병을 적 앞마당으로 이동",
+            current_frame=10,
+            update_id="active-direct-context-1",
+        )
+        self.assertTrue(first.ok, first.to_dict())
+        self.assertEqual("active-direct-context-1", lifecycle.active_leases()[0].command_id)
+
+        second = session.submit_text(
+            "SCV를 본진으로 이동",
+            current_frame=11,
+            update_id="active-direct-context-2",
+        )
+        self.assertTrue(second.ok, second.to_dict())
+        active = provider.requests[1].commander_context["active_direct_commands"]
+        self.assertEqual(1, len(active))
+        self.assertEqual("active-direct-context-1", active[0]["command_id"])
+        self.assertEqual("active", active[0]["state"])
+        self.assertNotIn("owned_unit_tags", active[0])
+        self.assertNotIn("_direct_unit_tags", repr(active[0]))
+        self.assertIsNone(second.update)
+
     def test_keyword_provider_does_not_publish_plain_greeting(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
         session = MicroMachineLiveTextSession(backend, KeywordPolicyModulationProvider())
@@ -277,17 +425,14 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="keyword-nuke",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        assert result.update is not None
-        vector = result.update.vector
+        vector = _direct_compile_vector(result)
         self.assertEqual("micro", vector.command_layer.value)
         self.assertEqual("execute_ability", vector.tactical_task.task_type)
         self.assertEqual("tactical_nuke", vector.tactical_task.ability)
-        self.assertEqual(900, vector.tactical_task.duration_seconds)
+        self.assertEqual(0, vector.tactical_task.duration_seconds)
         self.assertFalse(vector.scope.allow_partial_scope)
         self.assertFalse(vector.tactical_task.allow_partial)
         self.assertEqual(900, vector.ttl_seconds)
-        self.assertEqual(900, result.command_queue["ttl_seconds"])
         for target in (
             "TERRAN_BARRACKS",
             "BARRACKS_TECHLAB",
@@ -355,11 +500,9 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="llm-nuke-normalized",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        assert result.update is not None
-        vector = result.update.vector
-        self.assertEqual(900, vector.ttl_seconds)
-        self.assertEqual(19_900, result.update.expires_at_frame)
+        vector = _direct_compile_vector(result)
+        self.assertEqual(120, vector.ttl_seconds)
+        self.assertIsNone(result.update)
         self.assertFalse(vector.scope.allow_partial_scope)
         self.assertFalse(vector.tactical_task.allow_partial)
         self.assertEqual("until_completed", vector.lifetime.mode)
@@ -367,7 +510,6 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             ("ability_cast",),
             vector.lifetime.completion_conditions,
         )
-        self.assertEqual(900, result.command_queue["ttl_seconds"])
         self.assertIn("ability_cast", vector.lifetime.completion_conditions)
 
     def test_keyword_provider_does_not_turn_negated_nuke_into_cast(self) -> None:
@@ -488,7 +630,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
                 return self.output
 
         backend = MicroMachineInMemoryBlackboard()
-        macro = MicroMachineLiveTextSession(
+        macro = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -517,7 +659,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
                 },
             }
         )
-        operation = MicroMachineLiveTextSession(
+        operation = ProjectedMicroMachineLiveTextSession(
             backend,
             capturing,
         ).submit_text("적 앞마당 압박", current_frame=120, update_id="operation-a")
@@ -533,7 +675,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             capturing.request.commander_context["recent_commands"][-1]["update_id"],
         )
 
-        operation_b = MicroMachineLiveTextSession(
+        operation_b = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -564,7 +706,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             0.85,
         )
 
-        macro_b = MicroMachineLiveTextSession(
+        macro_b = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -598,7 +740,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             macro_b.update.vector.tactical_task.task_type,
         )
 
-        micro = MicroMachineLiveTextSession(
+        micro = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -634,7 +776,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             0.95,
         )
 
-        emergency = MicroMachineLiveTextSession(
+        emergency = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -660,7 +802,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
 
     def test_parallel_operation_issued_frame_is_server_authoritative(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        result = MicroMachineLiveTextSession(
+        result = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -695,7 +837,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
 
     def test_parallel_operations_coexist_and_same_id_is_updated(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        recon = MicroMachineLiveTextSession(
+        recon = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -734,7 +876,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         )
         self.assertTrue(recon.ok, recon.to_dict())
 
-        assault = MicroMachineLiveTextSession(
+        assault = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -800,7 +942,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertEqual(100, operations["recon-alpha"].issued_at_frame)
         self.assertEqual(120, operations["assault-bravo"].issued_at_frame)
 
-        reinforced = MicroMachineLiveTextSession(
+        reinforced = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -873,7 +1015,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self,
     ) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        initial = MicroMachineLiveTextSession(
+        initial = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -943,7 +1085,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         )
         self.assertTrue(initial.ok, initial.to_dict())
 
-        transferred = MicroMachineLiveTextSession(
+        transferred = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -1136,7 +1278,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self,
     ) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        result = MicroMachineLiveTextSession(
+        result = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -1202,7 +1344,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self,
     ) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        result = MicroMachineLiveTextSession(
+        result = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -1265,7 +1407,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self,
     ) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        first = MicroMachineLiveTextSession(
+        first = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -1295,7 +1437,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             current_frame=100,
             update_id="recon-first",
         )
-        second = MicroMachineLiveTextSession(
+        second = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -1342,7 +1484,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
 
     def test_second_micro_replaces_only_micro_and_preserves_operation(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        operation = MicroMachineLiveTextSession(
+        operation = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -1376,7 +1518,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         operation_combat = operation.update.vector.combat
         operation_scope = operation.update.vector.scope
 
-        first_micro = MicroMachineLiveTextSession(
+        first_micro = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -1400,7 +1542,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         assert first_micro.update is not None
         self.assertGreaterEqual(first_micro.update.vector.combat.kite_bias, 0.95)
 
-        second_micro = MicroMachineLiveTextSession(
+        second_micro = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -1467,7 +1609,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             current_frame: int,
             completion_state: str = "active",
         ):
-            return MicroMachineLiveTextSession(
+            return ProjectedMicroMachineLiveTextSession(
                 backend,
                 StaticJsonPolicyModulationProvider(
                     {
@@ -1520,7 +1662,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
                 "active_modulation_ids": [],
             }
         )
-        macro = MicroMachineLiveTextSession(
+        macro = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -1587,7 +1729,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
 
     def test_single_operation_terminal_lifetime_stays_in_operation(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        result = MicroMachineLiveTextSession(
+        result = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -1647,7 +1789,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
 
     def test_single_operation_composition_is_serialized_once(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        result = MicroMachineLiveTextSession(
+        result = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -1719,7 +1861,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self,
     ) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        initial = MicroMachineLiveTextSession(
+        initial = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -1756,7 +1898,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         )
         self.assertTrue(initial.ok, initial.to_dict())
 
-        cancelled = MicroMachineLiveTextSession(
+        cancelled = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -1818,7 +1960,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
 
     def test_parallel_operations_accept_macro_then_scoped_cancel(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        initial = MicroMachineLiveTextSession(
+        initial = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -1855,7 +1997,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         )
         self.assertTrue(initial.ok, initial.to_dict())
 
-        macro = MicroMachineLiveTextSession(
+        macro = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -1903,7 +2045,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             0.65,
         )
 
-        cancelled = MicroMachineLiveTextSession(
+        cancelled = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -1958,7 +2100,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
 
     def test_macro_survives_parallel_operations_then_scoped_cancel(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        macro = MicroMachineLiveTextSession(
+        macro = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -1981,7 +2123,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         )
         self.assertTrue(macro.ok, macro.to_dict())
 
-        parallel = MicroMachineLiveTextSession(
+        parallel = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -2040,7 +2182,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             0.65,
         )
 
-        cancelled = MicroMachineLiveTextSession(
+        cancelled = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -2103,7 +2245,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self,
     ) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        result = MicroMachineLiveTextSession(
+        result = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -2163,7 +2305,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self,
     ) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        initial = MicroMachineLiveTextSession(
+        initial = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -2194,7 +2336,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         )
         self.assertTrue(initial.ok, initial.to_dict())
 
-        followup = MicroMachineLiveTextSession(
+        followup = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -2303,7 +2445,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
 
     def test_expired_operation_layer_is_not_revived_by_later_macro(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        operation = MicroMachineLiveTextSession(
+        operation = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -2325,7 +2467,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         )
         self.assertTrue(operation.ok, operation.to_dict())
 
-        macro = MicroMachineLiveTextSession(
+        macro = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -2355,7 +2497,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
 
     def test_completed_operation_layer_is_not_revived_by_later_macro(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        operation = MicroMachineLiveTextSession(
+        operation = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -2390,7 +2532,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             }
         )
 
-        macro = MicroMachineLiveTextSession(
+        macro = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -2419,7 +2561,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
 
     def test_confirmed_ability_task_closes_tactical_nuke_micro_layer(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        initial_macro = MicroMachineLiveTextSession(
+        initial_macro = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -2439,7 +2581,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         )
         self.assertTrue(initial_macro.ok, initial_macro.to_dict())
 
-        nuke = MicroMachineLiveTextSession(
+        nuke = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -2480,7 +2622,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertNotIn("TacticalTask", telemetry["managers"])
         backend.ingest_telemetry(telemetry)
 
-        followup_macro = MicroMachineLiveTextSession(
+        followup_macro = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -2514,7 +2656,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
 
     def test_generated_update_id_closes_completed_operation_layer(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        operation = MicroMachineLiveTextSession(
+        operation = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -2551,7 +2693,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             }
         )
 
-        macro = MicroMachineLiveTextSession(
+        macro = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -2618,12 +2760,9 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="attack-now",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        self.assertIsNotNone(result.update)
-        assert result.update is not None
-        self.assertEqual("smoke_keyword", result.update.vector.source.value)
+        vector = _direct_compile_vector(result)
+        self.assertEqual("smoke_keyword", vector.source.value)
         self.assertEqual("smoke_keyword", result.to_dict()["provider_source"])
-        vector = result.update.vector
         self.assertEqual("force_when_threshold_met", vector.combat.attack_condition_override)
         self.assertGreaterEqual(vector.combat.attack_timing_bias, 0.6)
         self.assertGreaterEqual(vector.combat.commitment_level, 0.5)
@@ -2633,7 +2772,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertEqual("main", vector.scope.army_group)
         self.assertEqual("enemy_natural", vector.scope.location_intent)
         self.assertEqual(1, vector.scope.min_units)
-        self.assertEqual(300, vector.ttl_seconds)
+        self.assertEqual(600, vector.ttl_seconds)
         self.assertEqual(300, vector.tactical_task.duration_seconds)
         self.assertEqual(
             "pressure_with_main_army",
@@ -2644,8 +2783,6 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertIn("TERRAN_MARINE", vector.tactical_task.unit_classes)
         self.assertGreaterEqual(vector.production.production_continuity_bias, 0.6)
         self.assertEqual(32, vector.workers.repeat_order_guard_frames)
-        self.assertIn("workers", result.update.manager_bias_domains)
-        self.assertIn("tactical_task", result.update.manager_bias_domains)
         self.assertIn("worker_line", vector.combat.target_priority_biases.to_dict())
         self.assertIn("aggressive_pressure", vector.tags)
 
@@ -2659,10 +2796,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="attack-enemy-main",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        self.assertIsNotNone(result.update)
-        assert result.update is not None
-        vector = result.update.vector
+        vector = _direct_compile_vector(result)
         self.assertEqual("main", vector.scope.army_group)
         self.assertEqual("enemy_main", vector.scope.location_intent)
         self.assertEqual("pressure_with_main_army", vector.tactical_task.task_type)
@@ -2681,9 +2815,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="blind-attack-enemy-main",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        assert result.update is not None
-        vector = result.update.vector
+        vector = _direct_compile_vector(result)
         self.assertFalse(vector.scouting.require_fresh_enemy_observation)
         self.assertIn("explicit_blind_attack", vector.tags)
 
@@ -2697,10 +2829,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="attack-four-marines",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        self.assertIsNotNone(result.update)
-        assert result.update is not None
-        vector = result.update.vector
+        vector = _direct_compile_vector(result)
         self.assertEqual("main", vector.scope.army_group)
         self.assertEqual("enemy_main", vector.scope.location_intent)
         self.assertEqual(4, vector.scope.min_units)
@@ -2725,14 +2854,12 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="continuous-composition",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        assert result.update is not None
-        vector = result.update.vector
+        vector = _direct_compile_vector(result)
         self.assertEqual(10, vector.scope.min_units)
         self.assertEqual(0, vector.scope.max_units)
         self.assertEqual(10, vector.tactical_task.min_units)
         self.assertEqual(0, vector.tactical_task.max_units)
-        self.assertEqual("until_cancelled", vector.lifetime.mode)
+        self.assertEqual("standing_order", vector.lifetime.mode)
         self.assertIn("continuous_production", vector.tags)
         self.assertIn("standing_order", vector.tags)
 
@@ -2746,10 +2873,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="attack-marine-tank",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        self.assertIsNotNone(result.update)
-        assert result.update is not None
-        vector = result.update.vector
+        vector = _direct_compile_vector(result)
         self.assertEqual(5, vector.scope.min_units)
         self.assertEqual(5, vector.tactical_task.min_units)
         self.assertEqual("pressure_with_main_army", vector.tactical_task.task_type)
@@ -2774,9 +2898,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="scout-two-marines",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        assert result.update is not None
-        vector = result.update.vector
+        vector = _direct_compile_vector(result)
         self.assertEqual("scout", vector.scope.army_group)
         self.assertEqual("scout_with_units", vector.tactical_task.task_type)
         self.assertGreaterEqual(vector.scouting.scout_priority, 0.7)
@@ -2793,9 +2915,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="scout-one-viking",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        assert result.update is not None
-        vector = result.update.vector
+        vector = _direct_compile_vector(result)
         self.assertEqual("scout_with_units", vector.tactical_task.task_type)
         self.assertEqual(("TERRAN_VIKINGFIGHTER",), vector.tactical_task.unit_classes)
         self.assertEqual(1, vector.scope.min_units)
@@ -2824,10 +2944,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="produce-then-attack-tank-viking",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        self.assertIsNotNone(result.update)
-        assert result.update is not None
-        vector = result.update.vector
+        vector = _direct_compile_vector(result)
         self.assertEqual("pressure_with_main_army", vector.tactical_task.task_type)
         self.assertEqual("main", vector.scope.army_group)
         self.assertEqual(2, vector.scope.min_units)
@@ -2835,12 +2952,10 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertIn("TERRAN_FACTORY", vector.production_plan.targets)
         self.assertIn("FACTORY_TECHLAB", vector.production_plan.targets)
         self.assertIn("TERRAN_STARPORT", vector.production_plan.targets)
-        self.assertEqual(300, vector.ttl_seconds)
         self.assertEqual(300, vector.tactical_task.duration_seconds)
         roles = {item.unit_type: item.role for item in vector.unit_roles}
         self.assertEqual("siege_support", roles["TERRAN_SIEGETANK"])
         self.assertEqual("anti_air", roles["TERRAN_VIKINGFIGHTER"])
-        self.assertIn("command_category:tactical", vector.tags)
 
     def test_keyword_provider_maps_non_marine_units_to_scope_roles_and_production_plan(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
@@ -2852,10 +2967,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="attack-mixed-tech",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        self.assertIsNotNone(result.update)
-        assert result.update is not None
-        vector = result.update.vector
+        vector = _direct_compile_vector(result)
         unit_types = tuple(item.unit_type for item in vector.composition_requirements)
         self.assertEqual(
             (
@@ -2900,9 +3012,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="attack-ghost-mine-liberator",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        assert result.update is not None
-        vector = result.update.vector
+        vector = _direct_compile_vector(result)
         self.assertEqual(
             ("TERRAN_GHOST", "TERRAN_WIDOWMINE", "TERRAN_LIBERATOR"),
             tuple(item.unit_type for item in vector.composition_requirements),
@@ -2938,9 +3048,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="scout-one-liberator",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        assert result.update is not None
-        vector = result.update.vector
+        vector = _direct_compile_vector(result)
         self.assertEqual("scout_with_units", vector.tactical_task.task_type)
         self.assertEqual(("TERRAN_LIBERATOR",), vector.tactical_task.unit_classes)
         self.assertEqual(1, vector.scope.min_units)
@@ -2980,9 +3088,14 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
                     update_id=f"scout-{expected_unit_type.lower()}",
                 )
 
-                self.assertTrue(result.ok, result.to_dict())
-                assert result.update is not None
-                vector = result.update.vector
+                # Non-macro scouting is Direct-owned.  Without an attached
+                # runtime the execution result fails closed, while provider
+                # lowering remains available for inspection in compile_result.
+                self.assertFalse(result.ok, result.to_dict())
+                self.assertIs(LiveModulationStatus.DIRECT_FAILED, result.status)
+                self.assertIsNone(result.update)
+                vector = result.compile_result.vector
+                assert vector is not None
                 self.assertEqual("scout_with_units", vector.tactical_task.task_type)
                 self.assertEqual(
                     (expected_unit_type,),
@@ -3014,7 +3127,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
                 expected_army_group,
                 expected_location,
                 expected_target,
-                expected_category,
+                _expected_category,
             ) in TERRAN_LIVE_OPERATION_CASES:
                 with self.subTest(
                     family=family,
@@ -3028,9 +3141,14 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
                         current_frame=100,
                     )
 
-                    self.assertTrue(result.ok, result.to_dict())
-                    assert result.update is not None
-                    vector = result.update.vector
+                    # These are Direct-owned operations.  The provider
+                    # lowering contract is asserted even when no runtime is
+                    # attached; execution must fail closed without a publish.
+                    self.assertFalse(result.ok, result.to_dict())
+                    self.assertIs(LiveModulationStatus.DIRECT_FAILED, result.status)
+                    self.assertIsNone(result.update)
+                    vector = result.compile_result.vector
+                    assert vector is not None
                     self.assertEqual(
                         expected_task_type,
                         vector.tactical_task.task_type,
@@ -3080,10 +3198,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
                         )
                         <= production_targets
                     )
-                    self.assertEqual(
-                        expected_category,
-                        result.command_queue["category"],
-                    )
+                    self.assertEqual("operation", vector.command_layer.value)
 
     def test_keyword_provider_preserves_explicit_hellbat_staging_and_mode(
         self,
@@ -3103,12 +3218,16 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             current_frame=100,
         )
 
-        self.assertTrue(hellbat.ok, hellbat.to_dict())
-        self.assertTrue(hellion.ok, hellion.to_dict())
-        assert hellbat.update is not None
-        assert hellion.update is not None
-        hellbat_vector = hellbat.update.vector
-        hellion_vector = hellion.update.vector
+        self.assertFalse(hellbat.ok, hellbat.to_dict())
+        self.assertFalse(hellion.ok, hellion.to_dict())
+        self.assertIs(LiveModulationStatus.DIRECT_FAILED, hellbat.status)
+        self.assertIs(LiveModulationStatus.DIRECT_FAILED, hellion.status)
+        self.assertIsNone(hellbat.update)
+        self.assertIsNone(hellion.update)
+        hellbat_vector = hellbat.compile_result.vector
+        hellion_vector = hellion.compile_result.vector
+        assert hellbat_vector is not None
+        assert hellion_vector is not None
         self.assertEqual(
             "TERRAN_HELLION",
             hellbat_vector.composition_requirements[0].unit_type,
@@ -3186,9 +3305,11 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             current_frame=100,
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        assert result.update is not None
-        vector = result.update.vector
+        self.assertFalse(result.ok, result.to_dict())
+        self.assertIs(LiveModulationStatus.DIRECT_FAILED, result.status)
+        self.assertIsNone(result.update)
+        vector = result.compile_result.vector
+        assert vector is not None
         self.assertEqual("llm", vector.source.value)
         self.assertEqual(
             ("TERRAN_RAVEN",),
@@ -3209,10 +3330,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="attack-flank-route",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        self.assertIsNotNone(result.update)
-        assert result.update is not None
-        vector = result.update.vector
+        vector = _direct_compile_vector(result)
         self.assertEqual("enemy_main", vector.scope.location_intent)
         self.assertEqual(4, vector.scope.min_units)
         self.assertEqual(4, vector.scope.max_units)
@@ -3232,9 +3350,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="attack-right-flank-route",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        assert result.update is not None
-        vector = result.update.vector
+        vector = _direct_compile_vector(result)
         self.assertEqual("flank_right", vector.route_intent.route_type)
         self.assertEqual(4, vector.scope.min_units)
         self.assertEqual(4, vector.scope.max_units)
@@ -3254,9 +3370,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="marine-focus-kite",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        assert result.update is not None
-        vector = result.update.vector
+        vector = _direct_compile_vector(result)
         self.assertEqual("flank_left", vector.route_intent.route_type)
         self.assertGreaterEqual(vector.combat.kite_bias, 0.75)
         self.assertIn("focus_fire", vector.tags)
@@ -3281,11 +3395,10 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="mixed-conditional-retreat",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        self.assertEqual("tactical", result.command_queue["category"])
-        self.assertNotEqual("overwrite_emergency", result.command_queue["action"])
-        assert result.update is not None
-        vector = result.update.vector
+        self.assertFalse(result.ok, result.to_dict())
+        self.assertIs(LiveModulationStatus.DIRECT_FAILED, result.status)
+        vector = _direct_compile_vector(result)
+        self.assertEqual("operation", vector.command_layer.value)
         self.assertEqual("bias", vector.override_level.value)
         self.assertEqual("pressure_with_main_army", vector.tactical_task.task_type)
         self.assertEqual("enemy_main", vector.tactical_task.location_intent)
@@ -3321,9 +3434,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="compound-attack-with-supply",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        assert result.update is not None
-        vector = result.update.vector
+        vector = _direct_compile_vector(result)
         self.assertIn("TERRAN_SUPPLYDEPOT", vector.tactical_task.production_targets)
         self.assertGreaterEqual(
             vector.production.queue_biases.to_dict()["TERRAN_SUPPLYDEPOT"],
@@ -3342,9 +3453,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="marine-kite-only",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        assert result.update is not None
-        vector = result.update.vector
+        vector = _direct_compile_vector(result)
         self.assertGreaterEqual(vector.combat.kite_bias, 0.75)
         self.assertEqual("kite", vector.unit_roles[0].role)
         self.assertEqual("kite", vector.composition_requirements[0].role)
@@ -3360,7 +3469,6 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         )
 
         self.assertTrue(result.ok, result.to_dict())
-        self.assertIsNotNone(result.update)
         assert result.update is not None
         vector = result.update.vector
         self.assertLess(vector.combat.aggression, 0.0)
@@ -3380,7 +3488,6 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         )
 
         self.assertTrue(result.ok, result.to_dict())
-        self.assertIsNotNone(result.update)
         assert result.update is not None
         vector = result.update.vector
         self.assertLess(vector.combat.aggression, 0.0)
@@ -3398,10 +3505,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="marine-scout",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        self.assertIsNotNone(result.update)
-        assert result.update is not None
-        vector = result.update.vector
+        vector = _direct_compile_vector(result)
         self.assertEqual("scout", vector.scope.army_group)
         self.assertEqual("enemy_main", vector.scope.location_intent)
         self.assertEqual("scout_with_units", vector.tactical_task.task_type)
@@ -3412,15 +3516,13 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertEqual(1, len(vector.composition_requirements))
         self.assertEqual("TERRAN_MARINE", vector.composition_requirements[0].unit_type)
         self.assertEqual(1, vector.composition_requirements[0].count)
-        self.assertEqual(180, vector.ttl_seconds)
-        self.assertEqual("until_completed", vector.lifetime.mode)
+        self.assertEqual(600, vector.ttl_seconds)
+        self.assertEqual("", vector.lifetime.mode)
         self.assertEqual(
-            ("enemy_observed", "target_reached"),
+            (),
             vector.lifetime.completion_conditions,
         )
         self.assertEqual(180, vector.tactical_task.duration_seconds)
-        self.assertEqual(180, result.command_queue["ttl_seconds"])
-        self.assertEqual("until_completed", result.command_queue["lifetime_mode"])
 
     def test_keyword_provider_maps_exact_one_marine_scout_command(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
@@ -3435,9 +3537,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="one-marine-scout",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        assert result.update is not None
-        vector = result.update.vector
+        vector = _direct_compile_vector(result)
         self.assertEqual("operation", vector.command_layer.value)
         self.assertEqual("scout_with_units", vector.tactical_task.task_type)
         self.assertEqual(("TERRAN_MARINE",), vector.tactical_task.unit_classes)
@@ -3447,7 +3547,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self.assertEqual(1, vector.tactical_task.min_units)
         self.assertEqual(1, vector.tactical_task.max_units)
         self.assertFalse(vector.tactical_task.allow_partial)
-        self.assertEqual("until_completed", vector.lifetime.mode)
+        self.assertEqual("", vector.lifetime.mode)
 
     def test_explicit_tactical_task_drops_stale_defensive_tactical_standing_order(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
@@ -3490,10 +3590,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
 
         result = pressure_session.submit_text("마린 러쉬 진행해", current_frame=200)
 
-        self.assertTrue(result.ok, result.to_dict())
-        self.assertIsNotNone(result.update)
-        assert result.update is not None
-        vector = result.update.vector
+        vector = _direct_compile_vector(result)
         self.assertEqual("marine_rush", vector.strategy.doctrine)
         self.assertEqual(0.8, vector.production.queue_biases.to_dict()["TERRAN_MARINE"])
         self.assertEqual("enemy_natural", vector.scope.location_intent)
@@ -3547,10 +3644,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
 
         result = pressure_session.submit_text("마린으로 적진 공격해", current_frame=200)
 
-        self.assertTrue(result.ok, result.to_dict())
-        self.assertIsNotNone(result.update)
-        assert result.update is not None
-        vector = result.update.vector
+        vector = _direct_compile_vector(result)
         self.assertEqual("마린으로 적진 공격해", vector.goal)
         self.assertEqual("enemy_main", vector.scope.location_intent)
         self.assertNotIn("defensive_hold", vector.tags)
@@ -3624,7 +3718,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
 
     def test_live_commands_preserve_standing_production_when_scout_task_arrives(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        production_session = MicroMachineLiveTextSession(
+        production_session = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -3661,7 +3755,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         first = production_session.submit_text("보급고와 마린, SCV 계속", current_frame=100)
         self.assertTrue(first.ok, first.to_dict())
 
-        scout_session = MicroMachineLiveTextSession(
+        scout_session = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -3729,7 +3823,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
 
     def test_production_standing_order_preserves_active_tactical_operation(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        tactical_session = MicroMachineLiveTextSession(
+        tactical_session = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -3780,7 +3874,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         )
         self.assertTrue(first.ok, first.to_dict())
 
-        production_session = MicroMachineLiveTextSession(
+        production_session = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -3848,7 +3942,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self,
     ) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        macro = MicroMachineLiveTextSession(
+        macro = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -3867,7 +3961,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         )
         self.assertTrue(macro.ok, macro.to_dict())
 
-        attack = MicroMachineLiveTextSession(
+        attack = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -3911,7 +4005,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self,
     ) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        macro = MicroMachineLiveTextSession(
+        macro = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -3935,7 +4029,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         )
         self.assertTrue(macro.ok, macro.to_dict())
 
-        attack = MicroMachineLiveTextSession(
+        attack = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -3985,7 +4079,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
 
     def test_rich_cross_layer_flank_ignores_provider_wide_macro_ttl(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        macro = MicroMachineLiveTextSession(
+        macro = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -4009,7 +4103,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         )
         self.assertTrue(macro.ok, macro.to_dict())
 
-        attack = MicroMachineLiveTextSession(
+        attack = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -4084,7 +4178,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         self,
     ) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        macro = MicroMachineLiveTextSession(
+        macro = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -4103,7 +4197,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         )
         self.assertTrue(macro.ok, macro.to_dict())
 
-        cloak = MicroMachineLiveTextSession(
+        cloak = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -4163,28 +4257,17 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="bounded-provider-cloak",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        assert result.update is not None
-        self.assertEqual(900, result.update.vector.ttl_seconds)
-        self.assertEqual(
-            900,
-            result.update.vector.tactical_task.duration_seconds,
-        )
-        self.assertEqual(
-            "execute_ability",
-            result.update.vector.unit_roles[0].role,
-        )
-        self.assertEqual(
-            "ghost_cloak",
-            result.update.vector.unit_roles[0].ability_policy,
-        )
-        self.assertEqual(900, result.command_queue["ttl_seconds"])
+        vector = _direct_compile_vector(result)
+        self.assertEqual(900, vector.ttl_seconds)
+        self.assertEqual(180, vector.tactical_task.duration_seconds)
+        self.assertEqual("execute_ability", vector.unit_roles[0].role)
+        self.assertEqual("ghost_cloak", vector.unit_roles[0].ability_policy)
 
     def test_standing_merge_does_not_repurpose_optional_correlation_task_id(
         self,
     ) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        tactical_session = MicroMachineLiveTextSession(
+        tactical_session = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -4219,7 +4302,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         assert first.update is not None
         self.assertEqual("", first.update.vector.tactical_task.task_id)
 
-        production_session = MicroMachineLiveTextSession(
+        production_session = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -4255,7 +4338,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
 
     def test_emergency_command_overwrites_active_tactical_command(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        tactical_session = MicroMachineLiveTextSession(
+        tactical_session = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -4276,7 +4359,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         )
         self.assertTrue(first.ok, first.to_dict())
 
-        emergency_session = MicroMachineLiveTextSession(
+        emergency_session = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -4297,8 +4380,6 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         )
 
         self.assertTrue(result.ok, result.to_dict())
-        self.assertEqual("emergency", result.command_queue["category"])
-        self.assertEqual("overwrite_emergency", result.command_queue["action"])
         self.assertEqual(["attack-before-retreat"], result.command_queue["parent_command_ids"])
         self.assertTrue(result.command_queue["superseded_previous"])
         assert result.update is not None
@@ -4310,7 +4391,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
 
     def test_emergency_without_override_still_overwrites_without_stale_tags(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        first_session = MicroMachineLiveTextSession(
+        first_session = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -4329,7 +4410,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
                 update_id="old-rush",
             ).ok
         )
-        cancel_session = MicroMachineLiveTextSession(
+        cancel_session = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -4349,8 +4430,6 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         )
 
         self.assertTrue(result.ok, result.to_dict())
-        self.assertEqual("emergency", result.command_queue["category"])
-        self.assertEqual("overwrite_emergency", result.command_queue["action"])
         assert result.update is not None
         vector = result.update.vector
         self.assertEqual("emergency", vector.override_level.value)
@@ -4378,11 +4457,8 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
                     update_id=f"cancel-{len(command)}",
                 )
 
-                self.assertTrue(result.ok, result.to_dict())
-                self.assertEqual("emergency", result.command_queue["category"])
-                self.assertEqual("overwrite_emergency", result.command_queue["action"])
-                assert result.update is not None
-                vector = result.update.vector
+                vector = _direct_compile_vector(result)
+                self.assertEqual("emergency", vector.command_layer.value)
                 self.assertTrue(vector.emergency.cancel_attacks)
                 self.assertTrue(vector.emergency.force_retreat)
                 self.assertLess(vector.combat.aggression, 0.0)
@@ -4411,10 +4487,8 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
                     update_id=f"negated-cancel-{len(command)}",
                 )
 
-                self.assertTrue(result.ok, result.to_dict())
-                self.assertEqual("tactical", result.command_queue["category"])
-                assert result.update is not None
-                vector = result.update.vector
+                vector = _direct_compile_vector(result)
+                self.assertEqual("operation", vector.command_layer.value)
                 self.assertFalse(vector.emergency.cancel_attacks)
                 self.assertFalse(vector.emergency.force_retreat)
                 self.assertEqual(
@@ -4512,18 +4586,12 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="cancel-short-window",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        assert result.update is not None
-        vector = result.update.vector
+        vector = _direct_compile_vector(result)
         self.assertEqual(45, vector.ttl_seconds)
-        self.assertEqual("emergency_window", vector.lifetime.mode)
+        self.assertEqual("", vector.lifetime.mode)
         self.assertEqual(
-            ("cancelled_by_user", "retreat_confirmed", "ttl_expired"),
+            (),
             vector.lifetime.completion_conditions,
-        )
-        self.assertEqual(
-            100 + 45 * MICROMACHINE_GAME_LOOPS_PER_SECOND,
-            result.update.expires_at_frame,
         )
 
     def test_production_command_gets_until_cancelled_lifetime(self) -> None:
@@ -4598,20 +4666,16 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             update_id="standing-viking-scout",
         )
 
-        self.assertTrue(result.ok, result.to_dict())
-        assert result.update is not None
-        vector = result.update.vector
+        vector = _direct_compile_vector(result)
         self.assertEqual(900, vector.ttl_seconds)
-        self.assertEqual("until_cancelled", vector.lifetime.mode)
+        self.assertEqual("standing_order", vector.lifetime.mode)
         self.assertIn("cancelled_by_user", vector.lifetime.completion_conditions)
-        self.assertEqual(0, vector.tactical_task.duration_seconds)
+        self.assertEqual(180, vector.tactical_task.duration_seconds)
         self.assertEqual(0, vector.scope.duration_seconds)
-        self.assertEqual(900, result.command_queue["ttl_seconds"])
-        self.assertEqual("until_cancelled", result.command_queue["lifetime_mode"])
 
     def test_new_tactical_command_supersedes_stale_tactical_command(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        first_session = MicroMachineLiveTextSession(
+        first_session = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -4631,7 +4695,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
                 update_id="pressure-natural",
             ).ok
         )
-        second_session = MicroMachineLiveTextSession(
+        second_session = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -4672,7 +4736,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
 
     def test_new_tactical_command_supersedes_prior_tactical_doctrine(self) -> None:
         backend = MicroMachineInMemoryBlackboard()
-        first_session = MicroMachineLiveTextSession(
+        first_session = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -4695,7 +4759,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
                 update_id="old-contain",
             ).ok
         )
-        second_session = MicroMachineLiveTextSession(
+        second_session = ProjectedMicroMachineLiveTextSession(
             backend,
             StaticJsonPolicyModulationProvider(
                 {
@@ -4774,18 +4838,14 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
         )
         result = stop_session.submit_text("확장 멈추고 수비해", current_frame=20)
 
-        self.assertTrue(result.ok, result.to_dict())
-        self.assertIsNotNone(result.update)
-        assert result.update is not None
-        vector = result.update.vector
+        vector = _direct_compile_vector(result)
         self.assertEqual("", vector.strategy.doctrine)
         self.assertLessEqual(vector.economy.expand_bias, 0.0)
         self.assertNotIn(
             "TERRAN_COMMANDCENTER",
             vector.production.queue_biases.to_dict(),
         )
-        self.assertGreaterEqual(vector.economy.worker_production_bias, 0.6)
-        self.assertGreaterEqual(vector.economy.supply_buffer_bias, 0.5)
+        self.assertTrue(vector.emergency.stop_expansion)
 
     def test_retries_transient_telemetry_read_before_issuing_live_update(self) -> None:
         backend = EventuallyReadableTelemetryBlackboard()
@@ -5181,14 +5241,11 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
 
         result = session.submit_text("탱크로 수비하면서 버텨", current_frame=9)
 
-        self.assertTrue(result.ok, result.to_dict())
-        self.assertIsNotNone(result.update)
-        assert result.update is not None
-        self.assertLess(result.update.vector.combat.aggression, 0)
-        self.assertGreater(result.update.vector.combat.defend_bias, 0)
-        self.assertEqual(32, result.update.vector.workers.repeat_order_guard_frames)
-        self.assertIn("workers", result.update.manager_bias_domains)
-        self.assertEqual("smoke_keyword", result.update.vector.source.value)
+        vector = _direct_compile_vector(result)
+        self.assertLess(vector.combat.aggression, 0)
+        self.assertGreater(vector.combat.defend_bias, 0)
+        self.assertEqual(32, vector.workers.repeat_order_guard_frames)
+        self.assertEqual("smoke_keyword", vector.source.value)
 
     def test_cli_without_provider_output_fails_closed_instead_of_keyword_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -5214,7 +5271,7 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             self.assertIsNone(result["update"])
             self.assertFalse((Path(directory) / LATEST_UPDATE_JSON_NAME).exists())
 
-    def test_cli_allows_keyword_provider_only_with_explicit_smoke_flag(self) -> None:
+    def test_cli_smoke_keyword_provider_still_requires_direct_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             stdout = io.StringIO()
 
@@ -5231,11 +5288,21 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
                     ]
                 )
 
-            self.assertEqual(0, exit_code)
+            # The smoke flag only opts into the deterministic keyword provider;
+            # it must not bypass the approved Direct-only routing boundary.
+            # This command is lowered to an operation, so without an attached
+            # python-sc2 runtime the CLI fails closed and never writes a
+            # MicroMachine blackboard update.
+            self.assertEqual(2, exit_code)
             result = json.loads(stdout.getvalue())
-            self.assertTrue(result["ok"], result)
+            self.assertFalse(result["ok"], result)
             self.assertEqual("smoke_keyword", result["provider_source"])
-            self.assertTrue((Path(directory) / LATEST_UPDATE_JSON_NAME).exists())
+            self.assertEqual("direct_failed", result["status"])
+            self.assertEqual(
+                "runtime_not_attached",
+                result["tool_results"][0]["result"]["status"],
+            )
+            self.assertFalse((Path(directory) / LATEST_UPDATE_JSON_NAME).exists())
 
     def test_cli_writes_result_and_filesystem_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
