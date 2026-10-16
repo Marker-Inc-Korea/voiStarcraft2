@@ -2312,6 +2312,64 @@ class ArchivePolicyTest(unittest.TestCase):
         self.assertEqual([], archive_content_blockers(wheel))
         self.assertEqual([], archive_content_blockers(sdist))
 
+    def test_direct_lifecycle_and_qa_assets_are_narrowly_allowed(self) -> None:
+        approved = (
+            "voi_direct_lease_bridge.hpp",
+            "voi_operation_completion.hpp",
+            "voi_qa_observation.hpp",
+            "scripts/live_qa_30_macos_local.sh",
+            "scripts/qa30_scenario_command.py",
+        )
+        rejected = (
+            "voi_unreviewed.hpp",
+            "voi_direct_lease_bridge.hpp.bak",
+            "scripts/live_qa_31_macos_local.sh",
+            "scripts/qa31_scenario_command.py",
+            "scripts/nested/qa30_scenario_command.py",
+            "tests/direct_lease_bridge_test.cpp",
+        )
+        for kind, filename, prefix in (
+            ("wheel", "voistarcraft2-0.1.0-py3-none-any.whl", ""),
+            ("sdist", "voistarcraft2-0.1.0.tar.gz", "voistarcraft2-0.1.0/"),
+        ):
+            for tail in (*approved, *rejected):
+                with self.subTest(kind=kind, tail=tail):
+                    snapshot = ArchiveSnapshot(
+                        kind=kind,
+                        path=Path(filename),
+                        digest="c" * 64,
+                        entries=(),
+                        files={f"{prefix}integrations/micromachine/{tail}": b"safe"},
+                        blockers=(),
+                    )
+                    blockers = archive_content_blockers(snapshot)
+                    self.assertEqual(tail in rejected, bool(blockers))
+
+    def test_direct_lifecycle_and_qa_payloads_are_bound_to_git(self) -> None:
+        root = Path.cwd()
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=root, check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        manifests = expected_archive_payloads(root, head)
+        for tail in (
+            "voi_operation_completion.hpp",
+            "voi_qa_observation.hpp",
+            "scripts/live_qa_30_macos_local.sh",
+            "scripts/qa30_scenario_command.py",
+        ):
+            path = f"integrations/micromachine/{tail}"
+            committed = subprocess.run(
+                ["git", "show", f"{head}:{path}"], cwd=root, check=True,
+                capture_output=True,
+            ).stdout
+            for kind in ("wheel", "sdist"):
+                with self.subTest(kind=kind, path=path):
+                    self.assertEqual(
+                        compliance_module.sha256_bytes(committed),
+                        manifests[kind][path],
+                    )
+
     def test_sdist_rejects_alternate_egg_info_namespace(self) -> None:
         expected_payload = b"expected runtime"
         snapshot = ArchiveSnapshot(
