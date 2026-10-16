@@ -40,6 +40,11 @@ class DirectLeaseEventWriter:
             "release_reason": lease.release_reason,
             "runtime_instance_id": self.runtime_instance_id,
         }
+        if any(
+            any(char in str(value) for char in "\r\n;=")
+            for value in fields.values()
+        ):
+            raise ValueError("lease release fields contain record delimiters")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as output:
             output.write(";".join(f"{key}={str(value).replace(';', '_')}" for key, value in fields.items()) + "\n")

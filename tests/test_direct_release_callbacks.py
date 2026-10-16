@@ -68,6 +68,15 @@ def test_native_event_writer_serializes_terminal_release_with_epoch(tmp_path) ->
     assert executor.lifecycle_errors == ()
 
 
+def test_native_event_writer_rejects_record_delimiters(tmp_path) -> None:
+    writer = DirectLeaseEventWriter(tmp_path / "events", "a" * 32)
+    lifecycle = DirectCommandLifecycle(game_loops_per_second=1)
+    executor = SC2RuntimeExecutor(direct_lifecycle=lifecycle, on_direct_release=writer)
+    lifecycle.dispatch(command_id="bad;id", issued_at_frame=0, ttl_seconds=1)
+    lifecycle.observe("bad;id", frame=2)
+    assert len(executor.lifecycle_errors) == 1
+
+
 def test_native_event_writer_env_sink_is_wired_into_executor(tmp_path, monkeypatch) -> None:
     path = tmp_path / "env.events"
     monkeypatch.setenv("VOI_MICROMACHINE_RELEASE_EVENTS", str(path))

@@ -27,6 +27,7 @@ from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
 from starcraft_commander.direct_command_lifecycle import DirectCommandLease
 from starcraft_commander.direct_release import (
     DirectReleaseListeners,
+    DirectLeaseEventWriter,
     direct_lease_event_writer_from_env,
     same_callback,
 )
@@ -587,6 +588,9 @@ class SC2RuntimeExecutor:
         init=False,
         repr=False,
     )
+    _native_release_writer: DirectLeaseEventWriter | None = field(
+        default=None, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         self._started = self.bot is not None
@@ -599,6 +603,13 @@ class SC2RuntimeExecutor:
         self._release_listeners = DirectReleaseListeners.preserving(
             self.direct_lifecycle.on_release
         )
+        try:
+            self._native_release_writer = direct_lease_event_writer_from_env()
+        except Exception as error:
+            self._lifecycle_errors.append(SC2ExecutionError(
+                message=f"direct lease event writer setup failed: {error}",
+                exception_type=type(error).__name__, metadata={},
+            ))
         self.direct_lifecycle.on_release = self._handle_direct_release
 
     def _handle_direct_release(self, lease: DirectCommandLease) -> None:
@@ -651,9 +662,8 @@ class SC2RuntimeExecutor:
         # The native MicroMachine bridge is an opt-in append-only event sink.
         # It runs alongside host callbacks and is protected by runtime epoch.
         try:
-            writer = direct_lease_event_writer_from_env()
-            if writer is not None:
-                writer(lease)
+            if self._native_release_writer is not None:
+                self._native_release_writer(lease)
         except Exception as error:  # native bridge telemetry must not break SC2
             self._lifecycle_errors.append(SC2ExecutionError(
                 message=f"direct lease event writer failed: {error}",
