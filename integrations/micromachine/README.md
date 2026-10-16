@@ -16,6 +16,7 @@ Verified upstream:
 | `PRE_LIVE_JOURNEYS.json` | Versioned 14-journey deterministic integration manifest with initial state, ordered inputs, required raw events, stop conditions, frame timeouts, and allowed nondeterminism. |
 | `PRE_LIVE_PRODUCERS.json` | Authenticated isolated-producer policy for deterministic journey and provenance evidence emitted by CI. |
 | `voi_policy_blackboard.hpp` | Header-only C++17 reader for `latest_modulation.kv`. |
+| `voi_direct_lease_bridge.hpp` | Header-only C++17 consumer for terminal Direct lease callbacks; deduplicates releases and resumes autonomous control. |
 | `patches/0001-macos-latest-s2client-policy-blackboard.patch` | Verified patch bundle for current `s2client-api`, libvoxelbot linking, and the voi blackboard hook. |
 | `patches/0002-live-tactical-operation-fixes.patch` | Live tactical fixes for addon relocation ownership, exact composition rally/launch, tank siege gating, Scout/MainAttack ownership, and Viking objective following. |
 | `patches/0003-production-live-qa-blockers.patch` | Live combat blockers fix for producer lift/train ability ownership, grounded addon-relocation cooldown, exact squad acquisition and thresholds, forward rallying, combat-scout ownership, stale base-defense release, tank launch/siege and morph retry, Scout Viking objective preservation, shared focus fire, policy-driven kiting, and invalid queued worker orders. |
