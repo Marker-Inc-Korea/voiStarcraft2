@@ -16,11 +16,12 @@ function validateTargetPin(input) {
   if (Object.keys(input).some(key => !["name", "target", "metadata"].includes(key))) throw new TypeError("unexpected target pin field");
   const name = typeof input.name === "string" ? input.name.trim() : "";
   const target = typeof input.target === "string" ? input.target.trim() : "";
-  if (!name || name.length > 120) throw new TypeError("target pin name must contain 1..120 characters");
-  if (!target || target.length > 120 || /[\d,]|unit[_ -]?tag|position|coordinate/i.test(target)) throw new TypeError("target pin must be semantic");
+  if (!name || name.length > 128) throw new TypeError("target pin name must contain 1..128 characters");
+  const semanticTargets = new Set(["self_main","self_ramp","self_choke","self_natural","self_third","self_mineral_line","self_geyser","enemy_main","enemy_ramp","enemy_choke","enemy_front","enemy_natural","enemy_third","enemy_mineral_line","scout_location","last_seen_enemy_area"]);
+  if (!semanticTargets.has(target)) throw new TypeError("target pin must be a known semantic target");
   if (input.metadata !== undefined && (!input.metadata || typeof input.metadata !== "object" || Array.isArray(input.metadata))) throw new TypeError("target pin metadata must be an object");
   const metadata = input.metadata === undefined ? {} : {...input.metadata};
-  if (Object.keys(metadata).some(key => /tag|position|coordinate|unit/i.test(key))) throw new TypeError("raw runtime identity is not allowed");
+  if (Object.entries(metadata).some(([key,value]) => !["source","label"].includes(key) || typeof value !== "string" || value.length > 120)) throw new TypeError("raw runtime identity is not allowed");
   return {name, target, metadata};
 }
 function validateBaseUrl(value) {
