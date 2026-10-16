@@ -372,9 +372,11 @@ endpoint may return only `allow` or `deny` for an eligible command layer.
   policy vector, already-lowered route, eligible layers, and the exact local
   tool names (`sc2.direct.execute` or `micromachine.policy`).
 - Responses are a strict envelope containing only `protocol_version`,
-  `request_id`, `decision`, optional `reason`, and object-valued `audit`.
-  Raw SC2 methods, tool calls, plans, and replacement policy vectors are
-  rejected.
+  `request_id`, `decision`, optional string-valued `reason`, and object-valued
+  `audit`. `protocol_version` is required and must equal
+  `jev.system1.route/v1`; malformed or non-object endpoint payloads become a
+  typed `invalid` decision and fail closed. Raw SC2 methods, tool calls, plans,
+  and replacement policy vectors are rejected.
 - Endpoint absence preserves the local route. Ineligible layers do not call
   the endpoint. Transport failures and bounded sync/async timeouts retry at
   most three times and fail closed through `route_policy_vector_with_jev()`.
