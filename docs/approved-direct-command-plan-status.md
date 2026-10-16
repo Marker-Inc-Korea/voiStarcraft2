@@ -5,17 +5,20 @@
 아래 날짜별 기록은 과거 증거이며, 현재 완료 판정은 이 요약을 우선한다.
 원문 계획은 `approved-direct-command-plan-verbatim.md`에 그대로 보존한다.
 
-- PR #187: 아직 main에 머지되지 않았다. head `0584f46`의 hosted 재실행에서
-  Python 3.10/3.11/3.12 unit-contracts는 모두 통과했다. 후보/신뢰 검증기
-  producer-isolation은 CTest 4.4.3에서 exact 10/10 증거 판정 실패 상태다.
-  배포 검증은 기존 QA 헤더/스크립트 네 개의 명시적 허용 목록 누락을 발견했다.
+- PR #187: 아직 main에 머지되지 않았다. 현재 head `e6ef8b5`의 hosted
+  unit-contracts는 실행 중이다. 후보/신뢰 검증기 producer-isolation은
+  CTest 4.4.3에서 exact 10/10 증거 판정 실패 상태다. 배포 검증의 기존
+  QA 헤더/스크립트 허용 목록 누락은 `1962d3b`에서 보강했다.
 - CTest 4.4.3의 성공 요약 형식(`100% tests passed out of 10`)을 후보
   provenance parser가 엄격하게 수용하도록 `479c0f1`에서 보강했다
   (관련 집중 검증 `21 passed, 2 skipped, 20 subtests`). 단, 필수
   `pre-live-producer-isolation`은 보안상 고정된 trusted verifier `2473e63`을
   실행하므로 이 PR의 parser 수정으로 바뀌지 않는다. trusted pin을 후보
-  브랜치로 바꾸거나 보호를 우회하지 않았으며, 별도 검토된 verifier/pin 갱신이
-  있어야 해당 체크를 완료할 수 있다.
+  브랜치로 바꾸거나 보호를 우회하지 않았다. 독립 verifier 커밋 `db8067c`를
+  `trusted-verifier-ctest-44` 브랜치에 게시하고 후보 워크플로 pin도 갱신했지만,
+  `pull_request_target`은 main의 기존 워크플로를 실행해 여전히 `2473e63`을
+  체크아웃한다(호스티드 run `38884608930`). main 필수 체크에 동일 실패가
+  걸린 bootstrap 교착이므로 owner의 신뢰된 main-side 갱신 절차가 필요하다.
 - Electron #190: `electron/`에 Main/Preload/Renderer 셸을 추가했다.
   loopback-only 연결, 입력 allowlist, sender 검증, sandbox/context isolation,
   CSP, TypeScript API 선언, bounded history 조회, semantic registry와 target-pin
@@ -32,7 +35,7 @@
 - API #195: 기존 bounded catalog와 raw API 거부를 유지한다. `alert`,
   `chat_send`, Client/protocol API 및 모든 ability 실게임 검증은 완료되지 않았다.
 - 재검증: Direct/JEV/executor/bridge/API 집중 테스트
-  `145 passed, 127 subtests passed`; Electron Node tests `4 passed`.
+  `145 passed, 127 subtests passed`; Electron Node tests `5 passed`.
   이는 계약/단위 테스트 증거이며 실게임 증거가 아니다.
 - Goal: 기존 thread Goal은 `blocked`다. 확장 목표를 새 Goal로 생성하려 했으나
   `cannot create a new goal because this thread has an unfinished goal`로 거부됐다.
