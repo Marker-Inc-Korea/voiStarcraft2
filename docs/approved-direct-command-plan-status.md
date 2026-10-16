@@ -18,8 +18,9 @@
   있어야 해당 체크를 완료할 수 있다.
 - Electron #190: `electron/`에 Main/Preload/Renderer 셸을 추가했다.
   loopback-only 연결, 입력 allowlist, sender 검증, sandbox/context isolation,
-  CSP, TypeScript API 선언 및 bounded history 조회를 제공한다.
-  Node 테스트 4개 통과. 실제 Electron UI 실행·기존 UI parity·실게임 E2E는 미검증이다.
+  CSP, TypeScript API 선언, bounded history 조회, semantic registry와 target-pin
+  저장, clarification/lifecycle event 표시를 제공한다. Node 테스트 5개 통과.
+  실제 Electron UI 실행·기존 UI parity·실게임 E2E는 미검증이다.
 - C++ #192: 네이티브 Direct lease 이벤트 소비 helper와 Python executor의
   opt-in 이벤트 writer를 추가했다. runtime epoch 고정, 중복/오래된 이벤트 거부,
   구분자 주입 거부를 테스트했다. **upstream 게임 루프 연결은 아직 없다.**

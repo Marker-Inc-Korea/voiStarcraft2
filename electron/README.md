@@ -15,9 +15,12 @@ read from `VOI_COMMANDER_TOKEN` in the main process only.
 
 The allowlisted event method polls `/api/history` with a monotonic `after` cursor,
 so lifecycle and clarification events can be rendered without exposing a raw
-HTTP client in the renderer.
+HTTP client in the renderer. The shell also exposes read-only semantic registry
+data and a validated target-pin form; coordinates, unit tags, and other raw
+runtime identities are rejected in preload/Main before they reach Python.
 
 Validation: `npm test` runs the IPC schema and loopback origin boundary checks.
-This shell is an initial migration surface, not full browser parity: registry
-editing, voice capture, lifecycle presentation, packaging and live SC2 desktop
-QA remain pending. Keep the browser companion available until those pass.
+This shell is an initial migration surface: voice capture, packaging/signing,
+and live SC2 desktop QA remain pending. Keep the browser companion available
+until those pass. Contract tests cover the typed IPC and semantic target-pin
+boundary; they are not real-game evidence.
