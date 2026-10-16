@@ -234,3 +234,57 @@ def test_unconfigured_layer_does_not_call_jev_endpoint() -> None:
     assert result.status == "not_eligible"
     assert result.route is not None
     assert fake.requests == []
+
+
+def test_non_object_endpoint_payload_is_typed_invalid_decision() -> None:
+    """A bad external payload must never escape into command execution."""
+    fake = FakeJEV(response=None)
+    result = asyncio.run(
+        route_policy_vector_with_jev(
+            _operation_vector(),
+            endpoint=fake,
+            eligible_layers=("operation",),
+            request_id="invalid-payload",
+        )
+    )
+    assert result.status == "invalid"
+    assert result.allowed is False
+    assert "response must be an object" in result.error
+
+
+def test_jev_response_requires_protocol_and_string_reason() -> None:
+    for response, expected in (
+        ({"request_id": "missing-version", "decision": "allow"}, "protocol_version mismatch"),
+        (
+            {
+                "protocol_version": JEV_PROTOCOL_VERSION,
+                "request_id": "bad-reason",
+                "decision": "allow",
+                "reason": 42,
+            },
+            "reason must be a string",
+        ),
+    ):
+        fake = FakeJEV(response=response)
+        result = asyncio.run(
+            route_policy_vector_with_jev(
+                _operation_vector(),
+                endpoint=fake,
+                eligible_layers=("operation",),
+                request_id=response["request_id"],
+            )
+        )
+        assert result.status == "invalid"
+        assert expected in result.error
+
+
+def test_jev_rejects_non_finite_timeout() -> None:
+    import math
+
+    for timeout in (math.inf, math.nan):
+        try:
+            JEVRouter(eligible_layers=("operation",), timeout_seconds=timeout)
+        except ValueError as error:
+            assert "timeout_seconds" in str(error)
+        else:
+            raise AssertionError("non-finite timeout must be rejected")

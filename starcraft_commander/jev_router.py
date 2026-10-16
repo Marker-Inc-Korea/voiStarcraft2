@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import math
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -94,7 +95,10 @@ class JEVRouteRequest:
         object.__setattr__(self, "route", dict(self.route))
         object.__setattr__(self, "eligible_layers", eligible)
         object.__setattr__(self, "allowed_tools", tools)
-        object.__setattr__(self, "protocol_version", str(self.protocol_version))
+        protocol_version = str(self.protocol_version).strip()
+        if protocol_version != JEV_PROTOCOL_VERSION:
+            raise ValueError("unsupported JEV protocol_version")
+        object.__setattr__(self, "protocol_version", protocol_version)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -153,7 +157,7 @@ class JEVRouter:
         timeout_seconds: float = JEV_DEFAULT_TIMEOUT_SECONDS,
         retries: int = JEV_DEFAULT_RETRIES,
     ) -> None:
-        if timeout_seconds <= 0:
+        if timeout_seconds <= 0 or not math.isfinite(float(timeout_seconds)):
             raise ValueError("JEV timeout_seconds must be positive")
         if type(retries) is not int or retries < 0 or retries > 3:
             raise ValueError("JEV retries must be an integer between 0 and 3")
@@ -215,6 +219,17 @@ class JEVRouter:
                 request_id=resolved_id,
                 status="unavailable",
                 reason="JEV authorization failed closed.",
+                audit={"jev_enabled": True, "command_layer": layer},
+                error=str(error),
+            )
+        except JEVInvalidDecisionError as error:
+            # A malformed transport payload is a typed authorization failure,
+            # never an exception that can escape into the command executor.
+            return JEVRouteDecision(
+                request_id=resolved_id,
+                status="invalid",
+                reason="JEV returned an invalid decision.",
+                route=None,
                 audit={"jev_enabled": True, "command_layer": layer},
                 error=str(error),
             )
@@ -288,7 +303,7 @@ class JEVRouter:
         response: Mapping[str, object],
         request: JEVRouteRequest,
     ) -> JEVDecision:
-        if response.get("protocol_version", JEV_PROTOCOL_VERSION) != JEV_PROTOCOL_VERSION:
+        if response.get("protocol_version") != JEV_PROTOCOL_VERSION:
             raise JEVInvalidDecisionError("JEV protocol_version mismatch")
         if str(response.get("request_id", "")) != request.request_id:
             raise JEVInvalidDecisionError("JEV request_id mismatch")
@@ -305,6 +320,9 @@ class JEVRouter:
         audit = response.get("audit", {})
         if not isinstance(audit, Mapping):
             raise JEVInvalidDecisionError("JEV audit must be an object")
+        reason = response.get("reason", "")
+        if not isinstance(reason, str):
+            raise JEVInvalidDecisionError("JEV reason must be a string")
         return decision
 
 

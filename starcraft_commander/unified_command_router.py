@@ -1345,8 +1345,10 @@ def create_command_tool_registry(
             # for the runtime map resolver. Raw coordinates/tags are never
             # accepted as MCP arguments; a live adapter may still validate the
             # pin against the current map observation before issuing an order.
-            metadata_map.setdefault("target_pin", pin.name)
-            metadata_map.setdefault("target_pin_metadata", dict(pin.metadata))
+            # Registry resolution is authoritative: callers cannot spoof the
+            # audit identity or metadata by supplying colliding fields.
+            metadata_map["target_pin"] = pin.name
+            metadata_map["target_pin_metadata"] = dict(pin.metadata)
         try:
             squad = semantic_registry.resolve_squad(subject)
         except KeyError:

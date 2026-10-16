@@ -1047,6 +1047,30 @@ def test_mcp_target_pin_is_resolved_before_direct_dispatch() -> None:
     assert unknown.error.startswith("KeyError:'unknown target pin:")
 
 
+def test_mcp_target_pin_audit_cannot_be_spoofed_by_metadata() -> None:
+    registry = create_command_tool_registry(
+        command_registry=DirectCommandRegistry(
+            target_pins=(TargetPin("입구", "self_ramp", {"source": "registry"}),),
+        ),
+        direct_executor=_RecordingExecutor(),
+    )
+    result = registry.call(
+        "sc2.direct.move_group",
+        {
+            "subject": "available combat units",
+            "target_pin": "입구",
+            "metadata": {
+                "target_pin": "spoofed",
+                "target_pin_metadata": {"source": "caller"},
+            },
+        },
+    )
+    assert result.ok is True
+    action = result.result["result"]["plan"]["actions"][0]
+    assert action["metadata"]["target_pin"] == "입구"
+    assert action["metadata"]["target_pin_metadata"] == {"source": "registry"}
+
+
 class _RecordingExecutor:
     bot = object()
 
