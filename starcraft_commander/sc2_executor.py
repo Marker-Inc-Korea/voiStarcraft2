@@ -25,7 +25,11 @@ from starcraft_commander.contracts import (
 )
 from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
 from starcraft_commander.direct_command_lifecycle import DirectCommandLease
-from starcraft_commander.direct_release import DirectReleaseListeners, same_callback
+from starcraft_commander.direct_release import (
+    DirectReleaseListeners,
+    direct_lease_event_writer_from_env,
+    same_callback,
+)
 
 
 SC2_UNIT_TYPE_IDS: Final[dict[str, str]] = {
@@ -643,6 +647,19 @@ class SC2RuntimeExecutor:
 
     def _emit_direct_release(self, lease: DirectCommandLease) -> None:
         """Invoke preserved and configured terminal-release listeners."""
+
+        # The native MicroMachine bridge is an opt-in append-only event sink.
+        # It runs alongside host callbacks and is protected by runtime epoch.
+        try:
+            writer = direct_lease_event_writer_from_env()
+            if writer is not None:
+                writer(lease)
+        except Exception as error:  # native bridge telemetry must not break SC2
+            self._lifecycle_errors.append(SC2ExecutionError(
+                message=f"direct lease event writer failed: {error}",
+                exception_type=type(error).__name__,
+                metadata={"command_id": lease.command_id},
+            ))
 
         callback = self.on_direct_release
         if callback is None:

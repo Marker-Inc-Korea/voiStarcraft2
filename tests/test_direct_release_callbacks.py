@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
+from starcraft_commander.direct_release import DirectLeaseEventWriter
 from starcraft_commander.micromachine_live_session import (
     MicroMachineLiveTextSession,
     StaticJsonPolicyModulationProvider,
@@ -51,6 +53,30 @@ def test_shared_callback_is_exactly_once_in_executor_then_session_order() -> Non
     _complete(lifecycle, "executor-first")
 
     assert released == ["executor-first"]
+
+
+def test_native_event_writer_serializes_terminal_release_with_epoch(tmp_path) -> None:
+    path = tmp_path / "direct-release.events"
+    writer = DirectLeaseEventWriter(path, "a" * 32)
+    lifecycle = DirectCommandLifecycle(game_loops_per_second=1)
+    executor = SC2RuntimeExecutor(direct_lifecycle=lifecycle, on_direct_release=writer)
+    lifecycle.dispatch(command_id="native-complete", issued_at_frame=0, ttl_seconds=5, completion_conditions=("done",))
+    lifecycle.observe("native-complete", frame=1, evidence={"done": True})
+    line = path.read_text().strip()
+    assert "protocol_version=voi-mm-bridge/v1" in line
+    assert "state=completed" in line and "runtime_instance_id=" + "a" * 32 in line
+    assert executor.lifecycle_errors == ()
+
+
+def test_native_event_writer_env_sink_is_wired_into_executor(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "env.events"
+    monkeypatch.setenv("VOI_MICROMACHINE_RELEASE_EVENTS", str(path))
+    monkeypatch.setenv("VOI_MICROMACHINE_RUNTIME_INSTANCE_ID", "b" * 32)
+    lifecycle = DirectCommandLifecycle(game_loops_per_second=1)
+    SC2RuntimeExecutor(direct_lifecycle=lifecycle)
+    lifecycle.dispatch(command_id="native-expired", issued_at_frame=0, ttl_seconds=1)
+    lifecycle.observe("native-expired", frame=2)
+    assert "state=expired" in path.read_text()
 
 
 def test_shared_callback_is_exactly_once_when_session_listener_precedes_executor() -> None:

@@ -4,12 +4,53 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import os
+from pathlib import Path
 from collections.abc import Awaitable, Callable, Sequence
 
 from starcraft_commander.contracts import SC2ExecutionError
 from starcraft_commander.direct_command_lifecycle import DirectCommandLease
 
 ReleaseCallback = Callable[[DirectCommandLease], object]
+
+
+class DirectLeaseEventWriter:
+    """Serialize terminal leases for the native MicroMachine bridge.
+
+    The append-only record is intentionally dependency-free and consumed by
+    ``voi_direct_lease_bridge.hpp``. Runtime identity is mandatory so a late
+    callback from an older game cannot resume a newer owner.
+    """
+
+    def __init__(self, path: str | os.PathLike[str], runtime_instance_id: str) -> None:
+        self.path = Path(path)
+        self.runtime_instance_id = str(runtime_instance_id).strip()
+        if len(self.runtime_instance_id) != 32 or any(
+            char not in "0123456789abcdef" for char in self.runtime_instance_id
+        ):
+            raise ValueError("runtime_instance_id must be 32 lowercase hex characters")
+
+    def __call__(self, lease: DirectCommandLease) -> None:
+        if lease.state.value not in {"completed", "cancelled", "expired", "failed"}:
+            return
+        fields = {
+            "protocol_version": "voi-mm-bridge/v1",
+            "command_id": lease.command_id,
+            "state": lease.state.value,
+            "release_reason": lease.release_reason,
+            "runtime_instance_id": self.runtime_instance_id,
+        }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as output:
+            output.write(";".join(f"{key}={str(value).replace(';', '_')}" for key, value in fields.items()) + "\n")
+
+
+def direct_lease_event_writer_from_env() -> DirectLeaseEventWriter | None:
+    path = os.environ.get("VOI_MICROMACHINE_RELEASE_EVENTS", "").strip()
+    runtime = os.environ.get("VOI_MICROMACHINE_RUNTIME_INSTANCE_ID", "").strip()
+    if not path:
+        return None
+    return DirectLeaseEventWriter(path, runtime)
 
 
 def same_callback(left: object, right: object) -> bool:
