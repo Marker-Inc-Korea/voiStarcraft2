@@ -32,6 +32,7 @@ function createWindow() {
   win.webContents.setWindowOpenHandler(() => ({action:"deny"}));
   win.webContents.on("will-navigate", event => event.preventDefault());
   win.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  win.webContents.session.webRequest.onHeadersReceived((details, callback) => callback({responseHeaders:{...details.responseHeaders,"Content-Security-Policy":["default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'"]}}));
   win.loadFile(rendererFile);
 }
 app.whenReady().then(()=>{registerIpc();createWindow();app.on("activate",()=>{if(BrowserWindow.getAllWindows().length===0)createWindow();});});app.on("window-all-closed",()=>{if(process.platform!=="darwin")app.quit();});
