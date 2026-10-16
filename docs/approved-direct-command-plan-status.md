@@ -9,6 +9,13 @@
   Python 3.10/3.11/3.12 unit-contracts는 모두 통과했다. 후보/신뢰 검증기
   producer-isolation은 CTest 4.4.3에서 exact 10/10 증거 판정 실패 상태다.
   배포 검증은 기존 QA 헤더/스크립트 네 개의 명시적 허용 목록 누락을 발견했다.
+- CTest 4.4.3의 성공 요약 형식(`100% tests passed out of 10`)을 후보
+  provenance parser가 엄격하게 수용하도록 `479c0f1`에서 보강했다
+  (관련 집중 검증 `21 passed, 2 skipped, 20 subtests`). 단, 필수
+  `pre-live-producer-isolation`은 보안상 고정된 trusted verifier `2473e63`을
+  실행하므로 이 PR의 parser 수정으로 바뀌지 않는다. trusted pin을 후보
+  브랜치로 바꾸거나 보호를 우회하지 않았으며, 별도 검토된 verifier/pin 갱신이
+  있어야 해당 체크를 완료할 수 있다.
 - Electron #190: `electron/`에 Main/Preload/Renderer 셸을 추가했다.
   loopback-only 연결, 입력 allowlist, sender 검증, sandbox/context isolation,
   CSP, TypeScript API 선언 및 bounded history 조회를 제공한다.
