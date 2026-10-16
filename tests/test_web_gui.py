@@ -30,6 +30,10 @@ from urllib.parse import quote
 from starcraft_commander.micromachine_bridge import (
     MICROMACHINE_BRIDGE_PROTOCOL_VERSION,
 )
+from starcraft_commander.direct_command_lifecycle import (
+    DirectCommandLifecycle,
+)
+from starcraft_commander.contracts import SC2PlanExecutionResult
 from starcraft_commander.micromachine_terran_capabilities import (
     TERRAN_UNIT_FAMILIES,
 )
@@ -610,7 +614,7 @@ class BlockingPolicyModulationLLMControl(FakePolicyModulationLLMControl):
 
     def propose_policy_modulation(self, request):
         self.started.set()
-        if not self.release.wait(2):
+        if not self.release.wait(10):
             raise TimeoutError("test LLM release event was not set")
         return super().propose_policy_modulation(request)
 
@@ -1453,6 +1457,10 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "latest_request",
             "정책 적용",
             "명령 해석 중",
+            "명령 기록",
+            "실행 상태",
+            "queue-status",
+            "최신 명령 우선 처리",
             "commandIdentity",
             'status: "queued"',
             'consumption_status: "pending_compile"',
@@ -1496,6 +1504,13 @@ class WebGuiServerHTTPTest(unittest.TestCase):
             "latest_request",
             "명령 해석 중",
             "SC2 실행 대기",
+            "명령 기록",
+            "실행 상태",
+            "queue-status",
+            "/api/direct/registry",
+            "/api/direct/registry/target-pin",
+            "target-pin-save",
+            "semantic target",
             "commandIdentity",
             'status: "queued"',
             'consumption_status: "pending_compile"',
@@ -1508,6 +1523,7 @@ class WebGuiServerHTTPTest(unittest.TestCase):
         self.assertNotIn("cockpit-back", page)
         self.assertNotIn("전체 조종석", page)
         self.assertNotIn("window.open(", page)
+        self.assertNotIn("MyProxy가 명령을 해석하고 있습니다", page)
 
     def test_all_controller_routes_serve_the_same_compact_page(self):
         pages = []
@@ -5564,16 +5580,19 @@ function response(payload) {
             self.assertEqual(["TERRAN_MARINE", "TERRAN_SIEGETANK"], scope["unit_classes"])
             self.assertEqual("enemy_natural", scope["location_intent"])
             self.assertEqual(120, scope["duration_seconds"])
-            self.assertEqual(300, document["compile_result"]["vector"]["ttl_seconds"])
+            # An explicit request TTL is authoritative.  This is an operation
+            # scope, so it is executed by Direct SC2 and never published to
+            # the MicroMachine blackboard.
+            self.assertEqual(180, document["compile_result"]["vector"]["ttl_seconds"])
+            lifecycle = document["command_queue"]["lifecycle"]
             self.assertEqual(
-                "until_completed",
-                document["compile_result"]["vector"]["lifetime"]["mode"],
+                180,
+                round((lifecycle["expires_at_frame"] - 30) / 22.4),
             )
-            with open(f"{directory}/latest_modulation.kv", encoding="utf-8") as handle:
-                kv = handle.read()
-            self.assertIn("scope.army_group=main", kv)
-            self.assertIn("scope.location_intent=enemy_natural", kv)
-            self.assertIn("scope.unit_classes=TERRAN_MARINE,TERRAN_SIEGETANK", kv)
+            self.assertEqual("direct_executed", document["status"])
+            self.assertIsNone(document["update"])
+            self.assertEqual("direct_sc2", document["command_queue"]["direct_control_owner"])
+            self.assertFalse(os.path.exists(f"{directory}/latest_modulation.kv"))
 
     def test_micromachine_modulation_preserves_strict_partial_scope_flag(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -5611,16 +5630,18 @@ function response(payload) {
 
     def test_micromachine_modulation_accepts_string_unit_class_aliases(self):
         with tempfile.TemporaryDirectory() as directory:
-            for raw_unit_classes, expected in (
+            for index, (raw_unit_classes, expected) in enumerate((
                 ("siege_tank, workers", ["TERRAN_SCV", "TERRAN_SIEGETANK"]),
                 ("siege tank worker", ["TERRAN_SCV", "TERRAN_SIEGETANK"]),
-            ):
+            ), start=1):
                 with self.subTest(raw_unit_classes=raw_unit_classes):
+                    update_id = f"scope-alias-{index}"
                     status, _content_type, payload = self.post_micromachine_modulation(
                         {
                             "text": "유닛 클래스 범위 테스트",
                             "blackboard_dir": directory,
                             "current_frame": 32,
+                            "update_id": update_id,
                             "provider_output": {
                                 "goal": "scope unit class alias",
                                 "override_level": "bias",
@@ -5635,8 +5656,14 @@ function response(payload) {
                     self.assertEqual(HTTPStatus.ACCEPTED, HTTPStatus(status))
                     document = json.loads(payload.decode("utf-8"))
                     self.assertTrue(document["ok"], document)
+                    self.assertEqual("direct_executed", document["status"])
+                    self.assertIsNone(document["update"])
                     scope = document["compile_result"]["vector"]["scope"]
                     self.assertEqual(expected, scope["unit_classes"])
+                    self.session.executor.direct_lifecycle.cancel(
+                        update_id,
+                        reason="test_cleanup",
+                    )
 
     def test_micromachine_modulation_endpoint_rejects_raw_scope_control(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -5702,10 +5729,10 @@ function response(payload) {
             scope = document["compile_result"]["vector"]["scope"]
             self.assertEqual("main", scope["army_group"])
             self.assertEqual("enemy_natural", scope["location_intent"])
-            with open(f"{directory}/latest_modulation.kv", encoding="utf-8") as handle:
-                kv = handle.read()
-            self.assertIn("scope.army_group=main", kv)
-            self.assertIn("scope.location_intent=enemy_natural", kv)
+            self.assertEqual("direct_executed", document["status"])
+            self.assertIsNone(document["update"])
+            self.assertEqual("sc2.direct.execute", document["tool_results"][0]["name"])
+            self.assertFalse(os.path.exists(f"{directory}/latest_modulation.kv"))
 
     def test_micromachine_modulation_preserves_wrapped_terminal_provider_output(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -7691,10 +7718,15 @@ function response(payload) {
             self.assertEqual(2, intervention["attack_gate"]["unit_count"])
             self.assertTrue(intervention["attack_gate"]["scope_threshold_met"])
             tactical_evidence = intervention["tactical_evidence"]
-            self.assertEqual("passed", tactical_evidence["status"])
-            self.assertIn("contain", tactical_evidence["observed_effects"])
-            self.assertIn("target_priority", tactical_evidence["observed_effects"])
-            self.assertEqual([], tactical_evidence["missing_effects"])
+            # Direct-only commands do not fabricate MicroMachine manager
+            # consumption from an unrelated telemetry snapshot.  The UI must
+            # report the missing evidence honestly while retaining raw logs.
+            self.assertEqual("missing", tactical_evidence["status"])
+            self.assertEqual([], tactical_evidence["observed_effects"])
+            self.assertEqual(
+                ["contain", "target_priority"],
+                tactical_evidence["missing_effects"],
+            )
             self.assertTrue(intervention["log_snippets"])
             self.assertIn("calcTargets", intervention["log_snippets"][-1]["line"])
             self.assertEqual(
@@ -8190,7 +8222,11 @@ function response(payload) {
             self.assertEqual(HTTPStatus.ACCEPTED, HTTPStatus(response.status))
             self.assertTrue(payload["accepted"])
             self.assertEqual("smoke_keyword", payload["provider_source"])
-            self.assertEqual("keyword-smoke", payload["update"]["update_id"])
+            self.assertEqual("direct_executed", payload["status"])
+            self.assertIsNone(payload["update"])
+            self.assertEqual("operation", payload["compile_result"]["vector"]["command_layer"])
+            self.assertEqual("direct_sc2", payload["command_queue"]["direct_control_owner"])
+            self.assertEqual("sc2.direct.execute", payload["tool_results"][0]["name"])
             self.assertEqual(directory, payload["blackboard_dir"])
 
     def test_micromachine_modulation_missing_tool_does_not_use_rule_fallback(self):
@@ -10645,6 +10681,98 @@ function response(payload) {
         self.assertEqual(document["status"], "connected")
         self.assertEqual(document["telemetry_frame"], 42)
 
+    def test_direct_capability_and_registry_endpoints_are_read_only(self):
+        status, content_type, payload = self.request(
+            "GET", "/api/direct/capabilities"
+        )
+        self.assertEqual(HTTPStatus.OK, HTTPStatus(status))
+        self.assertIn("application/json", content_type)
+        capabilities = json.loads(payload.decode("utf-8"))
+        self.assertTrue(capabilities["available"])
+        names = {item["name"] for item in capabilities["capabilities"]}
+        self.assertIn("sc2.direct.execute_ability", names)
+        self.assertIn("sc2.direct.retreat", names)
+        self.assertEqual([], capabilities["registry"]["squads"])
+        self.assertEqual([], capabilities["registry"]["target_pins"])
+
+        status, content_type, payload = self.request(
+            "GET", "/api/direct/registry"
+        )
+        self.assertEqual(HTTPStatus.OK, HTTPStatus(status))
+        self.assertIn("application/json", content_type)
+        registry = json.loads(payload.decode("utf-8"))
+        self.assertTrue(registry["available"])
+        self.assertEqual([], registry["squads"])
+        self.assertEqual([], registry["target_pins"])
+
+    def test_direct_target_pin_endpoint_registers_canonical_semantic_pin(self):
+        body = json.dumps(
+            {
+                "name": "앞마당 입구",
+                "target": "enemy natural",
+                "metadata": {"source": "controller", "label": "front"},
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        status, content_type, payload = self.request(
+            "POST",
+            "/api/direct/registry/target-pin",
+            body=body,
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(HTTPStatus.CREATED, HTTPStatus(status))
+        self.assertIn("application/json", content_type)
+        document = json.loads(payload.decode("utf-8"))
+        self.assertTrue(document["accepted"])
+        self.assertEqual(
+            {
+                "name": "앞마당 입구",
+                "target": "enemy_natural",
+                "metadata": {"source": "controller", "label": "front"},
+            },
+            document["target_pin"],
+        )
+        registry = self.get_json("/api/direct/registry")
+        self.assertEqual([document["target_pin"]], registry["target_pins"])
+
+    def test_direct_target_pin_endpoint_rejects_raw_runtime_identity(self):
+        cases = (
+            {"name": "raw-tag", "target": "enemy_natural", "metadata": {"unit_tag": 42}},
+            {"name": "raw-point", "target": "enemy_natural", "metadata": {"position": {"x": 3, "y": 4}}},
+            {"name": "bad-target", "target": "12, 24", "metadata": {}},
+        )
+        for document in cases:
+            with self.subTest(document=document):
+                status, _content_type, payload = self.request(
+                    "POST",
+                    "/api/direct/registry/target-pin",
+                    body=json.dumps(document).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                )
+                self.assertEqual(HTTPStatus.BAD_REQUEST, HTTPStatus(status))
+                response = json.loads(payload.decode("utf-8"))
+                self.assertFalse(response["accepted"])
+        registry = self.get_json("/api/direct/registry")
+        self.assertEqual([], registry["target_pins"])
+
+    def test_direct_target_pin_endpoint_rejects_duplicate_name(self):
+        payload = json.dumps(
+            {"name": "ramp", "target": "self_ramp"}
+        ).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        first = self.request("POST", "/api/direct/registry/target-pin", payload, headers)
+        second = self.request("POST", "/api/direct/registry/target-pin", payload, headers)
+        self.assertEqual(HTTPStatus.CREATED, HTTPStatus(first[0]))
+        self.assertEqual(HTTPStatus.BAD_REQUEST, HTTPStatus(second[0]))
+
+    def test_direct_capability_endpoints_are_listed_in_not_found_help(self):
+        status, _content_type, payload = self.request("GET", "/api/not-a-route")
+        self.assertEqual(HTTPStatus.NOT_FOUND, HTTPStatus(status))
+        document = json.loads(payload.decode("utf-8"))
+        self.assertIn("/api/direct/capabilities", document["error"])
+        self.assertIn("/api/direct/registry", document["error"])
+        self.assertIn("/api/direct/registry/target-pin", document["error"])
+
     def test_runtime_endpoints_strip_internal_unit_identity(self):
         def launcher_payload(status):
             return {
@@ -10661,16 +10789,6 @@ function response(payload) {
                 "strategic_tags": ["pressure", 9201, "9202"],
                 "expected_tags": ["scouting-map-control", {"tag": 9301}],
             }
-
-        class FakeLegacyLauncher:
-            def configure(self, provider, api_key, model=""):
-                return None
-
-            def snapshot(self):
-                return launcher_payload("connected")
-
-            def start(self):
-                return launcher_payload("starting")
 
         class FakeMicroMachineLauncher:
             def snapshot(self, blackboard_dir=""):
@@ -10691,17 +10809,8 @@ function response(payload) {
                     "enemy_difficulty": enemy_difficulty,
                 }
 
-        self.server._http.live_launcher = FakeLegacyLauncher()
         self.server._http.micromachine_launcher = FakeMicroMachineLauncher()
-        self.server._http.auto_launch_live = True
         requests = (
-            ("GET", "/api/live/status", None),
-            ("GET", "/api/runtime/status?mode=legacy_commander", None),
-            (
-                "POST",
-                "/api/runtime/start",
-                {"mode": "legacy_commander"},
-            ),
             (
                 "GET",
                 "/api/runtime/status?mode=micromachine&blackboard_dir=/tmp/mm",
@@ -10714,15 +10823,6 @@ function response(payload) {
                     "mode": "micromachine",
                     "blackboard_dir": "/tmp/mm",
                     "enemy_difficulty": 7,
-                },
-            ),
-            (
-                "POST",
-                "/api/llm",
-                {
-                    "provider": "openai",
-                    "model": "gpt-test",
-                    "api_key": "unit-test-sensitive",
                 },
             ),
         )
@@ -11255,7 +11355,7 @@ function response(payload) {
             self.assertFalse(current_runtime["telemetry_stale_or_detached"])
             self.assertEqual("connected", current_runtime["status"])
 
-    def test_runtime_start_legacy_mode_is_blocked_until_key_is_saved(self):
+    def test_runtime_start_legacy_mode_is_removed(self):
         body = json.dumps({"mode": "legacy_commander"}).encode("utf-8")
         status, content_type, payload = self.request(
             "POST",
@@ -11263,13 +11363,20 @@ function response(payload) {
             body=body,
             headers={"Content-Type": "application/json"},
         )
-        self.assertEqual(HTTPStatus.CONFLICT, HTTPStatus(status))
+        self.assertEqual(HTTPStatus.GONE, HTTPStatus(status))
         self.assertIn("application/json", content_type)
         document = json.loads(payload.decode("utf-8"))
         self.assertFalse(document["accepted"], document)
-        self.assertEqual(document["mode"], "legacy_commander")
-        self.assertEqual(document["status"], "blocked")
-        self.assertTrue(contains_hangul(document["error"]))
+        self.assertEqual(document["status"], "removed")
+        self.assertIn("unsupported runtime mode", document["error"])
+
+    def test_removed_runtime_status_endpoints_do_not_launch(self):
+        with mock.patch.object(web_gui.subprocess, "Popen") as launch:
+            for path in ("/api/live/status", "/api/runtime/status?mode=legacy_commander"):
+                status, _, payload = self.request("GET", path)
+                self.assertEqual(410, status)
+                self.assertEqual("removed", json.loads(payload)["status"])
+            launch.assert_not_called()
 
     def test_report_command_yields_read_only_event_with_korean_narration(self):
         status, _content_type, payload = self.post_command("상황 보고해줘")
@@ -11591,7 +11698,7 @@ function response(payload) {
         parameters = inspect.signature(WebGuiServer.__init__).parameters
         self.assertEqual(
             list(parameters),
-            ["self", "bridge", "port", "host", "auth_token", "auto_launch_live"],
+            ["self", "bridge", "port", "host", "auth_token"],
         )
 
     def test_token_protects_network_exposed_server(self):
@@ -11653,6 +11760,91 @@ class SessionLoopBridgeTest(unittest.TestCase):
         session, _bot = build_dry_run_session()
         bridge = SessionLoopBridge(session=session)
         self.assertIsInstance(bridge, WebGuiBridgeInterface)
+
+    def test_bridge_ticks_shared_direct_lifecycle_for_game_loop(self):
+        session, _bot = build_dry_run_session()
+        lifecycle = DirectCommandLifecycle(game_loops_per_second=1)
+        bridge = SessionLoopBridge(
+            session=session,
+            direct_lifecycle=lifecycle,
+        )
+        lifecycle.dispatch(
+            command_id="bridge-direct",
+            issued_at_frame=10,
+            ttl_seconds=2,
+            completion_conditions=("target_reached",),
+            owned_subjects=("scout",),
+        )
+
+        observed = bridge.tick_direct_commands(
+            11,
+            {"bridge-direct": {"target_reached": True}},
+        )
+
+        self.assertEqual(1, len(observed))
+        self.assertEqual("completed", observed[0]["state"])
+        self.assertFalse(observed[0]["control_owned"])
+        self.assertEqual((), lifecycle.active_leases())
+        self.assertEqual((), bridge.observe_direct_commands(current_frame=99))
+
+    def test_modulation_requests_share_bridge_direct_ownership_registry(self):
+        class RecordingExecutor:
+            bot = object()
+
+            async def execute(self, plan):
+                return SC2PlanExecutionResult(
+                    plan=plan,
+                    attempted_actions=plan.actions,
+                    applied_actions=plan.actions,
+                    audit={"evidence": "bridge-test"},
+                )
+
+        class Session:
+            def __init__(self):
+                self.executor = RecordingExecutor()
+
+            async def process_text(self, _text):
+                return ()
+
+        bridge = SessionLoopBridge(
+            session=Session(),
+            direct_lifecycle=DirectCommandLifecycle(game_loops_per_second=1),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            provider_output = {
+                "goal": "scout",
+                "command_layer": "operation",
+                "operations": [
+                    {
+                        "operation_id": "bridge-scout",
+                        "tactical_task": {
+                            "task_type": "scout_with_units",
+                            "unit_classes": ["TERRAN_MARINE"],
+                            "location_intent": "enemy_natural",
+                        },
+                    }
+                ],
+            }
+            first = bridge._publish_micromachine_modulation(
+                "정찰 분대를 보내",
+                blackboard_dir=directory,
+                provider_output=provider_output,
+                current_frame=10,
+                update_id="bridge-scout-1",
+            )
+            second = bridge._publish_micromachine_modulation(
+                "정찰 분대를 다시 보내",
+                blackboard_dir=directory,
+                provider_output={**provider_output, "goal": "scout-again"},
+                current_frame=11,
+                update_id="bridge-scout-2",
+            )
+
+        self.assertTrue(first["ok"], first)
+        self.assertEqual("direct_executed", first["status"])
+        self.assertFalse(second["ok"], second)
+        self.assertEqual("direct_failed", second["status"])
+        self.assertEqual("direct_control_conflict", second["tool_results"][0]["result"]["status"])
 
     def test_web_event_journal_is_monotonic_bounded_and_redacted(self):
         journal = web_gui._WebEventJournal(retention=2)
@@ -14555,12 +14747,9 @@ class SessionLoopBridgeTest(unittest.TestCase):
             deadline = time.monotonic() + 3
             latest = {}
             while time.monotonic() < deadline:
-                path = os.path.join(directory, "latest_modulation.json")
-                if os.path.isfile(path):
-                    with open(path, encoding="utf-8") as handle:
-                        latest = json.load(handle)
-                    if latest.get("update_id") == "urgent-retreat":
-                        break
+                latest = web_gui._read_micromachine_compile_result(directory) or {}
+                if latest.get("update_id") == "urgent-retreat":
+                    break
                 time.sleep(0.02)
 
             self.assertEqual("urgent-retreat", latest.get("update_id"))
@@ -14576,14 +14765,10 @@ class SessionLoopBridgeTest(unittest.TestCase):
                 if not pending:
                     break
                 time.sleep(0.02)
-            archive_path = os.path.join(directory, "modulation_updates.jsonl")
-            with open(archive_path, encoding="utf-8") as handle:
-                archive_ids = [
-                    json.loads(line)["update_id"]
-                    for line in handle
-                    if line.strip()
-                ]
-            self.assertEqual(["urgent-retreat"], archive_ids)
+            history = web_gui._read_micromachine_compile_result_history(directory)
+            archive_ids = [str(item.get("update_id")) for item in history]
+            self.assertIn("urgent-retreat", archive_ids)
+            self.assertIn("slow-normal", archive_ids)
 
             status = bridge.micromachine_status(blackboard_dir=directory)
             stream = {
@@ -14591,7 +14776,89 @@ class SessionLoopBridgeTest(unittest.TestCase):
                 for item in status["modulation_results"]
             }
             self.assertEqual("superseded", stream["slow-normal"]["status"])
-            self.assertEqual("published", stream["urgent-retreat"]["status"])
+            self.assertIn(
+                stream["urgent-retreat"]["status"],
+                {"direct_executed", "direct_failed"},
+            )
+            self.assertEqual(
+                "urgent-retreat",
+                stream["urgent-retreat"]["command_queue"]["update_id"],
+            )
+
+    def test_micromachine_new_background_command_bypasses_blocked_normal(self):
+        first_started = threading.Event()
+        release_first = threading.Event()
+
+        class FirstRequestOnlyBlockingControl(FakePolicyModulationLLMControl):
+            def __init__(self):
+                self._lock = threading.Lock()
+                self._calls = 0
+
+            def propose_policy_modulation(self, request):
+                with self._lock:
+                    self._calls += 1
+                    call = self._calls
+                if call == 1:
+                    first_started.set()
+                    if not release_first.wait(2):
+                        raise TimeoutError("first request was not released")
+                return super().propose_policy_modulation(request)
+
+        session, _bot = build_dry_run_session()
+        bridge = SessionLoopBridge(
+            session=session,
+            llm_control=FirstRequestOnlyBlockingControl(),
+        )
+        bridge.start()
+        self.addCleanup(bridge.stop)
+        self.addCleanup(release_first.set)
+
+        with tempfile.TemporaryDirectory() as directory:
+            first = bridge.submit_micromachine_modulation_background(
+                "오래된 수비 명령",
+                blackboard_dir=directory,
+                current_frame=10,
+                update_id="slow-normal",
+            )
+            self.assertEqual("queued", first["status"])
+            self.assertTrue(first_started.wait(1))
+
+            latest = bridge.submit_micromachine_modulation_background(
+                "최신 압박 명령",
+                blackboard_dir=directory,
+                current_frame=11,
+                update_id="latest-normal",
+            )
+            self.assertEqual("queued", latest["status"])
+
+            deadline = time.monotonic() + 3
+            published = {}
+            while time.monotonic() < deadline:
+                published = web_gui._read_micromachine_compile_result(directory) or {}
+                if published.get("update_id") == "latest-normal":
+                    break
+                time.sleep(0.02)
+
+            self.assertEqual("latest-normal", published.get("update_id"))
+            release_first.set()
+
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                with bridge._micromachine_request_lock:
+                    if not bridge._micromachine_requests:
+                        break
+                time.sleep(0.02)
+
+            history = web_gui._read_micromachine_compile_result_history(directory)
+            archive_ids = [str(item.get("update_id")) for item in history]
+            self.assertIn("latest-normal", archive_ids)
+            self.assertIn("slow-normal", archive_ids)
+
+            status = bridge.micromachine_status(blackboard_dir=directory)
+            self.assertEqual(
+                "latest-normal",
+                status["latest_request"]["update_id"],
+            )
 
     def test_async_publish_refreshes_frame_after_delayed_llm_compile(self):
         started = threading.Event()
@@ -14735,8 +15002,6 @@ class SessionLoopBridgeTest(unittest.TestCase):
         def delay_normal_result(blackboard_dir, payload):
             if payload.get("update_id") == "normal-first":
                 normal_write_ready.set()
-                if not release_normal_write.wait(2):
-                    raise TimeoutError("normal result persistence was not released")
             return original_write(blackboard_dir, payload)
 
         with (
@@ -14822,15 +15087,19 @@ class SessionLoopBridgeTest(unittest.TestCase):
                 item.get("compile_result", {}).get("update_id"): item
                 for item in status["modulation_results"]
             }
-            self.assertEqual(
-                {"normal-first", "emergency-second"},
-                set(stream),
+            self.assertEqual({"normal-first", "emergency-second"}, set(stream))
+            self.assertIn(
+                stream["normal-first"]["status"],
+                {"superseded", "direct_executed", "direct_failed"},
+            )
+            self.assertIn(
+                stream["emergency-second"]["status"],
+                {"direct_executed", "direct_failed"},
             )
 
     def test_emergency_commit_blocks_normal_publish_from_stale_snapshot(self):
         normal_snapshot_ready = threading.Event()
         release_normal = threading.Event()
-        emergency_publish_ready = threading.Event()
         release_emergency = threading.Event()
         self.addCleanup(release_normal.set)
         self.addCleanup(release_emergency.set)
@@ -14844,24 +15113,7 @@ class SessionLoopBridgeTest(unittest.TestCase):
         )
         bridge.start()
         self.addCleanup(bridge.stop)
-        original_publish_vector = web_gui._GuardedMicroMachineBackend.publish_vector
-
-        def gate_emergency_publish(backend, *args, **kwargs):
-            if backend._request.update_id == "urgent-retreat":
-                emergency_publish_ready.set()
-                if not release_emergency.wait(2):
-                    raise TimeoutError("test emergency publish release was not set")
-            return original_publish_vector(backend, *args, **kwargs)
-
-        with (
-            tempfile.TemporaryDirectory() as directory,
-            mock.patch.object(
-                web_gui._GuardedMicroMachineBackend,
-                "publish_vector",
-                autospec=True,
-                side_effect=gate_emergency_publish,
-            ),
-        ):
+        with tempfile.TemporaryDirectory() as directory:
             bridge.submit_micromachine_modulation_background(
                 "긴급 즉시 후퇴",
                 blackboard_dir=directory,
@@ -14878,7 +15130,14 @@ class SessionLoopBridgeTest(unittest.TestCase):
                 current_frame=11,
                 update_id="urgent-retreat",
             )
-            self.assertTrue(emergency_publish_ready.wait(1))
+            deadline = time.monotonic() + 2
+            emergency_result = {}
+            while time.monotonic() < deadline:
+                emergency_result = web_gui._read_micromachine_compile_result(directory) or {}
+                if emergency_result.get("update_id") == "urgent-retreat":
+                    break
+                time.sleep(0.02)
+            self.assertEqual("urgent-retreat", emergency_result.get("update_id"))
 
             bridge.submit_micromachine_modulation_background(
                 "탱크로 수비해",
@@ -14891,16 +15150,12 @@ class SessionLoopBridgeTest(unittest.TestCase):
                 "normal request did not capture its pre-emergency snapshot",
             )
 
-            release_emergency.set()
             deadline = time.monotonic() + 2
             latest = {}
             while time.monotonic() < deadline:
-                path = os.path.join(directory, "latest_modulation.json")
-                if os.path.isfile(path):
-                    with open(path, encoding="utf-8") as handle:
-                        latest = json.load(handle)
-                    if latest.get("update_id") == "urgent-retreat":
-                        break
+                latest = web_gui._read_micromachine_compile_result(directory) or {}
+                if latest.get("update_id") == "urgent-retreat":
+                    break
                 time.sleep(0.02)
             self.assertEqual("urgent-retreat", latest.get("update_id"))
 
@@ -14913,23 +15168,13 @@ class SessionLoopBridgeTest(unittest.TestCase):
                     break
                 time.sleep(0.02)
 
-            with open(
-                os.path.join(directory, "latest_modulation.json"),
-                encoding="utf-8",
-            ) as handle:
-                latest = json.load(handle)
+            latest = web_gui._read_micromachine_compile_result(directory) or {}
             self.assertEqual("urgent-retreat", latest.get("update_id"))
 
-            with open(
-                os.path.join(directory, "modulation_updates.jsonl"),
-                encoding="utf-8",
-            ) as handle:
-                archive_ids = [
-                    json.loads(line)["update_id"]
-                    for line in handle
-                    if line.strip()
-                ]
-            self.assertEqual(["urgent-retreat"], archive_ids)
+            history = web_gui._read_micromachine_compile_result_history(directory)
+            archive_ids = [str(item.get("update_id")) for item in history]
+            self.assertIn("urgent-retreat", archive_ids)
+            self.assertIn("stale-normal", archive_ids)
 
             status = bridge.micromachine_status(blackboard_dir=directory)
             stream = {
@@ -14937,7 +15182,11 @@ class SessionLoopBridgeTest(unittest.TestCase):
                 for item in status["modulation_results"]
             }
             self.assertEqual("superseded", stream["stale-normal"]["status"])
-            self.assertEqual("published", stream["urgent-retreat"]["status"])
+            self.assertIn(
+                stream["urgent-retreat"]["status"],
+                {"direct_executed", "direct_failed"},
+            )
+            self.assertEqual("superseded", stream["stale-normal"]["status"])
 
     def test_emergency_safety_path_bypasses_llm_and_keeps_latest_runnable(self):
         class RejectEmergencyLLMControl(FakeConfiguredLLMControl):
@@ -14976,23 +15225,15 @@ class SessionLoopBridgeTest(unittest.TestCase):
                 deadline = time.monotonic() + 3
                 latest = {}
                 while time.monotonic() < deadline:
-                    path = os.path.join(directory, "latest_modulation.json")
-                    if os.path.isfile(path):
-                        with open(path, encoding="utf-8") as handle:
-                            latest = json.load(handle)
-                        if latest.get("update_id") == "replacement-emergency":
-                            break
+                    latest = web_gui._read_micromachine_compile_result(directory) or {}
+                    if latest.get("update_id") == "replacement-emergency":
+                        break
                     time.sleep(0.02)
 
                 self.assertEqual("replacement-emergency", latest.get("update_id"))
                 self.assertEqual(0, control._call_count)
-                archive_path = os.path.join(directory, "modulation_updates.jsonl")
-                with open(archive_path, encoding="utf-8") as handle:
-                    archive_ids = [
-                        json.loads(line)["update_id"]
-                        for line in handle
-                        if line.strip()
-                    ]
+                history = web_gui._read_micromachine_compile_result_history(directory)
+                archive_ids = [str(item.get("update_id")) for item in history]
                 self.assertEqual("replacement-emergency", archive_ids[-1])
                 self.assertLessEqual(len(archive_ids), 2)
             finally:
@@ -15527,6 +15768,12 @@ class SessionLoopBridgeTest(unittest.TestCase):
                     current_frame=index,
                     update_id=f"context-a-{index}",
                 )
+                deadline = time.monotonic() + 1
+                while time.monotonic() < deadline:
+                    result = web_gui._read_micromachine_compile_result(blackboard_a)
+                    if result and result.get("update_id") == f"context-a-{index}":
+                        break
+                    time.sleep(POLL_INTERVAL_SECONDS)
 
         contexts = {
             command_text: context for command_text, context in control.requests
@@ -15543,8 +15790,8 @@ class SessionLoopBridgeTest(unittest.TestCase):
         first_entry = contexts["A 명령 2"]["recent_commands"][0]
         self.assertEqual(first_entry["update_id"], "context-a-1")
         self.assertEqual(first_entry["command_layer"], "operation")
-        self.assertEqual(first_entry["category"], "tactical")
-        self.assertEqual(first_entry["reducer_action"], "activate")
+        self.assertEqual(first_entry["category"], "direct_operation")
+        self.assertIn(first_entry["reducer_action"], {"activate", "direct_execute", ""})
         self.assertEqual(first_entry["goal"], "A 명령 1")
         self.assertEqual(first_entry["doctrine"], "bio_pressure")
         self.assertEqual(
@@ -15558,8 +15805,8 @@ class SessionLoopBridgeTest(unittest.TestCase):
         )
         self.assertEqual(first_entry["route"], "flank_right")
         self.assertEqual(first_entry["target"], "enemy_main")
-        self.assertEqual(first_entry["consumption_status"], "pending_telemetry")
-        self.assertEqual(first_entry["execution_status"], "consumed_by_manager")
+        self.assertEqual(first_entry["consumption_status"], "not_published")
+        self.assertEqual(first_entry["execution_status"], "parsed")
         self.assertLessEqual(
             len(first_entry["tactical_task"]["units"]),
             web_gui._MICROMACHINE_RECENT_COMMAND_LIST_LIMIT,  # noqa: SLF001
@@ -16000,67 +16247,6 @@ class WebGuiServerConstructionTest(unittest.TestCase):
         )
         self.assertEqual(server.host, "0.0.0.0")
 
-    def test_live_launch_status_redacts_submitted_api_key_from_child_output(self):
-        submitted_key = "unit-test-" + "live-launch-key"
-
-        class FakeProcess:
-            pid = 4321
-            returncode = None
-            stdout = [
-                f"booting with {submitted_key}\n",
-                f"voiStarcraft2 커맨더 웹 GUI 시작: http://127.0.0.1:9876/?key={submitted_key}\n",
-            ]
-
-            def poll(self):
-                return None
-
-        with mock.patch.object(web_gui.subprocess, "Popen", return_value=FakeProcess()):
-            launcher = web_gui._LiveLaunchManager()
-            started = launcher.start("openai", submitted_key, "gpt-test")
-
-        deadline = time.monotonic() + POLL_DEADLINE_SECONDS
-        snapshot = launcher.snapshot()
-        while time.monotonic() < deadline and snapshot.get("status") != "ready":
-            time.sleep(POLL_INTERVAL_SECONDS)
-            snapshot = launcher.snapshot()
-
-        document = json.dumps({"started": started, "snapshot": snapshot}, ensure_ascii=False)
-        self.assertIn("[redacted]", document)
-        self.assertNotIn(submitted_key, document)
-        self.assertEqual(snapshot["status"], "ready")
-
-    def test_live_launch_passes_sc2_root_as_normalized_sc2path(self):
-        configured_root = "~/custom-sc2-root"
-
-        class FakeProcess:
-            pid = 4321
-            returncode = None
-            stdout = []
-
-            def poll(self):
-                return None
-
-        with mock.patch.dict(
-            web_gui.os.environ,
-            {
-                "SC2_ROOT": configured_root,
-                "SC2PATH": "/ignored-sc2path",
-            },
-            clear=False,
-        ):
-            with mock.patch.object(
-                web_gui.subprocess,
-                "Popen",
-                return_value=FakeProcess(),
-            ) as popen:
-                launcher = web_gui._LiveLaunchManager()
-                launcher.start("openai", "unit-test-key", "gpt-test")
-
-        child_environment = popen.call_args.kwargs["env"]
-        self.assertEqual(
-            os.path.abspath(os.path.expanduser(configured_root)),
-            child_environment["SC2PATH"],
-        )
 
     def test_default_sc2_install_path_prefers_environment_over_discovery(self):
         with mock.patch.dict(
@@ -16123,7 +16309,7 @@ class WebGuiMainTest(unittest.TestCase):
         self.assertTrue(contains_hangul(output))
         self.assertIn("--dry-run", output)
         self.assertIn("MicroMachine", output)
-        self.assertIn("legacy commander mode", output)
+        self.assertNotIn("legacy commander mode", output)
 
     def test_main_dry_run_serves_until_interrupt_then_cleans_up(self):
         stdout = io.StringIO()

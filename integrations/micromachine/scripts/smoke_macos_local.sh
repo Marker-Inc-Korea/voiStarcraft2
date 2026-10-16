@@ -70,6 +70,7 @@ MICROMACHINE_DIR="${MICROMACHINE_DIR:-/private/tmp/voi-micromachine-runtime/Micr
 ROOT_DIR="${ROOT_DIR:-$(dirname "${MICROMACHINE_DIR}")}"
 S2CLIENT_DIR="${S2CLIENT_DIR:-${ROOT_DIR}/s2client-api}"
 MICROMACHINE_BUILD_DIR="${MICROMACHINE_BUILD_DIR:-${MICROMACHINE_DIR}/build-latest-api}"
+SMOKE_WORKING_DIR="${SMOKE_WORKING_DIR:-${MICROMACHINE_DIR}/bin}"
 MICROMACHINE_BUILD_IDENTITY_REPORT="${MICROMACHINE_BUILD_IDENTITY_REPORT:-${MICROMACHINE_BUILD_DIR}/voi_build_identity.json}"
 SMOKE_REQUIRE_BUILD_IDENTITY="${SMOKE_REQUIRE_BUILD_IDENTITY:-1}"
 
@@ -835,13 +836,21 @@ log_text = "\n".join(path.read_text(errors="replace") for path in log_paths if p
 non_retryable_terms = (
     "Failed to place Barracks",
     "Failed to place Refinery",
-    "Cancel building TERRAN_SUPPLYDEPOT :",
     "Cancel building TERRAN_BARRACKS :",
     "Cancel building TERRAN_REFINERY :",
     "bootstrap_no_start_units",
 )
 if any(term in log_text for term in non_retryable_terms):
     raise SystemExit(0)
+# A supply-depot placement can be rejected once and then recover on the
+# fallback spiral. Treat it as non-retryable only when no later successful
+# supply command exists in the same runtime log.
+cancel_marker = "Cancel building TERRAN_SUPPLYDEPOT :"
+supply_success = "build command type=TERRAN_SUPPLYDEPOT"
+if cancel_marker in log_text:
+    last_cancel = log_text.rfind(cancel_marker)
+    if supply_success not in log_text[last_cancel:]:
+        raise SystemExit(0)
 macro_terms = (
     "build command type=TERRAN_SUPPLYDEPOT",
     "build command type=TERRAN_BARRACKS",
@@ -887,23 +896,36 @@ if [[ ! "${VOI_MICROMACHINE_RUNTIME_INSTANCE_ID}" =~ ^[0-9a-f]{32}$ ]]; then
 fi
 export VOI_MICROMACHINE_RUNTIME_INSTANCE_ID
 
-REQUIRED_MACRO_EVIDENCE=(
-  "build command type=TERRAN_SUPPLYDEPOT"
-  "TERRAN_SUPPLYDEPOT UnderConstruction"
-  "build command type=TERRAN_BARRACKS"
-  "TERRAN_BARRACKS UnderConstruction"
-  "build command type=TERRAN_REFINERY"
-)
-
-POST_BARRACKS_UNIT_EVIDENCE=(
-  "create unit item=Marine result=1"
-  "create unit item=Reaper result=1"
-)
+case "${SMOKE_STRATEGY_PROFILE_NAME}" in
+  tank_defensive_hold|siege_contain|contain_enemy_natural|mech_transition|tech_transition)
+    REQUIRED_MACRO_EVIDENCE=(
+      "build command type=TERRAN_SUPPLYDEPOT"
+      "build command type=TERRAN_REFINERY"
+      "build command type=TERRAN_FACTORY"
+    )
+    POST_BARRACKS_UNIT_EVIDENCE=(
+      "create unit item=Hellion result=1"
+      "create unit item=SiegeTank result=1"
+    )
+    ;;
+  *)
+    REQUIRED_MACRO_EVIDENCE=(
+      "build command type=TERRAN_SUPPLYDEPOT"
+      "TERRAN_SUPPLYDEPOT UnderConstruction"
+      "build command type=TERRAN_BARRACKS"
+      "TERRAN_BARRACKS UnderConstruction"
+      "build command type=TERRAN_REFINERY"
+    )
+    POST_BARRACKS_UNIT_EVIDENCE=(
+      "create unit item=Marine result=1"
+      "create unit item=Reaper result=1"
+    )
+    ;;
+esac
 
 FORBIDDEN_MACRO_FAILURES=(
   "Failed to place Barracks"
   "Failed to place Refinery"
-  "Cancel building TERRAN_SUPPLYDEPOT :"
   "Cancel building TERRAN_BARRACKS :"
   "Cancel building TERRAN_REFINERY :"
 )
@@ -2252,11 +2274,11 @@ else
   publish_profile "${SMOKE_STRATEGY_PROFILE_NAME}" "${SMOKE_ACTIVE_STRATEGY_UPDATE_ID}" "0"
   AGGRESSIVE_PROFILE_PUBLISHED=1
 fi
+capture_preexisting_sc2_port_pids
 clean_sc2_ports_before_launch
 settle_after_sc2_port_cleanup
-capture_preexisting_sc2_port_pids
 
-python3 - <<'PY' "${MICROMACHINE_DIR}/bin/BotConfig.txt" "${MAP_FILE}"
+python3 - <<'PY' "${SMOKE_WORKING_DIR}/BotConfig.txt" "${MAP_FILE}"
 import json
 import os
 import sys
@@ -2305,7 +2327,7 @@ path.write_text(json.dumps(config, indent=4) + "\n")
 PY
 
 (
-  cd "${MICROMACHINE_DIR}/bin"
+  cd "${SMOKE_WORKING_DIR}"
   VOI_MICROMACHINE_BLACKBOARD_DIR="${BLACKBOARD_DIR}" \
     VOI_SC2_EXTRA_ARGS="${VOI_SC2_EXTRA_ARGS:-}" \
     VOI_SC2_CREATEGAME_MAP_DATA="${VOI_SC2_CREATEGAME_MAP_DATA}" \
@@ -2336,7 +2358,7 @@ while kill -0 "${BOT_PID}" 2>/dev/null; do
       print_bot_logs
       exit 1
     fi
-    if [[ "${SMOKE_MANUAL_LIVE_MODE}" == "1" && -n "${current_telemetry_frame}" && "${current_telemetry_frame}" -ge "${NO_START_UNITS_FRAME}" ]] && has_required_macro_evidence && has_live_hold_preflight_evidence; then
+    if [[ "${SMOKE_MANUAL_LIVE_MODE}" == "1" && "${SMOKE_SKIP_LIVE_PREFLIGHT:-0}" != "1" && -n "${current_telemetry_frame}" && "${current_telemetry_frame}" -ge "${NO_START_UNITS_FRAME}" ]] && has_required_macro_evidence && has_live_hold_preflight_evidence; then
       print_bot_logs >/dev/null 2>&1
       echo "MicroMachine manual live hold preflight passed; keeping runtime alive for manual DSL commands."
       echo "MicroMachine manual live autonomy active; automatic aggressive smoke profile is disabled."

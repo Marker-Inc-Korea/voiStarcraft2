@@ -1,0 +1,48 @@
+diff --git a/src/CombatCommander.h b/src/CombatCommander.h
+--- a/src/CombatCommander.h
++++ b/src/CombatCommander.h
+@@ -238,6 +238,7 @@ struct VoiOperationState
+ 	bool completed = false;
+ 	std::string completionReason;
+ 	uint32_t completionFrame = 0;
++	bool retreatConfirmed = false;
+ 	bool targetReached = false;
+ 	bool submissionObserved = false;
+ 	std::string blockedReason;
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -4169,3 +4169,23 @@ void CombatCommander::observeVoiOperations()
+ 		operation.targetReached =
+ 			operation.targetReached || targetReached;
++		const int retreatRequiredCount =
++			std::max(1, operation.minUnits);
++		const int retreatHomeCount = static_cast<int>(
++			std::count_if(
++				observedUnits.begin(),
++				observedUnits.end(),
++				[&home](const Unit & unit)
++				{
++					return Util::DistSq(
++						unit.getPosition(),
++						home) <= 8.0f * 8.0f;
++				}));
++		const bool retreatConfirmed =
++			operation.squadOrderType == SquadOrderTypes::Retreat
++			&& operation.submissionObserved
++			&& operation.assignedCount >= retreatRequiredCount
++			&& operation.maxHomeDistance >= 12.0f
++			&& retreatHomeCount >= retreatRequiredCount;
++		operation.retreatConfirmed =
++			operation.retreatConfirmed || retreatConfirmed;
+ 		bool objectiveCompleted = false;
+@@ -8383,6 +8402,9 @@ void CombatCommander::writeVoiOperationTelemetry(
+ 			<< "\"completed\":"
+ 			<< (operation.completed ? "true" : "false")
+ 			<< ","
++			<< "\"retreat_confirmed\":"
++			<< (operation.retreatConfirmed ? "true" : "false")
++			<< ","
+ 			<< "\"edit_action\":\""
+ 			<< voiOperationJsonEscape(
+ 				operation.editAction)

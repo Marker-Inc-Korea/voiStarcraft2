@@ -1,5 +1,6 @@
 """Tests for safe SC2 chat-to-MicroMachine modulation boundary."""
 
+from starcraft_commander.contracts import SC2PlanExecutionResult
 from starcraft_commander.micromachine_chat_modulation import (
     ChatBoundaryStatus,
     ChatEventDeduper,
@@ -9,9 +10,27 @@ from starcraft_commander.micromachine_chat_modulation import (
 )
 from starcraft_commander.micromachine_live_session import (
     KeywordPolicyModulationProvider,
+    LiveModulationStatus,
     MicroMachineLiveTextSession,
 )
 from starcraft_commander.micromachine_runtime import MicroMachineInMemoryBlackboard
+
+
+class _TestDirectExecutor:
+    """Explicit fake Direct runtime for chat commands in unit tests."""
+
+    bot = object()
+
+    def __init__(self) -> None:
+        self.plans = []
+
+    async def execute(self, plan):
+        self.plans.append(plan)
+        return SC2PlanExecutionResult(
+            plan=plan,
+            attempted_actions=plan.actions,
+            applied_actions=plan.actions,
+        )
 
 
 def test_chat_telemetry_without_chat_events_reports_unsupported() -> None:
@@ -32,7 +51,12 @@ def test_chat_telemetry_without_chat_events_reports_unsupported() -> None:
 
 def test_chat_event_routes_eligible_user_text_to_live_modulation() -> None:
     backend = MicroMachineInMemoryBlackboard()
-    session = MicroMachineLiveTextSession(backend, KeywordPolicyModulationProvider())
+    executor = _TestDirectExecutor()
+    session = MicroMachineLiveTextSession(
+        backend,
+        KeywordPolicyModulationProvider(),
+        direct_executor=executor,
+    )
     bridge = MicroMachineChatModulationBridge(session)
 
     result = bridge.ingest_telemetry(
@@ -54,14 +78,69 @@ def test_chat_event_routes_eligible_user_text_to_live_modulation() -> None:
     assert result.status is ChatBoundaryStatus.ROUTED
     assert result.routed_count == 1
     assert result.events[0].status is ChatEventStatus.ROUTED
-    assert backend.latest_update is not None
-    assert backend.latest_update.update_id == "chat-msg-1"
-    assert backend.latest_update.vector.goal == "탱크로 안전하게 수비해"
+    assert result.events[0].result is not None
+    assert result.events[0].result.update is None
+    assert result.events[0].result.status is LiveModulationStatus.DIRECT_EXECUTED
+    assert result.events[0].result.command_text == "탱크로 안전하게 수비해"
+    assert result.events[0].result.compile_result.vector is not None
+    assert (
+        result.events[0].result.compile_result.vector.goal
+        == "탱크로 안전하게 수비해"
+    )
+    assert result.events[0].result.command_queue["active_command_id"] == "chat-msg-1"
+    assert len(executor.plans) == 1
+    assert (
+        result.events[0].result.tool_results[0]["result"]["result"]["audit"]
+        ["direct_command_lifecycle"]["command_id"]
+        == "chat-msg-1"
+    )
+    assert backend.latest_update is None
+
+
+def test_chat_event_without_runtime_fails_closed_without_publish() -> None:
+    backend = MicroMachineInMemoryBlackboard()
+    session = MicroMachineLiveTextSession(
+        backend,
+        KeywordPolicyModulationProvider(),
+    )
+    bridge = MicroMachineChatModulationBridge(session)
+
+    result = bridge.ingest_telemetry(
+        {
+            "chat_events": [
+                {
+                    "message_id": "no-runtime-1",
+                    "text": "탱크로 안전하게 수비해",
+                    "frame": 21,
+                    "from_user": True,
+                }
+            ],
+        }
+    )
+
+    assert result.status is ChatBoundaryStatus.ROUTE_FAILED
+    assert result.routed_count == 0
+    assert result.events[0].status is ChatEventStatus.NOT_PUBLISHED
+    assert result.events[0].result is not None
+    assert result.events[0].result.command_text == "탱크로 안전하게 수비해"
+    assert result.events[0].result.status is LiveModulationStatus.DIRECT_FAILED
+    assert result.events[0].result.command_queue["active_command_id"] == (
+        "chat-no-runtime-1"
+    )
+    assert result.events[0].result.tool_results[0]["result"]["status"] == (
+        "runtime_not_attached"
+    )
+    assert backend.latest_update is None
 
 
 def test_chat_event_dedupe_skips_repeated_message_id() -> None:
     backend = MicroMachineInMemoryBlackboard()
-    session = MicroMachineLiveTextSession(backend, KeywordPolicyModulationProvider())
+    executor = _TestDirectExecutor()
+    session = MicroMachineLiveTextSession(
+        backend,
+        KeywordPolicyModulationProvider(),
+        direct_executor=executor,
+    )
     bridge = MicroMachineChatModulationBridge(session, deduper=ChatEventDeduper())
     telemetry = {
         "chat_events": [
@@ -82,12 +161,28 @@ def test_chat_event_dedupe_skips_repeated_message_id() -> None:
     assert second.routed_count == 0
     assert second.skipped_count == 1
     assert second.events[0].status is ChatEventStatus.DUPLICATE
-    assert len(backend.update_archive) == 1
+    assert first.events[0].result is not None
+    assert first.events[0].result.status is LiveModulationStatus.DIRECT_EXECUTED
+    assert first.events[0].result.command_text == "공격 준비"
+    assert first.events[0].result.compile_result.vector is not None
+    assert first.events[0].result.compile_result.vector.goal == "공격 준비"
+    assert first.events[0].result.command_queue["active_command_id"] == "chat-repeat-1"
+    assert len(executor.plans) == 1
+    assert (
+        first.events[0].result.tool_results[0]["result"]["result"]["audit"]
+        ["direct_command_lifecycle"]["command_id"]
+        == "chat-repeat-1"
+    )
+    assert len(backend.update_archive) == 0
 
 
 def test_chat_event_update_id_suffix_is_sanitized() -> None:
     backend = MicroMachineInMemoryBlackboard()
-    session = MicroMachineLiveTextSession(backend, KeywordPolicyModulationProvider())
+    session = MicroMachineLiveTextSession(
+        backend,
+        KeywordPolicyModulationProvider(),
+        direct_executor=_TestDirectExecutor(),
+    )
     bridge = MicroMachineChatModulationBridge(session)
 
     result = bridge.ingest_telemetry(
@@ -104,6 +199,8 @@ def test_chat_event_update_id_suffix_is_sanitized() -> None:
     )
 
     assert result.status is ChatBoundaryStatus.ROUTED
+    assert result.events[0].result is not None
+    assert result.events[0].result.update is not None
     assert backend.latest_update is not None
     assert backend.latest_update.update_id.startswith("chat-")
     assert " " not in backend.latest_update.update_id
@@ -198,7 +295,11 @@ def test_chat_allowlist_rejects_plain_string_configuration() -> None:
 
 def test_chat_event_requires_user_marker_or_allowlist() -> None:
     backend = MicroMachineInMemoryBlackboard()
-    session = MicroMachineLiveTextSession(backend, KeywordPolicyModulationProvider())
+    session = MicroMachineLiveTextSession(
+        backend,
+        KeywordPolicyModulationProvider(),
+        direct_executor=_TestDirectExecutor(),
+    )
     bridge = MicroMachineChatModulationBridge(
         session,
         allowed_player_names=("Commander",),
@@ -228,6 +329,8 @@ def test_chat_event_requires_user_marker_or_allowlist() -> None:
     assert result.skipped_count == 1
     assert result.events[0].status is ChatEventStatus.INELIGIBLE
     assert result.events[1].status is ChatEventStatus.ROUTED
+    assert result.events[1].result is not None
+    assert result.events[1].result.update is not None
     assert backend.latest_update is not None
     assert backend.latest_update.update_id == "chat-human-1"
 

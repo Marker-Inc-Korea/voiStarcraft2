@@ -14,15 +14,11 @@ import json
 import os
 import subprocess
 import sys
-import threading
-import time
 import types
 import unittest
-import urllib.request
 from unittest import mock
 
 from starcraft_commander import demo_sc2
-from starcraft_commander.event_memory import CommanderEventMemory
 from starcraft_commander.live_pipeline import SC2CommandSession
 from starcraft_commander.llm_interpreter import (
     HybridCommandInterpreter,
@@ -40,14 +36,13 @@ from starcraft_commander.runtime_deps import (
     MissingSC2RuntimeError,
     MissingVoiceDependencyError as RuntimeMissingVoiceDependencyError,
 )
-from starcraft_commander.standing_orders import StandingOrderController
 from starcraft_commander.state_resolver import resolve_commander_state
 from starcraft_commander.voice_input import (
     MicrophoneListener,
     MissingVoiceDependencyError,
     VoiceTranscription,
 )
-from starcraft_commander.web_gui import DEFAULT_WEB_GUI_PORT, WebGuiBridgeInterface
+from starcraft_commander.web_gui import DEFAULT_WEB_GUI_PORT
 from toycraft_commander.interpreter import DEFAULT_COMMAND_INTERPRETER
 
 
@@ -207,7 +202,10 @@ class DemoFakeBotTest(unittest.TestCase):
         self.assertEqual(20, state.supply_used)
         self.assertEqual(21, state.supply_cap)
         self.assertEqual(1, state.supply_left)
-        self.assertEqual({"SCV": 12, "MARINE": 6}, dict(state.own_units))
+        self.assertEqual(
+            {"SCV": 12, "MARINE": 6, "SIEGETANK": 2},
+            dict(state.own_units),
+        )
         self.assertEqual({"COMMANDCENTER": 1}, dict(state.own_structures))
         self.assertEqual(2, state.idle_worker_count)
         self.assertEqual(6, state.army_count)
@@ -396,7 +394,7 @@ class LiveModeGuardTest(unittest.TestCase):
                     )
 
         self.assertEqual(result, 0)
-        self.assertTrue(captured["server_kwargs"]["auto_launch_live"])
+        self.assertNotIn("auto_launch_live", captured["server_kwargs"])
         self.assertIsInstance(
             captured["bridge_kwargs"]["llm_control"],
             LocalLLMControl,
@@ -557,7 +555,14 @@ class RunLiveWiringTest(unittest.TestCase):
             ):
                 await bot.on_start()
                 await bot._reader_task
-            await bot.on_step(0)
+                bot.state = types.SimpleNamespace(game_loop=448)
+                with mock.patch.object(
+                    bot.session.executor,
+                    "tick_direct_commands",
+                    mock.Mock(return_value=[]),
+                ) as tick_direct:
+                    await bot.on_step(0)
+                tick_direct.assert_called_once_with(448)
 
         with contextlib.redirect_stdout(buffer):
             asyncio.run(drive())

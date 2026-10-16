@@ -1,0 +1,10 @@
+diff --git a/src/BuildingPlacer.cpp b/src/BuildingPlacer.cpp
+--- a/src/BuildingPlacer.cpp
++++ b/src/BuildingPlacer.cpp
+@@ -444,9 +444,10 @@ CCTilePosition BuildingPlacer::getBuildLocationNear(const Building & b, bool ign
+ 			if (offset == MAX_OFFSET)//Did not find any walkable space within 25 tiles in all directions
+ 			{
+-				buildLocation = b.desiredPosition;//Avoids crashing, but this won't work well.
++				// Stop the fallback search instead of cycling forever at the limit.
++				return CCTilePosition(0, 0);
+ 			}

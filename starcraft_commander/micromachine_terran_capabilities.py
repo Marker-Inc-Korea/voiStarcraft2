@@ -17,6 +17,7 @@ TERRAN_OPERATION_TASKS: Final[tuple[str, ...]] = (
     "pressure_with_main_army",
     "defend_with_units",
     "harass_with_units",
+    "regroup_with_units",
 )
 TRANSIENT_PRODUCTION_BLOCKERS: Final[frozenset[str]] = frozenset(
     {
@@ -642,6 +643,24 @@ def lower_terran_natural_language_operation(
             "defend_with_units",
             "defense",
             location,
+        )
+    if (
+        not attack
+        and _contains_any(
+            normalized,
+            compact,
+            (
+                "재집결",
+                "regroup",
+                "rally back",
+                "rally up",
+            ),
+        )
+    ):
+        return TerranNaturalLanguageOperationIntent(
+            "regroup_with_units",
+            "regroup",
+            "home",
         )
     if harass:
         return TerranNaturalLanguageOperationIntent(

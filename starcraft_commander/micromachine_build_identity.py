@@ -34,7 +34,7 @@ SANITIZED_GIT_ENV: Final[dict[str, str]] = {
     "LC_ALL": "C",
     "PATH": "/usr/bin:/bin",
 }
-MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 82
+MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION: Final[int] = 85
 MICROMACHINE_SOURCE_ATTESTATION_SCHEMA_VERSION: Final[int] = 6
 MICROMACHINE_BUILD_TRANSACTION_SCHEMA_VERSION: Final[int] = 1
 MICROMACHINE_CTEST_REGISTRY_SCHEMA_VERSION: Final[int] = 1
@@ -655,6 +655,69 @@ DEFAULT_MICROMACHINE_EXACT_OPERATION_POLICY_LIFETIME_PATCH: Final[Path] = (
     / "patches"
     / "0080-exact-operation-policy-lifetime.patch"
 )
+DEFAULT_MICROMACHINE_BOUNDED_BUILDING_FALLBACK_LOOP_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0081-bounded-building-fallback-loop.patch"
+)
+DEFAULT_MICROMACHINE_QA_GAME_END_TRIGGER_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0082-qa-game-end-trigger.patch"
+)
+DEFAULT_MICROMACHINE_EXPLICIT_WORKER_PRODUCTION_SUBMIT_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0083-explicit-worker-production-submit.patch"
+)
+DEFAULT_MICROMACHINE_RAW_SC2_QA_OBSERVATIONS_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0084-raw-sc2-qa-observations.patch"
+)
+DEFAULT_MICROMACHINE_OPERATION_COMPLETION_CONDITIONS_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0085-operation-completion-conditions-are-conjunctive.patch"
+)
+DEFAULT_MICROMACHINE_RETREAT_COMPLETION_EVIDENCE_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0086-retreat-completion-evidence.patch"
+)
+DEFAULT_MICROMACHINE_EXPLICIT_REGROUP_OPERATION_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0087-explicit-regroup-operation.patch"
+)
+DEFAULT_MICROMACHINE_IGNORE_STALE_SQUAD_UNITS_DURING_TRANSFER_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0088-ignore-stale-squad-units-during-transfer.patch"
+)
+DEFAULT_MICROMACHINE_TRANSFER_PROJECTION_PRECOMMIT_STAGING_PATCH: Final[Path] = (
+    REPO_ROOT
+    / "integrations"
+    / "micromachine"
+    / "patches"
+    / "0089-transfer-projection-precommit-staging.patch"
+)
 DEFAULT_S2CLIENT_PATCH: Final[Path] = (
     REPO_ROOT
     / "integrations"
@@ -867,6 +930,9 @@ class MicroMachineBuildIdentityConfig:
     micromachine_operation_transfer_transactional_closure_patch: Path = (
         DEFAULT_MICROMACHINE_OPERATION_TRANSFER_TRANSACTIONAL_CLOSURE_PATCH
     )
+    micromachine_qa_game_end_trigger_patch: Path = (
+        DEFAULT_MICROMACHINE_QA_GAME_END_TRIGGER_PATCH
+    )
     micromachine_operation_transfer_final_review_closure_patch: Path = (
         DEFAULT_MICROMACHINE_OPERATION_TRANSFER_FINAL_REVIEW_CLOSURE_PATCH
     )
@@ -914,6 +980,30 @@ class MicroMachineBuildIdentityConfig:
     )
     micromachine_exact_operation_policy_lifetime_patch: Path = (
         DEFAULT_MICROMACHINE_EXACT_OPERATION_POLICY_LIFETIME_PATCH
+    )
+    micromachine_bounded_building_fallback_loop_patch: Path = (
+        DEFAULT_MICROMACHINE_BOUNDED_BUILDING_FALLBACK_LOOP_PATCH
+    )
+    micromachine_explicit_worker_production_submit_patch: Path = (
+        DEFAULT_MICROMACHINE_EXPLICIT_WORKER_PRODUCTION_SUBMIT_PATCH
+    )
+    micromachine_raw_sc2_qa_observations_patch: Path = (
+        DEFAULT_MICROMACHINE_RAW_SC2_QA_OBSERVATIONS_PATCH
+    )
+    micromachine_operation_completion_conditions_patch: Path = (
+        DEFAULT_MICROMACHINE_OPERATION_COMPLETION_CONDITIONS_PATCH
+    )
+    micromachine_retreat_completion_evidence_patch: Path = (
+        DEFAULT_MICROMACHINE_RETREAT_COMPLETION_EVIDENCE_PATCH
+    )
+    micromachine_explicit_regroup_operation_patch: Path = (
+        DEFAULT_MICROMACHINE_EXPLICIT_REGROUP_OPERATION_PATCH
+    )
+    micromachine_ignore_stale_squad_units_during_transfer_patch: Path = (
+        DEFAULT_MICROMACHINE_IGNORE_STALE_SQUAD_UNITS_DURING_TRANSFER_PATCH
+    )
+    micromachine_transfer_projection_precommit_staging_patch: Path = (
+        DEFAULT_MICROMACHINE_TRANSFER_PROJECTION_PRECOMMIT_STAGING_PATCH
     )
     s2client_patch: Path = DEFAULT_S2CLIENT_PATCH
     hook_manifest: Path = DEFAULT_HOOK_MANIFEST
@@ -1382,6 +1472,33 @@ def build_micromachine_build_identity(
                 config.micromachine_exact_operation_policy_lifetime_patch
             )
         ),
+        "micromachine_bounded_building_fallback_loop_patch_sha256": _sha256_file(
+            config.micromachine_bounded_building_fallback_loop_patch
+        ),
+        "micromachine_qa_game_end_trigger_patch_sha256": _sha256_file(
+            config.micromachine_qa_game_end_trigger_patch
+        ),
+        "micromachine_explicit_worker_production_submit_patch_sha256": _sha256_file(
+            config.micromachine_explicit_worker_production_submit_patch
+        ),
+        "micromachine_raw_sc2_qa_observations_patch_sha256": _sha256_file(
+            config.micromachine_raw_sc2_qa_observations_patch
+        ),
+        "micromachine_operation_completion_conditions_patch_sha256": _sha256_file(
+            config.micromachine_operation_completion_conditions_patch
+        ),
+        "micromachine_retreat_completion_evidence_patch_sha256": _sha256_file(
+            config.micromachine_retreat_completion_evidence_patch
+        ),
+        "micromachine_explicit_regroup_operation_patch_sha256": _sha256_file(
+            config.micromachine_explicit_regroup_operation_patch
+        ),
+        "micromachine_ignore_stale_squad_units_during_transfer_patch_sha256": _sha256_file(
+            config.micromachine_ignore_stale_squad_units_during_transfer_patch
+        ),
+        "micromachine_transfer_projection_precommit_staging_patch_sha256": _sha256_file(
+            config.micromachine_transfer_projection_precommit_staging_patch
+        ),
         "s2client_patch_sha256": _sha256_file(config.s2client_patch),
         "hook_manifest_sha256": _sha256_file(config.hook_manifest),
         "map_pool_sha256": _sha256_file(config.map_pool),
@@ -1793,6 +1910,33 @@ def build_micromachine_build_identity(
             ),
             "micromachine_exact_operation_policy_lifetime_patch": str(
                 config.micromachine_exact_operation_policy_lifetime_patch
+            ),
+            "micromachine_qa_game_end_trigger_patch": str(
+                config.micromachine_qa_game_end_trigger_patch
+            ),
+            "micromachine_bounded_building_fallback_loop_patch": str(
+                config.micromachine_bounded_building_fallback_loop_patch
+            ),
+            "micromachine_explicit_worker_production_submit_patch": str(
+                config.micromachine_explicit_worker_production_submit_patch
+            ),
+            "micromachine_raw_sc2_qa_observations_patch": str(
+                config.micromachine_raw_sc2_qa_observations_patch
+            ),
+            "micromachine_operation_completion_conditions_patch": str(
+                config.micromachine_operation_completion_conditions_patch
+            ),
+            "micromachine_retreat_completion_evidence_patch": str(
+                config.micromachine_retreat_completion_evidence_patch
+            ),
+            "micromachine_explicit_regroup_operation_patch": str(
+                config.micromachine_explicit_regroup_operation_patch
+            ),
+            "micromachine_ignore_stale_squad_units_during_transfer_patch": str(
+                config.micromachine_ignore_stale_squad_units_during_transfer_patch
+            ),
+            "micromachine_transfer_projection_precommit_staging_patch": str(
+                config.micromachine_transfer_projection_precommit_staging_patch
             ),
             "embedded_build_identity_header": str(
                 config.embedded_build_identity_header_path
@@ -2637,6 +2781,46 @@ def build_argument_parser() -> argparse.ArgumentParser:
             DEFAULT_MICROMACHINE_EXACT_OPERATION_POLICY_LIFETIME_PATCH
         ),
     )
+    parser.add_argument(
+        "--micromachine-bounded-building-fallback-loop-patch",
+        default=str(DEFAULT_MICROMACHINE_BOUNDED_BUILDING_FALLBACK_LOOP_PATCH),
+    )
+    parser.add_argument(
+        "--micromachine-qa-game-end-trigger-patch",
+        default=str(DEFAULT_MICROMACHINE_QA_GAME_END_TRIGGER_PATCH),
+    )
+    parser.add_argument(
+        "--micromachine-explicit-worker-production-submit-patch",
+        default=str(DEFAULT_MICROMACHINE_EXPLICIT_WORKER_PRODUCTION_SUBMIT_PATCH),
+    )
+    parser.add_argument(
+        "--micromachine-raw-sc2-qa-observations-patch",
+        default=str(DEFAULT_MICROMACHINE_RAW_SC2_QA_OBSERVATIONS_PATCH),
+    )
+    parser.add_argument(
+        "--micromachine-operation-completion-conditions-patch",
+        default=str(DEFAULT_MICROMACHINE_OPERATION_COMPLETION_CONDITIONS_PATCH),
+    )
+    parser.add_argument(
+        "--micromachine-retreat-completion-evidence-patch",
+        default=str(DEFAULT_MICROMACHINE_RETREAT_COMPLETION_EVIDENCE_PATCH),
+    )
+    parser.add_argument(
+        "--micromachine-explicit-regroup-operation-patch",
+        default=str(DEFAULT_MICROMACHINE_EXPLICIT_REGROUP_OPERATION_PATCH),
+    )
+    parser.add_argument(
+        "--micromachine-ignore-stale-squad-units-during-transfer-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_IGNORE_STALE_SQUAD_UNITS_DURING_TRANSFER_PATCH
+        ),
+    )
+    parser.add_argument(
+        "--micromachine-transfer-projection-precommit-staging-patch",
+        default=str(
+            DEFAULT_MICROMACHINE_TRANSFER_PROJECTION_PRECOMMIT_STAGING_PATCH
+        ),
+    )
     parser.add_argument("--s2client-patch", default=str(DEFAULT_S2CLIENT_PATCH))
     parser.add_argument("--hook-manifest", default=str(DEFAULT_HOOK_MANIFEST))
     parser.add_argument("--map-pool", default=str(DEFAULT_MAP_POOL))
@@ -2917,6 +3101,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         micromachine_exact_operation_policy_lifetime_patch=Path(
             args.micromachine_exact_operation_policy_lifetime_patch
+        ),
+        micromachine_bounded_building_fallback_loop_patch=Path(
+            args.micromachine_bounded_building_fallback_loop_patch
+        ),
+        micromachine_qa_game_end_trigger_patch=Path(
+            args.micromachine_qa_game_end_trigger_patch
+        ),
+        micromachine_explicit_worker_production_submit_patch=Path(
+            args.micromachine_explicit_worker_production_submit_patch
+        ),
+        micromachine_raw_sc2_qa_observations_patch=Path(
+            args.micromachine_raw_sc2_qa_observations_patch
+        ),
+        micromachine_operation_completion_conditions_patch=Path(
+            args.micromachine_operation_completion_conditions_patch
+        ),
+        micromachine_retreat_completion_evidence_patch=Path(
+            args.micromachine_retreat_completion_evidence_patch
+        ),
+        micromachine_explicit_regroup_operation_patch=Path(
+            args.micromachine_explicit_regroup_operation_patch
+        ),
+        micromachine_ignore_stale_squad_units_during_transfer_patch=Path(
+            args.micromachine_ignore_stale_squad_units_during_transfer_patch
+        ),
+        micromachine_transfer_projection_precommit_staging_patch=Path(
+            args.micromachine_transfer_projection_precommit_staging_patch
         ),
         s2client_patch=Path(args.s2client_patch),
         hook_manifest=Path(args.hook_manifest),
@@ -4269,6 +4480,16 @@ def inspect_git_worktree_state(
                         "mode": stat.S_IFMT(file_stat.st_mode),
                     }
                 )
+                continue
+            # Only generated match logs are mutable; tracked data and symlinks
+            # must remain part of the source attestation.
+            if (
+                "bin/BotConfig.txt" in normalized_excluded_paths
+                and re.fullmatch(
+                    r"bin/data/\d{4}-\d{2}-\d{2}--\d{2}-\d{2}-\d{2}_ai-[A-Za-z]+\.log",
+                    relative_path,
+                )
+            ):
                 continue
             checksum = _sha256_file(candidate)
         except OSError:

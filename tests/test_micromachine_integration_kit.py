@@ -1037,12 +1037,12 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
 
         self.assertEqual(
             [patch["order"] for patch in bundle],
-            list(range(1, 81)),
+            list(range(1, 90)),
         )
-        self.assertEqual(len(set(manifest_paths)), 80)
+        self.assertEqual(len(set(manifest_paths)), 89)
         self.assertEqual(
             manifest_paths[-1],
-            "patches/0080-exact-operation-policy-lifetime.patch",
+            "patches/0089-transfer-projection-precommit-staging.patch",
         )
         self.assertTrue(
             all((KIT_DIR / path).is_file() for path in manifest_paths)
@@ -4069,7 +4069,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
             ),
         )
         self.assertEqual(
-            1,
+            2,
             patch.count(
                 "diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp"
             ),
@@ -8620,9 +8620,7 @@ class MicroMachineIntegrationKitTest(unittest.TestCase):
         self,
     ) -> None:
         script = SMOKE_SCRIPT.read_text()
-        wrapper_end = script.index(
-            "\nREQUIRED_MACRO_EVIDENCE=(",
-        )
+        wrapper_end = script.index("REQUIRED_MACRO_EVIDENCE=(")
         runtime_id_block = script.index(
             'if [[ -z "${VOI_MICROMACHINE_RUNTIME_INSTANCE_ID:-}" ]]',
         )

@@ -358,3 +358,23 @@ diff --git a/src/WorkerManager.h b/src/WorkerManager.h
  	Unit getDepotAtBasePosition(CCPosition basePosition) const;
  	int  getWorkerCountAtBasePosition(CCPosition basePosition) const;
      Unit getClosestDepot(Unit worker) const;
+diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
+--- a/src/ProductionManager.cpp
++++ b/src/ProductionManager.cpp
+@@ -5707,6 +5707,16 @@ void ProductionManager::refreshVoiDoctrinePolicyBaseline(const std::string & updateId)
+ 	m_voiDoctrineBaselineUpdateId = updateId;
+ 	m_voiDoctrineBaselineFrame = m_bot.GetCurrentFrame();
+ 	m_voiDoctrineQueueBaseline.clear();
+ 	m_voiDoctrineUnitCountBaseline.clear();
++	const bool explicitExpandCommandCenterRequested =
++		isVoiExplicitExpandCommandCenterRequested();
++	if (explicitExpandCommandCenterRequested)
++	{
++		const auto commandCenterType =
++			sc2::UNIT_TYPEID::TERRAN_COMMANDCENTER;
++		m_nextPlacementRetryFrame.erase(commandCenterType);
++		m_placementRetryCount.erase(commandCenterType);
++	}
+ 	m_lastVoiDoctrineFrame = 0;
+ 	m_lastVoiDoctrineAction = "none";
+ 	m_lastVoiDoctrineQueueItem = "none";

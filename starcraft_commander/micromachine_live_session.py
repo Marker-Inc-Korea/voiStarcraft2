@@ -45,6 +45,9 @@ from starcraft_commander.policy_modulation import (
     PolicyOverrideLevel,
     WorkerModulation,
 )
+from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
+from starcraft_commander.direct_release import DirectReleaseListeners
+from starcraft_commander.direct_command_registry import DirectCommandRegistry
 from starcraft_commander.policy_modulation_provider import (
     PolicyModulationCompileResult,
     PolicyModulationCompileStatus,
@@ -65,6 +68,9 @@ class LiveModulationStatus(str, Enum):
     CLARIFICATION_REQUIRED = "clarification_required"
     REFUSED = "refused"
     PUBLISH_FAILED = "publish_failed"
+    DIRECT_EXECUTED = "direct_executed"
+    DIRECT_FAILED = "direct_failed"
+    DIRECT_PLANNED = "direct_planned"
 
 
 class LiveModulationConsumptionStatus(str, Enum):
@@ -74,6 +80,43 @@ class LiveModulationConsumptionStatus(str, Enum):
     PENDING_TELEMETRY = "pending_telemetry"
     PENDING_CONSUMPTION = "pending_consumption"
     CONSUMED = "consumed"
+
+
+def _direct_clarification_prompt(
+    tool_results: Sequence[Mapping[str, object]],
+) -> str:
+    """Extract a runtime clarification prompt from a refused Direct action.
+
+    Runtime adapters report ambiguity in the per-action report audit. Keep
+    that signal on the live text boundary so the UI can ask the user again
+    instead of presenting a safe refusal as an opaque Direct failure.
+    """
+
+    for tool_result in tool_results:
+        outer = tool_result.get("result")
+        if not isinstance(outer, Mapping):
+            continue
+        execution = outer.get("result")
+        if not isinstance(execution, Mapping):
+            continue
+        execution_audit = execution.get("audit")
+        if not isinstance(execution_audit, Mapping):
+            continue
+        reports = execution_audit.get("action_reports")
+        if not isinstance(reports, Mapping):
+            continue
+        for report in reports.values():
+            if not isinstance(report, Mapping):
+                continue
+            report_audit = report.get("audit")
+            if not isinstance(report_audit, Mapping):
+                continue
+            if report_audit.get("clarification_required") is not True:
+                continue
+            prompt = str(report_audit.get("clarification_prompt", "")).strip()
+            if prompt:
+                return prompt
+    return ""
 
 
 class LiveCommandCategory(str, Enum):
@@ -103,6 +146,7 @@ _TRANSIENT_TASK_TYPES = frozenset(
         "pressure_with_main_army",
         "defend_with_units",
         "harass_with_units",
+        "regroup_with_units",
     }
 )
 _MICRO_TASK_TYPES = frozenset({"execute_ability"})
@@ -112,6 +156,7 @@ _TACTICAL_ONLY_TASK_TYPES = frozenset(
         "pressure_with_main_army",
         "defend_with_units",
         "harass_with_units",
+        "regroup_with_units",
         "execute_ability",
     }
 )
@@ -408,7 +453,7 @@ class KeywordPolicyModulationProvider:
                 },
                 "production_plan": {
                     "targets": requested_production_targets,
-                    "allow_prerequisites": True,
+                    "allow_prerequisite_buildings": True,
                     "priority": 0.8,
                 },
                 "composition_requirements": composition_requirements,
@@ -467,6 +512,10 @@ class KeywordPolicyModulationProvider:
             defend_intent = (
                 terran_operation_intent is not None
                 and terran_operation_intent.task_type == "defend_with_units"
+            )
+            regroup_intent = (
+                terran_operation_intent is not None
+                and terran_operation_intent.task_type == "regroup_with_units"
             )
             if terran_operation_intent is None:
                 scout_intent = any(
@@ -565,7 +614,9 @@ class KeywordPolicyModulationProvider:
                 "defense_bias": 0.8 if defend_intent else -0.2,
                 "reinforce_bias": 0.3,
                 "contain_bias": 0.1 if flank_intent else 0.35,
-                "regroup_bias": 0.7 if tactical_retreat_intent else 0.2,
+                "regroup_bias": 0.95 if regroup_intent else (
+                    0.7 if tactical_retreat_intent else 0.2
+                ),
             }
             if flank_intent:
                 squad_payload["flank_bias"] = 0.75
@@ -580,6 +631,8 @@ class KeywordPolicyModulationProvider:
                 tags.append("harass_operation")
             if defend_intent:
                 tags.append("defense_operation")
+            if regroup_intent:
+                tags.append("regroup_operation")
             if requested_units is not None:
                 tags.append("explicit_unit_count")
             if composition_requirements:
@@ -717,7 +770,7 @@ class KeywordPolicyModulationProvider:
                 payload["composition_requirements"] = composition_requirements
                 payload["production_plan"] = {
                     "targets": requested_production_targets,
-                    "allow_prerequisites": True,
+                    "allow_prerequisite_buildings": True,
                     "priority": 0.8,
                 }
                 payload["unit_roles"] = [
@@ -793,6 +846,8 @@ class LiveTextModulationResult:
     consumption_status: LiveModulationConsumptionStatus | str
     command_queue: Mapping[str, object] | None = None
     provider_failure_recorded: bool = False
+    unified_route: Mapping[str, object] | None = None
+    tool_results: Sequence[Mapping[str, object]] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "command_text", _require_text("command_text", self.command_text))
@@ -814,10 +869,26 @@ class LiveTextModulationResult:
             "provider_failure_recorded",
             _coerce_bool(self.provider_failure_recorded, "provider_failure_recorded"),
         )
+        if self.unified_route is not None and not isinstance(
+            self.unified_route,
+            Mapping,
+        ):
+            raise ValueError("unified_route must be a mapping or None.")
+        normalized_tool_results = tuple(
+            dict(item)
+            for item in self.tool_results
+            if isinstance(item, Mapping)
+        )
+        object.__setattr__(self, "tool_results", normalized_tool_results)
 
     @property
     def ok(self) -> bool:
-        return self.status is LiveModulationStatus.PUBLISHED and self.update is not None
+        return (
+            self.status is LiveModulationStatus.PUBLISHED and self.update is not None
+        ) or self.status in {
+            LiveModulationStatus.DIRECT_EXECUTED,
+            LiveModulationStatus.DIRECT_PLANNED,
+        }
 
     @property
     def consumed(self) -> bool:
@@ -837,6 +908,10 @@ class LiveTextModulationResult:
             "consumed": self.consumed,
             "command_queue": dict(self.command_queue or {}),
             "provider_failure_recorded": self.provider_failure_recorded,
+            "unified_route": (
+                dict(self.unified_route) if self.unified_route is not None else None
+            ),
+            "tool_results": [dict(item) for item in self.tool_results],
         }
 
 
@@ -851,10 +926,63 @@ class MicroMachineLiveTextSession:
         bridge_status: PolicyModulationBridgeStatus | str = (
             PolicyModulationBridgeStatus.CONNECTED
         ),
+        direct_executor: object | None = None,
+        include_direct_tool: bool = True,
+        direct_lifecycle: DirectCommandLifecycle | None = None,
+        direct_command_registry: DirectCommandRegistry | None = None,
+        on_direct_release: Callable[[object], object] | None = None,
+        publish_non_macro_projection: bool = False,
     ) -> None:
         self.backend = backend
         self.provider = provider
         self.bridge_status = _coerce_bridge_status(bridge_status)
+        self.direct_executor = direct_executor
+        self.include_direct_tool = bool(include_direct_tool)
+        # Keep one lease registry for the whole live session.  Recreating it
+        # per request would make completion, cancellation, and TTL
+        # observations unable to release a previously issued squad lease.
+        shared_lifecycle = getattr(direct_executor, "direct_lifecycle", None)
+        if direct_lifecycle is None and isinstance(
+            shared_lifecycle,
+            DirectCommandLifecycle,
+        ):
+            direct_lifecycle = shared_lifecycle
+        self.direct_lifecycle = direct_lifecycle or DirectCommandLifecycle()
+        self.direct_command_registry = direct_command_registry or DirectCommandRegistry()
+        self.on_direct_release = on_direct_release
+        # Typed MicroMachine projection endpoints may carry operation-shaped
+        # records that must be persisted as authoritative manager state.  This
+        # is an explicit internal seam; ordinary user/LLM non-macro commands
+        # remain Direct-only and never set it.
+        self.publish_non_macro_projection = bool(publish_non_macro_projection)
+        from starcraft_commander.sc2_executor import SC2RuntimeExecutor
+
+        # Sessions must register BEHIND the runtime workflow gate. Wrapping
+        # its listener here would resume the host between build and train.
+        runtime = direct_executor
+        if runtime is None:
+            runtime = getattr(self.direct_lifecycle.on_release, "__self__", None)
+        if isinstance(runtime, SC2RuntimeExecutor):
+            runtime.bind_direct_lifecycle(self.direct_lifecycle)
+            self._release_listeners = runtime.direct_release_listeners
+        else:
+            self._release_listeners = DirectReleaseListeners.preserving(
+                self.direct_lifecycle.on_release
+            )
+            self.direct_lifecycle.on_release = self._release_listeners.emit
+        if on_direct_release is not None:
+            self._release_listeners.add(on_direct_release)
+
+    @property
+    def direct_release_errors(self) -> tuple[str, ...]:
+        """Return callback failures captured without breaking the game loop."""
+
+        return tuple(error.message for error in self._release_listeners.errors)
+
+    async def drain_direct_release_callbacks(self) -> None:
+        """Await async release callbacks before closing a standalone host."""
+
+        await self._release_listeners.drain()
 
     def submit_text(
         self,
@@ -893,6 +1021,17 @@ class MicroMachineLiveTextSession:
         if commander_context is not None:
             context.update(dict(commander_context))
         context["bridge_status"] = self.bridge_status.value
+        # Direct commands intentionally never publish to the MicroMachine
+        # blackboard.  Keep their authoritative lifecycle state visible to
+        # the next provider request through a separate context field so a
+        # follow-up can reason about ownership, completion conditions, and
+        # expiry without reintroducing tactical MicroMachine publication.
+        active_direct_commands = tuple(
+            _safe_direct_lease_context(lease)
+            for lease in self.direct_lifecycle.active_leases()
+        )
+        if active_direct_commands:
+            context["active_direct_commands"] = list(active_direct_commands)
         if previous_update is not None:
             context["active_micromachine_standing_orders"] = (
                 _standing_order_context(previous_update)
@@ -1007,6 +1146,66 @@ class MicroMachineLiveTextSession:
                     telemetry=telemetry_before,
                     incoming_update_id=effective_update_id,
                 )
+            if (
+                compile_result.vector.command_layer is not CommandLayer.MACRO
+                and not self.publish_non_macro_projection
+            ):
+                direct_route = self._unified_route_result(
+                    compile_result.vector,
+                    update_id=effective_update_id,
+                    current_frame=frame,
+                    published_payload={},
+                )
+                tool_results = tuple(direct_route.get("tool_results", ()))
+                direct_clarification_prompt = _direct_clarification_prompt(tool_results)
+                if direct_clarification_prompt:
+                    compile_result = replace(
+                        compile_result,
+                        clarification_prompt=direct_clarification_prompt,
+                    )
+                direct_ok = bool(tool_results) and all(
+                    bool(item.get("ok")) for item in tool_results
+                )
+                direct_queue = {
+                    "active_command_id": effective_update_id,
+                    "update_id": effective_update_id,
+                    "command_layer": compile_result.vector.command_layer.value,
+                    "direct_control_owner": (
+                        "direct_sc2" if direct_ok else "none"
+                    ),
+                    "lifecycle": (
+                        tool_results[0].get("result", {}).get("result", {}).get("audit", {}).get("direct_command_lifecycle", {})
+                        if tool_results and isinstance(tool_results[0].get("result"), Mapping)
+                        else {}
+                    ),
+                }
+                return LiveTextModulationResult(
+                    command_text=text,
+                    status=(
+                        LiveModulationStatus.CLARIFICATION_REQUIRED
+                        if direct_clarification_prompt
+                        else (
+                            LiveModulationStatus.DIRECT_EXECUTED
+                            if direct_ok
+                            else (
+                                LiveModulationStatus.DIRECT_PLANNED
+                                if not self.include_direct_tool
+                                else LiveModulationStatus.DIRECT_FAILED
+                            )
+                        )
+                    ),
+                    current_frame=frame,
+                    compile_result=compile_result,
+                    update=None,
+                    dashboard=self.backend.dashboard_snapshot(
+                        current_frame=frame,
+                        bridge_status=self.bridge_status,
+                    ),
+                    consumption_status=LiveModulationConsumptionStatus.NOT_PUBLISHED,
+                    command_queue=direct_queue,
+                    unified_route=direct_route.get("unified_route"),
+                    tool_results=tool_results,
+                )
             compile_result, command_queue = _reduce_live_command_queue(
                 text,
                 compile_result,
@@ -1065,6 +1264,20 @@ class MicroMachineLiveTextSession:
             current_frame=frame,
             bridge_status=self.bridge_status,
         )
+        route_result = (
+            {}
+            if self.publish_non_macro_projection
+            else self._unified_route_result(
+                compile_result.vector,
+                update_id=update.update_id,
+                current_frame=frame,
+                published_payload={
+                    "ok": True,
+                    "status": LiveModulationStatus.PUBLISHED.value,
+                    "update_id": update.update_id,
+                },
+            )
+        )
         return LiveTextModulationResult(
             command_text=text,
             status=LiveModulationStatus.PUBLISHED,
@@ -1078,7 +1291,123 @@ class MicroMachineLiveTextSession:
                 telemetry_before,
             ),
             command_queue=command_queue,
+            **route_result,
         )
+
+    def _unified_route_result(
+        self,
+        vector: PolicyModulationVector,
+        *,
+        update_id: str,
+        current_frame: int,
+        published_payload: Mapping[str, object],
+    ) -> dict[str, object]:
+        """Route one already-published vector without publishing MicroMachine twice."""
+
+        from starcraft_commander.unified_command_router import (
+            create_command_tool_registry,
+            route_and_execute,
+        )
+
+        registry = create_command_tool_registry(
+            micromachine_publish=lambda _arguments: dict(published_payload),
+            direct_executor=self.direct_executor,
+            lifecycle=self.direct_lifecycle,
+            command_registry=self.direct_command_registry,
+        )
+        routed = route_and_execute(
+            vector,
+            registry,
+            update_id=update_id,
+            current_frame=current_frame,
+            include_direct_tool=self.include_direct_tool,
+        )
+        return {
+            # ``LiveTextModulationResult`` exposes this field as
+            # ``unified_route``; retain the canonical router payload here.
+            "unified_route": routed.get("route"),
+            "tool_results": routed.get("tool_results", ()),
+        }
+
+    def observe_direct_command(
+        self,
+        command_id: str,
+        *,
+        current_frame: int,
+        evidence: Mapping[str, object] | None = None,
+    ) -> dict[str, object]:
+        """Advance a session-owned Direct lease from live observation data.
+
+        The method is intentionally small so a BotAI game-loop callback can
+        call it after each observation without publishing anything to
+        MicroMachine.  Once the lease reaches a terminal state, the normal
+        MicroMachine policy path is eligible again on the next macro command.
+        """
+
+        runtime_tick = self._shared_executor_tick()
+        if runtime_tick is not None:
+            runtime_tick(
+                current_frame,
+                {command_id: dict(evidence or {})},
+            )
+            lease = self.direct_lifecycle.get(command_id)
+            if lease is None:
+                raise KeyError(f"unknown direct command: {command_id}")
+            return lease.to_dict()
+        lease = self.direct_lifecycle.observe(command_id, frame=current_frame, evidence=evidence or {})
+        return lease.to_dict()
+
+    def observe_direct_commands(
+        self,
+        *,
+        current_frame: int,
+        evidence_by_command: Mapping[str, Mapping[str, object]] | None = None,
+    ) -> tuple[dict[str, object], ...]:
+        """Observe all active Direct leases for one BotAI game-loop tick.
+
+        A live ``BotAI.on_step`` callback can collect semantic evidence for
+        the current frame and pass it keyed by ``command_id``.  Leases with no
+        evidence are still ticked so TTL expiry occurs automatically.  The
+        lifecycle owns terminal transitions and invokes its configured release
+        callback; this method only exposes the resulting audit dictionaries to
+        the caller.
+        """
+
+        frame = _non_negative_int("current_frame", current_frame)
+        runtime_tick = self._shared_executor_tick()
+        if runtime_tick is not None:
+            return tuple(runtime_tick(frame, evidence_by_command or {}))
+        leases = self.direct_lifecycle.observe_all(frame=frame, evidence_by_command=evidence_by_command)
+        return tuple(lease.to_dict() for lease in leases)
+
+    def _shared_executor_tick(self) -> Callable[..., object] | None:
+        """Return the executor tick only when this session shares its lifecycle."""
+
+        tick = getattr(self.direct_executor, "tick_direct_commands", None)
+        shared = getattr(self.direct_executor, "direct_lifecycle", None)
+        return tick if callable(tick) and shared is self.direct_lifecycle else None
+
+    # ``tick_direct_commands`` is a concise callback seam for integrations
+    # whose game-loop naming is not tied to the text-session terminology.
+    def tick_direct_commands(
+        self,
+        current_frame: int,
+        evidence_by_command: Mapping[str, Mapping[str, object]] | None = None,
+    ) -> tuple[dict[str, object], ...]:
+        return self.observe_direct_commands(
+            current_frame=current_frame,
+            evidence_by_command=evidence_by_command,
+        )
+
+    def cancel_direct_command(
+        self,
+        command_id: str,
+        *,
+        reason: str = "cancelled_by_user",
+    ) -> dict[str, object]:
+        """Cancel a session-owned Direct lease and release squad ownership."""
+
+        return self.direct_lifecycle.cancel(command_id, reason=reason).to_dict()
 
     def _resolve_current_frame(self, current_frame: int | None) -> int:
         if current_frame is not None:
@@ -3350,6 +3679,48 @@ def _standing_order_context(update: MicroMachineBlackboardUpdate) -> dict[str, o
         "operations": [operation.to_dict() for operation in vector.operations],
         "tags": list(vector.tags),
     }
+
+
+def _safe_direct_lease_context(lease: object) -> dict[str, object]:
+    """Expose Direct follow-up state without leaking runtime-only identifiers."""
+
+    raw = lease.to_dict() if callable(getattr(lease, "to_dict", None)) else {}
+    if not isinstance(raw, Mapping):
+        return {}
+    # Unit tags and runtime binding metadata are adapter-private.  The
+    # provider needs lifecycle/semantic ownership state, never raw SC2 ids.
+    result = {
+        key: value
+        for key, value in raw.items()
+        if key not in {"owned_unit_tags", "command_metadata"}
+    }
+    metadata = raw.get("command_metadata")
+    if isinstance(metadata, Mapping):
+        safe_metadata = {
+            key: value
+            for key, value in metadata.items()
+            if key not in {"baseline", "actions"}
+        }
+        actions = metadata.get("actions")
+        if isinstance(actions, Sequence) and not isinstance(actions, (str, bytes)):
+            safe_actions: list[dict[str, object]] = []
+            for action in actions:
+                if not isinstance(action, Mapping):
+                    continue
+                safe_action = dict(action)
+                action_metadata = safe_action.get("metadata")
+                if isinstance(action_metadata, Mapping):
+                    safe_action["metadata"] = {
+                        key: value
+                        for key, value in action_metadata.items()
+                        if key != "_direct_unit_tags"
+                    }
+                safe_actions.append(safe_action)
+            if safe_actions:
+                safe_metadata["actions"] = safe_actions
+        if safe_metadata:
+            result["command_metadata"] = safe_metadata
+    return result
 
 
 def _recent_command_context(

@@ -10813,6 +10813,11 @@ def _allowed_integration_path(path: PurePosixPath) -> bool:
             "PRE_LIVE_JOURNEYS.json",
             "PRE_LIVE_PRODUCERS.json",
             "PRE_LIVE_RELEASE_STATUS.json",
+            # Native direct-command lifecycle and live-QA contracts are
+            # shipped as integration headers alongside the policy bridge.
+            "voi_direct_lease_bridge.hpp",
+            "voi_operation_completion.hpp",
+            "voi_qa_observation.hpp",
             "voi_policy_blackboard.hpp",
         }
     if len(tail) == 2 and tail[0] == "patches":
@@ -10825,6 +10830,8 @@ def _allowed_integration_path(path: PurePosixPath) -> bool:
             "soak_macos_local.sh",
             "soak_matrix_macos_local.sh",
             "strategy_matrix_macos_local.sh",
+            "live_qa_30_macos_local.sh",
+            "qa30_scenario_command.py",
         }
     return False
 

@@ -1,0 +1,45 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -7040,24 +7040,25 @@ void CombatCommander::updateVoiOperations()
+ 			destinationUnits =
+ 				m_squadData.getSquad(
+ 					destination->squadName).getUnits();
+ 		}
+-		for (const auto & unit : sourceUnits)
+-		{
+-			if (!unit.isValid() || !unit.isAlive())
+-			{
+-				runtimeBlocker =
+-					"transfer_source_squad_contains_invalid_unit";
+-				break;
+-			}
+-		}
+-		for (const auto & unit : destinationUnits)
+-		{
+-			if (!unit.isValid() || !unit.isAlive())
+-			{
+-				runtimeBlocker =
+-					"transfer_destination_squad_contains_invalid_unit";
+-				break;
+-			}
+-		}
++		auto retainLiveUnits =
++			[](std::vector<Unit> & units)
++			{
++				units.erase(
++					std::remove_if(
++						units.begin(),
++						units.end(),
++						[](const Unit & unit)
++						{
++							return !unit.isValid()
++								|| !unit.isAlive();
++						}),
++					units.end());
++			};
++		retainLiveUnits(sourceUnits);
++		retainLiveUnits(destinationUnits);
+ 
+ 		std::vector<std::pair<
+ 			sc2::Tag,

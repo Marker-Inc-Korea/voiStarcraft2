@@ -30,6 +30,78 @@ class StaticModulationProvider:
 
 
 class PolicyModulationProviderCompilerTest(unittest.TestCase):
+    def test_provider_query_unit_metadata_compiles_and_round_trips(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "goal": "stim buff query",
+                "tactical_task": {
+                    "task_type": "query_unit",
+                    "query": "has_buff",
+                    "buff": "STIMPACK",
+                    "bonus_distance": 3.0,
+                    "ignore_armor": True,
+                    "include_overkill_damage": False,
+                },
+            }
+        )
+        self.assertEqual(PolicyModulationCompileStatus.COMPILED, result.status)
+        assert result.vector is not None
+        task = result.vector.tactical_task
+        self.assertEqual("STIMPACK", task.buff)
+        self.assertEqual(3.0, task.bonus_distance)
+        self.assertTrue(task.ignore_armor)
+        self.assertFalse(task.include_overkill_damage)
+
+    def test_provider_query_unit_metadata_fails_closed(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "goal": "bad query",
+                "tactical_task": {
+                    "task_type": "query_unit",
+                    "query": "has_buff",
+                    "buff": "",
+                    "ignore_armor": "false",
+                },
+            }
+        )
+        self.assertEqual(PolicyModulationCompileStatus.REFUSED, result.status)
+
+    def test_provider_query_game_metadata_compiles_and_round_trips(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "goal": "check marine cost",
+                "tactical_task": {
+                    "task_type": "query_game",
+                    "query": "calculate_cost",
+                    "production_targets": ["TERRAN_MARINE"],
+                    "subject_kind": "unit",
+                },
+            }
+        )
+        self.assertEqual(PolicyModulationCompileStatus.COMPILED, result.status)
+        assert result.vector is not None
+        task = result.vector.tactical_task
+        self.assertEqual("query_game", task.task_type)
+        self.assertEqual("calculate_cost", task.query)
+        self.assertEqual("unit", task.subject_kind)
+
+    def test_provider_query_map_metadata_compiles_and_round_trips(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            {
+                "goal": "check home pathing",
+                "tactical_task": {
+                    "task_type": "query_map",
+                    "query": "in_pathing_grid",
+                    "location_intent": "home",
+                },
+            }
+        )
+        self.assertEqual(PolicyModulationCompileStatus.COMPILED, result.status)
+        assert result.vector is not None
+        self.assertEqual("query_map", result.vector.tactical_task.task_type)
+        self.assertEqual("in_pathing_grid", result.vector.tactical_task.query)
+        self.assertEqual("home", result.vector.tactical_task.location_intent)
+
     def test_provider_preserves_role_specific_transfer_delta(self) -> None:
         result = compile_policy_modulation_provider_output(
             {

@@ -36,8 +36,6 @@ def _chrome_executable() -> str | None:
 class CompactControllerBrowserTest(unittest.TestCase):
     def test_headless_browser_renders_latest_command_without_legacy_ui(self):
         chrome = _chrome_executable()
-        if chrome is None:
-            self.skipTest("Chrome/Chromium is not installed")
         prelude = r"""
 <script>
 window.__voiBrowserErrors = [];
@@ -102,6 +100,8 @@ window.fetch = function(url) {
             try:
                 from playwright.sync_api import sync_playwright
             except ImportError:
+                if chrome is None:
+                    self.skipTest("Chrome/Chromium is not installed")
                 process = subprocess.Popen(
                     [
                         chrome,
@@ -132,28 +132,32 @@ window.fetch = function(url) {
                     returncode = 0 if "</html>" in stdout else process.returncode
             else:
                 with sync_playwright() as playwright:
-                    browser = playwright.chromium.launch(
-                        executable_path=chrome,
+                        playwright_chrome = Path(playwright.chromium.executable_path)
+                        executable_path = os.environ.get("CHROME_BIN") or None
+                        if executable_path is None and not playwright_chrome.is_file():
+                            executable_path = chrome
+                        browser = playwright.chromium.launch(
+                            executable_path=executable_path,
                         headless=True,
-                    )
-                    try:
-                        browser_page = browser.new_page()
-                        browser_page.set_content(
-                            page_html,
-                            wait_until="domcontentloaded",
                         )
-                        browser_page.wait_for_function(
-                            """() => (
-                              document.getElementById("operation-goal")
-                                ?.textContent === "SCV를 생산한다"
-                            )""",
-                            timeout=10_000,
-                        )
-                        stdout = browser_page.content()
-                        stderr = ""
-                        returncode = 0
-                    finally:
-                        browser.close()
+                        try:
+                            browser_page = browser.new_page()
+                            browser_page.set_content(
+                                page_html,
+                                wait_until="domcontentloaded",
+                            )
+                            browser_page.wait_for_function(
+                                """() => (
+                                  document.getElementById("operation-goal")
+                                    ?.textContent === "SCV를 생산한다"
+                                )""",
+                                timeout=10_000,
+                            )
+                            stdout = browser_page.content()
+                            stderr = ""
+                            returncode = 0
+                        finally:
+                            browser.close()
 
         self.assertEqual(returncode, 0, stderr)
         self.assertIn("</html>", stdout)
@@ -858,31 +862,22 @@ global.fetch = function(url) {
   await runtimeFirst;
   assert.strictEqual(nodes["runtime-status"].textContent, "SC2 연결됨 · frame 500");
 
-  const operationFirst = refreshOperation();
-  const operationSecond = refreshOperation();
-  pendingOperation[1]({
-    status: "published",
-    consumption_status: "consumed",
-    latest_request: {
+      const operationFirst = refreshOperation();
+      const operationSecond = refreshOperation();
+      assert.strictEqual(operationFirst, operationSecond);
+      assert.strictEqual(pendingOperation.length, 1);
+      pendingOperation[0]({
+        status: "published",
+        consumption_status: "consumed",
+        latest_request: {
       update_id: "new-command",
       command_text: "SCV를 생산한다",
       consumption_status: "consumed"
-    },
-    operations: []
-  });
-  await operationSecond;
-  pendingOperation[0]({
-    status: "published",
-    consumption_status: "consumed",
-    latest_request: {
-      update_id: "old-command",
-      command_text: "오래된 명령",
-      consumption_status: "consumed"
-    },
-    operations: []
-  });
-  await operationFirst;
-  assert.strictEqual(nodes["operation-goal"].textContent, "SCV를 생산한다");
+        },
+        operations: []
+      });
+      await Promise.all([operationFirst, operationSecond]);
+      assert.strictEqual(nodes["operation-goal"].textContent, "SCV를 생산한다");
 })().catch(function(error) {
   console.error(error && error.stack ? error.stack : error);
   process.exit(1);

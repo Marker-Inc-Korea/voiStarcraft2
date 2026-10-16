@@ -132,7 +132,7 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
         self.assertEqual(ctest, resolved)
 
     def test_live_admission_requires_the_supported_schema(self) -> None:
-        self.assertEqual(82, MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION)
+        self.assertEqual(85, MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION)
         passing = {
             "schema_version": MICROMACHINE_BUILD_IDENTITY_SCHEMA_VERSION,
             "identity": "sha256:fixture",
@@ -471,6 +471,14 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             )
             self.assertIn(
                 "micromachine_exact_operation_policy_lifetime_patch_sha256",
+                report["checksums"],
+            )
+            self.assertIn(
+                "micromachine_transfer_projection_precommit_staging_patch",
+                report["paths"],
+            )
+            self.assertIn(
+                "micromachine_transfer_projection_precommit_staging_patch_sha256",
                 report["checksums"],
             )
             self.assertIn(
@@ -2716,6 +2724,18 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             ).name,
         )
 
+    def test_transfer_projection_precommit_staging_cli_defaults_to_patch_0089(
+        self,
+    ) -> None:
+        args = build_argument_parser().parse_args([])
+
+        self.assertEqual(
+            "0089-transfer-projection-precommit-staging.patch",
+            Path(
+                args.micromachine_transfer_projection_precommit_staging_patch
+            ).name,
+        )
+
     def test_operation_edit_ownership_handoff_patch_changes_identity(
         self,
     ) -> None:
@@ -4403,6 +4423,40 @@ class MicroMachineBuildIdentityTest(unittest.TestCase):
             report = build_micromachine_build_identity(config)
 
             self.assertTrue(report["ok"], report)
+
+    def test_generated_match_log_does_not_invalidate_binary_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = self.build_config(Path(directory), binary=True)
+            log = config.micromachine_dir / "bin/data/2026-09-12--03-45-51_ai-Zerg.log"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            log.write_text("runtime output\n")
+            report = build_micromachine_build_identity(config)
+            self.assertTrue(report["ok"], report)
+            log.write_text("runtime output\nanother frame\n")
+            report = build_micromachine_build_identity(config)
+            self.assertTrue(report["ok"], report)
+
+    def test_non_log_runtime_data_still_invalidates_binary_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = self.build_config(Path(directory), binary=True)
+            data = config.micromachine_dir / "bin/data/unexpected.cpp"
+            data.parent.mkdir(parents=True, exist_ok=True)
+            data.write_text("unexpected source\n")
+            report = build_micromachine_build_identity(config)
+            self.assertFalse(report["ok"])
+            self.assertIn(
+                "micromachine_source_state_mismatch",
+                {failure["code"] for failure in report["failures"]},
+            )
+
+    def test_match_log_symlink_still_invalidates_binary_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = self.build_config(Path(directory), binary=True)
+            log = config.micromachine_dir / "bin/data/2026-09-12--03-45-51_ai-Zerg.log"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            log.symlink_to(config.micromachine_dir / "CMakeLists.txt")
+            report = build_micromachine_build_identity(config)
+            self.assertFalse(report["ok"])
 
     def test_micromachine_build_artifacts_do_not_mutate_attested_source_state(
         self,

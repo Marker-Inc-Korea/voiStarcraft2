@@ -1,0 +1,56 @@
+diff --git a/src/CombatCommander.cpp b/src/CombatCommander.cpp
+--- a/src/CombatCommander.cpp
++++ b/src/CombatCommander.cpp
+@@ -1,4 +1,5 @@
+ #include "CombatCommander.h"
++#include "voi_operation_completion.hpp"
+ #include "voi_explicit_ability_spec.hpp"
+ #include "voi_live_production_binding.hpp"
+ #include "voi_operation_observation.hpp"
+@@ -4174,25 +4174,44 @@
+ 		if (!operation.standing
+ 			&& operation.lifetimeMode != "until_cancelled")
+ 		{
+ 			if (!operation.completionConditions.empty())
+ 			{
+-				objectiveCompleted =
+-					(voiCommaListContains(
+-						operation.completionConditions,
+-						"order_issued")
+-						&& operation.submissionObserved)
+-					|| (voiCommaListContains(
+-						operation.completionConditions,
+-						"target_reached")
+-						&& targetReached)
+-					|| (voiCommaListContains(
+-						operation.completionConditions,
+-						"enemy_observed")
+-						&& observedEnemy);
++				bool abilityObserved = false;
++				for (const auto & entry : operation.familyEvidenceByKey)
++				{
++					const auto evidence = voiSelectFamilyEffectTelemetry(
++						operation.generation, entry.second);
++					if (evidence.policyUpdateId != operation.policyUpdateId
++						|| evidence.operationGeneration != operation.generation
++						|| evidence.requiredEffect != "ability_state_or_effect"
++						|| evidence.effectKind != "ability_state"
++						|| evidence.submittedFrame < operation.issuedAtFrame
++						|| evidence.effectFrame < evidence.submittedFrame
++						|| evidence.effectFrame > currentFrame
++						|| evidence.submittedCount <= 0)
++					{
++						continue;
++					}
++					for (const auto tag : observedTags)
++						abilityObserved = abilityObserved
++							|| (evidence.submittedUnitTags.count(tag) > 0
++								&& evidence.effectUnitTags.count(tag) > 0);
++				}
++				objectiveCompleted =
++					voiOperationObjectivesSatisfied(
++						operation.completionConditions,
++						{operation.submissionObserved, targetReached,
++							observedEnemy, abilityObserved,
++							operation.retreatConfirmed});
+ 			}

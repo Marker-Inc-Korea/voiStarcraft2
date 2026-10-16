@@ -1199,6 +1199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
     private var backendHealthFailures = 0
     private var backendRecoveryInFlight = false
     private var backendMonitorStarted = false
+    private var frontmostMonitor: Timer?
     private var sc2PID: pid_t = 0
     private var sc2LaunchInFlight = false
     private let autoStartMicroMachine = launchArguments
@@ -1220,6 +1221,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        frontmostMonitor?.invalidate()
         guard let recorded = try? String(contentsOf: appPIDURL, encoding: .ascii),
               recorded.trimmingCharacters(in: .whitespacesAndNewlines)
                 == String(ProcessInfo.processInfo.processIdentifier) else {
@@ -1254,10 +1256,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
             defer: false
         )
         window.title = "voiStarcraft2"
+        // Keep the compact controller visible above SC2 and other app windows.
+        window.level = .statusBar
+        window.collectionBehavior = [
+            .canJoinAllSpaces,
+            .fullScreenAuxiliary,
+            .ignoresCycle,
+        ]
+        window.hidesOnDeactivate = false
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.keepControllerVisible()
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            self?.keepControllerVisible()
+        }
+        frontmostMonitor = Timer.scheduledTimer(
+            withTimeInterval: 0.75,
+            repeats: true
+        ) { [weak self] _ in
+            self?.keepControllerVisible()
+        }
         window.minSize = NSSize(width: 480, height: 560)
         window.contentView = webView
         window.center()
         window.makeKeyAndOrderFront(nil)
+    }
+
+    private func keepControllerVisible() {
+        guard window != nil, window.isVisible else { return }
+        window.level = .statusBar
+        window.orderFrontRegardless()
     }
 
     func userContentController(

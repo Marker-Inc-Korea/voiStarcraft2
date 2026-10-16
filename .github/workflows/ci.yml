@@ -27,7 +27,9 @@ jobs:
       - name: Set up Python
         run: uv python install ${{ matrix.python-version }}
       - name: Install package
-        run: uv sync --locked --python ${{ matrix.python-version }} --extra dev --extra llm
+        run: uv sync --locked --python ${{ matrix.python-version }} --extra dev --extra llm --extra browser
+      - name: Install matched browser for DOM contract tests
+        run: uv run --python ${{ matrix.python-version }} playwright install --with-deps chromium
       - name: Run tests
         run: uv run --python ${{ matrix.python-version }} pytest -q
       - name: Verify real Linux sudo candidate process boundary

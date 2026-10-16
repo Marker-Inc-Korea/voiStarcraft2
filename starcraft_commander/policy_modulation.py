@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
+import math
 from typing import Final
 
 
@@ -44,6 +45,9 @@ class CommandLayer(str, Enum):
 
     MACRO = "macro"
     OPERATION = "operation"
+    # "operation" is the stable wire value for the user's intermediate
+    # squad-tactics layer; keep the alias so the conceptual layer is explicit.
+    INTERMEDIATE = "operation"
     MICRO = "micro"
     EMERGENCY = "emergency"
 
@@ -81,20 +85,116 @@ MICROMACHINE_DOCTRINES: Final[frozenset[str]] = frozenset(
 )
 """Supported semantic doctrine labels for MicroMachine manager-level bias."""
 
-MICROMACHINE_TACTICAL_TASK_TYPES: Final[frozenset[str]] = frozenset(
+MICROMACHINE_MANAGER_TASK_TYPES: Final[frozenset[str]] = frozenset(
     {
         "",
         "scout_with_units",
         "pressure_with_main_army",
         "defend_with_units",
         "harass_with_units",
+        "regroup_with_units",
         "sustain_production",
         "tech_transition",
         "expand_or_land_command_center",
+    }
+)
+"""Bounded task labels that describe MicroMachine-owned policy intent."""
+
+MICROMACHINE_DIRECT_TASK_TYPES: Final[frozenset[str]] = frozenset(
+    {
+        # These are semantic Direct SC2 action categories, not python-sc2
+        # method names.  They are admitted only as explicit non-macro task
+        # tickets and are lowered by ``unified_command_router``.
+        "assign_workers",
+        "gather_resource",
+        "build_structure",
+        "train_unit",
+        "research_upgrade",
+        "warp_in",
+        "move_group",
+        "attack_move",
+        "smart",
+        "patrol",
+        "return_resource",
+        "repair",
+        "observe",
+        "move_camera",
+        "stop_group",
+        "hold_position",
+        "query_ability",
+        "query_placement",
+        "build_gas",
+        "distribute_workers",
+        "expand_now",
+        "query_unit",
+        "query_game",
+        "query_map",
         "execute_ability",
     }
 )
-"""Bounded task labels consumed by MicroMachine managers, never raw commands."""
+"""Bounded semantic task tickets owned by the Direct SC2 route."""
+
+MICROMACHINE_DIRECT_EMERGENCY_TASK_TYPES: Final[frozenset[str]] = frozenset(
+    {"stop_group", "hold_position"}
+)
+"""Direct task tickets that infer the emergency command layer."""
+
+MICROMACHINE_UNIT_QUERIES: Final[frozenset[str]] = frozenset(
+    {
+        "calculate_speed",
+        "distance_to",
+        "distance_to_squared",
+        "target_in_range",
+        "in_ability_cast_range",
+        "is_facing",
+        "is_using_ability",
+        "has_buff",
+        "calculate_damage_vs_target",
+        "calculate_dps_vs_target",
+    }
+)
+"""Allowlisted read-only python-sc2 Unit query names."""
+
+MICROMACHINE_GAME_QUERIES: Final[frozenset[str]] = frozenset(
+    {
+        "can_afford",
+        "calculate_cost",
+        "calculate_unit_value",
+        "calculate_supply_cost",
+        "can_feed",
+        "already_pending",
+        "already_pending_upgrade",
+        "structure_type_build_progress",
+        "tech_requirement_progress",
+        "worker_en_route_to_build",
+    }
+)
+"""Allowlisted read-only python-sc2 BotAI game query names."""
+
+MICROMACHINE_MAP_QUERIES: Final[frozenset[str]] = frozenset(
+    {
+        "get_next_expansion",
+        "get_terrain_height",
+        "get_terrain_z_height",
+        "has_creep",
+        "in_map_bounds",
+        "in_pathing_grid",
+        "in_placement_grid",
+        "is_visible",
+    }
+)
+"""Allowlisted read-only python-sc2 BotAI map query names."""
+
+MICROMACHINE_TACTICAL_TASK_TYPES: Final[frozenset[str]] = frozenset(
+    MICROMACHINE_MANAGER_TASK_TYPES | MICROMACHINE_DIRECT_TASK_TYPES
+)
+"""All bounded task labels accepted by the policy vector contract.
+
+Manager labels remain policy-only when the inferred layer is ``macro``.
+Direct labels are never passed to MicroMachine: the layer inference below
+routes them to the Direct SC2 boundary and rejects an explicit ``macro`` layer
+as a semantic conflict.
+"""
 
 MICROMACHINE_TACTICAL_ABILITIES: Final[frozenset[str]] = frozenset(
     {
@@ -161,6 +261,7 @@ MICROMACHINE_COMPLETION_CONDITIONS: Final[frozenset[str]] = frozenset(
         "order_issued",
         "target_reached",
         "enemy_observed",
+        "enemy_destroyed",
         "retreat_confirmed",
         "ability_cast",
         "cancelled_by_user",
@@ -312,6 +413,8 @@ MICROMACHINE_CANONICAL_TASK_TOKEN_ALIASES: Final[dict[str, str]] = {
     "refinery": "TERRAN_REFINERY",
     "gas": "TERRAN_REFINERY",
     "가스": "TERRAN_REFINERY",
+    "정제소": "TERRAN_REFINERY",
+    "가스터빈": "TERRAN_REFINERY",
     "barracks": "TERRAN_BARRACKS",
     "rax": "TERRAN_BARRACKS",
     "병영": "TERRAN_BARRACKS",
@@ -1060,8 +1163,12 @@ class TacticalScopeModulation:
             "location_intent",
             _optional_choice(
                 "location_intent",
-                self.location_intent,
+                _normalize_location_intent(self.location_intent),
                 {
+                    "minerals",
+                    "gas",
+                    "vespene",
+                    "self_geyser",
                     "home",
                     "natural",
                     "enemy_main",
@@ -1179,18 +1286,28 @@ class LifetimeModulation:
 
 @dataclass(frozen=True)
 class TacticalTaskModulation:
-    """Bounded tactical task ticket consumed by MicroMachine managers.
+    """Bounded semantic task ticket consumed by the unified command router.
 
     This is stronger than a vague bias but still not raw control: it describes
-    a manager-consumable task type, semantic unit/production scope, and lifecycle
-    metadata. The C++ bot decides exact unit tags, positions, and orders.
+    a manager policy or Direct task type, semantic unit/production scope, and
+    lifecycle metadata. Runtime adapters decide exact unit tags and positions.
+    ``target`` is a named entity/resource for Direct repair/gather tickets;
+    map placement and movement continue to use ``location_intent``.
     """
 
     task_type: str = ""
     task_id: str = ""
     ability: str = ""
+    query: str = ""
+    subject_kind: str = ""
+    check_supply_cost: bool = True
+    buff: str = ""
+    bonus_distance: float = 0.0
+    ignore_armor: bool = False
+    include_overkill_damage: bool = True
     unit_classes: tuple[str, ...] = ()
     production_targets: tuple[str, ...] = ()
+    target: str = ""
     location_intent: str = ""
     priority: float = 0.0
     min_units: int = 0
@@ -1224,6 +1341,67 @@ class TacticalTaskModulation:
                 set(MICROMACHINE_TACTICAL_ABILITIES),
             ),
         )
+        if self.query:
+            object.__setattr__(self, "query", _require_text("query", self.query))
+            if self.task_type not in {"query_unit", "query_game", "query_map"}:
+                raise ValueError(
+                    "tactical_task.query requires a read-only query task type."
+                )
+            allowed_queries = (
+                MICROMACHINE_UNIT_QUERIES
+                if self.task_type == "query_unit"
+                else MICROMACHINE_GAME_QUERIES
+                if self.task_type == "query_game"
+                else MICROMACHINE_MAP_QUERIES
+            )
+            if self.query not in allowed_queries:
+                raise ValueError(f"unsupported tactical_task.query: {self.query!r}.")
+        object.__setattr__(
+            self,
+            "subject_kind",
+            _optional_choice("subject_kind", self.subject_kind, {"", "unit", "upgrade"}),
+        )
+        object.__setattr__(
+            self,
+            "check_supply_cost",
+            _coerce_bool(self.check_supply_cost, "check_supply_cost"),
+        )
+        if self.subject_kind and self.task_type != "query_game":
+            raise ValueError("tactical_task.subject_kind requires task_type='query_game'.")
+        if self.check_supply_cost is not True and self.task_type != "query_game":
+            raise ValueError("tactical_task.check_supply_cost requires task_type='query_game'.")
+        if self.buff:
+            object.__setattr__(self, "buff", _require_text("buff", self.buff))
+            if self.task_type != "query_unit" or self.query != "has_buff":
+                raise ValueError("tactical_task.buff requires query_unit query='has_buff'.")
+        object.__setattr__(
+            self,
+            "bonus_distance",
+            _coerce_finite_bounded_float(
+                self.bonus_distance,
+                field_name="bonus_distance",
+                lower=0.0,
+                upper=1000.0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "ignore_armor",
+            _coerce_bool(self.ignore_armor, "ignore_armor"),
+        )
+        object.__setattr__(
+            self,
+            "include_overkill_damage",
+            _coerce_bool(self.include_overkill_damage, "include_overkill_damage"),
+        )
+        if self.bonus_distance and self.task_type != "query_unit":
+            raise ValueError("tactical_task.bonus_distance requires task_type='query_unit'.")
+        if self.ignore_armor is not False and self.task_type != "query_unit":
+            raise ValueError("tactical_task.ignore_armor requires task_type='query_unit'.")
+        if self.include_overkill_damage is not True and self.task_type != "query_unit":
+            raise ValueError(
+                "tactical_task.include_overkill_damage requires task_type='query_unit'."
+            )
         object.__setattr__(
             self,
             "unit_classes",
@@ -1238,13 +1416,29 @@ class TacticalTaskModulation:
                 _validate_string_tuple("production_targets", self.production_targets)
             ),
         )
+        if self.target:
+            object.__setattr__(self, "target", _require_text("target", self.target))
+            if self.task_type not in {
+                "repair",
+                "assign_workers",
+                "gather_resource",
+                "query_unit",
+                "query_map",
+            }:
+                raise ValueError(
+                    "tactical_task.target requires a supported target-bearing task."
+                )
         object.__setattr__(
             self,
             "location_intent",
             _optional_choice(
                 "location_intent",
-                self.location_intent,
+                _normalize_location_intent(self.location_intent),
                 {
+                    "minerals",
+                    "gas",
+                    "vespene",
+                    "self_geyser",
                     "home",
                     "natural",
                     "enemy_main",
@@ -1308,11 +1502,29 @@ class TacticalTaskModulation:
         )
         if not self.task_type and self._has_task_payload():
             raise ValueError("task_type is required when tactical_task payload is set.")
-        if self.task_type == "execute_ability" and not self.ability:
-            raise ValueError("ability is required for execute_ability tactical tasks.")
-        if self.ability and self.task_type != "execute_ability":
+        if self.task_type in {"execute_ability", "query_ability"} and not self.ability:
             raise ValueError(
-                "tactical_task.ability requires task_type='execute_ability'."
+                "ability is required for execute_ability and query_ability tactical tasks."
+            )
+        if self.task_type in {"query_unit", "query_game", "query_map"} and not self.query:
+            raise ValueError("query is required for read-only query tactical tasks.")
+        if self.task_type == "query_unit":
+            if self.query == "has_buff" and not self.buff:
+                raise ValueError("buff is required for query_unit query='has_buff'.")
+            if self.query != "has_buff" and self.buff:
+                raise ValueError("buff is only valid for query_unit query='has_buff'.")
+            if self.query in {"in_ability_cast_range", "is_using_ability"} and not self.ability:
+                raise ValueError(
+                    "ability is required for query_unit query requiring an ability."
+                )
+        elif self.task_type == "query_map":
+            if self.query != "get_next_expansion" and not self.target and not self.location_intent:
+                raise ValueError("query_map requires a semantic target or location_intent.")
+        elif self.buff:
+            raise ValueError("tactical_task.buff requires task_type='query_unit'.")
+        if self.ability and self.task_type not in {"execute_ability", "query_ability", "query_unit"}:
+            raise ValueError(
+                "tactical_task.ability requires execute_ability, query_ability, or query_unit."
             )
 
     def to_dict(self) -> dict[str, object]:
@@ -1320,8 +1532,16 @@ class TacticalTaskModulation:
             "task_type": self.task_type,
             "task_id": self.task_id,
             "ability": self.ability,
+            "query": self.query,
+            "subject_kind": self.subject_kind,
+            "check_supply_cost": self.check_supply_cost,
+            "buff": self.buff,
+            "bonus_distance": self.bonus_distance,
+            "ignore_armor": self.ignore_armor,
+            "include_overkill_damage": self.include_overkill_damage,
             "unit_classes": list(self.unit_classes),
             "production_targets": list(self.production_targets),
+            "target": self.target,
             "location_intent": self.location_intent,
             "priority": self.priority,
             "min_units": self.min_units,
@@ -1335,8 +1555,16 @@ class TacticalTaskModulation:
         return (
             bool(self.task_id)
             or bool(self.ability)
+            or bool(self.query)
+            or bool(self.subject_kind)
+            or self.check_supply_cost is not True
+            or bool(self.buff)
+            or self.bonus_distance != 0.0
+            or self.ignore_armor is not False
+            or self.include_overkill_damage is not True
             or bool(self.unit_classes)
             or bool(self.production_targets)
+            or bool(self.target)
             or bool(self.location_intent)
             or self.priority != 0.0
             or self.min_units != 0
@@ -2250,11 +2478,19 @@ def _infer_command_layer(vector: PolicyModulationVector) -> CommandLayer:
         return CommandLayer.OPERATION
     if vector.tactical_task.task_type == "execute_ability":
         return CommandLayer.MICRO
+    if vector.tactical_task.task_type in MICROMACHINE_DIRECT_EMERGENCY_TASK_TYPES:
+        return CommandLayer.EMERGENCY
+    if vector.tactical_task.task_type in MICROMACHINE_DIRECT_TASK_TYPES:
+        # Direct semantic tickets are one-shot commands. They must never be
+        # interpreted as manager policy, even when a provider omits the layer.
+        return CommandLayer.OPERATION
     if vector.tactical_task.task_type in {
         "scout_with_units",
         "pressure_with_main_army",
         "defend_with_units",
         "harass_with_units",
+        "regroup_with_units",
+        "train_unit",
     }:
         return CommandLayer.OPERATION
     if vector.tactical_task.task_type in {
@@ -2266,6 +2502,10 @@ def _infer_command_layer(vector: PolicyModulationVector) -> CommandLayer:
         # defense, rally, or placement context may accompany the standing
         # order without turning it into a finite army operation.
         return CommandLayer.MACRO
+    # A concrete building request is a finite action, not a standing
+    # production bias. It must cross the Direct SC2 boundary.
+    if vector.building_tasks:
+        return CommandLayer.OPERATION
     if (
         vector.route_intent.route_type
         or vector.route_intent.avoid_enemy_strength
@@ -2288,11 +2528,17 @@ def _infer_tactical_operation_layer(
     task_type = operation.tactical_task.task_type
     if task_type == "execute_ability":
         return CommandLayer.MICRO
+    if task_type in MICROMACHINE_DIRECT_EMERGENCY_TASK_TYPES:
+        return CommandLayer.EMERGENCY
+    if task_type in MICROMACHINE_DIRECT_TASK_TYPES:
+        return CommandLayer.OPERATION
     if task_type in {
         "scout_with_units",
         "pressure_with_main_army",
         "defend_with_units",
         "harass_with_units",
+        "regroup_with_units",
+        "train_unit",
     }:
         return CommandLayer.OPERATION
     if task_type in {
@@ -2717,6 +2963,21 @@ def _coerce_unit_interval(
     return number
 
 
+def _coerce_finite_bounded_float(
+    value: object,
+    *,
+    field_name: str,
+    lower: float,
+    upper: float,
+) -> float:
+    number = _coerce_float(value, field_name=field_name)
+    if not math.isfinite(number):
+        raise ValueError(f"{field_name} must be finite.")
+    if not lower <= number <= upper:
+        raise ValueError(f"{field_name} must be between {lower} and {upper}.")
+    return number
+
+
 def _coerce_float(value: object, *, field_name: str) -> float:
     if type(value) is bool or not isinstance(value, (int, float)):
         raise TypeError(f"{field_name} must be a number.")
@@ -2768,6 +3029,45 @@ def _require_choice(field_name: str, value: object, choices: set[str]) -> str:
             f"{field_name} must be one of: {', '.join(sorted(choices))}."
         )
     return text
+
+
+def _normalize_location_intent(value: object) -> object:
+    """Canonicalize common player-facing self-side location aliases.
+
+    Provider output is normally already one of the compact DSL choices, but
+    direct operation lowering also accepts natural semantic labels. Keeping
+    the alias normalization at the validated policy boundary prevents a
+    valid regroup/defense request from being rejected before it can reach the
+    Direct SC2 target resolver.
+    """
+
+    if not isinstance(value, str):
+        return value
+    key = " ".join(value.strip().casefold().split())
+    aliases = {
+        "main": "home",
+        "base": "home",
+        "self_main": "home",
+        "our home": "home",
+        "our main": "home",
+        "our base": "home",
+        "본진": "home",
+        "우리 본진": "home",
+        "우리본진": "home",
+        "아군 본진": "home",
+        "아군본진": "home",
+        "내 본진": "home",
+        "내본진": "home",
+        "self_natural": "natural",
+        "our natural": "natural",
+        "우리 앞마당": "natural",
+        "self_ramp": "ramp",
+        "our ramp": "ramp",
+        "우리 입구": "ramp",
+        "본진 입구": "ramp",
+        "본진입구": "ramp",
+    }
+    return aliases.get(key, value)
 
 
 def _optional_choice(field_name: str, value: object, choices: set[str]) -> str:

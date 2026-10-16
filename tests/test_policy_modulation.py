@@ -1233,6 +1233,8 @@ class PolicyModulationVectorTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "task_type"):
             TacticalTaskModulation(task_type="raw_attack_move")
+        with self.assertRaisesRegex(ValueError, "query is required"):
+            TacticalTaskModulation(task_type="query_unit")
         with self.assertRaisesRegex(ValueError, "task_id"):
             TacticalTaskModulation(task_type="scout_with_units", task_id="bad id")
         with self.assertRaisesRegex(ValueError, "task_type is required"):
@@ -1243,6 +1245,73 @@ class PolicyModulationVectorTest(unittest.TestCase):
                 min_units=3,
                 max_units=2,
             )
+
+    def test_query_unit_metadata_round_trips_and_is_validated(self) -> None:
+        task = TacticalTaskModulation(
+            task_type="query_unit",
+            query="has_buff",
+            buff="STIMPACK",
+            bonus_distance=2.5,
+            ignore_armor=True,
+            include_overkill_damage=False,
+        )
+        payload = task.to_dict()
+        self.assertEqual("STIMPACK", payload["buff"])
+        self.assertEqual(2.5, payload["bonus_distance"])
+        self.assertTrue(payload["ignore_armor"])
+        self.assertFalse(payload["include_overkill_damage"])
+        rebuilt = PolicyModulationVector.from_mapping(
+            {"goal": "query", "tactical_task": payload}
+        )
+        self.assertEqual(task, rebuilt.tactical_task)
+        with self.assertRaisesRegex(ValueError, "buff is required"):
+            TacticalTaskModulation(task_type="query_unit", query="has_buff")
+        with self.assertRaisesRegex(ValueError, "finite"):
+            TacticalTaskModulation(
+                task_type="query_unit", query="calculate_speed", bonus_distance=float("nan")
+            )
+        with self.assertRaises(TypeError):
+            TacticalTaskModulation(
+                task_type="query_unit", query="calculate_speed", ignore_armor="false"
+            )
+
+    def test_query_game_metadata_round_trips_and_is_bounded(self) -> None:
+        task = TacticalTaskModulation(
+            task_type="query_game",
+            query="already_pending_upgrade",
+            production_targets=("STIMPACK",),
+            subject_kind="upgrade",
+            check_supply_cost=False,
+        )
+        rebuilt = PolicyModulationVector.from_mapping(
+            {"goal": "pending upgrade", "tactical_task": task.to_dict()}
+        )
+        self.assertEqual(task, rebuilt.tactical_task)
+        with self.assertRaisesRegex(ValueError, "unsupported tactical_task.query"):
+            TacticalTaskModulation(task_type="query_game", query="stop")
+        with self.assertRaisesRegex(ValueError, "subject_kind"):
+            TacticalTaskModulation(
+                task_type="query_unit", query="calculate_speed", subject_kind="unit"
+            )
+
+    def test_query_map_metadata_round_trips_and_requires_semantic_target(self) -> None:
+        task = TacticalTaskModulation(
+            task_type="query_map",
+            query="in_pathing_grid",
+            location_intent="home",
+        )
+        rebuilt = PolicyModulationVector.from_mapping(
+            {"goal": "map pathing", "tactical_task": task.to_dict()}
+        )
+        self.assertEqual(task, rebuilt.tactical_task)
+        global_query = TacticalTaskModulation(
+            task_type="query_map", query="get_next_expansion"
+        )
+        self.assertEqual("get_next_expansion", global_query.query)
+        with self.assertRaisesRegex(ValueError, "semantic target"):
+            TacticalTaskModulation(task_type="query_map", query="is_visible")
+        with self.assertRaisesRegex(ValueError, "unsupported tactical_task.query"):
+            TacticalTaskModulation(task_type="query_map", query="stop")
 
 
 if __name__ == "__main__":

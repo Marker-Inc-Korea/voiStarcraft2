@@ -1592,9 +1592,14 @@ def _compile_command(
         )
     else:
         provider_output = _provider_output(preset)
+        # Pre-live journey compilation consumes a typed MicroMachine
+        # projection directly.  It is intentionally an explicit seam:
+        # ordinary user non-macro text remains Direct-owned and must not
+        # use this path as a runtime fallback.
         session = MicroMachineLiveTextSession(
             execution.backend,
             StaticJsonPolicyModulationProvider(provider_output),
+            publish_non_macro_projection=True,
         )
         result = session.submit_text(
             command_text,
@@ -1666,6 +1671,7 @@ def _compile_all_terran_matrix_update(
             session = MicroMachineLiveTextSession(
                 MicroMachineInMemoryBlackboard(),
                 StaticJsonPolicyModulationProvider(provider_output),
+                publish_non_macro_projection=True,
             )
             ability_index += 1
             result = session.submit_text(

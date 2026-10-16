@@ -171,7 +171,8 @@ diff --git a/src/ProductionManager.cpp b/src/ProductionManager.cpp
 +		m_lastVoiDoctrineEvidence = "queued_supply_and_continuing_plan";
  	}
  	if (workerProductionBias > 0.25f
- 		&& !m_queue.contains(workerMetatype)
+-		&& !m_queue.contains(workerMetatype)
++		&& (taskTargetsScv || !m_queue.contains(workerMetatype))
  		&& m_bot.GetCurrentSupply() < supplyWithQueuedProviders
  		&& queueVoiDoctrineItem(workerMetatype, "worker_continuity", true))
  	{

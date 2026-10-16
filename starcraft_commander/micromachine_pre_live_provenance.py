@@ -180,6 +180,12 @@ _REPOSITORY_RE: Final[re.Pattern[str]] = re.compile(
 _CTEST_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
     r"(?m)^\s*(\d+)%\s+tests passed,\s+(\d+)\s+tests failed out of\s+(\d+)\s*$"
 )
+# CTest 4.4 removed the explicit zero-failure clause from the successful
+# summary (``100% tests passed out of N``).  Keep this as a separate, strict
+# shape so malformed or partial summaries are still rejected below.
+_CTEST_SUCCESS_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?m)^\s*100%\s+tests passed\s+out of\s+(\d+)\s*$"
+)
 _CTEST_FRACTION_RE: Final[re.Pattern[str]] = re.compile(
     r"(?im)^\s*(\d+)/(\d+)\s+tests passed\s*$"
 )
@@ -7463,10 +7469,19 @@ def _run_ctest(
             blockers.append(f"ctest execution failed: {exc}")
     combined = stdout + "\n" + stderr
     summaries = _CTEST_SUMMARY_RE.findall(combined)
+    success_summaries = _CTEST_SUCCESS_SUMMARY_RE.findall(combined)
     fractions = _CTEST_FRACTION_RE.findall(combined)
     required_count = str(_REQUIRED_CTEST_COUNT)
-    exact_required = summaries == [("100", "0", required_count)] or (
-        not summaries and fractions == [(required_count, required_count)]
+    exact_required = (
+        summaries == [("100", "0", required_count)]
+        and not success_summaries
+    ) or (
+        not summaries
+        and success_summaries == [required_count]
+    ) or (
+        not summaries
+        and not success_summaries
+        and fractions == [(required_count, required_count)]
     )
     if returncode is not None and returncode != 0:
         blockers.append(f"ctest exited with code {returncode}")

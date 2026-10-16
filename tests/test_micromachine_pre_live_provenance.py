@@ -1227,7 +1227,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             f"  {AUTHORITATIVE_PROVENANCE_JOB_NAME}:\n",
             1,
         )[1].split("\n  micromachine-macos-contracts:\n", 1)[0]
-        trusted_verifier_commit = "2473e63ba8294af79722117fb7d558990993c3da"
+        trusted_verifier_commit = "db8067cf0cce2dbbaea2bb8f0d1f67dd7a6a50b5"
         self.assertIn(
             "    if: >-\n"
             "      github.event.pull_request.head.repo.id == "
@@ -4010,8 +4010,39 @@ class BuildBindingTest(unittest.TestCase):
                     )
                     self.assertFalse(report["ok"], report)
 
+    def test_accepts_ctest_44_success_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = make_build_fixture(Path(directory))
+
+            def runner(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
+                completed = passing_ctest(*args, **kwargs)
+                if "--show-only=json-v1" not in args[0]:
+                    completed.stdout = f"100% tests passed out of {REQUIRED_CTEST_COUNT}\n"
+                return completed
+
+            report = attest_build_binding(
+                fixture["report_path"],
+                repository_dir=fixture["repository"],
+                expected_repository_commit=fixture["repository_commit"],
+                command_runner=runner,
+            )
+            self.assertTrue(report["ok"], report)
+            self.assertEqual(REQUIRED_CTEST_COUNT, report["ctest"]["passed"])
+
     def test_rejects_ctest_failure_missing_and_inexact_summaries(self) -> None:
         cases = (
+            *(
+                subprocess.CompletedProcess([], 0, stdout=summary, stderr="")
+                for summary in (
+                    "100% tests passed out of 4\n",
+                    f"90% tests passed out of {REQUIRED_CTEST_COUNT}\n",
+                    f"100% tests passed out of {REQUIRED_CTEST_COUNT}\n" * 2,
+                    f"100% tests passed out of {REQUIRED_CTEST_COUNT}\n"
+                    f"88% tests passed, 1 tests failed out of {REQUIRED_CTEST_COUNT}\n",
+                    f"100% tests passed out of {REQUIRED_CTEST_COUNT}\n"
+                    f"100% tests passed, 0 tests failed out of {REQUIRED_CTEST_COUNT}\n",
+                )
+            ),
             subprocess.CompletedProcess(
                 [],
                 1,
