@@ -1,5 +1,41 @@
 # 승인된 Direct SC2 명령 계획과 구현 현황
 
+## 최신 재개 상태 — 2026-10-16
+
+아래 날짜별 기록은 과거 증거이며, 현재 완료 판정은 이 요약을 우선한다.
+원문 계획은 `approved-direct-command-plan-verbatim.md`에 그대로 보존한다.
+
+- PR #187: 아직 main에 머지되지 않았다. head `0584f46`의 hosted 재실행에서
+  Python 3.10/3.11/3.12 unit-contracts는 모두 통과했다. 후보/신뢰 검증기
+  producer-isolation은 CTest 4.4.3에서 exact 10/10 증거 판정 실패 상태다.
+  배포 검증은 기존 QA 헤더/스크립트 네 개의 명시적 허용 목록 누락을 발견했다.
+- Electron #190: `electron/`에 Main/Preload/Renderer 셸을 추가했다.
+  loopback-only 연결, 입력 allowlist, sender 검증, sandbox/context isolation,
+  CSP, TypeScript API 선언 및 bounded history 조회를 제공한다.
+  Node 테스트 4개 통과. 실제 Electron UI 실행·기존 UI parity·실게임 E2E는 미검증이다.
+- C++ #192: 네이티브 Direct lease 이벤트 소비 helper와 Python executor의
+  opt-in 이벤트 writer를 추가했다. runtime epoch 고정, 중복/오래된 이벤트 거부,
+  구분자 주입 거부를 테스트했다. **upstream 게임 루프 연결은 아직 없다.**
+  따라서 C++ MicroMachine 자율제어 재개 완료를 의미하지 않는다.
+- JEV #189: 비객체 응답을 typed `invalid`로 거부하고 protocol version,
+  reason type, 유한 timeout을 검증한다. 실제 외부 endpoint/auth는 미설정이다.
+- 위치/분대/수리 #194: target-pin registry 값을 caller metadata가 위조하지
+  못하도록 보강했다. 실제 map/buildability·repair 재선택·squad observation은 미검증이다.
+- API #195: 기존 bounded catalog와 raw API 거부를 유지한다. `alert`,
+  `chat_send`, Client/protocol API 및 모든 ability 실게임 검증은 완료되지 않았다.
+- 재검증: Direct/JEV/executor/bridge/API 집중 테스트
+  `145 passed, 127 subtests passed`; Electron Node tests `4 passed`.
+  이는 계약/단위 테스트 증거이며 실게임 증거가 아니다.
+- Goal: 기존 thread Goal은 `blocked`다. 확장 목표를 새 Goal로 생성하려 했으나
+  `cannot create a new goal because this thread has an unfinished goal`로 거부됐다.
+  완료되지 않은 기존 Goal을 완료로 바꾸거나 Goal DB를 직접 수정하지 않는다.
+
+확장 목표의 추적 원장은 issue #196이며 #188–#195의 완료 조건을 포함한다.
+최종 종료 조건은 필수 CI 통과 후 main 머지, Electron parity, 실제 SC2
+명령/건설/생산/카메라/TTL/취소/실패/lease 해제/C++ 재개 증거,
+실제 JEV 운영 계약, API 범위별 구현 또는 명시적 미지원 근거다.
+계약 테스트 통과를 이 종료 조건의 대체물로 사용하지 않는다.
+
 이 문서는 Codex 세션 `019fb8fc-d26e-73e3-8d8b-6686c71501c6`에서 사용자가 승인한
 계획을 기준으로 작성한 구현 대조표다. 이 문서의 목적은 “구현했다”는 표현을
 실제 코드·테스트·런타임 증거와 분리해서, 승인된 항목을 하나씩 완료 여부로
