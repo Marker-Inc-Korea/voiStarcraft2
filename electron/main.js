@@ -4,7 +4,7 @@ const {pathToFileURL}=require("node:url");
 const {validateCommand,validateBaseUrl}=require("./protocol.js");
 const BASE_URL=validateBaseUrl(process.env.VOI_COMMANDER_URL||"http://127.0.0.1:8765");
 const rendererFile=path.join(__dirname,"renderer","index.html");
-const CHANNELS=Object.freeze({status:"commander:status",command:"commander:command",capabilities:"commander:capabilities"});
+const CHANNELS=Object.freeze({status:"commander:status",command:"commander:command",capabilities:"commander:capabilities",events:"commander:events"});
 async function requestJson(pathname, options = {}) {
   const response = await fetch(new URL(pathname, BASE_URL), {
     ...options, redirect: "error", signal: AbortSignal.timeout(15000),
@@ -21,6 +21,10 @@ function registerIpc() {
   });
   handle(CHANNELS.status, () => requestJson("/api/micromachine/status"));
   handle(CHANNELS.capabilities, () => requestJson("/api/direct/capabilities"));
+  handle(CHANNELS.events, input => {
+    const after = input && Number.isInteger(input.after) && input.after >= 0 ? input.after : 0;
+    return requestJson(`/api/history?after=${after}`);
+  });
   handle(CHANNELS.command, input => requestJson("/api/micromachine/modulate", {method:"POST", body:JSON.stringify({...validateCommand(input), async_publish:true})}));
 }
 function createWindow() {
