@@ -1,3 +1,6 @@
 const test=require("node:test");const assert=require("node:assert/strict");const {validateCommand}=require("../protocol.js");
 test("command IPC accepts bounded semantic text",()=>assert.deepEqual(validateCommand({text:"앞마당 방어"}),{text:"앞마당 방어",ui_language:"ko",response_language:"ko"}));
 test("command IPC rejects empty or oversized input",()=>{assert.throws(()=>validateCommand({text:""}),/1..2000/);assert.throws(()=>validateCommand({text:"x".repeat(2001)}),/1..2000/);});
+test("command IPC rejects raw runtime arguments",()=>assert.throws(()=>validateCommand({text:"attack",unit_tags:[12]}),/unexpected/));
+const {validateBaseUrl}=require("../protocol.js");
+test("backend origin is loopback-only",()=>{assert.equal(validateBaseUrl("http://127.0.0.1:8765"),"http://127.0.0.1:8765"); for(const url of ["https://example.com","http://127.0.0.1.evil.test","http://u:p@localhost","file:///tmp/x","http://localhost/path"])assert.throws(()=>validateBaseUrl(url));});
