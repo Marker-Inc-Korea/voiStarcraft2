@@ -133,10 +133,13 @@ contract test. Read-only `Unit` properties and calculations are likewise not
 silently advertised as action tools; `sc2.direct.observe` remains the
 structured state snapshot boundary.
 
-This ledger is intentionally an explicit gap report, not a claim of “all SC2
-API support”. The approved “all functions” requirement remains open until the
-gap entries are either implemented and tested or explicitly rejected with a
-user-visible reason.
+The inventory now also carries explicit Client/protocol exclusion ledgers for
+transport, debug, session, protobuf, and raw query surfaces. These entries are
+reviewed dispositions rather than silent omissions: model-facing access still
+requires a bounded semantic schema, ownership policy, failure semantics, and
+focused tests. The ledger is intentionally an explicit gap report, not a claim
+of “all SC2 API support”; the approved “all functions” requirement remains
+open for runtime capabilities that still need those schemas or Live QA.
 
 `sc2.direct.query_placement` is likewise read-only and parallel-safe. It accepts
 one semantic structure name (`subject`) and target alias, bounds placement

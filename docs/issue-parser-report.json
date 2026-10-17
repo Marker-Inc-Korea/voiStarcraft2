@@ -1,0 +1,6043 @@
+{
+  "schema_version": "issue-parser/v1",
+  "issue_count": 100,
+  "issues": [
+    {
+      "number": 3,
+      "title": "Complete runtime convergence defense isolation placement and information stability",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/3",
+      "state": "CLOSED",
+      "updated_at": "2026-07-28T19:43:33Z",
+      "labels": [],
+      "references": [
+        124
+      ],
+      "sections": [
+        {
+          "level": 1,
+          "title": "Runtime convergence, defense isolation, placement, and information stability",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "문제",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "목표",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "범위",
+          "line_count": 14
+        },
+        {
+          "level": 2,
+          "title": "비범위",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 11
+        },
+        {
+          "level": 2,
+          "title": "필수 테스트",
+          "line_count": 12
+        },
+        {
+          "level": 2,
+          "title": "완료 증거",
+          "line_count": 5
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "부족 병력 작전이 prerequisite 생산 후 같은 operation generation으로 출동한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "blocker가 필요한 건물/유닛/현재 수/목표 수를 제공한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "attack, scout, entrance defense ownership 교집합이 0이다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "MainAttack과 Base Defense가 explicit operation-owned unit을 훔치지 않는다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "위협 종료와 cancel 후 owner/action/Squad가 정리되고 자율 play가 복구된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "semantic placement는 valid, buildable, connected 위치만 선택한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "production buildings가 정책 근거 없이 lift/land하지 않는다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "unobserved candidate를 fresh enemy observation으로 표시하지 않는다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "목표가 매 frame 흔들리지 않는다.",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 9,
+        "complete": 0,
+        "open": 9
+      }
+    },
+    {
+      "number": 4,
+      "title": "Add tactical voice readback and event callouts",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/4",
+      "state": "CLOSED",
+      "updated_at": "2026-07-30T11:54:00Z",
+      "labels": [],
+      "references": [
+        124,
+        133,
+        134
+      ],
+      "sections": [
+        {
+          "level": 1,
+          "title": "Tactical voice readback and event callouts",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "대목표",
+          "line_count": 16
+        },
+        {
+          "level": 2,
+          "title": "현재 문제",
+          "line_count": 12
+        },
+        {
+          "level": 2,
+          "title": "capability boundary",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "1. Single transcript session",
+          "line_count": 31
+        },
+        {
+          "level": 2,
+          "title": "2. Structured tactical readback",
+          "line_count": 17
+        },
+        {
+          "level": 2,
+          "title": "3. Authoritative callout transitions",
+          "line_count": 31
+        },
+        {
+          "level": 2,
+          "title": "4. Priority scheduler",
+          "line_count": 34
+        },
+        {
+          "level": 2,
+          "title": "5. Replay and scope safety",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "6. UI and accessibility",
+          "line_count": 24
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 12
+        },
+        {
+          "level": 2,
+          "title": "필수 테스트",
+          "line_count": 19
+        },
+        {
+          "level": 2,
+          "title": "완료 증거",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "비범위",
+          "line_count": 6
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "한 발화에 recording/pending bubble이 하나만 존재한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "partial/final transcript가 같은 node에서 누적된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "한 발화가 정확히 한 번만 command gateway에 제출된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "readback이 exact operation ID/generation과 structured plan에 일치한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "publish만 된 상태를 배정/실행됐다고 읽지 않는다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "P0/P1이 P2보다 우선하며 cooldown/dedupe/compaction이 동작한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "stale generation/frame/replay callout이 억제된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "snapshot hydration이 과거 audio를 재생하지 않는다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "mute/TTS unavailable에서도 caption과 command execution이 유지된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "한국어/영어/accessibility/mobile/reduced-motion 계약이 유지된다.",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 10,
+        "complete": 0,
+        "open": 10
+      }
+    },
+    {
+      "number": 5,
+      "title": "Add StarCraft 1 Brood War + BWAPI runtime adapter",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/5",
+      "state": "OPEN",
+      "updated_at": "2026-06-14T13:36:26Z",
+      "labels": [],
+      "references": [],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Why",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "Non-goals",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "Notes",
+          "line_count": 1
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 7,
+      "title": "Research intent representation injection with SOTA models",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/7",
+      "state": "OPEN",
+      "updated_at": "2026-06-17T08:15:33Z",
+      "labels": [],
+      "references": [],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Problem",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Research Questions",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "Non-Goals",
+          "line_count": 4
+        },
+        {
+          "level": 2,
+          "title": "Proposed Deliverables",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Acceptance Criteria",
+          "line_count": 5
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 9,
+      "title": "Review TALAR task-language approach for intent representation",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/9",
+      "state": "OPEN",
+      "updated_at": "2026-06-18T12:50:05Z",
+      "labels": [],
+      "references": [
+        7
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Paper",
+          "line_count": 4
+        },
+        {
+          "level": 2,
+          "title": "TLDR",
+          "line_count": 4
+        },
+        {
+          "level": 2,
+          "title": "Approach",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "Why this matters for voiStarcraft2",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "Concrete project ideas",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "Review",
+          "line_count": 12
+        },
+        {
+          "level": 2,
+          "title": "Proposed next step",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria for follow-up",
+          "line_count": 6
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 10,
+      "title": "Review LLM + behavior tree approach for StarCraft II collaboration",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/10",
+      "state": "CLOSED",
+      "updated_at": "2026-06-19T16:57:52Z",
+      "labels": [],
+      "references": [
+        7
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Paper",
+          "line_count": 4
+        },
+        {
+          "level": 2,
+          "title": "TLDR",
+          "line_count": 4
+        },
+        {
+          "level": 2,
+          "title": "Approach",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "Why this matters for voiStarcraft2",
+          "line_count": 15
+        },
+        {
+          "level": 2,
+          "title": "Concrete project ideas",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "Review",
+          "line_count": 12
+        },
+        {
+          "level": 2,
+          "title": "Proposed architecture direction",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "Proposed next step",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria for follow-up",
+          "line_count": 7
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 12,
+      "title": "Issue 10.1: Document MicroMachine adoption and non-neural bot decision",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/12",
+      "state": "CLOSED",
+      "updated_at": "2026-06-22T13:42:58Z",
+      "labels": [],
+      "references": [
+        10
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 13,
+      "title": "Issue 10.2: Add deep policy modulation DSL contracts",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/13",
+      "state": "CLOSED",
+      "updated_at": "2026-06-19T16:42:18Z",
+      "labels": [],
+      "references": [
+        10,
+        12
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 14,
+      "title": "Issue 10.3: Compile bounded LLM/neural provider output into policy modulation",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/14",
+      "state": "CLOSED",
+      "updated_at": "2026-06-19T16:47:19Z",
+      "labels": [],
+      "references": [
+        10,
+        13
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 15,
+      "title": "Issue 10.4: Specify MicroMachine sidecar bridge and blackboard protocol",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/15",
+      "state": "CLOSED",
+      "updated_at": "2026-06-19T16:52:28Z",
+      "labels": [],
+      "references": [
+        10,
+        13,
+        14
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 16,
+      "title": "Issue 10.5: Integrate modulation observability and evaluation harness",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/16",
+      "state": "CLOSED",
+      "updated_at": "2026-06-19T16:57:00Z",
+      "labels": [],
+      "references": [
+        10,
+        12,
+        13,
+        14,
+        15
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 22,
+      "title": "Issue 10.6: Complete real MicroMachine runtime integration kit",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/22",
+      "state": "CLOSED",
+      "updated_at": "2026-06-20T02:41:25Z",
+      "labels": [],
+      "references": [
+        10,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 24,
+      "title": "Issue 10.7: Harden MicroMachine local smoke beyond connection-only success",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/24",
+      "state": "CLOSED",
+      "updated_at": "2026-06-21T10:47:25Z",
+      "labels": [],
+      "references": [
+        10
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 25,
+      "title": "Issue 10.8: Add backend-swappable policy modulation transport abstraction",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/25",
+      "state": "CLOSED",
+      "updated_at": "2026-06-21T10:58:28Z",
+      "labels": [],
+      "references": [
+        10
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 26,
+      "title": "Issue 10.11: Add long-run soak and production sign-off for full-game MicroMachine collaboration",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/26",
+      "state": "CLOSED",
+      "updated_at": "2026-06-22T03:14:02Z",
+      "labels": [],
+      "references": [
+        10
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 27,
+      "title": "Issue 10.10: Add combat, scout, and intervention acceptance gates for MicroMachine",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/27",
+      "state": "CLOSED",
+      "updated_at": "2026-06-21T15:42:42Z",
+      "labels": [],
+      "references": [
+        10
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 28,
+      "title": "Issue 10.9: Stabilize MicroMachine full-game macro path after Barracks",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/28",
+      "state": "CLOSED",
+      "updated_at": "2026-06-21T14:30:00Z",
+      "labels": [],
+      "references": [
+        10
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 36,
+      "title": "Issue 10.14: Make production soak defaults zero-failure only",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/36",
+      "state": "CLOSED",
+      "updated_at": "2026-06-22T13:42:11Z",
+      "labels": [],
+      "references": [
+        10,
+        35
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 38,
+      "title": "Issue 10.15: Deepen MicroMachine policy modulation DSL axes",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/38",
+      "state": "CLOSED",
+      "updated_at": "2026-06-22T15:03:12Z",
+      "labels": [],
+      "references": [
+        10
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 39,
+      "title": "Issue 10.17: Wire Web GUI text input to MicroMachine live modulation",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/39",
+      "state": "CLOSED",
+      "updated_at": "2026-06-23T02:10:29Z",
+      "labels": [],
+      "references": [
+        10
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 40,
+      "title": "Issue 10.16: Add live text-to-MicroMachine modulation session",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/40",
+      "state": "CLOSED",
+      "updated_at": "2026-06-23T01:50:16Z",
+      "labels": [],
+      "references": [
+        10
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 41,
+      "title": "Issue 10.18: Add SC2 chat-to-modulation boundary without screen automation",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/41",
+      "state": "CLOSED",
+      "updated_at": "2026-06-23T02:23:26Z",
+      "labels": [],
+      "references": [
+        10
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 42,
+      "title": "Issue 10.19: Make SC2 soak operations toggleable with run history dashboard",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/42",
+      "state": "CLOSED",
+      "updated_at": "2026-06-23T02:36:52Z",
+      "labels": [],
+      "references": [
+        10
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 48,
+      "title": "MicroMachine production hardening master track",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/48",
+      "state": "CLOSED",
+      "updated_at": "2026-06-23T09:12:21Z",
+      "labels": [],
+      "references": [
+        10
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Non-negotiable root constraints",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "Production acceptance target",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Phases",
+          "line_count": 10
+        },
+        {
+          "level": 2,
+          "title": "Stop condition",
+          "line_count": 1
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 49,
+      "title": "Issue 48.1: Define MicroMachine production map pool and qualification contract",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/49",
+      "state": "CLOSED",
+      "updated_at": "2026-06-23T06:55:23Z",
+      "labels": [],
+      "references": [
+        10,
+        48
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Non-scope",
+          "line_count": 4
+        },
+        {
+          "level": 2,
+          "title": "Implementation notes",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 6
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 50,
+      "title": "Issue 48.5: Add long-horizon MicroMachine strategy-profile soak",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/50",
+      "state": "CLOSED",
+      "updated_at": "2026-06-23T07:44:13Z",
+      "labels": [],
+      "references": [
+        48
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Non-scope",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 5
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 51,
+      "title": "Issue 48.9: Add final MicroMachine production release gate",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/51",
+      "state": "CLOSED",
+      "updated_at": "2026-06-23T09:12:21Z",
+      "labels": [],
+      "references": [
+        48
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Non-scope",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 5
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 52,
+      "title": "Issue 48.3: Fix Thunderbird MicroMachine no-production deadlock",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/52",
+      "state": "CLOSED",
+      "updated_at": "2026-06-23T07:11:50Z",
+      "labels": [],
+      "references": [
+        48
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Non-scope",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 4
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 53,
+      "title": "Issue 48.6: Automate MicroMachine soak failure triage evidence",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/53",
+      "state": "CLOSED",
+      "updated_at": "2026-06-23T08:05:15Z",
+      "labels": [],
+      "references": [
+        48
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Non-scope",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 5
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 54,
+      "title": "Issue 48.8: Lock patched MicroMachine build reproducibility",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/54",
+      "state": "CLOSED",
+      "updated_at": "2026-06-23T08:50:46Z",
+      "labels": [],
+      "references": [
+        48
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Non-scope",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 5
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 55,
+      "title": "Issue 48.4: Expand MicroMachine ladder map/race/difficulty soak matrix",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/55",
+      "state": "CLOSED",
+      "updated_at": "2026-06-23T07:28:48Z",
+      "labels": [],
+      "references": [
+        48
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "Non-scope",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 5
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 56,
+      "title": "Issue 48.7: Add recent-N MicroMachine production dashboard signoff",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/56",
+      "state": "CLOSED",
+      "updated_at": "2026-06-23T08:24:12Z",
+      "labels": [],
+      "references": [
+        48
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Non-scope",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 5
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 57,
+      "title": "Issue 48.2: Add MicroMachine map geometry and placement preflight",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/57",
+      "state": "CLOSED",
+      "updated_at": "2026-06-23T07:03:01Z",
+      "labels": [],
+      "references": [
+        48
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Non-scope",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Implementation notes",
+          "line_count": 4
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 5
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 67,
+      "title": "Post-release QA: Fix MicroMachine Acropolis income stall in production matrix",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/67",
+      "state": "CLOSED",
+      "updated_at": "2026-06-26T08:55:31Z",
+      "labels": [],
+      "references": [
+        48
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Context",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Evidence",
+          "line_count": 12
+        },
+        {
+          "level": 2,
+          "title": "Observed runtime behavior",
+          "line_count": 13
+        },
+        {
+          "level": 2,
+          "title": "Required fix",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "Notes",
+          "line_count": 1
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 72,
+      "title": "Deepen MicroMachine tactical DSL hooks for attack, target, and unit-selection interfaces",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/72",
+      "state": "CLOSED",
+      "updated_at": "2026-06-26T13:44:10Z",
+      "labels": [],
+      "references": [],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Current state",
+          "line_count": 10
+        },
+        {
+          "level": 2,
+          "title": "Design requirements",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "DSL axes to add or fully consume",
+          "line_count": 0
+        },
+        {
+          "level": 3,
+          "title": "Attack timing and posture",
+          "line_count": 7
+        },
+        {
+          "level": 3,
+          "title": "Target priority",
+          "line_count": 8
+        },
+        {
+          "level": 3,
+          "title": "Squad and maneuver",
+          "line_count": 11
+        },
+        {
+          "level": 3,
+          "title": "Tactical scope / unit-selection-like intent",
+          "line_count": 7
+        },
+        {
+          "level": 3,
+          "title": "Economy/production pressure support",
+          "line_count": 7
+        },
+        {
+          "level": 3,
+          "title": "Scouting/information support",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Implementation plan",
+          "line_count": 18
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 6
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 73,
+      "title": "Evaluate Suvorov as an open multi-race rule-based SC2 bot modulation backend",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/73",
+      "state": "CLOSED",
+      "updated_at": "2026-06-27T00:31:59Z",
+      "labels": [],
+      "references": [
+        72
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Context",
+          "line_count": 4
+        },
+        {
+          "level": 2,
+          "title": "Source candidate",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Required research questions",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "Proposed adapter design",
+          "line_count": 0
+        },
+        {
+          "level": 3,
+          "title": "Shared layers to reuse",
+          "line_count": 6
+        },
+        {
+          "level": 3,
+          "title": "New Suvorov-specific layers",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "Implementation phases",
+          "line_count": 23
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "Non-goals",
+          "line_count": 3
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 74,
+      "title": "Add MicroMachine semantic unit-scope cockpit and tactical log dashboard",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/74",
+      "state": "CLOSED",
+      "updated_at": "2026-06-26T15:54:42Z",
+      "labels": [],
+      "references": [
+        72
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Context",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Requirements",
+          "line_count": 16
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "Depends on",
+          "line_count": 1
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 76,
+      "title": "Evaluate DI-star as optional intent-conditioned SC2 policy backend",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/76",
+      "state": "OPEN",
+      "updated_at": "2026-06-26T14:20:37Z",
+      "labels": [],
+      "references": [],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Context",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Acceptance Criteria",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Non-goals",
+          "line_count": 3
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 77,
+      "title": "Research PyMARL/SMAC-style Zerg micro specialist integration",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/77",
+      "state": "OPEN",
+      "updated_at": "2026-06-26T14:20:37Z",
+      "labels": [],
+      "references": [],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Context",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "Acceptance Criteria",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Non-goals",
+          "line_count": 3
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 80,
+      "title": "MicroMachine tactical effect evidence gate for DSL, GUI, and soak",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/80",
+      "state": "CLOSED",
+      "updated_at": "2026-06-27T01:29:23Z",
+      "labels": [],
+      "references": [
+        72,
+        74
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Context",
+          "line_count": 4
+        },
+        {
+          "level": 2,
+          "title": "Required implementation",
+          "line_count": 22
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "Non-goals",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Workflow",
+          "line_count": 1
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 82,
+      "title": "Fix MicroMachine SCV repeat-click and worker order stability",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/82",
+      "state": "CLOSED",
+      "updated_at": "2026-06-29T13:34:51Z",
+      "labels": [],
+      "references": [],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Problem",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "Validation required",
+          "line_count": 4
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 84,
+      "title": "Root-cause MicroMachine SCV self-position repeat move orders",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/84",
+      "state": "CLOSED",
+      "updated_at": "2026-06-30T02:59:52Z",
+      "labels": [],
+      "references": [],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Problem",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Required root-cause exploration before implementation",
+          "line_count": 25
+        },
+        {
+          "level": 2,
+          "title": "Implementation requirements",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "Workflow",
+          "line_count": 2
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 85,
+      "title": "Enforce LLM-only MicroMachine live intent modulation",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/85",
+      "state": "CLOSED",
+      "updated_at": "2026-06-30T03:40:29Z",
+      "labels": [],
+      "references": [],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Problem",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Required root-cause exploration before implementation",
+          "line_count": 17
+        },
+        {
+          "level": 2,
+          "title": "Implementation requirements",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "Workflow",
+          "line_count": 2
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 86,
+      "title": "Add deep doctrine and composition modulation beyond marine continuity",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/86",
+      "state": "CLOSED",
+      "updated_at": "2026-06-30T06:43:19Z",
+      "labels": [],
+      "references": [],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Problem",
+          "line_count": 16
+        },
+        {
+          "level": 2,
+          "title": "Required root-cause exploration before implementation",
+          "line_count": 12
+        },
+        {
+          "level": 2,
+          "title": "Implementation requirements",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "Workflow",
+          "line_count": 2
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 89,
+      "title": "Strengthen MicroMachine doctrine consumption evidence and false-pass gates",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/89",
+      "state": "CLOSED",
+      "updated_at": "2026-06-30T06:44:07Z",
+      "labels": [],
+      "references": [],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Problem",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Required root-cause exploration",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "Implementation plan",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 6
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 90,
+      "title": "Fix MicroMachine SCV self-position command root cause",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/90",
+      "state": "CLOSED",
+      "updated_at": "2026-06-30T06:44:07Z",
+      "labels": [],
+      "references": [],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Problem",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Required root-cause exploration",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "Implementation plan",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 6
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 91,
+      "title": "Enforce LLM-only live MicroMachine modulation and release evidence",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/91",
+      "state": "CLOSED",
+      "updated_at": "2026-06-30T06:44:07Z",
+      "labels": [],
+      "references": [],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Problem",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Required root-cause exploration",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "Implementation plan",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 6
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 94,
+      "title": "Complete MicroMachine production signoff for live DSL control",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/94",
+      "state": "CLOSED",
+      "updated_at": "2026-07-03T13:19:42Z",
+      "labels": [],
+      "references": [],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Problems addressed",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 6
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 96,
+      "title": "Fix MicroMachine baseline macro/supply/worker root causes",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/96",
+      "state": "CLOSED",
+      "updated_at": "2026-07-08T18:02:58Z",
+      "labels": [],
+      "references": [],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 97,
+      "title": "Add bounded tactical task layer for MicroMachine DSL",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/97",
+      "state": "CLOSED",
+      "updated_at": "2026-07-08T18:02:58Z",
+      "labels": [],
+      "references": [],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 98,
+      "title": "Expose MicroMachine command execution evidence in Commander UI",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/98",
+      "state": "CLOSED",
+      "updated_at": "2026-07-08T18:02:01Z",
+      "labels": [],
+      "references": [],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 102,
+      "title": "Add MicroMachine command queue and reducer for live chat steering",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/102",
+      "state": "CLOSED",
+      "updated_at": "2026-07-08T12:00:24Z",
+      "labels": [],
+      "references": [],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Problem",
+          "line_count": 10
+        },
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 19
+        },
+        {
+          "level": 2,
+          "title": "Non-goals",
+          "line_count": 4
+        },
+        {
+          "level": 2,
+          "title": "Acceptance Criteria",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "Validation",
+          "line_count": 4
+        },
+        {
+          "level": 2,
+          "title": "Review Gate",
+          "line_count": 7
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 103,
+      "title": "Add dynamic lifetime semantics for MicroMachine live commands",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/103",
+      "state": "CLOSED",
+      "updated_at": "2026-07-08T13:11:43Z",
+      "labels": [],
+      "references": [],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Problem",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 22
+        },
+        {
+          "level": 2,
+          "title": "Non-goals",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Acceptance Criteria",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "Validation",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Review Gate",
+          "line_count": 7
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 104,
+      "title": "Add semantic building placement intents for MicroMachine live commands",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/104",
+      "state": "CLOSED",
+      "updated_at": "2026-07-08T15:35:07Z",
+      "labels": [],
+      "references": [],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Problem",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 22
+        },
+        {
+          "level": 2,
+          "title": "Non-goals",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Acceptance Criteria",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "Validation",
+          "line_count": 4
+        },
+        {
+          "level": 2,
+          "title": "Review Gate",
+          "line_count": 7
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 105,
+      "title": "Make ProductionManager consume prerequisite chains from MicroMachine production plans",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/105",
+      "state": "CLOSED",
+      "updated_at": "2026-07-08T15:06:20Z",
+      "labels": [],
+      "references": [],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Problem",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 18
+        },
+        {
+          "level": 2,
+          "title": "Non-goals",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Acceptance Criteria",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "Validation",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Review Gate",
+          "line_count": 7
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 106,
+      "title": "Extend MicroMachine DSL for composition roles production plans and placement intents",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/106",
+      "state": "CLOSED",
+      "updated_at": "2026-07-08T13:42:54Z",
+      "labels": [],
+      "references": [],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Problem",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 24
+        },
+        {
+          "level": 2,
+          "title": "Non-goals",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Acceptance Criteria",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "Validation",
+          "line_count": 4
+        },
+        {
+          "level": 2,
+          "title": "Review Gate",
+          "line_count": 7
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 107,
+      "title": "Add end-to-end telemetry and QA gates for MicroMachine live commands",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/107",
+      "state": "CLOSED",
+      "updated_at": "2026-07-08T17:50:04Z",
+      "labels": [],
+      "references": [],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Problem",
+          "line_count": 11
+        },
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 27
+        },
+        {
+          "level": 2,
+          "title": "Non-goals",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Acceptance Criteria",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "Validation",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Review Gate",
+          "line_count": 7
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 108,
+      "title": "Add composition-aware squad assignment for MicroMachine tactical commands",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/108",
+      "state": "CLOSED",
+      "updated_at": "2026-07-08T16:01:15Z",
+      "labels": [],
+      "references": [],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Problem",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 17
+        },
+        {
+          "level": 2,
+          "title": "Non-goals",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Acceptance Criteria",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "Validation",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Review Gate",
+          "line_count": 7
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 109,
+      "title": "Connect MicroMachine unit roles to special-unit micro behavior",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/109",
+      "state": "CLOSED",
+      "updated_at": "2026-07-08T16:36:30Z",
+      "labels": [],
+      "references": [],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Problem",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 17
+        },
+        {
+          "level": 2,
+          "title": "Non-goals",
+          "line_count": 4
+        },
+        {
+          "level": 2,
+          "title": "Acceptance Criteria",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "Validation",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Review Gate",
+          "line_count": 7
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 124,
+      "title": "Pre-live Battlefield Commander completion",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/124",
+      "state": "CLOSED",
+      "updated_at": "2026-08-10T10:31:46Z",
+      "labels": [],
+      "references": [
+        3,
+        4,
+        98,
+        102,
+        109,
+        111,
+        118,
+        119,
+        120,
+        121,
+        122,
+        123,
+        125,
+        126,
+        127,
+        128,
+        133,
+        134
+      ],
+      "sections": [
+        {
+          "level": 1,
+          "title": "Pre-live Battlefield Commander Completion",
+          "line_count": 1
+        },
+        {
+          "level": 2,
+          "title": "대목표",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "사용자 문제",
+          "line_count": 17
+        },
+        {
+          "level": 2,
+          "title": "기존 기반",
+          "line_count": 12
+        },
+        {
+          "level": 2,
+          "title": "하위 deliverable",
+          "line_count": 10
+        },
+        {
+          "level": 2,
+          "title": "공통 UX 원칙",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "공통 개발 워크플로우",
+          "line_count": 15
+        },
+        {
+          "level": 2,
+          "title": "Master acceptance criteria",
+          "line_count": 17
+        },
+        {
+          "level": 2,
+          "title": "명시적 제외",
+          "line_count": 6
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Master acceptance criteria",
+          "text": "모든 하위 이슈가 독립 PR로 main에 병합되고 닫혔다.",
+          "complete": false
+        },
+        {
+          "section": "Master acceptance criteria",
+          "text": "명령 입력 후 브라우저가 LLM 완료를 기다리지 않고 즉시 수신 상태를 보인다.",
+          "complete": false
+        },
+        {
+          "section": "Master acceptance criteria",
+          "text": "operation lifecycle이 event-driven으로 전달되고 polling fallback이 있다.",
+          "complete": false
+        },
+        {
+          "section": "Master acceptance criteria",
+          "text": "explicit transfer/resize/reinforce/retarget가 기존 최소 편성을 보호한다.",
+          "complete": false
+        },
+        {
+          "section": "Master acceptance criteria",
+          "text": "충돌, 부족 병력, prerequisite, ownership 결정이 사용자 문구로 보인다.",
+          "complete": false
+        },
+        {
+          "section": "Master acceptance criteria",
+          "text": "공격/정찰/입구 방어가 중복 ownership 없이 동시에 유지된다.",
+          "complete": false
+        },
+        {
+          "section": "Master acceptance criteria",
+          "text": "전체 Terran 유닛군이 동일한 pre-live contract matrix를 통과한다.",
+          "complete": false
+        },
+        {
+          "section": "Master acceptance criteria",
+          "text": "MicroMachine이 explicit/autonomous/unassigned ownership, base readiness,",
+          "complete": false
+        },
+        {
+          "section": "Master acceptance criteria",
+          "text": "기존 카드와 4단계 rail을 유지한 채 planning/executing/completed/waiting",
+          "complete": false
+        },
+        {
+          "section": "Master acceptance criteria",
+          "text": "음성 명령이 하나의 transcript/readback/operation flow로 이어진다.",
+          "complete": false
+        },
+        {
+          "section": "Master acceptance criteria",
+          "text": "전체 CI, clean build, build identity, package/license, release gate가 통과한다.",
+          "complete": false
+        },
+        {
+          "section": "Master acceptance criteria",
+          "text": "독립 xhigh 최종 리뷰가 APPROVED다.",
+          "complete": false
+        },
+        {
+          "section": "Master acceptance criteria",
+          "text": "실제 SC2 live QA만 수동 최종 gate로 남는다.",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 13,
+        "complete": 0,
+        "open": 13
+      }
+    },
+    {
+      "number": 125,
+      "title": "Add event-driven command feedback and immediate acknowledgement",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/125",
+      "state": "CLOSED",
+      "updated_at": "2026-07-28T08:54:19Z",
+      "labels": [],
+      "references": [
+        124
+      ],
+      "sections": [
+        {
+          "level": 1,
+          "title": "Event-driven command feedback and immediate acknowledgement",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "문제",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "목표",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "범위",
+          "line_count": 13
+        },
+        {
+          "level": 2,
+          "title": "비범위",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "상태 계약",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "실패 처리",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 10
+        },
+        {
+          "level": 2,
+          "title": "필수 테스트",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "완료 증거",
+          "line_count": 5
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "명령 제출 100ms 이내에 브라우저 local `received` 상태가 나타난다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "하나의 명령에 pending assistant bubble이 중복 생성되지 않는다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "SSE 이벤트가 기존 operation card를 직접 갱신한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "reconnect 후 상태 역행이나 중복 operation card가 없다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "SSE 장애 시 polling fallback으로 정확성이 유지된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "LLM retry/repair 실패는 publish되지 않고 명확히 blocked 처리된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "production UI는 keyword/smoke lowering을 LLM 실행으로 표시하지 않는다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "기존 접근성 및 responsive 테스트가 유지된다.",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 8,
+        "complete": 0,
+        "open": 8
+      }
+    },
+    {
+      "number": 126,
+      "title": "Complete the all-Terran pre-live capability contract",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/126",
+      "state": "CLOSED",
+      "updated_at": "2026-07-29T04:26:53Z",
+      "labels": [],
+      "references": [
+        124
+      ],
+      "sections": [
+        {
+          "level": 1,
+          "title": "All-Terran pre-live capability contract",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "문제",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "목표",
+          "line_count": 4
+        },
+        {
+          "level": 2,
+          "title": "대상",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "범위",
+          "line_count": 13
+        },
+        {
+          "level": 2,
+          "title": "안전 경계",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "필수 테스트",
+          "line_count": 11
+        },
+        {
+          "level": 2,
+          "title": "완료 증거",
+          "line_count": 5
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "모든 대상 유닛이 canonical DSL composition과 role로 표현된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "각 유닛의 prerequisite plan이 deterministic하다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "각 유닛이 operation-owned Squad에 배정될 수 있다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "지원 가능한 micro/ability가 manager action으로 연결된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "unavailable/unsafe 조건이 정확한 blocker로 나타난다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "telemetry와 HUD가 unit family, role, attempted/executed/effect를 구분한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "유닛별 matrix가 code path 누락 없이 통과한다.",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 7,
+        "complete": 0,
+        "open": 7
+      }
+    },
+    {
+      "number": 127,
+      "title": "Add explicit operation transfer conflict resolution and editing",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/127",
+      "state": "CLOSED",
+      "updated_at": "2026-07-28T18:12:08Z",
+      "labels": [],
+      "references": [
+        124
+      ],
+      "sections": [
+        {
+          "level": 1,
+          "title": "Explicit operation transfer, conflict resolution, and operation editing",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "문제",
+          "line_count": 12
+        },
+        {
+          "level": 2,
+          "title": "목표",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "범위",
+          "line_count": 13
+        },
+        {
+          "level": 2,
+          "title": "충돌 규칙",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "비범위",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "필수 테스트",
+          "line_count": 11
+        },
+        {
+          "level": 2,
+          "title": "완료 증거",
+          "line_count": 4
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "자연어 transfer/resize/reinforce/retarget가 schema-valid DSL로 컴파일된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "source operation의 최소 편성 또는 exact composition을 깨는 이관은 거부된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "허용 이관은 old action/owner를 제거하고 new owner를 한 번만 배정한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "한 tag의 active owner 교집합은 항상 0이다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "sibling operation과 standing Macro는 유지된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "UI에 이관 전후 병력, 영향, blocker가 표시된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "late result와 stale telemetry가 최신 generation을 되돌리지 못한다.",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 7,
+        "complete": 0,
+        "open": 7
+      }
+    },
+    {
+      "number": 128,
+      "title": "Add the pre-live integration matrix and final release gate",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/128",
+      "state": "CLOSED",
+      "updated_at": "2026-08-10T10:31:44Z",
+      "labels": [],
+      "references": [
+        3,
+        4,
+        124,
+        125,
+        126,
+        127,
+        133,
+        134
+      ],
+      "sections": [
+        {
+          "level": 1,
+          "title": "Pre-live integration matrix, release gate, and final UX signoff",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "대목표",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "현재 문제",
+          "line_count": 15
+        },
+        {
+          "level": 2,
+          "title": "1. Workflow completion gate",
+          "line_count": 15
+        },
+        {
+          "level": 2,
+          "title": "2. Release-candidate attestation",
+          "line_count": 35
+        },
+        {
+          "level": 2,
+          "title": "3. Deterministic pre-live scenario matrix",
+          "line_count": 34
+        },
+        {
+          "level": 2,
+          "title": "4. Web/HUD/voice identity consistency",
+          "line_count": 10
+        },
+        {
+          "level": 2,
+          "title": "5. UX and accessibility release gate",
+          "line_count": 16
+        },
+        {
+          "level": 2,
+          "title": "6. Package/license/private configuration compliance",
+          "line_count": 12
+        },
+        {
+          "level": 2,
+          "title": "7. README truth and final runbook",
+          "line_count": 23
+        },
+        {
+          "level": 2,
+          "title": "8. CI/orchestration",
+          "line_count": 11
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 14
+        },
+        {
+          "level": 2,
+          "title": "필수 negative tests",
+          "line_count": 15
+        },
+        {
+          "level": 2,
+          "title": "완료 증거",
+          "line_count": 11
+        },
+        {
+          "level": 2,
+          "title": "비범위",
+          "line_count": 4
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "모든 dependency issue가 merged/closed다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "hosted CI가 전 Python matrix에서 통과한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "integration kit와 clean MicroMachine build/CTest가 통과한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "release evidence가 exact repository/build identity/checksum에 묶인다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "forged, stale, wrong-commit, dirty-tree evidence가 거부된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "deterministic pre-live scenario 실패가 0이다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "operation identity가 web/HUD/voice에서 일치한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "original UX와 accessibility/browser 회귀가 없다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "package/license/third-party/private-config 검사가 통과한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "README가 implemented/proposed/live-pending을 정확히 구분한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "release gate가 실제 SC2 live QA만 남았다고 판정한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "독립 `gpt-5.6-sol`, effort `xhigh` 최종 리뷰가 APPROVED다.",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 12,
+        "complete": 0,
+        "open": 12
+      }
+    },
+    {
+      "number": 133,
+      "title": "Add authoritative battlefield ownership readiness and launch telemetry",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/133",
+      "state": "CLOSED",
+      "updated_at": "2026-07-29T12:14:50Z",
+      "labels": [],
+      "references": [
+        124,
+        126
+      ],
+      "sections": [
+        {
+          "level": 1,
+          "title": "Authoritative battlefield ownership, readiness, and launch telemetry",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "대목표",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "현재 문제",
+          "line_count": 16
+        },
+        {
+          "level": 2,
+          "title": "capability boundary",
+          "line_count": 10
+        },
+        {
+          "level": 2,
+          "title": "구현 범위",
+          "line_count": 1
+        },
+        {
+          "level": 3,
+          "title": "1. Canonical battlefield overview",
+          "line_count": 37
+        },
+        {
+          "level": 3,
+          "title": "2. Operation projection 보강",
+          "line_count": 39
+        },
+        {
+          "level": 3,
+          "title": "3. Authoritative partial-launch decision",
+          "line_count": 34
+        },
+        {
+          "level": 3,
+          "title": "4. Base readiness and transfer availability",
+          "line_count": 27
+        },
+        {
+          "level": 3,
+          "title": "5. Canonical completion and callout signals",
+          "line_count": 16
+        },
+        {
+          "level": 3,
+          "title": "6. Telemetry/HUD identity source",
+          "line_count": 10
+        },
+        {
+          "level": 2,
+          "title": "구현 대상",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 18
+        },
+        {
+          "level": 2,
+          "title": "필수 테스트",
+          "line_count": 13
+        },
+        {
+          "level": 2,
+          "title": "완료 증거",
+          "line_count": 10
+        },
+        {
+          "level": 2,
+          "title": "비범위",
+          "line_count": 6
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "전체 eligible 병력의 explicit/autonomous/unassigned 합이 정확하다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "동일 unit tag의 duplicate runtime owner가 0이며 위반 시 명시적 integrity",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "operation owner count가 unique assigned tags와 일치한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "route, target evidence, lifetime, completion condition/reason/frame이",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "partial launch safety는 runtime이 계산하며 missing safety evidence는",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "base readiness와 protected minimum이 threat evidence와 함께 제공된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "transfer availability가 protected minimum을 침범하지 않고 edit admission",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "movement/engagement/target reached/completed가 분리된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "web telemetry와 in-game HUD가 동일 identity/stage/frame projection을",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "failed telemetry write, stale generation, policy refresh가 최신 상태를",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 10,
+        "complete": 0,
+        "open": 10
+      }
+    },
+    {
+      "number": 134,
+      "title": "Complete the Battlefield Commander situational cockpit and operation timeline",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/134",
+      "state": "CLOSED",
+      "updated_at": "2026-07-29T20:24:38Z",
+      "labels": [],
+      "references": [
+        4,
+        124,
+        133
+      ],
+      "sections": [
+        {
+          "level": 1,
+          "title": "Complete the Battlefield Commander situational cockpit and operation timeline",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "대목표",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "변경 금지 UX 계약",
+          "line_count": 10
+        },
+        {
+          "level": 2,
+          "title": "현재 문제",
+          "line_count": 15
+        },
+        {
+          "level": 2,
+          "title": "구현 범위",
+          "line_count": 1
+        },
+        {
+          "level": 3,
+          "title": "1. Operation card information",
+          "line_count": 16
+        },
+        {
+          "level": 3,
+          "title": "2. Four status lanes",
+          "line_count": 22
+        },
+        {
+          "level": 3,
+          "title": "3. Battlefield control overview",
+          "line_count": 16
+        },
+        {
+          "level": 3,
+          "title": "4. Operation semantic timeline",
+          "line_count": 51
+        },
+        {
+          "level": 3,
+          "title": "5. Resolution actions",
+          "line_count": 7
+        },
+        {
+          "level": 3,
+          "title": "6. Responsive and accessibility preservation",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "구현 대상",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 17
+        },
+        {
+          "level": 2,
+          "title": "필수 테스트",
+          "line_count": 14
+        },
+        {
+          "level": 2,
+          "title": "완료 증거",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "비범위",
+          "line_count": 6
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "기존 visual language와 command dock이 유지된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "operation card는 identity/route/lifetime/owner/launch/effect/blocker를",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "정확히 네 stage와 다섯 기존 card action이 유지된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "card가 네 lane 사이를 identity 손실/중복 없이 이동한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "standing operation이 movement/engagement만으로 completed가 되지 않는다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "overview가 authoritative explicit/autonomous/unassigned count와 base",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "unsafe partial launch/transfer choice는 표시되지 않거나 disabled이며",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "timeline이 operation/generation-scoped이고 frame monotonic하며 dedupe된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "SSE reconnect/snapshot hydration이 상태를 역행하거나 과거 event를 새",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "mobile, keyboard, reduced-motion, forced-color 회귀가 없다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "기존 command response bubble이 여러 개로 분열되지 않는다.",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 11,
+        "complete": 0,
+        "open": 11
+      }
+    },
+    {
+      "number": 138,
+      "title": "Authenticate pre-live evidence provenance and exact build identity",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/138",
+      "state": "CLOSED",
+      "updated_at": "2026-07-31T00:03:38Z",
+      "labels": [],
+      "references": [
+        124,
+        128
+      ],
+      "sections": [
+        {
+          "level": 1,
+          "title": "Authenticated pre-live evidence provenance and exact build binding",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "대목표",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "현재 문제",
+          "line_count": 13
+        },
+        {
+          "level": 2,
+          "title": "Capability boundary",
+          "line_count": 4
+        },
+        {
+          "level": 2,
+          "title": "구현 요구사항",
+          "line_count": 33
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 10
+        },
+        {
+          "level": 2,
+          "title": "필수 negative tests",
+          "line_count": 11
+        },
+        {
+          "level": 2,
+          "title": "완료 증거",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "비범위",
+          "line_count": 5
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "caller-supplied trusted producer 문자열만으로 evidence가 통과하지 않는다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "workflow/issue 상태는 GitHub source 결과와 불일치하면 fail closed한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "exact repository SHA, clean tree, expected remote가 검증된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "실제 schema-71 report와 executable이 재해시되고 embedded identity와",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "CTest/build result가 exact build report에 포함되고 검증된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "replay ledger가 필수·persistent·atomic이다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "검증 결과에는 immutable source IDs와 digest가 표시된다.",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 7,
+        "complete": 0,
+        "open": 7
+      }
+    },
+    {
+      "number": 139,
+      "title": "Execute deterministic pre-live journeys from raw runtime evidence",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/139",
+      "state": "CLOSED",
+      "updated_at": "2026-08-05T03:58:21Z",
+      "labels": [],
+      "references": [
+        124,
+        128,
+        138
+      ],
+      "sections": [
+        {
+          "level": 1,
+          "title": "Execute deterministic pre-live journeys from raw runtime evidence",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "대목표",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "현재 문제",
+          "line_count": 10
+        },
+        {
+          "level": 2,
+          "title": "Runtime responsibility",
+          "line_count": 16
+        },
+        {
+          "level": 2,
+          "title": "필수 journey",
+          "line_count": 16
+        },
+        {
+          "level": 2,
+          "title": "구현 요구사항",
+          "line_count": 17
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "필수 negative tests",
+          "line_count": 14
+        },
+        {
+          "level": 2,
+          "title": "완료 증거",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "비범위",
+          "line_count": 4
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "14개 journey 모두 실제 product path를 실행한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "report는 raw artifacts에서만 파생되며 caller assertion을 신뢰하지 않는다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "required-submission journey는 matching submission과 effect가 필수다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "forbidden-submission journey는 unsafe action 0건과 preserved state가 필수다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "duplicate ownership, stale generation/frame, wrong identity를 거부한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "all-Terran family/action/blocker coverage가 정확히 계산된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "deterministic rerun이 동일 canonical report를 생성한다.",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 7,
+        "complete": 0,
+        "open": 7
+      }
+    },
+    {
+      "number": 140,
+      "title": "Qualify distribution licensing and private configuration exclusion",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/140",
+      "state": "CLOSED",
+      "updated_at": "2026-08-08T17:43:41Z",
+      "labels": [],
+      "references": [
+        124,
+        128
+      ],
+      "sections": [
+        {
+          "level": 1,
+          "title": "Qualify distribution, licensing, and private configuration exclusion",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "대목표",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "현재 문제",
+          "line_count": 12
+        },
+        {
+          "level": 2,
+          "title": "구현 요구사항",
+          "line_count": 16
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 10
+        },
+        {
+          "level": 2,
+          "title": "필수 negative tests",
+          "line_count": 11
+        },
+        {
+          "level": 2,
+          "title": "완료 증거",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "비범위",
+          "line_count": 5
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "wheel/sdist build와 isolated install smoke가 통과한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "package content가 explicit allowlist와 일치한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "METADATA license expression이 정확하다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "license/AGPL/third-party notices가 두 artifact에 포함된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "required runtime manifest/data가 설치 후 로드된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "actual dependencies와 notices가 일치한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "tracked/package/report secret and private-config match가 0이다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "local MyProxy/model configuration은 commit/package/report에 포함되지 않는다.",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 8,
+        "complete": 0,
+        "open": 8
+      }
+    },
+    {
+      "number": 141,
+      "title": "Add non-skippable Battlefield Commander browser accessibility gate",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/141",
+      "state": "CLOSED",
+      "updated_at": "2026-08-10T10:31:40Z",
+      "labels": [],
+      "references": [
+        4,
+        124,
+        128
+      ],
+      "sections": [
+        {
+          "level": 1,
+          "title": "Add non-skippable Battlefield Commander browser and accessibility gate",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "대목표",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "현재 문제",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "보존할 original UX 계약",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "구현 요구사항",
+          "line_count": 15
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 11
+        },
+        {
+          "level": 2,
+          "title": "필수 negative tests",
+          "line_count": 12
+        },
+        {
+          "level": 2,
+          "title": "완료 증거",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "비범위",
+          "line_count": 5
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "desktop/mobile baseline이 승인되어 추적된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "four lanes, four stages, five actions가 browser-derived assertion으로 고정된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "keyboard-only 전체 핵심 journey가 통과한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "focus order, visible focus, retained focus, unique IDs가 통과한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "accessibility engine serious/critical violation이 0이다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "reduced-motion/forced-colors에서 정보가 손실되지 않는다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "one voice/pending node, exact operation identity, caption/mute fallback이",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "CI browser gate는 non-skippable이다.",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 8,
+        "complete": 0,
+        "open": 8
+      }
+    },
+    {
+      "number": 142,
+      "title": "Generate final release status runbook and post-merge live-QA attestation",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/142",
+      "state": "CLOSED",
+      "updated_at": "2026-08-10T10:31:42Z",
+      "labels": [],
+      "references": [
+        4,
+        124,
+        128,
+        138,
+        139,
+        140,
+        141
+      ],
+      "sections": [
+        {
+          "level": 1,
+          "title": "Generate final release status, runbook, and post-merge live-QA attestation",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "대목표",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "현재 문제",
+          "line_count": 11
+        },
+        {
+          "level": 2,
+          "title": "구현 요구사항",
+          "line_count": 28
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 11
+        },
+        {
+          "level": 2,
+          "title": "필수 negative tests",
+          "line_count": 12
+        },
+        {
+          "level": 2,
+          "title": "완료 증거",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "비범위",
+          "line_count": 4
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "CI에 Python 3.10/3.11/3.12, non-skippable browser/accessibility,",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "exact commit/build identity mismatch는 최종 gate에서 거부된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "`ready_to_merge`가 모든 dependency를 실제 GitHub 상태로 검증한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "merge 후 main workflow가 `ready_for_live_qa` artifact를 생성한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "README status는 generated source와 drift하면 CI가 실패한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "runbook이 14 journeys와 수동 live-QA stop condition을 완전하게 다룬다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "최종 report가 actual SC2 manual observation만 남았다고 정직하게 말한다.",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 7,
+        "complete": 0,
+        "open": 7
+      }
+    },
+    {
+      "number": 143,
+      "title": "Publish MicroMachine telemetry snapshots atomically",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/143",
+      "state": "CLOSED",
+      "updated_at": "2026-07-31T19:21:13Z",
+      "labels": [],
+      "references": [
+        124,
+        128,
+        138
+      ],
+      "sections": [
+        {
+          "level": 1,
+          "title": "Publish MicroMachine telemetry snapshots atomically",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "대목표",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "현재 문제",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "Capability boundary",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "구현 요구사항",
+          "line_count": 27
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 10
+        },
+        {
+          "level": 2,
+          "title": "필수 negative tests",
+          "line_count": 10
+        },
+        {
+          "level": 2,
+          "title": "완료 증거",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "비범위",
+          "line_count": 5
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "bootstrap과 authoritative telemetry가 동일 atomic writer를 사용한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "concurrent reader는 partial/empty/mixed snapshot을 관측하지 않는다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "acknowledgement는 successful rename 이후에만 발생한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "failed publication은 false를 반환하고 temp file을 제거한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "patch mutation/missing input이 build identity를 변경하거나 fail closed한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "build script가 `0071` 이후 `0072`를 적용하고 두 identity CLI phase에 전달한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "source attestation과 executable embedded identity가 schema-72 input에 묶인다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "clean build와 CTest `6/6`가 통과한다.",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 8,
+        "complete": 0,
+        "open": 8
+      }
+    },
+    {
+      "number": 145,
+      "title": "Bind canonical transfer identity to contextual resolution",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/145",
+      "state": "CLOSED",
+      "updated_at": "2026-08-01T00:25:38Z",
+      "labels": [],
+      "references": [
+        124,
+        128,
+        138,
+        143
+      ],
+      "sections": [
+        {
+          "level": 1,
+          "title": "Bind canonical transfer identity to contextual resolution",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "대목표",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "현재 문제",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "보존할 original UX 계약",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "구현 요구사항",
+          "line_count": 19
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 10
+        },
+        {
+          "level": 2,
+          "title": "필수 negative tests",
+          "line_count": 11
+        },
+        {
+          "level": 2,
+          "title": "완료 증거",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "비범위",
+          "line_count": 5
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "source/destination ID와 양쪽 generation이 보존된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "같은 source의 여러 destination 중 선택한 endpoint만 사용한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "server가 current canonical overview를 원자적으로 재검증한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "stale/mismatched/tampered request는 blackboard publish 0건이다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "성공 요청은 reciprocal pair 정확히 1건이다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "duplicate click/replay가 추가 이관을 만들지 않는다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "four lanes/four stages/five actions/DOM identity가 유지된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "typed publish를 consumed/assigned/action/effect로 오인하지 않는다.",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 8,
+        "complete": 0,
+        "open": 8
+      }
+    },
+    {
+      "number": 146,
+      "title": "Complete canonical Battlefield Control Overview detail",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/146",
+      "state": "CLOSED",
+      "updated_at": "2026-08-01T12:55:23Z",
+      "labels": [],
+      "references": [
+        124,
+        128,
+        138,
+        143,
+        145
+      ],
+      "sections": [
+        {
+          "level": 1,
+          "title": "Complete canonical Battlefield Control Overview detail",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "대목표",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "현재 문제",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "보존할 original UX 계약",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "구현 요구사항",
+          "line_count": 20
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 10
+        },
+        {
+          "level": 2,
+          "title": "필수 negative tests",
+          "line_count": 11
+        },
+        {
+          "level": 2,
+          "title": "완료 증거",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "비범위",
+          "line_count": 5
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "operation별 canonical ID/generation/ownership/composition이 보인다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "부족 병력과 prerequisite의 대기/해결 조건이 보인다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "기지별 threat evidence와 defender capability/count가 보인다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "protected minimum과 준수 여부가 operation/base/transfer에 연결된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "transfer 양쪽 identity가 보인다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "stale/missing/conflicting evidence를 성공이나 0으로 표시하지 않는다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "기존 visual direction과 responsive layout을 유지한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "overview/card/timeline이 동일 canonical identity를 사용한다.",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 8,
+        "complete": 0,
+        "open": 8
+      }
+    },
+    {
+      "number": 147,
+      "title": "Bound and age out terminal operations in the in-game HUD",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/147",
+      "state": "CLOSED",
+      "updated_at": "2026-08-01T16:04:30Z",
+      "labels": [],
+      "references": [
+        124,
+        128,
+        143
+      ],
+      "sections": [
+        {
+          "level": 1,
+          "title": "Bound and age out terminal operations in the in-game HUD",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "대목표",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "현재 문제",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "보존할 original UX 계약",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "구현 요구사항",
+          "line_count": 19
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "필수 negative tests",
+          "line_count": 11
+        },
+        {
+          "level": 2,
+          "title": "완료 증거",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "비범위",
+          "line_count": 6
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "HUD operation row가 deterministic하게 최대 8개다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "active/waiting work가 terminal history보다 우선한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "terminal row는 정확히 110-frame grace 뒤 사라진다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "hidden count가 +N operations hidden으로 정확히 보인다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "hidden/aged-out map marker가 남지 않는다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "canonical telemetry/history/ownership은 보존된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "Debug/NDEBUG native contract가 동일하게 통과한다.",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 7,
+        "complete": 0,
+        "open": 7
+      }
+    },
+    {
+      "number": 148,
+      "title": "Rerender the full Battlefield cockpit on language changes",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/148",
+      "state": "CLOSED",
+      "updated_at": "2026-08-02T05:39:02Z",
+      "labels": [],
+      "references": [
+        124,
+        128,
+        145,
+        146
+      ],
+      "sections": [
+        {
+          "level": 1,
+          "title": "Rerender the full Battlefield cockpit on language changes",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "대목표",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "현재 문제",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "보존할 original UX 계약",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "구현 요구사항",
+          "line_count": 18
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "필수 negative tests",
+          "line_count": 11
+        },
+        {
+          "level": 2,
+          "title": "완료 증거",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "비범위",
+          "line_count": 6
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "ko -> en -> zh -> ko가 lane/card/stage/timeline/overview/resolution 전체를 재렌더링한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "operation DOM identity, lane, generation, selection이 유지된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "keyboard focus, disclosure, scroll이 유지된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "voice/pending node가 중복 생성되지 않는다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "switch 중 SSE/replay가 state나 locale을 역행시키지 않는다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "missing translation fallback과 accessibility label이 일관된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "four lanes/four stages/five actions 계약이 유지된다.",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 7,
+        "complete": 0,
+        "open": 7
+      }
+    },
+    {
+      "number": 155,
+      "title": "Bootstrap authoritative pre-live provenance workflow on main",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/155",
+      "state": "CLOSED",
+      "updated_at": "2026-08-04T09:18:49Z",
+      "labels": [],
+      "references": [
+        139,
+        154
+      ],
+      "sections": [
+        {
+          "level": 1,
+          "title": "Bootstrap authoritative pre-live provenance workflow on main",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "목표",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "현재 문제",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "구현",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "비범위",
+          "line_count": 4
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "`.github/workflows/pre-live-provenance.yml`이 `main`에 병합된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "GitHub Actions API에서 workflow path와 active state를 확인한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "workflow contract tests와 일반 CI가 green이다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "exact-SHA independent review가 APPROVED다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "병합 후 PR #154를 `main`과 동기화해 authoritative provenance run을 실제 실행한다.",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 5,
+        "complete": 0,
+        "open": 5
+      }
+    },
+    {
+      "number": 157,
+      "title": "Advance authoritative pre-live verifier for read-only CTest registry",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/157",
+      "state": "CLOSED",
+      "updated_at": "2026-08-04T11:04:46Z",
+      "labels": [],
+      "references": [
+        139
+      ],
+      "sections": [
+        {
+          "level": 1,
+          "title": "Advance authoritative pre-live verifier for read-only CTest registry",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "목표",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "현재 문제",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "구현",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "비범위",
+          "line_count": 4
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "workflow contract test가 통과한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "bootstrap branch의 일반 CI가 green이다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "exact-SHA `gpt-5.6-sol` `xhigh` 독립 리뷰가 APPROVED다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "bootstrap PR이 병합되고 issue가 닫힌다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "PR #154를 `main`과 동기화한 뒤 authoritative provenance가 green이다.",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 5,
+        "complete": 0,
+        "open": 5
+      }
+    },
+    {
+      "number": 159,
+      "title": "Advance authoritative verifier for writable native test workdirs",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/159",
+      "state": "CLOSED",
+      "updated_at": "2026-08-04T13:21:10Z",
+      "labels": [],
+      "references": [
+        154
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Problem",
+          "line_count": 18
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 12
+        },
+        {
+          "level": 2,
+          "title": "Workflow",
+          "line_count": 2
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 161,
+      "title": "Advance authoritative verifier for pull-request-target identity",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/161",
+      "state": "CLOSED",
+      "updated_at": "2026-08-04T21:40:52Z",
+      "labels": [],
+      "references": [
+        154
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Problem",
+          "line_count": 20
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 13
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 13
+        },
+        {
+          "level": 2,
+          "title": "Workflow",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Remaining manual gate",
+          "line_count": 3
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 163,
+      "title": "Advance authoritative verifier for dedicated producer arena",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/163",
+      "state": "CLOSED",
+      "updated_at": "2026-08-04T23:31:54Z",
+      "labels": [],
+      "references": [
+        154
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Problem",
+          "line_count": 17
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "Workflow",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Remaining manual gate",
+          "line_count": 2
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "The promoted verifier SHA has exact-SHA `gpt-5.6-sol`, effort `xhigh`, independent `APPROVED`.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "All four workflow pin occurrences use the exact approved verifier SHA.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "The bootstrap PR changes only `.github/workflows/pre-live-provenance.yml`.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "Python 3.10, 3.11, and 3.12 general CI passes.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "Changed-file checks and `git diff --check` pass.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "The bootstrap-cycle authoritative run under the previous base verifier is documented as expected and is not represented as a product regression.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "After merge, PR #154 authoritative provenance passes with all 11 root dedicated-UID tests and exact native CTest 10/10 evidence for its candidate SHA.",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 7,
+        "complete": 0,
+        "open": 7
+      }
+    },
+    {
+      "number": 165,
+      "title": "Advance authoritative verifier for unit targets and ZIP preflight",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/165",
+      "state": "CLOSED",
+      "updated_at": "2026-08-05T03:33:30Z",
+      "labels": [],
+      "references": [
+        154
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Problem",
+          "line_count": 15
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "Validation of promoted verifier",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "Workflow",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Remaining manual gate",
+          "line_count": 2
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "The promoted verifier SHA received exact-SHA `gpt-5.6-sol`, effort `xhigh`, independent `APPROVED FOR BOOTSTRAP PIN`.",
+          "complete": true
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "All four workflow pin occurrences use the exact approved SHA.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "The previous verifier SHA has zero occurrences in the bootstrap workflow.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "Bootstrap branch tests and `git diff --check` pass.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "The bootstrap commit receives exact-SHA `gpt-5.6-sol`, effort `xhigh`, independent approval.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "Bootstrap PR CI completes and the PR merges to `main`.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "PR #154 merges updated `main`, synchronizes the workflow contract, and reruns Python 3.10/3.11/3.12, dedicated UID, native CTest 10/10, candidate qualification, and authoritative provenance checks.",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 7,
+        "complete": 1,
+        "open": 6
+      }
+    },
+    {
+      "number": 169,
+      "title": "Restore final-pre-live qualification after release merge",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/169",
+      "state": "CLOSED",
+      "updated_at": "2026-08-10T11:53:09Z",
+      "labels": [
+        "bug"
+      ],
+      "references": [
+        141,
+        168
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "목표",
+          "line_count": 6
+        },
+        {
+          "level": 2,
+          "title": "확인된 실패",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Capability boundary",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "구현 요구사항",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 13
+        },
+        {
+          "level": 2,
+          "title": "Negative tests",
+          "line_count": 8
+        },
+        {
+          "level": 2,
+          "title": "완료 증거",
+          "line_count": 2
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "candidate fixture가 readiness를 게시하고 browser/accessibility gate가 desktop/mobile 모두 통과한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "candidate interpreter는 trusted uv cache symlink에 의존하지 않는다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "invalid, symlinked, non-executable, 또는 candidate UID가 실행할 수 없는 interpreter는 heavy gate 전에 차단된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "release-closing reference는 정확히 #141 하나와 PR #168로 유지된다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "qualification fix의 exact merge push만 ready_for_live_qa를 생성한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "unrelated PR/push는 heavy jobs를 실행하지 않는다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "workflow contract tests가 interpreter 경계와 one-shot admission을 고정한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "focused tests와 full suite가 통과한다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "exact-SHA gpt-5.6-sol xhigh independent review가 APPROVE/findings 0이다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "hosted PR CI가 green이고 PR이 merge되어 이 이슈가 닫힌다.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "post-merge ready_for_live_qa.json이 ok=true, blockers=[], manual_live_qa_remaining=true이다.",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 11,
+        "complete": 0,
+        "open": 11
+      }
+    },
+    {
+      "number": 171,
+      "title": "Fix final-pre-live candidate fixture bootstrap isolation",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/171",
+      "state": "CLOSED",
+      "updated_at": "2026-08-10T14:08:22Z",
+      "labels": [],
+      "references": [
+        141,
+        168,
+        169,
+        170
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Problem",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "Required outcome",
+          "line_count": 10
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 5
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 173,
+      "title": "Fix isolated final-pre-live candidate package bootstrap",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/173",
+      "state": "CLOSED",
+      "updated_at": "2026-08-10T21:29:37Z",
+      "labels": [],
+      "references": [
+        141,
+        168,
+        171,
+        172
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Problem",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "Required outcome",
+          "line_count": 10
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 5
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 175,
+      "title": "Fix final-pre-live browser viewport envelope sealing",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/175",
+      "state": "CLOSED",
+      "updated_at": "2026-08-10T22:58:34Z",
+      "labels": [],
+      "references": [
+        174
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Problem",
+          "line_count": 39
+        },
+        {
+          "level": 2,
+          "title": "Required change",
+          "line_count": 13
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 16
+        },
+        {
+          "level": 2,
+          "title": "Scope boundary",
+          "line_count": 5
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 177,
+      "title": "Fix final release closure validation for GraphQL merged pull state",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/177",
+      "state": "CLOSED",
+      "updated_at": "2026-08-10T23:47:42Z",
+      "labels": [],
+      "references": [
+        141,
+        168
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Context",
+          "line_count": 20
+        },
+        {
+          "level": 2,
+          "title": "Required changes",
+          "line_count": 18
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 15
+        },
+        {
+          "level": 2,
+          "title": "Non-goals",
+          "line_count": 6
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "Focused final-release tests pass, including the GraphQL `MERGED`",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "Relevant lint, compilation, and diff checks pass.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "Full Python 3.10 suite passes without OOM by running sequentially.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "Exact-SHA independent GPT-5.6-sol xhigh review approves with zero",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "PR CI passes and the dedicated PR is merged.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "The exact merged SHA's `final-pre-live` run succeeds through",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "`micromachine-ready_for_live_qa/ready_for_live_qa.json` has no",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "`main` branch protection reports `strict=true` and exactly seven",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 8,
+        "complete": 0,
+        "open": 8
+      }
+    },
+    {
+      "number": 179,
+      "title": "Rebind one-shot final-pre-live qualification to the verifier correction base",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/179",
+      "state": "CLOSED",
+      "updated_at": "2026-08-11T00:14:13Z",
+      "labels": [],
+      "references": [
+        168,
+        175,
+        178
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Context",
+          "line_count": 13
+        },
+        {
+          "level": 2,
+          "title": "Required changes",
+          "line_count": 18
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 13
+        },
+        {
+          "level": 2,
+          "title": "Non-goals",
+          "line_count": 5
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "Workflow identity is bound to this exact issue, branch, and base SHA.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "Focused workflow, release, and provenance tests pass.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "Relevant Ruff, compilation/YAML, and diff checks pass.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "Exact-SHA independent GPT-5.6-sol xhigh review approves with zero",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "Hosted PR CI passes and the PR is merged.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "The merge-push final-pre-live run is applicable, not skipped.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "All five producers, sealer, and final readiness verdict pass.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "The readiness JSON truthfully leaves only manual live QA pending.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "Branch protection has exactly seven required GitHub Actions checks with",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 9,
+        "complete": 0,
+        "open": 9
+      }
+    },
+    {
+      "number": 183,
+      "title": "Ship one-click visible SC2 mixed-squad cockpit",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/183",
+      "state": "CLOSED",
+      "updated_at": "2026-08-17T07:40:45Z",
+      "labels": [],
+      "references": [
+        181
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 184,
+      "title": "Bootstrap trusted verifier for pre-live schema 82",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/184",
+      "state": "CLOSED",
+      "updated_at": "2026-08-14T12:28:05Z",
+      "labels": [],
+      "references": [
+        182
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 186,
+      "title": "Replace legacy dashboard with the compact controller",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/186",
+      "state": "CLOSED",
+      "updated_at": "2026-08-17T13:23:00Z",
+      "labels": [],
+      "references": [
+        185
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 8
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 188,
+      "title": "Speed up live LLM command interpretation",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/188",
+      "state": "OPEN",
+      "updated_at": "2026-10-16T10:21:12Z",
+      "labels": [],
+      "references": [
+        187
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 189,
+      "title": "Add System 1 routing to JEV with explicit contract",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/189",
+      "state": "OPEN",
+      "updated_at": "2026-10-16T10:21:13Z",
+      "labels": [],
+      "references": [],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Context",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 3
+        },
+        {
+          "level": 2,
+          "title": "Requirements",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "Open contract questions",
+          "line_count": 4
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 190,
+      "title": "Refactor Commander UI into an Electron desktop application",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/190",
+      "state": "OPEN",
+      "updated_at": "2026-10-16T13:44:52Z",
+      "labels": [],
+      "references": [
+        187,
+        188,
+        189
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Goal",
+          "line_count": 4
+        },
+        {
+          "level": 2,
+          "title": "Context",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Scope",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "Acceptance criteria",
+          "line_count": 11
+        },
+        {
+          "level": 2,
+          "title": "Non-goals",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Dependencies",
+          "line_count": 5
+        },
+        {
+          "level": 2,
+          "title": "Definition of done",
+          "line_count": 1
+        }
+      ],
+      "acceptance_criteria": [
+        {
+          "section": "Acceptance criteria",
+          "text": "Electron app launches in development with a documented command and connects to the existing local commander service/runtime.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "Preload exposes only an allowlisted, typed API; renderer cannot access Node or raw SC2 methods.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "All existing semantic actions/queries and lifecycle feedback remain available through the desktop shell.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "Macro/Direct routing invariants are covered by regression tests through the Electron IPC boundary.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "Repair clarification flow works end-to-end in the desktop UI.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "Registry and semantic target-pin flows reject raw coordinates/unit tags at UI and IPC boundaries.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "Runtime absence fails closed with runtime_not_attached; no silent MicroMachine fallback for non-macro commands.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "Build/package smoke tests and accessibility checks pass on supported macOS development environment.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "Real SC2 Live QA records action issuance, map/buildability/camera behavior, completion observation, lease release, and MicroMachine resume.",
+          "complete": false
+        },
+        {
+          "section": "Acceptance criteria",
+          "text": "Migration status and browser-entrypoint deprecation/removal decision are documented.",
+          "complete": false
+        }
+      ],
+      "acceptance_counts": {
+        "total": 10,
+        "complete": 0,
+        "open": 10
+      }
+    },
+    {
+      "number": 191,
+      "title": "Run real SC2 Live QA for Direct lifecycle and MicroMachine resume",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/191",
+      "state": "OPEN",
+      "updated_at": "2026-10-16T10:21:15Z",
+      "labels": [],
+      "references": [
+        187,
+        190
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 192,
+      "title": "Connect Direct lease release to the C++ MicroMachine game loop",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/192",
+      "state": "OPEN",
+      "updated_at": "2026-10-16T10:21:16Z",
+      "labels": [],
+      "references": [
+        187
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 193,
+      "title": "Resolve hosted CI blockers for the Direct command architecture",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/193",
+      "state": "CLOSED",
+      "updated_at": "2026-10-16T13:44:50Z",
+      "labels": [],
+      "references": [
+        187
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 194,
+      "title": "Complete live squad, target-pin and repair clarification resolution",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/194",
+      "state": "OPEN",
+      "updated_at": "2026-10-16T10:21:18Z",
+      "labels": [],
+      "references": [
+        187,
+        190,
+        191,
+        192
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 195,
+      "title": "Close SC2 API coverage gaps with bounded semantic tools",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/195",
+      "state": "OPEN",
+      "updated_at": "2026-10-16T10:21:19Z",
+      "labels": [],
+      "references": [
+        187
+      ],
+      "sections": [],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    },
+    {
+      "number": 196,
+      "title": "SC2 Direct architecture completion umbrella: Electron, Live QA, bridge, CI, and API coverage",
+      "url": "https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/196",
+      "state": "OPEN",
+      "updated_at": "2026-10-16T13:44:53Z",
+      "labels": [],
+      "references": [
+        187,
+        188,
+        189,
+        190,
+        191,
+        192,
+        193,
+        194,
+        195
+      ],
+      "sections": [
+        {
+          "level": 2,
+          "title": "Purpose",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Approved architecture to preserve",
+          "line_count": 7
+        },
+        {
+          "level": 2,
+          "title": "Child issues",
+          "line_count": 9
+        },
+        {
+          "level": 2,
+          "title": "Completion gate",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Current evidence",
+          "line_count": 2
+        },
+        {
+          "level": 2,
+          "title": "Current blockers",
+          "line_count": 1
+        }
+      ],
+      "acceptance_criteria": [],
+      "acceptance_counts": {
+        "total": 0,
+        "complete": 0,
+        "open": 0
+      }
+    }
+  ],
+  "reference_edges": [
+    {
+      "from": 3,
+      "to": 124
+    },
+    {
+      "from": 4,
+      "to": 124
+    },
+    {
+      "from": 4,
+      "to": 133
+    },
+    {
+      "from": 4,
+      "to": 134
+    },
+    {
+      "from": 9,
+      "to": 7
+    },
+    {
+      "from": 10,
+      "to": 7
+    },
+    {
+      "from": 12,
+      "to": 10
+    },
+    {
+      "from": 13,
+      "to": 10
+    },
+    {
+      "from": 13,
+      "to": 12
+    },
+    {
+      "from": 14,
+      "to": 10
+    },
+    {
+      "from": 14,
+      "to": 13
+    },
+    {
+      "from": 15,
+      "to": 10
+    },
+    {
+      "from": 15,
+      "to": 13
+    },
+    {
+      "from": 15,
+      "to": 14
+    },
+    {
+      "from": 16,
+      "to": 10
+    },
+    {
+      "from": 16,
+      "to": 12
+    },
+    {
+      "from": 16,
+      "to": 13
+    },
+    {
+      "from": 16,
+      "to": 14
+    },
+    {
+      "from": 16,
+      "to": 15
+    },
+    {
+      "from": 22,
+      "to": 10
+    },
+    {
+      "from": 22,
+      "to": 12
+    },
+    {
+      "from": 22,
+      "to": 13
+    },
+    {
+      "from": 22,
+      "to": 14
+    },
+    {
+      "from": 22,
+      "to": 15
+    },
+    {
+      "from": 22,
+      "to": 16
+    },
+    {
+      "from": 24,
+      "to": 10
+    },
+    {
+      "from": 25,
+      "to": 10
+    },
+    {
+      "from": 26,
+      "to": 10
+    },
+    {
+      "from": 27,
+      "to": 10
+    },
+    {
+      "from": 28,
+      "to": 10
+    },
+    {
+      "from": 36,
+      "to": 10
+    },
+    {
+      "from": 38,
+      "to": 10
+    },
+    {
+      "from": 39,
+      "to": 10
+    },
+    {
+      "from": 40,
+      "to": 10
+    },
+    {
+      "from": 41,
+      "to": 10
+    },
+    {
+      "from": 42,
+      "to": 10
+    },
+    {
+      "from": 48,
+      "to": 10
+    },
+    {
+      "from": 49,
+      "to": 10
+    },
+    {
+      "from": 49,
+      "to": 48
+    },
+    {
+      "from": 50,
+      "to": 48
+    },
+    {
+      "from": 51,
+      "to": 48
+    },
+    {
+      "from": 52,
+      "to": 48
+    },
+    {
+      "from": 53,
+      "to": 48
+    },
+    {
+      "from": 54,
+      "to": 48
+    },
+    {
+      "from": 55,
+      "to": 48
+    },
+    {
+      "from": 56,
+      "to": 48
+    },
+    {
+      "from": 57,
+      "to": 48
+    },
+    {
+      "from": 67,
+      "to": 48
+    },
+    {
+      "from": 73,
+      "to": 72
+    },
+    {
+      "from": 74,
+      "to": 72
+    },
+    {
+      "from": 80,
+      "to": 72
+    },
+    {
+      "from": 80,
+      "to": 74
+    },
+    {
+      "from": 124,
+      "to": 3
+    },
+    {
+      "from": 124,
+      "to": 4
+    },
+    {
+      "from": 124,
+      "to": 98
+    },
+    {
+      "from": 124,
+      "to": 102
+    },
+    {
+      "from": 124,
+      "to": 109
+    },
+    {
+      "from": 124,
+      "to": 125
+    },
+    {
+      "from": 124,
+      "to": 126
+    },
+    {
+      "from": 124,
+      "to": 127
+    },
+    {
+      "from": 124,
+      "to": 128
+    },
+    {
+      "from": 124,
+      "to": 133
+    },
+    {
+      "from": 124,
+      "to": 134
+    },
+    {
+      "from": 125,
+      "to": 124
+    },
+    {
+      "from": 126,
+      "to": 124
+    },
+    {
+      "from": 127,
+      "to": 124
+    },
+    {
+      "from": 128,
+      "to": 3
+    },
+    {
+      "from": 128,
+      "to": 4
+    },
+    {
+      "from": 128,
+      "to": 124
+    },
+    {
+      "from": 128,
+      "to": 125
+    },
+    {
+      "from": 128,
+      "to": 126
+    },
+    {
+      "from": 128,
+      "to": 127
+    },
+    {
+      "from": 128,
+      "to": 133
+    },
+    {
+      "from": 128,
+      "to": 134
+    },
+    {
+      "from": 133,
+      "to": 124
+    },
+    {
+      "from": 133,
+      "to": 126
+    },
+    {
+      "from": 134,
+      "to": 4
+    },
+    {
+      "from": 134,
+      "to": 124
+    },
+    {
+      "from": 134,
+      "to": 133
+    },
+    {
+      "from": 138,
+      "to": 124
+    },
+    {
+      "from": 138,
+      "to": 128
+    },
+    {
+      "from": 139,
+      "to": 124
+    },
+    {
+      "from": 139,
+      "to": 128
+    },
+    {
+      "from": 139,
+      "to": 138
+    },
+    {
+      "from": 140,
+      "to": 124
+    },
+    {
+      "from": 140,
+      "to": 128
+    },
+    {
+      "from": 141,
+      "to": 4
+    },
+    {
+      "from": 141,
+      "to": 124
+    },
+    {
+      "from": 141,
+      "to": 128
+    },
+    {
+      "from": 142,
+      "to": 4
+    },
+    {
+      "from": 142,
+      "to": 124
+    },
+    {
+      "from": 142,
+      "to": 128
+    },
+    {
+      "from": 142,
+      "to": 138
+    },
+    {
+      "from": 142,
+      "to": 139
+    },
+    {
+      "from": 142,
+      "to": 140
+    },
+    {
+      "from": 142,
+      "to": 141
+    },
+    {
+      "from": 143,
+      "to": 124
+    },
+    {
+      "from": 143,
+      "to": 128
+    },
+    {
+      "from": 143,
+      "to": 138
+    },
+    {
+      "from": 145,
+      "to": 124
+    },
+    {
+      "from": 145,
+      "to": 128
+    },
+    {
+      "from": 145,
+      "to": 138
+    },
+    {
+      "from": 145,
+      "to": 143
+    },
+    {
+      "from": 146,
+      "to": 124
+    },
+    {
+      "from": 146,
+      "to": 128
+    },
+    {
+      "from": 146,
+      "to": 138
+    },
+    {
+      "from": 146,
+      "to": 143
+    },
+    {
+      "from": 146,
+      "to": 145
+    },
+    {
+      "from": 147,
+      "to": 124
+    },
+    {
+      "from": 147,
+      "to": 128
+    },
+    {
+      "from": 147,
+      "to": 143
+    },
+    {
+      "from": 148,
+      "to": 124
+    },
+    {
+      "from": 148,
+      "to": 128
+    },
+    {
+      "from": 148,
+      "to": 145
+    },
+    {
+      "from": 148,
+      "to": 146
+    },
+    {
+      "from": 155,
+      "to": 139
+    },
+    {
+      "from": 157,
+      "to": 139
+    },
+    {
+      "from": 169,
+      "to": 141
+    },
+    {
+      "from": 171,
+      "to": 141
+    },
+    {
+      "from": 171,
+      "to": 169
+    },
+    {
+      "from": 173,
+      "to": 141
+    },
+    {
+      "from": 173,
+      "to": 171
+    },
+    {
+      "from": 177,
+      "to": 141
+    },
+    {
+      "from": 179,
+      "to": 175
+    },
+    {
+      "from": 190,
+      "to": 188
+    },
+    {
+      "from": 190,
+      "to": 189
+    },
+    {
+      "from": 191,
+      "to": 190
+    },
+    {
+      "from": 194,
+      "to": 190
+    },
+    {
+      "from": 194,
+      "to": 191
+    },
+    {
+      "from": 194,
+      "to": 192
+    },
+    {
+      "from": 196,
+      "to": 188
+    },
+    {
+      "from": 196,
+      "to": 189
+    },
+    {
+      "from": 196,
+      "to": 190
+    },
+    {
+      "from": 196,
+      "to": 191
+    },
+    {
+      "from": 196,
+      "to": 192
+    },
+    {
+      "from": 196,
+      "to": 193
+    },
+    {
+      "from": 196,
+      "to": 194
+    },
+    {
+      "from": 196,
+      "to": 195
+    }
+  ],
+  "open_acceptance_criteria": 223
+}

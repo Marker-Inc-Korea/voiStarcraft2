@@ -131,6 +131,39 @@ SC2_BOT_REJECTED_RAW_METHODS: Final[dict[str, str]] = {
     ),
 }
 
+# Client/protocol calls are intentionally audited as a separate surface. They
+# are transport/debug/session controls, not semantic unit capabilities. Keeping
+# an explicit disposition prevents dependency drift from being mistaken for
+# an unreviewed omission.
+SC2_CLIENT_EXCLUDED_METHODS: Final[dict[str, str]] = {
+    "actions": "transport primitive; only semantic executor actions are exposed",
+    "chat_send": "unimplemented until recipient/text policy is specified",
+    "debug_*": "debug/admin control; never exposed to the command model",
+    "dump_data": "raw game-data transport; observe/query schemas are required",
+    "get_game_data": "raw protocol data; semantic query schemas are required",
+    "get_game_info": "raw protocol data; observe/map schemas are required",
+    "join_game": "session lifecycle is owned by the runtime launcher",
+    "leave": "session lifecycle is owned by the runtime launcher",
+    "move_camera": "camera control requires semantic map target resolution",
+    "move_camera_spatial": "spatial raw camera control is rejected",
+    "obs_move_camera": "spatial raw camera control is rejected",
+    "observation": "raw observation transport; observe capability is the boundary",
+    "ping": "transport diagnostic; not a gameplay capability",
+    "query_*": "only bounded semantic query capabilities are exposed",
+    "quick_*": "save/load/debug controls are not gameplay capabilities",
+    "quit": "session lifecycle is owned by the runtime launcher",
+    "save_replay": "artifact operation; not a command capability",
+    "step": "frame stepping is runtime-owned and never user-controlled",
+    "toggle_autocast": "requires a bounded ability policy before exposure",
+}
+
+SC2_PROTOCOL_EXCLUDED_SURFACE: Final[dict[str, str]] = {
+    "Protocol": "transport/session implementation detail; no direct model access",
+    "RequestQuery": "raw protobuf query container; use query_* semantic tools",
+    "Status": "transport state; surfaced only through runtime status",
+    "sc_pb": "raw protobuf namespace; never serialized into command schemas",
+}
+
 
 def _public_callables(cls: object) -> tuple[str, ...]:
     names: list[str] = []
@@ -202,8 +235,10 @@ class SC2APISurfaceInventory:
             "classification_complete": self.classification_complete,
             "rejected_reasons": dict(SC2_BOT_REJECTED_RAW_METHODS),
             "unimplemented_reasons": dict(SC2_BOT_UNIMPLEMENTED_METHODS),
-            "scope": "Public Unit/BotAI callables only; semantic mappings cover bounded subsets.",
-            "not_audited": ["Unit/BotAI properties", "Client/protocol APIs", "ability target/caster matrix"],
+            "scope": "Public Unit/BotAI callables plus an explicit Client/protocol exclusion ledger; semantic mappings cover bounded subsets.",
+            "excluded_client_surface": dict(SC2_CLIENT_EXCLUDED_METHODS),
+            "excluded_protocol_surface": dict(SC2_PROTOCOL_EXCLUDED_SURFACE),
+            "not_audited": ["Unit/BotAI properties", "ability target/caster matrix"],
         }
 
 
@@ -265,6 +300,8 @@ def classify_python_sc2_surface(unit_class: type, bot_class: type) -> SC2APISurf
 __all__ = [
     "SC2APISurfaceInventory",
     "SC2_BOT_REJECTED_RAW_METHODS",
+    "SC2_CLIENT_EXCLUDED_METHODS",
+    "SC2_PROTOCOL_EXCLUDED_SURFACE",
     "SC2_BOT_SEMANTIC_ACTION_METHODS",
     "SC2_BOT_SEMANTIC_QUERY_METHODS",
     "SC2_BOT_INTERNAL_METHODS",
