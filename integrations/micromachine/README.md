@@ -152,6 +152,12 @@ gate, and human multiplayer is deferred.
 
 ## Wiring Steps
 
+The runtime-independent native contract helpers can be compiled and exercised
+with `scripts/test_native_contracts.sh`. This verifies terminal lease
+deduplication, runtime-epoch reconnect handling, ownership release/resume
+callbacks, and conjunctive operation completion without pretending that the
+upstream game loop itself was rebuilt.
+
 1. Copy `voi_policy_blackboard.hpp` into MicroMachine `src/`.
 2. Add a `voi::PolicyBlackboard` member to `GameCommander` or `CCBot`.
 3. In `GameCommander::onStart()` and `GameCommander::onFrame(bool executeMacro)`, call:

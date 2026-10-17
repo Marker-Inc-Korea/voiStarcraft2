@@ -4,7 +4,7 @@ const {pathToFileURL}=require("node:url");
 const {validateCommand,validateBaseUrl,validateCursor,validateTargetPin}=require("./protocol.js");
 const BASE_URL=validateBaseUrl(process.env.VOI_COMMANDER_URL||"http://127.0.0.1:8765");
 const rendererFile=path.join(__dirname,"renderer","index.html");
-const CHANNELS=Object.freeze({status:"commander:status",command:"commander:command",capabilities:"commander:capabilities",registry:"commander:registry",targetPin:"commander:target-pin",events:"commander:events"});
+const CHANNELS=Object.freeze({status:"commander:status",runtimeStatus:"commander:runtime-status",command:"commander:command",capabilities:"commander:capabilities",registry:"commander:registry",targetPin:"commander:target-pin",events:"commander:events"});
 async function requestJson(pathname, options = {}) {
   const response = await fetch(new URL(pathname, BASE_URL), {
     ...options, redirect: "error", signal: AbortSignal.timeout(15000),
@@ -20,6 +20,7 @@ function registerIpc() {
     return callback(input);
   });
   handle(CHANNELS.status, () => requestJson("/api/micromachine/status"));
+  handle(CHANNELS.runtimeStatus, () => requestJson("/api/runtime/status"));
   handle(CHANNELS.capabilities, () => requestJson("/api/direct/capabilities"));
   handle(CHANNELS.registry, () => requestJson("/api/direct/registry"));
   handle(CHANNELS.targetPin, input => requestJson("/api/direct/registry/target-pin", {method:"POST", body:JSON.stringify(validateTargetPin(input))}));

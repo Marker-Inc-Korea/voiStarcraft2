@@ -5,10 +5,10 @@
 아래 날짜별 기록은 과거 증거이며, 현재 완료 판정은 이 요약을 우선한다.
 원문 계획은 `approved-direct-command-plan-verbatim.md`에 그대로 보존한다.
 
-- PR #187: 아직 main에 머지되지 않았다. 현재 head `e6ef8b5`의 hosted
-  unit-contracts는 실행 중이다. 후보/신뢰 검증기 producer-isolation은
-  CTest 4.4.3에서 exact 10/10 증거 판정 실패 상태다. 배포 검증의 기존
-  QA 헤더/스크립트 허용 목록 누락은 `1962d3b`에서 보강했다.
+- PR #187: `main`에 머지되었다. merge commit은
+  `5defea51f0d427d5a68da87178e65d045915bc81`이다. 머지 후 Main CI
+  `38908358413`과 final-pre-live `38908358019`가 모두 성공했다. 배포
+  검증의 trusted verifier pin은 `db8067cf0cce2dbbaea2bb8f0d1f67dd7a6a50b5`다.
 - CTest 4.4.3의 성공 요약 형식(`100% tests passed out of 10`)을 후보
   provenance parser가 엄격하게 수용하도록 `479c0f1`에서 보강했다
   (관련 집중 검증 `21 passed, 2 skipped, 20 subtests`). 단, 필수
@@ -16,9 +16,9 @@
   실행하므로 이 PR의 parser 수정으로 바뀌지 않는다. trusted pin을 후보
   브랜치로 바꾸거나 보호를 우회하지 않았다. 독립 verifier 커밋 `db8067c`를
   `trusted-verifier-ctest-44` 브랜치에 게시하고 후보 워크플로 pin도 갱신했지만,
-  `pull_request_target`은 main의 기존 워크플로를 실행해 여전히 `2473e63`을
-  체크아웃한다(호스티드 run `38884608930`). main 필수 체크에 동일 실패가
-  걸린 bootstrap 교착이므로 owner의 신뢰된 main-side 갱신 절차가 필요하다.
+  당시 `pull_request_target`은 main의 기존 워크플로를 실행해 `2473e63`을
+  체크아웃했다. 이후 trusted verifier pin이 main에 반영되었고, 위 Main CI가
+  성공하면서 해당 hosted CI blocker는 해소되었다(이슈 #193 종료).
 - Electron #190: `electron/`에 Main/Preload/Renderer 셸을 추가했다.
   loopback-only 연결, 입력 allowlist, sender 검증, sandbox/context isolation,
   CSP, TypeScript API 선언, bounded history 조회, semantic registry와 target-pin
@@ -525,16 +525,21 @@ bind하고 lease에 기록한다. “SCV로 팩토리 짓고 탱크 생산해”
 - 해당 계획 문서화: **완료(원문 및 현황 문서)**. 위 요구를 현재 bounded catalog로
   축소 승인받은 것으로 취급하지 않는다. 기존 구현 작업은 진행됐으나 전체 구현
   완료가 아니다.
-- goal 생성 및 구현 진행: **goal은 active**, 구현 일부 진행. 최신 `get_goal`이
-  active를 반환했고 앞선 `thread/goal/set` 재시도도 성공했지만, Live QA·외부 JEV endpoint 운영 계약·
-  전체 raw API 노출 등 외부/추가 작업이 남아 있어 complete로 바꾸지 않았다.
+- goal 생성 및 구현 진행: 이 문서의 과거 goal 기록은 historical evidence다.
+  현재 작업 상태는 저장소의 코드·테스트·실행 증거와 외부 issue 상태를 기준으로
+  판정하며, goal 상태를 구현 완료의 대체 지표로 사용하지 않는다.
 - System 1 → JEV: **bounded 계약 구현 및 fake 테스트 완료**, [#189](https://github.com/Marker-Inc-Korea/voiStarcraft2/issues/189)는 OPEN.
   실제 endpoint·transport/auth/schema 운영 계약과 Live QA는 외부 의존으로 남아 있다.
-- PR 작성 및 보고: **PR 작성 완료**, #187은 OPEN/BLOCKED. merge하지 않았다.
+- PR 작성 및 보고: **PR #187은 `main`에 merge 완료**(`5defea5`). 현재 follow-up
+  변경은 이 worktree에 있으며 별도 commit/merge 전이다.
 - legacy 제거: **기본 MCP tactical route 제거 완료**, 저장소의 모든 과거 문서·테스트·
   MicroMachine 코드를 전부 제거한 것은 아니다. 기존 실패 테스트의 승인 계약 이행은 남아 있다.
-- Live QA: **미완료**. 원문 198202에서 사용자가 직접 수행하겠다고 했으며,
-  이 보고서는 실제 게임 검증을 대신하지 않는다.
+- Live QA: **부분 완료**. `.local/qa30-live-r32-full-20260918-final/`의
+  `final_audit.json`은 30개 SC2 시나리오를 모두 `passed`로 판정한다.
+  생산·건설·분대 이동·공격·정찰·병렬 소유권·후퇴·취소·재할당·재타깃·
+  장기 방어·선행조건 대기·생산 재개·게임 종료와 terminal telemetry를
+  포함한다. 입력 경계는 structured blackboard이므로 자연어/음성 전체 경로의
+  실게임 증거로 확대 해석하지 않는다.
 
 ## 3. 항목별 구현 대조 보고
 
@@ -569,8 +574,8 @@ bind하고 lease에 기록한다. “SCV로 팩토리 짓고 탱크 생산해”
 | JEV System 1 라우팅 | 계약 구현 완료 / 외부 endpoint 대기 | deterministic local route를 권위로 두는 `allow`/`deny` authorization boundary, sync/async timeout·retry·fail-closed, eligible layer gate, unsafe response rejection, fake endpoint 10개 테스트를 구현했다. 실제 JEV transport/auth/schema 운영 계약과 Live QA는 #189 대기다. |
 | 기본 MCP의 legacy tactical route 제거 | **완료(코드 경계)** | `include_legacy_tools` opt-in과 `micromachine.operation/ability/emergency` registry entries를 제거했다. 기본 registry와 MCP discovery에는 `micromachine.policy`만 남는다. 저장소 전체의 legacy 문서·테스트 제거까지 완료한 것은 아니다. |
 | 문서화 | 완료(현재 상태 보고) | 이 문서가 승인 원문 기준, 구조, capability, 위치·분대·수리, 병렬·선행조건, lifecycle, legacy 격리, JEV, PR·Live QA를 항목별로 기록한다. |
-| PR 반영 | 부분 완료 | 검증 대상 실행 코드 commit은 `2c6a841`다(이후 문서 갱신 commit은 별도). PR #187은 병합하지 않았다. `ci` run `36403412568`과 `pre-live-provenance` run `36403410273`은 historical hosted snapshots이며 Python 3.10/3.11/3.12 contract 및 pre-live producer isolation 실패를 기록한다. 더 최근 hosted run `36404286959`도 `unit-contracts`와 `pre-live-producer-isolation`이 실패했으므로 전체 검증 완료·merge 가능 상태가 아니다. |
-| 실제 Live QA | 미완료 | 이전 PR 설명에도 실제 StarCraft II Live QA를 실행하지 않았다고 명시되어 있다. |
+| PR 반영 | #187 완료 / follow-up 미병합 | PR #187은 merge commit `5defea5`로 `main`에 반영됐다. 현재 Electron/API-inventory/native-contract/issue-parser 변경은 uncommitted follow-up worktree에 있다. |
+| 실제 Live QA | 부분 완료 | `.local/qa30-live-r32-full-20260918-final/final_audit.json`의 30개 시나리오가 모두 통과했다. structured blackboard 입력이며 자연어/음성 경로와 전용 repair/map-click 시나리오는 별도 증거가 필요하다. |
 
 ## 4. 현재 검증 결과
 
