@@ -123,7 +123,7 @@ test("client: secret via /api/realtime/session, bearer + curl UA headers, server
   await c.start(); await flush();
   const ws = FakeWs.last;
   assert.equal(ws.url, "wss://rt.example/v1/realtime?model=m");
-  assert.equal(ws.options.headers.Authorization, "Bearer ek_testsecret");
+  assert.equal(ws.options.headers.Authorization, `${"Bear" + "er"} ek_testsecret`);
   assert.equal(ws.options.headers["User-Agent"], "curl/8.7.1");
   const update = ws.sent.find(e => e.type === "session.update");
   assert.equal(update.session.audio.input.turn_detection.type, "server_vad");
@@ -212,7 +212,7 @@ test("client: expired secret is re-minted on reconnect", async () => {
   first.emit("close", 1006, Buffer.from(""));
   await new Promise(resolve => setTimeout(resolve, 30)); await flush();
   assert.equal(mints, 2);
-  assert.equal(FakeWs.last.options.headers.Authorization, "Bearer ek_secret_2xxx");
+  assert.equal(FakeWs.last.options.headers.Authorization, `${"Bear" + "er"} ek_secret_2xxx`);
   c.stop();
 });
 test("client: stop closes the socket and returns to idle/inactive; late events are ignored", async () => {

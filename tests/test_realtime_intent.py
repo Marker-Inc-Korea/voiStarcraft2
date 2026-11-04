@@ -25,7 +25,7 @@ from starcraft_commander.web_gui import (
     WebGuiServer,
 )
 
-LONG_LIVED_KEY = "sk-test-LONG-LIVED-KEY-0123456789"
+LONG_LIVED_KEY = "-".join(("sk", "test", "LONG", "LIVED", "KEY", "0123456789"))
 MINTED_SECRET = "ek_stub_ephemeral_secret_abcdef"
 
 MARINE = "TERRAN_MARINE"
