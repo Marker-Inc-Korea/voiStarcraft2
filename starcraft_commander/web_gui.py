@@ -56,6 +56,7 @@ from urllib.parse import parse_qs, urlsplit
 from weakref import WeakValueDictionary
 
 from starcraft_commander.companion_ui import render_companion_page
+from starcraft_commander import realtime_intent
 from starcraft_commander.micromachine_bridge import (
     MICROMACHINE_GAME_LOOPS_PER_SECOND,
     MicroMachineBridgeFailureMode,
@@ -9023,6 +9024,40 @@ class SessionLoopBridge:
     def micromachine_blackboard_dir(self) -> str:
         return self._micromachine_blackboard_dir
 
+    def direct_runtime_descriptor(self) -> dict[str, str]:
+        """Report truthfully what executes Direct (operation/micro/emergency) vectors.
+
+        Derived from how the session was built, never from client input:
+        ``dry_run_fake_bot`` when the executor drives the scripted
+        ``DemoFakeBotAI`` (``web_gui --dry-run``), ``live`` when it drives
+        any other BotAI-like object, ``unknown`` when no executor bot is
+        attached to the session.
+        """
+
+        executor = getattr(self._session, "executor", None)
+        adapter = getattr(executor, "bot", None)
+        bot = getattr(adapter, "bot", adapter)
+        if bot is None:
+            return {
+                "kind": "unknown",
+                "evidence": "session has no executor bot attached",
+            }
+        from starcraft_commander.demo_sc2 import DemoFakeBotAI
+
+        if isinstance(bot, DemoFakeBotAI):
+            return {
+                "kind": "dry_run_fake_bot",
+                "evidence": (
+                    "executor drives the scripted DemoFakeBotAI (--dry-run); "
+                    "operation/micro/emergency vectors are simulated, only "
+                    "macro vectors reach the MicroMachine blackboard"
+                ),
+            }
+        return {
+            "kind": "live",
+            "evidence": f"executor bound to {type(bot).__name__}",
+        }
+
     def observe_direct_commands(
         self,
         *,
@@ -11072,6 +11107,12 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/micromachine/contextual-transfer":
             self._handle_micromachine_contextual_transfer()
             return
+        if path == "/api/realtime/session":
+            self._handle_realtime_session()
+            return
+        if path == "/api/realtime/intent":
+            self._handle_realtime_intent()
+            return
         # Drain any request body so a keep-alive connection stays usable.
         self._read_request_body()
         self._send_not_found()
@@ -12557,9 +12598,353 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                         "exhausted."
                     ),
                 )
+            payload = dict(payload)
+            payload["direct_runtime"] = self._direct_runtime_descriptor()
             self._send_json(HTTPStatus.OK, payload)
         except Exception as error:  # noqa: BLE001 - surfaced honestly.
             self._send_internal_error(error)
+
+    def _direct_runtime_descriptor(self) -> dict[str, str]:
+        """What executes operation/micro/emergency vectors (server-derived)."""
+
+        describe = getattr(self._bridge, "direct_runtime_descriptor", None)
+        if callable(describe):
+            try:
+                descriptor = describe()
+            except Exception:  # noqa: BLE001 - descriptor must never break a response.
+                descriptor = None
+            if (
+                isinstance(descriptor, Mapping)
+                and descriptor.get("kind") in {"dry_run_fake_bot", "live"}
+            ):
+                return {
+                    "kind": str(descriptor["kind"]),
+                    "evidence": str(descriptor.get("evidence", "") or ""),
+                }
+        return {
+            "kind": "unknown",
+            "evidence": "bridge does not report what executes Direct vectors",
+        }
+
+    def _request_is_loopback_or_authenticated(self) -> bool:
+        if getattr(self.server, "auth_token", ""):  # type: ignore[attr-defined]
+            return True  # do_POST already verified the token.
+        host = str(self.client_address[0] if self.client_address else "")
+        return host in {"127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"}
+
+    def _read_json_object_body(self, what: str) -> Mapping[str, object] | None:
+        """Read a JSON object body or answer 400 and return ``None``."""
+
+        body = self._read_request_body()
+        if body is None:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "error": f"{what} JSON 본문을 읽을 수 없습니다."},
+            )
+            return None
+        try:
+            document = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "error": f"{what} 본문이 올바른 JSON이 아닙니다."},
+            )
+            return None
+        if not isinstance(document, Mapping):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "error": f"{what} 본문은 JSON 객체여야 합니다."},
+            )
+            return None
+        return document
+
+    def _handle_realtime_session(self) -> None:
+        """Mint an ephemeral Realtime client secret (long-lived key stays here)."""
+
+        self._read_request_body()  # body is ignored; keep keep-alive usable.
+        if not self._request_is_loopback_or_authenticated():
+            self._send_json(
+                HTTPStatus.FORBIDDEN,
+                {"error": "Realtime 세션은 로컬 루프백 또는 인증된 요청만 만들 수 있습니다."},
+            )
+            return
+        try:
+            config = realtime_intent.load_upstream_config()
+            session = realtime_intent.mint_client_secret(config)
+        except realtime_intent.RealtimeSessionError as error:
+            self._send_json(
+                HTTPStatus(error.status),
+                {"error": error.message},
+            )
+            return
+        except Exception as error:  # noqa: BLE001 - surfaced honestly as 500.
+            self._send_internal_error(error)
+            return
+        self._send_json(HTTPStatus.OK, session)
+
+    def _handle_realtime_intent(self) -> None:
+        """Lower a Realtime tool call (or bare transcript) into the DSL and submit."""
+
+        started = time.monotonic()
+        submit_fn = getattr(self._bridge, "submit_micromachine_modulation", None)
+        if not callable(submit_fn):
+            self._send_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {"accepted": False, "error": "MicroMachine modulation bridge is disabled."},
+            )
+            return
+        document = self._read_json_object_body("Realtime intent")
+        if document is None:
+            return
+        raw_transcript = document.get("transcript", "")
+        if raw_transcript is None:
+            raw_transcript = ""
+        if not isinstance(raw_transcript, str):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "error": "transcript 필드는 문자열이어야 합니다."},
+            )
+            return
+        transcript = " ".join(raw_transcript.split())[:2000]
+        tool_arguments = document.get("tool_arguments")
+        if tool_arguments is not None and not isinstance(tool_arguments, Mapping):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "error": "tool_arguments 필드는 JSON 객체여야 합니다."},
+            )
+            return
+        latency = document.get("latency_ms")
+        latency_ms: dict[str, float] = {}
+        if isinstance(latency, Mapping):
+            for key, value in list(latency.items())[:16]:
+                if (
+                    isinstance(key, str)
+                    and len(key) <= 40
+                    and type(value) in (int, float)
+                    and value == value
+                    and abs(value) < 1e9
+                ):
+                    latency_ms[key] = value
+        if tool_arguments is None and not transcript:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {
+                    "accepted": False,
+                    "error": "tool_arguments 또는 transcript 중 하나는 필요합니다.",
+                },
+            )
+            return
+
+        direct_runtime = self._direct_runtime_descriptor()
+        try:
+            blackboard_dir = self._resolved_micromachine_blackboard_dir(
+                str(document.get("blackboard_dir", "") or "")
+            )
+        except (TypeError, ValueError) as error:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST, {"accepted": False, "error": str(error)}
+            )
+            return
+        provider_output: Mapping[str, object] | None = None
+        tier = ""
+        source = ""
+        text = transcript
+        try:
+            emergency_text = bool(transcript) and _micromachine_request_is_emergency(
+                transcript,
+                None,
+            )
+            if emergency_text:
+                provider_output = _micromachine_emergency_safety_output(transcript)
+                tier = realtime_intent.TIER_EMERGENCY
+                source = (
+                    "emergency_fast_path"
+                    if tool_arguments is None
+                    else "emergency_override"
+                )
+            elif tool_arguments is not None:
+                source = "tool_call"
+                tier = realtime_intent.classify_tier(tool_arguments)
+                if tier == realtime_intent.TIER_CLARIFICATION:
+                    provider_output = realtime_intent.tool_arguments_to_provider_output(
+                        tool_arguments
+                    )
+                else:
+                    negated = (
+                        tier == realtime_intent.TIER_EMERGENCY
+                        and realtime_intent.transcript_negates_emergency(transcript)
+                    ) or (
+                        tier == realtime_intent.TIER_MICRO
+                        and realtime_intent.micro_phrase_is_negated(transcript)
+                    )
+                    if negated:
+                        self._finish_realtime_intent(
+                            HTTPStatus.OK,
+                            {
+                                "accepted": False,
+                                "ok": False,
+                                "status": "negation_blocked",
+                                "error": (
+                                    "발화가 해당 행동을 부정하고 있어 실행하지 않았습니다."
+                                ),
+                            },
+                            tier=tier,
+                            source=source,
+                            transcript=transcript,
+                            latency_ms=latency_ms,
+                            started=started,
+                            direct_runtime=direct_runtime,
+                            blackboard_dir=blackboard_dir,
+                        )
+                        return
+                    provider_output = realtime_intent.tool_arguments_to_provider_output(
+                        tool_arguments
+                    )
+                    text = transcript or str(provider_output.get("goal", ""))
+            else:
+                fast_arguments = realtime_intent.match_micro_fast_path(transcript)
+                if fast_arguments is not None:
+                    provider_output = realtime_intent.tool_arguments_to_provider_output(
+                        fast_arguments
+                    )
+                    tier = realtime_intent.TIER_MICRO
+                    source = "micro_fast_path"
+                elif (
+                    realtime_intent.transcript_is_pure_negated_emergency(transcript)
+                    or realtime_intent.micro_phrase_is_negated(transcript)
+                ):
+                    self._finish_realtime_intent(
+                        HTTPStatus.OK,
+                        {
+                            "accepted": False,
+                            "ok": False,
+                            "status": "negation_blocked",
+                            "error": "발화가 해당 행동을 부정하고 있어 실행하지 않았습니다.",
+                        },
+                        tier=realtime_intent.TIER_CLARIFICATION,
+                        source="negation_guard",
+                        transcript=transcript,
+                        latency_ms=latency_ms,
+                        started=started,
+                        direct_runtime=direct_runtime,
+                        blackboard_dir=blackboard_dir,
+                    )
+                    return
+                else:
+                    tier = "unresolved"
+                    source = "text_llm"
+        except ValueError as error:
+            self._finish_realtime_intent(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "ok": False, "status": "invalid_intent", "error": str(error)},
+                tier=tier or "invalid",
+                source=source or "tool_call",
+                transcript=transcript,
+                latency_ms=latency_ms,
+                started=started,
+                direct_runtime=direct_runtime,
+                blackboard_dir=blackboard_dir,
+            )
+            return
+
+        if tier == realtime_intent.TIER_CLARIFICATION:
+            assert provider_output is not None
+            self._finish_realtime_intent(
+                HTTPStatus.OK,
+                {
+                    "accepted": False,
+                    "ok": False,
+                    "status": "clarification_required",
+                    "clarification_prompt": str(
+                        provider_output.get("clarification_prompt", "")
+                    ),
+                    "assistant_message": str(provider_output.get("assistant_message", "")),
+                },
+                tier=tier,
+                source=source,
+                transcript=transcript,
+                latency_ms=latency_ms,
+                started=started,
+                direct_runtime=direct_runtime,
+                blackboard_dir=blackboard_dir,
+            )
+            return
+
+        submission: dict[str, object] = {
+            "text": text or transcript,
+            "async_publish": True,
+        }
+        if provider_output is not None:
+            submission["provider_output"] = dict(provider_output)
+        for key in (
+            "blackboard_dir",
+            "current_frame",
+            "update_id",
+            "operation_id",
+            "operation_generation",
+            "ui_language",
+            "response_language",
+        ):
+            if key in document:
+                submission[key] = document[key]
+        status, payload = self._submit_micromachine_modulation_document(
+            submission,
+            submit_fn,
+        )
+        self._finish_realtime_intent(
+            status,
+            payload,
+            tier=tier,
+            source=source,
+            transcript=transcript,
+            latency_ms=latency_ms,
+            started=started,
+            direct_runtime=direct_runtime,
+            blackboard_dir=blackboard_dir,
+        )
+
+    def _finish_realtime_intent(
+        self,
+        status: HTTPStatus,
+        payload: Mapping[str, object],
+        *,
+        tier: str,
+        source: str,
+        transcript: str,
+        latency_ms: Mapping[str, float],
+        started: float,
+        direct_runtime: Mapping[str, str],
+        blackboard_dir: str,
+    ) -> None:
+        """Annotate, publish the ``voice_intent`` event and answer."""
+
+        response = dict(payload)
+        response["tier"] = tier
+        response["source"] = source
+        response["direct_runtime"] = dict(direct_runtime)
+        latency = dict(latency_ms)
+        latency["backend_handle"] = round((time.monotonic() - started) * 1000.0, 1)
+        response["latency_ms"] = latency
+        update_id, operation_id, generation, _frame = _web_event_identity(response)
+        self.server.publish_event(  # type: ignore[attr-defined]
+            "voice_intent",
+            {
+                "transcript": transcript,
+                "tier": tier,
+                "source": source,
+                "latency_ms": latency,
+                "status": str(response.get("status", "") or ""),
+                "accepted": bool(response.get("accepted", False)),
+                "error": str(response.get("error", "") or ""),
+                "clarification_prompt": str(response.get("clarification_prompt", "") or ""),
+                "direct_runtime": dict(direct_runtime),
+            },
+            update_id=update_id,
+            operation_id=operation_id,
+            generation=generation,
+            blackboard_dir=blackboard_dir,
+        )
+        self._send_json(status, response)
 
     def _handle_micromachine_modulate(self) -> None:
         submit_fn = getattr(self._bridge, "submit_micromachine_modulation", None)
@@ -12590,21 +12975,34 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 {"accepted": False, "error": "MicroMachine 요청 본문은 JSON 객체여야 합니다."},
             )
             return
+        status, payload = self._submit_micromachine_modulation_document(
+            document,
+            submit_fn,
+        )
+        self._send_json(status, payload)
+
+    def _submit_micromachine_modulation_document(
+        self,
+        document: Mapping[str, object],
+        submit_fn: Callable[..., Mapping[str, object]],
+    ) -> tuple[HTTPStatus, dict[str, object]]:
+        """Validate and submit one modulate document; return (status, payload).
+
+        Shared by ``/api/micromachine/modulate`` and ``/api/realtime/intent``
+        so voice requests take the identical pipeline (events, emergency
+        epochs, async lane, status codes).
+        """
+
         try:
             semantic_scope, ttl_seconds = _extract_micromachine_semantic_scope(document)
         except ValueError as error:
-            self._send_json(
-                HTTPStatus.BAD_REQUEST,
-                {"accepted": False, "error": str(error)},
-            )
-            return
+            return HTTPStatus.BAD_REQUEST, {"accepted": False, "error": str(error)}
         text = document.get("text")
         if not isinstance(text, str) or not text.strip():
-            self._send_json(
-                HTTPStatus.BAD_REQUEST,
-                {"accepted": False, "error": "text 필드는 비어 있지 않은 문자열이어야 합니다."},
-            )
-            return
+            return HTTPStatus.BAD_REQUEST, {
+                "accepted": False,
+                "error": "text 필드는 비어 있지 않은 문자열이어야 합니다.",
+            }
         cleaned_text = text.strip()
         request_blackboard_dir = self._resolved_micromachine_blackboard_dir(
             str(document.get("blackboard_dir", "") or "")
@@ -12615,37 +13013,30 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         )
         provider_output = document.get("provider_output")
         if provider_output is not None and not isinstance(provider_output, Mapping):
-            self._send_json(
-                HTTPStatus.BAD_REQUEST,
-                {"accepted": False, "error": "provider_output 필드는 JSON 객체여야 합니다."},
-            )
-            return
+            return HTTPStatus.BAD_REQUEST, {
+                "accepted": False,
+                "error": "provider_output 필드는 JSON 객체여야 합니다.",
+            }
         allow_smoke_keyword_provider = document.get("allow_smoke_keyword_provider", False)
         if type(allow_smoke_keyword_provider) is not bool:
-            self._send_json(
-                HTTPStatus.BAD_REQUEST,
-                {
-                    "accepted": False,
-                    "error": "allow_smoke_keyword_provider 필드는 boolean이어야 합니다.",
-                },
-            )
-            return
+            return HTTPStatus.BAD_REQUEST, {
+                "accepted": False,
+                "error": "allow_smoke_keyword_provider 필드는 boolean이어야 합니다.",
+            }
         async_publish = document.get("async_publish", False)
         if type(async_publish) is not bool:
-            self._send_json(
-                HTTPStatus.BAD_REQUEST,
-                {"accepted": False, "error": "async_publish 필드는 boolean이어야 합니다."},
-            )
-            return
+            return HTTPStatus.BAD_REQUEST, {
+                "accepted": False,
+                "error": "async_publish 필드는 boolean이어야 합니다.",
+            }
         current_frame = document.get("current_frame")
         if current_frame is not None and (
             type(current_frame) is bool or not isinstance(current_frame, int)
         ):
-            self._send_json(
-                HTTPStatus.BAD_REQUEST,
-                {"accepted": False, "error": "current_frame 필드는 정수여야 합니다."},
-            )
-            return
+            return HTTPStatus.BAD_REQUEST, {
+                "accepted": False,
+                "error": "current_frame 필드는 정수여야 합니다.",
+            }
         requested_current_frame = current_frame
         current_frame = self._resolved_micromachine_command_frame(
             request_blackboard_dir,
@@ -12692,14 +13083,10 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     None,
                 )
                 if not callable(async_submit_fn):
-                    self._send_json(
-                        HTTPStatus.SERVICE_UNAVAILABLE,
-                        {
-                            "accepted": False,
-                            "error": "MicroMachine async modulation bridge is disabled.",
-                        },
-                    )
-                    return
+                    return HTTPStatus.SERVICE_UNAVAILABLE, {
+                        "accepted": False,
+                        "error": "MicroMachine async modulation bridge is disabled.",
+                    }
                 payload = dict(
                     async_submit_fn(
                         cleaned_text,
@@ -12725,8 +13112,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     ),
                     blackboard_dir=request_blackboard_dir,
                 )
-                self._send_json(HTTPStatus.ACCEPTED, payload)
-                return
+                return HTTPStatus.ACCEPTED, payload
             payload = dict(
                 submit_fn(
                     cleaned_text,
@@ -12742,39 +13128,31 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 )
             )
         except ValueError as error:
-            self._send_json(
-                HTTPStatus.BAD_REQUEST,
-                {"accepted": False, "error": str(error)},
-            )
-            return
+            return HTTPStatus.BAD_REQUEST, {"accepted": False, "error": str(error)}
         except MissingLLMDependencyError:
-            self._send_json(
-                HTTPStatus.CONFLICT,
-                {"accepted": False, "error": LLM_REQUIRED_COMMAND_ERROR},
-            )
-            return
+            return HTTPStatus.CONFLICT, {
+                "accepted": False,
+                "error": LLM_REQUIRED_COMMAND_ERROR,
+            }
         except concurrent.futures.TimeoutError:
-            self._send_json(
-                HTTPStatus.SERVICE_UNAVAILABLE,
-                {
-                    "accepted": False,
-                    "error": "MicroMachine modulation request timed out.",
-                },
-            )
-            return
+            return HTTPStatus.SERVICE_UNAVAILABLE, {
+                "accepted": False,
+                "error": "MicroMachine modulation request timed out.",
+            }
         except _MicroMachineRequestSupersededError as error:
-            self._send_json(
-                HTTPStatus.CONFLICT,
-                {
-                    "accepted": False,
-                    "status": "superseded",
-                    "error": str(error),
-                },
-            )
-            return
+            return HTTPStatus.CONFLICT, {
+                "accepted": False,
+                "status": "superseded",
+                "error": str(error),
+            }
         except Exception as error:  # noqa: BLE001 - surfaced honestly as 500.
-            self._send_internal_error(error)
-            return
+            return HTTPStatus.INTERNAL_SERVER_ERROR, {
+                "error": (
+                    "서버 내부 오류가 발생했습니다: "
+                    f"{_redact_sensitive_text(error, normalize_whitespace=True)}. "
+                    "잠시 후 다시 시도해 주세요."
+                )
+            }
         status = (
             HTTPStatus.OK
             if not bool(payload.get("ok"))
@@ -12797,7 +13175,7 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
             ),
             blackboard_dir=request_blackboard_dir,
         )
-        self._send_json(status, payload)
+        return status, payload
 
     def _handle_micromachine_contextual_transfer(self) -> None:
         submit_fn = getattr(
@@ -13021,7 +13399,8 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     "POST /api/command, GET /api/runtime/status, "
                     "POST /api/runtime/start, GET /api/micromachine/status, "
                     "POST /api/micromachine/modulate, "
-                    "POST /api/micromachine/contextual-transfer."
+                    "POST /api/micromachine/contextual-transfer, "
+                    "POST /api/realtime/session, POST /api/realtime/intent."
                 )
             },
         )
