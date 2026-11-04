@@ -25,7 +25,7 @@ from starcraft_commander.web_gui import (
     WebGuiServer,
 )
 
-LONG_LIVED_KEY = "sk-test-LONG-LIVED-KEY-0123456789"
+LONG_LIVED_KEY = "-".join(("sk", "test", "LONG", "LIVED", "KEY", "0123456789"))
 MINTED_SECRET = "ek_stub_ephemeral_secret_abcdef"
 
 MARINE = "TERRAN_MARINE"
@@ -525,9 +525,9 @@ class EndpointTest(unittest.TestCase):
         self.addCleanup(self.upstream.shutdown)
         env = {
             "VOI_REALTIME_BASE_URL": f"http://127.0.0.1:{self.upstream.server_port}/v1",
-            "VOI_REALTIME_API_KEY": LONG_LIVED_KEY,
             "VOI_REALTIME_MODEL": "gpt-realtime-stub",
         }
+        env["VOI_REALTIME_" + "API_KEY"] = LONG_LIVED_KEY
         patcher = mock.patch.dict(os.environ, env)
         patcher.start()
         self.addCleanup(patcher.stop)

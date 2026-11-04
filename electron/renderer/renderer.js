@@ -53,7 +53,7 @@
     root.setProperty("--gap", `${l.margin}px`);
     body.dataset.dock = l.dock;
     body.dataset.motion = g.reduceMotion ? "off" : "on";
-    window.VoiSpace.configure({ stars: g.stars / 100, speed: g.starSpeed / 100, nebula: g.nebula / 100, hue: g.hue, saturation: g.saturation / 100, still: g.reduceMotion });
+    window.VoiSpace.configure({ stars: g.stars / 100, speed: g.starSpeed / 100, nebula: g.nebula / 100, hue: g.hue, saturation: g.saturation / 100, twinkle: g.twinkle, meteors: g.meteors, still: g.reduceMotion, glassAlpha: g.alpha });
     reportRect();
   }
 
@@ -113,8 +113,6 @@
     if (!el) { el = h("article", { class: "card", "data-key": card.key }); cardEls.set(card.key, el); }
     el.dataset.sig = signature;
     const parallel = view.rails.length > 1;
-    const overall = view.rails.some(r => r.rail.blocked) ? "blocked" : view.rails.every(r => r.rail.effectObserved) ? "effect" : view.rails.some(r => r.rail.effectObserved) ? "partial" : "live";
-    el.dataset.overall = overall;
     el.dataset.count = String(view.rails.length);
     const showHead = parallel || card.source === "voice";
     el.replaceChildren(...[
@@ -199,7 +197,9 @@
     if (event.type === "voice-state") {
       const prev = state.voice;
       state.voice = { state: event.state, active: Boolean(event.active), reason: event.reason || "" };
-      if (state.voice.active && !window.VoiMic.running && !micStarting) startMic();
+      // Open the mic only once the Realtime session is ready: audio before that is dropped by main anyway, and the OS
+      // mic indicator should not light up while we are still connecting. A reconnect (error) keeps the open mic.
+      if (state.voice.active && !window.VoiMic.running && !micStarting && ["idle", "listening", "thinking", "acting"].includes(state.voice.state)) startMic();
       if (!state.voice.active && window.VoiMic.running) window.VoiMic.stop();
       if (prev.state !== "acting" && state.voice.state === "acting") pokeSoon();
       renderVoice(); schedule();
@@ -329,7 +329,7 @@
   function tabGlass() {
     const rows = ["alpha", "blur"].map(key => rowFor("glass", key));
     if (state.env.vibrancySupported) rows.push(rowFor("glass", "vibrancy"));
-    return [...rows, ...["hue", "saturation", "borderGlow", "radius", "stars", "starSpeed", "nebula", "textSize"].map(key => rowFor("glass", key)), rowFor("glass", "reduceMotion")];
+    return [...rows, ...["hue", "saturation", "borderGlow", "radius", "stars", "starSpeed", "nebula", "textSize"].map(key => rowFor("glass", key)), rowFor("glass", "twinkle"), rowFor("glass", "meteors"), rowFor("glass", "reduceMotion")];
   }
   function tabLayout() {
     const displays = [{ id: "cursor", label: t("display_cursor") }, ...state.env.displays.map(d => ({ id: `id:${d.id}`, label: d.label }))];
@@ -344,7 +344,7 @@
   function tabRainbow() {
     const preview = h("button", { class: "btn", type: "button", text: t("preview") });
     preview.addEventListener("click", () => api.settings.previewRainbow().catch(() => {}));
-    return [rowFor("rainbow", "enabled"), ...["depth", "intensity", "speed", "brightness"].map(key => rowFor("rainbow", key)), rowFor("rainbow", "thinking"), rowFor("rainbow", "reactive"), row(t("preview"), h("div", { class: "ctl" }, preview))];
+    return [rowFor("rainbow", "enabled"), rowFor("rainbow", "screen", choice("rainbow", "screen", ["current", "all"], v => t(`screen_${v}`))), ...["depth", "intensity", "speed", "brightness"].map(key => rowFor("rainbow", key)), rowFor("rainbow", "thinking"), rowFor("rainbow", "reactive"), row(t("preview"), h("div", { class: "ctl" }, preview))];
   }
   let meterEl = null;
   function paintLevel() { if (meterEl && meterEl.isConnected) meterEl.style.setProperty("--lvl", String(Math.min(1, state.level))); }

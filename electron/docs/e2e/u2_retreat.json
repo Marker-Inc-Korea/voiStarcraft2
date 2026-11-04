@@ -1,0 +1,329 @@
+{
+  "name": "u2_retreat",
+  "startedAt": "2026-11-04T15:56:55.362Z",
+  "events": [
+    {
+      "t": 1793807815955,
+      "type": "voice-state",
+      "state": "connecting",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807817305,
+      "type": "session"
+    },
+    {
+      "t": 1793807820655,
+      "type": "voice-state",
+      "state": "idle",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807822959,
+      "type": "voice-state",
+      "state": "listening",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807822960,
+      "type": "transcript",
+      "text": "",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807822980,
+      "type": "dock-state"
+    },
+    {
+      "t": 1793807824037,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807824324,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807824325,
+      "type": "transcript",
+      "text": "후",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807824325,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807824325,
+      "type": "transcript",
+      "text": "후퇴",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807824325,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807824325,
+      "type": "transcript",
+      "text": "후퇴해",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807824334,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807824334,
+      "type": "transcript",
+      "text": "후퇴해.",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807824703,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807824704,
+      "type": "transcript",
+      "text": "후퇴해.",
+      "partial": false,
+      "final": true,
+      "turn": 1
+    },
+    {
+      "t": 1793807824901,
+      "type": "voice-state",
+      "state": "acting",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807824903,
+      "type": "intent",
+      "turn": 1,
+      "ok": true,
+      "kind": "submitted",
+      "tier": "emergency",
+      "transcript": "후퇴해.",
+      "latency_ms": {
+        "speech_end_to_tool_call": 864,
+        "speech_ms": 1078,
+        "transcript_wait": 0,
+        "tool_call_to_publish": 2,
+        "publish_request": 2
+      },
+      "tool_arguments": {
+        "command_layer": "emergency",
+        "goal": "후퇴해",
+        "emergency": {
+          "force_retreat": true
+        }
+      },
+      "response": {
+        "accepted": true,
+        "status": "queued",
+        "tier": "emergency",
+        "source": "emergency_override",
+        "update_id": "voi-mm-2b0c602e8fe34fc7ad57861aa5e116d3",
+        "direct_runtime": {
+          "kind": "dry_run_fake_bot",
+          "evidence": "executor drives the scripted DemoFakeBotAI (--dry-run); operation/micro/emergency vectors are simulated, only macro vectors reach the MicroMachine blackboard"
+        },
+        "latency_ms": {
+          "speech_end_to_tool_call": 864,
+          "speech_ms": 1078,
+          "transcript_wait": 0,
+          "backend_handle": 0.5
+        }
+      }
+    },
+    {
+      "t": 1793807824903,
+      "type": "voice-state",
+      "state": "acting",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807826304,
+      "type": "voice-state",
+      "state": "idle",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807826337,
+      "type": "dock-state"
+    },
+    {
+      "t": 1793807826337,
+      "type": "settings"
+    }
+  ],
+  "overlay": [
+    {
+      "t": 1793807815990,
+      "state": "off",
+      "visible": false
+    },
+    {
+      "t": 1793807822964,
+      "state": "listening",
+      "visible": true
+    },
+    {
+      "t": 1793807824053,
+      "state": "thinking",
+      "visible": true
+    },
+    {
+      "t": 1793807824929,
+      "state": "off",
+      "visible": true
+    },
+    {
+      "t": 1793807825322,
+      "state": "off",
+      "visible": false
+    }
+  ],
+  "shots": [
+    {
+      "name": "1-ready",
+      "file": "u2_retreat-1-ready.png",
+      "t": 1793807820840,
+      "ok": true
+    },
+    {
+      "name": "2-listening",
+      "file": "u2_retreat-2-listening.png",
+      "t": 1793807823646,
+      "ok": true
+    },
+    {
+      "name": "3-thinking",
+      "file": "u2_retreat-3-thinking.png",
+      "t": 1793807824227,
+      "ok": true
+    },
+    {
+      "name": "4-acting",
+      "file": "u2_retreat-4-acting.png",
+      "t": 1793807825750,
+      "ok": true
+    },
+    {
+      "name": "5-cards",
+      "file": "u2_retreat-5-cards.png",
+      "t": 1793807832485,
+      "ok": true
+    }
+  ],
+  "checks": [],
+  "notes": [
+    "orb clicked; waiting for Realtime session (429 capacity errors retry with back-off inside voice.js)",
+    "session ready after 4734 ms (includes any 429 retries)"
+  ],
+  "armedAt": 1793807815955,
+  "readyAt": 1793807820689,
+  "preReadyErrors": [],
+  "overlayDuringListening": {
+    "state": "listening",
+    "visible": true,
+    "bounds": {
+      "x": 0,
+      "y": 0,
+      "width": 1512,
+      "height": 982
+    }
+  },
+  "dom": {
+    "transcript": "후퇴해.",
+    "cards": [
+      {
+        "utterance": "후퇴해.",
+        "ops": [
+          {
+            "name": "후퇴해.",
+            "tier": "긴급",
+            "badges": [
+              "시뮬"
+            ],
+            "stages": [
+              "heard:done",
+              "understood:done",
+              "assigned:blocked",
+              "ordered:todo",
+              "effect:todo"
+            ],
+            "reason": "병력부족",
+            "reasonTitle": "action 'stop_group' was refused without issuing orders: insufficient_units."
+          }
+        ]
+      }
+    ],
+    "voiceBody": "idle"
+  },
+  "backendVoiceIntents": [],
+  "backendOperations": [
+    {
+      "operation_id": "voi-mm-2b0c602e8fe34fc7ad57861aa5e116d3",
+      "mission": "emergency",
+      "disposition": "pending",
+      "transport_status": "direct_failed",
+      "consumption_status": "not_published",
+      "layer": "emergency",
+      "goal": "후퇴해.",
+      "stages": [
+        "parsed:false",
+        "reduced:false",
+        "published:false",
+        "consumed_by_manager:false",
+        "queued_or_assigned:false",
+        "order_issued:false",
+        "action_issued:false",
+        "effect_observed:false"
+      ]
+    }
+  ],
+  "directRuntime": {
+    "kind": "dry_run_fake_bot",
+    "evidence": "executor drives the scripted DemoFakeBotAI (--dry-run); operation/micro/emergency vectors are simulated, only macro vectors reach the MicroMachine blackboard"
+  },
+  "latestRequest": {
+    "status": "compiled",
+    "consumption_status": "pending_consumption",
+    "update_id": "voi-mm-2b0c602e8fe34fc7ad57861aa5e116d3"
+  }
+}

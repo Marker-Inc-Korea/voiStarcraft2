@@ -22,6 +22,22 @@ Gear (or `Cmd/Ctrl+,`) opens settings in the same glass, instantly; Esc / gear /
 pinned open meanwhile. Tabs: 유리 레이아웃 무지개 음성 서버 초기화. Settings apply live, persist in
 `userData/settings.json`, and are schema-validated (`renderer/settings.js`, range errors throw, never clamp).
 
+## Cosmic glass
+
+Inside the panel, on one transparent canvas drawn additively (`lighter` + `mix-blend-mode: plus-lighter`, never opaque):
+3-depth parallax starfield (twinkle, 4-point flares, a shooting star every ~8-14 s), faint constellation lines, drifting
+nebula clouds (75 s loop, recoloured by 색조) and an aurora shimmer on the top edge. Stars/nebula use their own sliders
+(별 / 별 속도 / 성운 / 반짝임 / 유성), so they stay visible at low glass opacity. Finish: 1px white→violet→cyan gradient rim,
+inner highlight, starlight glow, hover specular sweep; the mic orb is a small planet with an orbiting ring and moon; rail
+dots are tiny stars (done = bright halo, active = pulsing flare, blocked = red dwarf, sim = hollow dashed). One rAF loop
+capped at ~30 fps, paused while the bar is collapsed, a single still frame under reduced motion. Pure model: `renderer/sky.js`.
+
+## Multi-display
+
+Display choice and all geometry live in the pure `displays.js` (negative origins, portrait, mixed scale factors): the
+dock follows the display under the cursor (250 ms dwell, collapsed only) unless 모니터 is fixed; windows are flush with
+`display.bounds`; 무지개 > 화면 `현재 | 전체` (one overlay window per display). Smoke: `SMOKE_DISPLAY=primary|<index>|id:<n>`.
+
 ## Dock behaviour
 
 - Positions `bottom | right | left | top`, size scale, margin, display (follow cursor or fixed). Window is sized once to
@@ -58,13 +74,20 @@ expiry, back-off reconnect, session rotation after 55 min. Only the microphone p
 
 ## Verification
 
-`npm test` (83 tests: validators, settings schema, dock logic, voice state machine + client on a fake `ws`, stage
-derivation, window flags). Real-Electron smoke against a fake backend (not SC2 evidence):
+`npm test` runs the pure unit tests (validators, settings schema, dock and multi-display logic, voice state machine
+and client on a fake `ws`, stage derivation, window flags). They never launch Electron or touch the pointer.
+
+The real-Electron smoke runs take over the mouse pointer and capture the screen, so run them only when the Mac is
+otherwise idle. Screenshots go to a temp dir unless `SMOKE_SAVE_SHOTS=1`; saved captures show your desktop and are
+git-ignored (`docs/screens/`, `docs/e2e/*.png`).
 
 ```
-swiftc -O smoke/warp_cursor.swift -o /tmp/warp_cursor   # real cursor moves via CoreGraphics
-npx electron smoke/driver.js          # 57 checks + docs/screens/*.png
-npx electron smoke/overlay_shots.js   # edge glow over bright/dark backdrops
+swiftc -O smoke/warp_cursor.swift -o /tmp/warp_cursor
+SMOKE_DISPLAY=primary npx electron smoke/driver.js      # also: SMOKE_DISPLAY=1, SMOKE_DISPLAY=2
+npx electron smoke/overlay_shots.js
+
+# real end-to-end: real web_gui --dry-run + real Realtime proxy + TTS wav as the Chromium mic (docs/e2e/RESULTS.md)
+E2E_NAME=u1_scout_attack VOI_COMMANDER_URL=http://127.0.0.1:18765 npx electron smoke/e2e_real.js
 ```
 
-The microphone in smoke is Chromium's fake device; real speech, real SC2 and macOS fullscreen-app overlay are unverified.
+Not verified: real microphone speech, real SC2, the overlay over macOS fullscreen apps, canvas CPU cost.

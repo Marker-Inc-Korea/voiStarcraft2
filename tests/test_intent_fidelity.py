@@ -883,9 +883,268 @@ class RegroupDefaultsAreValidTest(unittest.TestCase):
         self.assertEqual("siege", result.vector.scope.army_group)
 
 
+def _plan_tags_by_operation(result):
+    tags = {}
+    for tool in result.tool_results:
+        execution = tool.get("result", {}).get("result") or {}
+        for action in execution.get("plan", {}).get("ordered_actions", ()):
+            metadata = action.get("metadata", {})
+            operation_id = metadata.get("operation_id")
+            if operation_id:
+                tags.setdefault(operation_id, []).extend(metadata.get("_direct_unit_tags", ()))
+    return tags
+
+
+class DisjointOperationTagsTest(_DirectCase):
+    """H-1: "2 marines scout, 4 marines attack" must use SIX distinct marines."""
+
+    def test_concurrent_same_type_operations_get_disjoint_tags(self) -> None:
+        result = self.harness.submit(
+            "마린 2기는 정찰, 4기는 공격",
+            _operation_output(
+                _operation("scout", "scout_with_units", "enemy_main", 2),
+                _operation("attack", "pressure_with_main_army", "enemy_natural", 4),
+            ),
+            frame=100,
+            update_id="disjoint-1",
+        )
+        self.assertIs(result.status, LiveModulationStatus.DIRECT_EXECUTED, result.to_dict())
+        tags = _plan_tags_by_operation(result)
+        self.assertEqual(2, len(tags["scout"]))
+        self.assertEqual(4, len(tags["attack"]))
+        self.assertEqual(set(), set(tags["scout"]) & set(tags["attack"]))
+        issued = self.harness.bot.issued_commands
+        self.assertEqual(6, len(issued))
+        self.assertEqual(6, len({(entry[0], id(entry)) for entry in issued}))
+        lease = self.harness.lifecycle.get("disjoint-1")
+        self.assertEqual(6, len(lease.owned_unit_tags))
+
+    def test_marines_ordered_by_two_operations_are_six_distinct_units(self) -> None:
+        self.harness.submit(
+            "마린 2기는 정찰, 4기는 공격",
+            _operation_output(
+                _operation("scout", "scout_with_units", "enemy_main", 2),
+                _operation("attack", "pressure_with_main_army", "enemy_natural", 4),
+            ),
+            frame=100,
+            update_id="disjoint-units",
+        )
+        marines = [u for u in self.harness.bot.units if u.name == "Marine"]
+        ordered = [u for u in marines if u.issued_orders]
+        self.assertEqual(6, len(ordered))
+        self.assertTrue(all(len(u.issued_orders) == 1 for u in ordered))
+
+    def test_supply_shortfall_is_surfaced_and_never_overlaps(self) -> None:
+        result = self.harness.submit(
+            "마린 3기 정찰, 4기 공격 (마린은 6기뿐)",
+            _operation_output(
+                _operation("scout", "scout_with_units", "enemy_main", 3),
+                _operation("attack", "pressure_with_main_army", "enemy_natural", 4),
+            ),
+            frame=100,
+            update_id="disjoint-short",
+        )
+        tags = _plan_tags_by_operation(result)
+        self.assertEqual(set(), set(tags["scout"]) & set(tags["attack"]))
+        self.assertEqual(3, len(tags["scout"]))
+        self.assertEqual(3, len(tags["attack"]))
+        outcome = result.command_queue["direct_outcome"]
+        self.assertEqual("partial", outcome["status"])
+        self.assertEqual(
+            [(4, 3)],
+            [(item["requested"], item["issued"]) for item in outcome["shortfalls"]],
+        )
+
+    def test_emergency_stop_and_retreat_still_address_the_whole_group(self) -> None:
+        result = self.harness.submit(
+            "후퇴",
+            {
+                "goal": "후퇴",
+                "override_level": "emergency",
+                "ttl_seconds": 45,
+                "emergency": {"force_retreat": True, "cancel_attacks": True},
+            },
+            frame=100,
+            update_id="disjoint-em",
+        )
+        self.assertIs(result.status, LiveModulationStatus.DIRECT_EXECUTED, result.to_dict())
+        stops = [u for u in self.harness.bot.units if any(o[0] == "stop" for o in u.issued_orders)]
+        moves = [u for u in self.harness.bot.units if any(o[0] == "move" for o in u.issued_orders)]
+        self.assertEqual(8, len(stops))
+        self.assertEqual(8, len(moves))
+
+
+class ExplicitCountTest(_DirectCase):
+    """D14: "마린 1기" is exactly one marine, not the whole squad."""
+
+    def test_single_marine_scout_orders_exactly_one_unit(self) -> None:
+        result = self.harness.submit(
+            "마린 1기 정찰",
+            _operation_output(_operation("scout1", "scout_with_units", "enemy_main", 1)),
+            frame=100,
+            update_id="count-one",
+        )
+        self.assertIs(result.status, LiveModulationStatus.DIRECT_EXECUTED, result.to_dict())
+        self.assertEqual(1, len(self.harness.bot.issued_commands))
+        self.assertEqual(1, len(self.harness.lifecycle.get("count-one").owned_unit_tags))
+
+    def test_emergency_still_addresses_the_whole_group(self) -> None:
+        result = self.harness.submit(
+            "후퇴",
+            {"goal": "후퇴", "override_level": "emergency", "ttl_seconds": 45, "emergency": {"force_retreat": True}},
+            frame=100,
+            update_id="count-em",
+        )
+        self.assertIs(result.status, LiveModulationStatus.DIRECT_EXECUTED, result.to_dict())
+        self.assertEqual(8, len({id(u) for u in self.harness.bot.units if u.issued_orders}))
+
+
+class UnitClassSelectionTest(_DirectCase):
+    """H-6: a Viking/Medivac/Tank order must never be executed by Marines."""
+
+    def _order(self, unit, count, update_id):
+        operation = _operation("hr", "harass_with_units", "enemy_natural", count)
+        operation["tactical_task"]["unit_classes"] = [unit]
+        operation["composition_requirements"][0].update(unit_type=unit, role="anti_air")
+        return self.harness.submit("견제", _operation_output(operation), frame=100, update_id=update_id)
+
+    def test_missing_unit_class_is_refused_with_reason_and_no_orders(self) -> None:
+        for unit in ("TERRAN_VIKINGFIGHTER", "TERRAN_MEDIVAC", "TERRAN_BANSHEE", "TERRAN_THOR"):
+            with self.subTest(unit=unit):
+                harness = _DirectHarness()
+                self.addCleanup(harness.close)
+                self.harness = harness
+                result = self._order(unit, 2, f"cls-{unit}")
+                self.assertIs(result.status, LiveModulationStatus.DIRECT_FAILED, result.to_dict())
+                self.assertEqual([], harness.bot.issued_commands)
+                self.assertTrue(
+                    any("no_matching_units" in reason for reason in result.command_queue["direct_outcome"]["reasons"]),
+                    result.command_queue["direct_outcome"],
+                )
+
+    def test_existing_tanks_are_ordered_and_marines_are_left_alone(self) -> None:
+        result = self._order("TERRAN_SIEGETANK", 2, "cls-tank")
+        self.assertIs(result.status, LiveModulationStatus.DIRECT_EXECUTED, result.to_dict())
+        self.assertEqual({"SiegeTank"}, {entry[1] for entry in self.harness.bot.issued_commands})
+
+    def test_sieged_form_is_the_same_unit_class(self) -> None:
+        for unit in self.harness.bot.units:
+            if unit.name == "SiegeTank":
+                unit.name = "SiegeTankSieged"
+        result = self._order("TERRAN_SIEGETANK", 1, "cls-sieged")
+        self.assertIs(result.status, LiveModulationStatus.DIRECT_EXECUTED, result.to_dict())
+        self.assertEqual({"SiegeTankSieged"}, {entry[1] for entry in self.harness.bot.issued_commands})
+
+
+class EmergencyFastPathScopeTest(unittest.TestCase):
+    """H-2: "공격 취소" cancels attacks only; "후퇴" retreats."""
+
+    def _flags(self, text):
+        from starcraft_commander.web_gui import (
+            _micromachine_emergency_safety_output,
+            _micromachine_request_is_emergency,
+        )
+
+        self.assertTrue(_micromachine_request_is_emergency(text, None), text)
+        output = _micromachine_emergency_safety_output(text)
+        return output["emergency"], output
+
+    def test_cancel_attack_does_not_force_retreat(self) -> None:
+        for text in ("공격 취소", "공격을 중단해", "stop attacking", "cancel the attack"):
+            with self.subTest(text=text):
+                flags, output = self._flags(text)
+                self.assertTrue(flags["cancel_attacks"])
+                self.assertFalse(flags["force_retreat"])
+                self.assertNotIn("retreat_confirmed", output["lifetime"]["completion_conditions"])
+                self.assertLessEqual(output["squad"].get("regroup_bias", 0), 0.0)
+
+    def test_retreat_still_retreats_and_cancels(self) -> None:
+        for text in ("후퇴", "즉시 후퇴", "retreat"):
+            with self.subTest(text=text):
+                flags, output = self._flags(text)
+                self.assertTrue(flags["force_retreat"])
+                self.assertTrue(flags["cancel_attacks"])
+                self.assertIn("retreat_confirmed", output["lifetime"]["completion_conditions"])
+
+    def test_cancel_and_retreat_together_retreats(self) -> None:
+        from starcraft_commander.web_gui import _micromachine_emergency_safety_output
+
+        flags = _micromachine_emergency_safety_output("공격 취소하고 후퇴")["emergency"]
+        self.assertTrue(flags["force_retreat"])
+        self.assertTrue(flags["cancel_attacks"])
+
+    def test_negation_guards_are_kept(self) -> None:
+        from starcraft_commander.web_gui import _micromachine_request_is_emergency
+
+        for text in ("공격을 중단하지 말고 계속 압박해", "후퇴하지 마", "retreat the tanks but keep marines attacking"):
+            with self.subTest(text=text):
+                self.assertFalse(_micromachine_request_is_emergency(text, None))
+
+
+class RawCoordinateRefusalTest(unittest.TestCase):
+    """H-8: coordinates cannot be honoured, so the command must be refused, not retargeted."""
+
+    def _output(self, key, value=(30, 40), nested=False):
+        task = {
+            "task_type": "pressure_with_main_army",
+            "unit_classes": ["TERRAN_MARINE"],
+            "location_intent": "enemy_natural",
+        }
+        if nested:
+            operation = _operation("atk", "pressure_with_main_army", "enemy_natural", 2)
+            operation[key] = value
+            return {"goal": "좌표로 이동", "command_layer": "operation", "operations": [operation]}
+        return {"goal": "좌표로 이동", "command_layer": "operation", key: value, "tactical_task": task}
+
+    def test_coordinate_like_keys_are_refused_with_a_reason(self) -> None:
+        for key in ("x", "y", "xy", "coordinates", "coords", "position", "map_point", "target_position", "location_xy"):
+            for nested in (False, True):
+                with self.subTest(key=key, nested=nested):
+                    result = compile_policy_modulation_provider_output(self._output(key, nested=nested))
+                    self.assertIs(result.status, PolicyModulationCompileStatus.REFUSED, result.to_dict())
+                    self.assertIsNone(result.vector)
+                    self.assertIn(key, result.refusal_reason)
+                    self.assertIn("coordinate", result.refusal_reason.lower())
+
+    def test_semantic_locations_and_unrelated_unknown_keys_still_compile(self) -> None:
+        result = compile_policy_modulation_provider_output(self._output("note_to_self", "hello"))
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertTrue(any("note_to_self" in w for w in result.warnings))
+
+
 # ---------------------------------------------------------------------------
 # Whole-corpus invariants (scripts/fidelity/replay_chain.py)
 # ---------------------------------------------------------------------------
+
+
+class OperationMissionLabelTest(unittest.TestCase):
+    """UI-facing ``mission`` must not call a macro order an emergency."""
+
+    def _mission(self, vector: dict) -> str:
+        from starcraft_commander.web_gui import _micromachine_operation_mission
+
+        return _micromachine_operation_mission({"vector": vector})
+
+    def test_all_false_emergency_block_does_not_make_a_macro_an_emergency(self) -> None:
+        flags = {
+            "cancel_attacks": False,
+            "pull_workers_for_defense": False,
+            "evacuate_workers": False,
+            "force_retreat": False,
+            "hold_position": False,
+            "prioritize_repair": False,
+            "stop_expansion": False,
+        }
+        self.assertEqual(
+            "production",
+            self._mission({"goal": "서플라이 디포 두 개 지어", "command_layer": "macro", "emergency": flags}),
+        )
+
+    def test_real_emergency_flags_still_label_emergency(self) -> None:
+        self.assertEqual(
+            "emergency",
+            self._mission({"goal": "후퇴", "command_layer": "emergency", "emergency": {"force_retreat": True}}),
+        )
 
 
 class ChainReplayInvariantsTest(unittest.TestCase):

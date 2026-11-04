@@ -1,0 +1,5122 @@
+{
+"adv-001": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "2988dce6996910ab199aa00fa8fa9586aace0565174cb357f2fa0e8b6233201f",
+"speed": 1.0,
+"text_sha": "94045ec560e0",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "8f8a597b78382e4bf5ade489af0cd4db673afcf93e04556677753202c1093516",
+"speed": 1.15,
+"text_sha": "94045ec560e0",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "662fc8b6414fae9d1091bdff1f02defc4752cb0680f046dee6544396c53160de",
+"speed": 1.0,
+"text_sha": "94045ec560e0",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-002": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "7187fa144abe30c4d99c4c9cd80f698b93a5cb40a6f5da51066ce68e3bd26d02",
+"speed": 1.0,
+"text_sha": "30436470249b",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "424516847016a1a596c7d3a14a8cae2c8d4adacd645faa25105ed5da9c2f3362",
+"speed": 1.15,
+"text_sha": "30436470249b",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "f287ae241898144a4d086b21836bc042722e459ffade91cb8954eae4e2c348a9",
+"speed": 1.0,
+"text_sha": "30436470249b",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-003": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "674a1825d4d60a902513e85e7e552b61f8866b9a1804bd8f914d5b9b9cfbd6e1",
+"speed": 1.0,
+"text_sha": "3e7a6ccd8f0f",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "65fbed2211a6ad4a89e7d184b637cb83070c560e02090be2eedc4edef5d33589",
+"speed": 1.15,
+"text_sha": "3e7a6ccd8f0f",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "41efe62a1ba7d4d4479fe4eebe65bce3119ceb4aec3840695b25c0b8339a18ff",
+"speed": 1.0,
+"text_sha": "3e7a6ccd8f0f",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-004": {
+"v0": {
+"bytes": 122400,
+"duration_s": 2.55,
+"noise_snr_db": null,
+"sha256": "491cc91b3c07ab84a6d68d77f1c5631c22abebe217ed489414ea721308b8868e",
+"speed": 1.0,
+"text_sha": "c79f0e65e9fc",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 108522,
+"duration_s": 2.261,
+"noise_snr_db": null,
+"sha256": "521d66692e7bbded6a8c7500fb9f8530f9b85b71a2976ba5a476775af5473b81",
+"speed": 1.15,
+"text_sha": "c79f0e65e9fc",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 122400,
+"duration_s": 2.55,
+"noise_snr_db": 18.0,
+"sha256": "21eedbc03cc4a9eb276379cda0baa613566e3776c1006b317832c179f653ea5a",
+"speed": 1.0,
+"text_sha": "c79f0e65e9fc",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-005": {
+"v0": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": null,
+"sha256": "7adc51b0e5cadc92fddf088dcca099a2cdc8c757a1be772b5c43ec8240f207bb",
+"speed": 1.0,
+"text_sha": "3f65b3dafebf",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 81808,
+"duration_s": 1.704,
+"noise_snr_db": null,
+"sha256": "130e81f16a4be836c5103c00ca7e20bcea051f9f72bf63693804b069c4e6d47a",
+"speed": 1.15,
+"text_sha": "3f65b3dafebf",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "6718caa4506a4118696ba5383f96823ebe66f2cdb17e33ae77a545171c662efd",
+"speed": 1.0,
+"text_sha": "3f65b3dafebf",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-006": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "e8651554386cba723ce7fc60181c1f46e417cddad1030a317332f83ff4f5286b",
+"speed": 1.0,
+"text_sha": "de89b7dbe7e5",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "bcf4be30a1b4e44509de358ec92b8aeb7ea22cdecdc9351c79e0ffd799d57296",
+"speed": 1.15,
+"text_sha": "de89b7dbe7e5",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "301895ceb32d4e4d0119d31ccdd733853bf7c8217d64a1dfedd0e70724e4f1af",
+"speed": 1.0,
+"text_sha": "de89b7dbe7e5",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-007": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "29184a5ad5c991de5b9cf37d3133cd0439ec1355701812f5c5d81531172d6304",
+"speed": 1.0,
+"text_sha": "0cd42cd77c87",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "aae61834e22dbbd6fc924156096648630125f017df833b2b0e4a79a9d71ea542",
+"speed": 1.15,
+"text_sha": "0cd42cd77c87",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "f29c8a3a1c595a967570daf673fddadf0947981e8646e4bd077662c1bacd392d",
+"speed": 1.0,
+"text_sha": "0cd42cd77c87",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-008": {
+"v0": {
+"bytes": 45600,
+"duration_s": 0.95,
+"noise_snr_db": null,
+"sha256": "e38ac299b9060a34e91ba8e8d056ce1153dfe489b86e5ce23dd42f7ebbbd6a9c",
+"speed": 1.0,
+"text_sha": "d084320fd4c9",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "522482be367726e82a1d9afa9b9959c2b4d23201f798f03bb921c7377fc77cf2",
+"speed": 1.15,
+"text_sha": "d084320fd4c9",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "2879de8fa4c64eee9969c92a6399eb70ab7f28dac4c16bac159e6f41943f1192",
+"speed": 1.0,
+"text_sha": "d084320fd4c9",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-009": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "42631b51c57a058ca7324e305468d6f5709b4347cca7fc1f6ae53062aa20ba35",
+"speed": 1.0,
+"text_sha": "1fdcb60dcc20",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 81808,
+"duration_s": 1.704,
+"noise_snr_db": null,
+"sha256": "1fed9800da0a572e0a3b32b2b55ba57ac3f6139f2a8b9bb798507eb782dfbf11",
+"speed": 1.15,
+"text_sha": "1fdcb60dcc20",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "94fc0ac2b7269f715637dd5756474b69e0f97292bc0e9d899f645bf00898e0d7",
+"speed": 1.0,
+"text_sha": "1fdcb60dcc20",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-010": {
+"v0": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": null,
+"sha256": "4afea43df0a72be966f6492c322608ec9771c401feb1ba0d2d32c0111c59af44",
+"speed": 1.0,
+"text_sha": "4e33418658bd",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 95166,
+"duration_s": 1.983,
+"noise_snr_db": null,
+"sha256": "2990dc1f23ce5529b034f6744068f4e3d13c8ae720ba9e4c696105e558d69b94",
+"speed": 1.15,
+"text_sha": "4e33418658bd",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": 18.0,
+"sha256": "3afed93e20c3e52f919bb17128232ae39977e269af689dce60c182e7c0dc3db8",
+"speed": 1.0,
+"text_sha": "4e33418658bd",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-011": {
+"v0": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": null,
+"sha256": "365bfa81712fea7ecb682c6faa83ace2775ff7e899569153e68c7cb069491847",
+"speed": 1.0,
+"text_sha": "8d0e30ee5bf5",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 95166,
+"duration_s": 1.983,
+"noise_snr_db": null,
+"sha256": "8c29c80d0bab901831bf4ec4a4b737fcb3ce9f9ad2671ac599aa21e19da9183e",
+"speed": 1.15,
+"text_sha": "8d0e30ee5bf5",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": 18.0,
+"sha256": "ff84c6c6a9f3c88b169cd1145688622d28f3618f770e5d0fd1227399accaaf65",
+"speed": 1.0,
+"text_sha": "8d0e30ee5bf5",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-012": {
+"v0": {
+"bytes": 45600,
+"duration_s": 0.95,
+"noise_snr_db": null,
+"sha256": "a1a023e90108e61687be2a5b6013d9fa4f326e0970dd57025e0aa3356f7aa2b3",
+"speed": 1.0,
+"text_sha": "f30ab0f4bf24",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 41740,
+"duration_s": 0.87,
+"noise_snr_db": null,
+"sha256": "9ab95dfb2b8ae9af617d5c75826307bbdce0e3a9919c7ccded5a06a90e6e0b58",
+"speed": 1.15,
+"text_sha": "f30ab0f4bf24",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 45600,
+"duration_s": 0.95,
+"noise_snr_db": 18.0,
+"sha256": "53cc1ed71a38c5d38d6a596a9a9b959b9761a4ae9d9fb424eaaebf15cd8998bf",
+"speed": 1.0,
+"text_sha": "f30ab0f4bf24",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-013": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "15e0ef8fb82f1dc1f003ab2c3fb86fcc0c8dbbd278106962ec90e6fa7f597091",
+"speed": 1.0,
+"text_sha": "534b7e39a0e3",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "f5774cf5348eb67658bd93db1630bbfb653010ac589ec3e7d955a03fe3bdf8cb",
+"speed": 1.15,
+"text_sha": "534b7e39a0e3",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "48d3cd05115b3bcc98ffa03aa9f34f1608be2012817e84115ec552e05e6a38ca",
+"speed": 1.0,
+"text_sha": "534b7e39a0e3",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-014": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "4354995e5aab8782ced24d1f69c37567efeac2e637bb3ced7ac775a5e7185bd9",
+"speed": 1.0,
+"text_sha": "8b3d9f710e05",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "38a89e5e37188e44ac0509ed5a1dfdb9f54257c0acb6eb1aec2798f08e339082",
+"speed": 1.15,
+"text_sha": "8b3d9f710e05",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "c2b063536025fc8fe78f165ffd4da53d4ee1b9367d5a6932987f38524e98de8d",
+"speed": 1.0,
+"text_sha": "8b3d9f710e05",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-015": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "5a2acf36adc7f254d4e4a31b69a5be83f443442262c5eec2c448f24e640cf4d7",
+"speed": 1.0,
+"text_sha": "dd908dc8599c",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "85532727588e1e6ed1531cb502b707749b8c1d25c579a57ed87ee605afdaf6b8",
+"speed": 1.15,
+"text_sha": "dd908dc8599c",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "f3675505e6fc4c6930d9816fcf058ab240a9ef832d2c9a42a889a6a4aca9f91c",
+"speed": 1.0,
+"text_sha": "dd908dc8599c",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-016": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "29fbb87afcd022a9967a61779ef8bea161133b1ba96686d01c77b614180d1deb",
+"speed": 1.0,
+"text_sha": "ae38960a85e7",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "e8fcb8381f2502136cc1c17acbf6bddf56115715300a2d6177c1534efd99b880",
+"speed": 1.15,
+"text_sha": "ae38960a85e7",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "563313c3b4b317d03a64173df621c16e20836a3ecfa36bc6aeaa539d0c20d1a2",
+"speed": 1.0,
+"text_sha": "ae38960a85e7",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-017": {
+"v0": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": null,
+"sha256": "229b000504a1221da116e0d61bc5378ceafa8b7276f2cea04f9927bd76b713c3",
+"speed": 1.0,
+"text_sha": "555b582509f6",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 81808,
+"duration_s": 1.704,
+"noise_snr_db": null,
+"sha256": "4bab054b9270b1f0ed97a7303a43bbc4bc810e505622abaa76cf140e506e049b",
+"speed": 1.15,
+"text_sha": "555b582509f6",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": 18.0,
+"sha256": "1e9ab6540a0e68737ba5cb2be521cac2eaf288f2fbf93ef421a609013ba73a85",
+"speed": 1.0,
+"text_sha": "555b582509f6",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-018": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "8455326df958cbf087d0889b05d28fff1241a1925b9727e185bb6013a139c219",
+"speed": 1.0,
+"text_sha": "843c8799e3c2",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "cab09ea602dcab5e0655bd6113cd69872f71f9e022b696e06adc9c3ae2f2c7eb",
+"speed": 1.15,
+"text_sha": "843c8799e3c2",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "b91d7fa5ec72ef0620de78da638da112a2004dca0ea2e45732c116454bc156ad",
+"speed": 1.0,
+"text_sha": "843c8799e3c2",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-019": {
+"v0": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": null,
+"sha256": "8894aae098b17d38c375419f99a7ee4e738153c27bb4b7f9b9e770d7b68b91a9",
+"speed": 1.0,
+"text_sha": "cc7c2087f7a2",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 95166,
+"duration_s": 1.983,
+"noise_snr_db": null,
+"sha256": "7eafa82a2edd476057062c635910b7895ddf1ff3764ff7727ddfd144a563f43f",
+"speed": 1.15,
+"text_sha": "cc7c2087f7a2",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": 18.0,
+"sha256": "875fd59a615898268e23019829f9ccbd00d4bba90667c644ec41f20c9e1b5f62",
+"speed": 1.0,
+"text_sha": "cc7c2087f7a2",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-020": {
+"v0": {
+"bytes": 183840,
+"duration_s": 3.83,
+"noise_snr_db": null,
+"sha256": "7376cf5319b6db211f0892207128b979a7baa264cf54a6a0cfd2dec27a514973",
+"speed": 1.0,
+"text_sha": "9fa117dbb3ea",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 161948,
+"duration_s": 3.374,
+"noise_snr_db": null,
+"sha256": "aa5a7b90747ae788b0a1cad6158b2fcd1b8b869b305e13915268f6344f7b4e9e",
+"speed": 1.15,
+"text_sha": "9fa117dbb3ea",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 183840,
+"duration_s": 3.83,
+"noise_snr_db": 18.0,
+"sha256": "b1cbf7f8883c2885203943f03c154d8d233ac9cc2dfb770d7cdadacc0c36fae4",
+"speed": 1.0,
+"text_sha": "9fa117dbb3ea",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-021": {
+"v0": {
+"bytes": 122400,
+"duration_s": 2.55,
+"noise_snr_db": null,
+"sha256": "8644159c6726e2943fa6c561fe1276504712683fc2c13045d87029d4a2d8470c",
+"speed": 1.0,
+"text_sha": "f6f19f0b3350",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 121878,
+"duration_s": 2.539,
+"noise_snr_db": null,
+"sha256": "9cb118299e0bde7e9952b3128b5d25587406c609b139b4355610788af4d25c6b",
+"speed": 1.15,
+"text_sha": "f6f19f0b3350",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 137760,
+"duration_s": 2.87,
+"noise_snr_db": 18.0,
+"sha256": "ef4fb9c0ff4de87b5dc0e1f866f1f44ea23fb66d82b172a36cee3910141f6ed1",
+"speed": 1.0,
+"text_sha": "f6f19f0b3350",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-022": {
+"v0": {
+"bytes": 168480,
+"duration_s": 3.51,
+"noise_snr_db": null,
+"sha256": "24f3fe3996728afdcba382c60ed64c5564fd09e6619353a72b87402adc38dcc9",
+"speed": 1.0,
+"text_sha": "b73e6da2cd35",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 148592,
+"duration_s": 3.096,
+"noise_snr_db": null,
+"sha256": "7c6f4fb9780493d89e6db78aba98b0770f6f91b168d569fbe6dddfe5f9e6b966",
+"speed": 1.15,
+"text_sha": "b73e6da2cd35",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 168480,
+"duration_s": 3.51,
+"noise_snr_db": 18.0,
+"sha256": "ff4f53f1becb41145cbe27b0ebe4ec01e191cea4389c74d27ef79f4dbc134a30",
+"speed": 1.0,
+"text_sha": "b73e6da2cd35",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-023": {
+"v0": {
+"bytes": 183840,
+"duration_s": 3.83,
+"noise_snr_db": null,
+"sha256": "a86e76ebaa910719bc2909151f1e2f8e7aa281ed3e81a5e7823144120a56df28",
+"speed": 1.0,
+"text_sha": "25c9e5426b55",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 161948,
+"duration_s": 3.374,
+"noise_snr_db": null,
+"sha256": "ccf5d2f142823f9af553c144d564459bb3d3c20f4cbf2b9ea48154fd401c7166",
+"speed": 1.15,
+"text_sha": "25c9e5426b55",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 183840,
+"duration_s": 3.83,
+"noise_snr_db": 18.0,
+"sha256": "8a637bbb3763edf33d47ec07da5306c3aba9e503a9e549839b562815d530b150",
+"speed": 1.0,
+"text_sha": "25c9e5426b55",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-024": {
+"v0": {
+"bytes": 137760,
+"duration_s": 2.87,
+"noise_snr_db": null,
+"sha256": "2cad93ddf50ba8bdd24aa14e8d83bf11d0b21ebaa941cbc8aba7097ed9038204",
+"speed": 1.0,
+"text_sha": "407cd4266ec3",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 121878,
+"duration_s": 2.539,
+"noise_snr_db": null,
+"sha256": "ce376d88049c68f4313892c785fa3397a314ce9312dfb55ea1b0e4c161cb01da",
+"speed": 1.15,
+"text_sha": "407cd4266ec3",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 137760,
+"duration_s": 2.87,
+"noise_snr_db": 18.0,
+"sha256": "153c63b75db7ed2eb8106546c1be5a8c88d087c5503856e0d229408089880b06",
+"speed": 1.0,
+"text_sha": "407cd4266ec3",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-025": {
+"v0": {
+"bytes": 153120,
+"duration_s": 3.19,
+"noise_snr_db": null,
+"sha256": "f881ff57b57e00f6b76575bb0201bce35d6ae6249fbe3712dc28ae4e9912e6b0",
+"speed": 1.0,
+"text_sha": "bdb1a168a16a",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 148592,
+"duration_s": 3.096,
+"noise_snr_db": null,
+"sha256": "8293d1fdfbf2cb4b800f4637fceb3774560c831fd585f5ccc6a2d467aeafea68",
+"speed": 1.15,
+"text_sha": "bdb1a168a16a",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 153120,
+"duration_s": 3.19,
+"noise_snr_db": 18.0,
+"sha256": "659df1e1b85fe050f28c67be7256ea7be27eb22d50924d7eea5a3b085508a290",
+"speed": 1.0,
+"text_sha": "bdb1a168a16a",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-026": {
+"v0": {
+"bytes": 183840,
+"duration_s": 3.83,
+"noise_snr_db": null,
+"sha256": "49f0adacff0c3666ec90b7b7a210ee7e1a650f84e169ad5ed0034bea2f98f3d7",
+"speed": 1.0,
+"text_sha": "9aa7da5853ea",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 148592,
+"duration_s": 3.096,
+"noise_snr_db": null,
+"sha256": "63691e06e174d70c3d61782ade164cd83e7270143bb11d0ed739c21dceced549",
+"speed": 1.15,
+"text_sha": "9aa7da5853ea",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 199200,
+"duration_s": 4.15,
+"noise_snr_db": 18.0,
+"sha256": "3e57950370ac663827b483d4455abb015f98d465a7f8f57a6d49b88ea883fc37",
+"speed": 1.0,
+"text_sha": "9aa7da5853ea",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-027": {
+"v0": {
+"bytes": 153120,
+"duration_s": 3.19,
+"noise_snr_db": null,
+"sha256": "35a5fb4dbfc58cfba047fc67f4978278b394b95091aeee3b4736f504e0b42e8f",
+"speed": 1.0,
+"text_sha": "7f34bc6ff358",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 161948,
+"duration_s": 3.374,
+"noise_snr_db": null,
+"sha256": "6d47293bd8cfc9886267dc30894912dbff5e314792ca15b0df02699f34c77d97",
+"speed": 1.15,
+"text_sha": "7f34bc6ff358",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 168480,
+"duration_s": 3.51,
+"noise_snr_db": 18.0,
+"sha256": "4d2e6fce11f04eee0f4cb1651d5a90951be32c8939d69745f8547b19064339fd",
+"speed": 1.0,
+"text_sha": "7f34bc6ff358",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-028": {
+"v0": {
+"bytes": 183840,
+"duration_s": 3.83,
+"noise_snr_db": null,
+"sha256": "2a0f7ac45ca843bc19364d413bdf9815cb50a0a6d315a7fa630d2558c39a342a",
+"speed": 1.0,
+"text_sha": "343b462772da",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 161948,
+"duration_s": 3.374,
+"noise_snr_db": null,
+"sha256": "64674186332c63c65fcfd1a8d699167b62211f40bbc628c670f170ea991d78cd",
+"speed": 1.15,
+"text_sha": "343b462772da",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 199200,
+"duration_s": 4.15,
+"noise_snr_db": 18.0,
+"sha256": "0f3b54597b707f8e5986be93ce99d7e6052f94221cafc7f68c335f3a5a8d8504",
+"speed": 1.0,
+"text_sha": "343b462772da",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-029": {
+"v0": {
+"bytes": 199200,
+"duration_s": 4.15,
+"noise_snr_db": null,
+"sha256": "4b9cf7b76298ecfef068664313a204e2dcfd4406e721438592474be105ccbf13",
+"speed": 1.0,
+"text_sha": "6dec71b8d698",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 175304,
+"duration_s": 3.652,
+"noise_snr_db": null,
+"sha256": "2714f879953978cabbaf4341e526fffbed271580f867b37c447d3d840c79452e",
+"speed": 1.15,
+"text_sha": "6dec71b8d698",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 199200,
+"duration_s": 4.15,
+"noise_snr_db": 18.0,
+"sha256": "fd6dbbef1e6902932d02c204bcad07ba015424dee45a3b87d4e654d927abdd21",
+"speed": 1.0,
+"text_sha": "6dec71b8d698",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-030": {
+"v0": {
+"bytes": 183840,
+"duration_s": 3.83,
+"noise_snr_db": null,
+"sha256": "34e0f9ab4e912469a3f96fe4f6551fbc065e84853be52ff1a849bf1fce2eecce",
+"speed": 1.0,
+"text_sha": "5a0bc82a1fdc",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 175304,
+"duration_s": 3.652,
+"noise_snr_db": null,
+"sha256": "f01d3dca062e25fbced5f6c70a1327570b4c0098a75936b057fbe3dffceda47b",
+"speed": 1.15,
+"text_sha": "5a0bc82a1fdc",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 183840,
+"duration_s": 3.83,
+"noise_snr_db": 18.0,
+"sha256": "0e3111f48a5674aed1eee1e8b5f8abdf252420f2d36028c83b747bda515d2ee2",
+"speed": 1.0,
+"text_sha": "5a0bc82a1fdc",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"adv-031": {
+"v0": {
+"bytes": 291360,
+"duration_s": 6.07,
+"noise_snr_db": null,
+"sha256": "b97fef72e2b0219370a249a2da7131ae3b8dba7fac42c1dbefc73867ea7e2038",
+"speed": 1.0,
+"text_sha": "dbae4b4adfb1",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 268800,
+"duration_s": 5.6,
+"noise_snr_db": null,
+"sha256": "5ae4a7486eedca6eeeff08c30a234ddfe39f61fb6fd8832e46e3d95cbe16c309",
+"speed": 1.15,
+"text_sha": "dbae4b4adfb1",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 291360,
+"duration_s": 6.07,
+"noise_snr_db": 18.0,
+"sha256": "20096ea9807089c65ced7b0c4f369c6e372e92d759c57da7f03cdfc8f36e73e1",
+"speed": 1.0,
+"text_sha": "dbae4b4adfb1",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"eme-001": {
+"v0": {
+"bytes": 45600,
+"duration_s": 0.95,
+"noise_snr_db": null,
+"sha256": "d4ffd33215d98a0b98bb85a270c87e6994352bf54c62f5be306ed29f0d8eda57",
+"speed": 1.0,
+"text_sha": "e8873c26f78e",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 41740,
+"duration_s": 0.87,
+"noise_snr_db": null,
+"sha256": "7b62b0d784844af3d48084f82ad2277d5c12d3fac3a4a379961ceac0c63adc9e",
+"speed": 1.15,
+"text_sha": "e8873c26f78e",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 45600,
+"duration_s": 0.95,
+"noise_snr_db": 18.0,
+"sha256": "015f6ea0e1bbf40136b0804397b04067c7c0f9b627543df4dc069764f3fc2a6d",
+"speed": 1.0,
+"text_sha": "e8873c26f78e",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"eme-002": {
+"v0": {
+"bytes": 45600,
+"duration_s": 0.95,
+"noise_snr_db": null,
+"sha256": "a9988d1a1902fdff832331bad7d73de3f67a4614fe7a095ece18171837466dc6",
+"speed": 1.0,
+"text_sha": "4c6fdb2ce961",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 41740,
+"duration_s": 0.87,
+"noise_snr_db": null,
+"sha256": "7c87a85aa4d32d7349fb19498fb082f14d5fd2f95ee9905a4070a6465488f22a",
+"speed": 1.15,
+"text_sha": "4c6fdb2ce961",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 45600,
+"duration_s": 0.95,
+"noise_snr_db": 18.0,
+"sha256": "6da114080a3765e08c072ebc18aaca333dc9d59cb85cddfa36320e33c9f968ce",
+"speed": 1.0,
+"text_sha": "4c6fdb2ce961",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"eme-003": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "d25b3de784a73db7495b1d1db28cce843d13ccb0a843a8aa148564faa867f672",
+"speed": 1.0,
+"text_sha": "44ff90dc08e0",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "8a237891ab1a6e7dbe4ad021dbe794565f70b1aed1ad78a1b706e8900d69c9ab",
+"speed": 1.15,
+"text_sha": "44ff90dc08e0",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "57d18192fe19cccddc0409839dae061ebd1b396ea5695bc8b9ab57e0c2dc191a",
+"speed": 1.0,
+"text_sha": "44ff90dc08e0",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"eme-004": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "8f9c95e233ef9966a9a151f953943d74403d13888faf18c94d5080798c8bea51",
+"speed": 1.0,
+"text_sha": "adb8c47c5a18",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "3e8c9121cfe005c1f2daefc13cc374ee753bfaf8dfcb61c372ab586f1bae4f6f",
+"speed": 1.15,
+"text_sha": "adb8c47c5a18",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "a8aa6f319daa22766c611a5be0750f140e079b8933fd357154e376ddd9e4eefe",
+"speed": 1.0,
+"text_sha": "adb8c47c5a18",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"eme-005": {
+"v0": {
+"bytes": 45600,
+"duration_s": 0.95,
+"noise_snr_db": null,
+"sha256": "aad29008cf4e850b38825072040d99a0013b90334bc1753b66e1b192ef1c3e30",
+"speed": 1.0,
+"text_sha": "d5d116062bfb",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 41740,
+"duration_s": 0.87,
+"noise_snr_db": null,
+"sha256": "eeda133a9c58a48aa885f401755fae9046c7dd896dac0b7275d825cfbf3c9dd7",
+"speed": 1.15,
+"text_sha": "d5d116062bfb",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 45600,
+"duration_s": 0.95,
+"noise_snr_db": 18.0,
+"sha256": "420223b64858761e448e925b94d89353a613c899a59b3bfd3b9b9dfa291b54aa",
+"speed": 1.0,
+"text_sha": "d5d116062bfb",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"eme-006": {
+"v0": {
+"bytes": 45600,
+"duration_s": 0.95,
+"noise_snr_db": null,
+"sha256": "05edc2272d595a90b197585070506ff0c4778540ec41b641c25a457d279456d2",
+"speed": 1.0,
+"text_sha": "d985a0df95f7",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "d7be965c810fd32c712d6be00bbab3a1da1c54de9b8cf2c1bfeba00e77a9e38a",
+"speed": 1.15,
+"text_sha": "d985a0df95f7",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "fe3ea4167362b801ce369aff648b35f8ea7cbcbce3379ddf5acf2a02756f6446",
+"speed": 1.0,
+"text_sha": "d985a0df95f7",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"eme-007": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "efc0b08b84e75566b53d1536a2ee4998005d539235423cd9e75eb89de8b048cf",
+"speed": 1.0,
+"text_sha": "fa61560a9781",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "624a885ac805a274e686e3634917adc3d2e52bb895fe631f205c8ba4e6c7032e",
+"speed": 1.15,
+"text_sha": "fa61560a9781",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "7cb223b6597eff9ffe61476270f3a57e391350e762ae6ac11317b1625c233ed1",
+"speed": 1.0,
+"text_sha": "fa61560a9781",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"eme-008": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "89453cc93b1997e7a82c0d8f9a84995a2a62503ba67bf13a16fb3b22ecb62efa",
+"speed": 1.0,
+"text_sha": "b30250338571",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "833c630d566dfb8cc90194d965d972f4ebc0c795f69dc2767253033b5de7c8dd",
+"speed": 1.15,
+"text_sha": "b30250338571",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "a569fe0e7e57170b1ebf219f637aa6a09aea09b1870bfb301af6c70e5a9c0857",
+"speed": 1.0,
+"text_sha": "b30250338571",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"eme-009": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "6971e6f833be8b8ef02ec8ca5cb640b74957ec7d7aa2b95a22065d5aef946eb9",
+"speed": 1.0,
+"text_sha": "d1b9038f9642",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "40aadc47f4bf43d97434d257fd199014b83618554c93235f73565d11313d897e",
+"speed": 1.15,
+"text_sha": "d1b9038f9642",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "272744a2483a01ed210d1ab241bda2549c2196582dcd4c899d2554acf452fb5d",
+"speed": 1.0,
+"text_sha": "d1b9038f9642",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"eme-010": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "cc3304ce73e5cf100288f8ab88fc498acc47f882a554df56f4d411c4e6ddd589",
+"speed": 1.0,
+"text_sha": "fd844c30e9b3",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "4e268ae1f28f27863d9d97668122df1be337c294535b906227a14b46f119cb71",
+"speed": 1.15,
+"text_sha": "fd844c30e9b3",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "c34d7206e17d821b24dda5fd217e35c460a67d0884328e3e25a57d757beb16b2",
+"speed": 1.0,
+"text_sha": "fd844c30e9b3",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"eme-011": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "b3d7e319e7473fd7039011d9cc0cbe45738b134aebe8311e5933431b63db27b3",
+"speed": 1.0,
+"text_sha": "74a7167d7170",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "90bb93ba4ca427301dfa702dd693643c54a08f9f1618cac9f675cb785e158bc1",
+"speed": 1.15,
+"text_sha": "74a7167d7170",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "d109265d11c6c73ad2fc4d0f36f66ce213435deb5c419d07b0d9761622e3c9ca",
+"speed": 1.0,
+"text_sha": "74a7167d7170",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"eme-012": {
+"v0": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": null,
+"sha256": "85381cf149078291e876f9cbca7650c82ce2eaa0972ad700ad0e9b049183deea",
+"speed": 1.0,
+"text_sha": "47b28cdda69f",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 81808,
+"duration_s": 1.704,
+"noise_snr_db": null,
+"sha256": "8c3f839272479238c374fb6d7757f771fe44b0275e4d65a32c7e0ba8c7e3d115",
+"speed": 1.15,
+"text_sha": "47b28cdda69f",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": 18.0,
+"sha256": "eb2bef82702667668b7ac231863278e1c164538ccb51f65c92e81c22f469d9a1",
+"speed": 1.0,
+"text_sha": "47b28cdda69f",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"eme-013": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "fa5acd03acab12048dc45445b3534db20436f3990927a4e2dec205d83245c36d",
+"speed": 1.0,
+"text_sha": "ad8fa4c7477c",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "fa3abd972a0611bebe2380238c421d16d53e2cd4661143d8d6b9fe0ea903685c",
+"speed": 1.15,
+"text_sha": "ad8fa4c7477c",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "972d1c78861670aafbdd6e75e6374c6c757f47130f7a6fa116c53c70f1f51837",
+"speed": 1.0,
+"text_sha": "ad8fa4c7477c",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"eme-014": {
+"v0": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": null,
+"sha256": "13d706a45e9a7e035aec2ab8f6fd532c50c1b3defe52e561e6cdd54dd6f947d9",
+"speed": 1.0,
+"text_sha": "757c67170ec1",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 81808,
+"duration_s": 1.704,
+"noise_snr_db": null,
+"sha256": "a1f5f31418f9eb814de89b27f3a417bc355dd8c3d3a0d5358fdcb2442d63c8a1",
+"speed": 1.15,
+"text_sha": "757c67170ec1",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "a3c1e285e13355d1614bb535c745f4d69195ed37374e7caa8ecb3e27d7e23ff2",
+"speed": 1.0,
+"text_sha": "757c67170ec1",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"eme-015": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "f62682137ad3a68f790eaf6095ffbc21b9748db251670ff9902f0c605bcc9642",
+"speed": 1.0,
+"text_sha": "c7880b2771b3",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "a1c7839979a0f2c9007e3fc608686f67c58ffc59ac78ef242638481a6521f364",
+"speed": 1.15,
+"text_sha": "c7880b2771b3",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "729983b154bd0c7fe1d307135cba442cfb00c5d0523573d87f92e916d3cd5887",
+"speed": 1.0,
+"text_sha": "c7880b2771b3",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"eme-016": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "89e02f434088be7287352adcdd03017b92b05869b63769861b6e72f9bfa81487",
+"speed": 1.0,
+"text_sha": "6ec94643cecd",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "554f97b15dc9c9d858efd6c8db9c0eb5f0fdc0f1002ab5b568085d19422e54ec",
+"speed": 1.15,
+"text_sha": "6ec94643cecd",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "dec0791c0b0cb8b103872f465b489664a7bff12d0c964a44b34b00730006fb90",
+"speed": 1.0,
+"text_sha": "6ec94643cecd",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"eme-017": {
+"v0": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": null,
+"sha256": "ef97b78b5f8d35432f88bbe6223080cbc29fedfcdb9c7807f256453269a07414",
+"speed": 1.0,
+"text_sha": "77ada50092a7",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 81808,
+"duration_s": 1.704,
+"noise_snr_db": null,
+"sha256": "022492cea15402c9f64e3230f7d03afc386d34b526779560a320635f331569d4",
+"speed": 1.15,
+"text_sha": "77ada50092a7",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": 18.0,
+"sha256": "a7721416d8ad988b0ffb533653209bc3a000dfdce11a9a9f883d33245fd61ca9",
+"speed": 1.0,
+"text_sha": "77ada50092a7",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"eme-018": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "a71ca7341c111e0f315a6fbe90b81b383bea6e855c5156d4b8e8acd0b8a7a168",
+"speed": 1.0,
+"text_sha": "0e83f77a0591",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "c0cdb60d22db2480e314066accc8118f0eb83bd20d580337e959dd772538b510",
+"speed": 1.15,
+"text_sha": "0e83f77a0591",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "54f6615ad6945a6e4e365f86ee533738949e08ff5da62d61a7e4cfc00d06b603",
+"speed": 1.0,
+"text_sha": "0e83f77a0591",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"eme-019": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "dd1d5489a2360f479bed17371c3e5513b88cdc0d0879ec1320377c34355e8e9b",
+"speed": 1.0,
+"text_sha": "624c8efed3f3",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "8ce6ff25df3b2e93e863857c347ca012258b5a9b0db9e4c689bf0240a7cba474",
+"speed": 1.15,
+"text_sha": "624c8efed3f3",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "70025829938266cbfcb2908da11a6b6eb00713149bd030dbe193d4ea3dff00f6",
+"speed": 1.0,
+"text_sha": "624c8efed3f3",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"eme-020": {
+"v0": {
+"bytes": 45600,
+"duration_s": 0.95,
+"noise_snr_db": null,
+"sha256": "54c469b967c2b994913081fef291aec75fde631a9df2872f9dadd31fbb65de94",
+"speed": 1.0,
+"text_sha": "716d43a549bb",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 41740,
+"duration_s": 0.87,
+"noise_snr_db": null,
+"sha256": "ae68f79b74cee91ffaeb79e8b0465b2227c68113f7c5060e6fb2b3da7ef2c854",
+"speed": 1.15,
+"text_sha": "716d43a549bb",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 45600,
+"duration_s": 0.95,
+"noise_snr_db": 18.0,
+"sha256": "e014f740e9169f5ad459006182ac3a9fcbbdd954e31100d0d61cfdecff7904d1",
+"speed": 1.0,
+"text_sha": "716d43a549bb",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"eme-021": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "5cc27e371d6303cbfd8f27199fdb6d00836950c8c14262238944e50af7553e80",
+"speed": 1.0,
+"text_sha": "f1e140dfb334",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "fb33ae6e9d77be412e9628e8b7326cc99ba1cb87d13f385a62a77bbcf940eed3",
+"speed": 1.15,
+"text_sha": "f1e140dfb334",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "bf6d9151d58369c7f25922d7bdf50c86bac3467213a289b64e69c382be854e32",
+"speed": 1.0,
+"text_sha": "f1e140dfb334",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"eme-022": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "bfe9f74c6e00365ac449024dd2eaa42cca4ce957780f4f0e5a936cbdd02dd016",
+"speed": 1.0,
+"text_sha": "0e2bdbba1244",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "851eac5612e967a72b294486b38818ee1bd3bae3754a0ce9a6bd965974fe721a",
+"speed": 1.15,
+"text_sha": "0e2bdbba1244",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "5b5f29ed6017faeb176552aa42a9b5b4e030c71b6bd822f746c798cdf119f29b",
+"speed": 1.0,
+"text_sha": "0e2bdbba1244",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"eme-023": {
+"v0": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": null,
+"sha256": "ae8696c5385923394f8b91aeafea14fa25fd8f2de4a9c139449560ec68c8df97",
+"speed": 1.0,
+"text_sha": "1c73a0fa4390",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 95166,
+"duration_s": 1.983,
+"noise_snr_db": null,
+"sha256": "c61acd4d975a0abc6cd116cb00970d6f6ea203a4f2eff31172ac9bac109d7050",
+"speed": 1.15,
+"text_sha": "1c73a0fa4390",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": 18.0,
+"sha256": "e8c0bd9755220d1cacf0647e5abc63ab8649cb0056a126312ad08f423fd7e983",
+"speed": 1.0,
+"text_sha": "1c73a0fa4390",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-001": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "0c6ea74a12e27d8382b31d724e76721ed9fa9ebfd808c884c8da638f4a59eb0e",
+"speed": 1.0,
+"text_sha": "17fcd6f34570",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "10875a21e9362f6b5b4296110d11bad786bdcae7f9b802031b50362c5c45b590",
+"speed": 1.15,
+"text_sha": "17fcd6f34570",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "ecbbbc01c3c1ba9efd232513f4db3f0655583b716ce759cc701de2f59961f5d1",
+"speed": 1.0,
+"text_sha": "17fcd6f34570",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-002": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "5505281aaff25fda9d4933539d3212a0199d66e1c5687fbe9576b5bd285a1fe0",
+"speed": 1.0,
+"text_sha": "926d9a5f335e",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "ea6b9576ff90135ba255b07e3c7d8c790ac22a02912a0443392ed797f75f339f",
+"speed": 1.15,
+"text_sha": "926d9a5f335e",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "a41337f026e96628f91d3a41d8acfe1b38f6158b79c45af3422709dcb8d796b9",
+"speed": 1.0,
+"text_sha": "926d9a5f335e",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-003": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "92ff315affeaa20512beb9124c5e23efb5c12c19ee90a0fb51d118f46a968b1d",
+"speed": 1.0,
+"text_sha": "def750e49c23",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "fa8d04a072f880d8c97a7c0b0dee710a9ee3d39a983c386a0789e5070b5cb657",
+"speed": 1.15,
+"text_sha": "def750e49c23",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "2dac0517897c4b356634ed4e82d9f32b3b7058596c3be528a16589b0954d302d",
+"speed": 1.0,
+"text_sha": "def750e49c23",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-004": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "23b18ed59efa4c417589ec968b2009f2b7f7cdebd7208f983e8522e40ea43641",
+"speed": 1.0,
+"text_sha": "9675c0cd53ab",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "6d3932cce5760fd8c4b68a97a1dff4dd68f3c481db3d8e07847f2f1b5e6dbb75",
+"speed": 1.15,
+"text_sha": "9675c0cd53ab",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": 18.0,
+"sha256": "56c3447f4d2b189003ce62c2989bb2322463039265febb20a8358f1522d57d2d",
+"speed": 1.0,
+"text_sha": "9675c0cd53ab",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-005": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "3b5bc91cc127320003255503a89aba963ec1579cb4e1c0a76b785ca694be0910",
+"speed": 1.0,
+"text_sha": "18a5bca2ebea",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "18125c736dc3fd40e81ebd3e158ab10ff2a89d31e2e14795dca4ad318519edb5",
+"speed": 1.15,
+"text_sha": "18a5bca2ebea",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "82076714034e68f68659e61a76c55dab74a48b52242bf770112c6419e1739407",
+"speed": 1.0,
+"text_sha": "18a5bca2ebea",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-006": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "d3e4c780820654409cf196ab62a43ad5bf3f94d9bf33efab91ca58ef91fa31bd",
+"speed": 1.0,
+"text_sha": "e72b1b3018f2",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "d7d15e46b8491460221211706bc612ed58d68036b2e7363651595323329b5704",
+"speed": 1.15,
+"text_sha": "e72b1b3018f2",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "d5a5e506e23149a6f843aae34329140edd214e741c350ee9a38a9a7789a4f2d5",
+"speed": 1.0,
+"text_sha": "e72b1b3018f2",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-007": {
+"v0": {
+"bytes": 45600,
+"duration_s": 0.95,
+"noise_snr_db": null,
+"sha256": "14a24e77dd352f2ab3093aa5b09904c11c93862c93834b1e73ad34bb2516e343",
+"speed": 1.0,
+"text_sha": "84f9b480a58c",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 41740,
+"duration_s": 0.87,
+"noise_snr_db": null,
+"sha256": "033a840e756645de3f0b4fc0bdb03f9c8fc9d5c7d893e475ff538f651ea2019a",
+"speed": 1.15,
+"text_sha": "84f9b480a58c",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 45600,
+"duration_s": 0.95,
+"noise_snr_db": 18.0,
+"sha256": "25d1c00996abd09d32429a939d256602a6b36f71c4a5bb729219700542993aba",
+"speed": 1.0,
+"text_sha": "84f9b480a58c",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-008": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "96d324c145004efe3aaafe35ea5a1b08a054ba6cb62a3144aa8be151cd1bb52e",
+"speed": 1.0,
+"text_sha": "61e68136c3b2",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "a0af40047855166db943dba9f35400e8f860d63dcc77118907b3a12669d82404",
+"speed": 1.15,
+"text_sha": "61e68136c3b2",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "c60cebc04798345d1acb1bbf0db221af42f2b6c9e1481a80c901ddbf0c80c315",
+"speed": 1.0,
+"text_sha": "61e68136c3b2",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-009": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "75ff2801c454d3150e46bb72083cfbf632f75d1261462968fd272236b95b4447",
+"speed": 1.0,
+"text_sha": "979b6838e163",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "fbc265a8b29d55392b4b71c23d2be43c529e38c9ce6d043db054320f8f299249",
+"speed": 1.15,
+"text_sha": "979b6838e163",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "a5624050e474ffa0e5e9fd34ae1e7b83bed6226ff0b1e4832e3b0ddbf4da7879",
+"speed": 1.0,
+"text_sha": "979b6838e163",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-010": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "8d16de1a9619db58ce3b5baf8486070c3d5421b4ea384f3d80dd8653db67cc34",
+"speed": 1.0,
+"text_sha": "608977f83b69",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "befd99fcd709858158cc6af6f648f65358acbeb51767a131a0416ab7c3941f95",
+"speed": 1.15,
+"text_sha": "608977f83b69",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "d5991ab8a53006a3c33a5f9f54f06d312f7c38fb4f22a5a275e1363c620a9a40",
+"speed": 1.0,
+"text_sha": "608977f83b69",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-011": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "5f515333beb1a919e28cfb2d3b1f72afeea69434e8f1af05040a255ad45c85ad",
+"speed": 1.0,
+"text_sha": "9990b9f0e929",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "3d660d9b8d4a0787405c3abb53b62f736bf2983a63f9baa81a797c243edd52a4",
+"speed": 1.15,
+"text_sha": "9990b9f0e929",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "2c8206443dfd0d2bbc1d909aa1e31bed77b6643b48c9287199e8dd1c45c881d1",
+"speed": 1.0,
+"text_sha": "9990b9f0e929",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-012": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "cad7fa5f1792214fae3fc4b6ca51a1fad027e02956148f3adb4d369cfcb8110c",
+"speed": 1.0,
+"text_sha": "dc75c0a848f5",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "78aeac51bb5335b381a9743137dea20c3b95364c70edf0349681420f201d964f",
+"speed": 1.15,
+"text_sha": "dc75c0a848f5",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "8ca85849ad7610f132a9ed2bba2b5b232ac369f25eaa5d1088e39ad6a069b222",
+"speed": 1.0,
+"text_sha": "dc75c0a848f5",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-013": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "4a286e7fe70186ec9ebaa2439e66d0f35c64e3ee7f7f29977566add9aea71162",
+"speed": 1.0,
+"text_sha": "d122628cb33f",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "b3b20a30ca86d630b1163eab3db351446866600f64de05ef4a8b151a34e27bb7",
+"speed": 1.15,
+"text_sha": "d122628cb33f",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "271d3786d695eae5c4714be78821faeb06e7762e60bbe7fe24307ba15c0d8f30",
+"speed": 1.0,
+"text_sha": "d122628cb33f",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-014": {
+"v0": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": null,
+"sha256": "856128b9777fa7aa9ebc6ab20d0bd657ad5896818b230dad796cc42824407511",
+"speed": 1.0,
+"text_sha": "236197dd3aee",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 95166,
+"duration_s": 1.983,
+"noise_snr_db": null,
+"sha256": "724d58d7950156ccffded56bc03d3547689651e4e9698cc467b87e37a269c844",
+"speed": 1.15,
+"text_sha": "236197dd3aee",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": 18.0,
+"sha256": "44ff9ddc3116e48b154c04d1204849bb54203cf4a6c5379e592b7f61a813b354",
+"speed": 1.0,
+"text_sha": "236197dd3aee",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-015": {
+"v0": {
+"bytes": 137760,
+"duration_s": 2.87,
+"noise_snr_db": null,
+"sha256": "b7a370af790efd0ec5aab32e7f8ca64d23014b97583aac8be2faa4fbfb5ec842",
+"speed": 1.0,
+"text_sha": "25b9d0bea098",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 121878,
+"duration_s": 2.539,
+"noise_snr_db": null,
+"sha256": "837f61dfaae17b1d26d2ac37972014f2e0d2b1fb7c25bdf705ecb34367886ae2",
+"speed": 1.15,
+"text_sha": "25b9d0bea098",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 137760,
+"duration_s": 2.87,
+"noise_snr_db": 18.0,
+"sha256": "0efb772c5666a866d66bdc7f6205d341a268aba6bc240324f3ffaea49df38f89",
+"speed": 1.0,
+"text_sha": "25b9d0bea098",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-016": {
+"v0": {
+"bytes": 137760,
+"duration_s": 2.87,
+"noise_snr_db": null,
+"sha256": "2f23cd8c47c84fa232e2bd36138d2e464a83db53900dfca794dd83ef8d2af2ba",
+"speed": 1.0,
+"text_sha": "4b494b1f93dc",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 121878,
+"duration_s": 2.539,
+"noise_snr_db": null,
+"sha256": "299717f1309f394443018ccfbb6db29d0d306233b73e0f9b02a225b06e12bde4",
+"speed": 1.15,
+"text_sha": "4b494b1f93dc",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 137760,
+"duration_s": 2.87,
+"noise_snr_db": 18.0,
+"sha256": "f9dd9f65b0a64369b1bc8ce1db1f6c74b60b2916b769f41a6fd4562be95fbe52",
+"speed": 1.0,
+"text_sha": "4b494b1f93dc",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-017": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "6fc7a781bb157ab29f0687ea311dbb9cacb9092f0c6273f021bff38da6b5805d",
+"speed": 1.0,
+"text_sha": "5658819f3300",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "cc386f365f4f24763a56e8504e31fcaef62a7c0884c55107870fead661e67638",
+"speed": 1.15,
+"text_sha": "5658819f3300",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "228eb8b8aa998aa99cc176a1c19d260e88b37689d21cf25ae3274790d267304f",
+"speed": 1.0,
+"text_sha": "5658819f3300",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-018": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "e79c122f700593162b1ca896b50afe507e70d5a7427049484ff6af74aa500f08",
+"speed": 1.0,
+"text_sha": "6cb2b5468fd3",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "a33f692f45b3ca129a9182dd6d572da95f1df0a0792dd418f1cfe664ebd28b51",
+"speed": 1.15,
+"text_sha": "6cb2b5468fd3",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "9f9c4637f7f0ea58d699ccf05d32386089f7c91f52fd2c4487dba95f3d3ca819",
+"speed": 1.0,
+"text_sha": "6cb2b5468fd3",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-019": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "07340e969770ca56b4e855729c256cd31c193c9ff0989659d5c04f443d242540",
+"speed": 1.0,
+"text_sha": "2befdfe13b46",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "52a6c5d4a2e305bfde37b454765e157e4a66fc1b4c4d66673d09979020d00601",
+"speed": 1.15,
+"text_sha": "2befdfe13b46",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "bf68e94714626f270a13b7a49234ad15e1f4074d7554f2a8141b42bc2c73537f",
+"speed": 1.0,
+"text_sha": "2befdfe13b46",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-020": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "d11008cbe94829b083c164ba5fc0f8157d1201559e5a26a3400380c66c98e4cb",
+"speed": 1.0,
+"text_sha": "74a2d4475790",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "f849463f84ab1cb153aecb3dc9e16998b3069fa87df1b204da2e3c009abd1abb",
+"speed": 1.15,
+"text_sha": "74a2d4475790",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "098c73cec1fc08f0843cd713501a39ad80555f861ebfe8d3450d179d27a57047",
+"speed": 1.0,
+"text_sha": "74a2d4475790",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-021": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "ae7eb24ef7cb74e0a0105811e80f89e455858c461237354fc87591c23d5799a6",
+"speed": 1.0,
+"text_sha": "d4f36f196e16",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "663c6ea297dfdec34dac13674ab6d61b2edfc99ace33d51dc88dbb9043aa7dfb",
+"speed": 1.15,
+"text_sha": "d4f36f196e16",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "8071e4d00bba6fce1ad221c409634e95cebaa275ba5925c0d140b76bdcf4eca9",
+"speed": 1.0,
+"text_sha": "d4f36f196e16",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-022": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "abc1648bdd575104128d56e8b932633600de1cd9e6676026a8826cc7753f7c42",
+"speed": 1.0,
+"text_sha": "9355072d5b94",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 81808,
+"duration_s": 1.704,
+"noise_snr_db": null,
+"sha256": "443c5f008810403156a05d4cd3ca05bbb8353560e7ce9687e3b25aa61e33cf76",
+"speed": 1.15,
+"text_sha": "9355072d5b94",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "f36024861109173a21ca574b272862c5e8c9a60719943af23aa6780e0352f147",
+"speed": 1.0,
+"text_sha": "9355072d5b94",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-023": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "33b092e10e4e024dcd80271b202c91fe8df3c1d7d8dabd1d972ba2177d572cca",
+"speed": 1.0,
+"text_sha": "aabd6d67daba",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "6954ed09e9cc8b654b775c2014020cbaed70ac1460ce080b19cd4bd344d32ad7",
+"speed": 1.15,
+"text_sha": "aabd6d67daba",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "bdb02fc0c614078426c3dbde301dcd69d3dbf9d002dfa0a49acebf52c8d65b6b",
+"speed": 1.0,
+"text_sha": "aabd6d67daba",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-024": {
+"v0": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": null,
+"sha256": "f5b8489e83aa80f87c1492ebce724bf7511ae01d608b72453f209595a0948273",
+"speed": 1.0,
+"text_sha": "e51b47455780",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 81808,
+"duration_s": 1.704,
+"noise_snr_db": null,
+"sha256": "992735043fbcbb276577cbcd5e3085946140459016e22f70e4826de48858b8a5",
+"speed": 1.15,
+"text_sha": "e51b47455780",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": 18.0,
+"sha256": "ef26161946694ad8993b0325bece20a7fdcf93856e26120304dcdd19bc4478c9",
+"speed": 1.0,
+"text_sha": "e51b47455780",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-025": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "331701805aa53385495e13dafed1637c53e47befb853e222f3bca973a79f3e6a",
+"speed": 1.0,
+"text_sha": "e9d49b029d64",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 81808,
+"duration_s": 1.704,
+"noise_snr_db": null,
+"sha256": "102645d8419b3fac11ecc0941cf2b1da53aa84175defb56037daed64922005eb",
+"speed": 1.15,
+"text_sha": "e9d49b029d64",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": 18.0,
+"sha256": "a7d9c7eb7ccb39e48209d11f9ee0f9db7cd0cfffa81880130f3110f60428da97",
+"speed": 1.0,
+"text_sha": "e9d49b029d64",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-026": {
+"v0": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": null,
+"sha256": "9b7ed42bccd7bba2b4603d8a97964b0b3a415385d050559b7d8311d3742c2bb0",
+"speed": 1.0,
+"text_sha": "cca486d6b66a",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 81808,
+"duration_s": 1.704,
+"noise_snr_db": null,
+"sha256": "4efdb852dc0fddf01123cc049e34468b28bc083ca484aa8bdc19e7129bebef4a",
+"speed": 1.15,
+"text_sha": "cca486d6b66a",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": 18.0,
+"sha256": "b4a413656b22bd981948abc5b1eb22bd81ea51de4df93bb3d2bf2a154db699e1",
+"speed": 1.0,
+"text_sha": "cca486d6b66a",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mac-027": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "9bfe17eb2d70f245ab0391dc674087dfff5dc6148b50192b0dc41606798aded0",
+"speed": 1.0,
+"text_sha": "da955e6f6b8b",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "7c486d9ba12eaa7aee1a8a5c7eb0741f5b3f1ed0be597e68642778b0b1833f76",
+"speed": 1.15,
+"text_sha": "da955e6f6b8b",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "ec12a194856ed443f797307c2578b019ebdd264a040e3cf79751504d9d9b4608",
+"speed": 1.0,
+"text_sha": "da955e6f6b8b",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-001": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "70b5144ae1de9b37418985ffc0422b4cbd34e74eb9b39b04a5522c9dd522ea7f",
+"speed": 1.0,
+"text_sha": "f6486c41c31c",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "e43c4fd767ac57cb980dc10f772c591039c2743ba2f79a688cc30febb30903f8",
+"speed": 1.15,
+"text_sha": "f6486c41c31c",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "b096d49ef93864604f44f2a2b6f82cb478e2cd823c2011c3a5e28ca75d7da063",
+"speed": 1.0,
+"text_sha": "f6486c41c31c",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-002": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "983bbde1ab044fa1231a94d9b074e5a4b4824948bb26c239694e1d168ef4b7ae",
+"speed": 1.0,
+"text_sha": "376b31a3befd",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "af45000423da1a0f138fddae376fbb635698c140c6c0ab0e10ec03a7fed61fb9",
+"speed": 1.15,
+"text_sha": "376b31a3befd",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "094afd4daa1fa5f1bd58848c16f3d99bffa654a641adb3295b096a59e11c663f",
+"speed": 1.0,
+"text_sha": "376b31a3befd",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-003": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "76d45baea17bd322209e733d8585b1a4a72bde101d906be9e588f8213b7dfb50",
+"speed": 1.0,
+"text_sha": "f106a053a415",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 81808,
+"duration_s": 1.704,
+"noise_snr_db": null,
+"sha256": "23f84fba705300f2ba9731dbbbb72f3a1865500c5c3f75b063d6385d42b084db",
+"speed": 1.15,
+"text_sha": "f106a053a415",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "1d1ded9df178d6d44f451b064292858da4b7e79311a36b3446ebcf1366770525",
+"speed": 1.0,
+"text_sha": "f106a053a415",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-004": {
+"v0": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": null,
+"sha256": "a637239d0bd727abbddd6a7cb2d573b47ec440afb2930bc22cf26bb837ae0bd7",
+"speed": 1.0,
+"text_sha": "60fbd70a178c",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 81808,
+"duration_s": 1.704,
+"noise_snr_db": null,
+"sha256": "8523a23302ad040573cf4a0d66542b45198c67103ffa4068141aa8bdcaaaa0fb",
+"speed": 1.15,
+"text_sha": "60fbd70a178c",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": 18.0,
+"sha256": "0db5be99f2e5d2c5b90c2d9d3dc147dd50d58e2b521ac764b4a6267c269930af",
+"speed": 1.0,
+"text_sha": "60fbd70a178c",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-005": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "7982c7b6b336d4546c1bfe3b7ad741b92255b937416186e726634234c7ae4fd9",
+"speed": 1.0,
+"text_sha": "841c11fcbccd",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "94f7d131f4bd877119eb781aac4924b955ecff24b4ce78842c727a5253f95c50",
+"speed": 1.15,
+"text_sha": "841c11fcbccd",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "2fffdc113fedc7623ce7669e2bd6d3530e0c7eca0ed59174268e74c809dcf50c",
+"speed": 1.0,
+"text_sha": "841c11fcbccd",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-006": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "b0546a3a5c2c954860ecca411c62ff3fff5e82533a06d2cbdd8af0dac3b84755",
+"speed": 1.0,
+"text_sha": "0a68bfa9a189",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "8071e91538b36438472d8f40d71bb35cf9d3ec542a03cab7d4e5e2aff4645ec5",
+"speed": 1.15,
+"text_sha": "0a68bfa9a189",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "71e1076d0ff6c1c0011d5500c4c5cc005a66e581c7e767fa4aeaa1bf4e4f8f8f",
+"speed": 1.0,
+"text_sha": "0a68bfa9a189",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-007": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "2d921cbd304a8cbeb151062bcaaeda97880eb96fcf6f381e5b8ac53afe765e22",
+"speed": 1.0,
+"text_sha": "e3f0b08d01f4",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "d2246624bfaf2fe2ee50f19344ef50f090343891d5608e18c2b4d6f75c7269b0",
+"speed": 1.15,
+"text_sha": "e3f0b08d01f4",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "108d16d142b5f8a75e81b809877347eeb1b458d4621cc957ba73d67a2251f387",
+"speed": 1.0,
+"text_sha": "e3f0b08d01f4",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-008": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "0da35058a050d6749c21f39757ef2819be8bb7c5b71bd160031808768b5226dc",
+"speed": 1.0,
+"text_sha": "d3cf7df9589f",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "6ff0d8654caca804445920b5cbff0f9675d1a8184b8d2847c29970003d6f1d65",
+"speed": 1.15,
+"text_sha": "d3cf7df9589f",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "f52b1681eede924a8a0f25720bfcfd59101cb03c5ade793aeed5f54cc685b962",
+"speed": 1.0,
+"text_sha": "d3cf7df9589f",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-009": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "f1534b1daa0deb9eeac3b02e6476c0ace3733f6190567a50af6319e0ec2e3e0b",
+"speed": 1.0,
+"text_sha": "4666487328cf",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "11e0eb91379f4243080f063833a618a58a48c7907bfaaf21aac0aa3e7e86b143",
+"speed": 1.15,
+"text_sha": "4666487328cf",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "c61f1ebeecd8cb274a6638b9df26c1c402400bdc80059f0a429f0582f25126c8",
+"speed": 1.0,
+"text_sha": "4666487328cf",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-010": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "018d7457331b823fbb4a06d4919097613b94cb4d7314f0a037d241818ca5b15e",
+"speed": 1.0,
+"text_sha": "c215ab03a5ad",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "f15a7f30cf3a91a4b79536baa51712a6f651556524fb982015b437f1a81d64d1",
+"speed": 1.15,
+"text_sha": "c215ab03a5ad",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "31f836b650c6c4acc180c500f19ef1a20b1839ef88ffcd1a69a8c1c9d891ab6d",
+"speed": 1.0,
+"text_sha": "c215ab03a5ad",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-011": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "db036b7ac610c1e3d6a423a4fcbe4e20c69bdae5fcbd7db56b44a2e49bee746e",
+"speed": 1.0,
+"text_sha": "c216b6d87b1b",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "e14fdfa9be0b08aefd97d3064714c33e31853ad0570ae5b3e55430072bd076b0",
+"speed": 1.15,
+"text_sha": "c216b6d87b1b",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "d73300205b3658c949961d34c2e7b52a680ea0a157167964ff4aec7de6fce5ba",
+"speed": 1.0,
+"text_sha": "c216b6d87b1b",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-012": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "9dd9dd3d80c17dd5ba065276619795ec2f94ad2108c59219d9f45c9135e4d151",
+"speed": 1.0,
+"text_sha": "7d8b4e442c5a",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "dfc9d66d6d5a82745f353f53b7656081a8ad39274f6a75c6b0f2fa1e931f2c91",
+"speed": 1.15,
+"text_sha": "7d8b4e442c5a",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "cde65c510b5013232f815612d419b6757fc2821b818b0e6b0ad61df1e3c521b2",
+"speed": 1.0,
+"text_sha": "7d8b4e442c5a",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-013": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "d57d1f3378870a423bc5e7666c4aa7a092ba39a1ab946ae0bf5ec5379c66b20b",
+"speed": 1.0,
+"text_sha": "924488edf3e3",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "08642ec71e4727d265b867662bfbd11854665753c116ac5c141aae61c4d47c8e",
+"speed": 1.15,
+"text_sha": "924488edf3e3",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "93d551bf4614c2c126459b7264e0fcc147519947f8c555c67315d21a561e22d9",
+"speed": 1.0,
+"text_sha": "924488edf3e3",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-014": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "fbac9d9f86929b1c9dcc64540e65069ec272b2ba3b66ae5ee6584d0fc876fc9c",
+"speed": 1.0,
+"text_sha": "9a6bedbada3a",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "37918acf37d6defafe14204fa412a813f715b8861895ab0588545688f21c0142",
+"speed": 1.15,
+"text_sha": "9a6bedbada3a",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "7e85add3e9420e5a0526e38fd93513146ca6295eb662b1cf3c38020321217712",
+"speed": 1.0,
+"text_sha": "9a6bedbada3a",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-015": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "6e8d085f903a4c299c809017f13ab6989d4d2ab92af62869b0e56f0540767282",
+"speed": 1.0,
+"text_sha": "39d72dd270d5",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "69f6b618f1191691850ed4c4cdb42ebe38c4485fb88b1d95a045bcb74df3d004",
+"speed": 1.15,
+"text_sha": "39d72dd270d5",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "88056719ee0cd6349654b6edee85933eb2155e8f4f849ec6d97097c3e9db9029",
+"speed": 1.0,
+"text_sha": "39d72dd270d5",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-016": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "8655367a9b01e5eaf2f362248c3e2ab01a7bca14ec8ba50a99bcfd600f0cf472",
+"speed": 1.0,
+"text_sha": "b2325e243c04",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "56290c9dd8f21aa278acea33fc357707408b68ba824d5a5dfc77539c7619a201",
+"speed": 1.15,
+"text_sha": "b2325e243c04",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "c9c4112ab6315f0c8027baafbc244dc0e2fa57835717789f970802f97f97f3b2",
+"speed": 1.0,
+"text_sha": "b2325e243c04",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-017": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "1eca93937b2a2066031b75bccc63d15ef83e9829959d67d969eea4f33782e3fb",
+"speed": 1.0,
+"text_sha": "3e4a6217aad9",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "08ed120a6c7e2554cd09be885631ba20cb2885e83a3bba455e021582544c6081",
+"speed": 1.15,
+"text_sha": "3e4a6217aad9",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "ac8e6b6f1b8da756a4fa92c5c721dd7e99db175b4b80a8fdb26f0dfad0c4ff77",
+"speed": 1.0,
+"text_sha": "3e4a6217aad9",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-018": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "91fd83f559323504e24739517243fa56df90add05ede3414394496b25204b032",
+"speed": 1.0,
+"text_sha": "2ffa543f837a",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "e237fe8050cb6573268dcdcf395c496993e95587dab59836d1575f1768455315",
+"speed": 1.15,
+"text_sha": "2ffa543f837a",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "608f9d5e59a29222274d12e30a644de55eb808fab60a1614b9a467b78459cf34",
+"speed": 1.0,
+"text_sha": "2ffa543f837a",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-019": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "95d865178394b6fdb71747c6129efefcaca418d9190e209ccb12c39625438f8b",
+"speed": 1.0,
+"text_sha": "3aa883ccfa90",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "862dd412be8a9fab9dcd936167efb4cea86b98c6a83c250ad93c184482998637",
+"speed": 1.15,
+"text_sha": "3aa883ccfa90",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "cbb420fb738841172e029467c63b60b265e3a3a8fed3f1f6fa99821fe1c6cc65",
+"speed": 1.0,
+"text_sha": "3aa883ccfa90",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-020": {
+"v0": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": null,
+"sha256": "f57e607336d48a2f16348caa231e6cac86048160bc19d0d104baa8f04dc43c1e",
+"speed": 1.0,
+"text_sha": "118e6c17e586",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 95166,
+"duration_s": 1.983,
+"noise_snr_db": null,
+"sha256": "0f401c8aa40f2cbc33f1bc4cc4b35ba5daebbd097c4318b45e42584df293e0d6",
+"speed": 1.15,
+"text_sha": "118e6c17e586",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": 18.0,
+"sha256": "600c946c9177b192fdd3204e37e1093f2431daa0fce5ff95d01c23d6700ec0e9",
+"speed": 1.0,
+"text_sha": "118e6c17e586",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-021": {
+"v0": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": null,
+"sha256": "12cebe4b6e27b6a43b8307a98db016023a9d1a1aeb971501b87c87e8ac9569f0",
+"speed": 1.0,
+"text_sha": "05ef750f2acb",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 95166,
+"duration_s": 1.983,
+"noise_snr_db": null,
+"sha256": "6f7ffef7cb295844647a272bf1038f0851080753908a493619bdc3f41dde6c84",
+"speed": 1.15,
+"text_sha": "05ef750f2acb",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": 18.0,
+"sha256": "3c5c24f8629d33f73f147f4bc3ed6e4e27e4bb1f235305402aaa331d866793ce",
+"speed": 1.0,
+"text_sha": "05ef750f2acb",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-022": {
+"v0": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": null,
+"sha256": "47718b60cc5172522294f393936c300b6cf85704180739079a3308c9af8a80a5",
+"speed": 1.0,
+"text_sha": "c5a717156c99",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 95166,
+"duration_s": 1.983,
+"noise_snr_db": null,
+"sha256": "02d079c0d1fb155355996d1312c127e1a75eebf374ae2022bfc35f4a9a8ec9a4",
+"speed": 1.15,
+"text_sha": "c5a717156c99",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": 18.0,
+"sha256": "dc9efc2d1eecfd33caeb1fddcce23e455811863a248b5e48213e878bc2251259",
+"speed": 1.0,
+"text_sha": "c5a717156c99",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-023": {
+"v0": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": null,
+"sha256": "bd150c460be06b651f62be4ad90d21bb3cdc4605be15cea67524af0648c4ff66",
+"speed": 1.0,
+"text_sha": "462289667eff",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 95166,
+"duration_s": 1.983,
+"noise_snr_db": null,
+"sha256": "874f25700a6b70aabfae166945ef6ae5738cd176444c5f594dbcc52f043201bc",
+"speed": 1.15,
+"text_sha": "462289667eff",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": 18.0,
+"sha256": "908bd9b5016ee1c0d5dc0addfd7cf7316249de5b0c17a784fd0663936b977d09",
+"speed": 1.0,
+"text_sha": "462289667eff",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-024": {
+"v0": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": null,
+"sha256": "982b8b28e9af821041b49ffe52a2a6a3d4ea88787c04b0fe14436c8e0c6d3b8a",
+"speed": 1.0,
+"text_sha": "393b966e5104",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 95166,
+"duration_s": 1.983,
+"noise_snr_db": null,
+"sha256": "05aad947906edfeb6bc9963d9e08c8bca7753b5c1fb4c24eca3ccd834de4c16e",
+"speed": 1.15,
+"text_sha": "393b966e5104",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": 18.0,
+"sha256": "d75225f4e96389f71023598310e024377ddd54f6760b310679d7a61f721a3cbc",
+"speed": 1.0,
+"text_sha": "393b966e5104",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-025": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "b8551090c4d45f08e58a0329335b611f148e0170bc3aeb8455a78797c771904d",
+"speed": 1.0,
+"text_sha": "fdc1fc044c7c",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "54db0c5ec1e4a7e2f1a54ffebf6e0d19dcbb5ff2e08b8d58aa272b2c98a2c676",
+"speed": 1.15,
+"text_sha": "fdc1fc044c7c",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "ce65913e77b3c29353bab95a4c5d0dc3c9e2d4526a330262a354373dc0ee9191",
+"speed": 1.0,
+"text_sha": "fdc1fc044c7c",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-026": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "c8825e974a85c3375743bdcbd233d722bc16705262237031362500f2345dfec2",
+"speed": 1.0,
+"text_sha": "6d6835676ad4",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "fc965d1c7632fd0b1ebdfe3686187784bf68c02aa3accc0b9ea7a0bd8cacca1f",
+"speed": 1.15,
+"text_sha": "6d6835676ad4",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": 18.0,
+"sha256": "b80ca2408207ce3509e96d71ebc36e0981c5ab53898f0831279912f7675bbad9",
+"speed": 1.0,
+"text_sha": "6d6835676ad4",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-027": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "919ee1746bec586846009b1dc2d5d3ffdc9f661c33ef094c036afe402700da9b",
+"speed": 1.0,
+"text_sha": "68dd0033a5c7",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "6d63f6165cba012cef4a77a8bb8a7fb780692964859c04ca933a867a7015badf",
+"speed": 1.15,
+"text_sha": "68dd0033a5c7",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "166ae0163dcc00d87cf28f8fec3379f75369482ad20ef027bfec3d0479dacdbd",
+"speed": 1.0,
+"text_sha": "68dd0033a5c7",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-028": {
+"v0": {
+"bytes": 45600,
+"duration_s": 0.95,
+"noise_snr_db": null,
+"sha256": "d9372b9df10727cfd1435547eaf7872adbbb073c8db398603beb28c8089cf96e",
+"speed": 1.0,
+"text_sha": "2c7599188f31",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "f4457055c26d1cf501466fc8660ece9727d7a7ab323569a778fd431ee7cb0b39",
+"speed": 1.15,
+"text_sha": "2c7599188f31",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "ccee9439f7201630f043e0ef2c372bb806459b6f94a2fa135ee4e54f08946c06",
+"speed": 1.0,
+"text_sha": "2c7599188f31",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-029": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "7fac458c4972304b94edff7ef5c4df9f9c799da65ee19a1ea763c1ded4ee9983",
+"speed": 1.0,
+"text_sha": "b67fcb290517",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "7e1c86d09957062c3174768fe81161e6539f0d2c01cd9920c7e213c7782b0b52",
+"speed": 1.15,
+"text_sha": "b67fcb290517",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "d84b728aa60e9a163d41e3e95f3f3a37dcbc3441b74f6f0c890367c15e2900aa",
+"speed": 1.0,
+"text_sha": "b67fcb290517",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-030": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "68653dd93ba86ad76c06760b2e00d726ee86d4098ba4f83bf0dd8c3ba28b4c13",
+"speed": 1.0,
+"text_sha": "8c6b8a264e62",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "7f1b19ba21ded1c7e6dc22120eb79b845b03230facfb3612f91fbbea089d01b2",
+"speed": 1.15,
+"text_sha": "8c6b8a264e62",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "8c3f270d16af84a9d1572f683caa5935e6bc444de03ac102f0f5634e92a94a28",
+"speed": 1.0,
+"text_sha": "8c6b8a264e62",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-031": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "b3100c19433fcf64a160d6e8a97602386fd430be37a95cc26d24c4f3eaf07bcc",
+"speed": 1.0,
+"text_sha": "5508fedfadb0",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "96df935b4a8a7d9eb866dfa95a111c09bb108401cf7f356a7d3eb9ec09dc149f",
+"speed": 1.15,
+"text_sha": "5508fedfadb0",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "dd5ea12e68864d595d220ee1e73d122042b23e9b0112d6a8b9a13c67aadf1c82",
+"speed": 1.0,
+"text_sha": "5508fedfadb0",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-032": {
+"v0": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": null,
+"sha256": "5d06eb4b5c68e7a185eeeb893e841880d5707460858a69de59af521d817b023e",
+"speed": 1.0,
+"text_sha": "2cdc777d859f",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 81808,
+"duration_s": 1.704,
+"noise_snr_db": null,
+"sha256": "5a38672ab3676969f7c2f5e29d4dcc2723f0d79abd8bfe541a1fa89985188db7",
+"speed": 1.15,
+"text_sha": "2cdc777d859f",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": 18.0,
+"sha256": "6aad0b404bbc9c1a054fbfc66ee1a234afd175ee892c6fd0f6872d262be5d55b",
+"speed": 1.0,
+"text_sha": "2cdc777d859f",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"mic-033": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "69808a58636d4e9ccdbdf519c6ba6aa35cbbd6560d5c6033ff6625c8c469e2ed",
+"speed": 1.0,
+"text_sha": "b16f3d20751e",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "f814211a441d9d87e9b3514418e407c0da8838649b66fdd70ffad363827fb335",
+"speed": 1.15,
+"text_sha": "b16f3d20751e",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "9cd88507794f2f621f61c8276c39ec6ffb3061809aead835beef5111bdcb1350",
+"speed": 1.0,
+"text_sha": "b16f3d20751e",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-001": {
+"v0": {
+"bytes": 168480,
+"duration_s": 3.51,
+"noise_snr_db": null,
+"sha256": "b37a95a939b5b88ef19d7c42ad31057011bf00de37d394639cb363785e3588fd",
+"speed": 1.0,
+"text_sha": "6913eb59d113",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 135234,
+"duration_s": 2.817,
+"noise_snr_db": null,
+"sha256": "7cc2848f43cdbc8eb3502140d4050cc31e475d56e027ece42f906f536a4c024f",
+"speed": 1.15,
+"text_sha": "6913eb59d113",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 168480,
+"duration_s": 3.51,
+"noise_snr_db": 18.0,
+"sha256": "68570dcc6eea5cb70a3ec7d52a28142acbc3822d6ef12663c3e1e32b1eb10ffe",
+"speed": 1.0,
+"text_sha": "6913eb59d113",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-002": {
+"v0": {
+"bytes": 199200,
+"duration_s": 4.15,
+"noise_snr_db": null,
+"sha256": "fb55024d94a0003b78bb188caf51f2be14c0ff6b6bb0389c2991c53f2f98f841",
+"speed": 1.0,
+"text_sha": "59c3d1fa3b52",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 175304,
+"duration_s": 3.652,
+"noise_snr_db": null,
+"sha256": "ffc189180703cb12f7f9db9e908fb2d8d3c4489ddd62d7cb263e4bbc12e205e7",
+"speed": 1.15,
+"text_sha": "59c3d1fa3b52",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 199200,
+"duration_s": 4.15,
+"noise_snr_db": 18.0,
+"sha256": "eb7f2da576d8dcf939d00fe46d165107d6cae75e85cbaee88281cf97002fc170",
+"speed": 1.0,
+"text_sha": "59c3d1fa3b52",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-003": {
+"v0": {
+"bytes": 137760,
+"duration_s": 2.87,
+"noise_snr_db": null,
+"sha256": "a053f538f79da0503fd3280c6ec030827a3e94ed661bf60981bc23c5c3445f94",
+"speed": 1.0,
+"text_sha": "c05e871c4415",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 108522,
+"duration_s": 2.261,
+"noise_snr_db": null,
+"sha256": "94f51e99f6c6fba4562a7581de908b6fa02be24e244a8b332e4fc4ad3b2a53c0",
+"speed": 1.15,
+"text_sha": "c05e871c4415",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 137760,
+"duration_s": 2.87,
+"noise_snr_db": 18.0,
+"sha256": "7f3091457619ad533153f2fb7f4b70a6a77a77ebddac4d830e48c0fd6d2e5581",
+"speed": 1.0,
+"text_sha": "c05e871c4415",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-004": {
+"v0": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": null,
+"sha256": "2af01896dd0e6b3477f5d7436eed70c5002e03bb362f5851bec30125cb4807b6",
+"speed": 1.0,
+"text_sha": "e7c987214297",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 95166,
+"duration_s": 1.983,
+"noise_snr_db": null,
+"sha256": "f088482ca656c260810c5757df4cd0da183938ccc7e68a37727b3c186a173e79",
+"speed": 1.15,
+"text_sha": "e7c987214297",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": 18.0,
+"sha256": "4d09d8dff3c1760948809c63b1012d95eaac0d02b5d25c63259e9476b7a3710e",
+"speed": 1.0,
+"text_sha": "e7c987214297",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-005": {
+"v0": {
+"bytes": 122400,
+"duration_s": 2.55,
+"noise_snr_db": null,
+"sha256": "b5e7314794ddf43deb1e37690b2e051b51714098dab9aad83372801cea5579dc",
+"speed": 1.0,
+"text_sha": "6729958e3531",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 108522,
+"duration_s": 2.261,
+"noise_snr_db": null,
+"sha256": "c665f55d1f5966b607c53506054c522fc4707a4df985fcaf13ec9843e4c5d6c1",
+"speed": 1.15,
+"text_sha": "6729958e3531",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 122400,
+"duration_s": 2.55,
+"noise_snr_db": 18.0,
+"sha256": "05e384608177320edd1ce4daa6bc1ddcb8544ddc95c0794dccd584e521607087",
+"speed": 1.0,
+"text_sha": "6729958e3531",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-006": {
+"v0": {
+"bytes": 137760,
+"duration_s": 2.87,
+"noise_snr_db": null,
+"sha256": "841b26b0a580dfcec5797e6d8cdc7ad13c9db2ec9927e37bf76ee02de3028387",
+"speed": 1.0,
+"text_sha": "aa9de36798f6",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 121878,
+"duration_s": 2.539,
+"noise_snr_db": null,
+"sha256": "241872863d97d602d0c2bbb7a64eb8317cd06d4e8c7ef02dfd6874a433d4c55b",
+"speed": 1.15,
+"text_sha": "aa9de36798f6",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 137760,
+"duration_s": 2.87,
+"noise_snr_db": 18.0,
+"sha256": "1fd91d90dd6cf9c7056d915a1c83e34c09ac31befcc101d7cbdc5be71a426115",
+"speed": 1.0,
+"text_sha": "aa9de36798f6",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-007": {
+"v0": {
+"bytes": 137760,
+"duration_s": 2.87,
+"noise_snr_db": null,
+"sha256": "9357409d313cb8b94e863f1a2df0f31d6553eddb12835cd75318a5703562ec09",
+"speed": 1.0,
+"text_sha": "a767bafd6c68",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 121878,
+"duration_s": 2.539,
+"noise_snr_db": null,
+"sha256": "0bab1c8534f69f7c9e303c66e1f9689f04de78d0c58f4c791183268a63072192",
+"speed": 1.15,
+"text_sha": "a767bafd6c68",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 137760,
+"duration_s": 2.87,
+"noise_snr_db": 18.0,
+"sha256": "a7d301339b55d6176ab22860a1d9273b9d26abc9d0b8bd5e30f957cdb7d86c0f",
+"speed": 1.0,
+"text_sha": "a767bafd6c68",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-008": {
+"v0": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": null,
+"sha256": "8be67b151bbd7d5cfb4fd667647fe20bcdbcfad625ac597c814dbfd550e127ef",
+"speed": 1.0,
+"text_sha": "1d05df65ed39",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 81808,
+"duration_s": 1.704,
+"noise_snr_db": null,
+"sha256": "6c8bb56fe21a8cd9217c562b9493f1ad0a09cba05aaed70203dfe4d63091b823",
+"speed": 1.15,
+"text_sha": "1d05df65ed39",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": 18.0,
+"sha256": "870190a0afa79dcaa925e039f0ecae1782b3b901623d1480426a20a10e40c9cf",
+"speed": 1.0,
+"text_sha": "1d05df65ed39",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-009": {
+"v0": {
+"bytes": 153120,
+"duration_s": 3.19,
+"noise_snr_db": null,
+"sha256": "db8e4c68311937411e63dd1ef1f08dda573b511a8373a8a5a13d8d2d9997b9c5",
+"speed": 1.0,
+"text_sha": "dd102a4a1bdd",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 135234,
+"duration_s": 2.817,
+"noise_snr_db": null,
+"sha256": "0dd09749b7bf205d0eb9a4fb223fb7dd154773735609d797ae0a0b40dc814aad",
+"speed": 1.15,
+"text_sha": "dd102a4a1bdd",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 153120,
+"duration_s": 3.19,
+"noise_snr_db": 18.0,
+"sha256": "9232a7cb96faa974a5d137ea6553662e6b39e8be7b1c8e3e8d54e0e9ce82af5f",
+"speed": 1.0,
+"text_sha": "dd102a4a1bdd",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-010": {
+"v0": {
+"bytes": 122400,
+"duration_s": 2.55,
+"noise_snr_db": null,
+"sha256": "a14a55958336bb128fd38d5d6ead3f954389e12fe5bdb8a70cf331fa542be55f",
+"speed": 1.0,
+"text_sha": "7af34f76c34b",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 108522,
+"duration_s": 2.261,
+"noise_snr_db": null,
+"sha256": "47c7189d28c8d60f0d5dda74e1dabc106b3c439907be2bd85e270d27c7b574d3",
+"speed": 1.15,
+"text_sha": "7af34f76c34b",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 122400,
+"duration_s": 2.55,
+"noise_snr_db": 18.0,
+"sha256": "3100850e4e07f40a80d0044e6d34d8dde40f49a388a3c5e30d59337a4931ff71",
+"speed": 1.0,
+"text_sha": "7af34f76c34b",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-011": {
+"v0": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": null,
+"sha256": "0f4c00d00eb64e9b29c8bd322fcd14057de7ed4e2fb128ac322e79337d2ca574",
+"speed": 1.0,
+"text_sha": "6d8648c2566d",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 95166,
+"duration_s": 1.983,
+"noise_snr_db": null,
+"sha256": "0eff5f6f6e1bd94d2ab7356b3e2b9f81556134331dcce792ee8cf9e8b079c08d",
+"speed": 1.15,
+"text_sha": "6d8648c2566d",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": 18.0,
+"sha256": "19293b9e9f54c7f98258026e4d730cab72423449f32eeab8b6003f2e18e140c2",
+"speed": 1.0,
+"text_sha": "6d8648c2566d",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-012": {
+"v0": {
+"bytes": 122400,
+"duration_s": 2.55,
+"noise_snr_db": null,
+"sha256": "c242a6ffc583b4b215e93ff2c5c6c4e5d151ffc8f1864c0296a62085c3086a33",
+"speed": 1.0,
+"text_sha": "57acc9bbaba9",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 108522,
+"duration_s": 2.261,
+"noise_snr_db": null,
+"sha256": "364688d57c30a1069e1f96352c7e8f4317d7aa581824f48b9f74b01f1d792c66",
+"speed": 1.15,
+"text_sha": "57acc9bbaba9",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": 18.0,
+"sha256": "6eb62e26ba69a1ab2bbba6bcd743f7c65333d87dc019a1aae688d64d1459a46e",
+"speed": 1.0,
+"text_sha": "57acc9bbaba9",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-013": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "69b18f267fb3ce9d0d729ec6c2b27eabdee299121b39a6dd067ace1d2f9af390",
+"speed": 1.0,
+"text_sha": "1288cf52f85a",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "29df509638aeccde4c0dcfa1b254c2c37d9396cc8b185690039fe45b4434965b",
+"speed": 1.15,
+"text_sha": "1288cf52f85a",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "0478dd24d0af79f19284ae7b080b83912f13151eb9794d2acb70153a733dd205",
+"speed": 1.0,
+"text_sha": "1288cf52f85a",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-014": {
+"v0": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": null,
+"sha256": "2b5434f739d87b847ab0f8d731a9c60e79523a06c7e2e52918272723989bc29e",
+"speed": 1.0,
+"text_sha": "55acaaac0b83",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 95166,
+"duration_s": 1.983,
+"noise_snr_db": null,
+"sha256": "c0c2f8e4794b80ac78941b38682e39258eb5ba3facb201968d021b081664435a",
+"speed": 1.15,
+"text_sha": "55acaaac0b83",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": 18.0,
+"sha256": "66a7bb3f1e658fe2a86d5b01462eecc9259af845fefb116aa50de1830516a241",
+"speed": 1.0,
+"text_sha": "55acaaac0b83",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-015": {
+"v0": {
+"bytes": 229920,
+"duration_s": 4.79,
+"noise_snr_db": null,
+"sha256": "53612899bc944a241864f9470ca04fc247fda0a4f30b5b9868bebf7c02fa1dae",
+"speed": 1.0,
+"text_sha": "b41207176f2b",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 202018,
+"duration_s": 4.209,
+"noise_snr_db": null,
+"sha256": "f9a32d7d8dab8a07fc73332a96de5f2a5f02b1527a14696750406a3c96d20ef1",
+"speed": 1.15,
+"text_sha": "b41207176f2b",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 214560,
+"duration_s": 4.47,
+"noise_snr_db": 18.0,
+"sha256": "6fe0944448596b2ca21944603197ecd088de37136c82b0ec9d2b2dcf061544fd",
+"speed": 1.0,
+"text_sha": "b41207176f2b",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-016": {
+"v0": {
+"bytes": 276000,
+"duration_s": 5.75,
+"noise_snr_db": null,
+"sha256": "d65dfa59afcdaf015017396b45c6e536d898fac0e889326811f269b1e897237c",
+"speed": 1.0,
+"text_sha": "a94b6edea962",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 255444,
+"duration_s": 5.322,
+"noise_snr_db": null,
+"sha256": "4f3fcada48930d58aad65b360ab2031587a8b0c3b6565fbf6115bc31eb9eadcc",
+"speed": 1.15,
+"text_sha": "a94b6edea962",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 276000,
+"duration_s": 5.75,
+"noise_snr_db": 18.0,
+"sha256": "deb68ebc0a7b060bda239739512c730b5c8528929a05a4f6dc2e45b0e95ce2ec",
+"speed": 1.0,
+"text_sha": "a94b6edea962",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-017": {
+"v0": {
+"bytes": 260640,
+"duration_s": 5.43,
+"noise_snr_db": null,
+"sha256": "b11f398204984e14c47271e881e6da2606b9350326053b803f3231a56e48af31",
+"speed": 1.0,
+"text_sha": "9a61a874d0a3",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 228730,
+"duration_s": 4.765,
+"noise_snr_db": null,
+"sha256": "c9be9bace42fe442c6cdd3ad265c284f97baeb811c556ea14fb44d1f01839780",
+"speed": 1.15,
+"text_sha": "9a61a874d0a3",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 276000,
+"duration_s": 5.75,
+"noise_snr_db": 18.0,
+"sha256": "8ded449586cfc34239784d68897037ca6bd5de22b48a3137a980e81b46518668",
+"speed": 1.0,
+"text_sha": "9a61a874d0a3",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-018": {
+"v0": {
+"bytes": 260640,
+"duration_s": 5.43,
+"noise_snr_db": null,
+"sha256": "1ea398c0ec8ef710974df13653be8d6bb545c1cd0e4a7dcead8a32680570484f",
+"speed": 1.0,
+"text_sha": "427d5dafabd0",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 215374,
+"duration_s": 4.487,
+"noise_snr_db": null,
+"sha256": "f07442935e5be31a108c03efa77b8df0dbd72e670c0430490b39b42e49d9dd97",
+"speed": 1.15,
+"text_sha": "427d5dafabd0",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 260640,
+"duration_s": 5.43,
+"noise_snr_db": 18.0,
+"sha256": "c5b3ee5fb4857e4ab6260e40b777fa696931a4e479ca68c0724f3b9d89458ece",
+"speed": 1.0,
+"text_sha": "427d5dafabd0",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-019": {
+"v0": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": null,
+"sha256": "25439ea12791cb4759dc8a7d8f1fb935ded13078d44293aa3f74ec6fb3c77596",
+"speed": 1.0,
+"text_sha": "905c74215ec6",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 81808,
+"duration_s": 1.704,
+"noise_snr_db": null,
+"sha256": "68b740f9965f265a84dd7f7ace61f92e9b3a768ae68ba907048d750676da3e7b",
+"speed": 1.15,
+"text_sha": "905c74215ec6",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": 18.0,
+"sha256": "a284e183642b9416cf46bee0f4b9ee6d9020abf647cbbd1525a509d7e0fd4f4e",
+"speed": 1.0,
+"text_sha": "905c74215ec6",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-020": {
+"v0": {
+"bytes": 45600,
+"duration_s": 0.95,
+"noise_snr_db": null,
+"sha256": "20280387b534284562ecc40453abec5d9d4714ae8ee2f5a10a9f3302a2df2aad",
+"speed": 1.0,
+"text_sha": "9797b11e3fcd",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 41740,
+"duration_s": 0.87,
+"noise_snr_db": null,
+"sha256": "3311c4ce788223d1303a9e76c23294b196bebb1ed6ce8dd37091553fa964bb7a",
+"speed": 1.15,
+"text_sha": "9797b11e3fcd",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 45600,
+"duration_s": 0.95,
+"noise_snr_db": 18.0,
+"sha256": "4bee5bee06f24252504d34c2b3d9663009863c536ceb8fc551b2362924cd48fb",
+"speed": 1.0,
+"text_sha": "9797b11e3fcd",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-021": {
+"v0": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": null,
+"sha256": "4189950137902d83639a426ef051cded2e235162951ca0464dd0f487bc7573a2",
+"speed": 1.0,
+"text_sha": "a043fc79066b",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 95166,
+"duration_s": 1.983,
+"noise_snr_db": null,
+"sha256": "32e2df502f78426a61af3058fea449a1f46c09b9632945c042dfcb1d8b8084e3",
+"speed": 1.15,
+"text_sha": "a043fc79066b",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": 18.0,
+"sha256": "38fa1a59665f5263faad562eeb291b4cfb387c74a726053602a66ae0f21bbedc",
+"speed": 1.0,
+"text_sha": "a043fc79066b",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-022": {
+"v0": {
+"bytes": 122400,
+"duration_s": 2.55,
+"noise_snr_db": null,
+"sha256": "b122d24b1c9ed526408e8f65d291948a23aa4cfb0d9b67d3c1c750155ee5f7cb",
+"speed": 1.0,
+"text_sha": "90651b3b86a0",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 95166,
+"duration_s": 1.983,
+"noise_snr_db": null,
+"sha256": "b9ea567d61a99b10d25d667b2755c02081b56cd655d731d9af5d6094580a5f6e",
+"speed": 1.15,
+"text_sha": "90651b3b86a0",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 122400,
+"duration_s": 2.55,
+"noise_snr_db": 18.0,
+"sha256": "ae4c64ad5c67f2e1d21efce912a9c9b702d077e981e830241977d4cfaf36b45c",
+"speed": 1.0,
+"text_sha": "90651b3b86a0",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-023": {
+"v0": {
+"bytes": 122400,
+"duration_s": 2.55,
+"noise_snr_db": null,
+"sha256": "ae384fa138ae414efc570487f84d655d4afc96901d1f472b5ae5d033513f0d13",
+"speed": 1.0,
+"text_sha": "6acbd788d096",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 108522,
+"duration_s": 2.261,
+"noise_snr_db": null,
+"sha256": "f628cfb98be61dd11e5358b863b24c84c67d956004f4181618243de97104a313",
+"speed": 1.15,
+"text_sha": "6acbd788d096",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 122400,
+"duration_s": 2.55,
+"noise_snr_db": 18.0,
+"sha256": "8116183a5b9c212b1e1e5f60b96c84fbde4ad63e99ff68a25a5ebe8f0907fe41",
+"speed": 1.0,
+"text_sha": "6acbd788d096",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-024": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "a54b218cc17958a782e98b543f59cc9c9f73095b1632bde7d8a344483dc99c49",
+"speed": 1.0,
+"text_sha": "eb5ee14c9f0d",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "917fb23fb9cb7af1ab2000c4a66b145fe7a032c74e1a1b5704768d92db300824",
+"speed": 1.15,
+"text_sha": "eb5ee14c9f0d",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "a640a5e601dcb6bc110540bc4d528e4eb66a8869b0f7a03aa44ab38daf346479",
+"speed": 1.0,
+"text_sha": "eb5ee14c9f0d",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-025": {
+"v0": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": null,
+"sha256": "5ecef6b45678c04280448c0322a92458e5a70592e4eaa52bbc26330327390808",
+"speed": 1.0,
+"text_sha": "8cd12292d453",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 95166,
+"duration_s": 1.983,
+"noise_snr_db": null,
+"sha256": "807f2dac96f07c2e6d9ddab1d98171f90deb0c975a986f08bd8881676252b69c",
+"speed": 1.15,
+"text_sha": "8cd12292d453",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": 18.0,
+"sha256": "18c60c716c2011b022324a8aaf2b7ff8ee4311c13e5519cb7ee175718f8e344d",
+"speed": 1.0,
+"text_sha": "8cd12292d453",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-026": {
+"v0": {
+"bytes": 122400,
+"duration_s": 2.55,
+"noise_snr_db": null,
+"sha256": "f342b67cdc40f6d4575cc4d596f3fdbcdc4fa2da757ae9e5d7bea4f89e8f3f64",
+"speed": 1.0,
+"text_sha": "f98d85d8c6a4",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 108522,
+"duration_s": 2.261,
+"noise_snr_db": null,
+"sha256": "925970d3d7ec4b9c42c124922298dc7cf9969a308ec4d2ab3aa3cebcbebffa65",
+"speed": 1.15,
+"text_sha": "f98d85d8c6a4",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 122400,
+"duration_s": 2.55,
+"noise_snr_db": 18.0,
+"sha256": "c7303e5ae0cdb791ef688e03b8c302edd83709a819dee481f00e0c85d2503f84",
+"speed": 1.0,
+"text_sha": "f98d85d8c6a4",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-027": {
+"v0": {
+"bytes": 122400,
+"duration_s": 2.55,
+"noise_snr_db": null,
+"sha256": "f0c9ee0774b4fec025ae5c0e88ad875dd491f2c5d90f238e0452908e4a1b4068",
+"speed": 1.0,
+"text_sha": "c1632b03c358",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 108522,
+"duration_s": 2.261,
+"noise_snr_db": null,
+"sha256": "d3560bd0015d7526d07b3481970fbc141248ac1d158c01d4c5efe246982b2f75",
+"speed": 1.15,
+"text_sha": "c1632b03c358",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 122400,
+"duration_s": 2.55,
+"noise_snr_db": 18.0,
+"sha256": "ebc28ed284c18d499828c4ceaeeee37bd2e8479066a11f6506e2b6ecfbac9a70",
+"speed": 1.0,
+"text_sha": "c1632b03c358",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-028": {
+"v0": {
+"bytes": 183840,
+"duration_s": 3.83,
+"noise_snr_db": null,
+"sha256": "e857e4effa394c313ed834af404329fcef0a04825336631566101167bb571a65",
+"speed": 1.0,
+"text_sha": "e5b1464f37c0",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 161948,
+"duration_s": 3.374,
+"noise_snr_db": null,
+"sha256": "dfb508767360e5b58ab1f4dbf911532fe3348bf98939a720b05d78d74b77193e",
+"speed": 1.15,
+"text_sha": "e5b1464f37c0",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 183840,
+"duration_s": 3.83,
+"noise_snr_db": 18.0,
+"sha256": "c190ea5b3ab70313c3ce6391539c5fabccf278da42e2766f1a33eaa02ae109b5",
+"speed": 1.0,
+"text_sha": "e5b1464f37c0",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-029": {
+"v0": {
+"bytes": 153120,
+"duration_s": 3.19,
+"noise_snr_db": null,
+"sha256": "7bf1c35d740618dc9ae413c8113abd3b396f85e372ce59a760ce0d9d2a715a8b",
+"speed": 1.0,
+"text_sha": "872833c4d2a5",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 135234,
+"duration_s": 2.817,
+"noise_snr_db": null,
+"sha256": "c548d91273a7bc3f6eb19a0d01291d8ef187e919d5b743fa233b1d902ea68e17",
+"speed": 1.15,
+"text_sha": "872833c4d2a5",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 153120,
+"duration_s": 3.19,
+"noise_snr_db": 18.0,
+"sha256": "c48626b47b4d65e9fdd339183fbeade69cf0b03425b9bbe1a46a13fc657fa998",
+"speed": 1.0,
+"text_sha": "872833c4d2a5",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-030": {
+"v0": {
+"bytes": 137760,
+"duration_s": 2.87,
+"noise_snr_db": null,
+"sha256": "8c304a4e0d7ca9663d230781f195b48a7f433090be338d90ef7b3b4d7d700df5",
+"speed": 1.0,
+"text_sha": "a802bd04fe8c",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 108522,
+"duration_s": 2.261,
+"noise_snr_db": null,
+"sha256": "d093a44398cfbd1d4e32b5b720df57e66675834257bdf4159c14e81ec4f71f00",
+"speed": 1.15,
+"text_sha": "a802bd04fe8c",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 122400,
+"duration_s": 2.55,
+"noise_snr_db": 18.0,
+"sha256": "b19287001379dc9d034d3d5845f88aee07d0f6d22d902b361b20bc302cf0c7b9",
+"speed": 1.0,
+"text_sha": "a802bd04fe8c",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-031": {
+"v0": {
+"bytes": 153120,
+"duration_s": 3.19,
+"noise_snr_db": null,
+"sha256": "41bac4f50b71b1f336c3728843d5d7b1438701a8b13a110be88359e4ba179e9a",
+"speed": 1.0,
+"text_sha": "31eb53331abd",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 148592,
+"duration_s": 3.096,
+"noise_snr_db": null,
+"sha256": "6fd0dccd58f1b6455eee7b6b3330bbda4dfc4d21c2771db84eb69627586e5b4c",
+"speed": 1.15,
+"text_sha": "31eb53331abd",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 153120,
+"duration_s": 3.19,
+"noise_snr_db": 18.0,
+"sha256": "2c40166de349f6d9d5e23cea32481c86aa77395b21b079d1aed9daa86bed78a0",
+"speed": 1.0,
+"text_sha": "31eb53331abd",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-032": {
+"v0": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": null,
+"sha256": "0c4e21bd874364b5f6896cc8498f5e570ee6cc49dfe4e5cd9237648483b7d433",
+"speed": 1.0,
+"text_sha": "3f22383a3465",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 108522,
+"duration_s": 2.261,
+"noise_snr_db": null,
+"sha256": "41e9a619b8fe07edc673e507888669522a09aee328da67391ade3c0f4e34e87f",
+"speed": 1.15,
+"text_sha": "3f22383a3465",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": 18.0,
+"sha256": "eb60c3fc6d4bea7be5449904fbf327d4b61007ee68c4b871ddb14d16d9586347",
+"speed": 1.0,
+"text_sha": "3f22383a3465",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-033": {
+"v0": {
+"bytes": 122400,
+"duration_s": 2.55,
+"noise_snr_db": null,
+"sha256": "341dde2fe04300d923a6f6d9c3dc9a810efa0b14f0b90501349e97735867b204",
+"speed": 1.0,
+"text_sha": "1fc0f4429f8f",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 108522,
+"duration_s": 2.261,
+"noise_snr_db": null,
+"sha256": "e674127f63abe6dfd77741a63480a033b179cc37b94e6f6cb41f4eae6f53321f",
+"speed": 1.15,
+"text_sha": "1fc0f4429f8f",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 122400,
+"duration_s": 2.55,
+"noise_snr_db": 18.0,
+"sha256": "b74080980a32162ae277fd464b51e35482cd244880aac80e747e6a12b5621b4a",
+"speed": 1.0,
+"text_sha": "1fc0f4429f8f",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-034": {
+"v0": {
+"bytes": 137760,
+"duration_s": 2.87,
+"noise_snr_db": null,
+"sha256": "ab4b95e70a9bc0230fe42ff86d5e3f607c2a190bc9bee34a3a852e4319a1f807",
+"speed": 1.0,
+"text_sha": "810530417eda",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 108522,
+"duration_s": 2.261,
+"noise_snr_db": null,
+"sha256": "5c07e4d392a93149ba31de1189cf34812e606bc954a75d00f65fc4144cce5b03",
+"speed": 1.15,
+"text_sha": "810530417eda",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 122400,
+"duration_s": 2.55,
+"noise_snr_db": 18.0,
+"sha256": "41e83147551a7bb0dd50ca7fcc711b94160ff48d6e5b1533114b3778adaff351",
+"speed": 1.0,
+"text_sha": "810530417eda",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-035": {
+"v0": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": null,
+"sha256": "121907aa9b22fbbf7b2a1146255fff294ff49aee8725758b325fc945d613aebe",
+"speed": 1.0,
+"text_sha": "0a1bbfff4f3d",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 95166,
+"duration_s": 1.983,
+"noise_snr_db": null,
+"sha256": "1cc134d674ce19ab4086258a19bb9f245c042830a07188a562eee7cbaaa8c9c9",
+"speed": 1.15,
+"text_sha": "0a1bbfff4f3d",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": 18.0,
+"sha256": "cbdd54a8fcce147e8b38fc14250bbe9189a733b5f05a5d4d03e10b0e47724264",
+"speed": 1.0,
+"text_sha": "0a1bbfff4f3d",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-036": {
+"v0": {
+"bytes": 229920,
+"duration_s": 4.79,
+"noise_snr_db": null,
+"sha256": "e8f96cbaaaa640f31c4a4297df6395a208575758bc94fddc8b0df10db902a98b",
+"speed": 1.0,
+"text_sha": "3244c3946f6c",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 202018,
+"duration_s": 4.209,
+"noise_snr_db": null,
+"sha256": "4766352caa882b4a8fafb8cc8c098c8fa8c20547b4c21723875b198da698a92e",
+"speed": 1.15,
+"text_sha": "3244c3946f6c",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 214560,
+"duration_s": 4.47,
+"noise_snr_db": 18.0,
+"sha256": "82e78c00976f0e336d9cf8c2a528da93dc719dbe1044bd87c1575f484b59a657",
+"speed": 1.0,
+"text_sha": "3244c3946f6c",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-037": {
+"v0": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": null,
+"sha256": "8a2b03f9b5e1dc6ca47afaebfa14c64b851920a3021a256770b9548e874e02e0",
+"speed": 1.0,
+"text_sha": "a74ca0295f44",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 81808,
+"duration_s": 1.704,
+"noise_snr_db": null,
+"sha256": "e09d0f805aab87dd9dabdd24278b18f30a113c19c3b60b152cbb63fcb2be1bd7",
+"speed": 1.15,
+"text_sha": "a74ca0295f44",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": 18.0,
+"sha256": "6c3e682862f17539cf7023b450d6fedbc811417343d60ddd7c14f210a6bb305f",
+"speed": 1.0,
+"text_sha": "a74ca0295f44",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-038": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "593cd7399580c25f2bb577e3193ed7879f9c2d15be308d26c5b21972a3e10621",
+"speed": 1.0,
+"text_sha": "ddeeb3b237cf",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "152de6faf723baa1caaf25da48275090273de1dcd33311d2452de2943012a95a",
+"speed": 1.15,
+"text_sha": "ddeeb3b237cf",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "ccace36a4ebfd4a06ab7a6331008ef547aa5c754fb448c70ef9bf1c68bef8211",
+"speed": 1.0,
+"text_sha": "ddeeb3b237cf",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-039": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "509f4f96836b03de8975ca4931cd5dc64648751f3fed4a353235f01c08cb26c5",
+"speed": 1.0,
+"text_sha": "9d7c5f39f760",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "edd99eede54b826a4d0fb776d75cdc733c5a799b1a6942dcc41f15298250929b",
+"speed": 1.15,
+"text_sha": "9d7c5f39f760",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "0685960e240e80a7da01a50e2ff6ab2933e8ae75f2f45baa2c5e99c4c7e7b507",
+"speed": 1.0,
+"text_sha": "9d7c5f39f760",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-040": {
+"v0": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": null,
+"sha256": "948662506dae0a68668b0e2a934cd1ada22673cb3c245feb990753ac5f14a3c1",
+"speed": 1.0,
+"text_sha": "a4a09a2a4b52",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 55096,
+"duration_s": 1.148,
+"noise_snr_db": null,
+"sha256": "f45643e30c9beddd0964f2bdc29f31c53f1dda98267469a28ea79348ebd88759",
+"speed": 1.15,
+"text_sha": "a4a09a2a4b52",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 60960,
+"duration_s": 1.27,
+"noise_snr_db": 18.0,
+"sha256": "3d72f1f023f39ad0f647ac38ace548bda7e4c61cb6dd5d8b912b66ebc4b7af9c",
+"speed": 1.0,
+"text_sha": "a4a09a2a4b52",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-041": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "3f49a6b4b3b327aa2026447ba1932274be35fe8bd9f586da50aeb769cc0809d1",
+"speed": 1.0,
+"text_sha": "136881bcf5b0",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "c1a62e700ad0687770e561b9cca6f6cdb3808fcc07912e532e4c14042f314ed9",
+"speed": 1.15,
+"text_sha": "136881bcf5b0",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "c6da1ea0f2460051484ec22b89ae3a6fe6869a07f939010550c0652ce9ae228a",
+"speed": 1.0,
+"text_sha": "136881bcf5b0",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-042": {
+"v0": {
+"bytes": 122400,
+"duration_s": 2.55,
+"noise_snr_db": null,
+"sha256": "1b9969c7ea5bcb7b0c32928d2a1c7102d56c594328df7d64862e9d8dbaed3a76",
+"speed": 1.0,
+"text_sha": "20f87319b1f4",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 95166,
+"duration_s": 1.983,
+"noise_snr_db": null,
+"sha256": "141b0f11971e18e083865da891ddb9dd68ee3695b22d58813cf42be3311a44e7",
+"speed": 1.15,
+"text_sha": "20f87319b1f4",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 122400,
+"duration_s": 2.55,
+"noise_snr_db": 18.0,
+"sha256": "4713dcc9de43d42b60dd77bae6c3564445d07e24daa279d513e5f2dafbb60191",
+"speed": 1.0,
+"text_sha": "20f87319b1f4",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-043": {
+"v0": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": null,
+"sha256": "de5fea929e8e6a5d3dac89a7d986efae419a47bd46534b7621e1b427e79a7ec8",
+"speed": 1.0,
+"text_sha": "474e277fb906",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 81808,
+"duration_s": 1.704,
+"noise_snr_db": null,
+"sha256": "b63f24adf6eeff79ac75d9ec4489a30087c8ec11ccdcf45e5be7dd5dc727bc89",
+"speed": 1.15,
+"text_sha": "474e277fb906",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 91680,
+"duration_s": 1.91,
+"noise_snr_db": 18.0,
+"sha256": "dad445787e47f721078bdee65b2be90b20b4e67e846d67625d19469b703bfed1",
+"speed": 1.0,
+"text_sha": "474e277fb906",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-044": {
+"v0": {
+"bytes": 122400,
+"duration_s": 2.55,
+"noise_snr_db": null,
+"sha256": "b0f98151e772fc75ca3f3a18351a124320fc2e3ba8abbb6ff97a7850aa11036c",
+"speed": 1.0,
+"text_sha": "bfc6db2025a2",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 95166,
+"duration_s": 1.983,
+"noise_snr_db": null,
+"sha256": "f16da4892f7baba4b33e92013946e95530da5a69bc75293ee2d0339af11ea393",
+"speed": 1.15,
+"text_sha": "bfc6db2025a2",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": 18.0,
+"sha256": "ca86f9c2eee604b6140c39fc92f21d65088de6693c6b1d9e8b4af7146f5ac058",
+"speed": 1.0,
+"text_sha": "bfc6db2025a2",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-045": {
+"v0": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": null,
+"sha256": "7769b3dce784e584a8e571d2e2df7f28bbb1a233d65b687059f1e5eb2d3e6bcc",
+"speed": 1.0,
+"text_sha": "49d69091c28d",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 108522,
+"duration_s": 2.261,
+"noise_snr_db": null,
+"sha256": "dff7ae73878b4cb80a2f40f149a25ddb92fb38bdabfd4a9b8d990a058aa2ab1d",
+"speed": 1.15,
+"text_sha": "49d69091c28d",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 107040,
+"duration_s": 2.23,
+"noise_snr_db": 18.0,
+"sha256": "a017f3c8afed8b5a6e7a9941fbcdd2028a4c8ba845455db0ed6c12fddec2ce97",
+"speed": 1.0,
+"text_sha": "49d69091c28d",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+},
+"ope-046": {
+"v0": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": null,
+"sha256": "6afa660c7a0ae02b4dabfccc13ba34a064c5efe69148bce9bffe537105f69f69",
+"speed": 1.0,
+"text_sha": "7e0c6335bdab",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "alloy"
+},
+"v1": {
+"bytes": 68452,
+"duration_s": 1.426,
+"noise_snr_db": null,
+"sha256": "c7dd0eaba5deaacec29567af7cf2cec3687b18eac5442147abbb002ea905c267",
+"speed": 1.15,
+"text_sha": "7e0c6335bdab",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "onyx"
+},
+"v2": {
+"bytes": 76320,
+"duration_s": 1.59,
+"noise_snr_db": 18.0,
+"sha256": "367908df23045b99a88560a38341602c29e5327eb76a9b5b6fc5273f1198f74c",
+"speed": 1.0,
+"text_sha": "7e0c6335bdab",
+"tts_model": "gpt-4o-mini-tts",
+"voice": "nova"
+}
+}
+}

@@ -1,0 +1,422 @@
+{
+  "name": "u4_depots",
+  "startedAt": "2026-11-04T15:57:39.117Z",
+  "events": [
+    {
+      "t": 1793807859674,
+      "type": "voice-state",
+      "state": "connecting",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807862493,
+      "type": "session"
+    },
+    {
+      "t": 1793807866300,
+      "type": "voice-state",
+      "state": "idle",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807868561,
+      "type": "voice-state",
+      "state": "listening",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807868562,
+      "type": "transcript",
+      "text": "",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807868568,
+      "type": "dock-state"
+    },
+    {
+      "t": 1793807870705,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807871220,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807871220,
+      "type": "transcript",
+      "text": "서",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807871220,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807871220,
+      "type": "transcript",
+      "text": "서플",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807871220,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807871223,
+      "type": "transcript",
+      "text": "서플라이",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807871223,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807871223,
+      "type": "transcript",
+      "text": "서플라이 디",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807871223,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807871223,
+      "type": "transcript",
+      "text": "서플라이 디포",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807871223,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807871223,
+      "type": "transcript",
+      "text": "서플라이 디포 두",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807871223,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807871223,
+      "type": "transcript",
+      "text": "서플라이 디포 두 개",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807871223,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807871223,
+      "type": "transcript",
+      "text": "서플라이 디포 두 개 지",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807871223,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807871223,
+      "type": "transcript",
+      "text": "서플라이 디포 두 개 지어",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807871223,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807871223,
+      "type": "transcript",
+      "text": "서플라이 디포 두 개 지어.",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807871697,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807871697,
+      "type": "transcript",
+      "text": "서플라이 디포 두 개 지어.",
+      "partial": false,
+      "final": true,
+      "turn": 1
+    },
+    {
+      "t": 1793807872659,
+      "type": "voice-state",
+      "state": "acting",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807872744,
+      "type": "intent",
+      "turn": 1,
+      "ok": true,
+      "kind": "submitted",
+      "tier": "macro",
+      "transcript": "서플라이 디포 두 개 지어.",
+      "latency_ms": {
+        "speech_end_to_tool_call": 1957,
+        "speech_ms": 2143,
+        "transcript_wait": 0,
+        "tool_call_to_publish": 85,
+        "publish_request": 85
+      },
+      "tool_arguments": {
+        "command_layer": "macro",
+        "goal": "서플라이 디포 2개 지어",
+        "macro": {
+          "building_tasks": [
+            {
+              "building_type": "TERRAN_SUPPLYDEPOT",
+              "count": 2
+            }
+          ]
+        }
+      },
+      "response": {
+        "accepted": true,
+        "status": "queued",
+        "tier": "macro",
+        "source": "tool_call",
+        "update_id": "voi-mm-707eb964958c490885a4adfbcfb234ee",
+        "direct_runtime": {
+          "kind": "dry_run_fake_bot",
+          "evidence": "executor drives the scripted DemoFakeBotAI (--dry-run); operation/micro/emergency vectors are simulated, only macro vectors reach the MicroMachine blackboard"
+        },
+        "latency_ms": {
+          "speech_end_to_tool_call": 1957,
+          "speech_ms": 2143,
+          "transcript_wait": 0,
+          "backend_handle": 45.2
+        }
+      }
+    },
+    {
+      "t": 1793807872744,
+      "type": "voice-state",
+      "state": "acting",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807874146,
+      "type": "voice-state",
+      "state": "idle",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807874148,
+      "type": "dock-state"
+    },
+    {
+      "t": 1793807874148,
+      "type": "settings"
+    }
+  ],
+  "overlay": [
+    {
+      "t": 1793807859708,
+      "state": "off",
+      "visible": false
+    },
+    {
+      "t": 1793807868572,
+      "state": "listening",
+      "visible": true
+    },
+    {
+      "t": 1793807870711,
+      "state": "thinking",
+      "visible": true
+    },
+    {
+      "t": 1793807872689,
+      "state": "off",
+      "visible": true
+    },
+    {
+      "t": 1793807873081,
+      "state": "off",
+      "visible": false
+    }
+  ],
+  "shots": [
+    {
+      "name": "1-ready",
+      "file": "u4_depots-1-ready.png",
+      "t": 1793807866475,
+      "ok": true
+    },
+    {
+      "name": "2-listening",
+      "file": "u4_depots-2-listening.png",
+      "t": 1793807869428,
+      "ok": true
+    },
+    {
+      "name": "3-thinking",
+      "file": "u4_depots-3-thinking.png",
+      "t": 1793807870926,
+      "ok": true
+    },
+    {
+      "name": "4-acting",
+      "file": "u4_depots-4-acting.png",
+      "t": 1793807873601,
+      "ok": true
+    },
+    {
+      "name": "5-cards",
+      "file": "u4_depots-5-cards.png",
+      "t": 1793807880300,
+      "ok": true
+    }
+  ],
+  "checks": [],
+  "notes": [
+    "orb clicked; waiting for Realtime session (429 capacity errors retry with back-off inside voice.js)",
+    "session ready after 6653 ms (includes any 429 retries)"
+  ],
+  "armedAt": 1793807859673,
+  "readyAt": 1793807866326,
+  "preReadyErrors": [],
+  "overlayDuringListening": {
+    "state": "listening",
+    "visible": true,
+    "bounds": {
+      "x": 0,
+      "y": 0,
+      "width": 1512,
+      "height": 982
+    }
+  },
+  "dom": {
+    "transcript": "서플라이 디포 두 개 지어.",
+    "cards": [
+      {
+        "utterance": "서플라이 디포 두 개 지어.",
+        "ops": [
+          {
+            "name": "서플라이 디포 2개 지어",
+            "tier": "매크로",
+            "badges": [],
+            "stages": [
+              "heard:done",
+              "understood:done",
+              "assigned:active",
+              "ordered:todo",
+              "effect:todo"
+            ],
+            "reason": "",
+            "reasonTitle": ""
+          }
+        ]
+      }
+    ],
+    "voiceBody": "idle"
+  },
+  "backendVoiceIntents": [],
+  "backendOperations": [
+    {
+      "operation_id": "macro-tech_transition",
+      "mission": "emergency",
+      "disposition": "active",
+      "transport_status": "published",
+      "consumption_status": "pending_telemetry",
+      "layer": "macro",
+      "goal": "서플라이 디포 2개 지어",
+      "stages": [
+        "parsed:true",
+        "reduced:true",
+        "published:true",
+        "consumed_by_manager:false",
+        "queued_or_assigned:false",
+        "order_issued:false",
+        "action_issued:false",
+        "effect_observed:false"
+      ]
+    }
+  ],
+  "directRuntime": {
+    "kind": "dry_run_fake_bot",
+    "evidence": "executor drives the scripted DemoFakeBotAI (--dry-run); operation/micro/emergency vectors are simulated, only macro vectors reach the MicroMachine blackboard"
+  },
+  "latestRequest": {
+    "status": "compiled",
+    "consumption_status": "pending_telemetry",
+    "update_id": "voi-mm-707eb964958c490885a4adfbcfb234ee"
+  }
+}

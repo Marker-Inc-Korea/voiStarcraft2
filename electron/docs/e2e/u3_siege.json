@@ -1,0 +1,394 @@
+{
+  "name": "u3_siege",
+  "startedAt": "2026-11-04T15:57:16.351Z",
+  "events": [
+    {
+      "t": 1793807836942,
+      "type": "voice-state",
+      "state": "connecting",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807838421,
+      "type": "session"
+    },
+    {
+      "t": 1793807840899,
+      "type": "voice-state",
+      "state": "idle",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807843851,
+      "type": "voice-state",
+      "state": "listening",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807843851,
+      "type": "transcript",
+      "text": "",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807843877,
+      "type": "dock-state"
+    },
+    {
+      "t": 1793807845198,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807845479,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807845480,
+      "type": "transcript",
+      "text": "탱",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807845480,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807845480,
+      "type": "transcript",
+      "text": "탱크",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807845483,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807845484,
+      "type": "transcript",
+      "text": "탱크 시",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807845484,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807845484,
+      "type": "transcript",
+      "text": "탱크 시즈",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807845484,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807845484,
+      "type": "transcript",
+      "text": "탱크 시즈 모",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807845484,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807845484,
+      "type": "transcript",
+      "text": "탱크 시즈 모드",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807845484,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807845484,
+      "type": "transcript",
+      "text": "탱크 시즈 모드 해",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807845486,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807845486,
+      "type": "transcript",
+      "text": "탱크 시즈 모드 해.",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807845628,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807845628,
+      "type": "transcript",
+      "text": "탱크 시즈 모드 해.",
+      "partial": false,
+      "final": true,
+      "turn": 1
+    },
+    {
+      "t": 1793807847697,
+      "type": "voice-state",
+      "state": "acting",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807847700,
+      "type": "intent",
+      "turn": 1,
+      "ok": true,
+      "kind": "submitted",
+      "tier": "micro",
+      "transcript": "탱크 시즈 모드 해.",
+      "latency_ms": {
+        "speech_end_to_tool_call": 2499,
+        "speech_ms": 1347,
+        "transcript_wait": 0,
+        "tool_call_to_publish": 3,
+        "publish_request": 3
+      },
+      "tool_arguments": {
+        "command_layer": "micro",
+        "micro": [
+          {
+            "ability": "siege_mode",
+            "unit_classes": [
+              "TERRAN_SIEGETANK"
+            ]
+          }
+        ],
+        "goal": "탱크 시즈모드 해"
+      },
+      "response": {
+        "accepted": true,
+        "status": "queued",
+        "tier": "micro",
+        "source": "tool_call",
+        "update_id": "voi-mm-7e54f92effa5401f917687f449035b1c",
+        "direct_runtime": {
+          "kind": "dry_run_fake_bot",
+          "evidence": "executor drives the scripted DemoFakeBotAI (--dry-run); operation/micro/emergency vectors are simulated, only macro vectors reach the MicroMachine blackboard"
+        },
+        "latency_ms": {
+          "speech_end_to_tool_call": 2499,
+          "speech_ms": 1347,
+          "transcript_wait": 0,
+          "backend_handle": 1.4
+        }
+      }
+    },
+    {
+      "t": 1793807847700,
+      "type": "voice-state",
+      "state": "acting",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807849102,
+      "type": "voice-state",
+      "state": "idle",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807849113,
+      "type": "dock-state"
+    },
+    {
+      "t": 1793807849114,
+      "type": "settings"
+    }
+  ],
+  "overlay": [
+    {
+      "t": 1793807836971,
+      "state": "off",
+      "visible": false
+    },
+    {
+      "t": 1793807843852,
+      "state": "listening",
+      "visible": true
+    },
+    {
+      "t": 1793807845210,
+      "state": "thinking",
+      "visible": true
+    },
+    {
+      "t": 1793807847706,
+      "state": "off",
+      "visible": true
+    },
+    {
+      "t": 1793807848101,
+      "state": "off",
+      "visible": false
+    }
+  ],
+  "shots": [
+    {
+      "name": "1-ready",
+      "file": "u3_siege-1-ready.png",
+      "t": 1793807841082,
+      "ok": true
+    },
+    {
+      "name": "2-listening",
+      "file": "u3_siege-2-listening.png",
+      "t": 1793807844542,
+      "ok": true
+    },
+    {
+      "name": "3-thinking",
+      "file": "u3_siege-3-thinking.png",
+      "t": 1793807845371,
+      "ok": true
+    },
+    {
+      "name": "4-acting",
+      "file": "u3_siege-4-acting.png",
+      "t": 1793807848569,
+      "ok": true
+    },
+    {
+      "name": "5-cards",
+      "file": "u3_siege-5-cards.png",
+      "t": 1793807855261,
+      "ok": true
+    }
+  ],
+  "checks": [],
+  "notes": [
+    "orb clicked; waiting for Realtime session (429 capacity errors retry with back-off inside voice.js)",
+    "session ready after 3985 ms (includes any 429 retries)"
+  ],
+  "armedAt": 1793807836941,
+  "readyAt": 1793807840926,
+  "preReadyErrors": [],
+  "overlayDuringListening": {
+    "state": "listening",
+    "visible": true,
+    "bounds": {
+      "x": 0,
+      "y": 0,
+      "width": 1512,
+      "height": 982
+    }
+  },
+  "dom": {
+    "transcript": "탱크 시즈 모드 해.",
+    "cards": [
+      {
+        "utterance": "탱크 시즈 모드 해.",
+        "ops": [
+          {
+            "name": "탱크 시즈모드 해",
+            "tier": "마이크로",
+            "badges": [
+              "시뮬"
+            ],
+            "stages": [
+              "heard:done",
+              "understood:done",
+              "assigned:blocked",
+              "ordered:todo",
+              "effect:todo"
+            ],
+            "reason": "거절",
+            "reasonTitle": "action 'execute_ability' was refused without issuing orders: unresolvable_ability."
+          }
+        ]
+      }
+    ],
+    "voiceBody": "idle"
+  },
+  "backendVoiceIntents": [],
+  "backendOperations": [
+    {
+      "operation_id": "micro-siege_mode",
+      "mission": "emergency",
+      "disposition": "blocked",
+      "transport_status": "direct_failed",
+      "consumption_status": "not_published",
+      "layer": "micro",
+      "goal": "탱크 시즈모드 해",
+      "stages": [
+        "parsed:true",
+        "reduced:false",
+        "published:true",
+        "consumed_by_manager:false",
+        "queued_or_assigned:false",
+        "order_issued:false",
+        "action_issued:false",
+        "effect_observed:false"
+      ]
+    }
+  ],
+  "directRuntime": {
+    "kind": "dry_run_fake_bot",
+    "evidence": "executor drives the scripted DemoFakeBotAI (--dry-run); operation/micro/emergency vectors are simulated, only macro vectors reach the MicroMachine blackboard"
+  },
+  "latestRequest": {
+    "status": "compiled",
+    "consumption_status": "pending_consumption",
+    "update_id": "voi-mm-7e54f92effa5401f917687f449035b1c"
+  }
+}

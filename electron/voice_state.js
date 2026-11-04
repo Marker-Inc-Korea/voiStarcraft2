@@ -132,6 +132,7 @@ function createVoiceMachine({ now = Date.now, onChange = () => {} } = {}) {
           break;
         }
         if (turn) { turn.status = "calling"; turn.toolCallAt = calledAt; turn.callId = event.call_id || ""; }
+        intentInFlight += 1; holdActing = false; // thinking -> acting directly; the caller pairs this with intentFinished()
         effects.push({ type: "tool_call", args, turn: turn ? publicTurn(turn) : null, turnId: turn ? turn.id : 0, speechEndToToolCall: turn && turn.speechStoppedAt ? calledAt - turn.speechStoppedAt : null, speechMs: turn && turn.speechStoppedAt ? turn.speechStoppedAt - turn.speechStartedAt : null });
         break;
       }
@@ -179,7 +180,6 @@ function createVoiceMachine({ now = Date.now, onChange = () => {} } = {}) {
     setConnection(value) { connection = value; if (value === "ready") errorReason = ""; if (value !== "ready") { speakingTurn = null; awaitingTool.length = 0; } return changed(); },
     fail(reason) { errorReason = String(reason || "error").slice(0, 240); speakingTurn = null; return changed(); },
     clearError() { errorReason = ""; infoReason = ""; return changed(); },
-    intentStarted() { intentInFlight += 1; holdActing = false; changed(); },
     intentFinished(turnId, ok) { intentInFlight = Math.max(0, intentInFlight - 1); const turn = turns.get(turnId); if (turn) turn.status = ok ? "submitted" : "failed"; holdActing = ok; changed(); },
     setHoldActing(value) { holdActing = Boolean(value); changed(); },
     markTurn(turnId, status) { const turn = turns.get(turnId); if (turn) turn.status = status; },

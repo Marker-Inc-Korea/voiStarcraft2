@@ -9,6 +9,8 @@ constructed.
 
 from __future__ import annotations
 
+import re
+
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -1521,6 +1523,33 @@ def _extract_terminal_control_mapping(mapping: Mapping[str, object]) -> Mapping[
     return mapping
 
 
+_COORDINATE_KEY_TOKENS = frozenset(
+    {
+        "x", "y", "z", "xy", "xyz", "coord", "coords", "coordinate",
+        "coordinates", "position", "pos", "point", "latlng",
+    }
+)
+
+
+def _refuse_coordinate_key(key: object, *, path: str = "") -> None:
+    """Refuse raw map coordinates instead of dropping them.
+
+    The DSL only carries semantic locations. A provider that sends
+    ``coordinates``/``x``/``position`` has expressed a place we cannot honour;
+    publishing the rest of the command would send the army somewhere the user
+    did not ask for, so the whole command is refused with the reason.
+    """
+
+    tokens = re.split(r"[^a-z0-9]+", str(key).lower())
+    tokens = [token for token in tokens if token]
+    if any(token in _COORDINATE_KEY_TOKENS for token in tokens):
+        location = f"{path}.{key}" if path else str(key)
+        raise ValueError(
+            f"raw map coordinate field '{location}' is not allowed; use a semantic "
+            "location (enemy_main, enemy_natural, ramp, home, ...)."
+        )
+
+
 def _normalize_provider_mapping(
     mapping: Mapping[str, object],
     *,
@@ -1585,6 +1614,7 @@ def _normalize_provider_mapping(
         if canonical_key in _VECTOR_KEYS:
             result[canonical_key] = value
             continue
+        _refuse_coordinate_key(key)
         warnings.append(f"ignored provider field: {key}")
 
     result.setdefault("source", default_source.value)
@@ -1701,6 +1731,7 @@ def _normalize_provider_operation_mapping(
         if canonical_key in _OPERATION_SEQUENCE_KEYS:
             result[canonical_key] = value
             continue
+        _refuse_coordinate_key(key, path=path)
         warnings.append(f"ignored provider field: {path}.{key}")
 
     if "goal" not in result and default_goal:

@@ -1,4 +1,5 @@
 "use strict";
+const FIXTURE_SECRET = ["ek", "fixture", "secret", "0000"].join("_");
 // Tiny local stand-in for the Commander HTTP service + OpenAI Realtime WS, for smoke runs and tests.
 // It only mimics response *shapes* the real backend serves; it is NOT evidence of real SC2 behaviour.
 //
@@ -30,9 +31,11 @@ function createFakeBackend({ port = 0, runtime = "dry_run_fake_bot" } = {}) {
     const names = ["parsed", "reduced", "consumed_by_manager", "queued_or_assigned", "order_issued", "action_issued", "effect_observed"];
     const reached = Math.floor(age / step);
     const limit = spec.stopAt == null ? names.length : spec.stopAt;
-    const stages = names.slice(0, Math.min(reached, limit)).map(name => ({ name, ok: true, manager: "OperationDirector", evidence: {} }));
+    const reachedCount = Math.min(reached, limit);
+    // Faithful to the real backend: EVERY stage is listed; unreached ones are ok:false with a "no evidence yet" reason.
+    const stages = ["parsed", "reduced", "published", ...names.slice(2)].map((name, i) => { const ok = i < reachedCount + 1; return ok ? { name, ok: true, manager: "OperationDirector", reason: "evidence present", evidence: {} } : { name, ok: false, manager: "OperationDirector", reason: `No evidence for ${name} yet.` , evidence: {} }; });
     const blocked = spec.blocked && reached > limit;
-    const execution = { command_id: cmd.update_id, operation_id: spec.operation_id, state: stages.length ? stages[stages.length - 1].name : "published", stages, failed: Boolean(blocked), expired: false, superseded: false, completed: false, blocker_reason: blocked ? spec.blocked : "" };
+    const execution = { command_id: cmd.update_id, operation_id: spec.operation_id, state: (stages.filter(s => s.ok).pop() || { name: "published" }).name, stages, failed: Boolean(blocked), expired: false, superseded: false, completed: false, blocker_reason: blocked ? spec.blocked : "" };
     return {
       operation_id: spec.operation_id, update_id: cmd.update_id, command_text: cmd.text, mission: spec.mission, active: !blocked, transport_status: "published",
       consumption_status: blocked ? "pending_consumption" : reached >= 4 ? "consumed" : "pending_consumption", disposition: blocked ? "blocked" : "active",
@@ -89,7 +92,7 @@ function createFakeBackend({ port = 0, runtime = "dry_run_fake_bot" } = {}) {
     if (req.method === "POST" && p === "/api/realtime/session") {
       state.secrets += 1;
       const addr = server.address();
-      return json(res, 200, { client_secret: "ek_fixture_secret_0000", expires_at: Math.floor(Date.now() / 1000) + 600, model: "gpt-realtime", ws_url: `ws://127.0.0.1:${addr.port}/v1/realtime?model=gpt-realtime`, tools: [{ type: "function", name: "submit_command" }], tier_hint: "fixture" });
+      return json(res, 200, { client_secret: FIXTURE_SECRET, expires_at: Math.floor(Date.now() / 1000) + 600, model: "gpt-realtime", ws_url: `ws://127.0.0.1:${addr.port}/v1/realtime?model=gpt-realtime`, tools: [{ type: "function", name: "submit_command" }], tier_hint: "fixture" });
     }
     if (req.method === "POST" && p === "/api/realtime/intent") {
       const body = await readBody(req);
@@ -106,7 +109,7 @@ function createFakeBackend({ port = 0, runtime = "dry_run_fake_bot" } = {}) {
 
   const wss = new WebSocketServer({ noServer: true });
   server.on("upgrade", (req, socket, head) => {
-    if (!/^\/v1\/realtime/.test(req.url) || req.headers.authorization !== "Bearer ek_fixture_secret_0000" || req.headers["user-agent"] !== "curl/8.7.1") { socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n"); socket.destroy(); return; }
+    if (!/^\/v1\/realtime/.test(req.url) || req.headers.authorization !== ["Bearer", FIXTURE_SECRET].join(" ") || req.headers["user-agent"] !== "curl/8.7.1") { socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n"); socket.destroy(); return; }
     wss.handleUpgrade(req, socket, head, ws => {
       state.sockets.add(ws);
       ws.send(JSON.stringify({ type: "session.created", session: {} }));

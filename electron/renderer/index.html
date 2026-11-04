@@ -12,6 +12,8 @@
   <section class="panel" id="panel">
     <canvas id="space" aria-hidden="true"></canvas>
     <div class="sheen" aria-hidden="true"></div>
+    <div class="sweep" aria-hidden="true"></div>
+    <div class="rim" aria-hidden="true"></div>
 
     <div class="panel-body">
       <section class="deck" id="deck" aria-live="polite"><div class="cards" id="cards"></div></section>
@@ -24,6 +26,7 @@
       <footer class="bar" id="bar">
         <button class="orb" id="orb" type="button" aria-pressed="false" aria-label="음성">
           <span class="orb-halo" aria-hidden="true"></span>
+          <span class="orb-ring" aria-hidden="true"><i class="moon"></i></span>
           <span class="orb-core" aria-hidden="true">
             <svg viewBox="0 0 24 24" width="22" height="22"><path d="M12 15.5a3.5 3.5 0 0 0 3.5-3.5V6.5a3.5 3.5 0 1 0-7 0V12a3.5 3.5 0 0 0 3.5 3.5Z" fill="currentColor"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
           </span>
@@ -45,6 +48,7 @@
 
   <script src="./stages.js"></script>
   <script src="./settings.js"></script>
+  <script src="./sky.js"></script>
   <script src="./i18n.js"></script>
   <script src="./space.js"></script>
   <script src="./mic.js"></script>

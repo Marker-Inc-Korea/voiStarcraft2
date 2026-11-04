@@ -8,6 +8,7 @@ const P = require("./protocol.js");
 const Settings = require("./renderer/settings.js");
 const { createVoiceClient } = require("./voice.js");
 const { layoutFor, createDockController, inside } = require("./dock_state.js");
+const Displays = require("./displays.js");
 
 const ENV_URL = P.validateBaseUrl(process.env.VOI_COMMANDER_URL || "http://127.0.0.1:8765");
 let baseUrl = ENV_URL;
@@ -32,7 +33,8 @@ const SHORTCUT_SETTINGS = "CommandOrControl+,";
 const FORCE_VOICE_STATES = new Set(["listening", "thinking", "acting"]);
 
 let mainWindow = null;
-let overlayWindow = null;
+const overlays = new Map(); // display id -> overlay BrowserWindow (one per target display)
+let follower = Displays.createFollower({ dwellMs: 250 });
 let overlayHideTimer = null;
 let overlayState = "off";
 let voice = null;
@@ -119,7 +121,7 @@ function applySettings(patch) {
   if (changed("glass") && "vibrancy" in patch.glass) applyVibrancy();
   if (changed("layout")) {
     if ("display" in patch.layout) { dockDisplayId = resolveDockDisplay(); }
-    placeDock(dockDisplayId);
+    placeDock(dockDisplayId, "settings");
   }
   if (changed("server") && settings.server.url !== before.server.url) { baseUrl = settings.server.url; if (voice && voice.snapshot().active) voice.stop(); }
   if (changed("voice")) {
@@ -127,31 +129,46 @@ function applySettings(patch) {
     if (voice) voice.reconfigure();
     if ("mode" in patch.voice) pttToggled = false;
   }
-  if (changed("rainbow") || changed("glass")) updateOverlay();
+  if (changed("rainbow") && "screen" in patch.rainbow) syncOverlays();
+  if (changed("rainbow") || changed("glass")) { updateOverlay(); sendOverlaySettings(); }
   saveSettingsSoon();
   broadcastSettings();
   return settingsSnapshot();
 }
 
 // ---- displays / geometry -------------------------------------------------------------------
-const displayList = () => screen.getAllDisplays().map(display => ({ id: display.id, bounds: display.bounds, workArea: display.workArea }));
-const displayById = id => screen.getAllDisplays().find(display => display.id === id) || screen.getPrimaryDisplay();
+// Everything is in Electron's global DIP space; displays may have negative origins, mixed scale factors and portrait
+// orientation. Selection/geometry is the pure displays.js module; nothing here assumes primary or (0,0).
+const displayList = () => screen.getAllDisplays().map(display => ({ id: display.id, bounds: display.bounds, workArea: display.workArea, scaleFactor: display.scaleFactor }));
+const displayById = id => displayList().find(display => display.id === id) || Displays.pickDisplay(displayList(), currentCursor());
 function currentCursor() { return fakeCursor || screen.getCursorScreenPoint(); }
-function resolveDockDisplay() {
-  const match = /^id:(\d+)$/.exec(settings.layout.display);
-  if (match && screen.getAllDisplays().some(display => display.id === Number(match[1]))) return Number(match[1]);
-  return screen.getDisplayNearestPoint(currentCursor()).id;
-}
+function resolveDockDisplay() { return Displays.resolveDockDisplay(displayList(), settings.layout.display, currentCursor()).id; }
 function layoutOptions(display) {
   return { workArea: display.workArea, widthScale: settings.layout.width, heightScale: settings.layout.height, edgePx: settings.layout.zone, margin: settings.layout.margin };
 }
-function placeDock(displayId) {
+const dockTrace = []; // last placements: why/where the dock window moved (diagnostics for multi-display issues)
+function trace(event) { dockTrace.push({ t: Date.now(), ...event }); if (dockTrace.length > 60) dockTrace.shift(); }
+function placeDock(displayId, why = "") {
+  trace({ ev: "placeDock", from: dockDisplayId, to: displayId, why, cursor: currentCursor(), dock: settings.layout.dock });
   dockDisplayId = displayId;
   const display = displayById(displayId);
   currentLayout = layoutFor(settings.layout.dock, display.bounds, layoutOptions(display));
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setBounds(currentLayout.window, false);
-  followOverlay();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    applyBounds(mainWindow, currentLayout.window);
+  }
+  syncOverlays();
   pushDock(true);
+}
+// setBounds can land off by a rounding step when the window moves between displays of different scale factors;
+// re-apply until the window is where we asked (bounded, no loop forever).
+function applyBounds(win, want) {
+  win.setBounds(want, false);
+  for (let i = 0; i < 3; i += 1) {
+    const got = win.getBounds();
+    if (Displays.sameRect(got, want)) return true;
+    win.setBounds(want, false);
+  }
+  return Displays.withinRounding(win.getBounds(), want, 1);
 }
 function panelScreenRect() {
   if (!mainWindow || mainWindow.isDestroyed() || !currentLayout) return null;
@@ -161,8 +178,8 @@ function panelScreenRect() {
 }
 
 // ---- rainbow screen-edge overlay ------------------------------------------------------------
-function createOverlayWindow() {
-  const display = displayById(dockDisplayId);
+// 무지개 > 화면: "current" = one overlay on the dock/cursor display, "all" = one overlay window per display.
+function createOverlayWindow(display) {
   const win = new BrowserWindow({
     ...display.bounds, show: false, frame: false, transparent: true, resizable: false, movable: false, minimizable: false, maximizable: false, closable: false,
     fullscreenable: false, focusable: false, skipTaskbar: true, hasShadow: false, backgroundColor: "#00000000", enableLargerThanScreen: true,
@@ -175,19 +192,30 @@ function createOverlayWindow() {
   win.setFocusable(false);
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.webContents.on("will-navigate", event => event.preventDefault());
-  win.webContents.on("did-finish-load", sendOverlaySettings);
+  win.webContents.on("did-finish-load", () => { sendOverlaySettings(win); win.webContents.send(CHANNELS.overlayState, { state: overlayState }); });
   win.loadFile(overlayFile);
   return win;
 }
-function followOverlay() {
-  if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  const target = displayById(dockDisplayId).bounds;
-  const bounds = overlayWindow.getBounds();
-  if (bounds.x !== target.x || bounds.y !== target.y || bounds.width !== target.width || bounds.height !== target.height) overlayWindow.setBounds(target);
+const liveOverlays = () => [...overlays.values()].filter(win => !win.isDestroyed());
+// Reconcile overlay windows with the displays that should carry one (create / move / destroy).
+function syncOverlays() {
+  const displays = displayList();
+  const active = displays.find(display => display.id === dockDisplayId) || Displays.pickDisplay(displays, currentCursor());
+  const targets = Displays.overlayTargets(displays, settings.rainbow.screen, active);
+  const existing = new Map([...overlays].filter(([, win]) => !win.isDestroyed()).map(([id, win]) => [id, win.getBounds()]));
+  const plan = Displays.planOverlays(existing, targets);
+  for (const id of plan.destroy) { const win = overlays.get(id); if (win && !win.isDestroyed()) win.destroy(); overlays.delete(id); }
+  for (const [id, win] of overlays) if (win.isDestroyed()) overlays.delete(id);
+  for (const display of targets) {
+    if (plan.create.includes(display.id)) overlays.set(display.id, createOverlayWindow(display));
+    else if (plan.move.includes(display.id)) applyBounds(overlays.get(display.id), display.bounds);
+    const win = overlays.get(display.id);
+    if (win && overlayState !== "off" && !win.isVisible()) win.showInactive();
+  }
 }
-function sendOverlaySettings() {
-  if (!overlayWindow || overlayWindow.isDestroyed() || overlayWindow.webContents.isLoading()) return;
-  overlayWindow.webContents.send(CHANNELS.overlaySettings, { ...Settings.overlayView(settings), reduceMotion: settings.glass.reduceMotion });
+function sendOverlaySettings(only) {
+  const payload = { ...Settings.overlayView(settings), reduceMotion: settings.glass.reduceMotion };
+  for (const win of only ? [only] : liveOverlays()) if (!win.isDestroyed() && !win.webContents.isLoading()) win.webContents.send(CHANNELS.overlaySettings, payload);
 }
 // The overlay state is derived (voice state, rainbow preferences, preview) so every input funnels through one place.
 function desiredOverlayState() {
@@ -203,16 +231,14 @@ function setOverlay(next) {
   const { state } = P.validateOverlayState({ state: next });
   if (state === overlayState) return;
   overlayState = state;
-  if (!overlayWindow || overlayWindow.isDestroyed()) return;
   if (overlayHideTimer) { clearTimeout(overlayHideTimer); overlayHideTimer = null; }
   if (state !== "off") {
-    followOverlay();
-    if (!overlayWindow.isVisible()) overlayWindow.showInactive();
-    overlayWindow.setAlwaysOnTop(true, "screen-saver");
+    syncOverlays();
+    for (const win of liveOverlays()) { if (!win.isVisible()) win.showInactive(); win.setAlwaysOnTop(true, "screen-saver"); }
   } else {
-    overlayHideTimer = setTimeout(() => { overlayHideTimer = null; if (overlayState === "off" && overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.hide(); }, 400);
+    overlayHideTimer = setTimeout(() => { overlayHideTimer = null; if (overlayState === "off") for (const win of liveOverlays()) win.hide(); }, 400);
   }
-  overlayWindow.webContents.send(CHANNELS.overlayState, { state });
+  for (const win of liveOverlays()) if (!win.webContents.isLoading()) win.webContents.send(CHANNELS.overlayState, { state });
 }
 function previewRainbow() {
   previewUntil = Date.now() + PREVIEW_MS;
@@ -287,7 +313,11 @@ function tick() {
     forceOpen: forceOpen(now), pinned: settings.layout.pinned, now, settings: dockOptions(),
   });
   lastReason = decision.reason;
-  if (decision.moveToDisplayId !== null && !revealed) placeDock(decision.moveToDisplayId);
+  // The dock follows the CURSOR's display (debounced) while collapsed, unless a fixed display is chosen.
+  if (!revealed && settings.layout.display === "cursor") {
+    const target = follower.update(displayList(), cursor, dockDisplayId, now);
+    if (target) placeDock(target.id, "follow-cursor");
+  }
   if (decision.changed) {
     revealed = decision.revealed;
     if (revealed) { if (!mainWindow.isVisible()) mainWindow.showInactive(); registerRevealedShortcuts(); } else { releaseFocus(); shortcutOpen = false; setSettingsOpen(false); unregisterRevealedShortcuts(); }
@@ -407,7 +437,7 @@ function registerIpc() {
   listen(CHANNELS.voiceAudio, input => { voice.pushAudio(P.validateVoiceAudio(input)); });
   listen(CHANNELS.voiceLevel, input => {
     const level = P.validateVoiceLevel(input);
-    if (overlayState === "listening" && settings.rainbow.reactive && overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.webContents.send(CHANNELS.overlayLevel, level);
+    if (overlayState === "listening" && settings.rainbow.reactive) for (const win of liveOverlays()) win.webContents.send(CHANNELS.overlayLevel, level);
   });
   listen(CHANNELS.voicePtt, input => { voice.pttSet(P.validatePushToTalk(input).down); });
   listen(CHANNELS.voiceMicError, input => { voice.micFailed(P.validateMicError(input).reason); });
@@ -422,7 +452,7 @@ function installPermissions(ses) {
   ses.setPermissionCheckHandler((contents, permission, _origin, details) => Boolean(contents && contents.id === mainContentsId() && permission === "media" && (!details || details.mediaType === undefined || details.mediaType === "audio" || details.mediaType === "unknown")));
   ses.setDevicePermissionHandler(() => false);
   ses.webRequest.onHeadersReceived((details, callback) => {
-    const isOverlay = overlayWindow && !overlayWindow.isDestroyed() && details.webContentsId === overlayWindow.webContents.id;
+    const isOverlay = liveOverlays().some(win => win.webContents.id === details.webContentsId);
     callback({ responseHeaders: { ...details.responseHeaders, "Content-Security-Policy": [isOverlay ? OVERLAY_CSP : RENDERER_CSP] } });
   });
 }
@@ -449,9 +479,11 @@ function createDockWindow() {
   return mainWindow;
 }
 
-function onDisplaysChanged() {
+function onDisplaysChanged(event) {
+  trace({ ev: "display-event", cursor: currentCursor() });
+  follower.reset();
   dockDisplayId = resolveDockDisplay();
-  placeDock(dockDisplayId);
+  placeDock(dockDisplayId, "displays-changed");
   broadcastSettings();
 }
 
@@ -462,7 +494,7 @@ app.whenReady().then(() => {
   voice = createVoice();
   registerIpc();
   createDockWindow();
-  overlayWindow = createOverlayWindow();
+  syncOverlays();
   for (const eventName of ["display-added", "display-removed", "display-metrics-changed"]) screen.on(eventName, onDisplaysChanged);
   registerToggleShortcut();
   registerGlobal(SHORTCUT_OPACITY_UP, () => nudgeGlass(1));
@@ -478,7 +510,7 @@ module.exports = {
   CHANNELS, SHORTCUT_OPACITY_UP, SHORTCUT_OPACITY_DOWN, SHORTCUT_SETTINGS, requestJson,
   // Test/smoke hooks (read-only views of live state, plus a fake cursor).
   _internals: {
-    getMain: () => mainWindow, getOverlay: () => overlayWindow, getVoice: () => voice, getOverlayState: () => overlayState,
+    getTrace: () => dockTrace.slice(), getMain: () => mainWindow, getOverlay: () => liveOverlays()[0] || null, getOverlays: () => liveOverlays(), getDockDisplayId: () => dockDisplayId, getVoice: () => voice, getOverlayState: () => overlayState,
     setFakeCursor: point => { fakeCursor = point; },
     tick, toggleShortcut, nudgeGlass, applySettings, setSettingsOpen, previewRainbow,
     getSettings: () => settings,

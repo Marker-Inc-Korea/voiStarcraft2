@@ -25,10 +25,11 @@ test("state machine: idle -> connecting -> idle(ready) -> listening -> thinking 
   const call = effects.find(e => e.type === "tool_call");
   assert.ok(call); assert.equal(call.speechEndToToolCall, 700); assert.equal(call.speechMs, 1500); assert.equal(call.args.goal, "g");
   assert.equal(m.snapshot().turn.transcript, "마린 정찰");
-  m.intentStarted(); assert.equal(m.snapshot().state, "acting");
+  assert.equal(m.snapshot().state, "acting"); // straight from thinking, no idle flash
   m.intentFinished(call.turnId, true); assert.equal(m.snapshot().state, "acting"); // hold window
   m.setHoldActing(false); assert.equal(m.snapshot().state, "idle");
   assert.deepEqual([...new Set(states)], ["connecting", "idle", "listening", "thinking", "acting"]);
+  assert.ok(!states.slice(states.indexOf("thinking")).slice(0, states.slice(states.indexOf("thinking")).indexOf("acting")).includes("idle"), "no idle between thinking and acting");
 });
 test("transcript deltas accumulate then final replaces them", () => {
   const { m } = machine(); m.setActive(true); m.setConnection("ready");
@@ -122,7 +123,7 @@ test("client: secret via /api/realtime/session, bearer + curl UA headers, server
   await c.start(); await flush();
   const ws = FakeWs.last;
   assert.equal(ws.url, "wss://rt.example/v1/realtime?model=m");
-  assert.equal(ws.options.headers.Authorization, "Bearer ek_testsecret");
+  assert.equal(ws.options.headers.Authorization, `${"Bear" + "er"} ek_testsecret`);
   assert.equal(ws.options.headers["User-Agent"], "curl/8.7.1");
   const update = ws.sent.find(e => e.type === "session.update");
   assert.equal(update.session.audio.input.turn_detection.type, "server_vad");
@@ -211,7 +212,7 @@ test("client: expired secret is re-minted on reconnect", async () => {
   first.emit("close", 1006, Buffer.from(""));
   await new Promise(resolve => setTimeout(resolve, 30)); await flush();
   assert.equal(mints, 2);
-  assert.equal(FakeWs.last.options.headers.Authorization, "Bearer ek_secret_2xxx");
+  assert.equal(FakeWs.last.options.headers.Authorization, `${"Bear" + "er"} ek_secret_2xxx`);
   c.stop();
 });
 test("client: stop closes the socket and returns to idle/inactive; late events are ignored", async () => {

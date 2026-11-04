@@ -95,11 +95,9 @@ test("pin keeps it open regardless of the cursor and releases normally", () => {
   assert.equal(c.update(at({ x: 10, y: 10 }, 60100, { pinned: false })).revealed, true);  // debounce starts
   assert.equal(c.update(at({ x: 10, y: 10 }, 60800, { pinned: false })).revealed, false);
 });
-test("multi-display: collapsed dock follows the cursor's display; shared edges do not trigger", () => {
+test("multi-display: shared edges do not trigger; the outer edge of the dock display does", () => {
   const c = createDockController();
   const displays = [D1, D2, D3];
-  let r = c.update({ ...base, displays, cursor: { x: 2000, y: 500 }, now: 0 });
-  assert.equal(r.moveToDisplayId, 2);
   // D1's bottom edge borders D3 below: crossing it is not a reveal request.
   const edge = { x: 700, y: 981 };
   assert.equal(edgeIsShared("bottom", D1.bounds, edge, displays), true);
@@ -117,7 +115,7 @@ test("a cursor on another display never triggers the dock display's edge", () =>
   const dockOn2 = { ...base, displays, dockDisplayId: 2 };
   c.update({ ...dockOn2, cursor: { x: 700, y: 981 }, now: 0 });
   const r = c.update({ ...dockOn2, cursor: { x: 700, y: 981 }, now: 500 });
-  assert.equal(r.revealed, false); assert.equal(r.moveToDisplayId, 1);
+  assert.equal(r.revealed, false); assert.equal(r.cursorDisplayId, 1); // reported so main's follower can move the dock
 });
 test("mode switch: right mode uses the last 2px column and recomputes the window", () => {
   const c = createDockController();
@@ -185,7 +183,4 @@ test("settings override hide delay, zone, autoHide and follow-cursor per update"
   assert.equal(c3.update(at(p, 200, { settings: { zonePx: 6 } })).revealed, true);
   const c4 = createDockController();
   c4.update(at(p, 0)); assert.equal(c4.update(at(p, 200)).revealed, false);
-  // followCursor:false pins the dock to its display
-  const c5 = createDockController();
-  assert.equal(c5.update({ ...base, displays: [D1, D2], cursor: { x: 2000, y: 500 }, now: 0, settings: { followCursor: false } }).moveToDisplayId, null);
 });

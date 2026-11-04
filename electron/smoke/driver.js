@@ -8,17 +8,20 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { execFile, execFileSync } = require("node:child_process");
+const Target = require("./target.js");
 
 app.commandLine.appendSwitch("use-fake-device-for-media-stream");
 app.commandLine.appendSwitch("use-fake-ui-for-media-stream");
 app.setPath("userData", fs.mkdtempSync(path.join(os.tmpdir(), "voi-smoke-"))); // fresh prefs + localStorage
 
-const OUT = path.join(__dirname, "..", "docs", "screens");
+// Verification only: images go to a temp dir unless SMOKE_SAVE_SHOTS=1 (docs/screens is not touched by default).
+const OUT = process.env.SMOKE_SAVE_SHOTS === "1" ? path.join(__dirname, "..", "docs", "screens") : fs.mkdtempSync(path.join(os.tmpdir(), "voi-smoke-shots-"));
 const WARP = process.env.WARP_CURSOR || "/tmp/warp_cursor";
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const report = { steps: [], checks: [] };
 const note = (name, detail) => { report.steps.push({ name, detail }); console.log(`[smoke] ${name}: ${JSON.stringify(detail)}`); };
-const check = (name, ok, detail) => { report.checks.push({ name, ok: Boolean(ok), detail }); console.log(`[smoke] ${ok ? "PASS" : "FAIL"} ${name}${detail === undefined ? "" : ` ${JSON.stringify(detail)}`}`); };
+const check = (name, ok, detail) => {
+  if (!ok && globalThis.__dumpTrace) globalThis.__dumpTrace(name); report.checks.push({ name, ok: Boolean(ok), detail }); console.log(`[smoke] ${ok ? "PASS" : "FAIL"} ${name}${detail === undefined ? "" : ` ${JSON.stringify(detail)}`}`); };
 
 async function main() {
   fs.mkdirSync(OUT, { recursive: true });
@@ -26,28 +29,46 @@ async function main() {
   const backend = createFakeBackend({ port: 0, runtime: process.env.SMOKE_RUNTIME || "dry_run_fake_bot" });
   const port = await backend.listen();
   process.env.VOI_COMMANDER_URL = `http://127.0.0.1:${port}`;
-  const main = require("../main.js");
   const { screen } = require("electron");
   await app.whenReady();
+  const target = Target.pickTarget(screen.getAllDisplays(), screen.getPrimaryDisplay().id, process.env.SMOKE_DISPLAY, screen.getCursorScreenPoint());
+  const main = require("../main.js"); // after whenReady(): main.js picks its display from the cursor, so park the cursor first
+  try { const p = Target.pointIn(target.bounds, 0.5, 0.5); execFileSync(WARP, [String(p.x), String(p.y)]); await sleep(150); } catch { /* no warp helper: cursor stays */ }
   const I = main._internals;
+  globalThis.__dumpTrace = name => { try { const t0 = Date.now(); console.log(`[smoke] TRACE for failed "${name}": cursor=${JSON.stringify(screen.getCursorScreenPoint())} dock=${JSON.stringify(I.dockInfo())}`); for (const e of I.getTrace().slice(-8)) console.log(`[smoke]   trace -${t0 - e.t}ms ${JSON.stringify(e)}`); } catch { /* ignore */ } };
+  const DAEMON = process.env.CURSOR_DAEMON || "/tmp/cursor_daemon";
   const realCursor = fs.existsSync(WARP);
+  // A real mouse under a human hand drifts the pointer between a warp and the check that follows, which makes the dock
+  // (correctly!) follow the cursor to another display. The pinned point is re-asserted every 25 ms by a long-lived helper
+  // so a check sees the position it asked for; drift is counted and reported rather than hidden.
+  const daemon = fs.existsSync(DAEMON) ? require("node:child_process").spawn(DAEMON, [], { stdio: ["pipe", "ignore", "inherit"] }) : null;
+  let pinned = null, drifted = 0;
+  const sendPoint = p => { if (daemon && daemon.stdin.writable) daemon.stdin.write(`${p.x} ${p.y}\n`); else execFileSync(WARP, [String(p.x), String(p.y)]); };
+  const pinTimer = setInterval(() => { if (!pinned) return; const c = screen.getCursorScreenPoint(); if (Math.abs(c.x - pinned.x) > 1 || Math.abs(c.y - pinned.y) > 1) { drifted += 1; sendPoint(pinned); } else if (daemon) sendPoint(pinned); }, 25);
+  app.on("will-quit", () => { clearInterval(pinTimer); if (daemon) daemon.kill(); });
   const warp = async (x, y) => {
-    if (realCursor) { execFileSync(WARP, [String(Math.round(x)), String(Math.round(y))]); I.setFakeCursor(null); } else I.setFakeCursor({ x, y });
+    if (realCursor) { pinned = { x: Math.round(x), y: Math.round(y) }; sendPoint(pinned); I.setFakeCursor(null); } else I.setFakeCursor({ x, y });
     await sleep(60);
   };
   const waitFor = async (fn, label, timeout = 8000) => { const t0 = Date.now(); for (;;) { const value = await fn(); if (value) return value; if (Date.now() - t0 > timeout) throw new Error(`timeout: ${label}`); await sleep(80); } };
   const win = await waitFor(() => I.getMain(), "dock window");
   await waitFor(() => !win.webContents.isLoading(), "renderer load");
-  const overlay = await waitFor(() => I.getOverlay(), "overlay window");
-  await waitFor(() => !overlay.webContents.isLoading(), "overlay load");
+  await waitFor(() => I.getOverlay(), "overlay window");
+  await waitFor(() => !I.getOverlay().webContents.isLoading(), "overlay load");
+  // Overlay windows are created/destroyed as the dock moves between displays (and for 화면=전체): always resolve the live one.
+  const overlay = new Proxy({}, { get: (_t, key) => { const w = I.getOverlay(); const v = w && w[key]; return typeof v === "function" ? v.bind(w) : v; } });
   win.webContents.on("console-message", event => { const e = event && event.level !== undefined ? event : {}; if (e.level === "error" || e.level === 3) note("renderer console error", { message: e.message, line: e.lineNumber }); });
   const js = code => win.webContents.executeJavaScript(code, true);
   const shot = async (name, target = win) => { const image = await target.webContents.capturePage(); const file = path.join(OUT, `${name}.png`); fs.writeFileSync(file, image.toPNG()); note(`capturePage ${name}`, { size: image.getSize() }); };
   const screencapture = name => new Promise(resolve => { const file = path.join(OUT, `${name}.png`); execFile("screencapture", ["-x", file], error => { note(`screencapture ${name}`, { ok: !error }); resolve(!error); }); });
   const info = () => I.dockInfo();
-  const display = screen.getPrimaryDisplay().bounds;
-  note("environment", { realCursorWarp: realCursor, display, electron: process.versions.electron });
+  const display = target.bounds; // the display UNDER TEST (SMOKE_DISPLAY), not necessarily primary / (0,0)
+  const displayInfo = target;
+  note("environment", { realCursorWarp: realCursor, display, displayId: target.id, scaleFactor: target.scaleFactor, allDisplays: screen.getAllDisplays().map(x => ({ id: x.id, bounds: x.bounds, scale: x.scaleFactor })), electron: process.versions.electron });
   await waitFor(() => js("document.getElementById('btn-gear').dataset.backend==='ok'"), "backend dot ok");
+  // Pin the dock to the display under test so a drifting/hand-moved pointer cannot relocate it mid-check; the follow-the-cursor
+  // behaviour has its own section (9b) which switches 모니터 back to 커서.
+  I.applySettings({ layout: { display: `id:${target.id}` } }); await sleep(300);
 
   // ---- 1. collapsed: handle only, click-through, never focused ----
   await warp(display.x + display.width / 2, display.y + display.height / 2);
@@ -112,7 +133,9 @@ async function main() {
   await screencapture("04-thinking-overlay-fullscreen");
   await waitFor(() => js("document.querySelectorAll('.card .op').length>=2"), "two parallel operation rails", 14000);
   await sleep(9000);
+  I.applySettings({ layout: { pinned: true } }); await sleep(500); // the bar would auto-collapse 2.5 s after voice ended
   await screencapture("05-operations-strip-screen");
+  I.applySettings({ layout: { pinned: false } });
   note("intent forwarded", { intents: backend.state.intents.map(i => ({ transcript: i.transcript, tier: i.tool_arguments && i.tool_arguments.command_layer, latency: i.latency_ms })) });
   check("parallel operations rendered as separate rails", await js("document.querySelectorAll('.card .op').length>=2"));
   check("dry-run fake bot is a single small word badge (시뮬)", await js("[...document.querySelectorAll('.word-badge[data-kind=\"sim\"]')].every(n=>n.textContent==='시뮬') && !!document.querySelector('.word-badge[data-kind=\"sim\"]')"));
@@ -239,13 +262,13 @@ async function main() {
   backdrop.destroy();
   await sleep(300);
 
-  // ---- 9. layout: dock position changes live (left / top / right) with correct window geometry ----
-  const wa = screen.getPrimaryDisplay().workArea;
-  for (const dock of ["right", "left", "top"]) {
+  // ---- 9. layout: dock position changes live (left / top / right) with correct window geometry ON THE DISPLAY UNDER TEST ----
+  const Displays = require("../displays.js");
+  for (const dock of ["right", "left", "top", "bottom"]) {
     I.applySettings({ layout: { dock } }); await sleep(500);
     const b = info().bounds;
-    const ok = dock === "right" ? b.x + b.width === display.x + display.width : dock === "left" ? b.x === display.x : b.y === Math.max(display.y, wa.y);
-    check(`dock ${dock}: window flush with that edge`, ok && info().dock === dock, b);
+    const onTarget = screen.getDisplayMatching(b).id === target.id && b.x >= display.x && b.y >= display.y && b.x + b.width <= display.x + display.width && b.y + b.height <= display.y + display.height;
+    check(`dock ${dock}: window flush with that edge of display ${target.id}`, onTarget && Displays.isFlush(dock, target, b) && info().dock === dock, { bounds: b, display });
   }
   I.applySettings({ layout: { dock: "right" } }); await sleep(400);
   const rightTrigger = info().layout.trigger;
@@ -253,10 +276,36 @@ async function main() {
   await waitFor(() => info().revealed, "reveal right edge", 3000);
   await warp(display.x + display.width - 120, rightTrigger.y + rightTrigger.height / 2);
   await sleep(700);
-  await screencapture("09-right-dock");
   I.applySettings({ layout: { dock: "bottom" } });
   await warp(display.x + display.width / 2, display.y + 100);
   await waitFor(() => info().revealed === false, "collapse after layout test", 12000);
+
+  // ---- 9b. multi-display: the dock follows the CURSOR's display (debounced) and the overlay scope setting ----
+  I.applySettings({ layout: { display: "cursor" } }); await sleep(200);
+  const all = screen.getAllDisplays();
+  note("displays", all.map(x => ({ id: x.id, bounds: x.bounds, scale: x.scaleFactor, rotation: x.rotation })));
+  for (const other of all) {
+    const p = Target.pointIn(other.bounds, 0.5, 0.5);
+    await warp(p.x, p.y);
+    await waitFor(() => I.getDockDisplayId() === other.id, `dock follows cursor to display ${other.id}`, 4000).catch(() => {});
+    await sleep(300);
+    const b = info().bounds;
+    check(`cursor on display ${other.id} -> dock window is on display ${other.id}`, I.getDockDisplayId() === other.id && screen.getDisplayMatching(b).id === other.id && Displays.isFlush("bottom", other, b), { dock: I.getDockDisplayId(), bounds: b });
+  }
+  // back to the display under test
+  { const p = Target.pointIn(display, 0.5, 0.5); await warp(p.x, p.y); await waitFor(() => I.getDockDisplayId() === target.id, "dock back on target", 4000); }
+  I.applySettings({ layout: { display: `id:${target.id}` } }); await sleep(300);
+  I.previewRainbow(); await sleep(500);
+  check("rainbow 화면=현재: exactly one overlay, covering the dock's display", I.getOverlays().length === 1 && JSON.stringify(I.getOverlays()[0].getBounds()) === JSON.stringify(display), { overlays: I.getOverlays().map(w => w.getBounds()) });
+  await waitFor(() => I.getOverlayState() === "off", "preview ends", 4000);
+  I.applySettings({ rainbow: { screen: "all" } }); await sleep(600);
+  I.previewRainbow(); await sleep(600);
+  const boundsOf = w => JSON.stringify(w.getBounds());
+  check("rainbow 화면=전체: one overlay window per display, each exactly on its display", I.getOverlays().length === all.length && all.every(x => I.getOverlays().some(w => boundsOf(w) === JSON.stringify(x.bounds))), { overlays: I.getOverlays().map(w => w.getBounds()) });
+  check("rainbow 화면=전체: every overlay is visible, click-through-capable and never focused", I.getOverlays().every(w => w.isVisible() && !w.isFocusable() && !w.isFocused() && w.isAlwaysOnTop()));
+  await waitFor(() => I.getOverlayState() === "off", "preview ends 3", 4000);
+  I.applySettings({ rainbow: { screen: "current" } }); await sleep(500);
+  check("rainbow 화면=현재 again: extra overlay windows are destroyed", I.getOverlays().length === 1, { n: I.getOverlays().length });
 
   // ---- 10. rainbow preview (2s) and per-setting overlay behaviour ----
   I.previewRainbow(); await sleep(600);
@@ -280,6 +329,8 @@ async function main() {
   await sleep(500);
   check("shortcut again stops voice", I.getVoice().snapshot().active === false);
 
+  note("cursor drift corrected", { times: drifted });
+  report.cursorDriftCorrections = drifted;
   fs.writeFileSync(path.join(OUT, "smoke-report.json"), JSON.stringify(report, null, 2));
   const failed = report.checks.filter(c => !c.ok);
   console.log(`[smoke] ${report.checks.length - failed.length}/${report.checks.length} checks passed`);

@@ -13,9 +13,24 @@ orders.
 
 ## Current project state
 
-PR #187 is merged into `main` at `5defea5`. The current follow-up worktree
-contains uncommitted Electron, API-inventory, native-contract, and issue-parser
-changes; it has not been merged yet.
+PRs #187 and #197 are merged into `main`. This branch adds the voice-first
+desktop shell and the Realtime intent path:
+
+- `electron/`: frameless, edge-docked, auto-hide cosmic glass bar (bottom,
+  left, right or top) with adjustable glass opacity and blur behind a gear
+  settings panel, plus a full-display rainbow edge glow while the user speaks.
+- `starcraft_commander/realtime_intent.py` and `POST /api/realtime/session`,
+  `POST /api/realtime/intent`: OpenAI Realtime hears the speech and returns one
+  `submit_command` tool call, lowered into the same `PolicyModulationVector`
+  pipeline as text commands. Responses carry `direct_runtime` so the UI can tell
+  the dry-run fake bot (`dry_run_fake_bot`) from a live runtime.
+- `scripts/bench/` and `docs/voice-intent-benchmark.md`: the accuracy/latency
+  benchmark behind the routing policy.
+- `docs/intent-fidelity-audit.md` and `scripts/fidelity/`: offline
+  utterance-to-evidence replay, with the defects it found and fixed.
+
+None of this is live StarCraft II evidence. The shipped cockpit still runs the
+dry-run fake bot for non-macro commands; the UI marks those as simulation.
 
 The recorded SC2 run at
 `.local/qa30-live-r32-full-20260918-final/final_audit.json` passes all 30
