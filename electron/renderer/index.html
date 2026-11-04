@@ -1,1 +1,92 @@
-<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>voiStarcraft2 Commander</title><link rel="stylesheet" href="./style.css"></head><body><main><header><p class="eyebrow">voiStarcraft2 / DIRECT COMMAND</p><h1>전술 명령창</h1><span id="status">연결 확인 중…</span></header><section class="panel"><form id="command-form"><label for="command">명령</label><div class="row"><input id="command" autocomplete="off" placeholder="예: 앞마당을 방어해"><button>전송</button></div></form><p id="feedback" role="status"></p></section><section class="panel"><h2>최근 응답</h2><pre id="result">아직 명령이 없습니다.</pre></section><section class="panel"><h2>Clarification / lifecycle</h2><p id="lifecycle">이벤트를 기다리는 중…</p><pre id="events">아직 이벤트가 없습니다.</pre></section><section class="panel"><h2>Semantic target pin</h2><form id="pin-form"><div class="row"><input id="pin-name" required maxlength="128" placeholder="이름 (예: 앞마당 입구)"><select id="pin-target" required aria-label="semantic target"><option value="enemy_natural">enemy_natural · 적 앞마당</option><option value="enemy_main">enemy_main · 적 본진</option><option value="enemy_front">enemy_front · 적 전방</option><option value="enemy_ramp">enemy_ramp · 적 입구</option><option value="self_ramp">self_ramp · 우리 입구</option><option value="self_main">self_main · 우리 본진</option><option value="self_natural">self_natural · 우리 앞마당</option><option value="self_third">self_third · 우리 3멀티</option><option value="self_mineral_line">self_mineral_line · 우리 미네랄 라인</option><option value="enemy_mineral_line">enemy_mineral_line · 적 미네랄 라인</option><option value="scout_location">scout_location · 정찰 위치</option><option value="last_seen_enemy_area">last_seen_enemy_area · 마지막 적 위치</option></select><button>저장</button></div></form><p id="pin-feedback" role="status"></p><pre id="registry">registry를 불러오는 중…</pre></section></main><script src="./renderer.js"></script></body></html>
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>voiStarcraft2 Commander</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body data-dock="bottom" data-revealed="false" data-voice="off" data-lang="ko">
+  <div class="handle" id="handle" aria-hidden="true"></div>
+
+  <section class="panel" id="panel" aria-label="voiStarcraft2 Commander">
+    <canvas id="space" aria-hidden="true"></canvas>
+    <div class="sheen" aria-hidden="true"></div>
+
+    <div class="panel-body">
+      <header class="topline">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span class="brand-name">voi<b>Star</b>craft2</span>
+          <span class="brand-sub" data-i18n="brandSub">음성 지휘</span>
+        </div>
+        <div class="chips" role="status" aria-live="polite">
+          <span class="chip" id="chip-backend" data-tone="warn"><i></i><span data-i18n="chipConnecting">연결 확인 중</span></span>
+          <span class="chip" id="chip-runtime" data-tone="muted"><i></i><span>SC2 —</span></span>
+        </div>
+        <div class="top-actions">
+          <button class="icon-btn" id="btn-lang" type="button" title="한국어 / English" aria-label="Language">KO</button>
+          <button class="icon-btn" id="btn-pin" type="button" aria-pressed="false" data-i18n-title="pinHint" title="항상 표시">
+            <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M7 3h6l-1 5 3 3H5l3-3-1-5Zm3 8v6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button class="icon-btn" id="btn-dock" type="button" data-i18n-title="dockSwitch" title="도킹 위치 전환">
+            <svg class="dock-ico-bottom" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M2.5 12h15" stroke="currentColor" stroke-width="1.5"/></svg>
+            <svg class="dock-ico-right" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M12.5 3.5v13" stroke="currentColor" stroke-width="1.5"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <div class="glass-ctl" id="glass-ctl" role="group" aria-label="투명도">
+        <label><span data-i18n="glassOpacity">투명도</span><input id="rng-alpha" type="range" min="8" max="90" step="1" value="28"><output id="out-alpha">28%</output></label>
+        <label><span data-i18n="glassBlur">블러</span><input id="rng-blur" type="range" min="0" max="40" step="1" value="12"><output id="out-blur">12px</output></label>
+        <button class="toggle" id="btn-vibrancy" type="button" aria-pressed="false" hidden data-i18n="vibrancy" data-i18n-title="vibrancyHint" title="macOS 네이티브 배경 블러">네이티브 블러</button>
+      </div>
+
+      <section class="deck" id="deck" aria-label="명령 실행 단계" aria-live="polite">
+        <div class="empty" id="deck-empty">
+          <p class="empty-title" data-i18n="emptyTitle">말하거나 입력하면 여기에 실행 단계가 표시됩니다</p>
+          <p class="empty-sub" data-i18n="emptySub">들음 → 이해 → 배정 → 명령 → 효과 확인. 백엔드가 보고한 단계만 표시합니다.</p>
+        </div>
+        <div class="cards" id="cards"></div>
+        <div class="squads" id="squads">
+          <div class="side-head"><h2 data-i18n="opsTitle">작전 · 분대</h2><span class="count" id="ops-count">0</span></div>
+          <ul class="ops" id="ops"></ul>
+          <p class="side-empty" id="ops-empty" data-i18n="opsEmpty">활성 작전이 없습니다</p>
+          <h3 class="side-sub" data-i18n="eventsTitle">최근 이벤트</h3>
+          <ol class="events" id="events"></ol>
+          <p class="side-empty" id="events-empty" data-i18n="eventsEmpty">수신한 이벤트가 없습니다</p>
+        </div>
+      </section>
+
+      <footer class="dock" id="dock">
+        <button class="orb" id="orb" type="button" aria-pressed="false" data-i18n-aria="orbLabel" aria-label="음성 명령 켜기">
+          <span class="orb-halo" aria-hidden="true"></span>
+          <span class="orb-core" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22"><path d="M12 15.5a3.5 3.5 0 0 0 3.5-3.5V6.5a3.5 3.5 0 1 0-7 0V12a3.5 3.5 0 0 0 3.5 3.5Z" fill="currentColor"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          </span>
+        </button>
+        <div class="dock-main">
+          <div class="voice-line">
+            <span class="voice-badge" id="voice-badge" data-i18n="voiceIdle">음성 꺼짐</span>
+            <p class="transcript" id="transcript" data-placeholder="true" data-i18n="transcriptPlaceholder">마이크를 켜면 말하는 즉시 받아 적습니다</p>
+          </div>
+          <form class="cmd-form" id="cmd-form" autocomplete="off">
+            <input id="cmd-input" type="text" maxlength="2000" spellcheck="false" data-i18n-placeholder="inputPlaceholder" placeholder="직접 입력 — 예: 마린 두 기는 정찰, 네 기는 오른쪽 길로 공격">
+            <button class="send" type="submit" data-i18n="send">전송</button>
+          </form>
+        </div>
+        <button class="retreat" id="btn-retreat" type="button" data-i18n-title="retreatHint" title="긴급 후퇴 명령을 즉시 전송">
+          <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M11.5 4.5 6 10l5.5 5.5M6.5 10H17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span data-i18n="retreat">긴급 후퇴</span>
+        </button>
+      </footer>
+    </div>
+  </section>
+
+  <script src="./stages.js"></script>
+  <script src="./i18n.js"></script>
+  <script src="./space.js"></script>
+  <script src="./mic.js"></script>
+  <script src="./renderer.js"></script>
+</body>
+</html>

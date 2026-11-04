@@ -1,0 +1,306 @@
+{
+  "steps": [
+    {
+      "name": "environment",
+      "detail": {
+        "realCursorWarp": true,
+        "display": {
+          "x": 0,
+          "y": 0,
+          "width": 1512,
+          "height": 982
+        },
+        "electron": "36.9.5"
+      }
+    },
+    {
+      "name": "screencapture 01-collapsed-handle",
+      "detail": {
+        "ok": true
+      }
+    },
+    {
+      "name": "screencapture 02-hover-revealed-bar",
+      "detail": {
+        "ok": true
+      }
+    },
+    {
+      "name": "screencapture 03-listening-overlay-fullscreen",
+      "detail": {
+        "ok": true
+      }
+    },
+    {
+      "name": "screencapture 04-thinking-overlay-fullscreen",
+      "detail": {
+        "ok": true
+      }
+    },
+    {
+      "name": "screencapture 05-operations-strip-screen",
+      "detail": {
+        "ok": true
+      }
+    },
+    {
+      "name": "intent forwarded",
+      "detail": {
+        "intents": [
+          {
+            "transcript": "마린 두 기는 정찰하고 네 기는 오른쪽 길로 공격",
+            "tier": "operation",
+            "latency": {
+              "speech_end_to_tool_call": 11003,
+              "speech_ms": 6005,
+              "transcript_wait": 0,
+              "tool_call_to_publish": null
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "before input click",
+      "detail": {
+        "revealed": true,
+        "ignoring": false,
+        "inputRect": {
+          "x": 453.75,
+          "y": 595.625
+        },
+        "wb": {
+          "x": 339,
+          "y": -640,
+          "width": 980,
+          "height": 640
+        }
+      }
+    },
+    {
+      "name": "screencapture 08-right-sidebar-screen",
+      "detail": {
+        "ok": true
+      }
+    },
+    {
+      "name": "screencapture 09-glass-alpha-10",
+      "detail": {
+        "ok": true
+      }
+    },
+    {
+      "name": "screencapture 09-glass-alpha-28",
+      "detail": {
+        "ok": true
+      }
+    },
+    {
+      "name": "screencapture 09-glass-alpha-60",
+      "detail": {
+        "ok": true
+      }
+    },
+    {
+      "name": "screencapture 09-glass-alpha-90",
+      "detail": {
+        "ok": true
+      }
+    }
+  ],
+  "checks": [
+    {
+      "name": "collapsed: panel not revealed",
+      "ok": true
+    },
+    {
+      "name": "collapsed: window is click-through",
+      "ok": true
+    },
+    {
+      "name": "collapsed: window not focusable and not focused",
+      "ok": true,
+      "detail": {
+        "focusable": false,
+        "focused": false
+      }
+    },
+    {
+      "name": "window is the fixed dock footprint (bottom mode)",
+      "ok": true,
+      "detail": {
+        "x": 266,
+        "y": 342,
+        "width": 980,
+        "height": 640
+      }
+    },
+    {
+      "name": "hover reveals the bar (reason edge)",
+      "ok": true,
+      "detail": {
+        "reason": "edge"
+      }
+    },
+    {
+      "name": "hover did NOT take focus",
+      "ok": true,
+      "detail": {
+        "focused": false,
+        "focusable": false,
+        "appFocusedWindow": false
+      }
+    },
+    {
+      "name": "no focused BrowserWindow after hover",
+      "ok": true
+    },
+    {
+      "name": "cursor over panel -> window interactive",
+      "ok": true
+    },
+    {
+      "name": "still open 300ms after leaving (debounce)",
+      "ok": true
+    },
+    {
+      "name": "collapsed after cursor left",
+      "ok": true
+    },
+    {
+      "name": "mic audio reached the fake realtime socket",
+      "ok": true,
+      "detail": {
+        "bytes": 2400,
+        "chunks": 1
+      }
+    },
+    {
+      "name": "voice listening keeps the dock revealed with cursor elsewhere",
+      "ok": true,
+      "detail": {
+        "reason": "attention"
+      }
+    },
+    {
+      "name": "overlay: listening, visible, alwaysOnTop, non-focusable, not focused",
+      "ok": true,
+      "detail": {
+        "bounds": {
+          "x": 0,
+          "y": 0,
+          "width": 1512,
+          "height": 982
+        }
+      }
+    },
+    {
+      "name": "overlay covers the full display bounds",
+      "ok": true,
+      "detail": {
+        "overlay": {
+          "x": 0,
+          "y": 0,
+          "width": 1512,
+          "height": 982
+        },
+        "display": {
+          "x": 0,
+          "y": 0,
+          "width": 1512,
+          "height": 982
+        }
+      }
+    },
+    {
+      "name": "dock window still not focused during voice",
+      "ok": true
+    },
+    {
+      "name": "parallel operations rendered as separate rails",
+      "ok": true
+    },
+    {
+      "name": "dry-run fake bot is labelled as simulation",
+      "ok": true
+    },
+    {
+      "name": "blocked reason from backend is visible",
+      "ok": true
+    },
+    {
+      "name": "no real 'Effect observed' shown for fake bot",
+      "ok": true
+    },
+    {
+      "name": "clicking the input grants focus",
+      "ok": true,
+      "detail": {
+        "focusable": true,
+        "focused": true
+      }
+    },
+    {
+      "name": "collapse releases focus (focusable false, not focused)",
+      "ok": true,
+      "detail": {
+        "focusable": false,
+        "focused": false
+      }
+    },
+    {
+      "name": "missing direct_runtime shows 'runtime unknown' badge",
+      "ok": true
+    },
+    {
+      "name": "right mode: window spans the work-area height at the right edge",
+      "ok": true,
+      "detail": {
+        "x": 1122,
+        "y": 38,
+        "width": 390,
+        "height": 944
+      }
+    },
+    {
+      "name": "right mode reveals",
+      "ok": true
+    },
+    {
+      "name": "mode persisted to userData",
+      "ok": true
+    },
+    {
+      "name": "glass 10%: CSS variable applied live",
+      "ok": true
+    },
+    {
+      "name": "glass 28%: CSS variable applied live",
+      "ok": true
+    },
+    {
+      "name": "glass 60%: CSS variable applied live",
+      "ok": true
+    },
+    {
+      "name": "glass 90%: CSS variable applied live",
+      "ok": true
+    },
+    {
+      "name": "opacity shortcut nudges alpha by 5%",
+      "ok": true,
+      "detail": {
+        "before": 0.9,
+        "after": 0.85
+      }
+    },
+    {
+      "name": "shortcut opens the dock and starts voice",
+      "ok": true
+    },
+    {
+      "name": "shortcut again stops voice",
+      "ok": true
+    }
+  ]
+}
