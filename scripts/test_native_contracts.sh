@@ -2,8 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-REPO_ROOT="$(cd "${ROOT_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ROOT_DIR="${REPO_ROOT}/integrations/micromachine"
 BUILD_DIR="${MICROMACHINE_NATIVE_TEST_BUILD_DIR:-${TMPDIR:-/tmp}/voi-micromachine-native-contracts}"
 mkdir -p "${BUILD_DIR}"
 

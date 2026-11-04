@@ -18,3 +18,4 @@ battlefield-browser-artifacts/
 !.env.example
 credentials.json
 *.credentials.json
+node_modules/

@@ -153,7 +153,8 @@ gate, and human multiplayer is deferred.
 ## Wiring Steps
 
 The runtime-independent native contract helpers can be compiled and exercised
-with `scripts/test_native_contracts.sh`. This verifies terminal lease
+with the repository-level `scripts/test_native_contracts.sh` (a development
+script, intentionally not shipped in the distribution). This verifies terminal lease
 deduplication, runtime-epoch reconnect handling, ownership release/resume
 callbacks, and conjunctive operation completion without pretending that the
 upstream game loop itself was rebuilt.

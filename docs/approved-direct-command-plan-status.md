@@ -8,7 +8,7 @@
 - PR #187: `main`에 머지되었다. merge commit은
   `5defea51f0d427d5a68da87178e65d045915bc81`이다. 머지 후 Main CI
   `38908358413`과 final-pre-live `38908358019`가 모두 성공했다. 배포
-  검증의 trusted verifier pin은 `db8067cf0cce2dbbaea2bb8f0d1f67dd7a6a50b5`다.
+  검증의 trusted verifier pin은 `5defea51f0d427d5a68da87178e65d045915bc81`다.
 - CTest 4.4.3의 성공 요약 형식(`100% tests passed out of 10`)을 후보
   provenance parser가 엄격하게 수용하도록 `479c0f1`에서 보강했다
   (관련 집중 검증 `21 passed, 2 skipped, 20 subtests`). 단, 필수
