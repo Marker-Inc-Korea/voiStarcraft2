@@ -74,16 +74,20 @@ expiry, back-off reconnect, session rotation after 55 min. Only the microphone p
 
 ## Verification
 
-`npm test` (83 tests: validators, settings schema, dock logic, voice state machine + client on a fake `ws`, stage
-derivation, window flags). Real-Electron smoke against a fake backend (not SC2 evidence):
+`npm test` runs the pure unit tests (validators, settings schema, dock and multi-display logic, voice state machine
+and client on a fake `ws`, stage derivation, window flags). They never launch Electron or touch the pointer.
+
+The real-Electron smoke runs take over the mouse pointer and capture the screen, so run them only when the Mac is
+otherwise idle. Screenshots go to a temp dir unless `SMOKE_SAVE_SHOTS=1`; saved captures show your desktop and are
+git-ignored (`docs/screens/`, `docs/e2e/*.png`).
 
 ```
-swiftc -O smoke/warp_cursor.swift -o /tmp/warp_cursor   # real cursor moves via CoreGraphics
-npx electron smoke/driver.js          # 57 checks + docs/screens/*.png
-npx electron smoke/overlay_shots.js   # edge glow over bright/dark backdrops
+swiftc -O smoke/warp_cursor.swift -o /tmp/warp_cursor
+SMOKE_DISPLAY=primary npx electron smoke/driver.js      # also: SMOKE_DISPLAY=1, SMOKE_DISPLAY=2
+npx electron smoke/overlay_shots.js
 
-# REAL end-to-end (real web_gui --dry-run + real Realtime proxy + TTS wav as the Chromium mic); see docs/e2e/RESULTS.md
+# real end-to-end: real web_gui --dry-run + real Realtime proxy + TTS wav as the Chromium mic (docs/e2e/RESULTS.md)
 E2E_NAME=u1_scout_attack VOI_COMMANDER_URL=http://127.0.0.1:18765 npx electron smoke/e2e_real.js
 ```
 
-The microphone in smoke is Chromium's fake device; real speech, real SC2 and macOS fullscreen-app overlay are unverified.
+Not verified: real microphone speech, real SC2, the overlay over macOS fullscreen apps, canvas CPU cost.
