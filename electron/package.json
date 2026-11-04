@@ -1,1 +1,1 @@
-{"name":"voistarcraft2-electron","version":"0.1.0","private":true,"main":"main.js","scripts":{"start":"electron .","test":"node --test"},"devDependencies":{"electron":"^36.0.0"}}
+{"name":"voistarcraft2-electron","version":"0.2.0","private":true,"main":"main.js","scripts":{"start":"electron .","test":"node --test","smoke":"electron smoke/driver.js"},"dependencies":{"ws":"^8.18.0"},"devDependencies":{"electron":"^36.0.0"}}

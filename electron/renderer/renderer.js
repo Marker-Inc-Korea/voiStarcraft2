@@ -1,16 +1,485 @@
 "use strict";
-const statusNode=document.getElementById("status"),feedback=document.getElementById("feedback"),result=document.getElementById("result"),lifecycle=document.getElementById("lifecycle"),eventsNode=document.getElementById("events"),registryNode=document.getElementById("registry");
-async function refreshStatus(){try{const [value,runtime]=await Promise.all([window.commander.status(),window.commander.runtimeStatus()]);const runtimeState=runtime?.status||"unknown";statusNode.textContent="Commander 응답: "+(value.status||"수신됨")+" · SC2 "+runtimeState;statusNode.title=JSON.stringify({commander:value,runtime}); }catch(error){statusNode.textContent="Commander 연결 실패";}}
-let historyCursor=0;
-async function refreshRegistry(){try{registryNode.textContent=JSON.stringify(await window.commander.registry(),null,2);}catch(error){registryNode.textContent=`registry 오류: ${error.message}`;}}
-async function refreshEvents(){try{const value=await window.commander.events(historyCursor);const items=Array.isArray(value.events)?value.events:[];const reportedLatest=Number(value.latest);if(Number.isFinite(reportedLatest))historyCursor=Math.max(historyCursor,reportedLatest);if(items.length){historyCursor=Math.max(historyCursor,...items.map(item=>Number(item.seq||item.sequence||item.id||0)).filter(Number.isFinite));eventsNode.textContent=JSON.stringify(items.slice(-20),null,2);const latest=items[items.length-1];const text=latest?.clarification_prompt||latest?.message||latest?.status||latest?.event_type||"이벤트 수신";lifecycle.textContent=text;}}catch(error){lifecycle.textContent=`이벤트 오류: ${error.message}`;}}
-document.getElementById("command-form").addEventListener("submit",async event=>{event.preventDefault();const input=document.getElementById("command"),text=input.value.trim();if(!text)return;feedback.textContent="명령을 해석하고 있습니다…";try{const value=await window.commander.sendCommand(text);result.textContent=JSON.stringify(value,null,2);feedback.textContent="요청 전달됨 — 게임 완료 여부는 실행 상태로 확인합니다.";input.value="";}catch(error){feedback.textContent=`전달 실패: ${error.message}`;}});
-let polling = false;
-async function poll() {
-  if (polling) return;
-  polling = true;
-  try { await refreshStatus(); } finally { polling = false; }
-}
-poll(); setInterval(poll, 2000);
-document.getElementById("pin-form").addEventListener("submit",async event=>{event.preventDefault();const name=document.getElementById("pin-name").value.trim(),target=document.getElementById("pin-target").value.trim(),pinFeedback=document.getElementById("pin-feedback");try{await window.commander.registerTargetPin({name,target,metadata:{source:"electron"}});pinFeedback.textContent="semantic target pin 저장됨";await refreshRegistry();}catch(error){pinFeedback.textContent=`저장 실패: ${error.message}`;}});
-setInterval(refreshEvents,2000);refreshRegistry();refreshEvents();
+// Renderer: pure view over IPC. It never touches the network; every fact shown here comes from the
+// backend (via window.commander) or is labelled as local (heard text, send failures).
+// The in-game surface is words only: orb, one-line transcript, input, retreat, gear. Everything else lives in settings.
+(function () {
+  const api = window.commander;
+  const { deriveCommand, normalizeTier } = window.VoiStages;
+  const S = window.VoiSettings;
+  const i18n = window.VoiI18n.create("ko");
+  const t = (key, vars) => i18n.t(key, vars);
+  const $ = id => document.getElementById(id);
+  const body = document.body;
+  const root = document.documentElement.style;
+  const MAX_CARDS = 12;
+  const POLL_ACTIVE_MS = 900, POLL_IDLE_MS = 3000;
+
+  const state = {
+    cards: [], nextKey: 1, status: null, backendOk: null, runtime: null, voice: { state: "idle", active: false, reason: "" },
+    transcript: { text: "", partial: false }, dock: { revealed: false, dock: "bottom", settingsOpen: false },
+    settings: S.defaults(), env: { shortcut: {}, displays: [], model: "", platform: "", vibrancySupported: false, baseUrl: "" },
+    tab: "glass", latencies: [], level: 0, devices: [], server: { state: "checking" }, recording: false, resetArmed: false,
+  };
+  const cardEls = new Map();
+  body.dataset.platform = api.platform === "darwin" ? "darwin" : "other";
+
+  // ---------- tiny DOM helper (no innerHTML) ----------
+  function h(tag, attrs, ...children) {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) {
+      if (v === undefined || v === null || v === false) continue;
+      if (k === "class") el.className = v;
+      else if (k === "text") el.textContent = v;
+      else if (k.startsWith("data-") || k.startsWith("aria-") || k === "title" || k === "role" || k === "type" || k === "min" || k === "max" || k === "step") el.setAttribute(k, v === true ? "" : String(v));
+      else el[k] = v;
+    }
+    for (const child of children.flat()) if (child !== undefined && child !== null && child !== false) el.append(child.nodeType ? child : document.createTextNode(String(child)));
+    return el;
+  }
+
+  // ---------- applying settings: CSS variables only, so everything is live with no reload ----------
+  function applySettingsToCss() {
+    const g = state.settings.glass, l = state.settings.layout;
+    const alpha = g.alpha;
+    root.setProperty("--glass-alpha", String(alpha));
+    root.setProperty("--glass-blur", `${g.blur}px`);
+    root.setProperty("--legible", (Math.min(0.95, 0.45 + (1 - alpha) * 0.6)).toFixed(2));
+    root.setProperty("--scrim", (0.22 + (1 - alpha) * 0.3).toFixed(2));
+    root.setProperty("--hue", String(g.hue));
+    root.setProperty("--sat", `${g.saturation}%`);
+    root.setProperty("--border-glow", String(g.borderGlow / 100));
+    root.setProperty("--radius", `${g.radius}px`);
+    root.setProperty("--text", `${g.textSize}px`);
+    root.setProperty("--gap", `${l.margin}px`);
+    body.dataset.dock = l.dock;
+    body.dataset.motion = g.reduceMotion ? "off" : "on";
+    window.VoiSpace.configure({ stars: g.stars / 100, speed: g.starSpeed / 100, nebula: g.nebula / 100, hue: g.hue, saturation: g.saturation / 100, still: g.reduceMotion });
+    reportRect();
+  }
+
+  // ---------- cards: operation name, one-word tier, 5-dot rail, one-word blocked reason ----------
+  function addCard(card) {
+    const entry = { key: state.nextKey++, at: Date.now(), text: "", source: "text", updateId: "", tier: "", error: "", latency: null, listening: false, lastView: null, ...card };
+    state.cards.push(entry);
+    while (state.cards.length > MAX_CARDS) { const old = state.cards.shift(); const el = cardEls.get(old.key); if (el) el.remove(); cardEls.delete(old.key); }
+    renderCards();
+    return entry;
+  }
+  const voiceCards = new Map(); // realtime turn id -> card
+
+  function viewFor(card) {
+    const derived = deriveCommand(card, state.status);
+    let rails;
+    if (derived.kind === "operations") {
+      rails = derived.rails.map(({ op, rail }) => ({ op, rail, stale: false }));
+      card.lastView = rails.map(({ op, rail }) => ({ op, rail }));
+    } else if (card.lastView) rails = card.lastView.map(item => ({ ...item, stale: true }));
+    else rails = [{ op: null, rail: derived.rail, stale: false }];
+    return { rails };
+  }
+  function tierBadge(tier) {
+    const key = normalizeTier(tier);
+    return h("span", { class: "tier", "data-tier": key || "unknown", text: key ? t(`tier_${key}`) : t("tier_unknown") });
+  }
+  const opName = (op, fallback) => {
+    if (!op) return fallback || "";
+    const vector = (op.update && op.update.vector) || {};
+    return String(vector.goal || op.command_text || op.operation_id || fallback || "").slice(0, 60);
+  };
+  function rail5(rail) {
+    return h("ol", { class: "rail", "data-effect": rail.effectObserved ? "yes" : "no" }, rail.stages.map(stage => h("li", { class: "stage", "data-state": stage.state, "data-stage": stage.id },
+      h("span", { class: "node", "aria-hidden": "true" }), h("span", { class: "label", text: t(`stage_${stage.id}`) }))));
+  }
+  function railBlock(item, card) {
+    const { op, rail, stale } = item;
+    const reason = rail.blocked || rail.ended ? (rail.reason || card.error) : "";
+    const tier = rail.tier || card.tier;
+    const sim = rail.runtime === "dry_run_fake_bot";
+    const unknown = rail.runtime === "unknown" && normalizeTier(tier) && normalizeTier(tier) !== "macro";
+    return h("div", { class: "op", "data-state": rail.blocked ? "blocked" : rail.ended ? "ended" : "live", "data-stale": stale ? "yes" : "no" },
+      h("div", { class: "op-head" }, h("span", { class: "op-name", text: opName(op, card.text) }), tierBadge(tier),
+        sim ? h("span", { class: "word-badge", "data-kind": "sim", text: t("sim") }) : null,
+        unknown ? h("span", { class: "word-badge", "data-kind": "unknown", text: t("runtimeUnknown") }) : null),
+      rail5(rail),
+      rail.blocked || rail.ended ? h("span", { class: "reason", "data-kind": rail.blocked ? "blocked" : "ended", title: reason || "", text: rail.blocked ? i18n.reason(reason) : t("ended") }) : null);
+  }
+  function renderCard(card) {
+    const view = viewFor(card);
+    notifyAttention(card, view);
+    const signature = JSON.stringify([i18n.lang, card.directRuntime, card.directExecuted, card.text, card.listening, card.tier, card.error, view.rails.map(r => [r.rail, r.stale, r.op && r.op.operation_id, opName(r.op)])]);
+    let el = cardEls.get(card.key);
+    if (el && el.dataset.sig === signature) return el;
+    const created = !el;
+    if (!el) { el = h("article", { class: "card", "data-key": card.key }); cardEls.set(card.key, el); }
+    el.dataset.sig = signature;
+    const parallel = view.rails.length > 1;
+    const overall = view.rails.some(r => r.rail.blocked) ? "blocked" : view.rails.every(r => r.rail.effectObserved) ? "effect" : view.rails.some(r => r.rail.effectObserved) ? "partial" : "live";
+    el.dataset.overall = overall;
+    el.dataset.count = String(view.rails.length);
+    const showHead = parallel || card.source === "voice";
+    el.replaceChildren(...[
+      showHead ? h("p", { class: "utterance", text: card.text || (card.listening ? t("listening") : "…") }) : null,
+      h("div", { class: "ops-grid", "data-count": view.rails.length }, view.rails.map(item => railBlock(item, card))),
+    ].filter(Boolean));
+    if (created) el.classList.add("enter");
+    return el;
+  }
+  function renderCards() {
+    const host = $("cards");
+    [...state.cards].reverse().forEach((card, index) => {
+      const el = renderCard(card);
+      if (host.children[index] !== el) host.insertBefore(el, host.children[index] || null);
+    });
+  }
+
+  // ---------- bar: transcript, orb, gear dot ----------
+  function renderVoice() {
+    const v = state.voice;
+    body.dataset.voice = v.active ? v.state : "off";
+    const orb = $("orb");
+    orb.setAttribute("aria-pressed", v.active ? "true" : "false");
+    const line = $("transcript");
+    let text = state.transcript.text;
+    if (v.active && v.state === "error") text = v.reason || t("error");
+    else if (v.active && !text) text = v.state === "listening" ? t("listening") : v.state === "connecting" ? t("connecting") : "";
+    line.textContent = text;
+    line.dataset.empty = text ? "false" : "true";
+    line.dataset.partial = state.transcript.partial ? "true" : "false";
+    line.dataset.error = v.active && v.state === "error" ? "true" : "false";
+  }
+  function renderBackend() {
+    $("btn-gear").dataset.backend = state.backendOk === null ? "unknown" : state.backendOk ? "ok" : "bad";
+    $("retreat-word").textContent = t("retreat");
+    $("cmd-input").placeholder = t("command");
+    $("cmd-input").setAttribute("aria-label", t("command"));
+    $("btn-gear").setAttribute("aria-label", t("settings"));
+    $("orb").setAttribute("aria-label", t("mic"));
+  }
+
+  // ---------- backend polling ----------
+  function hasOpenCommands() {
+    return state.cards.some(card => {
+      if (card.error) return false;
+      return viewFor(card).rails.some(item => !item.rail.blocked && !item.rail.ended && !item.rail.completed && !item.rail.effectObserved);
+    });
+  }
+  async function pollStatus() {
+    try { state.status = await api.status(); state.backendOk = true; } catch { state.backendOk = false; }
+    renderBackend(); renderCards();
+  }
+  let statusTimer = 0;
+  function schedule() {
+    clearTimeout(statusTimer);
+    statusTimer = setTimeout(async () => { if (!document.hidden) await pollStatus(); schedule(); }, hasOpenCommands() || state.voice.state === "acting" ? POLL_ACTIVE_MS : POLL_IDLE_MS);
+  }
+  function pokeSoon() { clearTimeout(statusTimer); statusTimer = setTimeout(async () => { await pollStatus(); schedule(); }, 250); }
+
+  // ---------- commands ----------
+  // Fold a modulate/intent response into a card without inventing success.
+  function applyResponse(card, response) {
+    response = response || {};
+    card.updateId = String(response.update_id || card.updateId || "");
+    if (response.direct_runtime && typeof response.direct_runtime === "object") card.directRuntime = response.direct_runtime;
+    if (response.tier) card.tier = normalizeTier(response.tier);
+    if (response.status === "direct_executed") card.directExecuted = true;
+    if (card.tier === "emergency") api.dock.attention("emergency");
+    const refused = response.accepted === false || response.ok === false || response.status === "refused" || /conflict|failed|rejected/.test(String(response.status || "")) || response.error;
+    if (refused) card.error = String(response.error || response.refusal_reason || (response.compile_result && response.compile_result.refusal_reason) || response.status || "failed");
+  }
+  async function submitText(text, extra) {
+    const card = addCard({ text, source: "text", ...extra });
+    if (extra && extra.tier === "emergency") api.dock.attention("emergency");
+    try {
+      applyResponse(card, await api.sendCommand(text, i18n.lang));
+    } catch (error) { api.dock.attention("error"); card.error = String((error && error.message) || error).replace(/^Error invoking remote method '[^']+': (Error: )?/, ""); }
+    renderCards(); pokeSoon();
+  }
+  function onPush(event) {
+    if (!event || typeof event !== "object") return;
+    if (event.type === "voice-state") {
+      const prev = state.voice;
+      state.voice = { state: event.state, active: Boolean(event.active), reason: event.reason || "" };
+      if (state.voice.active && !window.VoiMic.running && !micStarting) startMic();
+      if (!state.voice.active && window.VoiMic.running) window.VoiMic.stop();
+      if (prev.state !== "acting" && state.voice.state === "acting") pokeSoon();
+      renderVoice(); schedule();
+    } else if (event.type === "dock-state") applyDock(event);
+    else if (event.type === "settings") applyEnvelope(event);
+    else if (event.type === "session") { state.env.model = event.model || state.env.model; if (state.dock.settingsOpen) renderSettings(); }
+    else if (event.type === "transcript") {
+      let card = voiceCards.get(event.turn);
+      if (!card) { card = addCard({ source: "voice", listening: true }); voiceCards.set(event.turn, card); state.transcript = { text: "", partial: true }; }
+      if (event.text) { card.text = event.text; state.transcript = { text: event.text, partial: Boolean(event.partial) }; }
+      if (event.final) card.listening = false;
+      renderVoice(); renderCards();
+    } else if (event.type === "intent") {
+      let card = voiceCards.get(event.turn);
+      if (!card) card = addCard({ source: "voice" });
+      voiceCards.set(event.turn, card);
+      card.listening = false;
+      if (event.transcript && !card.text) { card.text = event.transcript; state.transcript = { text: event.transcript, partial: false }; }
+      if (event.latency_ms) { card.latency = event.latency_ms; state.latencies.push(event.latency_ms); state.latencies = state.latencies.slice(-10); }
+      if (event.tier) card.tier = normalizeTier(event.tier);
+      if (event.ok && event.response) applyResponse(card, event.response);
+      else { api.dock.attention("error"); card.error = String(event.error || event.kind || "failed"); }
+      renderVoice(); renderCards(); pokeSoon();
+      if (state.dock.settingsOpen && state.tab === "voice") renderSettings();
+    }
+  }
+
+  // ---------- mic / voice ----------
+  let micStarting = false, pttHeld = false;
+  async function startMic() {
+    micStarting = true;
+    try { await window.VoiMic.start(chunk => api.voice.sendAudio(chunk), level => { state.level = level; api.voice.sendLevel(level); paintLevel(); }, state.settings.voice.device); }
+    catch (error) { api.voice.micError(String((error && error.name === "NotAllowedError" ? "denied" : error && error.message) || error)); }
+    finally { micStarting = false; }
+  }
+  async function toggleVoice() {
+    try { if (state.voice.active) await api.voice.stop(); else await api.voice.start(); }
+    catch (error) { state.voice = { state: "error", active: true, reason: String((error && error.message) || error) }; renderVoice(); }
+  }
+  async function restartMic() { if (window.VoiMic.running) { window.VoiMic.stop(); await startMic(); } }
+
+  // ---------- dock ----------
+  function applyDock(next) {
+    if (!next) return;
+    const wasRevealed = state.dock.revealed;
+    state.dock = { revealed: Boolean(next.revealed), dock: next.dock || state.dock.dock, settingsOpen: Boolean(next.settingsOpen), reason: next.reason || "" };
+    body.dataset.revealed = String(state.dock.revealed);
+    body.dataset.settings = state.dock.settingsOpen ? "open" : "closed";
+    $("btn-gear").setAttribute("aria-pressed", String(state.dock.settingsOpen));
+    if (state.dock.revealed && !wasRevealed) pollStatus();
+    if (!state.dock.revealed && wasRevealed && document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    if (state.dock.settingsOpen) renderSettings();
+    reportRect();
+  }
+  let lastRect = "";
+  function reportRect() {
+    const panel = $("panel");
+    // offset* ignores the CSS slide transform, so main always gets the revealed layout rectangle.
+    const rect = { x: panel.offsetLeft, y: panel.offsetTop, width: panel.offsetWidth, height: panel.offsetHeight };
+    const key = JSON.stringify(rect);
+    if (key !== lastRect && rect.width > 0 && rect.height > 0) { lastRect = key; api.dock.reportRect(rect); }
+  }
+  new ResizeObserver(reportRect).observe($("panel"));
+  const attentionSeen = new Map();
+  function notifyAttention(card, view) {
+    const summary = view.rails.map(item => item.rail.stages.map(stage => stage.state[0]).join("")).join("|");
+    const prev = attentionSeen.get(card.key);
+    attentionSeen.set(card.key, summary);
+    if (prev === undefined || prev === summary) return;
+    const blocked = view.rails.some(item => item.rail.blocked);
+    const emergency = view.rails.some(item => item.rail.tier === "emergency") || card.tier === "emergency";
+    api.dock.attention(blocked ? "blocked" : emergency ? "emergency" : "stage");
+  }
+
+  // ---------- settings panel (generated from the schema; words, sliders with numbers, toggles; no prose) ----------
+  const TABS = ["glass", "layout", "rainbow", "voice", "server", "reset"];
+  let pending = {}, pendingTimer = 0;
+  function patch(group, key, value) {
+    state.settings[group][key] = value; // optimistic: the bar updates before the round trip
+    applySettingsToCss();
+    pending[group] = { ...(pending[group] || {}), [key]: value };
+    clearTimeout(pendingTimer);
+    pendingTimer = setTimeout(async () => {
+      const send = pending; pending = {};
+      try { applyEnvelope(await api.settings.set(send)); } catch { api.settings.get().then(applyEnvelope).catch(() => {}); }
+    }, 60);
+  }
+  function applyEnvelope(envelope) {
+    if (!envelope || !envelope.settings) return;
+    if (!Object.keys(pending).length) state.settings = envelope.settings;
+    state.env = { ...state.env, ...envelope.status };
+    i18n.set(state.settings.voice.language === "en" ? "en" : "ko");
+    applySettingsToCss(); renderBackend(); renderCards(); renderVoice();
+    if (state.dock.settingsOpen && !isDragging()) renderSettings();
+  }
+  let dragging = false;
+  const isDragging = () => dragging;
+  const fmt = (spec, value) => `${spec.scale ? Math.round(value * spec.scale) : value}${spec.unit ? ` ${spec.unit}` : ""}`.replace(" %", "%");
+  function slider(group, key) {
+    const spec = S.SCHEMA[group][key];
+    const scale = spec.scale || 1;
+    const value = state.settings[group][key];
+    const out = h("output", { text: fmt(spec, value) });
+    const input = h("input", { type: "range", min: String(spec.min * scale), max: String(spec.max * scale), step: spec.integer || scale > 1 ? "1" : "0.01", value: String(Math.round(value * scale * 100) / 100), "aria-label": t(`${group}_${key}`) });
+    input.addEventListener("pointerdown", () => { dragging = true; });
+    window.addEventListener("pointerup", () => { dragging = false; }, { once: false });
+    input.addEventListener("input", () => { const v = Number(input.value) / scale; out.textContent = fmt(spec, v); patch(group, key, spec.integer ? Math.round(v) : Math.round(v * 100) / 100); });
+    return h("div", { class: "ctl" }, input, out);
+  }
+  function toggle(group, key) {
+    const on = state.settings[group][key];
+    const button = h("button", { class: "switch", type: "button", role: "switch", "aria-checked": String(on), "aria-label": t(`${group}_${key}`), "data-on": String(on) });
+    button.addEventListener("click", () => { const next = button.dataset.on !== "true"; button.dataset.on = String(next); button.setAttribute("aria-checked", String(next)); patch(group, key, next); if (group === "glass" && key === "vibrancy") setTimeout(() => api.settings.get().then(applyEnvelope), 200); });
+    return h("div", { class: "ctl" }, button);
+  }
+  function choice(group, key, values, labelOf) {
+    const current = state.settings[group][key];
+    return h("div", { class: "ctl seg", role: "group" }, values.map(value => {
+      const b = h("button", { type: "button", "data-on": String(value === current), text: labelOf(value) });
+      b.addEventListener("click", () => { patch(group, key, value); renderSettings(); if (group === "voice" && key === "language") applyEnvelope({ settings: state.settings, status: state.env }); });
+      return b;
+    }));
+  }
+  const row = (label, control, extra) => h("div", { class: "row" }, h("span", { class: "k", text: label }), control, extra || null);
+  const rowFor = (group, key, control) => row(t(`${group}_${key}`), control || (S.SCHEMA[group][key].type === "bool" ? toggle(group, key) : slider(group, key)));
+
+  function tabGlass() {
+    const rows = ["alpha", "blur"].map(key => rowFor("glass", key));
+    if (state.env.vibrancySupported) rows.push(rowFor("glass", "vibrancy"));
+    return [...rows, ...["hue", "saturation", "borderGlow", "radius", "stars", "starSpeed", "nebula", "textSize"].map(key => rowFor("glass", key)), rowFor("glass", "reduceMotion")];
+  }
+  function tabLayout() {
+    const displays = [{ id: "cursor", label: t("display_cursor") }, ...state.env.displays.map(d => ({ id: `id:${d.id}`, label: d.label }))];
+    return [
+      rowFor("layout", "dock", choice("layout", "dock", S.DOCKS, v => t(`dock_${v}`))),
+      ...["width", "height"].map(key => rowFor("layout", key)),
+      rowFor("layout", "autoHide"), rowFor("layout", "hideDelay"), rowFor("layout", "zone"), rowFor("layout", "pinned"),
+      rowFor("layout", "display", choice("layout", "display", displays.map(d => d.id), v => (displays.find(d => d.id === v) || { label: v }).label)),
+      rowFor("layout", "margin"),
+    ];
+  }
+  function tabRainbow() {
+    const preview = h("button", { class: "btn", type: "button", text: t("preview") });
+    preview.addEventListener("click", () => api.settings.previewRainbow().catch(() => {}));
+    return [rowFor("rainbow", "enabled"), ...["depth", "intensity", "speed", "brightness"].map(key => rowFor("rainbow", key)), rowFor("rainbow", "thinking"), rowFor("rainbow", "reactive"), row(t("preview"), h("div", { class: "ctl" }, preview))];
+  }
+  let meterEl = null;
+  function paintLevel() { if (meterEl && meterEl.isConnected) meterEl.style.setProperty("--lvl", String(Math.min(1, state.level))); }
+  function tabVoice() {
+    const select = h("select", { "aria-label": t("voice_device") }, h("option", { value: "", text: t("defaultDevice") }), ...state.devices.map(d => h("option", { value: d.deviceId, text: (d.label || d.deviceId).slice(0, 36), selected: d.deviceId === state.settings.voice.device })));
+    select.addEventListener("change", async () => { patch("voice", "device", select.value); await restartMic(); });
+    meterEl = h("div", { class: "meter", style: "" }, h("i"));
+    const record = h("button", { class: "btn", type: "button", text: state.recording ? t("pressKeys") : state.settings.voice.shortcut });
+    record.addEventListener("click", () => { state.recording = true; renderSettings(); });
+    record.addEventListener("keydown", async event => {
+      if (!state.recording) return;
+      event.preventDefault();
+      if (event.key === "Escape") { state.recording = false; renderSettings(); return; }
+      const accelerator = acceleratorFrom(event);
+      if (!accelerator) return;
+      const check = await api.settings.checkShortcut(accelerator).catch(() => ({ ok: false }));
+      state.recording = false;
+      if (check.ok) patch("voice", "shortcut", accelerator); else record.textContent = t("shortcutUsed");
+      setTimeout(renderSettings, check.ok ? 0 : 900);
+    });
+    if (state.recording) setTimeout(() => record.focus(), 0);
+    const lat = state.latencies;
+    const avg = key => { const v = lat.map(l => l[key]).filter(x => typeof x === "number"); return v.length ? Math.round(v.reduce((a, b) => a + b, 0) / v.length) : null; };
+    return [
+      row(t("voice_device"), h("div", { class: "ctl" }, select)),
+      row(t("voice_level"), h("div", { class: "ctl" }, meterEl)),
+      rowFor("voice", "silence"), rowFor("voice", "sensitivity"),
+      rowFor("voice", "mode", choice("voice", "mode", ["always", "ptt"], v => t(`mode_${v}`))),
+      row(t("voice_shortcut"), h("div", { class: "ctl" }, record)),
+      rowFor("voice", "language", choice("voice", "language", ["ko", "en", "auto"], v => t(`lang_${v}`))),
+      row(t("voice_model"), h("div", { class: "ctl" }, h("output", { text: state.env.model || "—" }))),
+      row(t("voice_latency"), h("div", { class: "ctl lat" }, h("output", { text: `${t("lat_speech")} ${avg("speech_end_to_tool_call") ?? "—"} ms` }), h("output", { text: `${t("lat_publish")} ${avg("tool_call_to_publish") ?? "—"} ms` }), h("output", { class: "dim", text: `n=${lat.length}` }))),
+    ];
+  }
+  function acceleratorFrom(event) {
+    if (["Control", "Meta", "Alt", "Shift"].includes(event.key)) return "";
+    const mods = [];
+    if (event.metaKey || event.ctrlKey) mods.push("CommandOrControl");
+    if (event.altKey) mods.push("Alt");
+    if (event.shiftKey) mods.push("Shift");
+    if (!mods.length) return "";
+    const map = { " ": "Space", ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right", Enter: "Return" };
+    const code = event.code || "";
+    let key = map[event.key] || (/^Key([A-Z])$/.test(code) ? code.slice(3) : /^Digit(\d)$/.test(code) ? code.slice(5) : event.key.length === 1 ? event.key.toUpperCase() : event.key);
+    const full = `${mods.join("+")}+${key}`;
+    return S.ACCELERATOR.test(full) ? full : "";
+  }
+  function tabServer() {
+    const input = h("input", { type: "text", value: state.settings.server.url, spellcheck: false, "aria-label": t("server_url") });
+    const word = h("output", { class: "status-word", "data-state": state.server.state, text: state.server.state === "ok" ? t("connected") : state.server.state === "bad" ? t("disconnected") : t("checking") });
+    const apply = h("button", { class: "btn", type: "button", text: t("apply") });
+    const probe = async () => {
+      state.server = { state: "checking" }; word.dataset.state = "checking"; word.textContent = t("checking");
+      let url; try { url = new URL(input.value).origin; } catch { state.server = { state: "bad" }; word.dataset.state = "bad"; word.textContent = t("disconnected"); return false; }
+      const result = await api.settings.probeServer(url).catch(() => ({ ok: false }));
+      state.server = { state: result.ok ? "ok" : "bad" }; word.dataset.state = state.server.state; word.textContent = result.ok ? `${t("connected")} ${result.ms} ms` : t("disconnected");
+      return result.ok;
+    };
+    apply.addEventListener("click", async () => { try { new URL(input.value); } catch { return; } try { await api.settings.set({ server: { url: new URL(input.value).origin } }); } catch { word.dataset.state = "bad"; word.textContent = t("disconnected"); return; } probe(); pollStatus(); });
+    setTimeout(probe, 0);
+    return [row(t("server_url"), h("div", { class: "ctl" }, input, apply)), row(t("server_status"), h("div", { class: "ctl" }, word))];
+  }
+  function tabReset() {
+    const make = (label, group) => {
+      const b = h("button", { class: "btn danger", type: "button", text: state.resetArmed === (group || "all") ? t("confirm") : label });
+      b.addEventListener("click", async () => {
+        if (state.resetArmed !== (group || "all")) { state.resetArmed = group || "all"; renderSettings(); setTimeout(() => { if (state.resetArmed) { state.resetArmed = false; if (state.dock.settingsOpen && state.tab === "reset") renderSettings(); } }, 3000); return; }
+        state.resetArmed = false;
+        applyEnvelope(await api.settings.reset(group).catch(() => null));
+        renderSettings();
+      });
+      return b;
+    };
+    return [row(t("reset_all"), h("div", { class: "ctl" }, make(t("reset_all"), undefined))), ...["glass", "layout", "rainbow", "voice"].map(group => row(t(`tab_${group}`), h("div", { class: "ctl" }, make(t(`tab_${group}`), group))))];
+  }
+  const TAB_BUILDERS = { glass: tabGlass, layout: tabLayout, rainbow: tabRainbow, voice: tabVoice, server: tabServer, reset: tabReset };
+  function renderSettings() {
+    if (!state.dock.settingsOpen) return;
+    const tabs = $("tabs");
+    tabs.replaceChildren(...TABS.map(tab => {
+      const b = h("button", { type: "button", role: "tab", "aria-selected": String(tab === state.tab), "data-tab": tab, text: t(`tab_${tab}`) });
+      b.addEventListener("click", () => { state.tab = tab; renderSettings(); });
+      return b;
+    }));
+    meterEl = null;
+    $("rows").replaceChildren(...TAB_BUILDERS[state.tab]());
+    reportRect();
+  }
+  async function loadDevices() {
+    try { state.devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "audioinput"); } catch { state.devices = []; }
+    if (state.dock.settingsOpen && state.tab === "voice") renderSettings();
+  }
+  function setSettingsOpen(open) {
+    api.settings.open(open).then(applyDock).catch(() => {});
+    if (open) { loadDevices(); }
+  }
+
+  // ---------- wiring ----------
+  $("cmd-form").addEventListener("submit", event => {
+    event.preventDefault();
+    const input = $("cmd-input"); const text = input.value.trim();
+    if (!text) return;
+    input.value = ""; submitText(text);
+  });
+  $("btn-retreat").addEventListener("click", () => submitText(i18n.lang === "en" ? "emergency retreat now" : "긴급 후퇴", { tier: "emergency" }));
+  $("orb").addEventListener("click", toggleVoice);
+  $("btn-gear").addEventListener("click", () => setSettingsOpen(!state.dock.settingsOpen));
+  // Typing needs key focus; hovering never takes it. Focus is granted on an explicit click only.
+  $("cmd-input").addEventListener("pointerdown", () => { api.dock.focus(true).then(() => $("cmd-input").focus()).catch(() => {}); });
+  $("cmd-input").addEventListener("blur", () => { setTimeout(() => { if (!document.hasFocus() || document.activeElement === document.body) api.dock.focus(false).catch(() => {}); }, 120); });
+  document.addEventListener("pointerdown", event => { // click outside the settings panel (but not on the gear) closes it
+    if (!state.dock.settingsOpen) return;
+    if (event.target.closest("#settings") || event.target.closest("#btn-gear")) return;
+    setSettingsOpen(false);
+  });
+  window.addEventListener("keydown", event => {
+    if (event.key === "Escape") {
+      if (state.recording) return;
+      if (state.dock.settingsOpen) { setSettingsOpen(false); return; }
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      api.dock.focus(false).catch(() => {});
+    }
+    if ((event.metaKey || event.ctrlKey) && event.key === ",") { event.preventDefault(); setSettingsOpen(!state.dock.settingsOpen); }
+    if ((event.metaKey || event.ctrlKey) && event.key === ".") $("btn-retreat").click();
+    if (state.settings.voice.mode === "ptt" && event.code === "Space" && !event.repeat && !pttHeld && document.activeElement && document.activeElement.tagName !== "INPUT") { pttHeld = true; api.voice.ptt(true); }
+  });
+  window.addEventListener("keyup", event => { if (pttHeld && event.code === "Space") { pttHeld = false; api.voice.ptt(false); } });
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) pokeSoon(); });
+
+  api.onEvent(onPush);
+  applySettingsToCss(); renderBackend(); renderVoice();
+  api.settings.get().then(applyEnvelope).catch(() => {});
+  api.dock.state().then(applyDock).catch(() => {});
+  api.voice.state().then(snapshot => { state.voice = { state: snapshot.state, active: snapshot.active, reason: snapshot.reason || "" }; renderVoice(); }).catch(() => {});
+  pollStatus().then(schedule);
+  setInterval(renderCards, 4000);
+  reportRect();
+})();

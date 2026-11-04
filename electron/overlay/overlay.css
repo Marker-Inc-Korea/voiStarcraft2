@@ -1,0 +1,42 @@
+/* Rainbow edge glow: a vignette that is strongest at the outermost pixel and feathers smoothly to fully
+   transparent --edge-depth inward. No stroke, no border.
+   - .spin is an oversized conic-gradient square rotated by a compositor-only transform animation, so the hue
+     travels around the screen perimeter with no per-frame paint/layout (equivalent to animating --angle).
+   - .layer carries the edge falloff as a mask: four eased linear gradients (top/right/bottom/left) combined with
+     mask-composite:add (source-over) => alpha = 1 - Π(1 - a_i), so corners blend seamlessly with no seam or gap.
+   - .glow (depth) + .bloom (1.9x depth, lower opacity) are stacked with mix-blend-mode: screen. Note: blending is
+     between these layers; a transparent window cannot blend against other apps' pixels, so brightness over a bright
+     backdrop comes from the saturated colours + bloom rather than from additive blending with the desktop. */
+:root { --edge-depth: 90px; --loop: 6s; --intensity: .95; --brightness: 1; --bloom-boost: 1; }
+html, body { margin: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; pointer-events: none; user-select: none; }
+.edge { position: fixed; inset: 0; opacity: 0; transition: opacity 150ms ease-out; isolation: isolate; }
+body:not([data-state="off"]) .edge { opacity: 1; }
+
+.layer { position: absolute; inset: 0; overflow: hidden; --d: var(--edge-depth); mix-blend-mode: screen;
+  -webkit-mask-image:
+    linear-gradient(to bottom, rgba(0,0,0,1) 0, rgba(0,0,0,.82) calc(var(--d) * .10), rgba(0,0,0,.55) calc(var(--d) * .26), rgba(0,0,0,.30) calc(var(--d) * .46), rgba(0,0,0,.12) calc(var(--d) * .68), rgba(0,0,0,.03) calc(var(--d) * .86), rgba(0,0,0,0) var(--d)),
+    linear-gradient(to top,    rgba(0,0,0,1) 0, rgba(0,0,0,.82) calc(var(--d) * .10), rgba(0,0,0,.55) calc(var(--d) * .26), rgba(0,0,0,.30) calc(var(--d) * .46), rgba(0,0,0,.12) calc(var(--d) * .68), rgba(0,0,0,.03) calc(var(--d) * .86), rgba(0,0,0,0) var(--d)),
+    linear-gradient(to right,  rgba(0,0,0,1) 0, rgba(0,0,0,.82) calc(var(--d) * .10), rgba(0,0,0,.55) calc(var(--d) * .26), rgba(0,0,0,.30) calc(var(--d) * .46), rgba(0,0,0,.12) calc(var(--d) * .68), rgba(0,0,0,.03) calc(var(--d) * .86), rgba(0,0,0,0) var(--d)),
+    linear-gradient(to left,   rgba(0,0,0,1) 0, rgba(0,0,0,.82) calc(var(--d) * .10), rgba(0,0,0,.55) calc(var(--d) * .26), rgba(0,0,0,.30) calc(var(--d) * .46), rgba(0,0,0,.12) calc(var(--d) * .68), rgba(0,0,0,.03) calc(var(--d) * .86), rgba(0,0,0,0) var(--d));
+  -webkit-mask-composite: source-over; mask-composite: add; }
+.glow { opacity: var(--intensity); filter: brightness(var(--brightness)); }
+.bloom { --d: calc(var(--edge-depth) * 1.9); opacity: calc(var(--intensity) * .4); filter: blur(8px) saturate(1.2) brightness(var(--brightness)); }
+
+.spin { position: absolute; left: 50%; top: 50%; width: 160vmax; height: 160vmax; margin: -80vmax 0 0 -80vmax; will-change: transform;
+  background: conic-gradient(from 0deg, #ff1744, #ff9100, #ffea00, #76ff03, #00e5ff, #2979ff, #d500f9, #ff4081, #ff1744);
+  animation: rotate var(--loop) linear infinite; }
+body[data-motion="off"] .spin, body[data-motion="off"] .edge { animation: none !important; }
+@keyframes rotate { to { transform: rotate(360deg); } }
+
+/* thinking: dimmer, slower, gently breathing */
+body[data-state="thinking"] { --loop: calc(var(--base-loop, 6s) * 2.3); }
+body[data-state="thinking"] .glow { opacity: calc(var(--intensity) * .44); }
+body[data-state="thinking"] .bloom { opacity: calc(var(--intensity) * .21); }
+body[data-state="thinking"] .edge { animation: breathe 2.4s ease-in-out infinite; }
+@keyframes breathe { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .spin { animation: none; }
+  body[data-state="thinking"] .edge { animation: none; }
+  .edge { transition-duration: 1ms; }
+}

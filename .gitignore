@@ -19,3 +19,4 @@ battlefield-browser-artifacts/
 credentials.json
 *.credentials.json
 node_modules/
+electron/node_modules/
