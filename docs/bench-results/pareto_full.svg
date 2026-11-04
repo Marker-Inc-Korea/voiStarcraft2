@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="640" font-family="Helvetica,Arial,sans-serif" font-size="11">
+<rect width="980" height="640" fill="white"/>
+<text x="490.0" y="24" text-anchor="middle" font-size="16" font-weight="bold">Voice intent benchmark (full: 160 rows)</text>
+<line x1="70" x2="950" y1="570.0" y2="570.0" stroke="#eee"/>
+<text x="62" y="574.0" text-anchor="end">0%</text>
+<line x1="70" x2="950" y1="518.0" y2="518.0" stroke="#eee"/>
+<text x="62" y="522.0" text-anchor="end">10%</text>
+<line x1="70" x2="950" y1="466.0" y2="466.0" stroke="#eee"/>
+<text x="62" y="470.0" text-anchor="end">20%</text>
+<line x1="70" x2="950" y1="414.0" y2="414.0" stroke="#eee"/>
+<text x="62" y="418.0" text-anchor="end">30%</text>
+<line x1="70" x2="950" y1="362.0" y2="362.0" stroke="#eee"/>
+<text x="62" y="366.0" text-anchor="end">40%</text>
+<line x1="70" x2="950" y1="310.0" y2="310.0" stroke="#eee"/>
+<text x="62" y="314.0" text-anchor="end">50%</text>
+<line x1="70" x2="950" y1="258.0" y2="258.0" stroke="#eee"/>
+<text x="62" y="262.0" text-anchor="end">60%</text>
+<line x1="70" x2="950" y1="206.0" y2="206.0" stroke="#eee"/>
+<text x="62" y="210.0" text-anchor="end">70%</text>
+<line x1="70" x2="950" y1="154.0" y2="154.0" stroke="#eee"/>
+<text x="62" y="158.0" text-anchor="end">80%</text>
+<line x1="70" x2="950" y1="102.0" y2="102.0" stroke="#eee"/>
+<text x="62" y="106.0" text-anchor="end">90%</text>
+<line x1="70" x2="950" y1="50.0" y2="50.0" stroke="#eee"/>
+<text x="62" y="54.0" text-anchor="end">100%</text>
+<line x1="70.0" x2="70.0" y1="50" y2="570" stroke="#eee"/>
+<text x="70.0" y="586" text-anchor="middle">0s</text>
+<line x1="218.7" x2="218.7" y1="50" y2="570" stroke="#eee"/>
+<text x="218.7" y="586" text-anchor="middle">2s</text>
+<line x1="367.3" x2="367.3" y1="50" y2="570" stroke="#eee"/>
+<text x="367.3" y="586" text-anchor="middle">4s</text>
+<line x1="516.0" x2="516.0" y1="50" y2="570" stroke="#eee"/>
+<text x="516.0" y="586" text-anchor="middle">6s</text>
+<line x1="664.6" x2="664.6" y1="50" y2="570" stroke="#eee"/>
+<text x="664.6" y="586" text-anchor="middle">8s</text>
+<line x1="813.3" x2="813.3" y1="50" y2="570" stroke="#eee"/>
+<text x="813.3" y="586" text-anchor="middle">10s</text>
+<line x1="70" x2="950" y1="570" y2="570" stroke="#333"/><line x1="70" x2="70" y1="50" y2="570" stroke="#333"/>
+<text x="510.0" y="612" text-anchor="middle" font-size="13">p50 latency, end of speech → tool call (s)  [lower is better]</text>
+<text transform="translate(18,310.0) rotate(-90)" text-anchor="middle" font-size="13">exact-semantic accuracy, all tiers (%)  [higher is better]</text>
+<polyline points="188.0,355.5 208.3,112.8 291.7,102.0 315.5,87.9 619.4,82.5" fill="none" stroke="#ff7f0e" stroke-width="2" stroke-dasharray="6 3"/>
+<circle cx="188.0" cy="355.5" r="6" fill="#7f7f7f" fill-opacity="0.75" stroke="black"><title>fp:ext_rules: 41.2% p50 1.59s unsafe 0.0%</title></circle>
+<text x="196.0" y="349.5" font-size="10">fp:ext_rules</text>
+<circle cx="188.0" cy="570.0" r="4" fill="#7f7f7f" fill-opacity="0.75" stroke="none"><title>fp:prod_regex: 0.0% p50 1.59s unsafe 0.0%</title></circle>
+<circle cx="238.4" cy="156.2" r="4" fill="#1f77b4" fill-opacity="0.75" stroke="none"><title>rt:gpt-realtime-2:manual:compact: 79.6% p50 2.27s unsafe 0.4%</title></circle>
+<circle cx="217.0" cy="138.8" r="4" fill="#1f77b4" fill-opacity="0.75" stroke="none"><title>rt:gpt-realtime:manual:fewshot: 82.9% p50 1.98s unsafe 0.8%</title></circle>
+<circle cx="337.9" cy="150.8" r="4" fill="#2ca02c" fill-opacity="0.75" stroke="none"><title>tx:gemini-3.5-flash-lite:fewshot: 80.6% p50 3.60s unsafe 0.0%</title></circle>
+<circle cx="908.1" cy="86.8" r="4" fill="#2ca02c" fill-opacity="0.75" stroke="none"><title>tx:gpt-5.6-sol:fewshot: 92.9% p50 11.28s unsafe 0.2%</title></circle>
+<circle cx="223.2" cy="139.9" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>gpt-realtime-2:manual:compact: 82.7% p50 2.06s unsafe 0.4%</title></circle>
+<circle cx="208.3" cy="112.8" r="6" fill="#d62728" fill-opacity="0.75" stroke="black"><title>cascade:ext_rules>gpt-realtime:manual:fewshot: 87.9% p50 1.86s unsafe 0.8%</title></circle>
+<text x="216.3" y="106.8" font-size="10">c:ext_rules>gpt-realtime:manual:fewshot</text>
+<circle cx="313.8" cy="132.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>gemini-3.5-flash-lite:fewshot: 84.2% p50 3.28s unsafe 0.0%</title></circle>
+<circle cx="619.4" cy="82.5" r="6" fill="#d62728" fill-opacity="0.75" stroke="black"><title>cascade:ext_rules>gpt-5.6-sol:fewshot: 93.8% p50 7.39s unsafe 0.2%</title></circle>
+<text x="627.4" y="76.5" font-size="10">c:ext_rules>gpt-5.6-sol:fewshot</text>
+<circle cx="291.7" cy="102.0" r="6" fill="#d62728" fill-opacity="0.75" stroke="black"><title>cascade:esc0.8:gpt-realtime-2:manual:compact>gpt-5.6-sol:fewshot: 90.0% p50 2.98s unsafe 0.4%</title></circle>
+<text x="299.7" y="96.0" font-size="10">c:esc0.8:gpt-realtime-2:manual:compact>gpt-5.6-sol:fewshot</text>
+<circle cx="357.0" cy="137.8" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gemini-3.5-flash-lite:fewshot>gpt-realtime-2:manual:compact: 83.1% p50 3.86s unsafe 0.4%</title></circle>
+<circle cx="357.0" cy="106.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gemini-3.5-flash-lite:fewshot>gpt-5.6-sol:fewshot: 89.2% p50 3.86s unsafe 0.2%</title></circle>
+<circle cx="238.4" cy="150.8" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gpt-realtime-2:manual:compact|gpt-5.6-sol:fewshot: 80.6% p50 2.27s unsafe 0.4%</title></circle>
+<circle cx="238.4" cy="146.4" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gemini-3.5-flash-lite:fewshot|gpt-realtime-2:manual:compact: 81.5% p50 2.27s unsafe 0.4%</title></circle>
+<circle cx="339.8" cy="106.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gemini-3.5-flash-lite:fewshot|gpt-5.6-sol:fewshot: 89.2% p50 3.63s unsafe 0.0%</title></circle>
+<circle cx="344.5" cy="133.4" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-2:manual:compact+gemini-3.5-flash-lite:fewshot: 84.0% p50 3.69s unsafe 0.0%</title></circle>
+<circle cx="343.4" cy="113.9" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime:manual:fewshot+gemini-3.5-flash-lite:fewshot: 87.7% p50 3.68s unsafe 0.0%</title></circle>
+<circle cx="316.5" cy="117.2" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-2:manual:compact+gemini-3.5-flash-lite:fewshot: 87.1% p50 3.32s unsafe 0.0%</title></circle>
+<circle cx="315.5" cy="87.9" r="6" fill="#d62728" fill-opacity="0.75" stroke="black"><title>cascade:ext_rules>veto:gpt-realtime:manual:fewshot+gemini-3.5-flash-lite:fewshot: 92.7% p50 3.30s unsafe 0.0%</title></circle>
+<text x="323.5" y="81.9" font-size="10">c:ext_rules>veto:gpt-realtime:manual:fewshot+gemini-3.5-flash-lite:fewshot</text>
+<circle cx="760" cy="62" r="5" fill="#1f77b4"/><text x="772" y="66">realtime audio</text>
+<circle cx="760" cy="78" r="5" fill="#2ca02c"/><text x="772" y="82">text LLM (transcript)</text>
+<circle cx="760" cy="94" r="5" fill="#7f7f7f"/><text x="772" y="98">deterministic fast path</text>
+<circle cx="760" cy="110" r="5" fill="#d62728"/><text x="772" y="114">cascade (simulated)</text>
+<line x1="754" x2="766" y1="132" y2="132" stroke="#ff7f0e" stroke-width="2" stroke-dasharray="6 3"/><text x="772" y="136">Pareto frontier (labelled)</text>
+</svg>
