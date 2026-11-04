@@ -841,6 +841,48 @@ class SilentDurationClampTest(unittest.TestCase):
         self.assertFalse(any("ttl_seconds" in warning for warning in result.warnings))
 
 
+class RegroupDefaultsAreValidTest(unittest.TestCase):
+    """D12: the compiler's own regroup default must satisfy the DSL validator.
+
+    ``_repair_micromachine_tactical_task_defaults`` fills ``army_group="regroup"``
+    which ``TacticalScopeModulation`` rejects, so "retreat/regroup these units"
+    without an explicit army group used to be refused.
+    """
+
+    def _regroup(self, **extra):
+        task = {
+            "task_type": "regroup_with_units",
+            "unit_classes": ["TERRAN_MARINE"],
+            "location_intent": "home",
+        }
+        return {"goal": "마린 후퇴해서 재정비", "command_layer": "operation", **extra, "tactical_task": task}
+
+    def test_top_level_regroup_without_army_group_compiles(self) -> None:
+        result = compile_policy_modulation_provider_output(self._regroup())
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertEqual("main", result.vector.scope.army_group)
+        self.assertEqual("home", result.vector.tactical_task.location_intent)
+
+    def test_operation_regroup_without_army_group_compiles(self) -> None:
+        output = {
+            "goal": "탱크는 후퇴",
+            "command_layer": "operation",
+            "operations": [
+                _operation("tk", "regroup_with_units", "home", 2)
+            ],
+        }
+        result = compile_policy_modulation_provider_output(output)
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertEqual("main", result.vector.operations[0].scope.army_group)
+
+    def test_explicit_army_group_is_respected(self) -> None:
+        result = compile_policy_modulation_provider_output(
+            self._regroup(scope={"army_group": "siege"})
+        )
+        self.assertTrue(result.ok, result.to_dict())
+        self.assertEqual("siege", result.vector.scope.army_group)
+
+
 # ---------------------------------------------------------------------------
 # Whole-corpus invariants (scripts/fidelity/replay_chain.py)
 # ---------------------------------------------------------------------------
@@ -864,11 +906,14 @@ class ChainReplayInvariantsTest(unittest.TestCase):
         self.assertEqual({}, errors)
 
     def test_violations_equal_documented_handoff_set(self) -> None:
-        actual = sorted(
+        actual = {
             f"{violation['case']}::{violation['invariant']}"
             for violation in self.report["violations"]
-        )
-        self.assertEqual(sorted(self.replay.EXPECTED_OPEN_VIOLATIONS), actual)
+        }
+        self.assertEqual(set(self.replay.EXPECTED_OPEN_VIOLATIONS), actual)
+
+    def test_no_expectation_mismatches(self) -> None:
+        self.assertEqual([], self.report["expectation_mismatches"])
 
     def test_ui_contract_never_claims_effect_without_effect_stage(self) -> None:
         for case in self.report["cases"]:

@@ -2665,7 +2665,9 @@ def _repair_micromachine_tactical_task_defaults(payload: dict[str, object]) -> N
         )
         tactical_task["location_intent"] = location
         _set_if_empty(scope, "location_intent", location)
-        _set_if_empty(scope, "army_group", "regroup")
+        # "regroup" is not a member of MICROMACHINE_ARMY_GROUPS; the old
+        # default made every un-grouped regroup/retreat operation a refusal.
+        _set_if_empty(scope, "army_group", "main")
         _copy_or_default_unit_classes(
             scope,
             tactical_task,
