@@ -18,7 +18,8 @@ S = importlib.import_module(os.environ.get("BENCH_SCHEMA_MODULE", "schema"))
 
 CORPUS = HERE / "corpus.jsonl"
 AUDIO_DIR = HERE / "audio_cache"
-RUNS_DIR = HERE / "runs"
+SHIPPED_MODE = os.environ.get("BENCH_SCHEMA_MODULE", "schema") == "shipped_schema"
+RUNS_DIR = HERE / ("runs_shipped" if SHIPPED_MODE else "runs")
 MANIFEST = HERE / "audio_manifest.json"
 RESULTS_DIR = REPO_ROOT / "docs" / "bench-results"
 

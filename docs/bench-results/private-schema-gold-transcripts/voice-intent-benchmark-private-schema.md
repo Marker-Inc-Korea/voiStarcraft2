@@ -1,10 +1,12 @@
+> **SUPERSEDED — previous run: private benchmark schema, GOLD transcripts for every text step, long-lived-key fallback for most realtime calls. Kept for reference only; the decision-grade numbers are in `docs/voice-intent-benchmark.md`.**
+
 # Voice intent → PolicyModulationVector benchmark
 
 Branch `feat/bench`. Everything below was produced by `scripts/bench/*` against the real proxy
 (`proxy.nomadamas.org`, OpenAI Realtime + chat models) on **2026-11-05 KST** (screening 00:11–01:30, finalists 01:34–02:03).
 5762 cached per-call result files are under `scripts/bench/runs/` (gitignored); machine-readable numbers are in
-`docs/bench-results/summary.json` (with `routing_policy`), per-config tables in `docs/bench-results/tables_*.md`,
-plot in `docs/bench-results/pareto.svg`.
+`summary.json` (this directory) (with `routing_policy`), per-config tables in `docs/bench-results/tables_*.md`,
+plot in `docs/pareto_full.svg`.
 
 > **What this is not.** This is *not* live-game evidence. SC2 is not runnable here. "Correct" means: the model's
 > `submit_command` arguments (a) satisfy the tool JSON schema, (b) lower to a payload that
@@ -161,7 +163,7 @@ Cell = exact-semantic accuracy · p50/p95 seconds. `sol` fewshot = 3 reps on all
 | `fp:ext_rules` | 480 | 82% · 1.6/1.6 | 91% · 1.6/1.6 | 0% · 1.6/1.6 | 67% · 1.6/1.6 | 0% · 1.6/1.6 | **41.2%** [37–46] · 1.6/1.6 | 41% | 0.0% | 41% | 0 |
 | `fp:prod_regex` | 240 | 0% · 1.6/1.6 | 0% · 1.6/1.6 | 0% · 1.6/1.6 | 0% · 1.6/1.6 | 0% · 1.6/1.6 | **0.0%** [-0–2] · 1.6/1.6 | 8% | 0.0% | 0% | 0 |
 
-![pareto](bench-results/pareto.svg)
+![pareto](pareto_full.svg)
 
 Pareto frontier (accuracy vs p50, `pareto.svg`): `ext_rules>gpt-realtime fewshot` (87.9 %, 1.9 s) → `ext_rules>veto(realtime+gemini)` (92.7 %, 3.3 s) → `ext_rules>sol` (93.8 %, 7.4 s).
 The composite sits at the knee: +4.8 pp for +1.4 s over the fastest accurate point; the next +1.1 pp costs +4.1 s.

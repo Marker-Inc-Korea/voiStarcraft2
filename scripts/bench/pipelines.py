@@ -27,7 +27,7 @@ import websockets
 
 import audio as audio_mod
 import fastpath
-from common import BASE_URL, S, UA, api_key, ssl_context, ws_url
+from common import BASE_URL, SHIPPED_MODE, S, UA, api_key, ssl_context, ws_url
 
 AUDIO_VARIANT_BY_REP = ["v0", "v1", "v2"]
 CHUNK_BYTES = 4800  # 100 ms of 24 kHz pcm16
@@ -56,7 +56,7 @@ class Config:
 
 
 def rt_config(model, endpoint="manual", variant="full", asr=False) -> Config:
-    name = f"rt:{model}:{endpoint}:{variant}" + (":asr" if asr else "")
+    name = f"rt:{model}:{endpoint}:{variant}" + (":asr" if asr and not SHIPPED_MODE else "")
     return Config(name, "rt", model, variant, endpoint, asr=asr)
 
 
@@ -65,8 +65,8 @@ def tx_config(model, variant="compact", effort="", src="gold") -> Config:
     return Config(name, "tx", model, variant, reasoning_effort=effort, transcript_source=src)
 
 
-def fp_config(which) -> Config:
-    return Config(f"fp:{which}", "fp", model=which)
+def fp_config(which, src="gold") -> Config:
+    return Config(f"fp:{which}" + (":asrtxt" if src == "asr" else ""), "fp", model=which, transcript_source=src)
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +122,7 @@ def _ms(a: float, b: float) -> float:
 def _turn_detection(endpoint: str):
     if endpoint == "manual":
         return None
-    sil = {"vad500": 500, "vad300": 300}[endpoint]
+    sil = {"vad500": 500, "vad300": 300, "vad350": 350}[endpoint]
     return {"type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 300,
             "silence_duration_ms": sil, "create_response": True, "interrupt_response": False}
 
@@ -144,13 +144,46 @@ def realtime_session(cfg: Config) -> dict:
 
 
 _MINT_BLOCKED_UNTIL = 0.0
+MINT_STATS = {"calls": 0, "http_429": 0, "retries_exhausted": 0, "mint_ms": []}
+
+
+_SHIPPED_MINT_DOWN_UNTIL = 0.0
+
+
+async def _mint_shipped(cfg: Config) -> tuple[str | None, dict]:
+    """Ephemeral secret via POST /realtime/client_secrets with the SHIPPED session body (realtime_intent._session_body),
+    exponential backoff on HTTP 429 (3 attempts, ~1+2+4 s). If the proxy keeps answering 429
+    (`realtime_client_secret_capacity_exhausted`) the call falls back to the long-lived key + an identical
+    `session.update` (auth='direct_key'); the 429 count and the fallback are recorded per call. After a failed ladder the
+    mint is not retried for 60 s (circuit breaker) so a capacity outage does not stall the whole run.
+    Mint time is NOT part of the measured latency (the app mints before the user speaks)."""
+    global _SHIPPED_MINT_DOWN_UNTIL
+    vad = None if cfg.endpoint == "manual" else int(cfg.endpoint.replace("vad", ""))
+    body = S.realtime_session_body(cfg.model, cfg.variant, vad_silence_ms=vad, transcription=True)
+    n429 = 0
+    t_start = time.perf_counter()
+    if time.time() < _SHIPPED_MINT_DOWN_UNTIL:
+        return None, {"mint_429": 0, "mint_ms": None, "mint_skipped_circuit_open": True}
+    for attempt in range(3):
+        MINT_STATS["calls"] += 1
+        r = await http().post("/realtime/client_secrets", json=body)
+        if r.status_code == 200:
+            ms = _ms(t_start, time.perf_counter())
+            MINT_STATS["mint_ms"].append(ms)
+            return r.json()["value"], {"mint_429": n429, "mint_ms": ms, "mint_attempts": attempt + 1}
+        if r.status_code == 429:
+            n429 += 1
+            MINT_STATS["http_429"] += 1
+            await asyncio.sleep(2.0**attempt + random.random())
+            continue
+        raise RuntimeError(f"client_secrets {r.status_code} {r.text[:200]}")
+    MINT_STATS["retries_exhausted"] += 1
+    _SHIPPED_MINT_DOWN_UNTIL = time.time() + 60
+    return None, {"mint_429": n429, "mint_ms": None, "mint_fallback_direct_key": True}
 
 
 async def _mint(cfg: Config) -> str | None:
-    """Ephemeral client secret with the session baked in (production path). Returns None when the proxy
-    reports mint capacity exhaustion (HTTP 429 realtime_client_secret_capacity_exhausted); the caller then
-    connects with the long-lived key and sends the identical session via session.update. Timing excluded
-    from the measured window either way (session setup happens before the audio is sent)."""
+    """Legacy (private-schema) path: mint with fallback to the long-lived key when the proxy has no secret capacity."""
     global _MINT_BLOCKED_UNTIL
     if time.time() < _MINT_BLOCKED_UNTIL:
         return None
@@ -164,7 +197,11 @@ async def _mint(cfg: Config) -> str | None:
 
 
 async def _realtime_once(cfg: Config, pcm: bytes) -> dict:
-    token = await _mint(cfg)
+    mint_info: dict = {}
+    if SHIPPED_MODE:
+        token, mint_info = await _mint_shipped(cfg)
+    else:
+        token = await _mint(cfg)
     auth = "mint" if token else "direct_key"
     async with websockets.connect(
         ws_url(cfg.model),
@@ -211,7 +248,7 @@ async def _realtime_once(cfg: Config, pcm: bytes) -> dict:
                                 st["args"] = item.get("arguments")
                                 st["t_done"] = st["t_done"] or now
                     if cfg.asr and st["args"] is not None:
-                        for _ in range(30):  # let the (async) input transcription land for recording
+                        for _ in range(100 if SHIPPED_MODE else 30):  # let the (async) input transcription land for recording
                             if st["t_transcript"] is not None:
                                 break
                             await asyncio.sleep(0.1)
@@ -248,8 +285,8 @@ async def _realtime_once(cfg: Config, pcm: bytes) -> dict:
         if st["error"]:
             raise RuntimeError(f"realtime error {st['error']}")
         if st["args"] is None:
-            return {"tool_args": None, "error": f"no tool call (status={st['resp_status']})", "t0": t0_box["t0"], "auth": auth, **st}
-        return {"tool_args": st["args"], "t0": t0_box["t0"], "auth": auth, **st}
+            return {"tool_args": None, "error": f"no tool call (status={st['resp_status']})", "t0": t0_box["t0"], "auth": auth, **mint_info, **st}
+        return {"tool_args": st["args"], "t0": t0_box["t0"], "auth": auth, **mint_info, **st}
 
 
 def _rt_tokens(usage) -> dict:
@@ -275,7 +312,7 @@ async def run_realtime(cfg: Config, row: dict, rep: int) -> dict:
         err = res.get("error")
     except json.JSONDecodeError:
         args, err = None, "tool args not JSON"
-    return {**out, "auth": res.get("auth"), "tool_args": args, "error": err, "attempts": attempts,
+    return {**out, "auth": res.get("auth"), "mint_429": res.get("mint_429"), "mint_ms": res.get("mint_ms"), "tool_args": args, "error": err, "attempts": attempts,
             "t_first_token_ms": _ms(t0, res["t_first"]) if res["t_first"] else None,
             "t_tool_call_ms": _ms(t0, res["t_done"]) if res["t_done"] else None,
             "t_speech_stopped_ms": _ms(t0, res["t_speech_stopped"]) if res["t_speech_stopped"] else None,
@@ -338,7 +375,10 @@ async def _chat_once(cfg: Config, text: str) -> dict:
 async def run_text(cfg: Config, row: dict, rep: int, asr_transcripts: dict | None = None) -> dict:
     text = row["text"]
     if cfg.transcript_source == "asr":
-        text = (asr_transcripts or {}).get(row["id"]) or row["text"]
+        text = (asr_transcripts or {}).get((row["id"], rep))
+        if not text:
+            return {"tool_args": None, "error": "no ASR transcript available for this (row, rep)", "attempts": 0, "tokens": {},
+                    "t_tool_call_ms": None, "t_first_token_ms": None, "total_ms": None, "input_text": ""}
     t_start = time.perf_counter()
     try:
         res, attempts = await with_retries(lambda: _chat_once(cfg, text), attempts=4)
@@ -364,14 +404,20 @@ async def run_text(cfg: Config, row: dict, rep: int, asr_transcripts: dict | Non
 # C: deterministic fast path
 # ---------------------------------------------------------------------------
 
-async def run_fastpath(cfg: Config, row: dict, rep: int) -> dict:
+async def run_fastpath(cfg: Config, row: dict, rep: int, asr_transcripts: dict | None = None) -> dict:
+    """cfg.model: 'prod_regex' | 'ext_rules' | 'shipped_fast' | 'shipped_regex'; transcript_source gold|asr."""
     fastpath._prod()  # warm the web_gui import outside the timed region
-    fn = fastpath.FASTPATHS[cfg.model]
+    text = row["text"]
+    if cfg.transcript_source == "asr":
+        text = (asr_transcripts or {}).get((row["id"], rep))
+        if not text:
+            return {"tool_args": None, "abstained": True, "error": "no ASR transcript available", "attempts": 0, "tokens": {},
+                    "t_tool_call_ms": None, "t_first_token_ms": None, "total_ms": None, "input_text": ""}
     t0 = time.perf_counter()
-    args = fn(row["text"])
+    args = fastpath.run_named(cfg.model, text)
     t1 = time.perf_counter()
     return {"tool_args": args, "abstained": args is None, "error": None, "attempts": 1, "t_first_token_ms": None,
-            "t_tool_call_ms": _ms(t0, t1), "total_ms": _ms(t0, t1), "tokens": {}}
+            "t_tool_call_ms": _ms(t0, t1), "total_ms": _ms(t0, t1), "tokens": {}, "input_text": text}
 
 
 async def run(cfg: Config, row: dict, rep: int, asr_transcripts: dict | None = None) -> dict:
@@ -380,7 +426,7 @@ async def run(cfg: Config, row: dict, rep: int, asr_transcripts: dict | None = N
     if cfg.kind == "tx":
         return await run_text(cfg, row, rep, asr_transcripts)
     if cfg.kind == "fp":
-        return await run_fastpath(cfg, row, rep)
+        return await run_fastpath(cfg, row, rep, asr_transcripts)
     raise ValueError(cfg.kind)
 
 
@@ -394,6 +440,19 @@ TX_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "claude-haiku-5-5",
 
 def registry() -> dict[str, Config]:
     cfgs: list[Config] = []
+    if SHIPPED_MODE:
+        for m in ("gpt-realtime", "gpt-realtime-mini"):
+            for ep in ("vad350", "manual"):
+                for v in S.VARIANTS:
+                    cfgs.append(rt_config(m, ep, v, asr=True))
+        for m in ("gemini-3.5-flash-lite", "gpt-5.6-sol"):
+            for v in S.VARIANTS:
+                cfgs.append(tx_config(m, v))
+                cfgs.append(tx_config(m, v, "", "asr"))
+        for w in ("shipped_regex", "shipped_fast", "ext_rules"):
+            cfgs.append(fp_config(w))
+            cfgs.append(fp_config(w, "asr"))
+        return {c.name: c for c in cfgs}
     for m in RT_MODELS:
         for ep in ("manual", "vad500", "vad300"):
             for v in ("full", "compact", "fewshot"):
@@ -414,8 +473,14 @@ def get_config(name: str) -> Config:
     reg = registry()
     if name in reg:
         return reg[name]
-    # on-the-fly tx with asr transcripts, e.g. tx:claude-haiku-5-5:compact:asrtxt
-    if name.startswith("tx:") and name.endswith(":asrtxt"):
-        _, model, variant, *_ = name.split(":")
-        return tx_config(model, variant, "", "asr")
+    parts = name.split(":")
+    if parts[0] == "fp":  # fp:<which>[:asrtxt]
+        return fp_config(parts[1], "asr" if parts[-1] == "asrtxt" else "gold")
+    if parts[0] == "tx" and parts[-1] == "asrtxt":  # tx:<model>:<variant>[:effort]:asrtxt
+        effort = parts[3] if len(parts) == 5 else ""
+        return tx_config(parts[1], parts[2], effort, "asr")
+    if parts[0] == "tx":
+        return tx_config(parts[1], parts[2], parts[3] if len(parts) > 3 else "", "gold")
+    if parts[0] == "rt":  # rt:<model>:<endpoint>:<variant>[:asr]
+        return rt_config(parts[1], parts[2], parts[3], asr=SHIPPED_MODE or parts[-1] == "asr")
     raise KeyError(f"unknown config {name!r}; see `run.py list`")

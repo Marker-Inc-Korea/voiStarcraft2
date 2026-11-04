@@ -62,16 +62,23 @@ def load_subset(rows) -> list[dict]:
     return [r for r in rows if r["id"] in ids]
 
 
-def asr_transcripts() -> dict[str, str]:
-    """id -> transcript recorded by realtime ASR-enabled configs (first non-empty)."""
-    out: dict[str, str] = {}
-    for d in RUNS_DIR.glob("rt_*asr*"):
+def asr_transcripts(source: str = "") -> dict[tuple[str, int], str]:
+    """(row id, rep) -> REAL ASR transcript recorded by a realtime config for the SAME audio (rep k -> variant k mod 3).
+
+    Private-schema runs (no --asr-from): scan rt_*asr* dirs, rep-agnostic (kept for the old bench)."""
+    out: dict[tuple[str, int], str] = {}
+    dirs = [cfg_dir(s) for s in source.split(",") if s] if source else list(RUNS_DIR.glob("rt_*asr*"))
+    for d in dirs:
         for f in sorted(d.glob("*.json")):
             if f.name.startswith("_"):
                 continue
             rec = json.loads(f.read_text())
-            if rec.get("transcript") and rec["id"] not in out:
-                out[rec["id"]] = rec["transcript"]
+            tr = rec.get("transcript")
+            if tr:
+                out.setdefault((rec["id"], rec["rep"]), tr)
+                if not source:
+                    for k in range(3):
+                        out.setdefault((rec["id"], k), tr)
     return out
 
 
@@ -105,6 +112,8 @@ async def run_config(cfg: P.Config, rows: list[dict], reps: int, sem: asyncio.Se
                 return
             res = await P.run(cfg, row, rep, asr)
         err = res.get("error")
+        if err and res.get("tool_args") is None and "no ASR transcript" in err:
+            return
         if err and any(k in err for k in ("RESOURCE_EXHAUSTED", "model_not_found", "Individual quota", "invalid_request_error")) \
                 and res.get("tool_args") is None:
             fatal_streak += 1
@@ -113,7 +122,7 @@ async def run_config(cfg: P.Config, rows: list[dict], reps: int, sem: asyncio.Se
                 abort.set()
             return
         fatal_streak = 0
-        sc = score_prediction(row, res.get("tool_args"), err)
+        sc = score_prediction(row, res.get("tool_args"), err, transcript=res.get("transcript") if cfg.kind == "rt" else res.get("input_text"))
         rec = {"config": cfg.name, "id": row["id"], "rep": rep, "tier": row["tier"], "text": row["text"],
                "ts": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
                **res, **{k: v for k, v in sc.items() if k not in ("id", "tier")},
@@ -165,7 +174,7 @@ async def amain(args) -> int:
             rows = rows[: args.limit]
         reps = args.reps or (3 if args.cmd == "screen" else 1)
         names = [c for c in args.configs.split(",") if c]
-        asr = asr_transcripts() if any(n.endswith(":asrtxt") for n in names) else None
+        asr = asr_transcripts(args.asr_from) if any(n.endswith(":asrtxt") for n in names) else None
         cfgs = [P.get_config(n) for n in names]
         sem = asyncio.Semaphore(min(args.concurrency, MAX_CONCURRENCY))
         t0 = time.time()
@@ -190,6 +199,7 @@ def main(argv=None) -> int:
             sp.add_argument("--reps", type=int, default=0, help="repeats per row (default 3 screen / 1 full)")
             sp.add_argument("--tiers", default="", help="restrict to tiers (comma list)")
             sp.add_argument("--limit", type=int, default=0)
+            sp.add_argument("--asr-from", default="", help="realtime config whose recorded transcripts feed *:asrtxt configs")
         if name in ("screen", "full", "synth"):
             sp.add_argument("--concurrency", type=int, default=MAX_CONCURRENCY, help=f"<= {MAX_CONCURRENCY}")
     args = ap.parse_args(argv)

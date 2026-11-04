@@ -87,27 +87,58 @@ def _match_multiset(gold: list, pred: list, ok: Callable[[Any, Any], bool]) -> b
     return False
 
 
+_PLACEMENT_GROUPS = [{"front_door", "self_natural_choke", "natural", "self_natural_safe"}]  # EQUIVALENCE RULE 2 (shipped mode only)
+
+
+def _placement_ok(gold_val, pred_val, strict: bool) -> bool:
+    if gold_val is None:
+        return (pred_val in ("", None)) if strict else True
+    alts = set(_alts(gold_val))
+    if SHIPPED:
+        for grp in _PLACEMENT_GROUPS:
+            if alts & grp:
+                alts |= grp
+    return pred_val in alts
+
+
 def _building_match(g: dict, p: dict, strict: bool) -> bool:
     if p.get("building_type") != g["building_type"]:
         return False
     if int(p.get("count", 1) or 1) != int(g.get("count", 1)):
         return False
-    return _attr_ok(g.get("placement_intent"), p.get("placement_intent"), strict)
+    return _placement_ok(g.get("placement_intent"), p.get("placement_intent"), strict)
 
 
 def _flags(args: dict) -> set[str]:
     return {k for k, v in (args.get("emergency") or {}).items() if v}
 
 
+SHIPPED = bool(getattr(S, "CANON_IS_VECTOR", False))
+
+
+def _gold_layer(gold: dict) -> str:
+    # shipped contract: one-shot construction (building_tasks) lives under the macro tier
+    if SHIPPED and "buildings" in gold and gold["layer"] == "operation":
+        return "macro"
+    return gold["layer"]
+
+
 def _sem(gold: dict, args: dict, strict: bool, layer: str) -> bool:
-    gl = gold["layer"]
+    gl = _gold_layer(gold)
     if layer != gl:
         return False
     if gl == "clarification":
+        if SHIPPED:  # the shipped clarification is a free-text question; reasons are not machine-readable
+            return True
         reason = (args.get("clarification") or {}).get("reason")
         return reason in gold["clarify"]["reasons"]
     if gl == "emergency":
-        return _flags(args) == set(gold["flags"])
+        got, want = _flags(args), set(gold["flags"])
+        if got == want:
+            return True
+        # shipped handler semantics: an explicit retreat also cancels attacks (documented in web_gui); accept that
+        # superset for `sem`, require the exact flag set for `strict`.
+        return SHIPPED and not strict and want == {"force_retreat"} and got == {"force_retreat", "cancel_attacks"}
     if gl == "micro":
         m = args.get("micro") or {}
         if m.get("ability") not in _alts(gold["ability"]):
@@ -119,6 +150,9 @@ def _sem(gold: dict, args: dict, strict: bool, layer: str) -> bool:
         if strict:
             return pu == gu
         return (not pu) or (not gu) or pu == gu
+    if gl == "macro" and "buildings" in gold:
+        return _match_multiset(gold["buildings"], args.get("buildings") or [],
+                               lambda g, p: _building_match(g, p, strict)) and not args.get("operations")
     if gl == "macro":
         p = args.get("production") or {}
         if p.get("task_type") not in _alts(gold["production"]["task_type"]):
@@ -150,11 +184,16 @@ def _safe(gold: dict, args: dict, layer: str) -> bool:
     return True
 
 
-def score_prediction(row: dict, args: dict | None, error: str | None = None) -> dict:
-    """Return per-row scores. ``args`` None (no tool call / transport error) scores all-false."""
+def score_prediction(row: dict, args: dict | None, error: str | None = None, transcript: str | None = None) -> dict:
+    """Return per-row scores. ``args`` None (no tool call / transport error) scores all-false.
+
+    With the shipped schema (S.CANON_IS_VECTOR) ``transcript`` is what the backend would receive alongside the tool call
+    (real ASR text); the web_gui handler is emulated and the resulting PolicyModulationVector is scored."""
     gold = row["gold"]
     res = {"id": row["id"], "tier": row["tier"], "sem": False, "strict": False, "layer_ok": False,
            "schema_valid": False, "safe": True, "pred_layer": None, "reason": error or ""}
+    if SHIPPED:
+        return _score_shipped(row, args, error, transcript, res)
     if not isinstance(args, dict):
         res["pred_layer"] = "none"
         res["safe"] = True  # nothing executed
@@ -168,6 +207,26 @@ def score_prediction(row: dict, args: dict | None, error: str | None = None) -> 
     if ok:  # an invalid call is never executed, hence never semantically correct
         res["sem"] = _sem(gold, args, False, layer) and res["safe"]
         res["strict"] = _sem(gold, args, True, layer) and res["safe"]
+    return res
+
+
+def _score_shipped(row, args, error, transcript, res):
+    gold = row["gold"]
+    if args is not None and not isinstance(args, dict):
+        args = None
+    canon, layer, valid, why, outcome = S.canonicalize(args, transcript)
+    if args is None and outcome.get("kind") == "unresolved":
+        res.update(pred_layer="none", reason=error or "no tool call / no fast path")
+        return res
+    res.update(schema_valid=valid, pred_layer=layer, reason=why if valid else (error or why))
+    res["outcome"] = outcome.get("kind")
+    res["source"] = outcome.get("source")
+    res["layer_ok"] = layer == _gold_layer(gold)
+    if not valid:
+        return res
+    res["safe"] = _safe(gold, canon, layer)
+    res["sem"] = _sem(gold, canon, False, layer) and res["safe"]
+    res["strict"] = _sem(gold, canon, True, layer) and res["safe"]
     return res
 
 

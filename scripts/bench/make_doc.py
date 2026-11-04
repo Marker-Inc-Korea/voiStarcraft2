@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-RES = ROOT / "docs" / "bench-results"
+RES = ROOT / "docs" / "bench-results" / "private-schema-gold-transcripts"
 tmpl = (Path(__file__).with_name("doc_template.md")).read_text(encoding="utf-8")
 screen = json.loads((RES / "summary_screen.json").read_text())["configs"]
 full = json.loads((RES / "summary_full.json").read_text())["configs"]
@@ -30,5 +30,5 @@ out = out.replace("{{SCREEN_SINGLE}}", single_rows(screen))
 out = out.replace("{{FULL_TABLE}}", (RES / "tables_full.md").read_text().split("\n", 3)[3].strip())
 out = out.replace("{{MISSES_SELECTED}}", (RES / "misses_full_selected.md").read_text())
 out = out.replace("{{MISSES_AUDIO}}", (RES / "misses_full_audio_native.md").read_text())
-(ROOT / "docs" / "voice-intent-benchmark.md").write_text(out, encoding="utf-8")
+(RES / "voice-intent-benchmark-private-schema.md").write_text(out, encoding="utf-8")
 print("doc written", len(out))
