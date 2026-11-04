@@ -182,3 +182,82 @@ body[data-motion="off"] *, body[data-motion="off"] *::before, body[data-motion="
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition-duration: 1ms !important; }
 }
+
+/* =====================================================================================================================
+   COSMIC FINISH — layered on top of the structural rules above. Everything here is additive/low-alpha so the desktop and
+   the game still show through; the glass fill itself stays driven by --glass-alpha / --glass-blur.
+   ===================================================================================================================== */
+
+/* canvas: stars + nebula keep their OWN intensity (별 / 성운 sliders), not the glass opacity */
+#space { opacity: 1; mix-blend-mode: plus-lighter; }
+.panel { box-shadow: 0 18px 60px rgba(2, 3, 14, .32), 0 0 34px hsl(var(--hue) 90% 62% / calc(.10 + var(--border-glow) * .34)), 0 0 90px hsl(calc(var(--hue) + 70) 90% 60% / calc(.05 + var(--border-glow) * .2)), inset 0 1px 0 rgba(255,255,255,.26), inset 0 0 46px hsl(var(--hue) 85% 66% / calc(var(--border-glow) * .2)); }
+
+/* 1px gradient border: white -> violet -> cyan at ~35 % alpha (masked ring, so the fill/blur stay untouched) */
+.panel { border: 1px solid transparent; }
+.rim { position: absolute; inset: 0; z-index: 1; pointer-events: none; border-radius: inherit; padding: 1px;
+  background: linear-gradient(135deg, rgba(255,255,255,.62), hsl(var(--hue) 90% 72% / .45) 38%, hsl(calc(var(--hue) - 60) 95% 66% / .42) 72%, rgba(255,255,255,.18));
+  -webkit-mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; opacity: calc(.55 + var(--border-glow) * .6); }
+/* inner top highlight + faint starlight wash */
+.sheen { background: linear-gradient(180deg, rgba(255,255,255,.14), rgba(255,255,255,.03) 22%, transparent 46%), radial-gradient(120% 70% at 50% -10%, hsl(var(--hue) 90% 70% / .12), transparent 60%); }
+/* specular sweep on hover: a soft diagonal band crossing the panel once */
+.sweep { position: absolute; inset: 0; z-index: 1; pointer-events: none; border-radius: inherit; overflow: hidden; opacity: 0; }
+.sweep::before { content: ""; position: absolute; top: -20%; bottom: -20%; width: 38%; left: -50%; transform: skewX(-18deg);
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.16), rgba(190,210,255,.10) 55%, transparent); }
+.panel:hover .sweep { opacity: 1; }
+.panel:hover .sweep::before { animation: sweep 1.15s cubic-bezier(.3,.7,.2,1) 1; }
+@keyframes sweep { from { left: -50%; } to { left: 130%; } }
+
+/* typography: crisp white, soft shadow for legibility on transparent glass; words only */
+.panel-body { color: #fff; font-weight: 500; letter-spacing: .01em; text-shadow: 0 1px 1.5px rgba(2,3,14, calc(var(--legible) * .95)), 0 0 8px rgba(2,3,14, calc(var(--legible) * .7)); }
+.label, .utterance, .op-name, .transcript { color: #fff; }
+.label { opacity: .78; }
+.stage[data-state="done"] .label, .stage[data-state="active"] .label { opacity: 1; }
+
+/* operation cards = glass shards with faint star dust (no stripe, no coloured edge) */
+.card { background: linear-gradient(155deg, rgba(255,255,255,.10), rgba(255,255,255,.015) 42%, rgba(255,255,255,.05)), rgba(6,7,22, calc(var(--scrim) * .85));
+  border: 1px solid rgba(255,255,255,.16); border-radius: calc(var(--radius) * .72) calc(var(--radius) * .5) calc(var(--radius) * .72) calc(var(--radius) * .5);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.22), inset 0 -10px 24px rgba(120,130,255,.05), 0 6px 22px rgba(2,3,14,.28); overflow: hidden; }
+.card::after { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .5;
+  background-image: radial-gradient(circle at 12% 30%, rgba(255,255,255,.55) 0 .6px, transparent 1.2px), radial-gradient(circle at 63% 72%, rgba(190,210,255,.5) 0 .6px, transparent 1.2px), radial-gradient(circle at 88% 22%, rgba(255,255,255,.4) 0 .5px, transparent 1px), radial-gradient(circle at 38% 84%, rgba(220,190,255,.45) 0 .5px, transparent 1px);
+  background-size: 140px 90px, 170px 110px, 120px 80px, 150px 100px; }
+.op { background: rgba(4,5,16, calc(var(--scrim) * .62)); border: 1px solid rgba(255,255,255,.08); box-shadow: inset 0 1px 0 rgba(255,255,255,.07); }
+
+/* stage-rail dots = tiny stars */
+.node { width: 11px; height: 11px; background: rgba(120,130,190,.28); border: 1px solid rgba(190,200,255,.28); }
+.stage[data-state="done"] .node { background: radial-gradient(circle, #fff 0 24%, #c9d4ff 48%, #8fa2ff 100%); border-color: transparent; box-shadow: 0 0 6px 1px rgba(200,215,255,.85), 0 0 14px 3px rgba(130,150,255,.55); }
+.rail[data-effect="yes"] .stage[data-stage="effect"][data-state="done"] .node { background: radial-gradient(circle, #fff 0 24%, #c8ffe6 52%, #5ff2b0 100%); box-shadow: 0 0 6px 1px rgba(200,255,230,.9), 0 0 16px 4px rgba(79,240,166,.6); }
+.stage[data-state="active"] .node { background: radial-gradient(circle, #fff 0 30%, #9fe9ff 62%, rgba(79,216,255,.4) 100%); border-color: transparent; animation: starPulse 1.4s ease-in-out infinite; }
+.stage[data-state="active"] .node::after { content: ""; position: absolute; left: 50%; top: 50%; width: 19px; height: 19px; transform: translate(-50%,-50%); opacity: .8; border-radius: 0;
+  background: linear-gradient(0deg, transparent 46%, rgba(255,255,255,.9) 50%, transparent 54%), linear-gradient(90deg, transparent 46%, rgba(255,255,255,.9) 50%, transparent 54%); -webkit-mask: radial-gradient(circle, #000 0 18%, transparent 72%); mask: radial-gradient(circle, #000 0 18%, transparent 72%); }
+.stage[data-state="blocked"] .node { background: radial-gradient(circle, #ffd0c4 0 22%, #ff6a58 56%, #b3122e 100%); box-shadow: 0 0 8px 1px rgba(255,90,80,.85), 0 0 16px 3px rgba(255,60,80,.45); } /* red dwarf */
+.stage[data-state="sim"] .node { background: transparent; border: 1.5px dashed var(--amber); box-shadow: none; }                                                                    /* hollow dashed */
+.stage[data-state="ended"] .node { background: rgba(150,155,200,.35); box-shadow: none; }
+.stage::before { background: linear-gradient(90deg, transparent, rgba(190,200,255,.18), transparent); height: 1px; top: 5px; }
+.stage[data-state="done"]::before { background: linear-gradient(90deg, rgba(143,162,255,.15), rgba(180,215,255,.7)); box-shadow: 0 0 6px rgba(150,180,255,.5); }
+@keyframes starPulse { 0%, 100% { transform: scale(.88); filter: brightness(.95); } 50% { transform: scale(1.22); filter: brightness(1.35); } }
+
+/* gear + retreat: same glass-cosmic language */
+.gear, .retreat, .tabs button, .btn, .cmd-form input, .transcript { backdrop-filter: blur(calc(var(--glass-blur) * .5)); -webkit-backdrop-filter: blur(calc(var(--glass-blur) * .5)); }
+.gear { background: linear-gradient(155deg, rgba(255,255,255,.16), rgba(255,255,255,.03)), rgba(8,9,28, calc(var(--scrim) * .8)); border: 1px solid rgba(190,205,255,.30); box-shadow: inset 0 1px 0 rgba(255,255,255,.28), 0 0 14px hsl(var(--hue) 90% 65% / .22); }
+.gear:hover { box-shadow: inset 0 1px 0 rgba(255,255,255,.34), 0 0 22px hsl(var(--hue) 95% 70% / .5); }
+.retreat { background: linear-gradient(155deg, rgba(255,150,150,.32), rgba(255,70,100,.10)), rgba(30,6,16, calc(var(--scrim) * .8)); border: 1px solid rgba(255,140,150,.55); color: #fff; text-shadow: 0 0 10px rgba(255,90,110,.65);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.28), 0 0 18px rgba(255,80,100,.3); }
+.cmd-form input { background: rgba(4,5,18, calc(.26 + var(--scrim) * .55)); border: 1px solid rgba(190,205,255,.22); color: #fff; box-shadow: inset 0 1px 6px rgba(0,0,0,.35); }
+.cmd-form input::placeholder { color: rgba(220,228,255,.55); }
+
+/* mic orb = a small glowing planet: nebula sphere + terminator shading, an orbiting ring and a tiny moon */
+.orb-core { background: radial-gradient(circle at 30% 26%, #fff 0 5%, #d4c8ff 14%, hsl(var(--hue) 80% 66%) 36%, hsl(calc(var(--hue) - 30) 70% 38%) 66%, #0d0b3a 100%); box-shadow: 0 0 20px hsl(var(--hue) 90% 62% / .7), 0 0 44px hsl(calc(var(--hue) + 50) 90% 60% / .35), inset -7px -9px 16px rgba(4,3,40,.65), inset 4px 5px 10px rgba(255,255,255,.28); }
+.orb-core::before { content: ""; position: absolute; inset: 0; border-radius: 50%; background: radial-gradient(60% 42% at 62% 70%, hsl(calc(var(--hue) + 70) 90% 70% / .35), transparent 70%), radial-gradient(40% 30% at 28% 62%, hsl(calc(var(--hue) - 50) 95% 70% / .3), transparent 70%); mix-blend-mode: screen; }
+.orb-ring { position: absolute; inset: -3px; border-radius: 50%; transform: rotate(-24deg) scaleY(.36); border: 1px solid rgba(200,215,255,.45); box-shadow: 0 0 8px rgba(160,180,255,.35); pointer-events: none; }
+.orb-ring .moon { position: absolute; left: 50%; top: -3px; width: 5px; height: 5px; margin-left: -2.5px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #fff, #b9c6ff 70%); box-shadow: 0 0 7px 1px rgba(210,225,255,.9); transform: scaleY(2.78); }
+body[data-voice="listening"] .orb-ring { border-color: rgba(255,255,255,.75); animation: orbit 2.6s linear infinite; }
+body[data-voice="thinking"] .orb-ring { animation: orbit 1.6s linear infinite; }
+body[data-voice="listening"] .orb-core { box-shadow: 0 0 28px rgba(255,106,213,.85), 0 0 62px rgba(79,216,255,.5), inset -7px -9px 16px rgba(4,3,40,.5), inset 4px 5px 10px rgba(255,255,255,.4); }
+@keyframes orbit { to { transform: rotate(336deg) scaleY(.36); } }
+body[data-voice="off"] .orb-ring { opacity: .45; }
+
+/* reduced motion: static sky, no sweeps/orbits/pulses (the canvas draws one still frame) */
+@media (prefers-reduced-motion: reduce) {
+  .panel:hover .sweep::before, .orb-ring, .stage[data-state="active"] .node { animation: none !important; }
+}
+body[data-motion="off"] .panel:hover .sweep::before, body[data-motion="off"] .orb-ring, body[data-motion="off"] .stage[data-state="active"] .node { animation: none !important; }

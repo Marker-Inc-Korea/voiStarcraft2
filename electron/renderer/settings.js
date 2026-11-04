@@ -26,6 +26,8 @@
       stars: int(0, 100, 50, { unit: "%" }),
       starSpeed: int(0, 100, 40, { unit: "%" }),
       nebula: int(0, 100, 50, { unit: "%" }),
+      twinkle: bool(true),
+      meteors: bool(true),
       textSize: int(11, 20, 13, { unit: "px" }),
       reduceMotion: bool(false),
     },
@@ -42,6 +44,7 @@
     },
     rainbow: {
       enabled: bool(true),
+      screen: oneOf(["current", "all"], "current"),
       depth: int(30, 240, 90, { unit: "px" }),
       intensity: int(10, 100, 95, { unit: "%" }),
       speed: int(1, 10, 5),

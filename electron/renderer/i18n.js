@@ -16,12 +16,12 @@
     // settings: tabs
     tab_glass: "유리", tab_layout: "레이아웃", tab_rainbow: "무지개", tab_voice: "음성", tab_server: "서버", tab_reset: "초기화",
     // glass
-    glass_alpha: "투명도", glass_blur: "블러", glass_vibrancy: "네이티브 블러", glass_hue: "색조", glass_saturation: "채도", glass_borderGlow: "테두리 빛", glass_radius: "모서리", glass_stars: "별", glass_starSpeed: "별 속도", glass_nebula: "성운", glass_textSize: "글자 크기", glass_reduceMotion: "모션 줄임",
+    glass_alpha: "투명도", glass_blur: "블러", glass_vibrancy: "네이티브 블러", glass_hue: "색조", glass_saturation: "채도", glass_borderGlow: "테두리 빛", glass_radius: "모서리", glass_stars: "별", glass_starSpeed: "별 속도", glass_nebula: "성운", glass_twinkle: "반짝임", glass_meteors: "유성", glass_textSize: "글자 크기", glass_reduceMotion: "모션 줄임",
     // layout
     layout_dock: "위치", layout_width: "너비", layout_height: "높이", layout_autoHide: "자동 숨김", layout_hideDelay: "숨김 지연", layout_zone: "감지 폭", layout_pinned: "항상 표시", layout_display: "모니터", layout_margin: "여백",
     dock_bottom: "하단", dock_right: "오른쪽", dock_left: "왼쪽", dock_top: "상단", display_cursor: "커서",
     // rainbow
-    rainbow_enabled: "사용", rainbow_depth: "깊이", rainbow_intensity: "세기", rainbow_speed: "속도", rainbow_brightness: "밝기", rainbow_thinking: "해석 중도", rainbow_reactive: "음성 반응", preview: "미리보기",
+    rainbow_enabled: "사용", rainbow_screen: "화면", screen_current: "현재", screen_all: "전체", rainbow_depth: "깊이", rainbow_intensity: "세기", rainbow_speed: "속도", rainbow_brightness: "밝기", rainbow_thinking: "해석 중도", rainbow_reactive: "음성 반응", preview: "미리보기",
     // voice
     voice_device: "마이크", voice_level: "입력", voice_silence: "침묵", voice_sensitivity: "감도", voice_mode: "방식", voice_shortcut: "단축키", voice_language: "언어", voice_model: "모델", voice_latency: "지연",
     mode_always: "상시", mode_ptt: "누르기", lang_ko: "한국어", lang_en: "English", lang_auto: "자동", recordShortcut: "기록", pressKeys: "키 입력", shortcutUsed: "사용 중", defaultDevice: "기본", off: "꺼짐",
@@ -38,10 +38,10 @@
     sim: "Sim", runtimeUnknown: "Unknown", blocked: "Blocked", ended: "Ended",
     r_resource: "Resources", r_units: "Units", r_prereq: "Prereq", r_conflict: "Conflict", r_refused: "Refused", r_clarify: "Clarify", r_expired: "Expired", r_timeout: "Timeout", r_failed: "Failed", r_unknown: "Blocked",
     tab_glass: "Glass", tab_layout: "Layout", tab_rainbow: "Rainbow", tab_voice: "Voice", tab_server: "Server", tab_reset: "Reset",
-    glass_alpha: "Opacity", glass_blur: "Blur", glass_vibrancy: "Native blur", glass_hue: "Hue", glass_saturation: "Saturation", glass_borderGlow: "Border glow", glass_radius: "Corners", glass_stars: "Stars", glass_starSpeed: "Star speed", glass_nebula: "Nebula", glass_textSize: "Text size", glass_reduceMotion: "Reduce motion",
+    glass_alpha: "Opacity", glass_blur: "Blur", glass_vibrancy: "Native blur", glass_hue: "Hue", glass_saturation: "Saturation", glass_borderGlow: "Border glow", glass_radius: "Corners", glass_stars: "Stars", glass_starSpeed: "Star speed", glass_nebula: "Nebula", glass_twinkle: "Twinkle", glass_meteors: "Meteors", glass_textSize: "Text size", glass_reduceMotion: "Reduce motion",
     layout_dock: "Position", layout_width: "Width", layout_height: "Height", layout_autoHide: "Auto-hide", layout_hideDelay: "Hide delay", layout_zone: "Edge zone", layout_pinned: "Always visible", layout_display: "Display", layout_margin: "Margin",
     dock_bottom: "Bottom", dock_right: "Right", dock_left: "Left", dock_top: "Top", display_cursor: "Cursor",
-    rainbow_enabled: "Enabled", rainbow_depth: "Depth", rainbow_intensity: "Intensity", rainbow_speed: "Speed", rainbow_brightness: "Brightness", rainbow_thinking: "Thinking too", rainbow_reactive: "Voice reactive", preview: "Preview",
+    rainbow_enabled: "Enabled", rainbow_screen: "Screen", screen_current: "Current", screen_all: "All", rainbow_depth: "Depth", rainbow_intensity: "Intensity", rainbow_speed: "Speed", rainbow_brightness: "Brightness", rainbow_thinking: "Thinking too", rainbow_reactive: "Voice reactive", preview: "Preview",
     voice_device: "Microphone", voice_level: "Level", voice_silence: "Silence", voice_sensitivity: "Sensitivity", voice_mode: "Mode", voice_shortcut: "Shortcut", voice_language: "Language", voice_model: "Model", voice_latency: "Latency",
     mode_always: "Always", mode_ptt: "Push", lang_ko: "한국어", lang_en: "English", lang_auto: "Auto", recordShortcut: "Record", pressKeys: "Press keys", shortcutUsed: "In use", defaultDevice: "Default", off: "Off",
     lat_speech: "speech→call", lat_publish: "call→post",

@@ -23,6 +23,15 @@ const i18n=require("../renderer/i18n.js");for(const lang of ["ko","en"])for(cons
 test("rainbow overlay is a feathered edge glow, not a stroke",()=>{const css=fs.readFileSync(path.join(__dirname,"..","overlay","overlay.css"),"utf8"),html=fs.readFileSync(path.join(__dirname,"..","overlay","index.html"),"utf8");
 assert.match(css,/--edge-depth: 90px/);assert.match(css,/mask-composite: add/);assert.match(css,/mix-blend-mode: screen/);assert.match(css,/conic-gradient/);assert.match(css,/@keyframes rotate/);assert.match(css,/prefers-reduced-motion/);assert.match(css,/pointer-events: none/);
 assert.doesNotMatch(css,/\bborder\s*:/);assert.doesNotMatch(css,/xor|exclude/);assert.match(html,/id="bloom"/);});
-test("cards are plain glass: no left accent stripe, ::before bar, or coloured edge on cards/ops",()=>{const css=fs.readFileSync(path.join(__dirname,"..","renderer","style.css"),"utf8"),js=fs.readFileSync(path.join(__dirname,"..","renderer","renderer.js"),"utf8");
-assert.doesNotMatch(css,/\.card[^{]*::(before|after)/);assert.doesNotMatch(css,/border-left/);assert.doesNotMatch(css,/data-overall/);assert.doesNotMatch(css,/\.(card|op)\[[^\]]*\][^{]*\{[^}]*border-color/);assert.doesNotMatch(js,/data-overall|dataset\.overall/);
-const rule=css.match(/\n\.card \{[^}]*\}/)[0];assert.doesNotMatch(rule,/inset\s+-?\d+px\s+0/);assert.match(rule,/border-radius/);assert.match(rule,/rgba\(6,7,22, var\(--scrim\)\)/);});
+test("cards are glass shards: no left stripe/divider/accent bar, no coloured edge (star dust texture is allowed)",()=>{const css=fs.readFileSync(path.join(__dirname,"..","renderer","style.css"),"utf8"),js=fs.readFileSync(path.join(__dirname,"..","renderer","renderer.js"),"utf8");
+assert.doesNotMatch(css,/border-left/);assert.doesNotMatch(css,/data-overall/);assert.doesNotMatch(js,/data-overall|dataset\.overall/);
+assert.doesNotMatch(css,/\.(card|op)\[[^\]]*\][^{]*\{[^}]*border-color/);
+// any ::before/::after on .card must be a full-surface texture (inset:0), never a thin bar anchored to one side
+for(const m of css.matchAll(/\.card[^{,]*::(?:before|after)\s*\{([^}]*)\}/g)){const body=m[1];assert.match(body,/inset:\s*0/,"card pseudo-element must cover the whole card: "+body);assert.doesNotMatch(body,/\bwidth:\s*\d+px/);assert.doesNotMatch(body,/\bleft:\s*0[;\s]/);assert.doesNotMatch(body,/box-shadow:[^;]*var\(--(violet|red|green|cyan)\)/);}
+const rule=css.match(/\n\.card \{[^}]*\}/)[0];assert.doesNotMatch(rule,/inset\s+-?\d+px\s+0\s+0/);assert.match(rule,/border-radius/);});
+test("cosmic finish: additive canvas, gradient rim, sweep, planet orb, star-dot rail, reduced-motion respected",()=>{const css=fs.readFileSync(path.join(__dirname,"..","renderer","style.css"),"utf8"),html=fs.readFileSync(path.join(__dirname,"..","renderer","index.html"),"utf8"),space=fs.readFileSync(path.join(__dirname,"..","renderer","space.js"),"utf8");
+assert.match(css,/#space \{[^}]*mix-blend-mode: plus-lighter/);assert.match(space,/globalCompositeOperation = "lighter"/);
+assert.match(css,/\.rim \{[^}]*mask-composite: exclude/);assert.match(html,/class="rim"/);assert.match(html,/class="sweep"/);assert.match(html,/class="orb-ring"[^>]*><i class="moon"><\/i><\/span>/);
+assert.match(css,/\.panel:hover \.sweep::before/);assert.match(css,/@keyframes starPulse/);assert.match(css,/@keyframes orbit/);
+assert.match(space,/requestAnimationFrame/);assert.match(space,/visible\(\)/);assert.match(space,/prefers-reduced-motion/);
+assert.doesNotMatch(css,/\.panel-body[^{]*\{[^}]*font-family/);assert.match(css,/\.panel-body \{[^}]*color: #fff/);});

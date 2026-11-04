@@ -114,3 +114,27 @@ test("blocked reasons collapse to exactly one word", () => {
   assert.equal(ko.reason(""), "막힘");
   assert.equal(I.create("en").reason("not enough minerals"), "Resources");
 });
+test("rainbow.screen: current | all, default current, strict enum", () => {
+  assert.equal(S.defaults().rainbow.screen, "current");
+  assert.equal(S.validatePatch({ rainbow: { screen: "all" } }).rainbow.screen, "all");
+  assert.throws(() => S.validatePatch({ rainbow: { screen: "primary" } }), /rainbow\.screen/);
+  assert.equal(S.sanitizeStored({ rainbow: { screen: "bogus" } }).rainbow.screen, "current");
+  for (const lang of ["ko", "en"]) for (const key of ["rainbow_screen", "screen_current", "screen_all"]) assert.ok(require("../renderer/i18n.js").tables[lang][key], `${lang} ${key}`);
+});
+
+test("glass.twinkle and glass.meteors: booleans, default on, strict, sanitised", () => {
+  const d = S.defaults();
+  assert.equal(d.glass.twinkle, true); assert.equal(d.glass.meteors, true);
+  assert.deepEqual(S.validatePatch({ glass: { twinkle: false, meteors: false } }), { glass: { twinkle: false, meteors: false } });
+  for (const bad of [1, "on", null]) { assert.throws(() => S.validatePatch({ glass: { twinkle: bad } }), /glass\.twinkle must be a boolean/); assert.throws(() => S.validatePatch({ glass: { meteors: bad } }), /glass\.meteors must be a boolean/); }
+  assert.equal(S.sanitizeStored({ glass: { twinkle: "yes", meteors: false } }).glass.twinkle, true);
+  assert.equal(S.sanitizeStored({ glass: { meteors: false } }).glass.meteors, false);
+  for (const lang of ["ko", "en"]) for (const key of ["glass_twinkle", "glass_meteors"]) assert.ok(require("../renderer/i18n.js").tables[lang][key], `${lang} ${key}`);
+  assert.equal(require("../renderer/i18n.js").tables.ko.glass_twinkle, "반짝임"); assert.equal(require("../renderer/i18n.js").tables.ko.glass_meteors, "유성");
+});
+test("the 유리 tab keeps 별 밀도 / 별 속도 / 성운 and adds 반짝임 / 유성 (schema order)", () => {
+  const keys = Object.keys(S.SCHEMA.glass);
+  for (const key of ["stars", "starSpeed", "nebula", "twinkle", "meteors"]) assert.ok(keys.includes(key), key);
+  assert.ok(keys.indexOf("nebula") < keys.indexOf("twinkle") && keys.indexOf("twinkle") < keys.indexOf("meteors"));
+  const i18n = require("../renderer/i18n.js").tables.ko; assert.equal(i18n.glass_stars, "별"); assert.equal(i18n.glass_starSpeed, "별 속도"); assert.equal(i18n.glass_nebula, "성운");
+});
