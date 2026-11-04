@@ -5319,6 +5319,32 @@ def _micromachine_request_is_emergency(
     return isinstance(emergency, Mapping) and any(bool(value) for value in emergency.values())
 
 
+def _realtime_call_is_named_operation_cancel(
+    tool_arguments: Mapping[str, object] | None,
+    transcript: str,
+) -> bool:
+    """True when the model's call only cancels named operations and nobody asked to retreat."""
+
+    if not isinstance(tool_arguments, Mapping) or _micromachine_emergency_wants_retreat(
+        transcript
+    ):
+        return False
+    try:
+        if realtime_intent.classify_tier(tool_arguments) != realtime_intent.TIER_OPERATION:
+            return False
+    except ValueError:
+        return False
+    operations = tool_arguments.get("operations")
+    if not isinstance(operations, (list, tuple)) or not operations:
+        return False
+    return all(
+        isinstance(item, Mapping)
+        and str(item.get("operation_action", "") or "").lower() == "cancel"
+        and bool(str(item.get("operation_id", "") or "").strip())
+        for item in operations
+    )
+
+
 def _micromachine_emergency_wants_retreat(text: str) -> bool:
     """True when the (negation-stripped) utterance asks to retreat, not only cancel."""
 
@@ -12780,6 +12806,12 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 transcript,
                 None,
             )
+            if emergency_text and _realtime_call_is_named_operation_cancel(
+                tool_arguments, transcript
+            ):
+                # "정찰 작전 취소해" cancels one named force; only an explicit
+                # retreat word may widen that into an army-wide emergency.
+                emergency_text = False
             if emergency_text:
                 provider_output = _micromachine_emergency_safety_output(transcript)
                 tier = realtime_intent.TIER_EMERGENCY

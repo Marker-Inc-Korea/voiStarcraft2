@@ -821,6 +821,46 @@ class EndpointTest(unittest.TestCase):
             self.assertEqual("emergency", payload["tier"])
             self.assertEqual("emergency_override", payload["source"])
 
+    def test_named_operation_cancel_is_not_overridden_into_an_emergency(self):
+        # "정찰 작전 취소해" cancels one named force; the generic attack-cancel
+        # regex must not turn it into an army-wide emergency.
+        with tempfile.TemporaryDirectory() as directory:
+            status, payload = self.intent(
+                directory,
+                {
+                    "transcript": "정찰 작전 취소해",
+                    "update_id": "voice-cancel-op-1",
+                    "tool_arguments": {
+                        "command_layer": "operation",
+                        "goal": "정찰 작전 취소",
+                        "operations": [
+                            {"operation_id": "scout", "operation_action": "cancel", "goal": "정찰 취소"}
+                        ],
+                    },
+                },
+            )
+            self.assertEqual(202, status, payload)
+            self.assertEqual("operation", payload["tier"])
+            self.assertEqual("tool_call", payload["source"])
+
+    def test_plain_attack_cancel_without_a_named_operation_still_overrides(self):
+        with tempfile.TemporaryDirectory() as directory:
+            status, payload = self.intent(
+                directory,
+                {
+                    "transcript": "공격 취소",
+                    "update_id": "voice-cancel-all-1",
+                    "tool_arguments": {
+                        "command_layer": "macro",
+                        "goal": "공격 취소",
+                        "macro": {"production_targets": [MARINE]},
+                    },
+                },
+            )
+            self.assertEqual(202, status, payload)
+            self.assertEqual("emergency", payload["tier"])
+            self.assertEqual("emergency_override", payload["source"])
+
     def test_clarification_is_not_submitted(self):
         with tempfile.TemporaryDirectory() as directory:
             status, payload = self.intent(
