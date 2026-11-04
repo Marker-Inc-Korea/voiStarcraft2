@@ -1,0 +1,264 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="640" font-family="Helvetica,Arial,sans-serif" font-size="11">
+<rect width="980" height="640" fill="white"/>
+<text x="490.0" y="24" text-anchor="middle" font-size="16" font-weight="bold">Voice intent benchmark (screen: 40 rows)</text>
+<line x1="70" x2="950" y1="570.0" y2="570.0" stroke="#eee"/>
+<text x="62" y="574.0" text-anchor="end">0%</text>
+<line x1="70" x2="950" y1="518.0" y2="518.0" stroke="#eee"/>
+<text x="62" y="522.0" text-anchor="end">10%</text>
+<line x1="70" x2="950" y1="466.0" y2="466.0" stroke="#eee"/>
+<text x="62" y="470.0" text-anchor="end">20%</text>
+<line x1="70" x2="950" y1="414.0" y2="414.0" stroke="#eee"/>
+<text x="62" y="418.0" text-anchor="end">30%</text>
+<line x1="70" x2="950" y1="362.0" y2="362.0" stroke="#eee"/>
+<text x="62" y="366.0" text-anchor="end">40%</text>
+<line x1="70" x2="950" y1="310.0" y2="310.0" stroke="#eee"/>
+<text x="62" y="314.0" text-anchor="end">50%</text>
+<line x1="70" x2="950" y1="258.0" y2="258.0" stroke="#eee"/>
+<text x="62" y="262.0" text-anchor="end">60%</text>
+<line x1="70" x2="950" y1="206.0" y2="206.0" stroke="#eee"/>
+<text x="62" y="210.0" text-anchor="end">70%</text>
+<line x1="70" x2="950" y1="154.0" y2="154.0" stroke="#eee"/>
+<text x="62" y="158.0" text-anchor="end">80%</text>
+<line x1="70" x2="950" y1="102.0" y2="102.0" stroke="#eee"/>
+<text x="62" y="106.0" text-anchor="end">90%</text>
+<line x1="70" x2="950" y1="50.0" y2="50.0" stroke="#eee"/>
+<text x="62" y="54.0" text-anchor="end">100%</text>
+<line x1="70.0" x2="70.0" y1="50" y2="570" stroke="#eee"/>
+<text x="70.0" y="586" text-anchor="middle">0s</text>
+<line x1="186.7" x2="186.7" y1="50" y2="570" stroke="#eee"/>
+<text x="186.7" y="586" text-anchor="middle">2s</text>
+<line x1="303.5" x2="303.5" y1="50" y2="570" stroke="#eee"/>
+<text x="303.5" y="586" text-anchor="middle">4s</text>
+<line x1="420.2" x2="420.2" y1="50" y2="570" stroke="#eee"/>
+<text x="420.2" y="586" text-anchor="middle">6s</text>
+<line x1="536.9" x2="536.9" y1="50" y2="570" stroke="#eee"/>
+<text x="536.9" y="586" text-anchor="middle">8s</text>
+<line x1="653.7" x2="653.7" y1="50" y2="570" stroke="#eee"/>
+<text x="653.7" y="586" text-anchor="middle">10s</text>
+<line x1="770.4" x2="770.4" y1="50" y2="570" stroke="#eee"/>
+<text x="770.4" y="586" text-anchor="middle">12s</text>
+<line x1="887.1" x2="887.1" y1="50" y2="570" stroke="#eee"/>
+<text x="887.1" y="586" text-anchor="middle">14s</text>
+<line x1="70" x2="950" y1="570" y2="570" stroke="#333"/><line x1="70" x2="70" y1="50" y2="570" stroke="#333"/>
+<text x="510.0" y="612" text-anchor="middle" font-size="13">p50 latency, end of speech → tool call (s)  [lower is better]</text>
+<text transform="translate(18,310.0) rotate(-90)" text-anchor="middle" font-size="13">exact-semantic accuracy, all tiers (%)  [higher is better]</text>
+<polyline points="162.6,440.0 177.8,310.0 182.3,214.7 182.3,193.0 227.0,145.3 244.0,136.7 252.7,106.3 267.1,89.0 288.5,80.3 373.2,67.3 659.9,58.7" fill="none" stroke="#ff7f0e" stroke-width="2" stroke-dasharray="6 3"/>
+<circle cx="162.6" cy="440.0" r="6" fill="#7f7f7f" fill-opacity="0.75" stroke="black"><title>fp:ext_rules: 25.0% p50 1.59s unsafe 0.0%</title></circle>
+<text x="170.6" y="434.0" font-size="10">fp:ext_rules</text>
+<circle cx="162.6" cy="570.0" r="4" fill="#7f7f7f" fill-opacity="0.75" stroke="none"><title>fp:prod_regex: 0.0% p50 1.59s unsafe 0.0%</title></circle>
+<circle cx="236.0" cy="193.0" r="4" fill="#1f77b4" fill-opacity="0.75" stroke="none"><title>rt:gpt-realtime-1.5:manual:compact: 72.5% p50 2.84s unsafe 1.7%</title></circle>
+<circle cx="227.3" cy="210.3" r="4" fill="#1f77b4" fill-opacity="0.75" stroke="none"><title>rt:gpt-realtime-2025-08-28:manual:compact: 69.2% p50 2.69s unsafe 2.5%</title></circle>
+<circle cx="276.6" cy="106.3" r="4" fill="#1f77b4" fill-opacity="0.75" stroke="none"><title>rt:gpt-realtime-2:manual:compact: 89.2% p50 3.54s unsafe 0.0%</title></circle>
+<circle cx="264.1" cy="323.0" r="4" fill="#1f77b4" fill-opacity="0.75" stroke="none"><title>rt:gpt-realtime-mini:manual:compact: 47.5% p50 3.33s unsafe 3.3%</title></circle>
+<circle cx="188.8" cy="323.0" r="4" fill="#1f77b4" fill-opacity="0.75" stroke="none"><title>rt:gpt-realtime-mini:manual:compact:asr: 47.5% p50 2.03s unsafe 2.5%</title></circle>
+<circle cx="247.7" cy="253.7" r="4" fill="#1f77b4" fill-opacity="0.75" stroke="none"><title>rt:gpt-realtime-mini:manual:fewshot: 60.8% p50 3.05s unsafe 1.7%</title></circle>
+<circle cx="259.8" cy="310.0" r="4" fill="#1f77b4" fill-opacity="0.75" stroke="none"><title>rt:gpt-realtime-mini:manual:full: 50.0% p50 3.25s unsafe 1.7%</title></circle>
+<circle cx="248.0" cy="288.3" r="4" fill="#1f77b4" fill-opacity="0.75" stroke="none"><title>rt:gpt-realtime-mini:vad500:compact: 54.2% p50 3.05s unsafe 1.7%</title></circle>
+<circle cx="263.4" cy="262.3" r="4" fill="#1f77b4" fill-opacity="0.75" stroke="none"><title>rt:gpt-realtime-mini:vad500:fewshot: 59.2% p50 3.31s unsafe 1.7%</title></circle>
+<circle cx="248.3" cy="301.3" r="4" fill="#1f77b4" fill-opacity="0.75" stroke="none"><title>rt:gpt-realtime-mini:vad500:full: 51.7% p50 3.06s unsafe 2.5%</title></circle>
+<circle cx="259.0" cy="201.7" r="4" fill="#1f77b4" fill-opacity="0.75" stroke="none"><title>rt:gpt-realtime:manual:compact: 70.8% p50 3.24s unsafe 1.7%</title></circle>
+<circle cx="186.3" cy="201.7" r="4" fill="#1f77b4" fill-opacity="0.75" stroke="none"><title>rt:gpt-realtime:manual:compact:asr: 70.8% p50 1.99s unsafe 3.3%</title></circle>
+<circle cx="245.3" cy="145.3" r="4" fill="#1f77b4" fill-opacity="0.75" stroke="none"><title>rt:gpt-realtime:manual:fewshot: 81.7% p50 3.00s unsafe 1.7%</title></circle>
+<circle cx="275.7" cy="188.7" r="4" fill="#1f77b4" fill-opacity="0.75" stroke="none"><title>rt:gpt-realtime:manual:full: 73.3% p50 3.52s unsafe 2.5%</title></circle>
+<circle cx="293.2" cy="201.7" r="4" fill="#1f77b4" fill-opacity="0.75" stroke="none"><title>rt:gpt-realtime:vad500:compact: 70.8% p50 3.82s unsafe 3.3%</title></circle>
+<circle cx="281.3" cy="149.7" r="4" fill="#1f77b4" fill-opacity="0.75" stroke="none"><title>rt:gpt-realtime:vad500:fewshot: 80.8% p50 3.62s unsafe 0.0%</title></circle>
+<circle cx="311.9" cy="223.3" r="4" fill="#1f77b4" fill-opacity="0.75" stroke="none"><title>rt:gpt-realtime:vad500:full: 66.7% p50 4.14s unsafe 2.5%</title></circle>
+<circle cx="455.5" cy="201.7" r="4" fill="#2ca02c" fill-opacity="0.75" stroke="none"><title>tx:claude-haiku-5-5:compact: 70.8% p50 6.61s unsafe 1.7%</title></circle>
+<circle cx="450.6" cy="132.3" r="4" fill="#2ca02c" fill-opacity="0.75" stroke="none"><title>tx:claude-haiku-5-5:fewshot: 84.2% p50 6.52s unsafe 1.7%</title></circle>
+<circle cx="478.3" cy="158.3" r="4" fill="#2ca02c" fill-opacity="0.75" stroke="none"><title>tx:claude-haiku-5-5:full: 79.2% p50 7.00s unsafe 1.7%</title></circle>
+<circle cx="304.0" cy="154.0" r="4" fill="#2ca02c" fill-opacity="0.75" stroke="none"><title>tx:gemini-3.5-flash-lite:compact: 80.0% p50 4.01s unsafe 0.0%</title></circle>
+<circle cx="289.3" cy="119.3" r="4" fill="#2ca02c" fill-opacity="0.75" stroke="none"><title>tx:gemini-3.5-flash-lite:fewshot: 86.7% p50 3.76s unsafe 0.0%</title></circle>
+<circle cx="277.2" cy="175.7" r="4" fill="#2ca02c" fill-opacity="0.75" stroke="none"><title>tx:gemini-3.5-flash-lite:fewshot:asrtxt: 75.8% p50 3.55s unsafe 0.0%</title></circle>
+<circle cx="869.9" cy="115.0" r="4" fill="#2ca02c" fill-opacity="0.75" stroke="none"><title>tx:gpt-5.6-luna:compact: 87.5% p50 13.70s unsafe 0.0%</title></circle>
+<circle cx="808.2" cy="84.7" r="4" fill="#2ca02c" fill-opacity="0.75" stroke="none"><title>tx:gpt-5.6-luna:fewshot: 93.3% p50 12.65s unsafe 0.0%</title></circle>
+<circle cx="908.1" cy="106.3" r="4" fill="#2ca02c" fill-opacity="0.75" stroke="none"><title>tx:gpt-5.6-sol:compact: 89.2% p50 14.36s unsafe 0.0%</title></circle>
+<circle cx="849.2" cy="58.7" r="4" fill="#2ca02c" fill-opacity="0.75" stroke="none"><title>tx:gpt-5.6-sol:fewshot: 98.3% p50 13.35s unsafe 0.0%</title></circle>
+<circle cx="855.9" cy="67.3" r="4" fill="#2ca02c" fill-opacity="0.75" stroke="none"><title>tx:gpt-5.6-sol:full: 96.7% p50 13.47s unsafe 0.0%</title></circle>
+<circle cx="852.4" cy="97.7" r="4" fill="#2ca02c" fill-opacity="0.75" stroke="none"><title>tx:gpt-5.6-terra:compact: 90.8% p50 13.41s unsafe 0.0%</title></circle>
+<circle cx="847.0" cy="76.0" r="4" fill="#2ca02c" fill-opacity="0.75" stroke="none"><title>tx:gpt-5.6-terra:fewshot: 95.0% p50 13.31s unsafe 0.0%</title></circle>
+<circle cx="218.1" cy="193.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>gpt-realtime-1.5:manual:compact: 72.5% p50 2.54s unsafe 1.7%</title></circle>
+<circle cx="212.4" cy="206.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>gpt-realtime-2025-08-28:manual:compact: 70.0% p50 2.44s unsafe 2.5%</title></circle>
+<circle cx="252.7" cy="106.3" r="6" fill="#d62728" fill-opacity="0.75" stroke="black"><title>cascade:ext_rules>gpt-realtime-2:manual:compact: 89.2% p50 3.13s unsafe 0.0%</title></circle>
+<text x="260.7" y="100.3" font-size="10">c:ext_rules>gpt-realtime-2:manual:compact</text>
+<circle cx="216.1" cy="301.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>gpt-realtime-mini:manual:compact: 51.7% p50 2.50s unsafe 3.3%</title></circle>
+<circle cx="177.8" cy="310.0" r="6" fill="#d62728" fill-opacity="0.75" stroke="black"><title>cascade:ext_rules>gpt-realtime-mini:manual:compact:asr: 50.0% p50 1.85s unsafe 2.5%</title></circle>
+<text x="185.8" y="304.0" font-size="10">c:ext_rules>gpt-realtime-mini:manual:compact:asr</text>
+<circle cx="222.7" cy="249.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>gpt-realtime-mini:manual:fewshot: 61.7% p50 2.62s unsafe 1.7%</title></circle>
+<circle cx="226.2" cy="292.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>gpt-realtime-mini:manual:full: 53.3% p50 2.68s unsafe 1.7%</title></circle>
+<circle cx="212.9" cy="258.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>gpt-realtime-mini:vad500:compact: 60.0% p50 2.45s unsafe 1.7%</title></circle>
+<circle cx="224.5" cy="249.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>gpt-realtime-mini:vad500:fewshot: 61.7% p50 2.65s unsafe 1.7%</title></circle>
+<circle cx="226.9" cy="288.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>gpt-realtime-mini:vad500:full: 54.2% p50 2.69s unsafe 2.5%</title></circle>
+<circle cx="212.7" cy="201.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>gpt-realtime:manual:compact: 70.8% p50 2.44s unsafe 1.7%</title></circle>
+<circle cx="182.3" cy="193.0" r="6" fill="#d62728" fill-opacity="0.75" stroke="black"><title>cascade:ext_rules>gpt-realtime:manual:compact:asr: 72.5% p50 1.92s unsafe 3.3%</title></circle>
+<text x="190.3" y="187.0" font-size="10">c:ext_rules>gpt-realtime:manual:compact:asr</text>
+<circle cx="227.0" cy="145.3" r="6" fill="#d62728" fill-opacity="0.75" stroke="black"><title>cascade:ext_rules>gpt-realtime:manual:fewshot: 81.7% p50 2.69s unsafe 1.7%</title></circle>
+<text x="235.0" y="139.3" font-size="10">c:ext_rules>gpt-realtime:manual:fewshot</text>
+<circle cx="241.2" cy="188.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>gpt-realtime:manual:full: 73.3% p50 2.93s unsafe 2.5%</title></circle>
+<circle cx="241.8" cy="197.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>gpt-realtime:vad500:compact: 71.7% p50 2.94s unsafe 3.3%</title></circle>
+<circle cx="253.7" cy="145.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>gpt-realtime:vad500:fewshot: 81.7% p50 3.15s unsafe 0.0%</title></circle>
+<circle cx="275.6" cy="206.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>gpt-realtime:vad500:full: 70.0% p50 3.52s unsafe 2.5%</title></circle>
+<circle cx="454.6" cy="201.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>claude-haiku-5-5:compact: 70.8% p50 6.59s unsafe 1.7%</title></circle>
+<circle cx="448.1" cy="132.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>claude-haiku-5-5:fewshot: 84.2% p50 6.48s unsafe 1.7%</title></circle>
+<circle cx="468.8" cy="149.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>claude-haiku-5-5:full: 80.8% p50 6.83s unsafe 1.7%</title></circle>
+<circle cx="287.5" cy="149.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>gemini-3.5-flash-lite:compact: 80.8% p50 3.73s unsafe 0.0%</title></circle>
+<circle cx="273.9" cy="115.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>gemini-3.5-flash-lite:fewshot: 87.5% p50 3.49s unsafe 0.0%</title></circle>
+<circle cx="272.7" cy="149.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>gemini-3.5-flash-lite:fewshot:asrtxt: 80.8% p50 3.47s unsafe 0.0%</title></circle>
+<circle cx="674.8" cy="110.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>gpt-5.6-luna:compact: 88.3% p50 10.36s unsafe 0.0%</title></circle>
+<circle cx="665.7" cy="84.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>gpt-5.6-luna:fewshot: 93.3% p50 10.21s unsafe 0.0%</title></circle>
+<circle cx="750.6" cy="93.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>gpt-5.6-sol:compact: 91.7% p50 11.66s unsafe 0.0%</title></circle>
+<circle cx="659.9" cy="58.7" r="6" fill="#d62728" fill-opacity="0.75" stroke="black"><title>cascade:ext_rules>gpt-5.6-sol:fewshot: 98.3% p50 10.11s unsafe 0.0%</title></circle>
+<text x="667.9" y="52.7" font-size="10">c:ext_rules>gpt-5.6-sol:fewshot</text>
+<circle cx="736.2" cy="63.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>gpt-5.6-sol:full: 97.5% p50 11.41s unsafe 0.0%</title></circle>
+<circle cx="693.1" cy="93.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>gpt-5.6-terra:compact: 91.7% p50 10.68s unsafe 0.0%</title></circle>
+<circle cx="782.2" cy="76.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>gpt-5.6-terra:fewshot: 95.0% p50 12.20s unsafe 0.0%</title></circle>
+<circle cx="373.2" cy="97.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gpt-realtime-2:manual:compact>gpt-5.6-sol:compact: 90.8% p50 5.20s unsafe 0.0%</title></circle>
+<circle cx="373.2" cy="67.3" r="6" fill="#d62728" fill-opacity="0.75" stroke="black"><title>cascade:esc0.8:gpt-realtime-2:manual:compact>gpt-5.6-sol:fewshot: 96.7% p50 5.20s unsafe 0.0%</title></circle>
+<text x="381.2" y="61.3" font-size="10">c:esc0.8:gpt-realtime-2:manual:compact>gpt-5.6-sol:fewshot</text>
+<circle cx="373.2" cy="71.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gpt-realtime-2:manual:compact>gpt-5.6-sol:full: 95.8% p50 5.20s unsafe 0.0%</title></circle>
+<circle cx="316.3" cy="227.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gpt-realtime-mini:manual:compact>gpt-realtime-1.5:manual:compact: 65.8% p50 4.22s unsafe 3.3%</title></circle>
+<circle cx="318.4" cy="249.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gpt-realtime-mini:manual:compact>gpt-realtime-2025-08-28:manual:compact: 61.7% p50 4.26s unsafe 3.3%</title></circle>
+<circle cx="324.7" cy="175.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gpt-realtime-mini:manual:compact>gpt-realtime-2:manual:compact: 75.8% p50 4.36s unsafe 3.3%</title></circle>
+<circle cx="313.4" cy="240.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gpt-realtime-mini:manual:compact>gpt-realtime:manual:compact: 63.3% p50 4.17s unsafe 3.3%</title></circle>
+<circle cx="256.6" cy="210.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gpt-realtime-mini:manual:compact:asr>gpt-realtime:manual:compact:asr: 69.2% p50 3.20s unsafe 4.2%</title></circle>
+<circle cx="281.0" cy="240.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gpt-realtime-mini:manual:fewshot>gpt-realtime:manual:fewshot: 63.3% p50 3.62s unsafe 2.5%</title></circle>
+<circle cx="325.8" cy="219.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gpt-realtime-mini:manual:full>gpt-realtime:manual:full: 67.5% p50 4.38s unsafe 2.5%</title></circle>
+<circle cx="316.9" cy="245.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gpt-realtime-mini:vad500:compact>gpt-realtime:vad500:compact: 62.5% p50 4.23s unsafe 3.3%</title></circle>
+<circle cx="320.5" cy="219.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gpt-realtime-mini:vad500:fewshot>gpt-realtime:vad500:fewshot: 67.5% p50 4.29s unsafe 1.7%</title></circle>
+<circle cx="326.2" cy="227.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gpt-realtime-mini:vad500:full>gpt-realtime:vad500:full: 65.8% p50 4.39s unsafe 2.5%</title></circle>
+<circle cx="318.8" cy="123.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gemini-3.5-flash-lite:compact>gpt-realtime-2:manual:compact: 85.8% p50 4.26s unsafe 0.0%</title></circle>
+<circle cx="318.8" cy="115.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gemini-3.5-flash-lite:compact>gpt-5.6-sol:compact: 87.5% p50 4.26s unsafe 0.0%</title></circle>
+<circle cx="318.8" cy="89.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gemini-3.5-flash-lite:compact>gpt-5.6-sol:fewshot: 92.5% p50 4.26s unsafe 0.0%</title></circle>
+<circle cx="318.8" cy="89.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gemini-3.5-flash-lite:compact>gpt-5.6-sol:full: 92.5% p50 4.26s unsafe 0.0%</title></circle>
+<circle cx="309.6" cy="128.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gemini-3.5-flash-lite:fewshot>gpt-realtime-2:manual:compact: 85.0% p50 4.11s unsafe 0.0%</title></circle>
+<circle cx="309.6" cy="119.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gemini-3.5-flash-lite:fewshot>gpt-5.6-sol:compact: 86.7% p50 4.11s unsafe 0.0%</title></circle>
+<circle cx="309.6" cy="93.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gemini-3.5-flash-lite:fewshot>gpt-5.6-sol:fewshot: 91.7% p50 4.11s unsafe 0.0%</title></circle>
+<circle cx="309.6" cy="93.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gemini-3.5-flash-lite:fewshot>gpt-5.6-sol:full: 91.7% p50 4.11s unsafe 0.0%</title></circle>
+<circle cx="301.2" cy="154.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gemini-3.5-flash-lite:fewshot:asrtxt>gpt-realtime-2:manual:compact: 80.0% p50 3.96s unsafe 0.0%</title></circle>
+<circle cx="301.2" cy="136.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gemini-3.5-flash-lite:fewshot:asrtxt>gpt-5.6-sol:compact: 83.3% p50 3.96s unsafe 0.0%</title></circle>
+<circle cx="301.2" cy="110.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gemini-3.5-flash-lite:fewshot:asrtxt>gpt-5.6-sol:fewshot: 88.3% p50 3.96s unsafe 0.0%</title></circle>
+<circle cx="301.2" cy="110.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:esc0.8:gemini-3.5-flash-lite:fewshot:asrtxt>gpt-5.6-sol:full: 88.3% p50 3.96s unsafe 0.0%</title></circle>
+<circle cx="276.6" cy="106.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gpt-realtime-2:manual:compact|gpt-5.6-sol:compact: 89.2% p50 3.54s unsafe 0.0%</title></circle>
+<circle cx="276.4" cy="106.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gpt-realtime-2:manual:compact|gpt-5.6-sol:fewshot: 89.2% p50 3.54s unsafe 0.0%</title></circle>
+<circle cx="276.6" cy="110.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gpt-realtime-2:manual:compact|gpt-5.6-sol:full: 88.3% p50 3.54s unsafe 0.0%</title></circle>
+<circle cx="218.4" cy="201.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gpt-realtime-mini:manual:compact|gpt-realtime-1.5:manual:compact: 70.8% p50 2.54s unsafe 3.3%</title></circle>
+<circle cx="209.8" cy="223.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gpt-realtime-mini:manual:compact|gpt-realtime-2025-08-28:manual:compact: 66.7% p50 2.39s unsafe 3.3%</title></circle>
+<circle cx="244.0" cy="136.7" r="6" fill="#d62728" fill-opacity="0.75" stroke="black"><title>cascade:spec:gpt-realtime-mini:manual:compact|gpt-realtime-2:manual:compact: 83.3% p50 2.98s unsafe 1.7%</title></circle>
+<text x="252.0" y="130.7" font-size="10">c:spec:gpt-realtime-mini:manual:compact|gpt-realtime-2:manual:compact</text>
+<circle cx="223.9" cy="236.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gpt-realtime-mini:manual:compact|gpt-realtime:manual:compact: 64.2% p50 2.64s unsafe 3.3%</title></circle>
+<circle cx="182.3" cy="214.7" r="6" fill="#d62728" fill-opacity="0.75" stroke="black"><title>cascade:spec:gpt-realtime-mini:manual:compact:asr|gpt-realtime:manual:compact:asr: 68.3% p50 1.92s unsafe 4.2%</title></circle>
+<text x="190.3" y="208.7" font-size="10">c:spec:gpt-realtime-mini:manual:compact:asr|gpt-realtime:manual:compact:asr</text>
+<circle cx="211.3" cy="193.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gpt-realtime-mini:manual:fewshot|gpt-realtime:manual:fewshot: 72.5% p50 2.42s unsafe 1.7%</title></circle>
+<circle cx="238.6" cy="201.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gpt-realtime-mini:manual:full|gpt-realtime:manual:full: 70.8% p50 2.89s unsafe 3.3%</title></circle>
+<circle cx="228.0" cy="214.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gpt-realtime-mini:vad500:compact|gpt-realtime:vad500:compact: 68.3% p50 2.71s unsafe 2.5%</title></circle>
+<circle cx="230.8" cy="188.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gpt-realtime-mini:vad500:fewshot|gpt-realtime:vad500:fewshot: 73.3% p50 2.76s unsafe 1.7%</title></circle>
+<circle cx="239.8" cy="206.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gpt-realtime-mini:vad500:full|gpt-realtime:vad500:full: 70.0% p50 2.91s unsafe 2.5%</title></circle>
+<circle cx="268.9" cy="110.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gemini-3.5-flash-lite:compact|gpt-realtime-2:manual:compact: 88.3% p50 3.41s unsafe 0.0%</title></circle>
+<circle cx="309.1" cy="89.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gemini-3.5-flash-lite:compact|gpt-5.6-sol:compact: 92.5% p50 4.10s unsafe 0.0%</title></circle>
+<circle cx="304.0" cy="84.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gemini-3.5-flash-lite:compact|gpt-5.6-sol:fewshot: 93.3% p50 4.01s unsafe 0.0%</title></circle>
+<circle cx="307.9" cy="89.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gemini-3.5-flash-lite:compact|gpt-5.6-sol:full: 92.5% p50 4.08s unsafe 0.0%</title></circle>
+<circle cx="267.1" cy="89.0" r="6" fill="#d62728" fill-opacity="0.75" stroke="black"><title>cascade:spec:gemini-3.5-flash-lite:fewshot|gpt-realtime-2:manual:compact: 92.5% p50 3.38s unsafe 0.0%</title></circle>
+<text x="275.1" y="83.0" font-size="10">c:spec:gemini-3.5-flash-lite:fewshot|gpt-realtime-2:manual:compact</text>
+<circle cx="290.4" cy="102.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gemini-3.5-flash-lite:fewshot|gpt-5.6-sol:compact: 90.0% p50 3.78s unsafe 0.0%</title></circle>
+<circle cx="284.2" cy="102.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gemini-3.5-flash-lite:fewshot|gpt-5.6-sol:fewshot: 90.0% p50 3.67s unsafe 0.0%</title></circle>
+<circle cx="290.4" cy="102.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gemini-3.5-flash-lite:fewshot|gpt-5.6-sol:full: 90.0% p50 3.78s unsafe 0.0%</title></circle>
+<circle cx="263.6" cy="123.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gemini-3.5-flash-lite:fewshot:asrtxt|gpt-realtime-2:manual:compact: 85.8% p50 3.32s unsafe 0.0%</title></circle>
+<circle cx="277.8" cy="158.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gemini-3.5-flash-lite:fewshot:asrtxt|gpt-5.6-sol:compact: 79.2% p50 3.56s unsafe 0.0%</title></circle>
+<circle cx="277.1" cy="154.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gemini-3.5-flash-lite:fewshot:asrtxt|gpt-5.6-sol:fewshot: 80.0% p50 3.55s unsafe 0.0%</title></circle>
+<circle cx="277.8" cy="158.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:spec:gemini-3.5-flash-lite:fewshot:asrtxt|gpt-5.6-sol:full: 79.2% p50 3.56s unsafe 0.0%</title></circle>
+<circle cx="310.2" cy="119.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-1.5:manual:compact+gemini-3.5-flash-lite:compact: 86.7% p50 4.12s unsafe 0.0%</title></circle>
+<circle cx="301.7" cy="106.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-1.5:manual:compact+gemini-3.5-flash-lite:fewshot: 89.2% p50 3.97s unsafe 0.0%</title></circle>
+<circle cx="289.3" cy="141.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-1.5:manual:compact+gemini-3.5-flash-lite:fewshot:asrtxt: 82.5% p50 3.76s unsafe 0.0%</title></circle>
+<circle cx="309.8" cy="115.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-2025-08-28:manual:compact+gemini-3.5-flash-lite:compact: 87.5% p50 4.11s unsafe 0.0%</title></circle>
+<circle cx="299.5" cy="93.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-2025-08-28:manual:compact+gemini-3.5-flash-lite:fewshot: 91.7% p50 3.93s unsafe 0.0%</title></circle>
+<circle cx="282.1" cy="123.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-2025-08-28:manual:compact+gemini-3.5-flash-lite:fewshot:asrtxt: 85.8% p50 3.63s unsafe 0.0%</title></circle>
+<circle cx="316.8" cy="80.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-2:manual:compact+gemini-3.5-flash-lite:compact: 94.2% p50 4.23s unsafe 0.0%</title></circle>
+<circle cx="309.5" cy="80.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-2:manual:compact+gemini-3.5-flash-lite:fewshot: 94.2% p50 4.10s unsafe 0.0%</title></circle>
+<circle cx="296.8" cy="115.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-2:manual:compact+gemini-3.5-flash-lite:fewshot:asrtxt: 87.5% p50 3.89s unsafe 0.0%</title></circle>
+<circle cx="314.3" cy="214.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-mini:manual:compact+gemini-3.5-flash-lite:compact: 68.3% p50 4.18s unsafe 0.8%</title></circle>
+<circle cx="310.1" cy="197.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-mini:manual:compact+gemini-3.5-flash-lite:fewshot: 71.7% p50 4.11s unsafe 0.0%</title></circle>
+<circle cx="297.3" cy="223.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-mini:manual:compact+gemini-3.5-flash-lite:fewshot:asrtxt: 66.7% p50 3.90s unsafe 0.0%</title></circle>
+<circle cx="312.2" cy="184.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-mini:manual:fewshot+gemini-3.5-flash-lite:compact: 74.2% p50 4.15s unsafe 0.8%</title></circle>
+<circle cx="305.9" cy="175.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-mini:manual:fewshot+gemini-3.5-flash-lite:fewshot: 75.8% p50 4.04s unsafe 0.0%</title></circle>
+<circle cx="287.5" cy="210.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-mini:manual:fewshot+gemini-3.5-flash-lite:fewshot:asrtxt: 69.2% p50 3.73s unsafe 0.0%</title></circle>
+<circle cx="316.9" cy="201.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-mini:manual:full+gemini-3.5-flash-lite:compact: 70.8% p50 4.23s unsafe 0.8%</title></circle>
+<circle cx="310.8" cy="175.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-mini:manual:full+gemini-3.5-flash-lite:fewshot: 75.8% p50 4.13s unsafe 0.0%</title></circle>
+<circle cx="296.1" cy="201.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-mini:manual:full+gemini-3.5-flash-lite:fewshot:asrtxt: 70.8% p50 3.87s unsafe 0.0%</title></circle>
+<circle cx="312.9" cy="184.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-mini:vad500:compact+gemini-3.5-flash-lite:compact: 74.2% p50 4.16s unsafe 0.8%</title></circle>
+<circle cx="310.6" cy="167.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-mini:vad500:compact+gemini-3.5-flash-lite:fewshot: 77.5% p50 4.12s unsafe 0.0%</title></circle>
+<circle cx="294.1" cy="197.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-mini:vad500:compact+gemini-3.5-flash-lite:fewshot:asrtxt: 71.7% p50 3.84s unsafe 0.0%</title></circle>
+<circle cx="315.4" cy="193.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-mini:vad500:fewshot+gemini-3.5-flash-lite:compact: 72.5% p50 4.20s unsafe 1.7%</title></circle>
+<circle cx="309.0" cy="193.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-mini:vad500:fewshot+gemini-3.5-flash-lite:fewshot: 72.5% p50 4.10s unsafe 0.0%</title></circle>
+<circle cx="295.4" cy="214.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-mini:vad500:fewshot+gemini-3.5-flash-lite:fewshot:asrtxt: 68.3% p50 3.86s unsafe 0.0%</title></circle>
+<circle cx="315.6" cy="193.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-mini:vad500:full+gemini-3.5-flash-lite:compact: 72.5% p50 4.21s unsafe 0.0%</title></circle>
+<circle cx="309.4" cy="167.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-mini:vad500:full+gemini-3.5-flash-lite:fewshot: 77.5% p50 4.10s unsafe 0.0%</title></circle>
+<circle cx="293.8" cy="201.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime-mini:vad500:full+gemini-3.5-flash-lite:fewshot:asrtxt: 70.8% p50 3.83s unsafe 0.0%</title></circle>
+<circle cx="319.3" cy="110.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime:manual:compact+gemini-3.5-flash-lite:compact: 88.3% p50 4.27s unsafe 0.0%</title></circle>
+<circle cx="314.1" cy="93.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime:manual:compact+gemini-3.5-flash-lite:fewshot: 91.7% p50 4.18s unsafe 0.0%</title></circle>
+<circle cx="308.8" cy="123.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime:manual:compact+gemini-3.5-flash-lite:fewshot:asrtxt: 85.8% p50 4.09s unsafe 0.0%</title></circle>
+<circle cx="314.3" cy="89.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime:manual:fewshot+gemini-3.5-flash-lite:compact: 92.5% p50 4.18s unsafe 0.0%</title></circle>
+<circle cx="309.9" cy="89.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime:manual:fewshot+gemini-3.5-flash-lite:fewshot: 92.5% p50 4.11s unsafe 0.0%</title></circle>
+<circle cx="292.1" cy="119.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime:manual:fewshot+gemini-3.5-flash-lite:fewshot:asrtxt: 86.7% p50 3.81s unsafe 0.0%</title></circle>
+<circle cx="316.7" cy="115.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime:manual:full+gemini-3.5-flash-lite:compact: 87.5% p50 4.23s unsafe 0.0%</title></circle>
+<circle cx="309.4" cy="93.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime:manual:full+gemini-3.5-flash-lite:fewshot: 91.7% p50 4.10s unsafe 0.0%</title></circle>
+<circle cx="300.1" cy="128.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime:manual:full+gemini-3.5-flash-lite:fewshot:asrtxt: 85.0% p50 3.94s unsafe 0.0%</title></circle>
+<circle cx="321.0" cy="119.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime:vad500:compact+gemini-3.5-flash-lite:compact: 86.7% p50 4.30s unsafe 0.8%</title></circle>
+<circle cx="315.9" cy="97.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime:vad500:compact+gemini-3.5-flash-lite:fewshot: 90.8% p50 4.21s unsafe 0.0%</title></circle>
+<circle cx="312.7" cy="123.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime:vad500:compact+gemini-3.5-flash-lite:fewshot:asrtxt: 85.8% p50 4.16s unsafe 0.0%</title></circle>
+<circle cx="316.8" cy="97.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime:vad500:fewshot+gemini-3.5-flash-lite:compact: 90.8% p50 4.23s unsafe 0.0%</title></circle>
+<circle cx="313.8" cy="97.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime:vad500:fewshot+gemini-3.5-flash-lite:fewshot: 90.8% p50 4.18s unsafe 0.0%</title></circle>
+<circle cx="300.1" cy="123.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime:vad500:fewshot+gemini-3.5-flash-lite:fewshot:asrtxt: 85.8% p50 3.94s unsafe 0.0%</title></circle>
+<circle cx="332.0" cy="141.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime:vad500:full+gemini-3.5-flash-lite:compact: 82.5% p50 4.49s unsafe 0.0%</title></circle>
+<circle cx="325.6" cy="119.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime:vad500:full+gemini-3.5-flash-lite:fewshot: 86.7% p50 4.38s unsafe 0.0%</title></circle>
+<circle cx="322.5" cy="145.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime:vad500:full+gemini-3.5-flash-lite:fewshot:asrtxt: 81.7% p50 4.33s unsafe 0.0%</title></circle>
+<circle cx="300.8" cy="119.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-1.5:manual:compact+gemini-3.5-flash-lite:compact: 86.7% p50 3.95s unsafe 0.0%</title></circle>
+<circle cx="282.8" cy="106.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-1.5:manual:compact+gemini-3.5-flash-lite:fewshot: 89.2% p50 3.65s unsafe 0.0%</title></circle>
+<circle cx="277.1" cy="115.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-1.5:manual:compact+gemini-3.5-flash-lite:fewshot:asrtxt: 87.5% p50 3.55s unsafe 0.0%</title></circle>
+<circle cx="299.7" cy="110.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-2025-08-28:manual:compact+gemini-3.5-flash-lite:compact: 88.3% p50 3.94s unsafe 0.0%</title></circle>
+<circle cx="277.4" cy="89.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-2025-08-28:manual:compact+gemini-3.5-flash-lite:fewshot: 92.5% p50 3.55s unsafe 0.0%</title></circle>
+<circle cx="276.5" cy="93.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-2025-08-28:manual:compact+gemini-3.5-flash-lite:fewshot:asrtxt: 91.7% p50 3.54s unsafe 0.0%</title></circle>
+<circle cx="303.9" cy="80.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-2:manual:compact+gemini-3.5-flash-lite:compact: 94.2% p50 4.01s unsafe 0.0%</title></circle>
+<circle cx="288.5" cy="80.3" r="6" fill="#d62728" fill-opacity="0.75" stroke="black"><title>cascade:ext_rules>veto:gpt-realtime-2:manual:compact+gemini-3.5-flash-lite:fewshot: 94.2% p50 3.74s unsafe 0.0%</title></circle>
+<text x="296.5" y="74.3" font-size="10">c:ext_rules>veto:gpt-realtime-2:manual:compact+gemini-3.5-flash-lite:fewshot</text>
+<circle cx="282.8" cy="89.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-2:manual:compact+gemini-3.5-flash-lite:fewshot:asrtxt: 92.5% p50 3.65s unsafe 0.0%</title></circle>
+<circle cx="308.8" cy="193.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-mini:manual:compact+gemini-3.5-flash-lite:compact: 72.5% p50 4.09s unsafe 0.8%</title></circle>
+<circle cx="298.4" cy="175.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-mini:manual:compact+gemini-3.5-flash-lite:fewshot: 75.8% p50 3.91s unsafe 0.0%</title></circle>
+<circle cx="282.1" cy="175.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-mini:manual:compact+gemini-3.5-flash-lite:fewshot:asrtxt: 75.8% p50 3.63s unsafe 0.0%</title></circle>
+<circle cx="302.6" cy="180.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-mini:manual:fewshot+gemini-3.5-flash-lite:compact: 75.0% p50 3.98s unsafe 0.8%</title></circle>
+<circle cx="280.3" cy="171.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-mini:manual:fewshot+gemini-3.5-flash-lite:fewshot: 76.7% p50 3.60s unsafe 0.0%</title></circle>
+<circle cx="277.2" cy="184.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-mini:manual:fewshot+gemini-3.5-flash-lite:fewshot:asrtxt: 74.2% p50 3.55s unsafe 0.0%</title></circle>
+<circle cx="304.5" cy="184.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-mini:manual:full+gemini-3.5-flash-lite:compact: 74.2% p50 4.02s unsafe 0.8%</title></circle>
+<circle cx="287.2" cy="158.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-mini:manual:full+gemini-3.5-flash-lite:fewshot: 79.2% p50 3.72s unsafe 0.0%</title></circle>
+<circle cx="279.6" cy="158.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-mini:manual:full+gemini-3.5-flash-lite:fewshot:asrtxt: 79.2% p50 3.59s unsafe 0.0%</title></circle>
+<circle cx="301.6" cy="154.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-mini:vad500:compact+gemini-3.5-flash-lite:compact: 80.0% p50 3.97s unsafe 0.8%</title></circle>
+<circle cx="286.4" cy="136.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-mini:vad500:compact+gemini-3.5-flash-lite:fewshot: 83.3% p50 3.71s unsafe 0.0%</title></circle>
+<circle cx="278.4" cy="149.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-mini:vad500:compact+gemini-3.5-flash-lite:fewshot:asrtxt: 80.8% p50 3.57s unsafe 0.0%</title></circle>
+<circle cx="304.5" cy="180.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-mini:vad500:fewshot+gemini-3.5-flash-lite:compact: 75.0% p50 4.02s unsafe 1.7%</title></circle>
+<circle cx="289.5" cy="180.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-mini:vad500:fewshot+gemini-3.5-flash-lite:fewshot: 75.0% p50 3.76s unsafe 0.0%</title></circle>
+<circle cx="278.5" cy="184.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-mini:vad500:fewshot+gemini-3.5-flash-lite:fewshot:asrtxt: 74.2% p50 3.57s unsafe 0.0%</title></circle>
+<circle cx="303.9" cy="180.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-mini:vad500:full+gemini-3.5-flash-lite:compact: 75.0% p50 4.01s unsafe 0.0%</title></circle>
+<circle cx="285.0" cy="154.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-mini:vad500:full+gemini-3.5-flash-lite:fewshot: 80.0% p50 3.68s unsafe 0.0%</title></circle>
+<circle cx="277.9" cy="162.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime-mini:vad500:full+gemini-3.5-flash-lite:fewshot:asrtxt: 78.3% p50 3.56s unsafe 0.0%</title></circle>
+<circle cx="309.5" cy="110.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime:manual:compact+gemini-3.5-flash-lite:compact: 88.3% p50 4.10s unsafe 0.0%</title></circle>
+<circle cx="304.4" cy="93.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime:manual:compact+gemini-3.5-flash-lite:fewshot: 91.7% p50 4.02s unsafe 0.0%</title></circle>
+<circle cx="278.6" cy="97.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime:manual:compact+gemini-3.5-flash-lite:fewshot:asrtxt: 90.8% p50 3.57s unsafe 0.0%</title></circle>
+<circle cx="305.0" cy="89.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime:manual:fewshot+gemini-3.5-flash-lite:compact: 92.5% p50 4.03s unsafe 0.0%</title></circle>
+<circle cx="298.4" cy="89.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime:manual:fewshot+gemini-3.5-flash-lite:fewshot: 92.5% p50 3.91s unsafe 0.0%</title></circle>
+<circle cx="280.5" cy="93.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime:manual:fewshot+gemini-3.5-flash-lite:fewshot:asrtxt: 91.7% p50 3.61s unsafe 0.0%</title></circle>
+<circle cx="306.4" cy="115.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime:manual:full+gemini-3.5-flash-lite:compact: 87.5% p50 4.05s unsafe 0.0%</title></circle>
+<circle cx="293.0" cy="93.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime:manual:full+gemini-3.5-flash-lite:fewshot: 91.7% p50 3.82s unsafe 0.0%</title></circle>
+<circle cx="284.5" cy="102.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime:manual:full+gemini-3.5-flash-lite:fewshot:asrtxt: 90.0% p50 3.67s unsafe 0.0%</title></circle>
+<circle cx="310.4" cy="115.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime:vad500:compact+gemini-3.5-flash-lite:compact: 87.5% p50 4.12s unsafe 0.8%</title></circle>
+<circle cx="307.7" cy="93.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime:vad500:compact+gemini-3.5-flash-lite:fewshot: 91.7% p50 4.07s unsafe 0.0%</title></circle>
+<circle cx="284.8" cy="97.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime:vad500:compact+gemini-3.5-flash-lite:fewshot:asrtxt: 90.8% p50 3.68s unsafe 0.0%</title></circle>
+<circle cx="304.5" cy="93.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime:vad500:fewshot+gemini-3.5-flash-lite:compact: 91.7% p50 4.02s unsafe 0.0%</title></circle>
+<circle cx="293.5" cy="93.3" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime:vad500:fewshot+gemini-3.5-flash-lite:fewshot: 91.7% p50 3.83s unsafe 0.0%</title></circle>
+<circle cx="283.9" cy="97.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime:vad500:fewshot+gemini-3.5-flash-lite:fewshot:asrtxt: 90.8% p50 3.66s unsafe 0.0%</title></circle>
+<circle cx="314.1" cy="123.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime:vad500:full+gemini-3.5-flash-lite:compact: 85.8% p50 4.18s unsafe 0.0%</title></circle>
+<circle cx="310.8" cy="102.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime:vad500:full+gemini-3.5-flash-lite:fewshot: 90.0% p50 4.12s unsafe 0.0%</title></circle>
+<circle cx="295.2" cy="110.7" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext_rules>veto:gpt-realtime:vad500:full+gemini-3.5-flash-lite:fewshot:asrtxt: 88.3% p50 3.86s unsafe 0.0%</title></circle>
+<circle cx="760" cy="62" r="5" fill="#1f77b4"/><text x="772" y="66">realtime audio</text>
+<circle cx="760" cy="78" r="5" fill="#2ca02c"/><text x="772" y="82">text LLM (transcript)</text>
+<circle cx="760" cy="94" r="5" fill="#7f7f7f"/><text x="772" y="98">deterministic fast path</text>
+<circle cx="760" cy="110" r="5" fill="#d62728"/><text x="772" y="114">cascade (simulated)</text>
+<line x1="754" x2="766" y1="132" y2="132" stroke="#ff7f0e" stroke-width="2" stroke-dasharray="6 3"/><text x="772" y="136">Pareto frontier (labelled)</text>
+</svg>
