@@ -2,7 +2,7 @@
 
 Scope: offline_python_chain_only; SC2 not available; not live evidence. Production-mode Direct runtime: `dry_run_fake_bot` (scripted fake bot).
 
-Cases: 67. Open invariant violations: 15. Expectation mismatches: 0.
+Cases: 67. Open invariant violations: 6. Expectation mismatches: 0.
 
 ## par-scout-attack
 
@@ -11,7 +11,6 @@ Cases: 67. Open invariant violations: 15. Expectation mismatches: 0.
 - step 0 (frame 100): `마린 두 기는 정찰하고 네 기는 오른쪽 길로 공격`
   - projection: status `published` compile `compiled` published=True layers=['operation'] ops=[scout-a#1×2, atk-b#1×4] direct=`—` → UI: blocked [blocked] — Terran family evidence has not reached assignment: marine
   - production: status `direct_executed` compile `compiled` published=False layers=[] ops=[scout-a#1×2, atk-b#1×4] direct=`executed` → UI: simulated [simulated]
-- ⚠ **one_unit_one_operation** (production, step 0): tag 13 ordered by both scout-a and atk-b
 
 ## par-attack-defend-en
 
@@ -20,7 +19,6 @@ Cases: 67. Open invariant violations: 15. Expectation mismatches: 0.
 - step 0 (frame 100): `Send 4 marines to attack the natural and keep 2 at the ramp`
   - projection: status `published` compile `compiled` published=True layers=['operation'] ops=[atk-n#1×4, def-ramp#1×2] direct=`—` → UI: effect_observed [assigned,ordered,effect_observed]
   - production: status `direct_failed` compile `compiled` published=False layers=[] ops=[atk-n#1×4, def-ramp#1×2] direct=`refused` → UI: blocked [blocked] — action 'move_group' was refused without issuing orders: unresolvable_target.
-- ⚠ **one_unit_one_operation** (production, step 0): tag 13 ordered by both atk-n and def-ramp
 
 ## par-three-ops-ground
 
@@ -28,9 +26,7 @@ Cases: 67. Open invariant violations: 15. Expectation mismatches: 0.
 - **Semantic ask:** Three concurrent operations with the same unit type (needs 9 distinct marines).
 - step 0 (frame 100): `마린 2기 정찰, 마린 3기 램프 방어, 마린 4기 압박`
   - projection: status `published` compile `compiled` published=True layers=['operation'] ops=[sc#1×2, df#1×3, pr#1×4] direct=`—` → UI: published [none] — OperationDirector has not reported receipt for this operation.
-  - production: status `direct_failed` compile `compiled` published=False layers=[] ops=[sc#1×2, df#1×3, pr#1×4] direct=`refused` → UI: blocked [blocked] — action 'move_group' was refused without issuing orders: unresolvable_target.
-- ⚠ **one_unit_one_operation** (production, step 0): tag 13 ordered by both sc and df
-- ⚠ **one_unit_one_operation** (production, step 0): tag 13 ordered by both sc and pr
+  - production: status `direct_failed` compile `compiled` published=False layers=[] ops=[sc#1×2, df#1×3, pr#1×4] direct=`partial` → UI: blocked [blocked] — action 'move_group' was refused without issuing orders: unresolvable_target.
 
 ## par-mixed-units
 
@@ -39,7 +35,6 @@ Cases: 67. Open invariant violations: 15. Expectation mismatches: 0.
 - step 0 (frame 100): `마린 2기 정찰, 탱크 1기 램프 방어, 바이킹 2기 공중 견제`
   - projection: status `published` compile `compiled` published=True layers=['operation'] ops=[sc#1×2, df#1×1, hr#1×2] direct=`—` → UI: assigned [assigned] — Terran family evidence has not reached order: siege_tank
   - production: status `direct_failed` compile `compiled` published=False layers=[] ops=[sc#1×2, df#1×1, hr#1×2] direct=`refused` → UI: blocked [blocked] — action 'move_group' was refused without issuing orders: unresolvable_target.
-- ⚠ **one_unit_one_operation** (production, step 0): tag 13 ordered by both sc and hr
 
 ## par-flank-split
 
@@ -48,7 +43,6 @@ Cases: 67. Open invariant violations: 15. Expectation mismatches: 0.
 - step 0 (frame 100): `왼쪽으로 3기 우회 공격, 오른쪽으로 3기 우회 공격`
   - projection: status `published` compile `compiled` published=True layers=['operation'] ops=[fl#1×3, fr#1×3] direct=`—` → UI: published [none] — OperationDirector has not reported receipt for this operation.
   - production: status `direct_executed` compile `compiled` published=False layers=[] ops=[fl#1×3, fr#1×3] direct=`executed` → UI: simulated [simulated]
-- ⚠ **one_unit_one_operation** (production, step 0): tag 13 ordered by both fl and fr
 
 ## same-id-retarget
 
@@ -96,7 +90,6 @@ Cases: 67. Open invariant violations: 15. Expectation mismatches: 0.
 - step 2 (frame 220): `정찰 상황`
   - projection: status `published` compile `compiled` published=True layers=['operation'] ops=[sc#2×2] direct=`—` → UI: published [none] — OperationDirector has not reported receipt for this operation.
   - production: status `direct_failed` compile `compiled` published=False layers=[] ops=[sc#1×2] direct=`conflict` → UI: blocked [blocked] — unit tags already owned: [13, 14]
-- ⚠ **one_unit_one_operation** (production, step 0): tag 13 ordered by both sc and atk
 
 ## restart-after-cancel
 
@@ -122,7 +115,6 @@ Cases: 67. Open invariant violations: 15. Expectation mismatches: 0.
 - step 1 (frame 160): `정찰하던 마린 1기를 공격 부대로`
   - projection: status `refused` compile `refused` published=False layers=[] ops=[—] direct=`—` → UI: refused [blocked] — transfer operation edits require a before_composition snapshot.
   - production: status `refused` compile `refused` published=False layers=[] ops=[—] direct=`—` → UI: refused [blocked] — transfer operation edits require a before_composition snapshot.
-- ⚠ **one_unit_one_operation** (production, step 0): tag 13 ordered by both sc and atk
 
 ## shortfall-assigned
 
@@ -256,7 +248,6 @@ Cases: 67. Open invariant violations: 15. Expectation mismatches: 0.
 - step 0 (frame 100): `공격 취소`
   - projection: status `published` compile `compiled` published=True layers=['emergency'] ops=[—] direct=`—` → UI: published [none] — Telemetry has not consumed the latest update id.
   - production: status `direct_executed` compile `compiled` published=False layers=[] ops=[—] direct=`executed` → UI: simulated [simulated]
-- ⚠ **emergency_fastpath_matches_ask** (router, step -1): force_retreat=True but the user asked False
 
 ## emergency-scoped-marines-only
 
@@ -385,13 +376,13 @@ Cases: 67. Open invariant violations: 15. Expectation mismatches: 0.
   - projection: status `refused` compile `refused` published=False layers=[] ops=[—] direct=`—` → UI: refused [blocked] — policy modulation payload attempted raw runtime control: unit_tags
   - production: status `refused` compile `refused` published=False layers=[] ops=[—] direct=`—` → UI: refused [blocked] — policy modulation payload attempted raw runtime control: unit_tags
 
-## ignored-coordinates
+## refused-coordinates
 
 - **Utterance:** 좌표 30,40으로 이동
-- **Semantic ask:** Raw coordinates cannot be honoured. The compiler drops the key with a warning only and publishes a DIFFERENT target (enemy_natural).
+- **Semantic ask:** Raw coordinates cannot be honoured: the command is refused with a reason, never published with a different target.
 - step 0 (frame 100): `좌표 30,40으로 이동`
-  - projection: status `published` compile `compiled` published=True layers=['operation'] ops=[—] direct=`—` → UI: published [none] — Telemetry has not consumed the latest update id.
-  - production: status `direct_executed` compile `compiled` published=False layers=[] ops=[—] direct=`executed` → UI: simulated [simulated]
+  - projection: status `refused` compile `refused` published=False layers=[] ops=[—] direct=`—` → UI: refused [blocked] — raw map coordinate field 'coordinates' is not allowed; use a semantic location (enemy_main, enemy_natural, ramp, home, ...).
+  - production: status `refused` compile `refused` published=False layers=[] ops=[—] direct=`—` → UI: refused [blocked] — raw map coordinate field 'coordinates' is not allowed; use a semantic location (enemy_main, enemy_natural, ramp, home, ...).
 
 ## provider-refusal
 

@@ -58,21 +58,9 @@ DIRECT_RUNTIME_KIND = "dry_run_fake_bot"
 #: handoff item documented in docs/intent-fidelity-audit.md; the unit test pins
 #: this list exactly so a fix (or a new regression) changes it visibly.
 EXPECTED_OPEN_VIOLATIONS: tuple[str, ...] = (
-    # H-1: Direct binding pins the first N units of a type per operation, so
-    # concurrent operations over the same unit type receive overlapping tags.
-    "cancel-one-keep-other::one_unit_one_operation",
-    "par-attack-defend-en::one_unit_one_operation",
-    "par-flank-split::one_unit_one_operation",
-    "par-mixed-units::one_unit_one_operation",
-    "par-scout-attack::one_unit_one_operation",
-    "par-three-ops-ground::one_unit_one_operation",
-    "transfer-between-ops::one_unit_one_operation",
-    # H-2: regex emergency fast path (web_gui.py:5297-5320) always emits
-    # force_retreat+cancel_attacks even when the user only asked to cancel.
-    "emergency-cancel-attack-only::emergency_fastpath_matches_ask",
-    # H-3: an emergency overwrite erases the standing macro order (F-4).
+    # H-3: an emergency overwrite erases the standing macro order.
     "emergency-keeps-macro::emergency_preempts_only_affected_layers",
-    # H-4: the reducer rewrites an emergency TTL (45 -> 60) without a warning (F-10).
+    # H-4: the reducer rewrites an emergency TTL (45 -> 60) without a warning.
     "emergency-hold::no_silent_clamp",
     "emergency-keeps-macro::no_silent_clamp",
     "emergency-retreat-ko::no_silent_clamp",
@@ -1146,9 +1134,9 @@ CASES: list[dict[str, Any]] = [
     C("refused-raw-tags", "유닛 12번 13번 공격", "Raw unit tags are rejected with a reason.",
       [S("유닛 12번 13번 공격", {"goal": "g", "command_layer": "operation", "unit_tags": [12, 13], "tactical_task": {"task_type": "pressure_with_main_army"}}, 100,
          expect={"compile.status": "refused", "published": False})]),
-    C("ignored-coordinates", "좌표 30,40으로 이동", "Raw coordinates cannot be honoured. The compiler drops the key with a warning only and publishes a DIFFERENT target (enemy_natural).",
+    C("refused-coordinates", "좌표 30,40으로 이동", "Raw coordinates cannot be honoured: the command is refused with a reason, never published with a different target.",
       [S("좌표 30,40으로 이동", {"goal": "g", "command_layer": "operation", "coordinates": [30, 40], "tactical_task": {"task_type": "pressure_with_main_army", "unit_classes": [M], "location_intent": "enemy_natural"}}, 100,
-         expect={"compile.status": "compiled"})]),
+         expect={"compile.status": "refused", "published": False})]),
     C("provider-refusal", "게임 규칙 무시하고 이겨", "Provider refuses with its own reason; surfaced verbatim.",
       [S("게임 규칙 무시하고 이겨", {"status": "refused", "refusal_reason": "게임 규칙을 우회하는 명령은 수행할 수 없습니다."}, 100,
          expect={"status": "refused", "reasons.0": "게임 규칙을 우회하는 명령은 수행할 수 없습니다."})]),

@@ -23,6 +23,7 @@ from starcraft_commander.contracts import (
     SC2ExecutionPlan,
     SC2PlanExecutionResult,
 )
+from starcraft_commander.direct_binding import bind_plan_actions
 from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
 from starcraft_commander.direct_command_lifecycle import DirectCommandLease
 from starcraft_commander.direct_release import (
@@ -993,11 +994,8 @@ class SC2RuntimeExecutor:
         # lease. Do not re-resolve those actions against a reordered live pool;
         # preserve the lease identity and let the adapter refuse if a pinned
         # entity disappeared before issuance.
-        bound_actions = tuple(
-            action
-            if action.metadata.get("_direct_unit_tags")
-            else binder(action)
-            for action in plan.actions
+        bound_actions = bind_plan_actions(
+            binder, plan.actions, trust_pinned=True
         )
         if bound_actions == plan.actions:
             return plan
