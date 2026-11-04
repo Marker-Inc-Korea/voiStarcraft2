@@ -108,6 +108,8 @@ test("blocked reasons collapse to exactly one word", () => {
   assert.equal(ko.reason("not enough minerals"), "자원부족");
   assert.equal(ko.reason("direct_control_conflict: Direct lease owns the units"), "충돌");
   assert.equal(ko.reason("지원하지 않는 명령입니다"), "거절");
+  assert.equal(ko.reason("action 'stop_group' was refused without issuing orders: insufficient_units."), "병력부족");
+  assert.equal(ko.reason("unit tags already owned: [13, 14]"), "충돌");
   assert.equal(ko.reason("missing_prerequisite_chain"), "선행필요");
   assert.equal(ko.reason(""), "막힘");
   assert.equal(I.create("en").reason("not enough minerals"), "Resources");

@@ -53,11 +53,11 @@
   // Backend reasons are long technical strings; the bar shows exactly one word and keeps the raw text as the hover title.
   const REASON_RULES = [
     [/clarif|확인|모호/i, "r_clarify"],
-    [/conflict|direct_control|lease|충돌/i, "r_conflict"],
-    [/refus|reject|unsupported|policy|지원하지|거절|정책/i, "r_refused"],
+    [/conflict|direct_control|lease|already owned|충돌/i, "r_conflict"],
     [/mineral|gas|resource|supply|afford|자원|광물|가스|인구/i, "r_resource"],
     [/composition|shortfall|no_idle|idle_unit|insufficient|unit|army|squad|병력|유닛|부족/i, "r_units"],
     [/prereq|tech|requires|missing_|선행|테크/i, "r_prereq"],
+    [/refus|reject|unsupported|policy|지원하지|거절|정책/i, "r_refused"],
     [/expire|만료/i, "r_expired"],
     [/timeout|timed_out|시간/i, "r_timeout"],
     [/fail|error|send|전송|실패|오류/i, "r_failed"],

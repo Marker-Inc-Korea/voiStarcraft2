@@ -25,10 +25,11 @@ test("state machine: idle -> connecting -> idle(ready) -> listening -> thinking 
   const call = effects.find(e => e.type === "tool_call");
   assert.ok(call); assert.equal(call.speechEndToToolCall, 700); assert.equal(call.speechMs, 1500); assert.equal(call.args.goal, "g");
   assert.equal(m.snapshot().turn.transcript, "마린 정찰");
-  m.intentStarted(); assert.equal(m.snapshot().state, "acting");
+  assert.equal(m.snapshot().state, "acting"); // straight from thinking, no idle flash
   m.intentFinished(call.turnId, true); assert.equal(m.snapshot().state, "acting"); // hold window
   m.setHoldActing(false); assert.equal(m.snapshot().state, "idle");
   assert.deepEqual([...new Set(states)], ["connecting", "idle", "listening", "thinking", "acting"]);
+  assert.ok(!states.slice(states.indexOf("thinking")).slice(0, states.slice(states.indexOf("thinking")).indexOf("acting")).includes("idle"), "no idle between thinking and acting");
 });
 test("transcript deltas accumulate then final replaces them", () => {
   const { m } = machine(); m.setActive(true); m.setConnection("ready");

@@ -26,7 +26,7 @@
   });
   const BLOCKING_DISPOSITIONS = new Set(["blocked", "expired"]);
   const NEUTRAL_END_DISPOSITIONS = new Set(["superseded"]);
-  const FAILED_TRANSPORT = new Set(["publish_failed", "refused", "clarification_required"]);
+  const FAILED_TRANSPORT = new Set(["publish_failed", "refused", "clarification_required", "direct_failed"]);
   const TIERS = Object.freeze(["macro", "operation", "micro", "emergency"]);
 
   const asObject = value => (value && typeof value === "object" && !Array.isArray(value) ? value : {});
@@ -47,18 +47,19 @@
     return "";
   }
 
+  // The real backend lists EVERY lifecycle stage; `ok:false` + reason means "no evidence yet", not "failed".
+  // Failure is only ever reported through execution.failed/expired/superseded, disposition, transport and direct_outcome.
   function stageEvidence(op) {
     const execution = asObject(asObject(op.intervention).command_execution);
     const done = new Set();
-    const failed = new Map(); // engine stage name -> reason
+    const pending = new Map(); // engine stage name -> why it has no evidence yet (shown only as hover text)
     for (const stage of asArray(execution.stages)) {
       const item = asObject(stage);
       const name = text(item.name);
       if (!name) continue;
-      if (item.ok === true) done.add(name);
-      else if (item.ok === false) failed.set(name, text(item.reason) || text(item.manager) || name);
+      if (item.ok === true) done.add(name); else pending.set(name, text(item.reason));
     }
-    return { execution, done, failed };
+    return { execution, done, pending, failed: new Map() };
   }
   const anyDone = (done, names) => names.some(name => done.has(name));
 
@@ -70,6 +71,22 @@
       || [...evidence.failed.values()][0]
       || text(compile.refusal_reason) || text(compile.clarification_prompt)
       || text(op.transport_status) || text(op.disposition) || "";
+  }
+
+  // Direct (non-macro) execution report: command_queue.direct_outcome = {status, reasons[], shortfalls[]}.
+  // status: executed | released | partial | conflict | runtime_not_attached | clarification_required | refused | no_executable_action | planned.
+  // "executed" = the SC2 order path accepted every action; it is NOT proof that units moved, so Effect is never derived from it.
+  const DIRECT_BLOCKING = new Set(["conflict", "runtime_not_attached", "clarification_required", "refused", "no_executable_action"]);
+  function directOutcome(op) {
+    const raw = asObject(asObject(op.command_queue).direct_outcome);
+    const status = text(raw.status);
+    if (!status) return null;
+    const reasons = asArray(raw.reasons).map(text).filter(Boolean);
+    const shortfall = asArray(raw.shortfalls).map(asObject).find(item => item.requested !== undefined || item.detail) || null;
+    let reason = reasons[0] || "";
+    if (status === "conflict") reason = `direct_control_conflict${reason ? `: ${reason}` : ""}`;
+    if (status === "partial") reason = `composition_shortfall: ${shortfall ? `${shortfall.requested}→${shortfall.issued}` : reason || "partial"}`;
+    return { status, reason: reason || status, blocking: DIRECT_BLOCKING.has(status), partial: status === "partial", accepted: status === "executed" || status === "released" };
   }
 
   // Where non-macro vectors really run. "dry_run_fake_bot" = scripted DemoFakeBotAI, NOT MicroMachine/SC2.
@@ -87,16 +104,22 @@
     const { done, failed } = evidence;
     const disposition = text(op.disposition);
     const transport = text(op.transport_status);
+    const outcome = directOutcome(op);
     const done5 = {
       heard: Boolean(text(op.command_text) || text(context.text)),
-      understood: transport === "published" || op.active === true || anyDone(done, DONE_IMPLIES.understood),
+      understood: transport === "published" || transport === "direct_executed" || op.active === true || anyDone(done, DONE_IMPLIES.understood),
       assigned: anyDone(done, DONE_IMPLIES.assigned),
       ordered: anyDone(done, DONE_IMPLIES.ordered),
       effect: anyDone(done, DONE_IMPLIES.effect),
     };
-    const hardBlocked = BLOCKING_DISPOSITIONS.has(disposition) || evidence.execution.failed === true || evidence.execution.expired === true || FAILED_TRANSPORT.has(transport) || failed.size > 0;
+    // Direct path: the order path accepted every action => assigned + ordered (never effect).
+    if (outcome && (outcome.accepted || outcome.partial)) { done5.understood = true; done5.assigned = true; done5.ordered = outcome.accepted; }
+    if (outcome && outcome.status === "clarification_required") done5.understood = false;
+    if (outcome && outcome.blocking && outcome.status !== "clarification_required") done5.understood = true;
+    const directBlocked = Boolean(outcome && (outcome.blocking || outcome.partial));
+    const hardBlocked = directBlocked || BLOCKING_DISPOSITIONS.has(disposition) || evidence.execution.failed === true || evidence.execution.expired === true || FAILED_TRANSPORT.has(transport) || failed.size > 0;
     const neutralEnd = !hardBlocked && (NEUTRAL_END_DISPOSITIONS.has(disposition) || evidence.execution.superseded === true);
-    const reason = hardBlocked || neutralEnd ? blockerReason(op, evidence) : "";
+    const reason = hardBlocked || neutralEnd ? ((directBlocked && outcome.reason) || blockerReason(op, evidence)) : "";
     const consumption = text(op.consumption_status);
     let firstOpen = STAGE_IDS.find(id => !done5[id]) || "";
     // A failed engine stage pins the blockage to its UI stage even if later flags look set.
@@ -107,12 +130,13 @@
     const stages = STAGE_IDS.map(id => {
       let state = done5[id] && !(hardBlocked && id === firstOpen) ? "done" : "todo";
       // Fake-bot execution is shown as simulation, never as a real order/effect.
-      if (state === "done" && simulated && (id === "ordered" || id === "effect")) state = "sim";
+      if (state === "done" && simulated && (id === "ordered" || id === "effect" || (id === "assigned" && outcome))) state = "sim";
       let detail = "";
       if (id === firstOpen && state !== "done") {
         if (hardBlocked) { state = "blocked"; detail = reason; }
         else if (neutralEnd) { state = "ended"; detail = reason || disposition; }
         else if (disposition === "completed") { state = "todo"; }
+        else if (simulated && id === "effect" && outcome && outcome.accepted) { state = "todo"; } // a fake bot can never produce an effect: no pulsing "waiting"
         else {
           state = "active";
           if (id === "assigned" || id === "ordered" || id === "effect") detail = consumption && consumption !== "consumed" ? consumption : "";
@@ -181,5 +205,5 @@
     return last ? last.id : "";
   }
 
-  return { STAGE_IDS, TIERS, ENGINE_TO_UI, deriveOperationRail, deriveCommandRail, deriveCommand, operationsForCommand, operationTier, normalizeTier, summarize, runtimeKind };
+  return { STAGE_IDS, TIERS, ENGINE_TO_UI, deriveOperationRail, deriveCommandRail, deriveCommand, operationsForCommand, operationTier, normalizeTier, summarize, runtimeKind, directOutcome };
 });

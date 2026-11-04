@@ -65,6 +65,9 @@ derivation, window flags). Real-Electron smoke against a fake backend (not SC2 e
 swiftc -O smoke/warp_cursor.swift -o /tmp/warp_cursor   # real cursor moves via CoreGraphics
 npx electron smoke/driver.js          # 57 checks + docs/screens/*.png
 npx electron smoke/overlay_shots.js   # edge glow over bright/dark backdrops
+
+# REAL end-to-end (real web_gui --dry-run + real Realtime proxy + TTS wav as the Chromium mic); see docs/e2e/RESULTS.md
+E2E_NAME=u1_scout_attack VOI_COMMANDER_URL=http://127.0.0.1:18765 npx electron smoke/e2e_real.js
 ```
 
 The microphone in smoke is Chromium's fake device; real speech, real SC2 and macOS fullscreen-app overlay are unverified.

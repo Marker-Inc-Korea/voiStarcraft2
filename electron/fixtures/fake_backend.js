@@ -30,9 +30,11 @@ function createFakeBackend({ port = 0, runtime = "dry_run_fake_bot" } = {}) {
     const names = ["parsed", "reduced", "consumed_by_manager", "queued_or_assigned", "order_issued", "action_issued", "effect_observed"];
     const reached = Math.floor(age / step);
     const limit = spec.stopAt == null ? names.length : spec.stopAt;
-    const stages = names.slice(0, Math.min(reached, limit)).map(name => ({ name, ok: true, manager: "OperationDirector", evidence: {} }));
+    const reachedCount = Math.min(reached, limit);
+    // Faithful to the real backend: EVERY stage is listed; unreached ones are ok:false with a "no evidence yet" reason.
+    const stages = ["parsed", "reduced", "published", ...names.slice(2)].map((name, i) => { const ok = i < reachedCount + 1; return ok ? { name, ok: true, manager: "OperationDirector", reason: "evidence present", evidence: {} } : { name, ok: false, manager: "OperationDirector", reason: `No evidence for ${name} yet.` , evidence: {} }; });
     const blocked = spec.blocked && reached > limit;
-    const execution = { command_id: cmd.update_id, operation_id: spec.operation_id, state: stages.length ? stages[stages.length - 1].name : "published", stages, failed: Boolean(blocked), expired: false, superseded: false, completed: false, blocker_reason: blocked ? spec.blocked : "" };
+    const execution = { command_id: cmd.update_id, operation_id: spec.operation_id, state: (stages.filter(s => s.ok).pop() || { name: "published" }).name, stages, failed: Boolean(blocked), expired: false, superseded: false, completed: false, blocker_reason: blocked ? spec.blocked : "" };
     return {
       operation_id: spec.operation_id, update_id: cmd.update_id, command_text: cmd.text, mission: spec.mission, active: !blocked, transport_status: "published",
       consumption_status: blocked ? "pending_consumption" : reached >= 4 ? "consumed" : "pending_consumption", disposition: blocked ? "blocked" : "active",

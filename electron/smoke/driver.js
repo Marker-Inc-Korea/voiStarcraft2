@@ -112,7 +112,9 @@ async function main() {
   await screencapture("04-thinking-overlay-fullscreen");
   await waitFor(() => js("document.querySelectorAll('.card .op').length>=2"), "two parallel operation rails", 14000);
   await sleep(9000);
+  I.applySettings({ layout: { pinned: true } }); await sleep(500); // the bar would auto-collapse 2.5 s after voice ended
   await screencapture("05-operations-strip-screen");
+  I.applySettings({ layout: { pinned: false } });
   note("intent forwarded", { intents: backend.state.intents.map(i => ({ transcript: i.transcript, tier: i.tool_arguments && i.tool_arguments.command_layer, latency: i.latency_ms })) });
   check("parallel operations rendered as separate rails", await js("document.querySelectorAll('.card .op').length>=2"));
   check("dry-run fake bot is a single small word badge (시뮬)", await js("[...document.querySelectorAll('.word-badge[data-kind=\"sim\"]')].every(n=>n.textContent==='시뮬') && !!document.querySelector('.word-badge[data-kind=\"sim\"]')"));

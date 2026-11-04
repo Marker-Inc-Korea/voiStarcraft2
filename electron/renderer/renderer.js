@@ -113,8 +113,6 @@
     if (!el) { el = h("article", { class: "card", "data-key": card.key }); cardEls.set(card.key, el); }
     el.dataset.sig = signature;
     const parallel = view.rails.length > 1;
-    const overall = view.rails.some(r => r.rail.blocked) ? "blocked" : view.rails.every(r => r.rail.effectObserved) ? "effect" : view.rails.some(r => r.rail.effectObserved) ? "partial" : "live";
-    el.dataset.overall = overall;
     el.dataset.count = String(view.rails.length);
     const showHead = parallel || card.source === "voice";
     el.replaceChildren(...[
@@ -199,7 +197,9 @@
     if (event.type === "voice-state") {
       const prev = state.voice;
       state.voice = { state: event.state, active: Boolean(event.active), reason: event.reason || "" };
-      if (state.voice.active && !window.VoiMic.running && !micStarting) startMic();
+      // Open the mic only once the Realtime session is ready: audio before that is dropped by main anyway, and the OS
+      // mic indicator should not light up while we are still connecting. A reconnect (error) keeps the open mic.
+      if (state.voice.active && !window.VoiMic.running && !micStarting && ["idle", "listening", "thinking", "acting"].includes(state.voice.state)) startMic();
       if (!state.voice.active && window.VoiMic.running) window.VoiMic.stop();
       if (prev.state !== "acting" && state.voice.state === "acting") pokeSoon();
       renderVoice(); schedule();

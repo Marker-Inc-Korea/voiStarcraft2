@@ -108,7 +108,7 @@ function createVoiceClient(options) {
       if (stale()) return;
       const id = send(defaultSessionUpdate(env, getPrefs()));
       pingTimer = setIntervalFn(() => { try { if (socket.readyState === 1) socket.ping(); } catch { /* ignore */ } }, PING_MS);
-      sessionReadyTimer = setTimer(() => { if (!stale()) { machine.fail("Realtime 세션 초기화 시간 초과"); scheduleReconnect("session.update timeout"); } }, 8000);
+      sessionReadyTimer = setTimer(() => { if (!stale()) { machine.fail("Realtime 세션 초기화 시간 초과"); scheduleReconnect("session.update timeout"); } }, 15000);
       if (!id) { machine.fail("Realtime 소켓 전송 실패"); }
     });
     socket.on("message", data => { if (!stale()) handleMessage(String(data), mine); });
@@ -178,7 +178,6 @@ function createVoiceClient(options) {
 
   async function submitIntent(effect, mine) {
     const turnId = effect.turnId;
-    machine.intentStarted();
     if (actingTimer) { clearTimer(actingTimer); actingTimer = null; }
     const startedAt = now();
     let transcript = effect.turn ? effect.turn.transcript : "";

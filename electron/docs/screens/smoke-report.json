@@ -51,8 +51,8 @@
             "transcript": "마린 두 기는 정찰하고 네 기는 오른쪽 길로 공격",
             "tier": "operation",
             "latency": {
-              "speech_end_to_tool_call": 11004,
-              "speech_ms": 6001,
+              "speech_end_to_tool_call": 11003,
+              "speech_ms": 6002,
               "transcript_wait": 0,
               "tool_call_to_publish": null
             }
@@ -324,7 +324,7 @@
       "name": "gear opens settings within 300ms",
       "ok": true,
       "detail": {
-        "ms": 11
+        "ms": 7
       }
     },
     {
