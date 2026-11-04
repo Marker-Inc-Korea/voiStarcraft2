@@ -1117,6 +1117,36 @@ class RawCoordinateRefusalTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+class OperationMissionLabelTest(unittest.TestCase):
+    """UI-facing ``mission`` must not call a macro order an emergency."""
+
+    def _mission(self, vector: dict) -> str:
+        from starcraft_commander.web_gui import _micromachine_operation_mission
+
+        return _micromachine_operation_mission({"vector": vector})
+
+    def test_all_false_emergency_block_does_not_make_a_macro_an_emergency(self) -> None:
+        flags = {
+            "cancel_attacks": False,
+            "pull_workers_for_defense": False,
+            "evacuate_workers": False,
+            "force_retreat": False,
+            "hold_position": False,
+            "prioritize_repair": False,
+            "stop_expansion": False,
+        }
+        self.assertEqual(
+            "production",
+            self._mission({"goal": "서플라이 디포 두 개 지어", "command_layer": "macro", "emergency": flags}),
+        )
+
+    def test_real_emergency_flags_still_label_emergency(self) -> None:
+        self.assertEqual(
+            "emergency",
+            self._mission({"goal": "후퇴", "command_layer": "emergency", "emergency": {"force_retreat": True}}),
+        )
+
+
 class ChainReplayInvariantsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

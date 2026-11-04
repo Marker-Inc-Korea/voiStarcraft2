@@ -1915,7 +1915,8 @@ def _micromachine_operation_mission(
         return "attack"
     if any(token in goal for token in ("defend", "hold", "수비", "방어", "사수")):
         return "defense"
-    if _mapping_child(vector, "emergency"):
+    emergency_flags = _mapping_child(vector, "emergency")
+    if any(value is True for value in emergency_flags.values()):
         return "emergency"
     if command_layer == "macro" or _mapping_child(vector, "production"):
         return "production"
