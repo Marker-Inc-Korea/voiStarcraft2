@@ -18,7 +18,7 @@ battlefield-browser-artifacts/
 !.env.example
 credentials.json
 *.credentials.json
-node_modules/
+node_modules
 electron/node_modules/
 
 # Local QA captures (show the developer desktop; kept out of the repo)

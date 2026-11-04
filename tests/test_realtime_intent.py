@@ -17,6 +17,7 @@ from unittest import mock
 import pytest
 
 from starcraft_commander import realtime_intent as ri
+from starcraft_commander import web_gui
 from starcraft_commander.demo_sc2 import build_dry_run_session
 from starcraft_commander.policy_modulation import PolicyModulationVector
 from starcraft_commander.web_gui import (
@@ -682,9 +683,23 @@ class EndpointTest(unittest.TestCase):
         self.fail("modulation was never compiled")
 
     def intent(self, directory, doc, **kwargs):
-        return self.post(
+        status, payload = self.post(
             "/api/realtime/intent", {"blackboard_dir": directory, **doc}, **kwargs
         )
+        # Accepted intents are published asynchronously; let the worker finish
+        # writing into ``directory`` before the caller's TemporaryDirectory is
+        # torn down (slow CI runners otherwise race the cleanup).
+        update_id = payload.get("update_id") if isinstance(payload, dict) else None
+        if status == 202 and update_id:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                latest = web_gui._read_micromachine_compile_result(directory) or {}
+                if latest.get("update_id") == update_id:
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail(f"compile result for {update_id!r} never appeared")
+        return status, payload
 
     def test_tool_call_parallel_operations_are_submitted_and_compiled(self):
         args = next(a for n, a, _, _ in PAYLOADS if n == "operation-parallel-scout-attack")
