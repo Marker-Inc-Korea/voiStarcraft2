@@ -7,6 +7,8 @@ import unittest
 from unittest.mock import patch
 
 from starcraft_commander.sc2_api_inventory import (
+    SC2_CLIENT_EXCLUDED_METHODS,
+    SC2_PROTOCOL_EXCLUDED_SURFACE,
     SC2_BOT_REJECTED_RAW_METHODS,
     SC2_UNIT_ACTION_METHODS,
     SC2_UNIT_QUERY_METHODS,
@@ -45,6 +47,10 @@ class SC2APISurfaceInventoryTest(unittest.TestCase):
         self.assertIsInstance(payload["rejected_reasons"], dict)
         self.assertEqual(inventory.classification_complete, payload["classification_complete"])
         self.assertEqual(payload, json.loads(json.dumps(payload)))
+        self.assertIn("chat_send", payload["excluded_client_surface"])
+        self.assertIn("Protocol", payload["excluded_protocol_surface"])
+        self.assertEqual(payload["excluded_client_surface"], dict(SC2_CLIENT_EXCLUDED_METHODS))
+        self.assertEqual(payload["excluded_protocol_surface"], dict(SC2_PROTOCOL_EXCLUDED_SURFACE))
 
     def test_unknown_unit_and_new_callback_are_not_silently_classified(self) -> None:
         class FutureUnit:
