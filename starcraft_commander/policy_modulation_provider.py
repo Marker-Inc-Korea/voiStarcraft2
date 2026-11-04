@@ -1590,7 +1590,18 @@ def _normalize_provider_mapping(
     result.setdefault("source", default_source.value)
     if "goal" not in result and default_goal:
         result["goal"] = default_goal
+    requested_ttl = result.get("ttl_seconds")
     _canonicalize_micromachine_payload(result)
+    effective_ttl = result.get("ttl_seconds")
+    if (
+        type(requested_ttl) in (int, float)
+        and type(effective_ttl) is int
+        and int(requested_ttl) != effective_ttl
+    ):
+        warnings.append(
+            f"ttl_seconds clamped: requested {int(requested_ttl)}s, "
+            f"applied {effective_ttl}s"
+        )
     return result, tuple(warnings)
 
 
@@ -1895,6 +1906,22 @@ def _canonicalize_rich_intent_sequences(payload: dict[str, object]) -> None:
         payload[key] = normalized_items
 
 
+def _requested_unit_count(item: Mapping[str, object], *, index: int) -> int:
+    """Return the exact requested count or refuse; never drop or clamp silently."""
+
+    count = item.get("count", None)
+    label = f"composition_requirements[{index}].count"
+    if type(count) is bool or not isinstance(count, (int, float)):
+        raise ValueError(f"{label} must be a positive integer, got {count!r}.")
+    if isinstance(count, float) and not count.is_integer():
+        raise ValueError(f"{label} must be a whole number, got {count!r}.")
+    if int(count) <= 0:
+        raise ValueError(f"{label} must be at least 1, got {count!r}.")
+    if int(count) > 200:
+        raise ValueError(f"{label} must be at most 200, got {count!r}.")
+    return int(count)
+
+
 def _normalize_micromachine_composition_and_roles(
     payload: dict[str, object],
 ) -> None:
@@ -1903,34 +1930,30 @@ def _normalize_micromachine_composition_and_roles(
     merged_requirements: dict[tuple[str, str], dict[str, object]] = {}
     requirements = payload.get("composition_requirements")
     if _is_non_text_sequence(requirements):
-        for item in requirements:
+        for index, item in enumerate(requirements):
             if not isinstance(item, Mapping):
                 continue
             unit_type = str(item.get("unit_type", "") or "").strip()
-            count = item.get("count", 0)
-            if (
-                not unit_type
-                or type(count) is bool
-                or not isinstance(count, (int, float))
-            ):
+            if not unit_type:
                 continue
-            normalized_count = max(0, int(count))
-            if normalized_count <= 0:
-                continue
+            normalized_count = _requested_unit_count(item, index=index)
             role = str(item.get("role", "") or "").strip()
             key = (unit_type, role)
             existing = merged_requirements.get(key)
             if existing is None:
                 merged_requirements[key] = {
                     "unit_type": unit_type,
-                    "count": min(200, normalized_count),
+                    "count": normalized_count,
                     "role": role,
                 }
                 continue
-            existing["count"] = min(
-                200,
-                int(existing.get("count", 0) or 0) + normalized_count,
-            )
+            merged = int(existing.get("count", 0) or 0) + normalized_count
+            if merged > 200:
+                raise ValueError(
+                    f"composition_requirements[{index}].count merges to {merged} "
+                    f"{unit_type} units; at most 200 are allowed."
+                )
+            existing["count"] = merged
 
     merged_roles: dict[tuple[str, str], dict[str, object]] = {}
     roles = payload.get("unit_roles")
@@ -2642,7 +2665,9 @@ def _repair_micromachine_tactical_task_defaults(payload: dict[str, object]) -> N
         )
         tactical_task["location_intent"] = location
         _set_if_empty(scope, "location_intent", location)
-        _set_if_empty(scope, "army_group", "regroup")
+        # "regroup" is not a member of MICROMACHINE_ARMY_GROUPS; the old
+        # default made every un-grouped regroup/retreat operation a refusal.
+        _set_if_empty(scope, "army_group", "main")
         _copy_or_default_unit_classes(
             scope,
             tactical_task,

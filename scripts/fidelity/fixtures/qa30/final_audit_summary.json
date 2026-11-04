@@ -1,0 +1,297 @@
+{
+ "source": ".local/qa30-live-r32-full-20260918-final/final_audit.json",
+ "scope": "recorded_SC2_runtime_evidence_only",
+ "natural_language_verified": false,
+ "voice_verified": false,
+ "scenarios": {
+  "01-scv-production": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "train_command|SCV",
+    "unit_count_increased"
+   ],
+   "missing_evidence": []
+  },
+  "02-mineral-saturation": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "positive_mineral_income",
+    "worker_assignment_observed"
+   ],
+   "missing_evidence": []
+  },
+  "03-refinery-gas": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "build_command|Refinery",
+    "positive_gas_income"
+   ],
+   "missing_evidence": []
+  },
+  "04-supply-recovery": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "build_command|SupplyDepot",
+    "building_completed"
+   ],
+   "missing_evidence": []
+  },
+  "05-barracks": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "build_command|Barracks",
+    "building_completed"
+   ],
+   "missing_evidence": []
+  },
+  "06-marine-wave": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "train_command|Marine",
+    "unit_count_reached"
+   ],
+   "missing_evidence": []
+  },
+  "07-factory": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "build_command|Factory",
+    "building_completed"
+   ],
+   "missing_evidence": []
+  },
+  "08-factory-techlab": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "addon_completed",
+    "build_command|FactoryTechLab"
+   ],
+   "missing_evidence": []
+  },
+  "09-siege-tank": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "train_command|SiegeTank",
+    "unit_count_increased"
+   ],
+   "missing_evidence": []
+  },
+  "10-tank-ramp-defense": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "actual_sc2_action",
+    "defense_effect",
+    "operation_assigned"
+   ],
+   "missing_evidence": []
+  },
+  "11-tank-siege-hold": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "position_held",
+    "siege_command",
+    "terminal_state"
+   ],
+   "missing_evidence": []
+  },
+  "12-marine-natural-pressure": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "engagement_observed",
+    "movement_observed",
+    "operation_assigned"
+   ],
+   "missing_evidence": []
+  },
+  "13-marine-main-attack": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "movement_observed",
+    "operation_assigned",
+    "target_effect"
+   ],
+   "missing_evidence": []
+  },
+  "14-marine-scout": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "enemy_observed",
+    "movement_observed",
+    "operation_assigned"
+   ],
+   "missing_evidence": []
+  },
+  "15-parallel-attack-defense": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "exclusive_ownership",
+    "movement_observed",
+    "two_operations_assigned"
+   ],
+   "missing_evidence": []
+  },
+  "16-defense-reinforcement": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "defense_effect",
+    "movement_observed",
+    "reinforcement_assigned"
+   ],
+   "missing_evidence": []
+  },
+  "17-natural-expansion": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "build_command|CommandCenter",
+    "building_completed",
+    "building_started"
+   ],
+   "missing_evidence": []
+  },
+  "18-expansion-workers": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "worker_assignment_observed",
+    "worker_transfer"
+   ],
+   "missing_evidence": []
+  },
+  "19-expand-production-resume": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "building_completed",
+    "train_command|Marine"
+   ],
+   "missing_evidence": []
+  },
+  "20-retreat": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "operation_assigned",
+    "ownership_released",
+    "retreat_confirmed"
+   ],
+   "missing_evidence": []
+  },
+  "21-cancel-attack": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "cancelled_by_user",
+    "ownership_released",
+    "queue_purge_observed"
+   ],
+   "missing_evidence": []
+  },
+  "22-reassign-marines": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "tag_scoped_ownership",
+    "terminal_state",
+    "transfer_admitted"
+   ],
+   "missing_evidence": []
+  },
+  "23-reassign-tanks": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "ability_policy_preserved",
+    "terminal_state",
+    "transfer_admitted"
+   ],
+   "missing_evidence": []
+  },
+  "24-retarget": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "generation_advanced",
+    "movement_observed",
+    "target_latched"
+   ],
+   "missing_evidence": []
+  },
+  "25-long-defense": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "defense_effect",
+    "operation_alive_after_lease",
+    "terminal_state"
+   ],
+   "missing_evidence": []
+  },
+  "26-long-production": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "factory_progress",
+    "positive_income",
+    "tank_progress"
+   ],
+   "missing_evidence": []
+  },
+  "27-prerequisite-wait": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "blocked_reason",
+    "command_retried",
+    "prerequisite_completed"
+   ],
+   "missing_evidence": []
+  },
+  "28-supply-block-recovery": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "production_resumed",
+    "supply_blocked",
+    "supply_provider_command"
+   ],
+   "missing_evidence": []
+  },
+  "29-heal-regroup": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "autonomous_owner_restored",
+    "operation_terminal",
+    "regroup_action"
+   ],
+   "missing_evidence": []
+  },
+  "30-game-end": {
+   "status": "passed",
+   "input_boundary": "structured_blackboard_not_natural_language_or_voice",
+   "proven_evidence": [
+    "CheckGameResult",
+    "OnGameEnd",
+    "final_telemetry"
+   ],
+   "missing_evidence": []
+  }
+ }
+}

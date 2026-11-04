@@ -119,6 +119,220 @@ def _direct_clarification_prompt(
     return ""
 
 
+_COMBAT_GROUP_ACTIONS = frozenset(
+    {
+        "move_group",
+        "attack_move",
+        "smart",
+        "patrol",
+        "stop_group",
+        "hold_position",
+        "execute_ability",
+    }
+)
+
+
+def _operation_requests_cancel(operation: object) -> bool:
+    edit_action = str(getattr(operation.operation_edit, "action", "") or "")
+    state = str(getattr(operation.lifetime, "completion_state", "") or "")
+    return edit_action == "cancel" or state == "cancelled"
+
+
+def _vector_is_emergency(vector: PolicyModulationVector) -> bool:
+    return vector.override_level is PolicyOverrideLevel.EMERGENCY or any(
+        (
+            vector.emergency.cancel_attacks,
+            vector.emergency.force_retreat,
+            vector.emergency.hold_position,
+        )
+    )
+
+
+def _lease_actions(lease: object) -> tuple[Mapping[str, object], ...]:
+    metadata = getattr(lease, "command_metadata", {})
+    actions = metadata.get("actions", ()) if isinstance(metadata, Mapping) else ()
+    if not isinstance(actions, Sequence) or isinstance(actions, (str, bytes)):
+        return ()
+    return tuple(item for item in actions if isinstance(item, Mapping))
+
+
+def _lease_operation_ids(lease: object) -> set[str]:
+    ids: set[str] = set()
+    for action in _lease_actions(lease):
+        metadata = action.get("metadata")
+        if isinstance(metadata, Mapping):
+            operation_id = str(metadata.get("operation_id", "") or "").strip()
+            if operation_id:
+                ids.add(operation_id)
+    return ids
+
+
+def _lease_is_combat_group(lease: object) -> bool:
+    actions = _lease_actions(lease)
+    return bool(actions) and all(
+        str(action.get("action_type", "") or "") in _COMBAT_GROUP_ACTIONS
+        for action in actions
+    )
+
+
+def _lease_sharing_block(leases: Sequence[object], allowed: set[str]) -> str:
+    """Refuse releasing a lease that also owns operations the user did not touch."""
+
+    for lease in leases:
+        others = _lease_operation_ids(lease) - allowed
+        if others:
+            return (
+                f"Direct command {lease.command_id} also owns operations "
+                f"{sorted(others)}; per-operation release is not supported, "
+                "so it was left untouched."
+            )
+    return ""
+
+
+def _release_result(
+    *,
+    ok: bool,
+    status: str,
+    reason: str,
+    released: Sequence[str],
+) -> dict[str, object]:
+    return {
+        "name": "sc2.direct.release",
+        "ok": ok,
+        "result": {
+            "ok": ok,
+            "status": status,
+            "reason": reason,
+            "released_command_ids": list(released),
+        },
+        "error": "",
+    }
+
+
+def _first_direct_lifecycle(
+    tool_results: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    for item in tool_results:
+        outer = item.get("result")
+        if not isinstance(outer, Mapping):
+            continue
+        execution = outer.get("result")
+        if not isinstance(execution, Mapping):
+            continue
+        audit = execution.get("audit")
+        if isinstance(audit, Mapping) and isinstance(
+            audit.get("direct_command_lifecycle"), Mapping
+        ):
+            return dict(audit["direct_command_lifecycle"])
+    return {}
+
+
+def _direct_outcome(
+    tool_results: Sequence[Mapping[str, object]],
+    *,
+    include_direct_tool: bool,
+    clarification: str = "",
+) -> dict[str, object]:
+    """User-displayable Direct outcome: status, refusal reasons, count shortfalls.
+
+    ``status`` is one of ``executed``, ``released``, ``partial``, ``conflict``,
+    ``runtime_not_attached``, ``clarification_required``, ``refused``,
+    ``no_executable_action``, ``planned``.  ``executed`` means the SC2 order
+    path accepted every action; it is NOT proof that units moved.
+    """
+
+    reasons: list[str] = []
+    shortfalls: list[dict[str, object]] = []
+    status = "executed"
+    if clarification:
+        return {
+            "status": "clarification_required",
+            "reasons": [clarification],
+            "shortfalls": [],
+        }
+    if not tool_results:
+        if not include_direct_tool:
+            return {"status": "planned", "reasons": [], "shortfalls": []}
+        return {
+            "status": "no_executable_action",
+            "reasons": [
+                "The command lowered to no executable Direct action "
+                "(missing target, ability, or unit selection)."
+            ],
+            "shortfalls": [],
+        }
+    released_only = all(
+        item.get("name") == "sc2.direct.release" for item in tool_results
+    )
+    if released_only and all(bool(item.get("ok")) for item in tool_results):
+        status = "released"
+    for item in tool_results:
+        outer = item.get("result")
+        outer = outer if isinstance(outer, Mapping) else {}
+        tool_status = str(outer.get("status", "") or "")
+        if bool(item.get("ok")):
+            continue
+        reason = str(outer.get("reason", "") or "")
+        execution = outer.get("result")
+        execution = execution if isinstance(execution, Mapping) else {}
+        audit = execution.get("audit")
+        audit = audit if isinstance(audit, Mapping) else {}
+        reports = audit.get("action_reports")
+        actions = ()
+        plan = execution.get("plan")
+        if isinstance(plan, Mapping):
+            raw_actions = plan.get("ordered_actions", ())
+            if isinstance(raw_actions, Sequence) and not isinstance(
+                raw_actions, (str, bytes)
+            ):
+                actions = tuple(raw_actions)
+        partial_found = False
+        if isinstance(reports, Mapping):
+            for key, report in reports.items():
+                if isinstance(report, Mapping) and report.get("is_partial") is True:
+                    partial_found = True
+                    index = int(key) if str(key).isdigit() else -1
+                    action = (
+                        actions[index]
+                        if 0 <= index < len(actions) and isinstance(actions[index], Mapping)
+                        else {}
+                    )
+                    shortfalls.append(
+                        {
+                            "action_index": index,
+                            "action_type": str(action.get("action_type", "") or ""),
+                            "requested": report.get("requested_count"),
+                            "issued": report.get("issued_count"),
+                            "detail": str(report.get("detail", "") or ""),
+                        }
+                    )
+        for error in execution.get("errors", ()) or ():
+            if isinstance(error, Mapping) and error.get("message"):
+                reasons.append(str(error["message"]))
+            elif isinstance(error, str) and error:
+                reasons.append(error)
+        if reason:
+            reasons.append(reason)
+        if partial_found:
+            status = "partial"
+        elif tool_status in {
+            "runtime_not_attached",
+            "direct_control_conflict",
+        }:
+            status = (
+                "conflict" if tool_status == "direct_control_conflict" else tool_status
+            )
+        elif status != "partial":
+            status = "refused"
+        if not reasons:
+            reasons.append(tool_status or "direct_tool_failed")
+    return {
+        "status": status,
+        "reasons": list(dict.fromkeys(reasons)),
+        "shortfalls": shortfalls,
+    }
+
+
 class LiveCommandCategory(str, Enum):
     """Coarse live-command class used by the reducer before blackboard publish."""
 
@@ -1150,13 +1364,31 @@ class MicroMachineLiveTextSession:
                 compile_result.vector.command_layer is not CommandLayer.MACRO
                 and not self.publish_non_macro_projection
             ):
-                direct_route = self._unified_route_result(
-                    compile_result.vector,
-                    update_id=effective_update_id,
-                    current_frame=frame,
-                    published_payload={},
+                direct_vector, preflight_results, dispatch_direct = (
+                    self._direct_preflight(
+                        compile_result.vector,
+                        update_id=effective_update_id,
+                    )
                 )
-                tool_results = tuple(direct_route.get("tool_results", ()))
+                if dispatch_direct:
+                    direct_route = self._unified_route_result(
+                        direct_vector,
+                        update_id=effective_update_id,
+                        current_frame=frame,
+                        published_payload={},
+                    )
+                else:
+                    direct_route = {
+                        "unified_route": {
+                            "layer": "micro",
+                            "reason": "direct operation release; no SC2 order issued.",
+                        },
+                        "tool_results": (),
+                    }
+                tool_results = (
+                    *preflight_results,
+                    *tuple(direct_route.get("tool_results", ())),
+                )
                 direct_clarification_prompt = _direct_clarification_prompt(tool_results)
                 if direct_clarification_prompt:
                     compile_result = replace(
@@ -1171,12 +1403,13 @@ class MicroMachineLiveTextSession:
                     "update_id": effective_update_id,
                     "command_layer": compile_result.vector.command_layer.value,
                     "direct_control_owner": (
-                        "direct_sc2" if direct_ok else "none"
+                        "direct_sc2" if direct_ok and dispatch_direct else "none"
                     ),
-                    "lifecycle": (
-                        tool_results[0].get("result", {}).get("result", {}).get("audit", {}).get("direct_command_lifecycle", {})
-                        if tool_results and isinstance(tool_results[0].get("result"), Mapping)
-                        else {}
+                    "lifecycle": _first_direct_lifecycle(tool_results),
+                    "direct_outcome": _direct_outcome(
+                        tool_results,
+                        include_direct_tool=self.include_direct_tool,
+                        clarification=direct_clarification_prompt,
                     ),
                 }
                 return LiveTextModulationResult(
@@ -1247,11 +1480,17 @@ class MicroMachineLiveTextSession:
                 update=None,
                 dashboard=dashboard,
                 consumption_status=LiveModulationConsumptionStatus.NOT_PUBLISHED,
-                command_queue=_command_queue_summary_for_compile_failure(
-                    text,
-                    compile_result,
-                    update_id=update_id,
-                ),
+                command_queue={
+                    **_command_queue_summary_for_compile_failure(
+                        text,
+                        compile_result,
+                        update_id=update_id,
+                    ),
+                    "failure": {
+                        "stage": "publish",
+                        "reason": f"{type(exc).__name__}: {exc}",
+                    },
+                },
                 provider_failure_recorded=failure_recorded,
             )
         publish_result = MicroMachineBackendPublishResult(
@@ -1292,6 +1531,126 @@ class MicroMachineLiveTextSession:
             ),
             command_queue=command_queue,
             **route_result,
+        )
+
+    def _direct_preflight(
+        self,
+        vector: PolicyModulationVector,
+        *,
+        update_id: str,
+    ) -> tuple[PolicyModulationVector, tuple[dict[str, object], ...], bool]:
+        """Apply operation cancel/supersede and emergency preemption to leases.
+
+        Returns ``(vector_to_dispatch, release_tool_results, dispatch)``.
+        A cancel edit must release the named operation, not be lowered into a
+        new attack order; a retarget/resize edit must supersede that
+        operation's own lease rather than collide with it; an emergency must
+        preempt combat-group leases (and only those).
+        """
+
+        results: list[dict[str, object]] = []
+        cancelled_ids = {
+            operation.operation_id
+            for operation in vector.operations
+            if _operation_requests_cancel(operation)
+        }
+        superseding_ids = {
+            operation.operation_id
+            for operation in vector.operations
+            if operation.operation_id not in cancelled_ids
+            and operation.operation_edit.action not in ("", "create")
+        }
+        for operation_id in sorted(cancelled_ids):
+            leases = self._leases_for_operations({operation_id})
+            blocked = _lease_sharing_block(leases, {operation_id})
+            if not leases:
+                results.append(
+                    _release_result(
+                        ok=False,
+                        status="no_active_direct_operation",
+                        reason=f"No active Direct command owns operation {operation_id}.",
+                        released=(),
+                    )
+                )
+            elif blocked:
+                results.append(
+                    _release_result(
+                        ok=False,
+                        status="operation_shares_lease",
+                        reason=blocked,
+                        released=(),
+                    )
+                )
+            else:
+                released = tuple(
+                    self.direct_lifecycle.cancel(
+                        lease.command_id, reason="cancelled_by_user"
+                    ).command_id
+                    for lease in leases
+                )
+                results.append(
+                    _release_result(
+                        ok=True, status="released", reason="", released=released
+                    )
+                )
+        refused = any(not item["ok"] for item in results)
+        for operation_id in sorted(superseding_ids):
+            if refused:
+                break
+            leases = self._leases_for_operations({operation_id})
+            blocked = _lease_sharing_block(leases, superseding_ids | cancelled_ids)
+            if blocked:
+                results.append(
+                    _release_result(
+                        ok=False,
+                        status="operation_shares_lease",
+                        reason=blocked,
+                        released=(),
+                    )
+                )
+                refused = True
+                continue
+            for lease in leases:
+                if lease.control_owned:
+                    self.direct_lifecycle.cancel(
+                        lease.command_id, reason=f"superseded_by:{update_id}"
+                    )
+        if _vector_is_emergency(vector) and not refused:
+            preempted = tuple(
+                self.direct_lifecycle.cancel(
+                    lease.command_id, reason=f"emergency_preempted:{update_id}"
+                ).command_id
+                for lease in self.direct_lifecycle.active_leases()
+                if _lease_is_combat_group(lease)
+            )
+            if preempted:
+                results.append(
+                    _release_result(
+                        ok=True, status="released", reason="", released=preempted
+                    )
+                )
+        if refused:
+            return vector, tuple(results), False
+        if cancelled_ids:
+            remaining = [
+                operation.to_dict()
+                for operation in vector.operations
+                if operation.operation_id not in cancelled_ids
+            ]
+            if not remaining:
+                return vector, tuple(results), False
+            payload = vector.to_dict()
+            payload["operations"] = remaining
+            payload.pop("command_layer", None)
+            payload["command_layer"] = vector.command_layer.value
+            return PolicyModulationVector.from_mapping(payload), tuple(results), True
+        return vector, tuple(results), True
+
+    def _leases_for_operations(self, operation_ids: set[str]) -> tuple[object, ...]:
+        return tuple(
+            lease
+            for lease in self.direct_lifecycle.active_leases()
+            if _lease_operation_ids(lease) & operation_ids
         )
 
     def _unified_route_result(
