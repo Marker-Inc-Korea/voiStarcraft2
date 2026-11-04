@@ -5318,13 +5318,34 @@ def _micromachine_request_is_emergency(
     return isinstance(emergency, Mapping) and any(bool(value) for value in emergency.values())
 
 
-def _micromachine_emergency_safety_output(text: str) -> dict[str, object]:
-    """Compile explicit retreat/cancel intent without waiting on an LLM."""
+def _micromachine_emergency_wants_retreat(text: str) -> bool:
+    """True when the (negation-stripped) utterance asks to retreat, not only cancel."""
 
-    return {
+    normalized = " ".join(str(text or "").lower().split())
+    for pattern in _MICROMACHINE_NEGATED_EMERGENCY_PATTERNS:
+        normalized = pattern.sub(" ", normalized)
+    normalized = " ".join(normalized.split()).strip(" ,;:")
+    return bool(
+        re.search(r"후퇴|퇴각|철수|retreat|fall\s+back|撤退", normalized, re.IGNORECASE)
+    )
+
+
+def _micromachine_emergency_safety_output(text: str) -> dict[str, object]:
+    """Compile explicit retreat/cancel intent without waiting on an LLM.
+
+    "공격 취소" cancels the attacks only; sending the army home needs an explicit
+    retreat word. The previous canned output always forced a retreat as well.
+    """
+
+    retreat = _micromachine_emergency_wants_retreat(text)
+    output: dict[str, object] = {
         "source": PolicyModulationSource.UI.value,
         "goal": text,
-        "assistant_message": "긴급 후퇴·공격 취소를 safety override로 즉시 적용했습니다.",
+        "assistant_message": (
+            "긴급 후퇴·공격 취소를 safety override로 즉시 적용했습니다."
+            if retreat
+            else "공격 취소를 safety override로 즉시 적용했습니다. 후퇴는 하지 않습니다."
+        ),
         "override_level": "emergency",
         "command_layer": "emergency",
         "confidence": 1.0,
@@ -5338,20 +5359,21 @@ def _micromachine_emergency_safety_output(text: str) -> dict[str, object]:
         },
         "squad": {
             "main_army_bias": -0.8,
-            "regroup_bias": 0.95,
+            "regroup_bias": 0.95 if retreat else 0.0,
             "defense_bias": 0.7,
         },
         "emergency": {
             "cancel_attacks": True,
-            "force_retreat": True,
+            "force_retreat": retreat,
         },
         "workers": {"repeat_order_guard_frames": 32},
         "lifetime": {
             "mode": "emergency_window",
-            "completion_conditions": [
-                "retreat_confirmed",
-                "ttl_expired",
-            ],
+            "completion_conditions": (
+                ["retreat_confirmed", "ttl_expired"]
+                if retreat
+                else ["cancelled_by_user", "ttl_expired"]
+            ),
             "completion_state": "active",
             "reason": "deterministic safety override",
         },
@@ -5362,8 +5384,11 @@ def _micromachine_emergency_safety_output(text: str) -> dict[str, object]:
         ],
         "rationale": (
             "Safety-critical retreat and attack cancellation bypass LLM latency."
+            if retreat
+            else "Attack cancellation bypasses LLM latency; no retreat was requested."
         ),
     }
+    return output
 
 
 class _SemanticScopePolicyModulationProvider:

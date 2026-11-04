@@ -52,6 +52,7 @@ from starcraft_commander.contracts import (
     SC2ExecutionPlan,
     SC2PlanExecutionResult,
 )
+from starcraft_commander.direct_binding import bind_plan_actions
 from starcraft_commander.direct_command_lifecycle import (
     DirectCommandLifecycle,
     DirectCommandOwnershipConflict,
@@ -4081,12 +4082,7 @@ def _bind_session_direct_plan(
     bind_action = getattr(bot, "bind_direct_action", None)
     if not callable(bind_action):
         return plan
-    actions = tuple(
-        action
-        if action.metadata.get("_direct_unit_tags")
-        else bind_action(action)
-        for action in plan.actions
-    )
+    actions = bind_plan_actions(bind_action, plan.actions, trust_pinned=True)
     if actions == plan.actions:
         return plan
     return SC2ExecutionPlan(

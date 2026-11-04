@@ -5,7 +5,7 @@ fidelity is unproven.** Nothing below is evidence that MicroMachine moved a unit
 the repo is the recorded QA30 run (structured blackboard input, not natural language or voice).
 
 Reproduce: `python -m scripts.fidelity.replay_chain --markdown out.md` (67 cases, 8 are recorded QA30
-fixtures) and `pytest tests/test_intent_fidelity.py`. A full per-case rendering is committed as
+fixtures; 5 expected open violations remain: H-3 x1, H-4 x4) and `pytest tests/test_intent_fidelity.py`. A full per-case rendering is committed as
 `docs/intent-fidelity-replay.generated.md`.
 
 ## 1. Chain
@@ -87,20 +87,24 @@ failures for D1-D6 in the first run; D7-D12 each red individually, see section 7
 | D11 | `ttl_seconds` 5000 -> 900 and emergency 600 -> 60 silently | warning `ttl_seconds clamped: requested Xs, applied Ys` from the compiler | `SilentDurationClampTest` |
 | D12 | compiler default `army_group="regroup"` is not a valid group: every un-grouped "retreat/regroup these units" was REFUSED | default `main` | `RegroupDefaultsAreValidTest` |
 
-Existing suites touched by the changed files: 819 passed, 933 subtests (list in section 6).
+| D13 (H-1) | Concurrent operations over one unit type pinned the SAME first-N units ("2 scout, 4 attack" ordered marines 13,14 twice; one lease owned 4 units but 6 orders were issued) | new `direct_binding.bind_plan_actions` binds a plan carrying already-reserved tags; `bind_direct_action(exclude_tags=)` skips them; call sites `sc2_executor._bind_direct_plan`, `live_pipeline._bind_session_direct_plan`, `unified_command_router` (MCP boundary re-binds, never trusts pinned tags). Short supply: the later operation gets what is left and `direct_outcome.shortfalls` says "requested 4, issued 3" | `DisjointOperationTagsTest` (4) |
+| D14 | an operation-keyed "마린 1기" ordered the WHOLE squad (count 1 was read as "default all") | operation-keyed actions honour their exact count; count 0 still means whole group (emergency) | `ExplicitCountTest` |
+| D15 (H-6) | Viking/Medivac/Tank/Banshee/Thor orders were executed by Marines and reported `direct_executed` (`python_sc2_adapter.py:240` knows only SCV/Marine/Hellion) | `_select_group` selects the named Terran FAMILY in any form (sieged tank, assault viking...) or nothing; nothing -> refused `no_matching_units`, zero SC2 orders | `UnitClassSelectionTest` (3) |
+| D16 (H-2) | regex fast path "공격 취소" also forced a retreat home | `web_gui._micromachine_emergency_safety_output`: `force_retreat` only when the utterance contains a retreat word (after negation stripping); cancel-only gets `cancelled_by_user`, `regroup_bias 0`; "공격 취소하고 후퇴" retreats | `EmergencyFastPathScopeTest` (4) |
+| D17 (H-8) | `x`/`coordinates`/`position`/`map_point`/`location_xy`... were dropped with a warning and the command published with a DIFFERENT target | `policy_modulation_provider._refuse_coordinate_key`: refuse the whole command, reason names the key; unrelated unknown keys still only warn | `RawCoordinateRefusalTest` (2, 18 subtests) |
+
+Existing suites touched by the changed files: see section 7.
 
 ### Open items: handoff (not in my files, or no safe fix)
 
+Fixed since the first report and removed from this table: H-1 -> D13/D14, H-2 -> D16, H-6 -> D15, H-8 -> D17. H-3/H-9 were evaluated and left documented: both change when a standing order stops being applied, which is a product decision (does "후퇴" end "계속 생산"?), and the safe fix needs telemetry-aware pruning in the reducer, not a one-line change.
+
 | ID | Where | Problem | Surfaces as |
 |---|---|---|---|
-| H-1 | `python_sc2_adapter.py:2185-2242` `bind_direct_action` (+ `unified_command_router.py:620-640`) | Each operation pins the FIRST N units of a type independently, so concurrent operations over the same unit type get overlapping tags. In a single plan the second operation is `(13,14,15,16)` while the first is `(13,14)`. Lease admission treats them as one command so no conflict is raised. Violates "one unit one operation" for exactly the headline case "2 scout, 4 attack". Replayed: `par-scout-attack`, `par-three-ops-ground`, `par-attack-defend-en`, `par-flank-split`, `par-mixed-units`, `cancel-one-keep-other`, `transfer-between-ops` | violation `one_unit_one_operation` |
-| H-2 | `web_gui.py:5297-5342` | Regex emergency fast path (`_micromachine_emergency_safety_output`) always sets `force_retreat` AND `cancel_attacks`. "공격 취소" (only cancel attacks) also sends the army home. Scoped phrases ("마린만 후퇴", "탱크 후퇴시켜") do NOT trigger it (correct, they go to the LLM) | `emergency-cancel-attack-only` |
 | H-3 | `micromachine_live_session.py:2578` area (`_updated_live_layer_state`, emergency returns `{emergency: entry}`) | An emergency overwrite deletes the standing macro order (production). Retreat should not stop marine production. Also `_active_live_command_layers`: the macro reappears only because of a later merge | `emergency-keeps-macro` |
 | H-4 | `micromachine_live_session.py` reducer `_live_command_lifetime` | Reducer rewrites ttl (45 -> 60, 120/300/900) without a warning; compile-stage clamps (D11) are now reported, reducer ones are not | `no_silent_clamp` x4 |
 | H-5 | `web_gui.py:13275-13308`, `local_cockpit.py:885` | Direct runtime is the scripted fake bot. Responses say `runtime_attached: true`. Main already assigned `direct_runtime.kind` to VoiceAgent | UI must render "simulated" |
-| H-6 | `micromachine_live_session.py` `_unified_route_result` / `unified_command_router.py:1100-1115` | No unit-type-aware selection: `_select_group` for `SIEGETANK`/`VIKINGFIGHTER`/`MEDIVAC`/... is not in `_KNOWN_UNIT_TYPE_NAMES={HELLION,MARINE,SCV}` (`python_sc2_adapter.py:240`), so a Viking order falls through to the generic "any non-worker army" branch (`:2422-2430`). Reproduced: a "2 vikings harass" Direct plan was executed by 2 **Marines**. Wrong unit type obeying an order, reported `direct_executed` | silent unit substitution |
 | H-7 | `demo_sc2.py:155` | `DemoUnit` has no `stop`/`hold_position`, so the dry-run bot refuses every emergency stop (`insufficient_units`). The tests add the two verbs locally | emergency refused in the shipped cockpit |
-| H-8 | `policy_modulation_provider.py:1534-1595` | Raw-coordinate-like keys (`x`, `coordinates`, `position`, `map_point`...) are dropped with only a warning `ignored provider field: ...`; the command still compiles and publishes with a DIFFERENT (default) target. The user said "30,40"; the agent attacks `enemy_natural` | `ignored-coordinates` (pinned as `compiled`) |
 | H-9 | `micromachine_live_session.py` `_prune_live_layer_state` | A published macro order carries `expires_at_frame` (19900) yet is merged into a command issued at frame 40000. Expired standing orders are not pruned unless telemetry says so; with no telemetry they come back. Pinned in `macro-default-ttl-expiry` | stale production resurrected |
 | H-10 | `web_gui.py:3714-3830` `_micromachine_intervention_summary` | Consumes legacy `state`; UI must switch to `achieved_stage` / `shortfall` / `direct_outcome` (section 5) | overclaim risk |
 | H-11 | `transfer_*` edits need `before_composition` (`policy_modulation.py`) | The Realtime tool schema must produce `unit_selection` AND `before_composition` for "move 1 marine from scout to attack" or the command is refused (surfaced, not silent) | refusal |
@@ -111,12 +115,12 @@ Existing suites touched by the changed files: 819 passed, 933 subtests (list in 
 |---|---|
 | no silent unit-count downgrade | PASS after D1 (and shortfall visible, D7) |
 | same operation_id upserts, new id parallel, generation +1, cancelled op stops counting | PASS (`same-id-retarget`, `reinforce-count`, `different-id-parallel`, `cancel-one-keep-other`, `restart-after-cancel`) |
-| one unit one operation | **FAIL in Direct plans (H-1)**; telemetry-level overlap correctly blocks both ops (`ownership-conflict-telemetry`) |
+| one unit one operation | PASS in Direct plans after D13 (disjoint tags, shortfall surfaced; `par-*`, `cancel-one-keep-other`, `transfer-between-ops` replays); telemetry-level overlap blocks both ops (`ownership-conflict-telemetry`) |
 | emergency preempts only affected layers | Direct leases PASS (D4, worker lease kept); blackboard layers **FAIL (H-3)** |
 | `published` never presented as `effect_observed` | PASS: published-only -> `ui.label=published`; every `effect_observed` claim required `assigned` and `ordered` (asserted in the unit test) |
 | cancelled/superseded ops release ownership | PASS on Direct (D2/D3, `direct-cancel-releases`, TTL release); blackboard cancel is director-reported (`evidence-cancelled`) |
 | clarification_required never publishes | PASS: 0 writes, 0 orders, 0 tools (`clarify-ambiguous`) |
-| refusal reasons in a displayable field | PASS after D5/D9: `compile_result.refusal_reason`, `clarification_prompt`, `command_queue.direct_outcome.reasons`, `command_queue.failure.reason` |
+| refusal reasons in a displayable field | PASS after D5/D9/D17: `compile_result.refusal_reason`, `clarification_prompt`, `command_queue.direct_outcome.reasons`, `command_queue.failure.reason` |
 | macro persistence | persists across op/micro; replaced by newer macro; expired macro is resurrected (H-9) |
 
 ## 5. Overclaim risks in UI status text
@@ -128,7 +132,7 @@ Existing suites touched by the changed files: 819 passed, 933 subtests (list in 
 | rendering legacy `state` verbatim | `state=consumed_by_manager` with `consumed_by_manager.ok=false` | Use `achieved_stage`. Fixed in classifier (D10); UI adoption open (H-10) |
 | "completed" for `objective_observed_complete` | | Treat as "Objective seen, effect not proven"; never green-with-checkmark of Effect |
 | requested 4, assigned 1 shown as "assigned" | | `shortfall` (D7); blocked when partial not allowed |
-| ignored coordinate | H-8 | Show compile warnings; do not claim "Understood" without them |
+| ignored coordinate | fixed (D17): refused with the key named | none |
 | operation blocked by `producer_busy`/`training` while moving | recorded QA30 12/15/16: attack MOVING+effect but `blocker=training` | `state=blocked` with a reason, not failed |
 | silent regroup refusal | D12 | fixed |
 
@@ -173,8 +177,8 @@ Backend guarantees for the contract: `achieved_stage`, `shortfall`, `command_que
 
 | Claim | Result |
 |---|---|
-| "Python 314 passed/563 subtests" | **No such headline in the README or in any doc at HEAD.** A `314 passed, 1 skipped, 439 subtests passed` appears in git history (commit `0584f46`) as a focused-suite figure, not the full suite. The repository collects **3221 tests** (`pytest --collect-only`). A full run was started from a clean `git archive` copy and stopped at the 480 s cap at ~59 %: 1913 passed, 60 skipped, **9 failures not triaged** (the copy lacks `.local`/untracked inputs, so they may be environmental). **Full suite: not re-run to completion.** |
-| focused suites over every file I changed | 819 passed, 933 subtests: `test_intent_fidelity`, `test_micromachine_command_execution`, `test_micromachine_live_session`, `test_policy_modulation_provider`, `test_policy_modulation`, `test_unified_command_router`, `test_micromachine_chat_modulation`, `test_direct_command_architecture`, `test_live_qa_audit`, `test_live_qa_observation_audit`, `test_live_qa_concurrent_ownership`, `test_contextual_transfer`, `test_web_gui`, `test_llm_interpreter`. Baseline before my edits on the first seven plus audit suites: 278 passed, 383 subtests |
+| "Python 314 passed/563 subtests" | **No such headline in the README or in any doc at HEAD.** A `314 passed, 1 skipped, 439 subtests passed` appears in git history (commit `0584f46`) as a focused-suite figure, not the full suite. The repository collects **3221 tests** (`pytest --collect-only`). A full run was started from a clean `git archive` copy and stopped at the 480 s cap at ~59 %: 1913 passed, 60 skipped, **9 failures not triaged** (the copy lacks `.local`/untracked inputs, so they may be environmental). **Full suite: not re-run to completion.** The 9 failures are ENVIRONMENTAL: all are `subprocess.CalledProcessError` from `git rev-parse HEAD` / `git -C /private/tmp/fid_base ...` (6 `test_battlefield_browser_gate` candidate-fixture tests, 2 `test_distribution_compliance` git-bound payload tests, 1 secret-scan test) because the copy was made with `git archive` and has no `.git`. The same 9 tests run in the real worktree: `42 passed, 1 skipped, 22 subtests` (that selection = the whole `BattlefieldBrowserGateContractTest` class + the 3 distribution tests). No code failure was seen in the 59 % that ran. |
+| focused suites over every file I changed | `tests/test_intent_fidelity.py tests/test_python_sc2_adapter_contract.py tests/test_micromachine_live_session.py tests/test_micromachine_command_execution.py tests/test_policy_modulation_provider.py tests/test_unified_command_router.py tests/test_direct_command_architecture.py`: **439 passed, 1 skipped, 641 subtests**. `tests/test_web_gui.py -x`: **267 passed, 197 subtests**. Earlier run over 14 files (before D13-D17): 819 passed, 933 subtests |
 | "Electron 6 tests" | `cd electron && npm install && npm test`: tests 6, pass 6, fail 0 (status doc `approved-direct-command-plan-status.md:38` says 5; it is stale) |
 | "native contract tests" | `bash scripts/test_native_contracts.sh`: `native MicroMachine contract tests passed`, exit 0 |
 | "recorded QA 30/30 (`final_audit.json`)" | `final_audit.json` says 30/30 passed. Re-running `python -m starcraft_commander.live_qa_audit` over the recording with `.local/qa-scenario-manifest-30.json`: **30/30 passed (exit 0)**. BUT the launcher log of that run (`qa30-live-r32-full-20260918-final.log`) ends `{"status":"incomplete","summary":{"blocked":2,"passed":28}}` with scenarios 19 and 28 NOT "independently passed"; their `scenario_audit.json` is `unverified` (written 03:00 / 03:54). `final_audit.json` (04:09) and `results.json` (30 passed) were produced afterwards by re-auditing the recorded telemetry, i.e. **30/30 is a post-hoc re-audit of recordings, 28/30 live-time**. Scope in the file: `recorded_SC2_runtime_evidence_only`, `natural_language_verified:false`, `voice_verified:false` |
@@ -183,14 +187,14 @@ Backend guarantees for the contract: `achieved_stage`, `shortfall`, `command_que
 
 Everything about actual unit behaviour. Not exercised: natural language or voice into the live game,
 the C++ managers consuming a Direct-produced vector, the shipped cockpit with a real BotAI, parallel
-ops over real unit tags (H-1 is a Python-plan finding that would also show live).
+ops over real unit tags (D13 disjoint tags is a Python-plan fix; it must be re-confirmed against live unit tags).
 
 Live scenarios that must be run later, using the QA30 manifest names, **through `/api/realtime/intent`
 and the real (non-dry-run) Direct runtime**, not blackboard writes:
 `14-marine-scout`, `12-marine-natural-pressure`, `13-marine-main-attack`, `15-parallel-attack-defense`
-(checks H-1: disjoint tags), `16-defense-reinforcement`, `22-reassign-marines`, `23-reassign-tanks`,
-`24-retarget` (D3), `21-cancel-attack` (D2), `20-retreat` (D4, H-2), `25-long-defense`,
+(checks D13: disjoint tags), `16-defense-reinforcement`, `22-reassign-marines`, `23-reassign-tanks`,
+`24-retarget` (D3), `21-cancel-attack` (D2), `20-retreat` (D4, D16), `25-long-defense`,
 `27-prerequisite-wait` (D8), `29-heal-regroup` (D12), `10-tank-ramp-defense`/`11-tank-siege-hold`
 (ability gating), `01-scv-production`..`06-marine-wave` (macro persistence after an emergency, H-3/H-9),
-and `30-game-end`. Add: a Viking/Medivac order (H-6), a >N-count order (shortfall), and a Korean
+and `30-game-end`. Add: a Viking/Medivac order (D15: must be refused when none exist), a >N-count order (shortfall), and a Korean
 "마린만 후퇴" scoped retreat.
