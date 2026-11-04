@@ -4,16 +4,13 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const WebSocket = require("ws");
-const {
-  validateCommand, validateBaseUrl, validateCursor, validateTargetPin,
-  validateVoiceControl, validateVoiceAudio, validateVoiceLevel, validateMicError, validateOverlayState, overlayStateForVoice,
-  validateDockMode, validateDockPin, validateDockFocus, validateDockRect, validateDockAttention, DOCK_MODES,
-  validateGlass, nudgeGlassAlpha, sanitizeStoredGlass, GLASS_LIMITS,
-} = require("./protocol.js");
+const P = require("./protocol.js");
+const Settings = require("./renderer/settings.js");
 const { createVoiceClient } = require("./voice.js");
 const { layoutFor, createDockController, inside } = require("./dock_state.js");
 
-const BASE_URL = validateBaseUrl(process.env.VOI_COMMANDER_URL || "http://127.0.0.1:8765");
+const ENV_URL = P.validateBaseUrl(process.env.VOI_COMMANDER_URL || "http://127.0.0.1:8765");
+let baseUrl = ENV_URL;
 const rendererFile = path.join(__dirname, "renderer", "index.html");
 const overlayFile = path.join(__dirname, "overlay", "index.html");
 const RENDERER_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'";
@@ -21,15 +18,17 @@ const OVERLAY_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; co
 const CHANNELS = Object.freeze({
   status: "commander:status", runtimeStatus: "commander:runtime-status", command: "commander:command", capabilities: "commander:capabilities",
   registry: "commander:registry", targetPin: "commander:target-pin", events: "commander:events",
-  voiceStart: "voice:start", voiceStop: "voice:stop", voiceState: "voice:state", voiceAudio: "voice:audio", voiceMicError: "voice:mic-error", voiceLevel: "voice:level",
-  dockState: "dock:state", dockMode: "dock:mode", dockPin: "dock:pin", dockGlass: "dock:glass", dockFocus: "dock:focus", dockRect: "dock:rect", dockAttention: "dock:attention",
-  push: "commander:push", overlayState: "overlay:state", overlayLevel: "overlay:level",
+  voiceStart: "voice:start", voiceStop: "voice:stop", voiceState: "voice:state", voiceAudio: "voice:audio", voiceMicError: "voice:mic-error", voiceLevel: "voice:level", voicePtt: "voice:ptt",
+  settingsGet: "settings:get", settingsSet: "settings:set", settingsReset: "settings:reset", settingsOpen: "settings:open", serverProbe: "server:probe", shortcutCheck: "shortcut:check", rainbowPreview: "rainbow:preview",
+  dockState: "dock:state", dockFocus: "dock:focus", dockRect: "dock:rect", dockAttention: "dock:attention",
+  push: "commander:push", overlayState: "overlay:state", overlayLevel: "overlay:level", overlaySettings: "overlay:settings",
 });
 const POLL_MS = 50;
 const ATTENTION_PULSE_MS = 400; // one attention pulse; the dock controller then holds the bar open for its 2.5 s idle grace
-const SHORTCUT = "CommandOrControl+Shift+Space";
+const PREVIEW_MS = 2000;
 const SHORTCUT_OPACITY_UP = "CommandOrControl+Alt+Up";
 const SHORTCUT_OPACITY_DOWN = "CommandOrControl+Alt+Down";
+const SHORTCUT_SETTINGS = "CommandOrControl+,";
 const FORCE_VOICE_STATES = new Set(["listening", "thinking", "acting"]);
 
 let mainWindow = null;
@@ -37,8 +36,9 @@ let overlayWindow = null;
 let overlayHideTimer = null;
 let overlayState = "off";
 let voice = null;
-let prefs = { mode: "bottom", pinned: false, glass: sanitizeStoredGlass(null) };
-let prefsFile = "";
+let settings = Settings.defaults({ serverUrl: ENV_URL });
+let settingsFile = "";
+let saveTimer = null;
 let controller = createDockController();
 let dockDisplayId = null;
 let panelRect = null; // window-relative rect of the glass panel as laid out by the renderer
@@ -46,14 +46,20 @@ let revealed = false;
 let ignoring = true; // current setIgnoreMouseEvents state (true = click-through)
 let windowFocusable = false;
 let shortcutOpen = false;
+let settingsOpen = false;
 let attentionUntil = 0;
+let previewUntil = 0;
 let pollTimer = null;
 let fakeCursor = null; // test hook only; never set in production
 let lastDockPush = "";
+let lastReason = "";
 let currentLayout = null;
+let lastSession = { model: "", tierHint: "" };
+let shortcutStatus = { toggle: true, settings: true };
+let pttToggled = false;
 
 async function requestJson(pathname, options = {}) {
-  const response = await fetch(new URL(pathname, BASE_URL), {
+  const response = await fetch(new URL(pathname, baseUrl), {
     ...options, redirect: "error", signal: AbortSignal.timeout(options.timeoutMs || 15000),
     headers: { accept: "application/json", "content-type": "application/json", ...(process.env.VOI_COMMANDER_TOKEN ? { Authorization: `Bearer ${process.env.VOI_COMMANDER_TOKEN}` } : {}) },
   });
@@ -71,29 +77,78 @@ function pushToRenderer(payload) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(CHANNELS.push, payload);
 }
 
-// ---- persisted prefs -----------------------------------------------------------------------
-function loadPrefs() {
-  prefsFile = path.join(app.getPath("userData"), "dock-prefs.json");
-  try {
-    const raw = JSON.parse(fs.readFileSync(prefsFile, "utf8"));
-    if (DOCK_MODES.includes(raw.mode)) prefs.mode = raw.mode;
-    if (typeof raw.pinned === "boolean") prefs.pinned = raw.pinned;
-    prefs.glass = sanitizeStoredGlass(raw.glass);
-  } catch { /* first run or unreadable: defaults */ }
+// ---- persisted settings --------------------------------------------------------------------
+function loadSettings() {
+  settingsFile = path.join(app.getPath("userData"), "settings.json");
+  let raw = null;
+  try { raw = JSON.parse(fs.readFileSync(settingsFile, "utf8")); } catch { /* first run or unreadable: defaults */ }
+  settings = Settings.sanitizeStored(raw, { serverUrl: ENV_URL });
+  baseUrl = settings.server.url === Settings.defaults({ serverUrl: ENV_URL }).server.url && !raw ? ENV_URL : settings.server.url;
 }
-function savePrefs() {
-  try { fs.mkdirSync(path.dirname(prefsFile), { recursive: true }); fs.writeFileSync(prefsFile, JSON.stringify(prefs)); } catch (error) { if (process.env.VOI_DEBUG) console.log(`[prefs] ${error.message}`); }
+function saveSettingsSoon() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveSettingsNow, 200);
+}
+function saveSettingsNow() {
+  clearTimeout(saveTimer);
+  try { fs.mkdirSync(path.dirname(settingsFile), { recursive: true }); fs.writeFileSync(settingsFile, JSON.stringify(settings)); } catch (error) { if (process.env.VOI_DEBUG) console.log(`[settings] ${error.message}`); }
+}
+function displayChoices() {
+  return screen.getAllDisplays().map((display, index) => ({ id: display.id, label: `${index + 1}`, primary: display.id === screen.getPrimaryDisplay().id }));
+}
+function settingsSnapshot() {
+  return { settings, status: { shortcut: shortcutStatus, displays: displayChoices(), model: lastSession.model, tierHint: lastSession.tierHint, platform: process.platform, vibrancySupported: process.platform === "darwin", baseUrl } };
+}
+function broadcastSettings() {
+  pushToRenderer({ type: "settings", ...settingsSnapshot() });
+  sendOverlaySettings();
+}
+function dockOptions() {
+  return {
+    autoHide: settings.layout.autoHide, hideDelayMs: settings.layout.hideDelay, zonePx: settings.layout.zone,
+    widthScale: settings.layout.width, heightScale: settings.layout.height, margin: settings.layout.margin,
+    followCursor: settings.layout.display === "cursor",
+  };
+}
+
+// Applies a validated patch: persist, re-layout, re-register shortcuts, reconfigure voice, broadcast to bar + overlay.
+function applySettings(patch) {
+  const before = settings;
+  settings = Settings.merge(settings, patch);
+  const changed = group => Boolean(patch[group]);
+  if (changed("glass") && "vibrancy" in patch.glass) applyVibrancy();
+  if (changed("layout")) {
+    if ("display" in patch.layout) { dockDisplayId = resolveDockDisplay(); }
+    placeDock(dockDisplayId);
+  }
+  if (changed("server") && settings.server.url !== before.server.url) { baseUrl = settings.server.url; if (voice && voice.snapshot().active) voice.stop(); }
+  if (changed("voice")) {
+    if ("shortcut" in patch.voice) registerToggleShortcut();
+    if (voice) voice.reconfigure();
+    if ("mode" in patch.voice) pttToggled = false;
+  }
+  if (changed("rainbow") || changed("glass")) updateOverlay();
+  saveSettingsSoon();
+  broadcastSettings();
+  return settingsSnapshot();
 }
 
 // ---- displays / geometry -------------------------------------------------------------------
-const displayList = () => screen.getAllDisplays().map(display => ({ id: display.id, bounds: display.bounds }));
+const displayList = () => screen.getAllDisplays().map(display => ({ id: display.id, bounds: display.bounds, workArea: display.workArea }));
 const displayById = id => screen.getAllDisplays().find(display => display.id === id) || screen.getPrimaryDisplay();
 function currentCursor() { return fakeCursor || screen.getCursorScreenPoint(); }
-
+function resolveDockDisplay() {
+  const match = /^id:(\d+)$/.exec(settings.layout.display);
+  if (match && screen.getAllDisplays().some(display => display.id === Number(match[1]))) return Number(match[1]);
+  return screen.getDisplayNearestPoint(currentCursor()).id;
+}
+function layoutOptions(display) {
+  return { workArea: display.workArea, widthScale: settings.layout.width, heightScale: settings.layout.height, edgePx: settings.layout.zone, margin: settings.layout.margin };
+}
 function placeDock(displayId) {
   dockDisplayId = displayId;
   const display = displayById(displayId);
-  currentLayout = layoutFor(prefs.mode, display.bounds, { workArea: display.workArea });
+  currentLayout = layoutFor(settings.layout.dock, display.bounds, layoutOptions(display));
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setBounds(currentLayout.window, false);
   followOverlay();
   pushDock(true);
@@ -120,6 +175,7 @@ function createOverlayWindow() {
   win.setFocusable(false);
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.webContents.on("will-navigate", event => event.preventDefault());
+  win.webContents.on("did-finish-load", sendOverlaySettings);
   win.loadFile(overlayFile);
   return win;
 }
@@ -129,8 +185,22 @@ function followOverlay() {
   const bounds = overlayWindow.getBounds();
   if (bounds.x !== target.x || bounds.y !== target.y || bounds.width !== target.width || bounds.height !== target.height) overlayWindow.setBounds(target);
 }
+function sendOverlaySettings() {
+  if (!overlayWindow || overlayWindow.isDestroyed() || overlayWindow.webContents.isLoading()) return;
+  overlayWindow.webContents.send(CHANNELS.overlaySettings, { ...Settings.overlayView(settings), reduceMotion: settings.glass.reduceMotion });
+}
+// The overlay state is derived (voice state, rainbow preferences, preview) so every input funnels through one place.
+function desiredOverlayState() {
+  const now = Date.now();
+  if (now < previewUntil) return "listening";
+  if (!settings.rainbow.enabled) return "off";
+  const state = voice ? P.overlayStateForVoice(voice.snapshot()) : "off";
+  if (state === "thinking" && !settings.rainbow.thinking) return "off";
+  return state;
+}
+function updateOverlay() { setOverlay(desiredOverlayState()); }
 function setOverlay(next) {
-  const { state } = validateOverlayState({ state: next });
+  const { state } = P.validateOverlayState({ state: next });
   if (state === overlayState) return;
   overlayState = state;
   if (!overlayWindow || overlayWindow.isDestroyed()) return;
@@ -144,33 +214,43 @@ function setOverlay(next) {
   }
   overlayWindow.webContents.send(CHANNELS.overlayState, { state });
 }
+function previewRainbow() {
+  previewUntil = Date.now() + PREVIEW_MS;
+  updateOverlay();
+  setTimeout(updateOverlay, PREVIEW_MS + 60);
+}
 
 // ---- voice ---------------------------------------------------------------------------------
 function createVoice() {
   return createVoiceClient({
-    requestJson, WebSocketImpl: WebSocket,
+    requestJson, WebSocketImpl: WebSocket, getPrefs: () => Settings.voiceView(settings),
     onState: snapshot => {
       if (snapshot.state === "error") attentionUntil = Date.now() + ATTENTION_PULSE_MS;
-      setOverlay(overlayStateForVoice(snapshot));
+      updateOverlay();
       pushToRenderer({ type: "voice-state", ...snapshot });
     },
     onTranscript: transcript => pushToRenderer({ type: "transcript", ...transcript }),
     onIntent: intent => pushToRenderer({ type: "intent", ...intent }),
+    onSession: info => { lastSession = info; pushToRenderer({ type: "session", ...info }); },
     onLog: message => { if (process.env.VOI_DEBUG) console.log(`[voice] ${message}`); },
   });
 }
 
 // ---- dock: reveal / hide / interactivity / focus ---------------------------------------------
 function dockSnapshot() {
-  return { revealed, mode: prefs.mode, pinned: prefs.pinned, shortcutOpen, reason: lastReason, glass: { ...prefs.glass }, vibrancySupported: process.platform === "darwin" };
+  return { revealed, dock: settings.layout.dock, shortcutOpen, settingsOpen, reason: lastReason };
 }
-let lastReason = "";
 function pushDock(force) {
   const snapshot = dockSnapshot();
   const key = JSON.stringify(snapshot);
   if (!force && key === lastDockPush) return;
   lastDockPush = key;
   pushToRenderer({ type: "dock-state", ...snapshot });
+}
+// Real behind-window blur is an OS feature (CSS backdrop-filter only blurs content inside the window), so it is an opt-in toggle.
+function applyVibrancy() {
+  if (process.platform !== "darwin" || !mainWindow || mainWindow.isDestroyed()) return;
+  try { mainWindow.setVibrancy(settings.glass.vibrancy ? "under-window" : null); } catch (error) { if (process.env.VOI_DEBUG) console.log(`[vibrancy] ${error.message}`); }
 }
 function setIgnore(next) {
   if (!mainWindow || mainWindow.isDestroyed() || next === ignoring) return;
@@ -186,7 +266,6 @@ function releaseFocus() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (mainWindow.isFocused()) mainWindow.blur();
   setFocusable(false);
-  if (process.platform === "darwin" && !app.isHidden()) { /* focusable:false hands key status back to the previously active app */ }
 }
 function focusDock() {
   if (!mainWindow || mainWindow.isDestroyed() || !revealed) return false;
@@ -197,21 +276,21 @@ function focusDock() {
 }
 function forceOpen(now) {
   const voiceState = voice ? voice.snapshot() : null;
-  return Boolean((voiceState && voiceState.active && FORCE_VOICE_STATES.has(voiceState.state)) || now < attentionUntil || shortcutOpen);
+  return Boolean((voiceState && voiceState.active && FORCE_VOICE_STATES.has(voiceState.state)) || now < attentionUntil || shortcutOpen || settingsOpen);
 }
 function tick() {
   if (!mainWindow || mainWindow.isDestroyed()) return null;
   const now = Date.now();
   const cursor = currentCursor();
   const decision = controller.update({
-    cursor, displays: displayList(), dockDisplayId, mode: prefs.mode, panelRect: revealed ? panelScreenRect() : null,
-    forceOpen: forceOpen(now), pinned: prefs.pinned, now,
+    cursor, displays: displayList(), dockDisplayId, mode: settings.layout.dock, panelRect: revealed ? panelScreenRect() : null,
+    forceOpen: forceOpen(now), pinned: settings.layout.pinned, now, settings: dockOptions(),
   });
   lastReason = decision.reason;
   if (decision.moveToDisplayId !== null && !revealed) placeDock(decision.moveToDisplayId);
   if (decision.changed) {
     revealed = decision.revealed;
-    if (revealed) { if (!mainWindow.isVisible()) mainWindow.showInactive(); } else { releaseFocus(); shortcutOpen = false; }
+    if (revealed) { if (!mainWindow.isVisible()) mainWindow.showInactive(); registerRevealedShortcuts(); } else { releaseFocus(); shortcutOpen = false; setSettingsOpen(false); unregisterRevealedShortcuts(); }
     pushDock(true);
   }
   // Interactive only where the glass panel actually is; everything else stays click-through to the game.
@@ -223,26 +302,19 @@ function tick() {
 function startPolling() { if (!pollTimer) pollTimer = setInterval(tick, POLL_MS); }
 function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
 
-// Real behind-window blur is an OS feature (CSS backdrop-filter only blurs content inside the window), so it is an opt-in toggle.
-function applyVibrancy() {
-  if (process.platform !== "darwin" || !mainWindow || mainWindow.isDestroyed()) return;
-  try { mainWindow.setVibrancy(prefs.glass.vibrancy ? "under-window" : null); } catch (error) { if (process.env.VOI_DEBUG) console.log(`[vibrancy] ${error.message}`); }
-}
-function setGlass(patch) {
-  prefs.glass = { ...prefs.glass, ...patch };
-  savePrefs();
-  if ("vibrancy" in patch) applyVibrancy();
+function setSettingsOpen(open) {
+  if (settingsOpen === open) return;
+  settingsOpen = open;
+  if (open) { registerGlobal("Escape", () => setSettingsOpen(false)); tick(); } else unregisterGlobal("Escape");
   pushDock(true);
-  return dockSnapshot();
-}
-function nudgeGlass(direction) { return setGlass({ alpha: nudgeGlassAlpha(prefs.glass.alpha, direction) }); }
-function setMode(mode) {
-  if (prefs.mode === mode) return;
-  prefs.mode = mode; savePrefs();
-  panelRect = null; // renderer re-reports after its relayout
-  placeDock(dockDisplayId);
 }
 function toggleShortcut() {
+  if (settings.voice.mode === "ptt" && voice.snapshot().active) { // push-to-talk via shortcut: press to start talking, press again to send
+    pttToggled = !pttToggled;
+    voice.pttSet(pttToggled);
+    tick();
+    return;
+  }
   if (!shortcutOpen) {
     shortcutOpen = true;
     tick();
@@ -255,6 +327,33 @@ function toggleShortcut() {
   }
   pushDock(true);
 }
+
+// ---- global shortcuts (Electron cannot see key-up, so PTT-by-shortcut is press/press) ----------
+const registered = new Map();
+function registerGlobal(accelerator, callback) {
+  unregisterGlobal(accelerator);
+  let ok = false;
+  try { ok = globalShortcut.register(accelerator, callback); } catch { ok = false; }
+  if (ok) registered.set(accelerator, callback);
+  else if (process.env.VOI_DEBUG) console.log(`[shortcut] could not register ${accelerator}`);
+  return ok;
+}
+function unregisterGlobal(accelerator) {
+  if (!registered.has(accelerator)) return;
+  try { globalShortcut.unregister(accelerator); } catch { /* ignore */ }
+  registered.delete(accelerator);
+}
+let toggleAccelerator = "";
+function registerToggleShortcut() {
+  if (toggleAccelerator) unregisterGlobal(toggleAccelerator);
+  toggleAccelerator = settings.voice.shortcut;
+  shortcutStatus = { ...shortcutStatus, toggle: registerGlobal(toggleAccelerator, toggleShortcut) };
+  return shortcutStatus.toggle;
+}
+// Cmd+, is only claimed while the bar is revealed so it never shadows other apps (or the game) when collapsed.
+function registerRevealedShortcuts() { shortcutStatus = { ...shortcutStatus, settings: registerGlobal(SHORTCUT_SETTINGS, () => setSettingsOpen(!settingsOpen)) }; }
+function unregisterRevealedShortcuts() { unregisterGlobal(SHORTCUT_SETTINGS); }
+function nudgeGlass(direction) { return applySettings({ glass: { alpha: Settings.nudgeAlpha(settings.glass.alpha, direction) } }); }
 
 // ---- IPC -----------------------------------------------------------------------------------
 function registerIpc() {
@@ -270,25 +369,48 @@ function registerIpc() {
   handle(CHANNELS.runtimeStatus, () => requestJson("/api/runtime/status"));
   handle(CHANNELS.capabilities, () => requestJson("/api/direct/capabilities"));
   handle(CHANNELS.registry, () => requestJson("/api/direct/registry"));
-  handle(CHANNELS.targetPin, input => requestJson("/api/direct/registry/target-pin", { method: "POST", body: JSON.stringify(validateTargetPin(input)) }));
-  handle(CHANNELS.events, input => requestJson(`/api/history?after=${validateCursor(input && input.after)}`));
-  handle(CHANNELS.command, input => requestJson("/api/micromachine/modulate", { method: "POST", body: JSON.stringify({ ...validateCommand(input), async_publish: true }) }));
-  handle(CHANNELS.voiceStart, async input => { validateVoiceControl(input); return voice.start(); });
-  handle(CHANNELS.voiceStop, input => { validateVoiceControl(input); shortcutOpen = false; return voice.stop(); });
+  handle(CHANNELS.targetPin, input => requestJson("/api/direct/registry/target-pin", { method: "POST", body: JSON.stringify(P.validateTargetPin(input)) }));
+  handle(CHANNELS.events, input => requestJson(`/api/history?after=${P.validateCursor(input && input.after)}`));
+  handle(CHANNELS.command, input => requestJson("/api/micromachine/modulate", { method: "POST", body: JSON.stringify({ ...P.validateCommand(input), async_publish: true }) }));
+  handle(CHANNELS.voiceStart, async input => { P.validateVoiceControl(input); return voice.start(); });
+  handle(CHANNELS.voiceStop, input => { P.validateVoiceControl(input); shortcutOpen = false; return voice.stop(); });
   handle(CHANNELS.voiceState, () => voice.snapshot());
-  handle(CHANNELS.dockState, () => dockSnapshot());
-  handle(CHANNELS.dockMode, input => { setMode(validateDockMode(input).mode); return dockSnapshot(); });
-  handle(CHANNELS.dockGlass, input => setGlass(validateGlass(input)));
-  handle(CHANNELS.dockPin, input => { prefs.pinned = validateDockPin(input).pinned; savePrefs(); tick(); pushDock(true); return dockSnapshot(); });
-  handle(CHANNELS.dockFocus, input => { const { focus } = validateDockFocus(input); if (focus) return { focused: focusDock() }; releaseFocus(); return { focused: false }; });
-  listen(CHANNELS.dockRect, input => { panelRect = validateDockRect(input); });
-  listen(CHANNELS.dockAttention, input => { validateDockAttention(input); attentionUntil = Date.now() + ATTENTION_PULSE_MS; });
-  listen(CHANNELS.voiceAudio, input => { voice.pushAudio(validateVoiceAudio(input)); });
-  listen(CHANNELS.voiceLevel, input => {
-    const level = validateVoiceLevel(input);
-    if (overlayState === "listening" && overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.webContents.send(CHANNELS.overlayLevel, level);
+  handle(CHANNELS.settingsGet, () => settingsSnapshot());
+  handle(CHANNELS.settingsSet, input => applySettings(P.validateSettingsPatch(input)));
+  handle(CHANNELS.settingsReset, input => {
+    const { group } = P.validateSettingsReset(input);
+    const fresh = Settings.defaults({ serverUrl: ENV_URL });
+    return applySettings(group ? { [group]: fresh[group] } : fresh);
   });
-  listen(CHANNELS.voiceMicError, input => { voice.micFailed(validateMicError(input).reason); });
+  handle(CHANNELS.settingsOpen, input => { setSettingsOpen(P.validateSettingsOpen(input).open); return dockSnapshot(); });
+  handle(CHANNELS.serverProbe, async input => {
+    const { url } = P.validateServerProbe(input);
+    const started = Date.now();
+    try {
+      const response = await fetch(new URL("/api/runtime/status", url), { redirect: "error", signal: AbortSignal.timeout(2500), headers: { accept: "application/json", ...(process.env.VOI_COMMANDER_TOKEN ? { Authorization: `Bearer ${process.env.VOI_COMMANDER_TOKEN}` } : {}) } });
+      return { ok: response.ok, status: response.status, ms: Date.now() - started };
+    } catch (error) { return { ok: false, status: 0, ms: Date.now() - started, error: String((error && error.name) || "error") }; }
+  });
+  handle(CHANNELS.shortcutCheck, input => { // can this accelerator be claimed? (does not keep it registered)
+    const { accelerator } = P.validateShortcutPreview(input);
+    if (accelerator === toggleAccelerator) return { ok: true, own: true };
+    if (registered.has(accelerator)) return { ok: false, reason: "used" };
+    let ok = false;
+    try { ok = globalShortcut.register(accelerator, () => {}); if (ok) globalShortcut.unregister(accelerator); } catch { ok = false; }
+    return { ok, reason: ok ? "" : "used" };
+  });
+  handle(CHANNELS.rainbowPreview, input => { P.validateRainbowPreview(input); previewRainbow(); return { ms: PREVIEW_MS }; });
+  handle(CHANNELS.dockState, () => dockSnapshot());
+  handle(CHANNELS.dockFocus, input => { const { focus } = P.validateDockFocus(input); if (focus) return { focused: focusDock() }; releaseFocus(); return { focused: false }; });
+  listen(CHANNELS.dockRect, input => { panelRect = P.validateDockRect(input); });
+  listen(CHANNELS.dockAttention, input => { P.validateDockAttention(input); attentionUntil = Date.now() + ATTENTION_PULSE_MS; });
+  listen(CHANNELS.voiceAudio, input => { voice.pushAudio(P.validateVoiceAudio(input)); });
+  listen(CHANNELS.voiceLevel, input => {
+    const level = P.validateVoiceLevel(input);
+    if (overlayState === "listening" && settings.rainbow.reactive && overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.webContents.send(CHANNELS.overlayLevel, level);
+  });
+  listen(CHANNELS.voicePtt, input => { voice.pttSet(P.validatePushToTalk(input).down); });
+  listen(CHANNELS.voiceMicError, input => { voice.micFailed(P.validateMicError(input).reason); });
 }
 
 function installPermissions(ses) {
@@ -307,7 +429,7 @@ function installPermissions(ses) {
 
 function createDockWindow() {
   const display = displayById(dockDisplayId);
-  currentLayout = layoutFor(prefs.mode, display.bounds, { workArea: display.workArea });
+  currentLayout = layoutFor(settings.layout.dock, display.bounds, layoutOptions(display));
   mainWindow = new BrowserWindow({
     ...currentLayout.window, show: false, frame: false, transparent: true, hasShadow: false, backgroundColor: "#00000000",
     resizable: false, movable: false, minimizable: false, maximizable: false, fullscreenable: false, closable: false,
@@ -321,46 +443,46 @@ function createDockWindow() {
   mainWindow.setIgnoreMouseEvents(true, { forward: true });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", event => event.preventDefault());
-  mainWindow.webContents.once("did-finish-load", () => { mainWindow.showInactive(); pushDock(true); });
+  mainWindow.webContents.once("did-finish-load", () => { mainWindow.showInactive(); pushDock(true); broadcastSettings(); });
   mainWindow.on("closed", () => { mainWindow = null; });
   mainWindow.loadFile(rendererFile);
   return mainWindow;
 }
 
 function onDisplaysChanged() {
-  const displays = screen.getAllDisplays();
-  if (!displays.some(display => display.id === dockDisplayId)) dockDisplayId = screen.getPrimaryDisplay().id;
+  dockDisplayId = resolveDockDisplay();
   placeDock(dockDisplayId);
+  broadcastSettings();
 }
 
 app.whenReady().then(() => {
   installPermissions(electronSession.defaultSession);
-  loadPrefs();
-  dockDisplayId = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).id;
+  loadSettings();
+  dockDisplayId = resolveDockDisplay();
   voice = createVoice();
   registerIpc();
   createDockWindow();
   overlayWindow = createOverlayWindow();
   for (const eventName of ["display-added", "display-removed", "display-metrics-changed"]) screen.on(eventName, onDisplaysChanged);
-  for (const [accelerator, callback] of [[SHORTCUT, toggleShortcut], [SHORTCUT_OPACITY_UP, () => nudgeGlass(1)], [SHORTCUT_OPACITY_DOWN, () => nudgeGlass(-1)]]) {
-    if (!globalShortcut.register(accelerator, callback) && process.env.VOI_DEBUG) console.log(`[shortcut] could not register ${accelerator}`);
-  }
+  registerToggleShortcut();
+  registerGlobal(SHORTCUT_OPACITY_UP, () => nudgeGlass(1));
+  registerGlobal(SHORTCUT_OPACITY_DOWN, () => nudgeGlass(-1));
   startPolling();
   app.on("activate", () => { startPolling(); });
 });
 app.on("window-all-closed", () => app.quit());
-app.on("will-quit", () => { globalShortcut.unregisterAll(); stopPolling(); });
+app.on("will-quit", () => { saveSettingsNow(); globalShortcut.unregisterAll(); stopPolling(); });
 app.on("before-quit", () => { if (voice) voice.stop(); });
 
 module.exports = {
-  CHANNELS, SHORTCUT, SHORTCUT_OPACITY_UP, SHORTCUT_OPACITY_DOWN, validateCommand, requestJson,
+  CHANNELS, SHORTCUT_OPACITY_UP, SHORTCUT_OPACITY_DOWN, SHORTCUT_SETTINGS, requestJson,
   // Test/smoke hooks (read-only views of live state, plus a fake cursor).
   _internals: {
     getMain: () => mainWindow, getOverlay: () => overlayWindow, getVoice: () => voice, getOverlayState: () => overlayState,
     setFakeCursor: point => { fakeCursor = point; },
-    tick,
-    toggleShortcut, nudgeGlass, setGlass,
-    dockInfo: () => ({ revealed, ignoring, focusable: windowFocusable, focused: Boolean(mainWindow && mainWindow.isFocused()), mode: prefs.mode, pinned: prefs.pinned, glass: prefs.glass, reason: lastReason, bounds: mainWindow && mainWindow.getBounds(), panelRect, layout: currentLayout, shortcutOpen }),
+    tick, toggleShortcut, nudgeGlass, applySettings, setSettingsOpen, previewRainbow,
+    getSettings: () => settings,
+    dockInfo: () => ({ revealed, ignoring, focusable: windowFocusable, focused: Boolean(mainWindow && mainWindow.isFocused()), dock: settings.layout.dock, glass: settings.glass, reason: lastReason, bounds: mainWindow && mainWindow.getBounds(), panelRect, layout: currentLayout, shortcutOpen, settingsOpen, baseUrl }),
     setOverlay,
   },
 };

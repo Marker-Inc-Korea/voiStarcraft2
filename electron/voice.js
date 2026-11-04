@@ -13,12 +13,17 @@ const PING_MS = 20000;
 const BACKOFF_MS = [500, 1000, 2000, 4000, 8000];
 const MAX_QUEUED_SEND_BYTES = 4 * 1024 * 1024;
 
-function defaultSessionUpdate(env) {
-  const silence = Number(env.VOI_VAD_SILENCE_MS);
+// `prefs` = settings voiceView ({silenceMs, threshold, ptt, language}); env stays as the developer override.
+function defaultSessionUpdate(env, prefs = {}) {
+  const envSilence = Number(env.VOI_VAD_SILENCE_MS);
+  const silence = Number.isFinite(envSilence) && envSilence >= 150 && envSilence <= 2000 ? envSilence : (prefs.silenceMs >= 150 && prefs.silenceMs <= 2000 ? prefs.silenceMs : 450);
+  const threshold = typeof prefs.threshold === "number" && prefs.threshold >= 0.1 && prefs.threshold <= 0.9 ? prefs.threshold : 0.5;
   const transcription = env.VOI_TRANSCRIBE_MODEL === "off" ? null : { model: env.VOI_TRANSCRIBE_MODEL || "gpt-4o-mini-transcribe" };
+  if (transcription && (prefs.language === "ko" || prefs.language === "en")) transcription.language = prefs.language;
   const input = {
     format: { type: "audio/pcm", rate: 24000 },
-    turn_detection: { type: "server_vad", threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: Number.isFinite(silence) && silence >= 150 && silence <= 2000 ? silence : 450, create_response: true, interrupt_response: false },
+    // Push-to-talk: no server VAD, the client commits/creates the response itself on key release.
+    turn_detection: prefs.ptt ? null : { type: "server_vad", threshold, prefix_padding_ms: 300, silence_duration_ms: silence, create_response: true, interrupt_response: false },
   };
   if (transcription) input.transcription = transcription;
   return { type: "session.update", session: { type: "realtime", audio: { input } } };
@@ -27,7 +32,7 @@ function defaultSessionUpdate(env) {
 function createVoiceClient(options) {
   const {
     requestJson, WebSocketImpl, onState = () => {}, onTranscript = () => {}, onIntent = () => {}, onLog = () => {},
-    now = Date.now, env = process.env, setTimer = setTimeout, clearTimer = clearTimeout, setIntervalFn = setInterval, clearIntervalFn = clearInterval,
+    now = Date.now, env = process.env, getPrefs = () => ({}), onSession = () => {}, setTimer = setTimeout, clearTimer = clearTimeout, setIntervalFn = setInterval, clearIntervalFn = clearInterval,
   } = options;
   if (typeof requestJson !== "function" || typeof WebSocketImpl !== "function") throw new TypeError("voice client needs requestJson and WebSocketImpl");
   const machine = createVoiceMachine({ now, onChange: snapshot => onState(snapshot) });
@@ -42,6 +47,8 @@ function createVoiceClient(options) {
   let eventCounter = 0;
   const benignEventIds = new Set();
   let sessionReadyTimer = null;
+  let pttHeld = false;
+  let pttItem = 0;
 
   function send(payload) {
     if (!ws || ws.readyState !== 1) return false;
@@ -69,6 +76,7 @@ function createVoiceClient(options) {
     if (!force && secretUsable()) return session;
     const payload = await requestJson("/api/realtime/session", { method: "POST", body: "{}" });
     session = { ...validateRealtimeSession(payload), fetchedAt: now() };
+    onSession({ model: session.model, tierHint: session.tierHint });
     return session;
   }
   function scheduleReconnect(reason) {
@@ -98,7 +106,7 @@ function createVoiceClient(options) {
     const stale = () => mine !== generation || ws !== socket;
     socket.on("open", () => {
       if (stale()) return;
-      const id = send(defaultSessionUpdate(env));
+      const id = send(defaultSessionUpdate(env, getPrefs()));
       pingTimer = setIntervalFn(() => { try { if (socket.readyState === 1) socket.ping(); } catch { /* ignore */ } }, PING_MS);
       sessionReadyTimer = setTimer(() => { if (!stale()) { machine.fail("Realtime 세션 초기화 시간 초과"); scheduleReconnect("session.update timeout"); } }, 8000);
       if (!id) { machine.fail("Realtime 소켓 전송 실패"); }
@@ -141,8 +149,7 @@ function createVoiceClient(options) {
     if (event.type === "error" && event.event_id && benignEventIds.delete(event.event_id)) return;
     if (event.type === "error" && event.error && event.error.event_id && benignEventIds.delete(event.error.event_id)) return;
     if (event.type === "response.done") pruneConversation(event);
-    const effects = machine.handle(event);
-    for (const effect of effects) runEffect(effect, mine);
+    runEffects(machine.handle(event), mine);
   }
   // The model must decide every utterance from scratch ("exactly what the user said"), so processed
   // conversation items are removed instead of letting earlier commands bias later ones.
@@ -156,6 +163,7 @@ function createVoiceClient(options) {
     }
   }
 
+  function runEffects(effects, mine) { for (const effect of effects) runEffect(effect, mine); }
   function runEffect(effect, mine) {
     switch (effect.type) {
       case "speech_started": onTranscript({ turn: effect.turn.id, text: "", partial: true, final: false, started: true }); break;
@@ -209,7 +217,10 @@ function createVoiceClient(options) {
       await connect();
       return machine.snapshot();
     },
+    // Re-send the session config after a settings change (VAD/sensitivity/language/PTT take effect live).
+    reconfigure() { if (ws && ws.readyState === 1 && machine.snapshot().state !== "connecting") send(defaultSessionUpdate(env, getPrefs())); },
     stop() {
+      pttHeld = false;
       if (reconnectTimer) { clearTimer(reconnectTimer); reconnectTimer = null; }
       if (actingTimer) { clearTimer(actingTimer); actingTimer = null; }
       teardownSocket();
@@ -218,9 +229,28 @@ function createVoiceClient(options) {
     },
     // Called with a validated pcm16 Buffer; silently dropped unless the socket is ready.
     pushAudio(buffer) {
+      if (getPrefs().ptt && !pttHeld) return false; // push-to-talk: only stream while the key is held
       const snap = machine.snapshot();
       if (!snap.active || !ws || ws.readyState !== 1 || snap.state === "connecting" || snap.state === "error") return false;
       return Boolean(send({ type: "input_audio_buffer.append", audio: buffer.toString("base64") }));
+    },
+    // Push-to-talk: no server VAD, so the client frames the turn. Down = start (clear stale audio), up = commit + respond.
+    pttSet(down) {
+      const snap = machine.snapshot();
+      if (!getPrefs().ptt || !snap.active || !ws || ws.readyState !== 1 || snap.state === "connecting" || snap.state === "error") return false;
+      if (down === pttHeld) return true;
+      pttHeld = down;
+      pttItem += 1;
+      const item_id = `ptt_${pttItem}`;
+      if (down) {
+        send({ type: "input_audio_buffer.clear" });
+        runEffects(machine.handle({ type: "input_audio_buffer.speech_started", item_id }), generation);
+      } else {
+        runEffects(machine.handle({ type: "input_audio_buffer.speech_stopped", item_id: `ptt_${pttItem - 1}` }), generation);
+        send({ type: "input_audio_buffer.commit" });
+        send({ type: "response.create" });
+      }
+      return true;
     },
     micFailed(reason) { machine.fail(`마이크: ${reason}`); },
     snapshot: () => machine.snapshot(),

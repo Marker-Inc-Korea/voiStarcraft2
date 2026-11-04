@@ -3,9 +3,12 @@
 // The renderer holds no network access; chunks go to the main process which owns the Realtime socket.
 (function () {
   let stream = null, context = null, node = null, source = null, sink = null;
-  async function start(sendChunk, onLevel) {
+  async function start(sendChunk, onLevel, deviceId) {
     if (context) return;
-    stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    const audio = { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+    if (deviceId) audio.deviceId = { exact: deviceId };
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio }); }
+    catch (error) { if (deviceId && error && error.name === "OverconstrainedError") stream = await navigator.mediaDevices.getUserMedia({ audio: { ...audio, deviceId: undefined } }); else throw error; }
     context = new AudioContext({ sampleRate: 24000, latencyHint: "interactive" });
     await context.audioWorklet.addModule("./mic-worklet.js");
     source = context.createMediaStreamSource(stream);

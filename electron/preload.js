@@ -15,7 +15,17 @@ const voice = Object.freeze({
   // Renderer-local mic pipeline hands raw pcm16 (24 kHz mono) to Main; Main owns the socket + secret.
   sendAudio: chunk => ipcRenderer.send("voice:audio", chunk),
   sendLevel: level => ipcRenderer.send("voice:level", level),
+  ptt: down => ipcRenderer.send("voice:ptt", { down: Boolean(down) }),
   micError: reason => ipcRenderer.send("voice:mic-error", { reason: String(reason || "mic error").slice(0, 160) }),
+});
+const settings = Object.freeze({
+  get: () => ipcRenderer.invoke("settings:get"),
+  set: patch => ipcRenderer.invoke("settings:set", patch),
+  reset: group => ipcRenderer.invoke("settings:reset", group ? { group } : {}),
+  open: open => ipcRenderer.invoke("settings:open", { open: Boolean(open) }),
+  probeServer: url => ipcRenderer.invoke("server:probe", { url }),
+  checkShortcut: accelerator => ipcRenderer.invoke("shortcut:check", { accelerator }),
+  previewRainbow: () => ipcRenderer.invoke("rainbow:preview", {}),
 });
 contextBridge.exposeInMainWorld("commander", Object.freeze({
   status: () => ipcRenderer.invoke("commander:status"),
@@ -27,14 +37,12 @@ contextBridge.exposeInMainWorld("commander", Object.freeze({
   sendCommand: (text, responseLanguage = "ko") => ipcRenderer.invoke("commander:command", { text, response_language: responseLanguage }),
   dock: Object.freeze({
     state: () => ipcRenderer.invoke("dock:state"),
-    setMode: mode => ipcRenderer.invoke("dock:mode", { mode }),
-    setGlass: patch => ipcRenderer.invoke("dock:glass", patch),
-    setPinned: pinned => ipcRenderer.invoke("dock:pin", { pinned }),
     focus: focus => ipcRenderer.invoke("dock:focus", { focus }),
     reportRect: rect => ipcRenderer.send("dock:rect", rect),
     attention: reason => ipcRenderer.send("dock:attention", { reason }),
   }),
-  // Main-process pushes: {type:"voice-state"|"transcript"|"intent", ...}
+  settings,
+  // Main-process pushes: {type:"voice-state"|"transcript"|"intent"|"dock-state"|"settings"|"session", ...}
   onEvent: callback => subscribe("commander:push", callback),
   voice,
   platform: process.platform,

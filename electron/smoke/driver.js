@@ -47,7 +47,7 @@ async function main() {
   const info = () => I.dockInfo();
   const display = screen.getPrimaryDisplay().bounds;
   note("environment", { realCursorWarp: realCursor, display, electron: process.versions.electron });
-  await waitFor(() => js("document.getElementById('chip-backend').dataset.tone==='ok'"), "backend chip ok");
+  await waitFor(() => js("document.getElementById('btn-gear').dataset.backend==='ok'"), "backend dot ok");
 
   // ---- 1. collapsed: handle only, click-through, never focused ----
   await warp(display.x + display.width / 2, display.y + display.height / 2);
@@ -110,13 +110,14 @@ async function main() {
   await waitFor(() => js("document.body.dataset.voice==='thinking'"), "thinking state", 9000);
   await sleep(600);
   await screencapture("04-thinking-overlay-fullscreen");
-  await waitFor(() => js("!!document.querySelector('.card .latency')"), "intent card with latency", 14000);
+  await waitFor(() => js("document.querySelectorAll('.card .op').length>=2"), "two parallel operation rails", 14000);
   await sleep(9000);
   await screencapture("05-operations-strip-screen");
   note("intent forwarded", { intents: backend.state.intents.map(i => ({ transcript: i.transcript, tier: i.tool_arguments && i.tool_arguments.command_layer, latency: i.latency_ms })) });
   check("parallel operations rendered as separate rails", await js("document.querySelectorAll('.card .op').length>=2"));
-  check("dry-run fake bot is labelled as simulation", await js("!!document.querySelector('.runtime-badge[data-runtime=\"dry_run_fake_bot\"]')"));
-  check("blocked reason from backend is visible", await js("[...document.querySelectorAll('.reason[data-kind=\"blocked\"]')].some(n=>/composition_shortfall/.test(n.textContent))"));
+  check("dry-run fake bot is a single small word badge (시뮬)", await js("[...document.querySelectorAll('.word-badge[data-kind=\"sim\"]')].every(n=>n.textContent==='시뮬') && !!document.querySelector('.word-badge[data-kind=\"sim\"]')"));
+  check("blocked reason is ONE word (병력부족), raw text only as hover title", await js("[...document.querySelectorAll('.reason[data-kind=\"blocked\"]')].some(n=>n.textContent==='병력부족' && /composition_shortfall/.test(n.title))"));
+  check("bar has no paragraphs / helper text", await js("document.querySelectorAll('.panel p:not(.transcript):not(.utterance)').length===0"));
   check("no real 'Effect observed' shown for fake bot", await js("!document.querySelector('.rail[data-effect=\"yes\"]')"));
 
   // ---- 5. text input: click focuses (only then), hide releases focus ----
@@ -124,6 +125,10 @@ async function main() {
   await sleep(300);
   await js("document.getElementById('orb').click()"); // stop voice
   await sleep(500);
+  await warp(display.x + display.width / 2, display.y + display.height - 1);
+  await waitFor(() => info().revealed, "bar revealed before measuring", 4000);
+  await warp(display.x + display.width / 2, display.y + display.height - 60);
+  await waitFor(() => js("getComputedStyle(document.getElementById('panel')).transform==='none' && getComputedStyle(document.getElementById('panel')).opacity==='1'"), "slide finished", 4000);
   const inputRect = await js("(()=>{const r=document.getElementById('cmd-input').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()");
   const wb = win.getBounds();
   await warp(wb.x + inputRect.x, wb.y + inputRect.y); // a real user's cursor is on the input when clicking
@@ -152,51 +157,122 @@ async function main() {
   await warp(display.x + display.width / 2, display.y + display.height - 60);
   await js("(()=>{const i=document.getElementById('cmd-input');i.value='정찰 보내';document.getElementById('cmd-form').requestSubmit();})()");
   await sleep(2600);
-  check("missing direct_runtime shows 'runtime unknown' badge", await js("!!document.querySelector('.runtime-badge[data-runtime=\"unknown\"]')"));
+  check("missing direct_runtime shows the one-word 미확인 badge", await js("[...document.querySelectorAll('.word-badge[data-kind=\"unknown\"]')].some(n=>n.textContent==='미확인')"));
   backend.state.runtime = "dry_run_fake_bot";
 
-  // ---- 7. right sidebar mode (persisted) ----
-  await js("document.getElementById('btn-dock').click()");
-  await sleep(900);
-  d = info();
-  check("right mode: window spans the work-area height at the right edge", d.mode === "right" && d.bounds.height === screen.getPrimaryDisplay().workArea.height && d.bounds.x + d.bounds.width === display.x + display.width, d.bounds);
-  await warp(display.x + display.width - 1, display.y + display.height / 2);
-  await sleep(500);
-  await warp(display.x + display.width - 100, display.y + display.height / 2);
-  await sleep(900);
-  check("right mode reveals", info().revealed === true);
-  await screencapture("08-right-sidebar-screen");
-  check("mode persisted to userData", JSON.parse(fs.readFileSync(path.join(app.getPath("userData"), "dock-prefs.json"), "utf8")).mode === "right");
-  await js("document.getElementById('btn-dock').click()");
-  await sleep(700);
+  // ---- 7. minimal bar screenshot (voice off, no cards) ----
+  await js("document.getElementById('orb').click()").catch(() => {});
+  await sleep(200);
+  const stopVoice = async () => { if (I.getVoice().snapshot().active) { await js("document.getElementById('orb').click()"); await sleep(500); } };
+  await stopVoice();
+  await js("(()=>{document.getElementById('cards').replaceChildren();})()");
+  await warp(display.x + display.width / 2, display.y + display.height - 1);
+  await waitFor(() => info().revealed, "reveal for minimal bar");
+  await warp(display.x + display.width / 2, display.y + display.height - 60);
+  await sleep(600);
+  await screencapture("06-minimal-bar");
+  check("minimal bar shows only orb, input, retreat word, gear", await js("[...document.querySelectorAll('.bar button, .bar input')].map(n=>n.id).join(',')==='orb,cmd-input,btn-retreat,btn-gear' && document.getElementById('retreat-word').textContent==='후퇴' && document.getElementById('cmd-input').placeholder==='명령'"));
 
-  // ---- 7b. adjustable transparency over a busy, colourful backdrop (shows the real desktop through the glass) ----
+  // ---- 8. settings panel: gear click opens at once, pins the bar, every tab, live apply, Esc / outside / gear close ----
+  const openedAt = Date.now();
+  await js("document.getElementById('btn-gear').click()");
+  await waitFor(() => info().settingsOpen && js("document.body.dataset.settings==='open'"), "settings open", 1500);
+  check("gear opens settings within 300ms", Date.now() - openedAt < 300, { ms: Date.now() - openedAt });
+  check("settings open pins the bar revealed", info().revealed === true);
+  await warp(display.x + display.width / 2, display.y + 100); // cursor far away
+  await sleep(1500);
+  check("bar stays revealed while settings are open (cursor away)", info().revealed === true);
+  for (const tab of ["glass", "layout", "rainbow", "voice", "server", "reset"]) {
+    await js(`document.querySelector('.tabs [data-tab="${tab}"]').click()`);
+    await sleep(tab === "server" ? 700 : 350);
+    const rows = await js("document.querySelectorAll('#rows .row').length");
+    check(`settings tab ${tab} renders rows`, rows >= 2, { rows });
+    check(`tab ${tab}: labels are words (no sentences)`, await js("[...document.querySelectorAll('#rows .k')].every(n=>n.textContent.length<=10 && !/[.。]/.test(n.textContent))"));
+    await screencapture(`07-settings-${tab}`);
+  }
+  await js("document.querySelector('.tabs [data-tab=\"glass\"]').click()");
+  await sleep(300);
+  // live apply: drag-equivalent input events on the real sliders
+  const setRange = (index, value) => js(`(()=>{const r=document.querySelectorAll('#rows input[type=range]')[${index}];r.value=${value};r.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  await setRange(0, 60); await sleep(400);
+  check("opacity slider applies live to the bar (CSS var) and persists in main", Math.abs(Number(await js("getComputedStyle(document.documentElement).getPropertyValue('--glass-alpha')")) - 0.6) < 0.001 && Math.abs(I.getSettings().glass.alpha - 0.6) < 0.001, { main: I.getSettings().glass.alpha });
+  await setRange(2, 200); await sleep(300); // hue slider is the 3rd range on the glass tab (after the toggle row is skipped)
+  I.applySettings({ glass: { alpha: 0.12, blur: 4 } }); await sleep(500);
+  await screencapture("08-glass-combo-alpha12-blur4");
+  I.applySettings({ glass: { alpha: 0.62, blur: 24, hue: 200, saturation: 70 } }); await sleep(500);
+  await screencapture("08-glass-combo-alpha62-blur24");
+  check("settings persisted to userData/settings.json", await (async () => { await sleep(500); const f = path.join(app.getPath("userData"), "settings.json"); return fs.existsSync(f) && JSON.parse(fs.readFileSync(f, "utf8")).glass.alpha === 0.62; })());
+  I.applySettings({ glass: { alpha: 0.28, blur: 12, hue: 250, saturation: 55 } });
+  // close paths
+  await js("document.getElementById('btn-gear').click()"); await sleep(300);
+  check("gear again closes settings", info().settingsOpen === false);
+  await js("document.getElementById('btn-gear').click()"); await sleep(300);
+  win.webContents.sendInputEvent({ type: "keyDown", keyCode: "Escape" }); win.webContents.sendInputEvent({ type: "keyUp", keyCode: "Escape" }); await sleep(300);
+  note("escape result", { settingsOpen: info().settingsOpen });
+  if (info().settingsOpen) await js("window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}))");
+  await sleep(300);
+  check("Esc closes settings", info().settingsOpen === false);
+  await js("document.getElementById('btn-gear').click()"); await sleep(300);
+  await js("document.getElementById('transcript').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}))"); await sleep(300);
+  check("click outside closes settings", info().settingsOpen === false);
+
+  // ---- 8b. adjustable transparency over a busy, colourful backdrop (the real desktop shows through the glass) ----
   const { BrowserWindow } = require("electron");
-  const backdrop = new BrowserWindow({ ...display, show: false, frame: false, focusable: false, skipTaskbar: true, hasShadow: false, webPreferences: { partition: "backdrop", sandbox: true } });
+  const backdrop = new BrowserWindow({ ...display, show: false, frame: false, focusable: false, skipTaskbar: true, hasShadow: false, webPreferences: { partition: "backdrop-test", sandbox: true } });
   const stripes = Array.from({ length: 14 }, (_, i) => `<div style="position:absolute;left:${i * 7.2}%;top:0;bottom:0;width:7.2%;background:hsl(${i * 26},90%,${i % 2 ? 55 : 42}%)"></div>`).join("");
-  await backdrop.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(`<body style="margin:0;overflow:hidden;font:700 64px sans-serif;color:#fff"><div style="position:absolute;inset:0">${stripes}</div><div style="position:absolute;left:5%;right:5%;bottom:6%;height:230px;background:repeating-linear-gradient(45deg,#fff 0 18px,#111 18px 36px);opacity:.9"></div><div style="position:absolute;left:8%;bottom:10%;mix-blend-mode:difference">BACKDROP VISIBLE THROUGH GLASS 12345</div></body>`));
+  await backdrop.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(`<!doctype html><body style="margin:0;overflow:hidden;font:700 64px sans-serif;color:#fff"><div style="position:absolute;inset:0">${stripes}</div><div style="position:absolute;left:5%;right:5%;bottom:6%;height:230px;background:repeating-linear-gradient(45deg,#fff 0 18px,#111 18px 36px);opacity:.9"></div><div style="position:absolute;left:8%;bottom:10%;mix-blend-mode:difference">BACKDROP VISIBLE THROUGH GLASS 12345</div></body>`));
   backdrop.showInactive();
   await sleep(500);
-  await js("(()=>{const b=document.getElementById('btn-pin'); if(b.getAttribute('aria-pressed')!=='true') b.click();})()");
+  I.applySettings({ layout: { pinned: true } });
   await warp(display.x + display.width / 2, display.y + 120);
   await sleep(900);
   for (const pct of [10, 28, 60, 90]) {
-    I.setGlass({ alpha: pct / 100, blur: pct === 10 ? 4 : 12 });
+    I.applySettings({ glass: { alpha: pct / 100, blur: pct === 10 ? 4 : 12 } });
     await sleep(700);
     check(`glass ${pct}%: CSS variable applied live`, Math.abs(Number(await js("getComputedStyle(document.documentElement).getPropertyValue('--glass-alpha')")) - pct / 100) < 0.001);
-    await screencapture(`09-glass-alpha-${String(pct).padStart(2, "0")}`);
+    await screencapture(`10-glass-alpha-${String(pct).padStart(2, "0")}-over-backdrop`);
   }
   const before = info().glass.alpha;
   I.nudgeGlass(-1); await sleep(300);
   check("opacity shortcut nudges alpha by 5%", Math.abs(info().glass.alpha - Math.max(0.08, before - 0.05)) < 0.001, { before, after: info().glass.alpha });
-  I.setGlass({ alpha: 0.28, blur: 12 });
-  await js("document.getElementById('btn-pin').click()");
+  I.applySettings({ glass: { alpha: 0.28, blur: 12 }, layout: { pinned: false } });
   backdrop.destroy();
   await sleep(300);
 
-  // ---- 8. global shortcut path (toggle pin-open + voice) ----
+  // ---- 9. layout: dock position changes live (left / top / right) with correct window geometry ----
+  const wa = screen.getPrimaryDisplay().workArea;
+  for (const dock of ["right", "left", "top"]) {
+    I.applySettings({ layout: { dock } }); await sleep(500);
+    const b = info().bounds;
+    const ok = dock === "right" ? b.x + b.width === display.x + display.width : dock === "left" ? b.x === display.x : b.y === Math.max(display.y, wa.y);
+    check(`dock ${dock}: window flush with that edge`, ok && info().dock === dock, b);
+  }
+  I.applySettings({ layout: { dock: "right" } }); await sleep(400);
+  const rightTrigger = info().layout.trigger;
+  await warp(rightTrigger.x + 1, rightTrigger.y + rightTrigger.height / 2);
+  await waitFor(() => info().revealed, "reveal right edge", 3000);
+  await warp(display.x + display.width - 120, rightTrigger.y + rightTrigger.height / 2);
+  await sleep(700);
+  await screencapture("09-right-dock");
+  I.applySettings({ layout: { dock: "bottom" } });
   await warp(display.x + display.width / 2, display.y + 100);
-  await waitFor(() => info().revealed === false, "collapse before shortcut", 12000);
+  await waitFor(() => info().revealed === false, "collapse after layout test", 12000);
+
+  // ---- 10. rainbow preview (2s) and per-setting overlay behaviour ----
+  I.previewRainbow(); await sleep(600);
+  check("rainbow preview shows the overlay without voice", I.getOverlayState() === "listening" && overlay.isVisible());
+  await waitFor(() => I.getOverlayState() === "off", "preview ends", 4000);
+  I.applySettings({ rainbow: { enabled: false } });
+  I.previewRainbow(); await sleep(500);
+  check("preview still works when disabled (it is a preview)", I.getOverlayState() === "listening");
+  await waitFor(() => I.getOverlayState() === "off", "preview ends 2", 4000);
+  I.applySettings({ rainbow: { enabled: true, depth: 140, intensity: 80 } }); await sleep(300);
+  check("overlay received its settings subset", await overlay.webContents.executeJavaScript("getComputedStyle(document.documentElement).getPropertyValue('--edge-depth').trim()") === "140px");
+  I.applySettings({ rainbow: { depth: 90, intensity: 95 } });
+
+  // ---- 11. global shortcut path ----
+  await warp(display.x + display.width / 2, display.y + 100);
+  await sleep(600);
   I.toggleShortcut();
   await sleep(900);
   check("shortcut opens the dock and starts voice", info().revealed === true && info().shortcutOpen === true && Boolean(I.getVoice().snapshot().active));

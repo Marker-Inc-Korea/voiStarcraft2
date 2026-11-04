@@ -51,8 +51,8 @@
             "transcript": "마린 두 기는 정찰하고 네 기는 오른쪽 길로 공격",
             "tier": "operation",
             "latency": {
-              "speech_end_to_tool_call": 11003,
-              "speech_ms": 6005,
+              "speech_end_to_tool_call": 11004,
+              "speech_ms": 6001,
               "transcript_wait": 0,
               "tool_call_to_publish": null
             }
@@ -66,43 +66,103 @@
         "revealed": true,
         "ignoring": false,
         "inputRect": {
-          "x": 453.75,
-          "y": 595.625
+          "x": 464.88671875,
+          "y": 598
         },
         "wb": {
-          "x": 339,
-          "y": -640,
+          "x": 266,
+          "y": 342,
           "width": 980,
           "height": 640
         }
       }
     },
     {
-      "name": "screencapture 08-right-sidebar-screen",
+      "name": "screencapture 06-minimal-bar",
       "detail": {
         "ok": true
       }
     },
     {
-      "name": "screencapture 09-glass-alpha-10",
+      "name": "screencapture 07-settings-glass",
       "detail": {
         "ok": true
       }
     },
     {
-      "name": "screencapture 09-glass-alpha-28",
+      "name": "screencapture 07-settings-layout",
       "detail": {
         "ok": true
       }
     },
     {
-      "name": "screencapture 09-glass-alpha-60",
+      "name": "screencapture 07-settings-rainbow",
       "detail": {
         "ok": true
       }
     },
     {
-      "name": "screencapture 09-glass-alpha-90",
+      "name": "screencapture 07-settings-voice",
+      "detail": {
+        "ok": true
+      }
+    },
+    {
+      "name": "screencapture 07-settings-server",
+      "detail": {
+        "ok": true
+      }
+    },
+    {
+      "name": "screencapture 07-settings-reset",
+      "detail": {
+        "ok": true
+      }
+    },
+    {
+      "name": "screencapture 08-glass-combo-alpha12-blur4",
+      "detail": {
+        "ok": true
+      }
+    },
+    {
+      "name": "screencapture 08-glass-combo-alpha62-blur24",
+      "detail": {
+        "ok": true
+      }
+    },
+    {
+      "name": "escape result",
+      "detail": {
+        "settingsOpen": false
+      }
+    },
+    {
+      "name": "screencapture 10-glass-alpha-10-over-backdrop",
+      "detail": {
+        "ok": true
+      }
+    },
+    {
+      "name": "screencapture 10-glass-alpha-28-over-backdrop",
+      "detail": {
+        "ok": true
+      }
+    },
+    {
+      "name": "screencapture 10-glass-alpha-60-over-backdrop",
+      "detail": {
+        "ok": true
+      }
+    },
+    {
+      "name": "screencapture 10-glass-alpha-90-over-backdrop",
+      "detail": {
+        "ok": true
+      }
+    },
+    {
+      "name": "screencapture 09-right-dock",
       "detail": {
         "ok": true
       }
@@ -221,11 +281,15 @@
       "ok": true
     },
     {
-      "name": "dry-run fake bot is labelled as simulation",
+      "name": "dry-run fake bot is a single small word badge (시뮬)",
       "ok": true
     },
     {
-      "name": "blocked reason from backend is visible",
+      "name": "blocked reason is ONE word (병력부족), raw text only as hover title",
+      "ok": true
+    },
+    {
+      "name": "bar has no paragraphs / helper text",
       "ok": true
     },
     {
@@ -249,25 +313,115 @@
       }
     },
     {
-      "name": "missing direct_runtime shows 'runtime unknown' badge",
+      "name": "missing direct_runtime shows the one-word 미확인 badge",
       "ok": true
     },
     {
-      "name": "right mode: window spans the work-area height at the right edge",
+      "name": "minimal bar shows only orb, input, retreat word, gear",
+      "ok": true
+    },
+    {
+      "name": "gear opens settings within 300ms",
       "ok": true,
       "detail": {
-        "x": 1122,
-        "y": 38,
-        "width": 390,
-        "height": 944
+        "ms": 11
       }
     },
     {
-      "name": "right mode reveals",
+      "name": "settings open pins the bar revealed",
       "ok": true
     },
     {
-      "name": "mode persisted to userData",
+      "name": "bar stays revealed while settings are open (cursor away)",
+      "ok": true
+    },
+    {
+      "name": "settings tab glass renders rows",
+      "ok": true,
+      "detail": {
+        "rows": 12
+      }
+    },
+    {
+      "name": "tab glass: labels are words (no sentences)",
+      "ok": true
+    },
+    {
+      "name": "settings tab layout renders rows",
+      "ok": true,
+      "detail": {
+        "rows": 9
+      }
+    },
+    {
+      "name": "tab layout: labels are words (no sentences)",
+      "ok": true
+    },
+    {
+      "name": "settings tab rainbow renders rows",
+      "ok": true,
+      "detail": {
+        "rows": 8
+      }
+    },
+    {
+      "name": "tab rainbow: labels are words (no sentences)",
+      "ok": true
+    },
+    {
+      "name": "settings tab voice renders rows",
+      "ok": true,
+      "detail": {
+        "rows": 9
+      }
+    },
+    {
+      "name": "tab voice: labels are words (no sentences)",
+      "ok": true
+    },
+    {
+      "name": "settings tab server renders rows",
+      "ok": true,
+      "detail": {
+        "rows": 2
+      }
+    },
+    {
+      "name": "tab server: labels are words (no sentences)",
+      "ok": true
+    },
+    {
+      "name": "settings tab reset renders rows",
+      "ok": true,
+      "detail": {
+        "rows": 5
+      }
+    },
+    {
+      "name": "tab reset: labels are words (no sentences)",
+      "ok": true
+    },
+    {
+      "name": "opacity slider applies live to the bar (CSS var) and persists in main",
+      "ok": true,
+      "detail": {
+        "main": 0.6
+      }
+    },
+    {
+      "name": "settings persisted to userData/settings.json",
+      "ok": true
+    },
+    {
+      "name": "gear again closes settings",
+      "ok": true
+    },
+    {
+      "name": "Esc closes settings",
+      "ok": true
+    },
+    {
+      "name": "click outside closes settings",
       "ok": true
     },
     {
@@ -293,6 +447,48 @@
         "before": 0.9,
         "after": 0.85
       }
+    },
+    {
+      "name": "dock right: window flush with that edge",
+      "ok": true,
+      "detail": {
+        "x": 1122,
+        "y": 38,
+        "width": 390,
+        "height": 944
+      }
+    },
+    {
+      "name": "dock left: window flush with that edge",
+      "ok": true,
+      "detail": {
+        "x": 0,
+        "y": 38,
+        "width": 390,
+        "height": 944
+      }
+    },
+    {
+      "name": "dock top: window flush with that edge",
+      "ok": true,
+      "detail": {
+        "x": 266,
+        "y": 38,
+        "width": 980,
+        "height": 640
+      }
+    },
+    {
+      "name": "rainbow preview shows the overlay without voice",
+      "ok": true
+    },
+    {
+      "name": "preview still works when disabled (it is a preview)",
+      "ok": true
+    },
+    {
+      "name": "overlay received its settings subset",
+      "ok": true
     },
     {
       "name": "shortcut opens the dock and starts voice",

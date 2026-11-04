@@ -34,7 +34,7 @@ function validateBaseUrl(value) {
 // ---- voice / overlay / window contracts -------------------------------------------------
 const VOICE_STATES = Object.freeze(["idle", "connecting", "listening", "thinking", "acting", "error"]);
 const OVERLAY_STATES = Object.freeze(["off", "listening", "thinking"]);
-const DOCK_MODES = Object.freeze(["bottom", "right"]);
+const DOCK_MODES = Object.freeze(["bottom", "right", "left", "top"]);
 const ATTENTION_REASONS = Object.freeze(["stage", "blocked", "emergency", "error"]);
 const MAX_AUDIO_CHUNK_BYTES = 48000; // 1 s of 24 kHz pcm16 mono; renderer sends 50 ms chunks.
 function plainObject(input, label) {
@@ -78,18 +78,6 @@ function overlayStateForVoice(voice) {
   if (voice.state === "thinking") return "thinking";
   return "off";
 }
-function validateDockMode(input) {
-  plainObject(input, "dock mode");
-  if (Object.keys(input).some(key => key !== "mode")) throw new TypeError("unexpected dock mode field");
-  if (!DOCK_MODES.includes(input.mode)) throw new TypeError("unknown dock mode");
-  return {mode: input.mode};
-}
-function validateDockPin(input) {
-  plainObject(input, "dock pin");
-  if (Object.keys(input).some(key => key !== "pinned")) throw new TypeError("unexpected dock pin field");
-  if (typeof input.pinned !== "boolean") throw new TypeError("pinned must be a boolean");
-  return {pinned: input.pinned};
-}
 function validateDockFocus(input) {
   plainObject(input, "dock focus");
   if (Object.keys(input).some(key => key !== "focus")) throw new TypeError("unexpected dock focus field");
@@ -115,40 +103,45 @@ function validateDockAttention(input) {
   if (!ATTENTION_REASONS.includes(input.reason)) throw new TypeError("unknown attention reason");
   return {reason: input.reason};
 }
-const GLASS_LIMITS = Object.freeze({ alphaMin: 0.08, alphaMax: 0.9, alphaDefault: 0.28, blurMin: 0, blurMax: 40, blurDefault: 12 });
-// Partial update of the glass look: any subset of {alpha, blur, vibrancy}; numbers range-checked, never clamped silently.
-function validateGlass(input) {
-  plainObject(input, "glass settings");
-  if (Object.keys(input).some(key => !["alpha", "blur", "vibrancy"].includes(key))) throw new TypeError("unexpected glass field");
-  const out = {};
-  if (input.alpha !== undefined) {
-    if (typeof input.alpha !== "number" || !Number.isFinite(input.alpha) || input.alpha < GLASS_LIMITS.alphaMin - 1e-9 || input.alpha > GLASS_LIMITS.alphaMax + 1e-9) throw new TypeError("glass alpha must be 0.08..0.90");
-    out.alpha = Math.round(input.alpha * 100) / 100;
-  }
-  if (input.blur !== undefined) {
-    if (typeof input.blur !== "number" || !Number.isFinite(input.blur) || input.blur < GLASS_LIMITS.blurMin || input.blur > GLASS_LIMITS.blurMax) throw new TypeError("glass blur must be 0..40");
-    out.blur = Math.round(input.blur);
-  }
-  if (input.vibrancy !== undefined) {
-    if (typeof input.vibrancy !== "boolean") throw new TypeError("vibrancy must be a boolean");
-    out.vibrancy = input.vibrancy;
-  }
-  if (!Object.keys(out).length) throw new TypeError("glass settings need alpha, blur or vibrancy");
-  return out;
+// Settings are validated by the shared pure schema (renderer/settings.js); out-of-range values throw, never clamp.
+const Settings = require("./renderer/settings.js");
+function validateSettingsPatch(input) { return Settings.validatePatch(input); }
+function validateSettingsReset(input) {
+  if (input === undefined || input === null) return {};
+  plainObject(input, "settings reset");
+  if (Object.keys(input).some(key => key !== "group")) throw new TypeError("unexpected settings reset field");
+  if (input.group !== undefined && !Settings.GROUPS.includes(input.group)) throw new TypeError("unknown settings group");
+  return input.group ? { group: input.group } : {};
 }
-// Keyboard nudge helper: 5 % steps, clamped to the allowed range (the shortcut may press past the end).
-function nudgeGlassAlpha(current, direction) {
-  const next = Math.round((current + (direction > 0 ? 0.05 : -0.05)) * 100) / 100;
-  return Math.min(GLASS_LIMITS.alphaMax, Math.max(GLASS_LIMITS.alphaMin, next));
+function validateSettingsOpen(input) {
+  plainObject(input, "settings open");
+  if (Object.keys(input).some(key => key !== "open")) throw new TypeError("unexpected settings open field");
+  if (typeof input.open !== "boolean") throw new TypeError("open must be a boolean");
+  return { open: input.open };
 }
-function sanitizeStoredGlass(raw) {
-  const out = { alpha: GLASS_LIMITS.alphaDefault, blur: GLASS_LIMITS.blurDefault, vibrancy: false };
-  if (raw && typeof raw === "object") {
-    try { Object.assign(out, validateGlass({ alpha: raw.alpha, blur: raw.blur, vibrancy: raw.vibrancy })); } catch {
-      for (const key of ["alpha", "blur", "vibrancy"]) { try { if (raw[key] !== undefined) Object.assign(out, validateGlass({ [key]: raw[key] })); } catch { /* keep default */ } }
-    }
-  }
-  return out;
+function validateServerProbe(input) {
+  plainObject(input, "server probe");
+  if (Object.keys(input).some(key => key !== "url")) throw new TypeError("unexpected server probe field");
+  if (typeof input.url !== "string" || !Settings.loopbackOrigin(input.url)) throw new TypeError("server url must be a loopback HTTP origin");
+  return { url: new URL(input.url).origin };
+}
+function validateShortcutPreview(input) {
+  plainObject(input, "shortcut");
+  if (Object.keys(input).some(key => key !== "accelerator")) throw new TypeError("unexpected shortcut field");
+  if (typeof input.accelerator !== "string" || !Settings.ACCELERATOR.test(input.accelerator)) throw new TypeError("invalid accelerator");
+  return { accelerator: input.accelerator };
+}
+function validateRainbowPreview(input) {
+  if (input === undefined || input === null) return {};
+  plainObject(input, "rainbow preview");
+  if (Object.keys(input).length) throw new TypeError("unexpected rainbow preview field");
+  return {};
+}
+function validatePushToTalk(input) {
+  plainObject(input, "push to talk");
+  if (Object.keys(input).some(key => key !== "down")) throw new TypeError("unexpected push to talk field");
+  if (typeof input.down !== "boolean") throw new TypeError("down must be a boolean");
+  return { down: input.down };
 }
 function validateRealtimeWsUrl(value) {
   const url = new URL(value);
@@ -189,7 +182,8 @@ function validateIntentRequest(input) {
 module.exports = {
   validateCommand, validateBaseUrl, validateCursor, validateTargetPin,
   VOICE_STATES, OVERLAY_STATES, DOCK_MODES, ATTENTION_REASONS, MAX_AUDIO_CHUNK_BYTES,
-  validateVoiceControl, validateVoiceAudio, validateVoiceLevel, validateMicError, validateOverlayState, overlayStateForVoice, validateDockMode, validateDockPin, validateDockFocus, validateDockRect, validateDockAttention,
-  GLASS_LIMITS, validateGlass, nudgeGlassAlpha, sanitizeStoredGlass,
+  validateVoiceControl, validateVoiceAudio, validateVoiceLevel, validateMicError, validateOverlayState, overlayStateForVoice,
+  validateDockFocus, validateDockRect, validateDockAttention,
+  validateSettingsPatch, validateSettingsReset, validateSettingsOpen, validateServerProbe, validateShortcutPreview, validateRainbowPreview, validatePushToTalk,
   validateRealtimeWsUrl, validateRealtimeSession, validateIntentRequest,
 };

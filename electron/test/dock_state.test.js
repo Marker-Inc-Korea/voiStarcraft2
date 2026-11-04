@@ -25,7 +25,7 @@ test("right layout spans the full display height at the right edge, ~380px (+mar
   assert.equal(window.width, 390);
   assert.deepEqual(trigger, { x: 1512 + 1920 - 2, y: 0, width: 2, height: 1080 });
 });
-test("unknown mode is rejected", () => assert.throws(() => layoutFor("top", D1.bounds), /dock mode/));
+test("unknown mode is rejected", () => assert.throws(() => layoutFor("diagonal", D1.bounds), /dock mode/));
 
 test("edge zone hit reveals after the dwell, not instantly", () => {
   const c = createDockController();
@@ -138,10 +138,54 @@ test("mode switch: right mode uses the last 2px column and recomputes the window
   assert.equal(c.update({ ...right, cursor: { x: 100, y: 400 }, now: 6700, panelRect: panel }).revealed, false);
 });
 
-test("right layout honours the work area (menu bar) vertically, bottom layout is unaffected", () => {
+test("side layouts honour the work area (menu bar) vertically, bottom layout is unaffected", () => {
   const wa = { x: 0, y: 38, width: 1512, height: 944 };
   const r = layoutFor("right", D1.bounds, { workArea: wa });
   assert.equal(r.window.y, 38); assert.equal(r.window.height, 944);
-  assert.equal(r.trigger.y, 0); assert.equal(r.trigger.height, 982); // the trigger still spans the full edge
+  assert.equal(r.trigger.height, 944); // trigger follows the window span
   assert.deepEqual(layoutFor("bottom", D1.bounds, { workArea: wa }).window, layoutFor("bottom", D1.bounds).window);
+});
+test("left and top docks: geometry and edge triggers", () => {
+  const left = layoutFor("left", D1.bounds);
+  assert.equal(left.window.x, 0); assert.equal(left.window.width, 390); assert.deepEqual(left.trigger, { x: 0, y: 0, width: 2, height: 982 });
+  const top = layoutFor("top", D1.bounds);
+  assert.equal(top.window.y, 0); assert.equal(top.window.width, 980); assert.deepEqual(top.trigger, { x: top.window.x, y: 0, width: 980, height: 2 });
+  const c = createDockController();
+  const topEdge = { x: 700, y: 0 };
+  c.update({ ...base, mode: "top", cursor: topEdge, now: 0 });
+  assert.equal(c.update({ ...base, mode: "top", cursor: topEdge, now: 200 }).revealed, true);
+  const c2 = createDockController();
+  c2.update({ ...base, mode: "left", cursor: { x: 0, y: 400 }, now: 0 });
+  assert.equal(c2.update({ ...base, mode: "left", cursor: { x: 0, y: 400 }, now: 200 }).revealed, true);
+});
+test("layout scale, zone size and margin settings feed the geometry", () => {
+  const half = layoutFor("bottom", D1.bounds, { widthScale: 50, heightScale: 50 });
+  assert.equal(half.window.width, 490); assert.equal(half.window.height, 320);
+  assert.equal(layoutFor("bottom", D1.bounds, { edgePx: 8 }).trigger.height, 8);
+  const side = layoutFor("right", D1.bounds, { heightScale: 50 });
+  assert.equal(side.window.height, 491); assert.equal(side.window.y, Math.floor((982 - 491) / 2));
+});
+test("settings override hide delay, zone, autoHide and follow-cursor per update", () => {
+  const c = createDockController();
+  reveal(c);
+  const panel = layoutFor("bottom", D1.bounds).window;
+  const far = { x: 700, y: 10 };
+  const s = { hideDelayMs: 1500 };
+  c.update(at(far, 5000, { panelRect: panel, settings: s }));
+  assert.equal(c.update(at(far, 6400, { panelRect: panel, settings: s })).revealed, true);
+  assert.equal(c.update(at(far, 6550, { panelRect: panel, settings: s })).revealed, false);
+  // autoHide:false behaves like a pin
+  const c2 = createDockController();
+  assert.equal(c2.update(at({ x: 5, y: 5 }, 0, { settings: { autoHide: false } })).revealed, true);
+  assert.equal(c2.update(at({ x: 5, y: 5 }, 90000, { settings: { autoHide: false } })).revealed, true);
+  // a 6px zone is hit 5px above the edge, a 2px zone is not
+  const c3 = createDockController();
+  const p = { x: 700, y: 977 };
+  c3.update(at(p, 0, { settings: { zonePx: 6 } }));
+  assert.equal(c3.update(at(p, 200, { settings: { zonePx: 6 } })).revealed, true);
+  const c4 = createDockController();
+  c4.update(at(p, 0)); assert.equal(c4.update(at(p, 200)).revealed, false);
+  // followCursor:false pins the dock to its display
+  const c5 = createDockController();
+  assert.equal(c5.update({ ...base, displays: [D1, D2], cursor: { x: 2000, y: 500 }, now: 0, settings: { followCursor: false } }).moveToDisplayId, null);
 });
