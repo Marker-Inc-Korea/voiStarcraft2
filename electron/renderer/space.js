@@ -13,9 +13,9 @@
   let stars = [], edges = [];
   let meteor = null, meteorStart = 0, nextMeteorAt = 0;
   const rand = Sky.mulberry32(0x5eed);
-  let cfg = { stars: 0.5, speed: 0.4, nebula: 0.5, hue: 250, saturation: 0.55, twinkle: true, meteors: true, still: false, glassAlpha: 0.28 };
+  let cfg = { enabled: true, stars: 0.5, speed: 0.4, nebula: 0.5, hue: 250, saturation: 0.55, twinkle: true, meteors: true, still: false, glassAlpha: 0.28 };
   const still = () => osMotion.matches || cfg.still;
-  const visible = () => document.body.dataset.revealed === "true" && !document.hidden;
+  const visible = () => cfg.enabled !== false && document.body.dataset.revealed === "true" && !document.hidden;
 
   // Nebula clouds: violet / indigo / cyan / magenta, offsets from the user hue so the 색조 slider recolours the sky.
   const CLOUDS = [

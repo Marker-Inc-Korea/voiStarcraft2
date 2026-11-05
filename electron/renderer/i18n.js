@@ -6,7 +6,7 @@
 })(typeof self !== "undefined" ? self : this, function () {
   const ko = {
     // bar
-    command: "명령", retreat: "후퇴", settings: "설정", mic: "음성", listening: "듣는 중", ready: "말하세요", connecting: "연결 중", error: "오류",
+    command: "명령", retreat: "후퇴", hold: "홀드", stop: "멈춰", ops: "작전", em_sent: "전달", em_failed: "실패", em_nokey: "키불가", settings: "설정", mic: "음성", listening: "듣는 중", ready: "말하세요", connecting: "연결 중", error: "오류",
     // stages / tiers
     stage_heard: "들음", stage_understood: "이해", stage_assigned: "배정", stage_ordered: "명령", stage_effect: "효과",
     tier_macro: "매크로", tier_operation: "작전", tier_micro: "마이크로", tier_emergency: "긴급", tier_unknown: "분류중",
@@ -14,8 +14,9 @@
     // reasons (one word each)
     r_resource: "자원부족", r_units: "병력부족", r_prereq: "선행필요", r_conflict: "충돌", r_refused: "거절", r_clarify: "확인필요", r_expired: "만료", r_timeout: "시간초과", r_failed: "실패", r_unknown: "막힘",
     // settings: tabs
-    tab_glass: "유리", tab_layout: "레이아웃", tab_rainbow: "무지개", tab_voice: "음성", tab_server: "서버", tab_reset: "초기화",
+    tab_glass: "유리", tab_layout: "레이아웃", tab_rainbow: "무지개", tab_voice: "음성", tab_emergency: "긴급", tab_server: "서버", tab_reset: "초기화",
     // glass
+    glass_skin: "스킨", skin_cosmic: "우주", skin_terminal: "터미널", glass_slant: "기울기", emergency_retreat: "후퇴 키", emergency_hold: "홀드 키", emergency_stop: "멈춰 키",
     glass_alpha: "투명도", glass_blur: "블러", glass_vibrancy: "네이티브 블러", glass_hue: "색조", glass_saturation: "채도", glass_borderGlow: "테두리 빛", glass_radius: "모서리", glass_stars: "별", glass_starSpeed: "별 속도", glass_nebula: "성운", glass_twinkle: "반짝임", glass_meteors: "유성", glass_textSize: "글자 크기", glass_reduceMotion: "모션 줄임",
     // layout
     layout_dock: "위치", layout_width: "너비", layout_height: "높이", layout_autoHide: "자동 숨김", layout_hideDelay: "숨김 지연", layout_zone: "감지 폭", layout_pinned: "항상 표시", layout_display: "모니터", layout_margin: "여백",
@@ -32,12 +33,13 @@
     reset_all: "전체", confirm: "확인", on: "켜짐",
   };
   const en = {
-    command: "Command", retreat: "Retreat", settings: "Settings", mic: "Voice", listening: "Listening", ready: "Speak", connecting: "Connecting", error: "Error",
+    command: "Command", retreat: "Retreat", hold: "Hold", stop: "Stop", ops: "Ops", em_sent: "Sent", em_failed: "Failed", em_nokey: "No key", settings: "Settings", mic: "Voice", listening: "Listening", ready: "Speak", connecting: "Connecting", error: "Error",
     stage_heard: "Heard", stage_understood: "Understood", stage_assigned: "Assigned", stage_ordered: "Ordered", stage_effect: "Effect",
     tier_macro: "Macro", tier_operation: "Operation", tier_micro: "Micro", tier_emergency: "Emergency", tier_unknown: "Sorting",
     sim: "Sim", runtimeUnknown: "Unknown", blocked: "Blocked", ended: "Ended",
     r_resource: "Resources", r_units: "Units", r_prereq: "Prereq", r_conflict: "Conflict", r_refused: "Refused", r_clarify: "Clarify", r_expired: "Expired", r_timeout: "Timeout", r_failed: "Failed", r_unknown: "Blocked",
-    tab_glass: "Glass", tab_layout: "Layout", tab_rainbow: "Rainbow", tab_voice: "Voice", tab_server: "Server", tab_reset: "Reset",
+    tab_glass: "Glass", tab_layout: "Layout", tab_rainbow: "Rainbow", tab_voice: "Voice", tab_emergency: "Emergency", tab_server: "Server", tab_reset: "Reset",
+    glass_skin: "Skin", skin_cosmic: "Cosmic", skin_terminal: "Terminal", glass_slant: "Slant", emergency_retreat: "Retreat key", emergency_hold: "Hold key", emergency_stop: "Stop key",
     glass_alpha: "Opacity", glass_blur: "Blur", glass_vibrancy: "Native blur", glass_hue: "Hue", glass_saturation: "Saturation", glass_borderGlow: "Border glow", glass_radius: "Corners", glass_stars: "Stars", glass_starSpeed: "Star speed", glass_nebula: "Nebula", glass_twinkle: "Twinkle", glass_meteors: "Meteors", glass_textSize: "Text size", glass_reduceMotion: "Reduce motion",
     layout_dock: "Position", layout_width: "Width", layout_height: "Height", layout_autoHide: "Auto-hide", layout_hideDelay: "Hide delay", layout_zone: "Edge zone", layout_pinned: "Always visible", layout_display: "Display", layout_margin: "Margin",
     dock_bottom: "Bottom", dock_right: "Right", dock_left: "Left", dock_top: "Top", display_cursor: "Cursor",

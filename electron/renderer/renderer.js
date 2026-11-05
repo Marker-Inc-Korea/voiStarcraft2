@@ -1,17 +1,19 @@
 "use strict";
 // Renderer: pure view over IPC. It never touches the network; every fact shown here comes from the
 // backend (via window.commander) or is labelled as local (heard text, send failures).
-// The in-game surface is words only: orb, one-line transcript, input, retreat, gear. Everything else lives in settings.
+// The in-game surface is words only: orb, one-line transcript, input, 후퇴/홀드/멈춰, gear. Everything else lives in settings.
+// Operation cards are NOT drawn here: the HUD derives them (board_cards.js) and publishes them to the separate tactical board window.
 (function () {
   const api = window.commander;
-  const { deriveCommand, normalizeTier } = window.VoiStages;
+  const { normalizeTier } = window.VoiStages;
+  const BoardCards = window.VoiBoardCards, HudShape = window.VoiHudShape, Skins = window.VoiSkins;
   const S = window.VoiSettings;
   const i18n = window.VoiI18n.create("ko");
   const t = (key, vars) => i18n.t(key, vars);
   const $ = id => document.getElementById(id);
   const body = document.body;
   const root = document.documentElement.style;
-  const MAX_CARDS = 12;
+  const MAX_COMMANDS = 12;
   const POLL_ACTIVE_MS = 900, POLL_IDLE_MS = 3000;
 
   const state = {
@@ -20,7 +22,8 @@
     settings: S.defaults(), env: { shortcut: {}, displays: [], model: "", platform: "", vibrancySupported: false, baseUrl: "" },
     tab: "glass", latencies: [], level: 0, devices: [], server: { state: "checking" }, recording: false, resetArmed: false,
   };
-  const cardEls = new Map();
+  const EMERGENCY = ["retreat", "hold", "stop"];
+  const EMERGENCY_TEXT = { ko: { retreat: "긴급 후퇴", hold: "긴급 홀드", stop: "긴급 멈춤" }, en: { retreat: "emergency retreat now", hold: "emergency hold position", stop: "emergency stop" } };
   body.dataset.platform = api.platform === "darwin" ? "darwin" : "other";
 
   // ---------- tiny DOM helper (no innerHTML) ----------
@@ -40,94 +43,80 @@
   // ---------- applying settings: CSS variables only, so everything is live with no reload ----------
   function applySettingsToCss() {
     const g = state.settings.glass, l = state.settings.layout;
-    const alpha = g.alpha;
-    root.setProperty("--glass-alpha", String(alpha));
-    root.setProperty("--glass-blur", `${g.blur}px`);
-    root.setProperty("--legible", (Math.min(0.95, 0.45 + (1 - alpha) * 0.6)).toFixed(2));
-    root.setProperty("--scrim", (0.22 + (1 - alpha) * 0.3).toFixed(2));
-    root.setProperty("--hue", String(g.hue));
-    root.setProperty("--sat", `${g.saturation}%`);
-    root.setProperty("--border-glow", String(g.borderGlow / 100));
-    root.setProperty("--radius", `${g.radius}px`);
-    root.setProperty("--text", `${g.textSize}px`);
+    body.dataset.skin = Skins.normalize(g.skin);
+    for (const [name, value] of Object.entries(Skins.cssVars(g.skin, g))) root.setProperty(name, value);
     root.setProperty("--gap", `${l.margin}px`);
     body.dataset.dock = l.dock;
     body.dataset.motion = g.reduceMotion ? "off" : "on";
-    window.VoiSpace.configure({ stars: g.stars / 100, speed: g.starSpeed / 100, nebula: g.nebula / 100, hue: g.hue, saturation: g.saturation / 100, twinkle: g.twinkle, meteors: g.meteors, still: g.reduceMotion, glassAlpha: g.alpha });
+    window.VoiSpace.configure({ enabled: Skins.normalize(g.skin) === "cosmic", stars: g.stars / 100, speed: g.starSpeed / 100, nebula: g.nebula / 100, hue: g.hue, saturation: g.saturation / 100, twinkle: g.twinkle, meteors: g.meteors, still: g.reduceMotion, glassAlpha: g.alpha });
+    applyShape();
     reportRect();
   }
 
-  // ---------- cards: operation name, one-word tier, 5-dot rail, one-word blocked reason ----------
+  // ---------- trapezoid: one pure polygon (hud_shape.js) drives the clip, the outline/brackets and main's hit-test ----------
+  let lastShapeKey = "";
+  function applyShape() {
+    const hud = $("hud");
+    const width = hud.offsetWidth, height = hud.offsetHeight;
+    if (width < 2 || height < 2) return;
+    const g = state.settings.glass, dock = state.settings.layout.dock;
+    const slantDeg = g.slant, chamfer = Skins.chamferFor(g.skin, g.radius);
+    const bar = $("bar");
+    const barDepth = (dock === "bottom" || dock === "top") ? bar.offsetHeight + 26 : 0;
+    const key = [dock, width, height, slantDeg, chamfer, barDepth, g.skin].join("|");
+    if (key === lastShapeKey) return;
+    lastShapeKey = key;
+    const shape = HudShape.shape(dock, width, height, { slantDeg, chamfer });
+    $("panel").style.clipPath = shape.clipPath;
+    const outline = $("outline");
+    outline.setAttribute("width", String(width)); outline.setAttribute("height", String(height)); outline.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    const points = HudShape.svgPoints(shape.points);
+    $("outline-poly").setAttribute("points", points); $("outline-glow").setAttribute("points", points);
+    const along = dock === "bottom" || dock === "top";
+    // brackets sit on the far (narrow) corners; the base corners are on the screen edge
+    const far = shape.points.map((point, index) => ({ point, index })).filter(({ point }) => (dock === "bottom" ? point[1] < height - 1 : dock === "top" ? point[1] > 1 : dock === "right" ? point[0] < width - 1 : point[0] > 1)).map(({ index }) => index);
+    $("outline-brackets").setAttribute("d", HudShape.cornerBrackets(shape.points, 16, far));
+    // content stays inside the slanted sides: the bar is near the wide base, the settings reach the narrow far edge
+    const depth = along ? height : width;
+    const atBar = shape.inset * Math.min(1, barDepth / depth);
+    const full = shape.inset + chamfer * 0.5;
+    if (along) {
+      root.setProperty("--pad-x", `${Math.max(14, Math.round(atBar + 10))}px`);
+      root.setProperty("--pad-set", `${Math.max(0, Math.round(full + 6 - Math.max(14, atBar + 10)))}px`);
+      root.setProperty("--pad-y", "0px");
+    } else {
+      root.setProperty("--pad-x", "14px"); root.setProperty("--pad-set", "0px");
+      root.setProperty("--pad-y", `${Math.round(shape.inset + chamfer * 0.5 + 6)}px`);
+    }
+  }
+
+  // ---------- commands -> board cards ----------
+  // `state.cards` are the commands this session. Their stage rails come from backend evidence (stages.js); they are
+  // published to the board window and only a one-word count is shown here.
   function addCard(card) {
     const entry = { key: state.nextKey++, at: Date.now(), text: "", source: "text", updateId: "", tier: "", error: "", latency: null, listening: false, lastView: null, ...card };
     state.cards.push(entry);
-    while (state.cards.length > MAX_CARDS) { const old = state.cards.shift(); const el = cardEls.get(old.key); if (el) el.remove(); cardEls.delete(old.key); }
-    renderCards();
+    while (state.cards.length > MAX_COMMANDS) state.cards.shift();
+    refreshBoard();
     return entry;
   }
   const voiceCards = new Map(); // realtime turn id -> card
-
-  function viewFor(card) {
-    const derived = deriveCommand(card, state.status);
-    let rails;
-    if (derived.kind === "operations") {
-      rails = derived.rails.map(({ op, rail }) => ({ op, rail, stale: false }));
-      card.lastView = rails.map(({ op, rail }) => ({ op, rail }));
-    } else if (card.lastView) rails = card.lastView.map(item => ({ ...item, stale: true }));
-    else rails = [{ op: null, rail: derived.rail, stale: false }];
-    return { rails };
+  const attentionSeen = new Map();
+  let lastPublished = "";
+  function refreshBoard() {
+    const { cards, open, views } = BoardCards.cardsFor(state.cards, state.status, { fallbackName: card => (card.source === "voice" ? (card.listening ? t("listening") : "…") : "") });
+    for (const { card, view } of views) notifyAttention(card, view);
+    state.openOps = open;
+    renderOps(cards.length, open);
+    const key = JSON.stringify([i18n.lang, cards]);
+    if (key !== lastPublished) { lastPublished = key; try { api.board.publish(cards); } catch { /* board window is optional */ } }
   }
-  function tierBadge(tier) {
-    const key = normalizeTier(tier);
-    return h("span", { class: "tier", "data-tier": key || "unknown", text: key ? t(`tier_${key}`) : t("tier_unknown") });
-  }
-  const opName = (op, fallback) => {
-    if (!op) return fallback || "";
-    const vector = (op.update && op.update.vector) || {};
-    return String(vector.goal || op.command_text || op.operation_id || fallback || "").slice(0, 60);
-  };
-  function rail5(rail) {
-    return h("ol", { class: "rail", "data-effect": rail.effectObserved ? "yes" : "no" }, rail.stages.map(stage => h("li", { class: "stage", "data-state": stage.state, "data-stage": stage.id },
-      h("span", { class: "node", "aria-hidden": "true" }), h("span", { class: "label", text: t(`stage_${stage.id}`) }))));
-  }
-  function railBlock(item, card) {
-    const { op, rail, stale } = item;
-    const reason = rail.blocked || rail.ended ? (rail.reason || card.error) : "";
-    const tier = rail.tier || card.tier;
-    const sim = rail.runtime === "dry_run_fake_bot";
-    const unknown = rail.runtime === "unknown" && normalizeTier(tier) && normalizeTier(tier) !== "macro";
-    return h("div", { class: "op", "data-state": rail.blocked ? "blocked" : rail.ended ? "ended" : "live", "data-stale": stale ? "yes" : "no" },
-      h("div", { class: "op-head" }, h("span", { class: "op-name", text: opName(op, card.text) }), tierBadge(tier),
-        sim ? h("span", { class: "word-badge", "data-kind": "sim", text: t("sim") }) : null,
-        unknown ? h("span", { class: "word-badge", "data-kind": "unknown", text: t("runtimeUnknown") }) : null),
-      rail5(rail),
-      rail.blocked || rail.ended ? h("span", { class: "reason", "data-kind": rail.blocked ? "blocked" : "ended", title: reason || "", text: rail.blocked ? i18n.reason(reason) : t("ended") }) : null);
-  }
-  function renderCard(card) {
-    const view = viewFor(card);
-    notifyAttention(card, view);
-    const signature = JSON.stringify([i18n.lang, card.directRuntime, card.directExecuted, card.text, card.listening, card.tier, card.error, view.rails.map(r => [r.rail, r.stale, r.op && r.op.operation_id, opName(r.op)])]);
-    let el = cardEls.get(card.key);
-    if (el && el.dataset.sig === signature) return el;
-    const created = !el;
-    if (!el) { el = h("article", { class: "card", "data-key": card.key }); cardEls.set(card.key, el); }
-    el.dataset.sig = signature;
-    const parallel = view.rails.length > 1;
-    el.dataset.count = String(view.rails.length);
-    const showHead = parallel || card.source === "voice";
-    el.replaceChildren(...[
-      showHead ? h("p", { class: "utterance", text: card.text || (card.listening ? t("listening") : "…") }) : null,
-      h("div", { class: "ops-grid", "data-count": view.rails.length }, view.rails.map(item => railBlock(item, card))),
-    ].filter(Boolean));
-    if (created) el.classList.add("enter");
-    return el;
-  }
-  function renderCards() {
-    const host = $("cards");
-    [...state.cards].reverse().forEach((card, index) => {
-      const el = renderCard(card);
-      if (host.children[index] !== el) host.insertBefore(el, host.children[index] || null);
-    });
+  function renderOps(total, open) {
+    const el = $("ops");
+    el.hidden = total === 0;
+    el.dataset.live = open > 0 ? "yes" : "no";
+    $("ops-word").textContent = t("ops");
+    $("ops-count").textContent = String(open || total);
   }
 
   // ---------- bar: transcript, orb, gear dot ----------
@@ -147,7 +136,10 @@
   }
   function renderBackend() {
     $("btn-gear").dataset.backend = state.backendOk === null ? "unknown" : state.backendOk ? "ok" : "bad";
-    $("retreat-word").textContent = t("retreat");
+    for (const action of EMERGENCY) $(`${action}-word`).textContent = t(action);
+    $("emergency").setAttribute("aria-label", t("tab_emergency"));
+    $("term-word").textContent = t("command");
+    renderEmergencyKeys();
     $("cmd-input").placeholder = t("command");
     $("cmd-input").setAttribute("aria-label", t("command"));
     $("btn-gear").setAttribute("aria-label", t("settings"));
@@ -155,15 +147,10 @@
   }
 
   // ---------- backend polling ----------
-  function hasOpenCommands() {
-    return state.cards.some(card => {
-      if (card.error) return false;
-      return viewFor(card).rails.some(item => !item.rail.blocked && !item.rail.ended && !item.rail.completed && !item.rail.effectObserved);
-    });
-  }
+  function hasOpenCommands() { return state.openOps > 0; }
   async function pollStatus() {
     try { state.status = await api.status(); state.backendOk = true; } catch { state.backendOk = false; }
-    renderBackend(); renderCards();
+    renderBackend(); refreshBoard();
   }
   let statusTimer = 0;
   function schedule() {
@@ -186,11 +173,49 @@
   }
   async function submitText(text, extra) {
     const card = addCard({ text, source: "text", ...extra });
-    if (extra && extra.tier === "emergency") api.dock.attention("emergency");
     try {
       applyResponse(card, await api.sendCommand(text, i18n.lang));
     } catch (error) { api.dock.attention("error"); card.error = String((error && error.message) || error).replace(/^Error invoking remote method '[^']+': (Error: )?/, ""); }
-    renderCards(); pokeSoon();
+    refreshBoard(); pokeSoon();
+  }
+
+  // ---------- emergency: buttons and global shortcuts take the same deterministic route (no model) ----------
+  const flashTimers = new Map();
+  function emergencyButton(action) { return $(`btn-${action}`); }
+  function renderEmergencyKeys() {
+    const keys = (state.env.shortcut && state.env.shortcut.emergency) || {};
+    for (const action of EMERGENCY) {
+      const button = emergencyButton(action);
+      const bad = keys[action] === false;
+      button.dataset.key = bad ? "bad" : "ok";
+      if (button.dataset.state === "idle") button.querySelector(".em-sub").textContent = bad ? t("em_nokey") : "";
+    }
+  }
+  function flashEmergency(action, kind) { // kind: busy | sent | failed
+    const button = emergencyButton(action);
+    clearTimeout(flashTimers.get(action));
+    button.dataset.state = kind;
+    button.querySelector(".em-sub").textContent = kind === "busy" ? "…" : kind === "sent" ? t("em_sent") : t("em_failed");
+    if (kind !== "busy") flashTimers.set(action, setTimeout(() => { button.dataset.state = "idle"; renderEmergencyKeys(); }, kind === "failed" ? 2400 : 1400));
+  }
+  // Folds an emergency result ({ok, action, response|error}) into one board card: honest about refusal, never invents success.
+  function foldEmergency(result) {
+    if (!result || !EMERGENCY.includes(result.action)) return;
+    const card = addCard({ text: EMERGENCY_TEXT[i18n.lang][result.action], source: "text", tier: "emergency" });
+    api.dock.attention("emergency");
+    if (result.ok && result.response) {
+      applyResponse(card, result.response);
+      card.tier = "emergency";
+    } else card.error = String(result.error || "failed").replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
+    const refused = Boolean(card.error);
+    flashEmergency(result.action, refused ? "failed" : "sent");
+    refreshBoard(); pokeSoon();
+  }
+  async function triggerEmergency(action) {
+    flashEmergency(action, "busy");
+    let result;
+    try { result = await api.emergency(action); } catch (error) { result = { ok: false, action, error: String((error && error.message) || error) }; }
+    foldEmergency(result);
   }
   function onPush(event) {
     if (!event || typeof event !== "object") return;
@@ -205,13 +230,14 @@
       renderVoice(); schedule();
     } else if (event.type === "dock-state") applyDock(event);
     else if (event.type === "settings") applyEnvelope(event);
+    else if (event.type === "emergency") foldEmergency(event); // a global shortcut fired in main
     else if (event.type === "session") { state.env.model = event.model || state.env.model; if (state.dock.settingsOpen) renderSettings(); }
     else if (event.type === "transcript") {
       let card = voiceCards.get(event.turn);
       if (!card) { card = addCard({ source: "voice", listening: true }); voiceCards.set(event.turn, card); state.transcript = { text: "", partial: true }; }
       if (event.text) { card.text = event.text; state.transcript = { text: event.text, partial: Boolean(event.partial) }; }
       if (event.final) card.listening = false;
-      renderVoice(); renderCards();
+      renderVoice(); refreshBoard();
     } else if (event.type === "intent") {
       let card = voiceCards.get(event.turn);
       if (!card) card = addCard({ source: "voice" });
@@ -222,7 +248,7 @@
       if (event.tier) card.tier = normalizeTier(event.tier);
       if (event.ok && event.response) applyResponse(card, event.response);
       else { api.dock.attention("error"); card.error = String(event.error || event.kind || "failed"); }
-      renderVoice(); renderCards(); pokeSoon();
+      renderVoice(); refreshBoard(); pokeSoon();
       if (state.dock.settingsOpen && state.tab === "voice") renderSettings();
     }
   }
@@ -256,14 +282,14 @@
   }
   let lastRect = "";
   function reportRect() {
-    const panel = $("panel");
-    // offset* ignores the CSS slide transform, so main always gets the revealed layout rectangle.
-    const rect = { x: panel.offsetLeft, y: panel.offsetTop, width: panel.offsetWidth, height: panel.offsetHeight };
+    const hud = $("hud");
+    // offset* ignores the CSS slide transform, so main always gets the revealed layout rectangle; main derives the same
+    // trapezoid from it + the dock/slant/skin settings (hud_shape.js) for pointer hit-testing.
+    const rect = { x: hud.offsetLeft, y: hud.offsetTop, width: hud.offsetWidth, height: hud.offsetHeight };
     const key = JSON.stringify(rect);
     if (key !== lastRect && rect.width > 0 && rect.height > 0) { lastRect = key; api.dock.reportRect(rect); }
   }
-  new ResizeObserver(reportRect).observe($("panel"));
-  const attentionSeen = new Map();
+  new ResizeObserver(() => { applyShape(); reportRect(); }).observe($("hud"));
   function notifyAttention(card, view) {
     const summary = view.rails.map(item => item.rail.stages.map(stage => stage.state[0]).join("")).join("|");
     const prev = attentionSeen.get(card.key);
@@ -275,7 +301,7 @@
   }
 
   // ---------- settings panel (generated from the schema; words, sliders with numbers, toggles; no prose) ----------
-  const TABS = ["glass", "layout", "rainbow", "voice", "server", "reset"];
+  const TABS = ["glass", "layout", "rainbow", "voice", "emergency", ...(S.SCHEMA.board ? ["board"] : []), "server", "reset"];
   let pending = {}, pendingTimer = 0;
   function patch(group, key, value) {
     state.settings[group][key] = value; // optimistic: the bar updates before the round trip
@@ -292,7 +318,7 @@
     if (!Object.keys(pending).length) state.settings = envelope.settings;
     state.env = { ...state.env, ...envelope.status };
     i18n.set(state.settings.voice.language === "en" ? "en" : "ko");
-    applySettingsToCss(); renderBackend(); renderCards(); renderVoice();
+    applySettingsToCss(); renderBackend(); refreshBoard(); renderVoice();
     if (state.dock.settingsOpen && !isDragging()) renderSettings();
   }
   let dragging = false;
@@ -327,9 +353,10 @@
   const rowFor = (group, key, control) => row(t(`${group}_${key}`), control || (S.SCHEMA[group][key].type === "bool" ? toggle(group, key) : slider(group, key)));
 
   function tabGlass() {
-    const rows = ["alpha", "blur"].map(key => rowFor("glass", key));
+    const rows = [rowFor("glass", "skin", choice("glass", "skin", S.SCHEMA.glass.skin.values, v => t(`skin_${v}`)))];
+    rows.push(...["alpha", "blur"].map(key => rowFor("glass", key)));
     if (state.env.vibrancySupported) rows.push(rowFor("glass", "vibrancy"));
-    return [...rows, ...["hue", "saturation", "borderGlow", "radius", "stars", "starSpeed", "nebula", "textSize"].map(key => rowFor("glass", key)), rowFor("glass", "twinkle"), rowFor("glass", "meteors"), rowFor("glass", "reduceMotion")];
+    return [...rows, ...["hue", "saturation", "borderGlow", "radius", "slant", "stars", "starSpeed", "nebula", "textSize"].map(key => rowFor("glass", key)), rowFor("glass", "twinkle"), rowFor("glass", "meteors"), rowFor("glass", "reduceMotion")];
   }
   function tabLayout() {
     const displays = [{ id: "cursor", label: t("display_cursor") }, ...state.env.displays.map(d => ({ id: `id:${d.id}`, label: d.label }))];
@@ -348,24 +375,46 @@
   }
   let meterEl = null;
   function paintLevel() { if (meterEl && meterEl.isConnected) meterEl.style.setProperty("--lvl", String(Math.min(1, state.level))); }
-  function tabVoice() {
-    const select = h("select", { "aria-label": t("voice_device") }, h("option", { value: "", text: t("defaultDevice") }), ...state.devices.map(d => h("option", { value: d.deviceId, text: (d.label || d.deviceId).slice(0, 36), selected: d.deviceId === state.settings.voice.device })));
-    select.addEventListener("change", async () => { patch("voice", "device", select.value); await restartMic(); });
-    meterEl = h("div", { class: "meter", style: "" }, h("i"));
-    const record = h("button", { class: "btn", type: "button", text: state.recording ? t("pressKeys") : state.settings.voice.shortcut });
-    record.addEventListener("click", () => { state.recording = true; renderSettings(); });
-    record.addEventListener("keydown", async event => {
-      if (!state.recording) return;
+  // One recorder for every accelerator setting (voice toggle, emergency words, board paging): click, press keys, main checks it.
+  function shortcutButton(group, key) {
+    const id = `${group}.${key}`;
+    const recording = state.recording === id;
+    const button = h("button", { class: "btn", type: "button", text: recording ? t("pressKeys") : state.settings[group][key] });
+    button.addEventListener("click", () => { state.recording = id; renderSettings(); });
+    button.addEventListener("keydown", async event => {
+      if (state.recording !== id) return;
       event.preventDefault();
       if (event.key === "Escape") { state.recording = false; renderSettings(); return; }
       const accelerator = acceleratorFrom(event);
       if (!accelerator) return;
       const check = await api.settings.checkShortcut(accelerator).catch(() => ({ ok: false }));
       state.recording = false;
-      if (check.ok) patch("voice", "shortcut", accelerator); else record.textContent = t("shortcutUsed");
+      if (check.ok) patch(group, key, accelerator); else button.textContent = t("shortcutUsed");
       setTimeout(renderSettings, check.ok ? 0 : 900);
     });
-    if (state.recording) setTimeout(() => record.focus(), 0);
+    if (recording) setTimeout(() => button.focus(), 0);
+    return button;
+  }
+  function tabEmergency() {
+    const keys = (state.env.shortcut && state.env.shortcut.emergency) || {};
+    return EMERGENCY.map(action => row(t(`emergency_${action}`), h("div", { class: "ctl" }, shortcutButton("emergency", action), keys[action] === false ? h("output", { class: "status-word", "data-state": "bad", text: t("em_nokey") }) : null)));
+  }
+  function tabBoard() {
+    const specs = S.SCHEMA.board;
+    return Object.keys(specs).map(key => {
+      const spec = specs[key];
+      const label = t(`board_${key}`);
+      if (spec.type === "bool") return rowFor("board", key);
+      if (spec.type === "enum") return row(label, choice("board", key, spec.values, v => t(`anchor_${v.replace("-", "")}`)));
+      if (spec.type === "str") return row(label, h("div", { class: "ctl" }, shortcutButton("board", key)));
+      return rowFor("board", key);
+    });
+  }
+  function tabVoice() {
+    const select = h("select", { "aria-label": t("voice_device") }, h("option", { value: "", text: t("defaultDevice") }), ...state.devices.map(d => h("option", { value: d.deviceId, text: (d.label || d.deviceId).slice(0, 36), selected: d.deviceId === state.settings.voice.device })));
+    select.addEventListener("change", async () => { patch("voice", "device", select.value); await restartMic(); });
+    meterEl = h("div", { class: "meter", style: "" }, h("i"));
+    const record = shortcutButton("voice", "shortcut");
     const lat = state.latencies;
     const avg = key => { const v = lat.map(l => l[key]).filter(x => typeof x === "number"); return v.length ? Math.round(v.reduce((a, b) => a + b, 0) / v.length) : null; };
     return [
@@ -418,9 +467,9 @@
       });
       return b;
     };
-    return [row(t("reset_all"), h("div", { class: "ctl" }, make(t("reset_all"), undefined))), ...["glass", "layout", "rainbow", "voice"].map(group => row(t(`tab_${group}`), h("div", { class: "ctl" }, make(t(`tab_${group}`), group))))];
+    return [row(t("reset_all"), h("div", { class: "ctl" }, make(t("reset_all"), undefined))), ...["glass", "layout", "rainbow", "voice", "emergency", ...(S.SCHEMA.board ? ["board"] : [])].map(group => row(t(`tab_${group}`), h("div", { class: "ctl" }, make(t(`tab_${group}`), group))))];
   }
-  const TAB_BUILDERS = { glass: tabGlass, layout: tabLayout, rainbow: tabRainbow, voice: tabVoice, server: tabServer, reset: tabReset };
+  const TAB_BUILDERS = { glass: tabGlass, layout: tabLayout, rainbow: tabRainbow, voice: tabVoice, emergency: tabEmergency, board: tabBoard, server: tabServer, reset: tabReset };
   function renderSettings() {
     if (!state.dock.settingsOpen) return;
     const tabs = $("tabs");
@@ -447,9 +496,10 @@
     event.preventDefault();
     const input = $("cmd-input"); const text = input.value.trim();
     if (!text) return;
-    input.value = ""; submitText(text);
+    input.value = ""; $("cmd-form").dataset.filled = "false"; submitText(text);
   });
-  $("btn-retreat").addEventListener("click", () => submitText(i18n.lang === "en" ? "emergency retreat now" : "긴급 후퇴", { tier: "emergency" }));
+  for (const action of EMERGENCY) emergencyButton(action).addEventListener("click", () => triggerEmergency(action));
+  $("cmd-input").addEventListener("input", () => { $("cmd-form").dataset.filled = $("cmd-input").value ? "true" : "false"; });
   $("orb").addEventListener("click", toggleVoice);
   $("btn-gear").addEventListener("click", () => setSettingsOpen(!state.dock.settingsOpen));
   // Typing needs key focus; hovering never takes it. Focus is granted on an explicit click only.
@@ -468,7 +518,7 @@
       api.dock.focus(false).catch(() => {});
     }
     if ((event.metaKey || event.ctrlKey) && event.key === ",") { event.preventDefault(); setSettingsOpen(!state.dock.settingsOpen); }
-    if ((event.metaKey || event.ctrlKey) && event.key === ".") $("btn-retreat").click();
+    if ((event.metaKey || event.ctrlKey) && event.key === ".") triggerEmergency("retreat");
     if (state.settings.voice.mode === "ptt" && event.code === "Space" && !event.repeat && !pttHeld && document.activeElement && document.activeElement.tagName !== "INPUT") { pttHeld = true; api.voice.ptt(true); }
   });
   window.addEventListener("keyup", event => { if (pttHeld && event.code === "Space") { pttHeld = false; api.voice.ptt(false); } });
@@ -480,6 +530,6 @@
   api.dock.state().then(applyDock).catch(() => {});
   api.voice.state().then(snapshot => { state.voice = { state: snapshot.state, active: snapshot.active, reason: snapshot.reason || "" }; renderVoice(); }).catch(() => {});
   pollStatus().then(schedule);
-  setInterval(renderCards, 4000);
+  setInterval(refreshBoard, 4000);
   reportRect();
 })();
