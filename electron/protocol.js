@@ -97,6 +97,14 @@ function validateDockRect(input) {
   if (out.width < 1 || out.height < 1) throw new TypeError("dock rect must be non-empty");
   return out;
 }
+// Emergency parity: the three always-visible buttons and their global shortcuts all send exactly one of these words.
+const EMERGENCY_ACTIONS = Object.freeze(["retreat", "hold", "stop"]);
+function validateEmergency(input) {
+  plainObject(input, "emergency");
+  if (Object.keys(input).some(key => key !== "action")) throw new TypeError("unexpected emergency field");
+  if (!EMERGENCY_ACTIONS.includes(input.action)) throw new TypeError(`emergency action must be one of ${EMERGENCY_ACTIONS.join("|")}`);
+  return { action: input.action };
+}
 function validateDockAttention(input) {
   plainObject(input, "dock attention");
   if (Object.keys(input).some(key => key !== "reason")) throw new TypeError("unexpected dock attention field");
@@ -163,7 +171,7 @@ function validateRealtimeSession(input) {
 }
 function validateIntentRequest(input) {
   plainObject(input, "intent request");
-  if (Object.keys(input).some(key => !["tool_arguments", "transcript", "latency_ms"].includes(key))) throw new TypeError("unexpected intent field");
+  if (Object.keys(input).some(key => !["tool_arguments", "transcript", "latency_ms", "fast", "path"].includes(key))) throw new TypeError("unexpected intent field");
   const transcript = typeof input.transcript === "string" ? input.transcript.trim().slice(0, 2000) : "";
   let toolArguments;
   if (input.tool_arguments !== undefined) {
@@ -171,19 +179,55 @@ function validateIntentRequest(input) {
     if (JSON.stringify(toolArguments).length > 32768) throw new TypeError("tool_arguments too large");
   }
   if (!toolArguments && !transcript) throw new TypeError("intent needs tool_arguments or transcript");
+  if (input.fast !== undefined && typeof input.fast !== "boolean") throw new TypeError("fast must be a boolean");
+  if (input.fast && toolArguments) throw new TypeError("a fast rule request carries no tool_arguments");
+  if (input.path !== undefined && input.path !== "rule" && input.path !== "model") throw new TypeError("path must be rule or model");
   const latency = {};
   for (const [key, value] of Object.entries(input.latency_ms && typeof input.latency_ms === "object" ? input.latency_ms : {})) {
     if (/^[a-z_]{1,48}$/.test(key) && (value === null || (typeof value === "number" && Number.isFinite(value)))) latency[key] = value === null ? null : Math.round(value);
   }
   const body = {transcript, latency_ms: latency};
   if (toolArguments) body.tool_arguments = toolArguments;
+  if (input.fast) body.fast = true;
+  if (input.path) body.path = input.path;
   return body;
 }
+// BOARD: cards published by the HUD renderer (board:publish) and forwarded to the tactical board window (board:cards).
+const BOARD_TIERS = Object.freeze(["macro", "operation", "micro", "emergency", ""]);
+const BOARD_STAGE_STATES = Object.freeze(["done", "active", "todo", "blocked", "ended", "sim"]);
+const BOARD_MAX_CARDS = 24;
+const BOARD_STAGE_COUNT = 5;
+function validateBoardCards(input) {
+  if (!Array.isArray(input)) throw new TypeError("board cards must be an array");
+  if (input.length > BOARD_MAX_CARDS) throw new TypeError(`board cards are limited to ${BOARD_MAX_CARDS}`);
+  const seen = new Set();
+  return input.map(raw => {
+    plainObject(raw, "board card");
+    if (Object.keys(raw).some(key => !["id", "name", "tier", "stages", "blockedReason", "sim"].includes(key))) throw new TypeError("unexpected board card field");
+    if (typeof raw.id !== "string" || !raw.id || raw.id.length > 64) throw new TypeError("board card id must be 1..64 characters");
+    if (seen.has(raw.id)) throw new TypeError("duplicate board card id");
+    seen.add(raw.id);
+    if (typeof raw.name !== "string" || raw.name.length > 80) throw new TypeError("board card name must be a string up to 80 characters");
+    const tier = raw.tier === undefined || raw.tier === null ? "" : raw.tier;
+    if (!BOARD_TIERS.includes(tier)) throw new TypeError("unknown board card tier");
+    if (!Array.isArray(raw.stages) || raw.stages.length !== BOARD_STAGE_COUNT) throw new TypeError(`board card needs ${BOARD_STAGE_COUNT} stages`);
+    const stages = raw.stages.map(stage => {
+      const state = stage && typeof stage === "object" && !Array.isArray(stage) ? stage.state : stage;
+      if (!BOARD_STAGE_STATES.includes(state)) throw new TypeError("unknown board stage state");
+      return state;
+    });
+    const reason = raw.blockedReason === undefined || raw.blockedReason === null ? "" : raw.blockedReason;
+    if (typeof reason !== "string" || reason.length > 200) throw new TypeError("board blockedReason must be a string up to 200 characters");
+    if (raw.sim !== undefined && typeof raw.sim !== "boolean") throw new TypeError("board sim must be a boolean");
+    return { id: raw.id, name: raw.name.trim(), tier, stages, blockedReason: reason, sim: raw.sim === true };
+  });
+}
 module.exports = {
+  validateBoardCards, BOARD_MAX_CARDS, BOARD_TIERS, BOARD_STAGE_STATES,
   validateCommand, validateBaseUrl, validateCursor, validateTargetPin,
   VOICE_STATES, OVERLAY_STATES, DOCK_MODES, ATTENTION_REASONS, MAX_AUDIO_CHUNK_BYTES,
   validateVoiceControl, validateVoiceAudio, validateVoiceLevel, validateMicError, validateOverlayState, overlayStateForVoice,
-  validateDockFocus, validateDockRect, validateDockAttention,
+  validateDockFocus, validateDockRect, validateDockAttention, EMERGENCY_ACTIONS, validateEmergency,
   validateSettingsPatch, validateSettingsReset, validateSettingsOpen, validateServerProbe, validateShortcutPreview, validateRainbowPreview, validatePushToTalk,
   validateRealtimeWsUrl, validateRealtimeSession, validateIntentRequest,
 };

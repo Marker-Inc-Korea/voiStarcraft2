@@ -1327,105 +1327,94 @@ def match_micro_fast_path(transcript: str) -> dict[str, object] | None:
 # ---------------------------------------------------------------------------
 # Extended deterministic pre-model layer (transcript only; no LLM)
 # ---------------------------------------------------------------------------
-# Promoted from scripts/bench/fastpath.py:ext_rules. Every family below was measured on the REAL-ASR corpus
-# (docs/voice-intent-benchmark.md): a family is listed in PROMOTED_FAST_PATH_FAMILIES only if it answered at least
-# three times with 100 % precision. The layer abstains (returns None) on negation, raw-control words, unknown units,
+# Round 2: at most FIVE promoted families (user decision). The ranking behind the choice is reproducible with
+# scripts/bench/family_ranking.py over the recorded real-ASR transcripts (table in docs/voice-intent-benchmark.md):
+# a family must answer with 100 % precision; the three emergency words (retreat / hold / stop) are mandatory; the two
+# remaining slots go to the micro families with the most correct real-ASR answers (stim, siege), because micro is the tier
+# whose latency matters most (macro/operation only have to finish within 10 s). Every other family that earlier rounds
+# promoted (production, expand, research, cloak, nuke, yamato, medivac, auto-turret, evacuate-workers, stop-expansion...)
+# now goes to the model. The layer abstains (returns None) on negation, raw-control words, unknown units,
 # compound requests and anything it cannot account for.
-
-# Promotion rule: >= 3 answers with 100 % precision on the real-ASR benchmark transcripts (850 transcripts of 160 rows).
-# Families with fewer answers stay with the older exact-phrase path (match_micro_fast_path) or the model:
-# micro:unsiege (1), micro:widow_mine_unburrow (2), micro:widow_mine_burrow (0 under ASR), micro:emp (2),
-# micro:banshee_decloak (2) and the multi-flag emergency:combo (0).
+MAX_PROMOTED_FAST_PATH_FAMILIES: Final[int] = 5
 PROMOTED_FAST_PATH_FAMILIES: Final[frozenset[str]] = frozenset(
     {
-        "emergency:force_retreat",
-        "emergency:cancel_attacks",
-        "emergency:hold_position",
-        "emergency:evacuate_workers",
-        "emergency:stop_expansion",
-        "macro:expand",
-        "macro:production",
-        "macro:research_stimpack",
-        "macro:research_combatshield",
-        "micro:stimpack",
-        "micro:marine_stimpack",
-        "micro:marauder_stimpack",
-        "micro:siege_mode",
-        "micro:banshee_cloak",
-        "micro:ghost_cloak",
-        "micro:tactical_nuke",
-        "micro:yamato",
-        "micro:auto_turret",
-        "micro:medivac_load",
-        "micro:medivac_unload_all",
+        "emergency:force_retreat",  # 후퇴 / 퇴각 / 철수 / retreat / fall back
+        "emergency:hold_position",  # 홀드 / 제자리 / 멈춰 서 / hold position
+        "emergency:cancel_attacks",  # 멈춰 / 정지 / 그만 / 공격 취소 / stop (attacks only, no retreat)
+        "micro:stimpack",  # 스팀팩 (+ 마린/불곰 스팀팩)
+        "micro:siege_mode",  # 시즈모드 (+ 시즈 풀어 / 언시즈)
     }
 )
 
+_W0: Final[str] = r"(?<![0-9A-Za-z_가-힣])"  # ASCII-word-or-Hangul boundaries, written out so the JS port is identical
+_W1: Final[str] = r"(?![0-9A-Za-z_가-힣])"
 _FAST_NEG_RE: Final[re.Pattern[str]] = re.compile(
-    r"지\s*(?:마|말|않|못)|하지\s*마|안\s*(?:해|하|돼)|\b(?:don'?t|do\s+not|never|no\s+need|without)\b|말고|금지",
+    r"지\s*(?:마|말|않|못)|하지\s*마|안\s*(?:해|하|돼)|아니|말고|금지|"
+    + _W0 + r"(?:don'?t|do\s+not|never|no\s+need|without|not)" + _W1,
     re.IGNORECASE,
 )
-_FAST_CONTRA_RE: Final[re.Pattern[str]] = re.compile(r"(?:하면서|동시에|하고|그리고|\band\b|랑|,)", re.IGNORECASE)
+_FAST_CONTRA_RE: Final[re.Pattern[str]] = re.compile(r"하면서|동시에|하고|그리고|랑|,|" + _W0 + r"and" + _W1, re.IGNORECASE)
 _FAST_ATTACKISH_RE: Final[re.Pattern[str]] = re.compile(
-    r"공격|정찰|견제|방어|수비|집결|지어|건설|attack|scout|harass|defend|build", re.IGNORECASE
+    r"공격|정찰|견제|방어|수비|집결|지어|건설|" + _W0 + r"(?:attack|scout|harass|defend|build)", re.IGNORECASE
+)
+# --- emergency families (retreat / hold / stop), one word and nothing else -----------------------------------------------
+# Order matters: the hold pattern consumes "멈춰 서" before the stop pattern sees "멈춰".
+_FAST_HOLD_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:멈추고\s*)?홀드(?:\s*포지션)?|" + _W0 + r"hold(?:\s+position)?" + _W1 + r"|제자리(?:에서)?|멈춰\s*서|서\s*있어",
+    re.IGNORECASE,
+)
+_FAST_STOP_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:공격|러시|러쉬|압박|작전|진격)(?:을|를)?\s*(?:취소|중지|중단|멈춰|멈추|정지|그만)|"
+    r"멈춰|멈추라|정지|그만|스톱|스탑|" + _W0 + r"(?:stop|halt|freeze)" + _W1 + r"|"
+    + _W0 + r"(?:cancel|abort)\s+(?:the\s+)?(?:attack|rush|operation)" + _W1,
+    re.IGNORECASE,
 )
 _FAST_RETREAT_RE: Final[re.Pattern[str]] = re.compile(
-    r"후퇴|퇴각|철수|물러나|빠져|도망(?!쳐)|\bretreat\b|\bfall\s*back\b", re.IGNORECASE
+    r"후퇴|퇴각|철수|물러나|빠져|도망(?!쳐)|" + _W0 + r"(?:retreat|fall\s*back|fallback)" + _W1, re.IGNORECASE
 )
-_FAST_CANCEL_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?:공격|러시|러쉬|압박|작전|진격)(?:을|를)?\s*(?:취소|중지|중단|멈춰|그만)|"
-    r"\b(?:cancel|abort|stop)\s+(?:the\s+)?(?:attack|rush|operation)",
-    re.IGNORECASE,
+_FAST_EMERGENCY_RULES: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
+    ("hold", _FAST_HOLD_RE),
+    ("stop", _FAST_STOP_RE),
+    ("retreat", _FAST_RETREAT_RE),
 )
-_FAST_HOLD_RE: Final[re.Pattern[str]] = re.compile(r"홀드|\bhold\b(?:\s+position)?", re.IGNORECASE)
-_FAST_EVAC_RE: Final[re.Pattern[str]] = re.compile(
-    r"일꾼.{0,6}(?:대피|도망|피신|피해|후퇴)|\b(?:pull|evacuate).{0,12}workers?\b|"
-    r"\bworkers?\b.{0,12}\b(?:back|safety|evacuate)",
-    re.IGNORECASE,
-)
-_FAST_PULL_RE: Final[re.Pattern[str]] = re.compile(r"일꾼.{0,6}(?:수비|방어).{0,4}(?:동원|투입)|일꾼도 수비", re.IGNORECASE)
-_FAST_STOP_EXPANSION_RE: Final[re.Pattern[str]] = re.compile(r"확장.{0,3}(?:중단|중지|멈춰)|\bstop\s+expand", re.IGNORECASE)
-_FAST_UNIT_WORDS: Final[dict[str, str]] = {
-    "마린": "TERRAN_MARINE", "해병": "TERRAN_MARINE", "marine": "TERRAN_MARINE", "불곰": "TERRAN_MARAUDER",
-    "탱크": "TERRAN_SIEGETANK", "땡크": "TERRAN_SIEGETANK", "tank": "TERRAN_SIEGETANK", "밴시": "TERRAN_BANSHEE",
-    "banshee": "TERRAN_BANSHEE", "바이킹": "TERRAN_VIKINGFIGHTER", "viking": "TERRAN_VIKINGFIGHTER",
-    "해방선": "TERRAN_LIBERATOR", "토르": "TERRAN_THOR", "의료선": "TERRAN_MEDIVAC", "메디박": "TERRAN_MEDIVAC",
-    "일꾼": "TERRAN_SCV", "scv": "TERRAN_SCV", "고스트": "TERRAN_GHOST", "리퍼": "TERRAN_REAPER",
-    "사이클론": "TERRAN_CYCLONE", "배틀크루저": "TERRAN_BATTLECRUISER",
+_FAST_EMERGENCY_FLAGS: Final[dict[str, tuple[str, str]]] = {
+    "retreat": ("force_retreat", "emergency:force_retreat"),
+    "hold": ("hold_position", "emergency:hold_position"),
+    "stop": ("cancel_attacks", "emergency:cancel_attacks"),
 }
-# (family, regex, ability, implied caster) - most specific first; the first hit wins.
+# Words that may accompany an emergency word without adding a second request.
+_FAST_FILLER_RE: Final[re.Pattern[str]] = re.compile(
+    r"긴급|즉시|당장|지금|바로|전원|모두|전부|전체|다들|빨리|어서|얼른|제발|뒤로|안전한?\s*곳으로?|병력|유닛들?|군대|"
+    r"하십시[오요]|하시오|합니다|합시다|하세요|해\s*주세요|해주세요|해줘요?|해라|하라|해요|해봐|해야|해|하자|하|"
+    r"가라|가자|시켜라?|라|요|야|가|"
+    + _W0 + r"(?:all|now|please|immediately|everyone|everybody|units?|army|troops|the|to|back|up|right)" + _W1,
+    re.IGNORECASE,
+)
+# --- micro families (stim, siege) ----------------------------------------------------------------------------------------
+# (family, regex, ability, implied caster); marine/marauder stim and unsiege belong to the stim / siege family.
 _FAST_ABILITY_RULES: Final[tuple[tuple[str, re.Pattern[str], str, tuple[str, ...]], ...]] = tuple(
-    (f"micro:{ability}", re.compile(pattern, re.IGNORECASE), ability, units)
-    for ability, pattern, units in (
-        ("unsiege", r"(?:시즈|siege)\s*(?:모드|mode)?\s*(?:풀|해제)|unsiege", ("TERRAN_SIEGETANK",)),
-        ("siege_mode", r"시즈|siege", ("TERRAN_SIEGETANK",)),
-        ("banshee_decloak", r"(?:밴시|banshee).{0,6}(?:클로킹|투명|cloak).{0,6}(?:풀|해제|꺼|off)|decloak", ("TERRAN_BANSHEE",)),
-        ("ghost_cloak", r"(?:고스트|ghost).{0,4}(?:클로킹|투명|cloak)", ("TERRAN_GHOST",)),
-        ("banshee_cloak", r"(?:밴시|banshee).{0,6}(?:클로킹|투명|cloak)|(?:클로킹|투명|cloak).{0,6}(?:밴시|banshee)|cloak the banshee", ("TERRAN_BANSHEE",)),
-        ("tactical_nuke", r"전술핵|(?<![가-힣])핵(?![가-힣])\s*(?:발사|쏴|쏘)|nuke", ("TERRAN_GHOST",)),
-        ("emp", r"이엠피|\bemp\b", ("TERRAN_GHOST",)),
-        ("yamato", r"야마토|yamato", ("TERRAN_BATTLECRUISER",)),
-        ("medivac_unload_all", r"(?:메디박|의료선|medivac).{0,6}(?:내려|unload)|(?:내려놔)", ("TERRAN_MEDIVAC",)),
-        ("medivac_load", r"(?:메디박|의료선|medivac).{0,6}(?:태워|load)", ("TERRAN_MEDIVAC",)),
-        ("widow_mine_unburrow", r"(?:지뢰|mine).{0,6}(?:매복\s*(?:풀|해제)|unburrow)", ("TERRAN_WIDOWMINE",)),
-        ("widow_mine_burrow", r"(?:지뢰|mine).{0,6}(?:매복|burrow)", ("TERRAN_WIDOWMINE",)),
-        ("auto_turret", r"자동\s*포탑|auto\s*turret", ("TERRAN_RAVEN",)),
-        ("marine_stimpack", r"(?:마린|marine).{0,3}(?:스팀|stim)", ("TERRAN_MARINE",)),
-        ("marauder_stimpack", r"(?:불곰|marauder).{0,3}(?:스팀|stim)", ("TERRAN_MARAUDER",)),
-        ("stimpack", r"스팀|\bstim\b", ()),
+    (family, re.compile(pattern, re.IGNORECASE), ability, units)
+    for family, ability, pattern, units in (
+        ("micro:siege_mode", "unsiege", r"언\s*시즈|(?:시즈|siege)\s*(?:모드|mode)?\s*(?:풀|해제)|unsiege", ("TERRAN_SIEGETANK",)),
+        ("micro:siege_mode", "siege_mode", r"시즈|시[지재]\s*모드|" + _W0 + r"siege", ("TERRAN_SIEGETANK",)),
+        ("micro:stimpack", "marine_stimpack", r"(?:마린|해병|marine).{0,3}(?:스팀|stim)", ("TERRAN_MARINE",)),
+        ("micro:stimpack", "marauder_stimpack", r"(?:불곰|marauder).{0,3}(?:스팀|stim)", ("TERRAN_MARAUDER",)),
+        ("micro:stimpack", "stimpack", r"스팀|" + _W0 + r"(?:stim|steam\s*p[ae]c?k?)" + _W1, ()),
     )
 )
 _FAST_PROD_VERB_RE: Final[re.Pattern[str]] = re.compile(
-    r"생산|뽑|찍|계속|\bkeep\s+making\b|\bstart\s+producing\b|\bbuild\s+more\b", re.IGNORECASE
+    r"생산|뽑|찍|계속|" + _W0 + r"(?:keep\s+making|start\s+producing|build\s+more)", re.IGNORECASE
 )
-_FAST_RESEARCH_WORD_RE: Final[re.Pattern[str]] = re.compile(r"연구|업그레이드|research|upgrade", re.IGNORECASE)
+_FAST_RESEARCH_WORD_RE: Final[re.Pattern[str]] = re.compile(r"연구|업그레이드|" + _W0 + r"(?:research|upgrade)", re.IGNORECASE)
 _FAST_STRUCT_WORD_RE: Final[re.Pattern[str]] = re.compile(
-    r"아카데미|병영|공장|우주공항|보급고|사령부|정제소|barracks|factory|starport|academy|depot", re.IGNORECASE
+    r"아카데미|병영|공장|우주공항|보급고|사령부|정제소|" + _W0 + r"(?:barracks|factory|starport|academy|depot)", re.IGNORECASE
 )
-_FAST_EXPAND_RE: Final[re.Pattern[str]] = re.compile(r"멀티\s*먹|확장해|앞마당\s*확장|\bexpand\b|확장\s*해", re.IGNORECASE)
-_FAST_RESEARCH_RULES: Final[tuple[tuple[str, re.Pattern[str], str], ...]] = (
-    ("macro:research_stimpack", re.compile(r"스팀팩?\s*연구|research\s+stim", re.IGNORECASE), "STIMPACK"),
-    ("macro:research_combatshield", re.compile(r"전투\s*방패\s*연구|research\s+combat\s*shield", re.IGNORECASE), "COMBATSHIELD"),
+# A second ability, an emergency word, or a stop word next to a micro word means "not a plain single-ability order".
+_FAST_MICRO_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
+    r"클로킹|투명|전술핵|이엠피|야마토|메디박|의료선|지뢰|자동\s*포탑|저격|간섭|"
+    r"후퇴|퇴각|철수|물러나|도망|홀드|제자리|멈|정지|그만|스톱|스탑|취소|중단|중지|일꾼|"
+    + _W0 + r"(?:cloak|decloak|nuke|emp|yamato|medivac|mine|snipe|retreat|hold|stop|halt|cancel|abort|workers?|scv)",
+    re.IGNORECASE,
 )
 
 # Raw-control / prompt-injection words: such a transcript must never execute, whatever the model returned.
@@ -1460,119 +1449,79 @@ def transcript_is_raw_control_or_injection(transcript: str) -> bool:
 class FastPathMatch:
     family: str
     arguments: dict[str, object]
+    # Executable emergency action ("retreat" | "hold" | "stop") for the three emergency families, else "".
+    action: str = ""
+
+
+_FAST_PUNCT_RE: Final[re.Pattern[str]] = re.compile(r"[.!?~…,，。]+")
 
 
 def match_fast_path(transcript: str) -> FastPathMatch | None:
-    """Extended deterministic layer; ``None`` means "ask the model".
+    """Deterministic layer over the transcript; ``None`` means "ask the model".
 
-    Families (see ``PROMOTED_FAST_PATH_FAMILIES``): single-flag emergencies, single-ability micro, research of
-    stimpack/combat shield, expansion, and single-unit-type standing production.
+    Exactly the families in ``PROMOTED_FAST_PATH_FAMILIES`` (retreat, hold, stop, stim, siege). Anything that is not a
+    plain, un-negated, single-intent phrase of one of them abstains. ``electron/fast_rules.js`` is a line-by-line port;
+    ``electron/fixtures/fast_rules.json`` keeps the two in lockstep (tests on both sides).
     """
 
     if not isinstance(transcript, str):
         return None
     text = " ".join(transcript.split()).strip()
-    if not text or len(text) > 80:
+    if not text or len(text) > 80 or "?" in text or "？" in text:
         return None
     if _FAST_NEG_RE.search(text) or transcript_is_raw_control_or_injection(text):
         return None
-    match = _fast_emergency(text) or _fast_micro(text) or _fast_macro(text)
+    bare = " ".join(_FAST_PUNCT_RE.sub(" ", text).split())
+    if not bare:
+        return None
+    match = _fast_emergency(text, bare) or _fast_micro(text, bare)
     if match is None or match.family not in PROMOTED_FAST_PATH_FAMILIES:
         return None
     return match
 
 
-def _fast_emergency(text: str) -> FastPathMatch | None:
-    flags: dict[str, str] = {}
-    if _FAST_RETREAT_RE.search(text):
-        flags["force_retreat"] = "emergency:force_retreat"
-    if _FAST_CANCEL_RE.search(text):
-        flags["cancel_attacks"] = "emergency:cancel_attacks"
-    if _FAST_HOLD_RE.search(text):
-        flags["hold_position"] = "emergency:hold_position"
-    if _FAST_EVAC_RE.search(text):
-        flags["evacuate_workers"] = "emergency:evacuate_workers"
-    if _FAST_PULL_RE.search(text):
-        flags["pull_workers_for_defense"] = "emergency:pull_workers"
-    if _FAST_STOP_EXPANSION_RE.search(text):
-        flags["stop_expansion"] = "emergency:stop_expansion"
-    if not flags:
+def _fast_emergency(text: str, bare: str) -> FastPathMatch | None:
+    """One emergency word and nothing else (filler like 전원/지금/해/now is allowed)."""
+
+    remaining = bare
+    actions: list[str] = []
+    for action, pattern in _FAST_EMERGENCY_RULES:
+        if pattern.search(remaining):
+            actions.append(action)
+            remaining = pattern.sub(" ", remaining)
+    if len(actions) != 1:
         return None
-    stripped = _FAST_CANCEL_RE.sub(" ", text)
-    lowered = text.lower()
-    if _FAST_ATTACKISH_RE.search(stripped) or any(
-        word in lowered for word in _FAST_UNIT_WORDS if word not in ("일꾼", "scv")
-    ):
+    if _FAST_FILLER_RE.sub(" ", remaining).strip():
         return None
-    if flags.get("force_retreat") and "공격" in text and "cancel_attacks" not in flags:
-        return None
-    if "hold_position" in flags and len(flags) > 1:
-        return None
-    if "evacuate_workers" in flags and "pull_workers_for_defense" in flags:
-        flags.pop("evacuate_workers")
-    family = next(iter(flags.values())) if len(flags) == 1 else "emergency:combo"
+    action = actions[0]
+    flag, family = _FAST_EMERGENCY_FLAGS[action]
     return FastPathMatch(
         family,
-        {"command_layer": "emergency", "goal": text, "emergency": {name: True for name in flags}},
+        {"command_layer": "emergency", "goal": text, "emergency": {flag: True}},
+        action,
     )
 
 
-def _fast_micro(text: str) -> FastPathMatch | None:
+def _fast_micro(text: str, bare: str) -> FastPathMatch | None:
     if (
         _FAST_RESEARCH_WORD_RE.search(text)
         or _FAST_STRUCT_WORD_RE.search(text)
         or _FAST_ATTACKISH_RE.search(text)
         or _FAST_PROD_VERB_RE.search(text)
+        or _FAST_CONTRA_RE.search(text)
+        or _FAST_MICRO_BLOCK_RE.search(text)
     ):
         return None
-    for family, pattern, ability, units in _FAST_ABILITY_RULES:
-        if pattern.search(text):
-            item: dict[str, object] = {"ability": ability}
-            if units:
-                item["unit_classes"] = list(units)
-            return FastPathMatch(family, {"command_layer": "micro", "goal": text, "micro": [item]})
-    return None
-
-
-def _fast_macro(text: str) -> FastPathMatch | None:
-    for family, pattern, target in _FAST_RESEARCH_RULES:
-        if pattern.search(text):
-            return FastPathMatch(
-                family,
-                {
-                    "command_layer": "macro",
-                    "goal": text,
-                    "macro": {"task_type": "tech_transition", "production_targets": [target]},
-                },
-            )
-    if _FAST_ATTACKISH_RE.search(text):
+    hits = [(family, ability, units) for family, pattern, ability, units in _FAST_ABILITY_RULES if pattern.search(text)]
+    if not hits:
         return None
-    if _FAST_EXPAND_RE.search(text):
-        return FastPathMatch(
-            "macro:expand",
-            {"command_layer": "macro", "goal": text, "macro": {"task_type": "expand_or_land_command_center"}},
-        )
-    if (
-        _FAST_PROD_VERB_RE.search(text)
-        and not _FAST_CONTRA_RE.search(text)
-        and not _FAST_STRUCT_WORD_RE.search(text)
-    ):
-        lowered = text.lower()
-        found = sorted({token for word, token in _FAST_UNIT_WORDS.items() if word in lowered})
-        if len(found) == 1:
-            return FastPathMatch(
-                "macro:production",
-                {
-                    "command_layer": "macro",
-                    "goal": text,
-                    "macro": {
-                        "task_type": "sustain_production",
-                        "production_targets": found,
-                        "standing_order": True,
-                    },
-                },
-            )
-    return None
+    first_family, ability, units = hits[0]
+    if any(family != first_family for family, _a, _u in hits):
+        return None
+    item: dict[str, object] = {"ability": ability}
+    if units:
+        item["unit_classes"] = list(units)
+    return FastPathMatch(first_family, {"command_layer": "micro", "goal": text, "micro": [item]})
 
 
 # ---------------------------------------------------------------------------
@@ -1838,9 +1787,9 @@ def micro_phrase_is_negated(transcript: str) -> bool:
 
 
 _EMERGENCY_WORD_RE: Final[re.Pattern[str]] = re.compile(
-    r"후퇴|퇴각|철수|물러나|도망|"
+    r"후퇴|퇴각|철수|물러나|도망|홀드|제자리|멈추|멈춰|정지|그만|스톱|스탑|"
     r"(?:공격|러시|러쉬|압박|작전|진격)(?:을|를|은|는)?\s*(?:취소|중지|중단|멈추|멈춰|그만)\S*|"
-    r"\b(?:retreat|fall\s*back|abort|cancel(?:\s+the)?\s+(?:attack|rush|operation))\b",
+    r"\b(?:retreat|fall\s*back|abort|hold|stop|cancel(?:\s+the)?\s+(?:attack|rush|operation))\b",
     re.IGNORECASE,
 )
 _TRUE_NEGATION_RE: Final[re.Pattern[str]] = re.compile(

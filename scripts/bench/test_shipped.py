@@ -41,7 +41,7 @@ def test_decision_modes_differ_exactly_where_the_changes_apply():
         "res=[]\n"
         "for mode in S.MODES:\n"
         "    S.set_mode(mode)\n"
-        "    res.append(S.handler_outcome(inj, call)['kind']+'/'+S.handler_outcome('마린 계속 뽑아', None)['kind'])\n"
+        "    res.append(S.handler_outcome(inj, call)['kind']+'/'+S.handler_outcome('홀드', None)['kind'])\n"
         "print(' '.join(res))"
     )
     # baseline | guard | fast | new

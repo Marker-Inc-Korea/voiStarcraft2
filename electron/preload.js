@@ -34,6 +34,10 @@ contextBridge.exposeInMainWorld("commander", Object.freeze({
   registry: () => ipcRenderer.invoke("commander:registry"),
   registerTargetPin: pin => ipcRenderer.invoke("commander:target-pin", pin),
   events: (after = 0) => ipcRenderer.invoke("commander:events", { after }),
+  // Emergency parity: buttons and global shortcuts both end here. Main validates the enum and POSTs /api/emergency (no model).
+  emergency: action => ipcRenderer.invoke("commander:emergency", { action }),
+  // The HUD derives operation cards; the tactical board is a separate window, so cards are handed to main (board:publish).
+  board: Object.freeze({ publish: cards => ipcRenderer.send("board:publish", cards) }),
   sendCommand: (text, responseLanguage = "ko") => ipcRenderer.invoke("commander:command", { text, response_language: responseLanguage }),
   dock: Object.freeze({
     state: () => ipcRenderer.invoke("dock:state"),

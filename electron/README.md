@@ -11,18 +11,40 @@ cd electron && npm install && npm start      # VOI_COMMANDER_URL overrides the l
 npm test                                     # node --test
 ```
 
-## Bar
+## HUD
 
-Orb · one-line transcript · input (`명령`) · `후퇴` · gear. Operation cards: name, one-word tier
-(매크로/작전/마이크로/긴급), five-dot rail (들음 이해 배정 명령 효과), one-word blocked reason (`병력부족`, `자원부족`,
-`충돌`, `거절` … raw backend text only as hover title). `시뮬` = executed by the fake bot (`direct_runtime`), `미확인` =
-backend did not say. A stage is done only when the backend reports it; **효과 appears only for `effect_observed`**.
+A bottom-anchored **trapezoid** control HUD (wide base on the screen edge, narrower far edge; slant 0-30°, default 14°, 유리 > 기울기).
+`renderer/hud_shape.js` is the single pure geometry: it produces the CSS `clip-path`, the SVG outline + corner brackets and
+the polygon main uses for pointer hit-testing, so the slanted corners and everything outside the trapezoid stay click-through
+to the game (`main.js` `pointerOverPanel`, not the rectangle). Words only: orb · one-line transcript · `작전 N` (count of live
+operations) · input (`명령`) · **`후퇴` `홀드` `멈춰`** · gear. **There are no operation cards in the HUD**: the renderer still derives
+them from backend evidence (`stages.js` + `board_cards.js`: heard/understood/assigned/ordered/effect; 효과 only for
+`effect_observed`, `시뮬` for the fake bot) and publishes them through `window.commander.board.publish(cards)` -> `board:publish`
+to the tactical board window (`electron/board*`, separate small translucent window, upper-left).
 
-Gear (or `Cmd/Ctrl+,`) opens settings in the same glass, instantly; Esc / gear / click outside closes it; the bar stays
-pinned open meanwhile. Tabs: 유리 레이아웃 무지개 음성 서버 초기화. Settings apply live, persist in
+Gear (or `Cmd/Ctrl+,`) opens settings in the same glass, instantly; Esc / gear / click outside closes it; the HUD stays
+pinned open meanwhile. Tabs: 유리 레이아웃 무지개 음성 긴급 (전술판) 서버 초기화. Settings apply live, persist in
 `userData/settings.json`, and are schema-validated (`renderer/settings.js`, range errors throw, never clamp).
 
-## Cosmic glass
+### Emergency parity
+
+The three words are always visible, large (min 76×50), and have global shortcuts that take the **same route**:
+button or shortcut -> `window.commander.emergency(action)` -> IPC `commander:emergency` (enum `retreat|hold|stop`, validated
+in `protocol.js`) -> `POST /api/emergency {action}` (deterministic, no model) -> result word on the button (`…` / `전달` /
+`실패`) and one emergency card to the board. Defaults `Cmd/Ctrl+Shift+R` retreat, `+H` hold, `+X` stop (설정 > 긴급). A shortcut that
+cannot be registered shows `키불가` on its button and in settings; it is never silent. Registration logic is pure and tested
+(`shortcuts.js`, fake `globalShortcut`).
+
+### Skins (유리 > 스킨)
+
+`cosmic` (우주): the glass + starfield/nebula described below, adapted to the trapezoid. `terminal` (터미널): StarCraft
+in-game computer console: near-black translucent panel, phosphor green (`#2cff7a`) monospace (`SF Mono`/Menlo/IBM Plex Mono),
+scanlines, faint CRT glow/vignette/flicker, blinking block cursor (`> 명령_`), chamfered Terran key bevels and corner brackets,
+green status LEDs. Both skins share opacity/blur/hue settings, reduced-motion support and the rainbow edge overlay. The
+terminal text scrim/glow are computed from the opacity (`renderer/skins.js`) so it stays legible at 8 % opacity. The switch is
+live (no reload) and persisted (`glass.skin`).
+
+## Cosmic glass (skin 우주)
 
 Inside the panel, on one transparent canvas drawn additively (`lighter` + `mix-blend-mode: plus-lighter`, never opaque):
 3-depth parallax starfield (twinkle, 4-point flares, a shooting star every ~8-14 s), faint constellation lines, drifting
@@ -59,8 +81,8 @@ aware. Reads its own settings subset (`rainbow.*`) pushed over `overlay:settings
 
 ## IPC / voice contract
 
-`window.commander`: `status runtimeStatus capabilities registry registerTargetPin events sendCommand`,
-`onEvent(cb)` (`voice-state | transcript | intent | dock-state | settings | session`), `voice.{start stop state sendAudio
+`window.commander`: `status runtimeStatus capabilities registry registerTargetPin events sendCommand emergency board.publish`,
+`onEvent(cb)` (`voice-state | transcript | intent | dock-state | settings | session | emergency`), `voice.{start stop state sendAudio
 sendLevel ptt micError}`, `dock.{state focus reportRect attention}`, `settings.{get set reset open probeServer
 checkShortcut previewRainbow}`. All payloads are validated in `protocol.js`.
 
@@ -74,7 +96,7 @@ expiry, back-off reconnect, session rotation after 55 min. Only the microphone p
 
 ## Verification
 
-`npm test` runs the pure unit tests (validators, settings schema, dock and multi-display logic, voice state machine
+`npm test` runs the pure unit tests (validators, HUD trapezoid geometry + polygon hit-test, skins, emergency shortcut registry, board card view-model, settings schema, dock and multi-display logic, voice state machine
 and client on a fake `ws`, stage derivation, window flags). They never launch Electron or touch the pointer.
 
 The real-Electron smoke runs take over the mouse pointer and capture the screen, so run them only when the Mac is
@@ -91,3 +113,17 @@ E2E_NAME=u1_scout_attack VOI_COMMANDER_URL=http://127.0.0.1:18765 npx electron s
 ```
 
 Not verified: real microphone speech, real SC2, the overlay over macOS fullscreen apps, canvas CPU cost.
+
+## Tactical board (separate window)
+
+Operation cards do not live in the HUD. The HUD renderer publishes its derived card list (`commander.board.publish(cards)` -> `board:publish`);
+main validates it (`protocol.validateBoardCards`: <= 24 cards, 5 stage states each) and `electron/board.js` owns a small translucent,
+frameless, non-focusable, always-on-top window (`electron/board/*`) on the display the HUD is on.
+
+- Geometry (`board/layout.js`): 300-340 px wide, upper-left (`board.anchor` = `upper-left` | `left`), 12 px / 64 px offsets, height capped at 40 % of the display,
+  never past the screen centre or into the lower 40 % (minimap / bottom HUD), moves clear of the HUD panel.
+- Paging (`board/paging.js`): 3 or 4 cards per page, `1/3` label, auto-advance (`board.autoAdvanceSec`, 0 = off; paused while hovered), jump to the page of a
+  new / changed / blocked / emergency card and back after 4 s, Cmd/Ctrl+Shift+PageUp/PageDown (only registered while there is more than one page), click/scroll in the window.
+  Finished cards age out (`board.ageOutSec`). No operations: a tiny `작전 0` tab (or hidden with `board.hideWhenEmpty`).
+- Click-through (`setIgnoreMouseEvents(true, {forward: true})`) except while the cursor is over the board; never focused (`showInactive`).
+- Skin follows `glass.skin` (`cosmic` | `terminal`). `효과` only when the backend reported effect_observed; fake bot shows `시뮬`.

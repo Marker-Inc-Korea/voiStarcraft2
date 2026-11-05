@@ -1,0 +1,509 @@
+{
+ "calls": 1396,
+ "candidate_ranking": [
+  {
+   "family": "macro:production",
+   "answers": 71,
+   "correct": 71,
+   "precision": 1.0,
+   "unsafe": 0,
+   "coverage_of_tier_calls": 0.3008474576271186,
+   "median_saved_ms": 355.2000000000007,
+   "total_saved_s": 42.968500000000006,
+   "wrong": []
+  },
+  {
+   "family": "micro:siege_mode",
+   "answers": 34,
+   "correct": 34,
+   "precision": 1.0,
+   "unsafe": 0,
+   "coverage_of_tier_calls": 0.12186379928315412,
+   "median_saved_ms": 313.64999999999986,
+   "total_saved_s": 26.891199999999998,
+   "wrong": []
+  },
+  {
+   "family": "micro:stimpack",
+   "answers": 31,
+   "correct": 31,
+   "precision": 1.0,
+   "unsafe": 0,
+   "coverage_of_tier_calls": 0.1111111111111111,
+   "median_saved_ms": 567.7000000000003,
+   "total_saved_s": 25.030500000000007,
+   "wrong": []
+  },
+  {
+   "family": "macro:research_stimpack",
+   "answers": 14,
+   "correct": 14,
+   "precision": 1.0,
+   "unsafe": 0,
+   "coverage_of_tier_calls": 0.059322033898305086,
+   "median_saved_ms": 390.1500000000001,
+   "total_saved_s": 22.7624,
+   "wrong": []
+  },
+  {
+   "family": "macro:expand",
+   "answers": 26,
+   "correct": 26,
+   "precision": 1.0,
+   "unsafe": 0,
+   "coverage_of_tier_calls": 0.11016949152542373,
+   "median_saved_ms": 340.0,
+   "total_saved_s": 20.769299999999994,
+   "wrong": []
+  },
+  {
+   "family": "micro:auto_turret",
+   "answers": 8,
+   "correct": 8,
+   "precision": 1.0,
+   "unsafe": 0,
+   "coverage_of_tier_calls": 0.02867383512544803,
+   "median_saved_ms": 620.1500000000001,
+   "total_saved_s": 13.094299999999999,
+   "wrong": []
+  },
+  {
+   "family": "emergency:cancel_attacks",
+   "answers": 37,
+   "correct": 37,
+   "precision": 1.0,
+   "unsafe": 0,
+   "coverage_of_tier_calls": 0.19072164948453607,
+   "median_saved_ms": 36.600000000000364,
+   "total_saved_s": 12.311200000000003,
+   "wrong": []
+  },
+  {
+   "family": "micro:tactical_nuke",
+   "answers": 14,
+   "correct": 14,
+   "precision": 1.0,
+   "unsafe": 0,
+   "coverage_of_tier_calls": 0.05017921146953405,
+   "median_saved_ms": 424.0999999999999,
+   "total_saved_s": 10.6953,
+   "wrong": []
+  },
+  {
+   "family": "emergency:stop_expansion",
+   "answers": 8,
+   "correct": 8,
+   "precision": 1.0,
+   "unsafe": 0,
+   "coverage_of_tier_calls": 0.041237113402061855,
+   "median_saved_ms": 303.1500000000001,
+   "total_saved_s": 9.816900000000002,
+   "wrong": []
+  },
+  {
+   "family": "micro:banshee_cloak",
+   "answers": 18,
+   "correct": 18,
+   "precision": 1.0,
+   "unsafe": 0,
+   "coverage_of_tier_calls": 0.06451612903225806,
+   "median_saved_ms": 347.9000000000001,
+   "total_saved_s": 8.108300000000002,
+   "wrong": []
+  },
+  {
+   "family": "emergency:hold_position",
+   "answers": 21,
+   "correct": 21,
+   "precision": 1.0,
+   "unsafe": 0,
+   "coverage_of_tier_calls": 0.10824742268041238,
+   "median_saved_ms": 56.5,
+   "total_saved_s": 8.0398,
+   "wrong": []
+  },
+  {
+   "family": "micro:marauder_stimpack",
+   "answers": 6,
+   "correct": 6,
+   "precision": 1.0,
+   "unsafe": 0,
+   "coverage_of_tier_calls": 0.021505376344086023,
+   "median_saved_ms": 695.2000000000003,
+   "total_saved_s": 7.8308,
+   "wrong": []
+  },
+  {
+   "family": "micro:medivac_load",
+   "answers": 8,
+   "correct": 8,
+   "precision": 1.0,
+   "unsafe": 0,
+   "coverage_of_tier_calls": 0.02867383512544803,
+   "median_saved_ms": 158.45000000000027,
+   "total_saved_s": 6.3836,
+   "wrong": []
+  },
+  {
+   "family": "micro:yamato",
+   "answers": 8,
+   "correct": 8,
+   "precision": 1.0,
+   "unsafe": 0,
+   "coverage_of_tier_calls": 0.02867383512544803,
+   "median_saved_ms": 274.1500000000001,
+   "total_saved_s": 6.263299999999999,
+   "wrong": []
+  },
+  {
+   "family": "emergency:evacuate_workers",
+   "answers": 21,
+   "correct": 21,
+   "precision": 1.0,
+   "unsafe": 0,
+   "coverage_of_tier_calls": 0.10824742268041238,
+   "median_saved_ms": 0.3000000000001819,
+   "total_saved_s": 5.4448,
+   "wrong": []
+  },
+  {
+   "family": "micro:unsiege",
+   "answers": 8,
+   "correct": 8,
+   "precision": 1.0,
+   "unsafe": 0,
+   "coverage_of_tier_calls": 0.02867383512544803,
+   "median_saved_ms": 410.04999999999995,
+   "total_saved_s": 5.4171,
+   "wrong": []
+  },
+  {
+   "family": "micro:banshee_decloak",
+   "answers": 6,
+   "correct": 6,
+   "precision": 1.0,
+   "unsafe": 0,
+   "coverage_of_tier_calls": 0.021505376344086023,
+   "median_saved_ms": 343.25,
+   "total_saved_s": 4.950399999999999,
+   "wrong": []
+  },
+  {
+   "family": "micro:medivac_unload_all",
+   "answers": 6,
+   "correct": 6,
+   "precision": 1.0,
+   "unsafe": 0,
+   "coverage_of_tier_calls": 0.021505376344086023,
+   "median_saved_ms": 650.0,
+   "total_saved_s": 4.809800000000001,
+   "wrong": []
+  },
+  {
+   "family": "micro:emp",
+   "answers": 5,
+   "correct": 5,
+   "precision": 1.0,
+   "unsafe": 0,
+   "coverage_of_tier_calls": 0.017921146953405017,
+   "median_saved_ms": 343.1999999999998,
+   "total_saved_s": 4.6113,
+   "wrong": []
+  },
+  {
+   "family": "macro:research_combatshield",
+   "answers": 9,
+   "correct": 9,
+   "precision": 1.0,
+   "unsafe": 0,
+   "coverage_of_tier_calls": 0.038135593220338986,
+   "median_saved_ms": 127.09999999999991,
+   "total_saved_s": 3.4422,
+   "wrong": []
+  },
+  {
+   "family": "micro:widow_mine_unburrow",
+   "answers": 5,
+   "correct": 5,
+   "precision": 1.0,
+   "unsafe": 0,
+   "coverage_of_tier_calls": 0.017921146953405017,
+   "median_saved_ms": 239.5,
+   "total_saved_s": 3.286600000000001,
+   "wrong": []
+  },
+  {
+   "family": "micro:ghost_cloak",
+   "answers": 6,
+   "correct": 6,
+   "precision": 1.0,
+   "unsafe": 0,
+   "coverage_of_tier_calls": 0.021505376344086023,
+   "median_saved_ms": 234.50000000000045,
+   "total_saved_s": 2.9260999999999995,
+   "wrong": []
+  },
+  {
+   "family": "micro:marine_stimpack",
+   "answers": 5,
+   "correct": 5,
+   "precision": 1.0,
+   "unsafe": 0,
+   "coverage_of_tier_calls": 0.017921146953405017,
+   "median_saved_ms": 218.69999999999982,
+   "total_saved_s": 2.573,
+   "wrong": []
+  },
+  {
+   "family": "emergency:force_retreat",
+   "answers": 79,
+   "correct": 75,
+   "precision": 0.9493670886075949,
+   "unsafe": 2,
+   "coverage_of_tier_calls": 0.4072164948453608,
+   "median_saved_ms": 343.5999999999999,
+   "total_saved_s": 55.43399999999998,
+   "wrong": [
+    [
+     "adv-030",
+     "Emergency retreat."
+    ],
+    [
+     "eme-023",
+     "일꾼을 안전한 곳으로 철수시켜라."
+    ],
+    [
+     "eme-023",
+     "일꾼을 안전한 곳으로 후퇴시켜라."
+    ]
+   ]
+  }
+ ],
+ "product_families": [
+  "emergency:cancel_attacks",
+  "emergency:force_retreat",
+  "emergency:hold_position",
+  "micro:siege_mode",
+  "micro:stimpack"
+ ],
+ "blend": {
+  "before": {
+   "n": 1396,
+   "all": {
+    "n": 1396,
+    "sem": 0.8925501432664756,
+    "sem_ci": [
+     0.875213960324332,
+     0.9077317672494164
+    ],
+    "strict": 0.8216332378223495,
+    "layer_ok": 0.9240687679083095,
+    "schema_valid": 0.9863896848137536,
+    "unsafe": 0.0014326647564469914,
+    "error_rate": 0.0,
+    "p50_ms": 4734.450000000001,
+    "p95_ms": 8925.25,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "adversarial": {
+    "n": 260,
+    "sem": 0.8961538461538462,
+    "sem_ci": [
+     0.8531261307321476,
+     0.9276453624668022
+    ],
+    "strict": 0.8961538461538462,
+    "layer_ok": 0.8961538461538462,
+    "schema_valid": 0.9807692307692307,
+    "unsafe": 0.007692307692307693,
+    "error_rate": 0.0,
+    "p50_ms": 4360.25,
+    "p95_ms": 8644.994999999988,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "emergency": {
+    "n": 194,
+    "sem": 0.8917525773195877,
+    "sem_ci": [
+     0.8401884541390234,
+     0.9281029466583823
+    ],
+    "strict": 0.4793814432989691,
+    "layer_ok": 0.8969072164948454,
+    "schema_valid": 0.9948453608247423,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 4628.6,
+    "p95_ms": 7778.3799999999965,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "macro": {
+    "n": 236,
+    "sem": 0.8516949152542372,
+    "sem_ci": [
+     0.8007309380925345,
+     0.8913925300631147
+    ],
+    "strict": 0.826271186440678,
+    "layer_ok": 0.8686440677966102,
+    "schema_valid": 0.9915254237288136,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 4637.3,
+    "p95_ms": 9283.7,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "micro": {
+    "n": 279,
+    "sem": 0.942652329749104,
+    "sem_ci": [
+     0.9088843786866152,
+     0.9643959308576668
+    ],
+    "strict": 0.899641577060932,
+    "layer_ok": 0.9713261648745519,
+    "schema_valid": 0.989247311827957,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 4806.2,
+    "p95_ms": 8755.619999999995,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "operation": {
+    "n": 427,
+    "sem": 0.8805620608899297,
+    "sem_ci": [
+     0.8463583040873196,
+     0.9079792529173892
+    ],
+    "strict": 0.8782201405152225,
+    "layer_ok": 0.9531615925058547,
+    "schema_valid": 0.9812646370023419,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 5038.4,
+    "p95_ms": 9143.259999999998,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   }
+  },
+  "rule_first": {
+   "n": 1396,
+   "all": {
+    "n": 1396,
+    "sem": 0.9025787965616046,
+    "sem_ci": [
+     0.8859006634687867,
+     0.9170473272181596
+    ],
+    "strict": 0.8853868194842407,
+    "layer_ok": 0.9240687679083095,
+    "schema_valid": 0.9863896848137536,
+    "unsafe": 0.0014326647564469914,
+    "error_rate": 0.0,
+    "p50_ms": 4633.55,
+    "p95_ms": 8617.35,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "adversarial": {
+    "n": 260,
+    "sem": 0.8961538461538462,
+    "sem_ci": [
+     0.8531261307321476,
+     0.9276453624668022
+    ],
+    "strict": 0.8961538461538462,
+    "layer_ok": 0.8961538461538462,
+    "schema_valid": 0.9807692307692307,
+    "unsafe": 0.007692307692307693,
+    "error_rate": 0.0,
+    "p50_ms": 4173.45,
+    "p95_ms": 8308.999999999995,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "emergency": {
+    "n": 194,
+    "sem": 0.9639175257731959,
+    "sem_ci": [
+     0.9274048466558927,
+     0.9824139174462981
+    ],
+    "strict": 0.9381443298969072,
+    "layer_ok": 0.8969072164948454,
+    "schema_valid": 0.9948453608247423,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 4151.45,
+    "p95_ms": 7298.654999999999,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "macro": {
+    "n": 236,
+    "sem": 0.8516949152542372,
+    "sem_ci": [
+     0.8007309380925345,
+     0.8913925300631147
+    ],
+    "strict": 0.826271186440678,
+    "layer_ok": 0.8686440677966102,
+    "schema_valid": 0.9915254237288136,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 4637.3,
+    "p95_ms": 9283.7,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "micro": {
+    "n": 279,
+    "sem": 0.942652329749104,
+    "sem_ci": [
+     0.9088843786866152,
+     0.9643959308576668
+    ],
+    "strict": 0.899641577060932,
+    "layer_ok": 0.9713261648745519,
+    "schema_valid": 0.989247311827957,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 4604.0,
+    "p95_ms": 8364.16,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "operation": {
+    "n": 427,
+    "sem": 0.8805620608899297,
+    "sem_ci": [
+     0.8463583040873196,
+     0.9079792529173892
+    ],
+    "strict": 0.8782201405152225,
+    "layer_ok": 0.9531615925058547,
+    "schema_valid": 0.9812646370023419,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 5038.4,
+    "p95_ms": 9143.259999999998,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   }
+  },
+  "rule_hits": {
+   "raw_control_guard": 84,
+   "emergency:force_retreat": 75,
+   "emergency:cancel_attacks": 37,
+   "emergency:hold_position": 21,
+   "micro:stimpack": 38,
+   "micro:siege_mode": 47
+  }
+ }
+}

@@ -31,19 +31,81 @@ CANON_IS_VECTOR = True  # scoring.score_prediction uses canonicalize() below
 
 # --- A/B variants over the SHIPPED prompt -----------------------------------------------------------------------------
 # "shipped"  = main as of the baseline (byte-identical to the original build_realtime_instructions, no transcription hints)
-# "rules"    = + rules 8-14;  "fewshot" = + nine extra examples;  "both" = + both;
-# a "_h" suffix = transcription language/prompt hints in the minted session ("both_h" is the product default).
-VARIANTS = ("shipped", "rules", "fewshot", "both", "shipped_h", "both_h")
+# "rules"    = + rules 8-14;  "fewshot" = + nine extra examples;  "both" = + both (= product prompt);
+# "lean1"    = rules 8-14, the nine extra few-shot examples dropped, restating tool-property descriptions trimmed
+#              (enum values/required untouched);
+# "lean2"    = lean1 + remaining tool descriptions shortened + the base-prompt example that duplicates rule 1 dropped.
+# Suffixes (any order, after the base name): "_h" = transcription language/prompt hints in the minted session ("both_h");
+# "_tcn" = tool_choice is the named function {type:function,name:submit_command} instead of "required".
+BASE_VARIANTS = ("shipped", "rules", "fewshot", "both", "lean1", "lean2")
 _INSTR = {"shipped": (False, False), "rules": (True, False), "fewshot": (False, True), "both": (True, True),
-          "shipped_h": (False, False), "both_h": (True, True)}
+          "lean1": (True, False), "lean2": (True, False)}
+VARIANTS = ("shipped", "rules", "fewshot", "both", "shipped_h", "both_h")  # registry default set (run.py list)
+_DUP_EXAMPLE_PREFIX = "'마린 두 기는 정찰하고 네 기는 오른쪽 길로 공격' -> operation"
+_DUP_EXAMPLE_END = "flank_right}].\n"
+
+
+def parse_variant(variant: str) -> tuple[str, bool, bool]:
+    """'both_h_tcn' -> ('both', hints=True, named_tool_choice=True). Unknown base names raise ValueError."""
+    parts = variant.split("_")
+    base, flags = parts[0], parts[1:]
+    if base not in BASE_VARIANTS or any(f not in ("h", "tcn") for f in flags):
+        raise ValueError(f"unknown prompt variant {variant!r}")
+    return base, "h" in flags, "tcn" in flags
 
 
 def variant_has_hints(variant: str) -> bool:
-    return variant.endswith("_h")
+    return parse_variant(variant)[1]
+
+
+def variant_tool_choice(variant: str):
+    return {"type": "function", "name": TOOL_NAME} if parse_variant(variant)[2] else "required"
+
+
+def _set_desc(node: dict, text) -> None:
+    if text is None:
+        node.pop("description", None)
+    else:
+        node["description"] = text
+
+
+def _lean_tool(tool: dict, level: int) -> dict:
+    """Trim descriptions only (never enums / required / property names / types), so the lowering contract is unchanged.
+
+    lean1: drop descriptions that merely restate the property name/enum or duplicate base-prompt rule 3
+           (operations[].goal/operation_action/location/route_type, top-level goal, operations[]/micro[] array notes) and
+           shorten composition/task_type hints.
+    lean2: lean1 + shorten the tool, operation_id, emergency and clarification descriptions and drop the task_type/composition hints."""
+    import copy
+
+    t = copy.deepcopy(tool)
+    props = t["parameters"]["properties"]
+    ops = props["operations"]["items"]["properties"]
+    for name in ("operation_action", "goal", "location", "route_type"):
+        _set_desc(ops[name], None)
+    _set_desc(ops["composition"], "Exact unit counts the user SAID; omit when none spoken.")
+    _set_desc(ops["task_type"], "scout / pressure=attack / defend / harass workers or production / regroup=gather.")
+    _set_desc(props["goal"], None)
+    _set_desc(props["operations"], None)
+    _set_desc(props["micro"], None)
+    if level >= 2:
+        t["description"] = ("Submit exactly one StarCraft II commander intent (emergency/micro/operation/macro; "
+                            "parallel forces in operations[]).")
+        _set_desc(ops["operation_id"], "Short english slug; reuse the SAME id to edit that force; omit for a new one.")
+        _set_desc(ops["task_type"], None)
+        _set_desc(ops["composition"], None)
+        _set_desc(props["emergency"], "Only the flags the user asked for; exclusive with every other section.")
+        _set_desc(props["clarification"], "ONE short question in the user's language when ambiguous, unintelligible, "
+                  "a pure negation or not a command; leave every other section out.")
+    return t
 
 
 def build_tool(variant: str = "shipped") -> dict:
-    return RI.build_submit_command_tool()
+    base = parse_variant(variant)[0]
+    tool = RI.build_submit_command_tool()
+    if base in ("lean1", "lean2"):
+        return _lean_tool(tool, 1 if base == "lean1" else 2)
+    return tool
 
 
 def to_chat_tool(tool: dict) -> dict:
@@ -54,22 +116,49 @@ def to_chat_tool(tool: dict) -> dict:
 
 
 def build_instructions(variant: str = "shipped") -> str:
-    rules, fewshot = _INSTR[variant]
-    return RI.build_realtime_instructions(rules=rules, fewshot=fewshot)
+    base = parse_variant(variant)[0]
+    rules, fewshot = _INSTR[base]
+    text = RI.build_realtime_instructions(rules=rules, fewshot=fewshot)
+    if base == "lean2":
+        i = text.index(_DUP_EXAMPLE_PREFIX)
+        j = text.index(_DUP_EXAMPLE_END, i) + len(_DUP_EXAMPLE_END)
+        text = text[:i] + text[j:]
+    return text
 
 
-def realtime_session_body(model: str, variant: str, *, vad_silence_ms: int | None, transcription: bool = True) -> dict:
-    """The exact /realtime/client_secrets body the shipped backend sends (optionally swapping instructions / endpointing)."""
+def turn_detection(endpoint: str, vad_silence_ms: int | None = None):
+    """endpoint: manual | vadNNN | semhigh | semauto (semantic_vad eagerness high/auto). Same dict for mint + session.update."""
+    if endpoint == "manual":
+        return None
+    if endpoint in ("semhigh", "semauto"):
+        return {"type": "semantic_vad", "eagerness": "high" if endpoint == "semhigh" else "auto",
+                "create_response": True, "interrupt_response": False}
+    if endpoint.startswith("vad") and endpoint[3:].isdigit():
+        return {"type": "server_vad", "silence_duration_ms": int(endpoint[3:]), "prefix_padding_ms": 300,
+                "create_response": True, "interrupt_response": False}
+    raise ValueError(f"unknown endpoint {endpoint!r}")
+
+
+def realtime_session_body(model: str, variant: str, *, vad_silence_ms: int | None = None, transcription: bool = True,
+                          endpoint: str | None = None) -> dict:
+    """The exact /realtime/client_secrets body the shipped backend sends (optionally swapping instructions / tools /
+    tool_choice / endpointing). ``endpoint`` (manual|vadNNN|semhigh|semauto) wins over ``vad_silence_ms``."""
     hints = variant_has_hints(variant)
     cfg = RI.RealtimeUpstreamConfig(base_url=RI.DEFAULT_REALTIME_BASE_URL, model=model, api_key="",
                                     vad_silence_ms=vad_silence_ms or RI.DEFAULT_VAD_SILENCE_MS,
                                     transcribe_language=RI.HINTS_TRANSCRIBE_LANGUAGE if hints else "",
                                     transcribe_prompt=RI.HINTS_TRANSCRIBE_PROMPT if hints else "")
-    body = RI._session_body(cfg, transcription=transcription, text_output=True,
-                            transcription_hints=variant_has_hints(variant))
+    body = RI._session_body(cfg, transcription=transcription, text_output=True, transcription_hints=hints)
     sess = body["session"]
     sess["instructions"] = build_instructions(variant)
-    if vad_silence_ms is None:  # manual commit endpointing
+    sess["tools"] = [build_tool(variant)]
+    sess["tool_choice"] = variant_tool_choice(variant)
+    if endpoint is not None:
+        td = turn_detection(endpoint)
+        if td is not None and td["type"] == "server_vad":
+            td = {**sess["audio"]["input"]["turn_detection"], **td}  # keep the product's threshold/etc. keys, override silence
+        sess["audio"]["input"]["turn_detection"] = td
+    elif vad_silence_ms is None:  # manual commit endpointing
         sess["audio"]["input"]["turn_detection"] = None
     return body
 

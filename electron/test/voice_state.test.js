@@ -229,3 +229,147 @@ test("session.update VAD silence is configurable and bounded", () => {
   assert.equal(defaultSessionUpdate({ VOI_VAD_SILENCE_MS: "5" }).session.audio.input.turn_detection.silence_duration_ms, 450);
   assert.equal(defaultSessionUpdate({ VOI_TRANSCRIBE_MODEL: "off" }).session.audio.input.transcription, undefined);
 });
+
+// ---------- rule-first path (deterministic rule beats the model; dedupe + cancel) ----------
+function ruleClient(intentImpl) {
+  const log = { posts: [], intents: [] };
+  const { c, advance } = client({
+    requestJson: async (pathname, options) => {
+      if (pathname === "/api/realtime/session") return { client_secret: "ek_testsecret", expires_at: 4e9, ws_url: "wss://rt.example/v1/realtime?model=m", model: "m", tools: [] };
+      const body = JSON.parse(options.body);
+      log.posts.push(body);
+      return intentImpl(body);
+    },
+    onIntent: x => log.intents.push(x),
+  });
+  return { c, log, advance };
+}
+const accepted = body => (body.fast ? { accepted: true, tier: "emergency", source: "fast_rule", update_id: "u-rule" } : { accepted: true, tier: "operation", source: "tool_call" });
+async function armed(rc) {
+  await rc.c.start(); await flush();
+  const ws = FakeWs.last; ws.server({ type: "session.updated" }); return ws;
+}
+const speak = (ws, item) => { ws.server({ type: "input_audio_buffer.speech_started", item_id: item }); ws.server({ type: "input_audio_buffer.speech_stopped", item_id: item }); };
+const cancels = ws => ws.sent.filter(e => e.type === "response.cancel");
+
+test("rule-first: 후퇴 posts a fast intent on the transcript, cancels the model response and ignores its tool call", async () => {
+  const rc = ruleClient(accepted); const ws = await armed(rc);
+  speak(ws, "i1"); rc.advance(300);
+  ws.server({ type: "response.created", response: { id: "resp_1" } });
+  ws.server({ type: "conversation.item.input_audio_transcription.completed", item_id: "i1", transcript: "후퇴." });
+  await flush();
+  assert.equal(rc.log.posts.length, 1);
+  assert.deepEqual({ ...rc.log.posts[0], latency_ms: undefined }, { transcript: "후퇴.", fast: true, path: "rule", latency_ms: undefined });
+  assert.equal(cancels(ws).length, 1); assert.equal(cancels(ws)[0].response_id, "resp_1");
+  // the model's own call for the same utterance arrives anyway: it must NOT execute again
+  ws.server({ ...toolDone({ command_layer: "emergency", goal: "후퇴", emergency: { force_retreat: true } }), response_id: "resp_1" });
+  ws.server({ type: "response.done", response: { id: "resp_1", status: "cancelled", output: [] } });
+  await flush();
+  assert.equal(rc.log.posts.length, 1, "no second post");
+  const submitted = rc.log.intents.filter(i => i.kind === "submitted");
+  assert.equal(submitted.length, 1); assert.equal(submitted[0].path, "rule"); assert.equal(submitted[0].ok, true);
+  assert.equal(typeof submitted[0].latency_ms.speech_end_to_decision, "number"); assert.equal(typeof submitted[0].latency_ms.decision_to_publish, "number");
+  assert.equal(rc.log.intents.filter(i => i.kind === "no_command").length, 0);
+  rc.c.stop();
+});
+test("rule-first: the response created after the rule fired is cancelled as soon as it appears", async () => {
+  const rc = ruleClient(accepted); const ws = await armed(rc);
+  speak(ws, "i1");
+  ws.server({ type: "conversation.item.input_audio_transcription.completed", item_id: "i1", transcript: "홀드" });
+  await flush();
+  assert.equal(rc.log.posts.length, 1); assert.equal(cancels(ws).length, 0, "no response yet, nothing to cancel");
+  ws.server({ type: "response.created", response: { id: "resp_late" } });
+  assert.equal(cancels(ws).length, 1); assert.equal(cancels(ws)[0].response_id, "resp_late");
+  ws.server({ ...toolDone({ command_layer: "emergency", goal: "홀드", emergency: { hold_position: true } }), response_id: "resp_late" });
+  await flush();
+  assert.equal(rc.log.posts.length, 1);
+  rc.c.stop();
+});
+test("rule-first: no rule hit (or a negation) falls through to the model tool call exactly once", async () => {
+  for (const text of ["마린 두 기 정찰해", "후퇴하지 마", "멈추지 마"]) {
+    const rc = ruleClient(accepted); const ws = await armed(rc);
+    speak(ws, "i1"); ws.server({ type: "response.created", response: { id: "r1" } });
+    ws.server({ type: "conversation.item.input_audio_transcription.completed", item_id: "i1", transcript: text });
+    await flush();
+    assert.equal(rc.log.posts.length, 0, text); assert.equal(cancels(ws).length, 0, text);
+    ws.server({ ...toolDone({ command_layer: "operation", goal: "g", operations: [{ goal: "a" }] }), response_id: "r1" });
+    await flush();
+    assert.equal(rc.log.posts.length, 1, text); assert.equal(rc.log.posts[0].fast, undefined); assert.equal(rc.log.posts[0].path, "model");
+    assert.ok(rc.log.posts[0].tool_arguments);
+    rc.c.stop();
+  }
+});
+test("rule-first: a model call that already ran is never followed by a rule post for the same turn", async () => {
+  const rc = ruleClient(accepted); const ws = await armed(rc);
+  speak(ws, "i1"); ws.server({ type: "response.created", response: { id: "r1" } });
+  ws.server({ ...toolDone({ command_layer: "emergency", goal: "후퇴", emergency: { force_retreat: true } }), response_id: "r1" });
+  ws.server({ type: "conversation.item.input_audio_transcription.completed", item_id: "i1", transcript: "후퇴" });
+  await flush(); await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(rc.log.posts.length, 1); assert.ok(rc.log.posts[0].tool_arguments); assert.equal(rc.log.posts[0].fast, undefined);
+  rc.c.stop();
+});
+test("rule-first: rule request failure or a server fast_miss releases the turn to the model call", async () => {
+  for (const impl of [body => { if (body.fast) throw new Error("backend down"); return accepted(body); }, body => (body.fast ? { accepted: false, status: "fast_miss" } : accepted(body))]) {
+    const rc = ruleClient(impl); const ws = await armed(rc);
+    speak(ws, "i1"); ws.server({ type: "response.created", response: { id: "r1" } });
+    ws.server({ type: "conversation.item.input_audio_transcription.completed", item_id: "i1", transcript: "후퇴" });
+    // the model's call lands while the rule request is still in flight: it is parked, not lost
+    ws.server({ ...toolDone({ command_layer: "emergency", goal: "후퇴", emergency: { force_retreat: true } }), response_id: "r1" });
+    await flush(); await flush();
+    assert.equal(rc.log.posts.length, 2, JSON.stringify(rc.log.posts));
+    assert.equal(rc.log.posts[0].fast, true); assert.ok(rc.log.posts[1].tool_arguments);
+    assert.equal(cancels(ws).length, 0);
+    rc.c.stop();
+  }
+});
+test("rule-first: a model call arriving while the rule request is pending is dropped once the rule is handled", async () => {
+  let release; const gate = new Promise(resolve => { release = resolve; });
+  const rc = ruleClient(async body => { if (body.fast) { await gate; } return accepted(body); });
+  const ws = await armed(rc);
+  speak(ws, "i1"); ws.server({ type: "response.created", response: { id: "r1" } });
+  ws.server({ type: "conversation.item.input_audio_transcription.completed", item_id: "i1", transcript: "멈춰" });
+  ws.server({ ...toolDone({ command_layer: "emergency", goal: "멈춰", emergency: { cancel_attacks: true } }), response_id: "r1", call_id: "c9" });
+  await flush();
+  assert.equal(rc.log.posts.length, 1);
+  release(); await flush(); await flush();
+  assert.equal(rc.log.posts.length, 1, "parked model call must not post");
+  assert.equal(rc.c.snapshot().state, "acting");
+  assert.equal(cancels(ws).length, 1);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(rc.c.snapshot().state, "idle");
+  rc.c.stop();
+});
+test("rule-first: two utterances back to back are deduped per turn (second is model, first is rule)", async () => {
+  const rc = ruleClient(accepted); const ws = await armed(rc);
+  speak(ws, "i1"); ws.server({ type: "response.created", response: { id: "r1" } });
+  ws.server({ type: "conversation.item.input_audio_transcription.completed", item_id: "i1", transcript: "후퇴" });
+  await flush();
+  speak(ws, "i2"); ws.server({ type: "response.created", response: { id: "r2" } });
+  ws.server({ type: "conversation.item.input_audio_transcription.completed", item_id: "i2", transcript: "마린 둘 정찰" });
+  ws.server({ ...toolDone({ command_layer: "emergency", goal: "후퇴", emergency: { force_retreat: true } }), response_id: "r1", call_id: "c1" });
+  ws.server({ ...toolDone({ command_layer: "operation", goal: "정찰", operations: [{ goal: "s" }] }), response_id: "r2", call_id: "c2" });
+  await flush();
+  assert.equal(rc.log.posts.length, 2);
+  assert.equal(rc.log.posts[0].fast, true); assert.equal(rc.log.posts[1].transcript, "마린 둘 정찰"); assert.ok(rc.log.posts[1].tool_arguments);
+  rc.c.stop();
+});
+test("rule-first: a replayed tool-call event (same call id) posts once", async () => {
+  const rc = ruleClient(accepted); const ws = await armed(rc);
+  speak(ws, "i1"); ws.server({ type: "response.created", response: { id: "r1" } });
+  ws.server({ type: "conversation.item.input_audio_transcription.completed", item_id: "i1", transcript: "탱크 정찰" });
+  const call = { ...toolDone({ command_layer: "operation", goal: "g", operations: [{ goal: "a" }] }), response_id: "r1", call_id: "dup" };
+  ws.server(call); ws.server(call);
+  await flush();
+  assert.equal(rc.log.posts.length, 1);
+  rc.c.stop();
+});
+test("rule-first can be switched off by preference", async () => {
+  const rc = ruleClient(accepted);
+  const off = client({ getPrefs: () => ({ fastRules: false }), requestJson: async (pathname, options) => { if (pathname === "/api/realtime/session") return { client_secret: "ek_x", expires_at: 4e9, ws_url: "wss://rt.example/x" }; rc.log.posts.push(JSON.parse(options.body)); return accepted({}); } });
+  await off.c.start(); await flush();
+  const ws = FakeWs.last; ws.server({ type: "session.updated" });
+  speak(ws, "i1"); ws.server({ type: "conversation.item.input_audio_transcription.completed", item_id: "i1", transcript: "후퇴" });
+  await flush();
+  assert.equal(rc.log.posts.length, 0);
+  off.c.stop();
+});
