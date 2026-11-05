@@ -5385,18 +5385,74 @@ _RAW_CONTROL_MESSAGE = (
     "좌표·유닛 태그·클릭·코드 호출이나 지시 무시 요청은 실행하지 않습니다. "
     "'적 앞마당 공격'처럼 장소 이름으로 말씀해 주세요."
 )
+# Button / shortcut emergencies: action -> (goal text shown in the event feed, family).
+_EMERGENCY_BUTTON_ACTIONS: Final[dict[str, tuple[str, str]]] = {
+    "retreat": ("후퇴 (버튼)", "emergency:force_retreat"),
+    "hold": ("홀드 (버튼)", "emergency:hold_position"),
+    "stop": ("정지 (버튼)", "emergency:cancel_attacks"),
+}
+
+
+def _emergency_output_for_action(action: str, goal: str) -> dict[str, object]:
+    """Provider output for an explicit emergency action (voice rule or button); no model, no transcript parsing.
+
+    retreat -> the existing deterministic retreat override (force_retreat, which also cancels attacks as it always has);
+    stop -> the existing attack-cancel override WITHOUT a retreat; hold -> hold_position only.
+    """
+
+    if action == "hold":
+        return realtime_intent.tool_arguments_to_provider_output(
+            {"command_layer": "emergency", "goal": goal, "emergency": {"hold_position": True}}
+        )
+    if action not in ("retreat", "stop"):
+        raise ValueError(f"unknown emergency action: {action!r}")
+    output = _micromachine_emergency_safety_output("후퇴" if action == "retreat" else "공격 취소")
+    output["goal"] = goal
+    return output
+
+
+def _fast_match_provider_output(fast: realtime_intent.FastPathMatch) -> dict[str, object]:
+    if fast.action:
+        return _emergency_output_for_action(fast.action, str(fast.arguments.get("goal", "")))
+    return realtime_intent.tool_arguments_to_provider_output(fast.arguments)
 
 
 def _decide_realtime_intent(
     transcript: str,
     tool_arguments: Mapping[str, object] | None,
+    *,
+    fast: bool = False,
 ) -> _RealtimeDecision:
     """Deterministic routing for a Realtime intent. Raises ``ValueError`` for an invalid tool call.
 
-    Order: raw-control/injection refusal -> exact emergency phrases -> extended deterministic fast path (also
-    overrides a model call for the same utterance) -> the model's tool call (with negation guards) ->
+    ``fast=True`` is the client's rule-first request (transcript only, no model call yet): only the promoted
+    deterministic families may answer, everything else is ``unresolved``/``fast_miss`` and the model path decides.
+    Otherwise the order is: raw-control/injection refusal -> model clarification -> exact emergency phrases -> promoted
+    fast path (also overrides a model call for the same utterance) -> the model's tool call (with negation guards) ->
     transcript-only guards/micro fast path -> text LLM lane.
     """
+
+    if fast:
+        if tool_arguments is not None:
+            raise ValueError("a fast rule request carries no tool_arguments")
+        if transcript and realtime_intent.transcript_is_raw_control_or_injection(transcript):
+            return _RealtimeDecision(
+                "blocked",
+                realtime_intent.TIER_CLARIFICATION,
+                "raw_control_guard",
+                status="refused_raw_control",
+                message=_RAW_CONTROL_MESSAGE,
+            )
+        rule = realtime_intent.match_fast_path(transcript) if transcript else None
+        if rule is None:
+            return _RealtimeDecision("unresolved", "unresolved", "fast_miss", status="fast_miss")
+        return _RealtimeDecision(
+            "executed",
+            realtime_intent.classify_tier(rule.arguments),
+            "fast_rule",
+            _fast_match_provider_output(rule),
+            family=rule.family,
+        )
 
     if transcript and realtime_intent.transcript_is_raw_control_or_injection(transcript):
         return _RealtimeDecision(
@@ -5427,25 +5483,24 @@ def _decide_realtime_intent(
             "emergency_fast_path" if tool_arguments is None else "emergency_override",
             _micromachine_emergency_safety_output(transcript),
         )
-    fast = (
+    rule = (
         realtime_intent.match_fast_path(transcript)
         if transcript and not _realtime_call_is_named_operation_cancel(tool_arguments, transcript)
         else None
     )
-    if fast is not None:
-        output = realtime_intent.tool_arguments_to_provider_output(fast.arguments)
+    if rule is not None:
         return _RealtimeDecision(
             "executed",
-            realtime_intent.classify_tier(fast.arguments),
+            realtime_intent.classify_tier(rule.arguments),
             (
                 "micro_fast_path"
-                if fast.family.startswith("micro:") and tool_arguments is None
+                if rule.family.startswith("micro:") and tool_arguments is None
                 else "fast_path"
                 if tool_arguments is None
                 else "fast_path_override"
             ),
-            output,
-            family=fast.family,
+            _fast_match_provider_output(rule),
+            family=rule.family,
         )
     if tool_arguments is not None:
         tier = realtime_intent.classify_tier(tool_arguments)
@@ -11318,6 +11373,9 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/realtime/intent":
             self._handle_realtime_intent()
             return
+        if path == "/api/emergency":
+            self._handle_emergency()
+            return
         # Drain any request body so a keep-alive connection stays usable.
         self._read_request_body()
         self._send_not_found()
@@ -12918,18 +12976,14 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 {"accepted": False, "error": "tool_arguments 필드는 JSON 객체여야 합니다."},
             )
             return
-        latency = document.get("latency_ms")
-        latency_ms: dict[str, float] = {}
-        if isinstance(latency, Mapping):
-            for key, value in list(latency.items())[:16]:
-                if (
-                    isinstance(key, str)
-                    and len(key) <= 40
-                    and type(value) in (int, float)
-                    and value == value
-                    and abs(value) < 1e9
-                ):
-                    latency_ms[key] = value
+        fast = document.get("fast", False)
+        if type(fast) is not bool:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"accepted": False, "error": "fast 필드는 true/false여야 합니다."},
+            )
+            return
+        latency_ms = self._clean_latency_ms(document.get("latency_ms"))
         if tool_arguments is None and not transcript:
             self._send_json(
                 HTTPStatus.BAD_REQUEST,
@@ -12950,12 +13004,8 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 HTTPStatus.BAD_REQUEST, {"accepted": False, "error": str(error)}
             )
             return
-        provider_output: Mapping[str, object] | None = None
-        tier = ""
-        source = ""
-        text = transcript
         try:
-            decision = _decide_realtime_intent(transcript, tool_arguments)
+            decision = _decide_realtime_intent(transcript, tool_arguments, fast=fast)
         except ValueError as error:
             self._finish_realtime_intent(
                 HTTPStatus.BAD_REQUEST,
@@ -12969,9 +13019,114 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 blackboard_dir=blackboard_dir,
             )
             return
+        if decision.status == "fast_miss":
+            # The client asked "does a deterministic rule own this transcript?"; no: nothing executed, no event,
+            # the model's tool call decides. Not an error.
+            self._send_json(
+                HTTPStatus.OK,
+                {"accepted": False, "ok": False, "status": "fast_miss", "tier": decision.tier, "source": decision.source},
+            )
+            return
+        self._execute_realtime_decision(
+            decision,
+            document,
+            transcript=transcript,
+            tool_arguments=tool_arguments,
+            latency_ms=latency_ms,
+            started=started,
+            direct_runtime=direct_runtime,
+            blackboard_dir=blackboard_dir,
+            submit_fn=submit_fn,
+        )
+
+    @staticmethod
+    def _clean_latency_ms(latency: object) -> dict[str, float]:
+        cleaned: dict[str, float] = {}
+        if isinstance(latency, Mapping):
+            for key, value in list(latency.items())[:16]:
+                if (
+                    isinstance(key, str)
+                    and len(key) <= 40
+                    and type(value) in (int, float)
+                    and value == value
+                    and abs(value) < 1e9
+                ):
+                    cleaned[key] = value
+        return cleaned
+
+    def _handle_emergency(self) -> None:
+        """Button / keyboard-shortcut emergency: deterministic, no model, no transcript."""
+
+        started = time.monotonic()
+        submit_fn = getattr(self._bridge, "submit_micromachine_modulation", None)
+        if not callable(submit_fn):
+            self._send_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {"accepted": False, "error": "MicroMachine modulation bridge is disabled."},
+            )
+            return
+        document = self._read_json_object_body("Emergency")
+        if document is None:
+            return
+        action = document.get("action")
+        if type(action) is not str or action not in _EMERGENCY_BUTTON_ACTIONS:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {
+                    "accepted": False,
+                    "error": "action은 retreat, hold, stop 중 하나여야 합니다.",
+                },
+            )
+            return
+        direct_runtime = self._direct_runtime_descriptor()
+        try:
+            blackboard_dir = self._resolved_micromachine_blackboard_dir(
+                str(document.get("blackboard_dir", "") or "")
+            )
+        except (TypeError, ValueError) as error:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST, {"accepted": False, "error": str(error)}
+            )
+            return
+        goal, family = _EMERGENCY_BUTTON_ACTIONS[action]
+        decision = _RealtimeDecision(
+            "executed",
+            realtime_intent.TIER_EMERGENCY,
+            "button",
+            _emergency_output_for_action(action, goal),
+            family=family,
+        )
+        self._execute_realtime_decision(
+            decision,
+            document,
+            transcript=goal,
+            tool_arguments=None,
+            latency_ms=self._clean_latency_ms(document.get("latency_ms")),
+            started=started,
+            direct_runtime=direct_runtime,
+            blackboard_dir=blackboard_dir,
+            submit_fn=submit_fn,
+        )
+
+    def _execute_realtime_decision(
+        self,
+        decision: _RealtimeDecision,
+        document: Mapping[str, object],
+        *,
+        transcript: str,
+        tool_arguments: Mapping[str, object] | None,
+        latency_ms: Mapping[str, float],
+        started: float,
+        direct_runtime: Mapping[str, str],
+        blackboard_dir: str,
+        submit_fn: Callable[..., Mapping[str, object]],
+    ) -> None:
+        """Answer a blocked/clarification decision or submit the executable one (shared by voice and buttons)."""
+
         tier = decision.tier
         source = decision.source
         provider_output = decision.provider_output
+        text = transcript
         if decision.kind == "blocked":
             self._finish_realtime_intent(
                 HTTPStatus.OK,
@@ -13546,7 +13701,8 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                     "POST /api/runtime/start, GET /api/micromachine/status, "
                     "POST /api/micromachine/modulate, "
                     "POST /api/micromachine/contextual-transfer, "
-                    "POST /api/realtime/session, POST /api/realtime/intent."
+                    "POST /api/realtime/session, POST /api/realtime/intent, "
+                    "POST /api/emergency."
                 )
             },
         )

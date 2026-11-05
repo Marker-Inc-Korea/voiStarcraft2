@@ -1,5 +1,79 @@
 # Voice intent → PolicyModulationVector benchmark (shipped schema, real ASR)
 
+# Round 2 — rule-first routing, five promoted families, emergency endpoint (branch `feat/r2-speed`)
+
+Everything here is offline (recorded real-ASR calls, unit tests) or a measurement against the real Realtime proxy. SC2 was not involved. **Every latency number in this section was measured on an overloaded machine** (load average 40 → 300 during the sweep, 28 → 245 during the ASR probe; see `docs/bench-results/latency_sweep.md` and `asr_words_probe.md`); p50 4.7 s here corresponds to ≈1.9 s on a quiet machine in the earlier run. Compare only inside one table.
+
+## R2-A. What changed
+
+| area | change |
+|---|---|
+| client (`electron/voice.js`, `voice_state.js`, new `electron/fast_rules.js`) | When the input transcription **completes** (`conversation.item.input_audio_transcription.completed`) the JS port of the deterministic matcher runs. On a hit the client immediately `POST /api/realtime/intent {transcript, fast:true, path:"rule"}`, then sends `response.cancel` for the model's in-flight response and ignores that response's later tool call (dedupe by turn/response id and `call_id`). No hit, a negation, a `fast_miss` answer or a failed request ⇒ the model's tool call runs as before (a call that arrives while the rule request is in flight is parked and released, never lost). Per-turn latency is reported as `{speech_end_to_decision, decision_to_publish, path: rule|model}` (the old `speech_end_to_tool_call` / `tool_call_to_publish` keys are kept for the HUD readout). `getPrefs().fastRules === false` switches it off. |
+| server (`web_gui.py`) | `_decide_realtime_intent(..., fast=True)` answers only from the promoted rules (`source: fast_rule`) and otherwise returns `status: fast_miss` (HTTP 200, nothing executed, no feed event). `POST /api/emergency {action: retreat\|hold\|stop}` is deterministic (no transcript, no model), same response shape as `/api/realtime/intent` plus `source: "button"` and `latency_ms.backend_handle`. retreat → `force_retreat` (+`cancel_attacks`, as the existing override), hold → `hold_position` only, **stop → `cancel_attacks` only, `force_retreat:false`**. Loopback-or-token auth like the other POST routes. |
+| rules (`realtime_intent.py`) | `PROMOTED_FAST_PATH_FAMILIES` is now **5** (test-enforced ≤ 5): `emergency:force_retreat` (후퇴/퇴각/철수/빠져/물러나/retreat/fall back), `emergency:hold_position` (홀드/제자리/멈춰 서/hold [position]), `emergency:cancel_attacks` (멈춰/정지/그만/스톱/공격 취소/stop/cancel the attack — attacks only), `micro:stimpack` (+marine/marauder), `micro:siege_mode` (+unsiege). Emergency rules require the *whole* utterance to be one emergency word plus filler (전원, 지금, 해, now…), so "일꾼 후퇴", "스팀팩 멈춰", "후퇴 홀드" go to the model. Negation (…하지 마, don't …, 말고, 아니, not) vetoes every rule, and `transcript_negates_emergency` now also knows 홀드/제자리/멈추/정지/그만/stop/hold so a *model* emergency call is still blocked by "멈추지 마" / "don't stop". The 15 other families go back to the model. |
+| emergency = rule **and** model | Exact words → rule first (client, at transcript time). Everything else (compound, ambiguous, negated, other flags such as 일꾼 대피) → the model's call, validated server-side as before (clarification precedence, raw-control guard, negation guards). No second-model veto. |
+| parity | `electron/fixtures/fast_rules.json` (766 phrases: probes, the 160 corpus utterances, every recorded real-ASR transcript; regenerate with `scripts/bench/gen_fast_fixture.py`) is asserted by `electron/test/fast_rules.test.js` (JS) and `tests/test_realtime_intent.py::test_js_fixture_is_current` (Python) — a rule edit on one side only fails a test. |
+| ASR variants | The word probe (below) showed `스팀팩` is transcribed as `SteamPec/Steampack/…` in 6 of 6 draws and `시즈모드` as `시지 모드/시재 모드` in 4 of 6, so the stim/siege rules also accept `steam p[ae]c?k?` and `시[지재] 모드`. |
+
+## R2-B. Which five families — the data
+
+`scripts/bench/family_ranking.py` (needs no network; data = 1 396 recorded real-ASR calls of the 160-row corpus: 4 prompt variants × up to 3 reps) scores the frozen previous-round grammar (`scripts/bench/candidate_families.py`, all 24 candidate families) against corpus gold. "saved" = what a rule-first client gains per answer, `t_tool_call − t_transcript` (the transcript is the earliest moment any rule can fire). Full table: `docs/bench-results/family_ranking.md|json`.
+
+| family | answers | correct | precision | coverage of its tier's calls | median saved ms | total saved s | decision |
+|---|---|---|---|---|---|---|---|
+| `emergency:force_retreat` | 79 | 75 | 95 % (4 wrong = adv-030 "Emergency retreat." ×2, 철수시켜라 in a worker-evacuation row ×2) | 40.7 % | 344 | 55.4 | **IN** (mandatory; the 4 misses are closed by the whole-utterance rule: "일꾼을 안전한 곳으로 철수시켜라" now abstains, and "Emergency retreat." (the ASR-truncated injection row) no longer matches, because `emergency` is not accepted filler — it goes to the model, which refuses) |
+| `macro:production` | 71 | 71 | 100 % | 30.1 % | 355 | 43.0 | out: macro only has to meet ≤ 10 s |
+| `micro:siege_mode` | 34 (+8 unsiege) | 34 | 100 % | 12.2 % | 314 | 26.9 | **IN** (best micro by savings) |
+| `micro:stimpack` | 31 (+11 marine/marauder) | 31 | 100 % | 11.1 % | 568 | 25.0 | **IN** (largest per-answer saving of the big families) |
+| `macro:research_stimpack` | 14 | 14 | 100 % | 5.9 % | 390 | 22.8 | out (macro) |
+| `macro:expand` | 26 | 26 | 100 % | 11.0 % | 340 | 20.8 | out (macro) |
+| `emergency:cancel_attacks` | 37 | 37 | 100 % | 19.1 % | 37 | 12.3 | **IN** (mandatory; "stop") |
+| `emergency:hold_position` | 21 | 21 | 100 % | 10.8 % | 56 | 8.0 | **IN** (mandatory; "hold") |
+| all other 16 (auto turret, nuke, stop-expansion, banshee cloak, evacuate workers, medivac, yamato, …) | 5–21 each | all correct | 100 % | ≤ 10.8 % | 0–650 | ≤ 13.1 | out |
+
+Why these five: the user fixed retreat/hold/stop; for the remaining two slots micro is the tier whose latency matters (macro/operation have a 10 s budget), and stim and siege are the two micro families with the largest coverage and total saving at 100 % precision. `macro:production` saves more in total but is a macro command. Precision is 100 % for every family except `force_retreat` (95 % on the previous grammar), which is why the new emergency matcher is stricter (whole utterance = one emergency word).
+
+**Honest size of the win.** The rule can only fire when the *transcript* exists, and the model's tool call arrives a median ≈ 350 ms (p90 ≈ 2.1 s) after it. Offline blend on the same 1 396 calls (rule hit → decision at `t_transcript`, otherwise unchanged):
+
+| tier | model-only acc | rule-first acc | model-only p50 / p95 s | rule-first p50 / p95 s | unsafe |
+|---|---|---|---|---|---|
+| emergency | 89.2 % | **96.4 %** | 4.63 / 7.78 | **4.15 / 7.30** | 0 → 0 |
+| micro | 94.3 % | 94.3 % | 4.81 / 8.76 | 4.60 / 8.36 | 0 → 0 |
+| operation / macro | 88.1 / 85.2 % | unchanged | unchanged | unchanged | 0 |
+| all | 89.3 % | 90.3 % | 4.73 / 8.93 | 4.63 / 8.62 | 0.14 → 0.14 % |
+
+(load-inflated absolute times; the saving is the −0.1…−0.5 s difference.) The dominant cost is speech-end → transcript (ASR), not the model: in the word probe the transcription completes at p50 3.8 s / p95 7.7 s after the last sample (loaded), `speech_stopped` p50 2.9 s. The latency floor for emergencies is therefore the keyboard shortcut / on-screen button (`POST /api/emergency`, no ASR, no model), which is why they exist in parallel with voice.
+
+**Delta partials are NOT used.** `asr_words_probe` (276 TTS calls, 46 phrases, real ASR): every call streams deltas and 80 % deliver the first delta before `completed`, but the median lead is only 116 ms, and 13 calls had a partial that matches an emergency word while the final text does not — 12 of them "후퇴하지 마" / "후퇴하지 말고 공격해" whose deltas are `후`,`퇴`,`하지`… (a delta rule would retreat on "don't retreat"). The client therefore acts on the final transcript only (`docs/bench-results/asr_words_probe.md`).
+
+**ASR reliability of the bare emergency words** (6 draws each, TTS audio — synthetic, not human speech): 후퇴 6/6, 멈춰 6/6, 정지 6/6, 제자리 5/6 (1 no transcript), stop 6/6, hold 5/5, 철수 6/6, 홀드 2/6 (`Horde`, `Hold us.`, no transcript ×1 …), 그만 3/6 (`Come on.` ×2), 퇴각 2/6 (`체학`, `책각`, …), 스톱 4/6. Rule hit rates on those transcripts (new matcher): 후퇴 6/6, 멈춰 6/6, 정지 6/6, 철수 6/6, 제자리 5/5, 멈춰 서 6/6, 스톱 4/6, 홀드 2/5 transcripts. Misses simply go to the model path, which hears the audio. No negated phrase (후퇴하지 마, 멈추지 마, 정지하지 마, 그만하지 마, 홀드하지 마, don't stop/retreat/hold, 스팀팩 멈춰, 일꾼 멈춰/후퇴) executed in any of the 36+ negation draws (0 rule hits).
+
+## R2-C. Latency experiments (item 4) — adoption table
+
+Harness: shipped schema/session body, same 160-row corpus, real ASR, **rep 0 only (≈158 matched rows per config; rep 1 not finished — time cap)**, all configs interleaved in one process; direct-key auth because mint returned 429 (`realtime_client_secret_capacity_exhausted`) — identical `session.update`. Machine load average 40 → 314 (`docs/bench-results/latency_sweep.md` has per-invocation `uptime`). Model-path view vs baseline `vad350:both`; CIs are wide (n ≈ 158), none of the latency deltas is distinguishable from noise.
+
+| change | Δ accuracy pp [95 % CI] | unsafe | p50 / p95 (all) s, baseline → exp. | verdict |
+|---|---|---|---|---|
+| (a) pre-mint / warm socket | warm session vs cold-first utterance (12 rows × 2): p50 3.23 vs 4.16 s, paired median −0.48 s; cold start = mint p50 1.9 s + ws open p50 2.8 s + session.updated p50 3.2 s (loaded) | – | – | **already adopted** (the client mints at arm time, refreshes before expiry and keeps the socket); nothing new to change |
+| (b) VAD silence 200 ms | −1.9 [−5.7, +1.9] | 0 % | 4.75/9.33 → 4.68/9.15 | **DROP** (accuracy at the −2 pp floor, micro/emergency p50 not better) |
+| (b) VAD silence 500 ms | +0.6 [−1.9, +3.2] | 0 % | → 5.04/11.34 | DROP (slower) |
+| (b) semantic VAD, eagerness high | +0.6 [−1.9, +3.2] | 0 % | → 5.28/11.98 | DROP (slower) |
+| (c) lean prompt/tool 1 (−12 % tokens) | −1.3 [−5.1, +2.5] (macro 88.9 → 77.8 %) | 0 % | → 4.56/12.86 | DROP |
+| (c) lean prompt/tool 2 (−15 % tokens) | −2.5 [−7.0, +1.3] | 0 % | → 4.61/9.47 | DROP (fails −2 pp) |
+| (d) `tool_choice` = named function | −66.7 [−76.2, −57.1] | 0 % | no tool-call events | DROP — the proxy accepts it but the model answers with a text message containing JSON instead of a `function_call` |
+
+Nothing beyond the rule layer was adopted: no tested change lowered latency without costing accuracy or being within noise of baseline. VAD/prompt/eagerness were **not** re-tuned in shipping code. Targets: micro/emergency p50 — **not measured on a quiet machine**; the loaded numbers are 4.2–4.8 s for the model path and the rule path saves ≈0.1–0.5 s of that (the earlier quiet-machine run measured the model path at ≈1.5–1.9 s p50, so expect ≈1.2–1.8 s for rule-matched words; **[INFERENCE]**, not measured this session). Operation/macro p95 on the loaded machine: 6.9–12.2 s per config (baseline: operation 8.56, macro 6.87 s ≤ 10 s). Button/shortcut emergency path: one local HTTP round trip (`backend_handle` is reported per request).
+
+## R2-D. Not done / caveats
+
+* Quiet-machine latency per tier was not obtained (the machine stayed at load ≥ 40 for the whole session); the sweep has 1 rep, not 2.
+* Pre-minted secret hook exists in the harness but the product already pre-mints; no separate pre-mint A/B was possible because mint 429'd.
+* ASR probe audio is TTS, not human speech; real microphone audio will differ (accents, noise).
+* The native/Electron path (`voice.js` against a real socket, `response.cancel` semantics on the real proxy) was exercised only against a fake WebSocket; `response.cancel` of an in-flight response is assumed to behave as in the OpenAI Realtime docs. No Electron/pointer run was made.
+* `PRE_LIVE_JOURNEYS` evidence was not rebuilt: `web_gui` changes are limited to the realtime/emergency handlers and `_decide_realtime_intent`; `micromachine_live_session`, `command_execution`, `policy_modulation_provider` and status shaping are untouched. **Not verified** by building the journey bundles.
+
+---
+
 # Applied to the product — post-change numbers (branch `feat/apply-routing-policy`)
 
 > The sections below this one (from "Voice intent → ... (shipped schema, real ASR)") are the **before** analysis and are kept unchanged.

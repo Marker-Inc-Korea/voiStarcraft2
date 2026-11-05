@@ -1,0 +1,3044 @@
+{
+ "corpus_rows": 160,
+ "definition": "Report for the interleaved latency sweep -> docs/bench-results/latency_sweep.{json,md}.\n\n  BENCH_SCHEMA_MODULE=shipped_schema python latency_report.py [--group 'DIR|E0name|E1,E2,...' ...] [--warm runs_shipped/warm_probe_raw.json]\n\nViews (every call is re-scored with the CURRENT product decision layer):\n  model        = handler_outcome(transcript, tool_args); latency = t_tool_call_ms (end of speech -> tool-call args complete).\n  rule-first   = rule hit (realtime_intent.match_fast_path(transcript) or web_gui._micromachine_request_is_emergency(transcript, None))\n                 -> handler_outcome(transcript, None), latency = t_transcript_ms (input transcription completed; the client posts\n                 {transcript, fast:true} right then and cancels the response); non-hit -> the model view.\nOnly (row, rep) pairs completed by EVERY config of a group are used (matched design; incomplete pairs are dropped, never extrapolated).\nPaired comparison vs the group's baseline = bootstrap over rows (reps pooled, 2000 resamples, seed 7).\n",
+ "groups": [
+  {
+   "dir": "sweep_20261105",
+   "baseline": "rt:gpt-realtime:vad350:both",
+   "configs": {
+    "rt:gpt-realtime:vad350:both": {
+     "short": "vad350:both",
+     "n": 158,
+     "rule_hits": 25,
+     "rule_hit_rate": 0.158,
+     "auth": {
+      "direct_key": 156,
+      "mint": 2
+     },
+     "call_errors": 0,
+     "tiers": {
+      "all": {
+       "n": 158,
+       "model": {
+        "n": 158,
+        "sem": 0.943,
+        "sem_ci95": [
+         0.8953,
+         0.9697
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4750.25,
+        "p95_ms": 9326.875,
+        "mean_tokens": 4050.0,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4284.7,
+       "transcript_p95_ms": 10531.580000000002,
+       "rule_first": {
+        "n": 158,
+        "sem": 0.9494,
+        "sem_ci95": [
+         0.9033,
+         0.9741
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4732.2,
+        "p95_ms": 9326.875,
+        "mean_tokens": 4050.0,
+        "error_rate": 0.0
+       }
+      },
+      "micro": {
+       "n": 32,
+       "model": {
+        "n": 32,
+        "sem": 1.0,
+        "sem_ci95": [
+         0.8928,
+         1.0
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4889.55,
+        "p95_ms": 11059.154999999999,
+        "mean_tokens": 4083.0,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4018.15,
+       "transcript_p95_ms": 10248.06,
+       "rule_first": {
+        "n": 32,
+        "sem": 1.0,
+        "sem_ci95": [
+         0.8928,
+         1.0
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4757.6,
+        "p95_ms": 11599.31,
+        "mean_tokens": 4083.0,
+        "error_rate": 0.0
+       }
+      },
+      "emergency": {
+       "n": 22,
+       "model": {
+        "n": 22,
+        "sem": 0.9091,
+        "sem_ci95": [
+         0.7218,
+         0.9747
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4328.05,
+        "p95_ms": 9553.98,
+        "mean_tokens": 4068.8,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 3734.2,
+       "transcript_p95_ms": 7635.7,
+       "rule_first": {
+        "n": 22,
+        "sem": 1.0,
+        "sem_ci95": [
+         0.8513,
+         1.0
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4185.35,
+        "p95_ms": 7579.269999999999,
+        "mean_tokens": 4068.8,
+        "error_rate": 0.0
+       }
+      },
+      "operation": {
+       "n": 46,
+       "model": {
+        "n": 46,
+        "sem": 0.9348,
+        "sem_ci95": [
+         0.825,
+         0.9776
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 5068.65,
+        "p95_ms": 8560.175000000001,
+        "mean_tokens": 4146.1,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4654.9,
+       "transcript_p95_ms": 11135.915,
+       "rule_first": {
+        "n": 46,
+        "sem": 0.913,
+        "sem_ci95": [
+         0.7968,
+         0.9657
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 5068.65,
+        "p95_ms": 8560.175000000001,
+        "mean_tokens": 4146.1,
+        "error_rate": 0.0
+       }
+      },
+      "macro": {
+       "n": 27,
+       "model": {
+        "n": 27,
+        "sem": 0.8889,
+        "sem_ci95": [
+         0.7194,
+         0.9615
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4624.65,
+        "p95_ms": 6868.35,
+        "mean_tokens": 3935.8,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4343.2,
+       "transcript_p95_ms": 8840.824999999999,
+       "rule_first": {
+        "n": 27,
+        "sem": 0.8889,
+        "sem_ci95": [
+         0.7194,
+         0.9615
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4624.65,
+        "p95_ms": 6868.35,
+        "mean_tokens": 3935.8,
+        "error_rate": 0.0
+       }
+      },
+      "adversarial": {
+       "n": 31,
+       "model": {
+        "n": 31,
+        "sem": 0.9677,
+        "sem_ci95": [
+         0.8381,
+         0.9943
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4750.25,
+        "p95_ms": 8536.445,
+        "mean_tokens": 3959.7,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4133.45,
+       "transcript_p95_ms": 9642.794999999995,
+       "rule_first": {
+        "n": 31,
+        "sem": 0.9677,
+        "sem_ci95": [
+         0.8381,
+         0.9943
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4750.25,
+        "p95_ms": 8536.445,
+        "mean_tokens": 3959.7,
+        "error_rate": 0.0
+       }
+      }
+     },
+     "t_speech_stopped_p50_ms": 3029.3999999999996
+    },
+    "rt:gpt-realtime:vad200:both": {
+     "short": "vad200:both",
+     "n": 158,
+     "rule_hits": 26,
+     "rule_hit_rate": 0.165,
+     "auth": {
+      "direct_key": 158
+     },
+     "call_errors": 0,
+     "tiers": {
+      "all": {
+       "n": 158,
+       "model": {
+        "n": 158,
+        "sem": 0.9241,
+        "sem_ci95": [
+         0.8719,
+         0.956
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4683.8,
+        "p95_ms": 9149.355000000001,
+        "mean_tokens": 4096.5,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4287.7,
+       "transcript_p95_ms": 11171.519999999995,
+       "rule_first": {
+        "n": 158,
+        "sem": 0.9241,
+        "sem_ci95": [
+         0.8719,
+         0.956
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4598.6,
+        "p95_ms": 9837.75,
+        "mean_tokens": 4096.5,
+        "error_rate": 0.0
+       }
+      },
+      "micro": {
+       "n": 32,
+       "model": {
+        "n": 32,
+        "sem": 1.0,
+        "sem_ci95": [
+         0.8928,
+         1.0
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 5193.4,
+        "p95_ms": 10788.599999999999,
+        "mean_tokens": 4083.3,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4678.9,
+       "transcript_p95_ms": 11219.0,
+       "rule_first": {
+        "n": 32,
+        "sem": 1.0,
+        "sem_ci95": [
+         0.8928,
+         1.0
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 5064.9,
+        "p95_ms": 11365.55,
+        "mean_tokens": 4083.3,
+        "error_rate": 0.0
+       }
+      },
+      "emergency": {
+       "n": 22,
+       "model": {
+        "n": 22,
+        "sem": 0.8636,
+        "sem_ci95": [
+         0.6666,
+         0.9525
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4769.049999999999,
+        "p95_ms": 8674.189999999999,
+        "mean_tokens": 4070.6,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4184.75,
+       "transcript_p95_ms": 9180.875,
+       "rule_first": {
+        "n": 22,
+        "sem": 0.9091,
+        "sem_ci95": [
+         0.7218,
+         0.9747
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4272.8,
+        "p95_ms": 8674.189999999999,
+        "mean_tokens": 4070.6,
+        "error_rate": 0.0
+       }
+      },
+      "operation": {
+       "n": 46,
+       "model": {
+        "n": 46,
+        "sem": 0.8696,
+        "sem_ci95": [
+         0.7433,
+         0.9388
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4552.049999999999,
+        "p95_ms": 8916.15,
+        "mean_tokens": 4133.7,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 3601.8,
+       "transcript_p95_ms": 10862.219999999996,
+       "rule_first": {
+        "n": 46,
+        "sem": 0.8478,
+        "sem_ci95": [
+         0.7178,
+         0.9243
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4526.9,
+        "p95_ms": 8916.15,
+        "mean_tokens": 4133.7,
+        "error_rate": 0.0
+       }
+      },
+      "macro": {
+       "n": 27,
+       "model": {
+        "n": 27,
+        "sem": 0.963,
+        "sem_ci95": [
+         0.8172,
+         0.9934
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4397.3,
+        "p95_ms": 6946.42,
+        "mean_tokens": 4085.6,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 3920.9,
+       "transcript_p95_ms": 10683.409999999998,
+       "rule_first": {
+        "n": 27,
+        "sem": 0.963,
+        "sem_ci95": [
+         0.8172,
+         0.9934
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4397.3,
+        "p95_ms": 6946.42,
+        "mean_tokens": 4085.6,
+        "error_rate": 0.0
+       }
+      },
+      "adversarial": {
+       "n": 31,
+       "model": {
+        "n": 31,
+        "sem": 0.9355,
+        "sem_ci95": [
+         0.7928,
+         0.9821
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4263.7,
+        "p95_ms": 8053.6,
+        "mean_tokens": 4082.7,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 5191.85,
+       "transcript_p95_ms": 10557.559999999992,
+       "rule_first": {
+        "n": 31,
+        "sem": 0.9355,
+        "sem_ci95": [
+         0.7928,
+         0.9821
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4263.7,
+        "p95_ms": 8053.6,
+        "mean_tokens": 4082.7,
+        "error_rate": 0.0
+       }
+      }
+     },
+     "t_speech_stopped_p50_ms": 2977.1,
+     "vs_baseline": {
+      "accuracy_delta_pp_model": {
+       "delta_pp": -1.9,
+       "ci95_pp": [
+        -5.7,
+        1.9
+       ],
+       "n_pairs": 158
+      },
+      "accuracy_delta_pp_rule_first": {
+       "delta_pp": -2.53,
+       "ci95_pp": [
+        -6.33,
+        1.27
+       ],
+       "n_pairs": 158
+      },
+      "latency_delta": {
+       "micro_p50": {
+        "model": {
+         "base": 4890,
+         "exp": 5193,
+         "delta_ms": 304,
+         "ci95_ms": [
+          -901,
+          1654
+         ]
+        },
+        "rule_first": {
+         "base": 4758,
+         "exp": 5065,
+         "delta_ms": 307,
+         "ci95_ms": [
+          -701,
+          1656
+         ]
+        }
+       },
+       "emergency_p50": {
+        "model": {
+         "base": 4328,
+         "exp": 4769,
+         "delta_ms": 441,
+         "ci95_ms": [
+          -1582,
+          1435
+         ]
+        },
+        "rule_first": {
+         "base": 4185,
+         "exp": 4273,
+         "delta_ms": 87,
+         "ci95_ms": [
+          -2094,
+          1428
+         ]
+        }
+       },
+       "operation_p95": {
+        "model": {
+         "base": 8560,
+         "exp": 8916,
+         "delta_ms": 356,
+         "ci95_ms": [
+          -13486,
+          4306
+         ]
+        },
+        "rule_first": {
+         "base": 8560,
+         "exp": 8916,
+         "delta_ms": 356,
+         "ci95_ms": [
+          -13486,
+          4306
+         ]
+        }
+       },
+       "macro_p95": {
+        "model": {
+         "base": 6868,
+         "exp": 6946,
+         "delta_ms": 78,
+         "ci95_ms": [
+          -2930,
+          4526
+         ]
+        },
+        "rule_first": {
+         "base": 6868,
+         "exp": 6946,
+         "delta_ms": 78,
+         "ci95_ms": [
+          -2930,
+          4526
+         ]
+        }
+       },
+       "all_p50": {
+        "model": {
+         "base": 4750,
+         "exp": 4684,
+         "delta_ms": -66,
+         "ci95_ms": [
+          -592,
+          306
+         ]
+        },
+        "rule_first": {
+         "base": 4732,
+         "exp": 4599,
+         "delta_ms": -134,
+         "ci95_ms": [
+          -607,
+          236
+         ]
+        }
+       },
+       "all_p95": {
+        "model": {
+         "base": 9327,
+         "exp": 9149,
+         "delta_ms": -178,
+         "ci95_ms": [
+          -2092,
+          2614
+         ]
+        },
+        "rule_first": {
+         "base": 9327,
+         "exp": 9838,
+         "delta_ms": 511,
+         "ci95_ms": [
+          -2119,
+          2633
+         ]
+        }
+       }
+      },
+      "tier_latency_checks": [
+       {
+        "tier": "micro",
+        "stat": "p50_ms",
+        "base": 4890,
+        "exp": 5193,
+        "improves": false
+       },
+       {
+        "tier": "emergency",
+        "stat": "p50_ms",
+        "base": 4328,
+        "exp": 4769,
+        "improves": false
+       },
+       {
+        "tier": "operation",
+        "stat": "p95_ms",
+        "base": 8560,
+        "exp": 8916,
+        "improves": false
+       },
+       {
+        "tier": "macro",
+        "stat": "p95_ms",
+        "base": 6868,
+        "exp": 6946,
+        "improves": false
+       }
+      ],
+      "unsafe_all": 0.0,
+      "criteria": {
+       "accuracy_delta_gt_-2pp": true,
+       "unsafe_le_2pct": true,
+       "latency_improves": false
+      },
+      "verdict": "DROP"
+     }
+    },
+    "rt:gpt-realtime:vad500:both": {
+     "short": "vad500:both",
+     "n": 158,
+     "rule_hits": 25,
+     "rule_hit_rate": 0.158,
+     "auth": {
+      "mint": 2,
+      "direct_key": 156
+     },
+     "call_errors": 0,
+     "tiers": {
+      "all": {
+       "n": 158,
+       "model": {
+        "n": 158,
+        "sem": 0.9494,
+        "sem_ci95": [
+         0.9033,
+         0.9741
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 5040.35,
+        "p95_ms": 11342.180000000002,
+        "mean_tokens": 4102.0,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4430.2,
+       "transcript_p95_ms": 11453.699999999995,
+       "rule_first": {
+        "n": 158,
+        "sem": 0.9557,
+        "sem_ci95": [
+         0.9114,
+         0.9784
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4878.549999999999,
+        "p95_ms": 11193.68,
+        "mean_tokens": 4102.0,
+        "error_rate": 0.0
+       }
+      },
+      "micro": {
+       "n": 32,
+       "model": {
+        "n": 32,
+        "sem": 0.9688,
+        "sem_ci95": [
+         0.8426,
+         0.9945
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 5076.95,
+        "p95_ms": 8995.375,
+        "mean_tokens": 4085.7,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4641.2,
+       "transcript_p95_ms": 8930.15,
+       "rule_first": {
+        "n": 32,
+        "sem": 0.9688,
+        "sem_ci95": [
+         0.8426,
+         0.9945
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4843.65,
+        "p95_ms": 8995.375,
+        "mean_tokens": 4085.7,
+        "error_rate": 0.0
+       }
+      },
+      "emergency": {
+       "n": 22,
+       "model": {
+        "n": 22,
+        "sem": 0.8636,
+        "sem_ci95": [
+         0.6666,
+         0.9525
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4602.8,
+        "p95_ms": 11432.229999999998,
+        "mean_tokens": 4071.0,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 3892.0,
+       "transcript_p95_ms": 10585.7,
+       "rule_first": {
+        "n": 22,
+        "sem": 0.9545,
+        "sem_ci95": [
+         0.782,
+         0.9919
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 3757.7,
+        "p95_ms": 10468.739999999998,
+        "mean_tokens": 4071.0,
+        "error_rate": 0.0
+       }
+      },
+      "operation": {
+       "n": 46,
+       "model": {
+        "n": 46,
+        "sem": 0.9348,
+        "sem_ci95": [
+         0.825,
+         0.9776
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 5327.9,
+        "p95_ms": 12234.775000000001,
+        "mean_tokens": 4147.7,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4459.95,
+       "transcript_p95_ms": 11260.1,
+       "rule_first": {
+        "n": 46,
+        "sem": 0.913,
+        "sem_ci95": [
+         0.7968,
+         0.9657
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 5327.6,
+        "p95_ms": 12234.775000000001,
+        "mean_tokens": 4147.7,
+        "error_rate": 0.0
+       }
+      },
+      "macro": {
+       "n": 27,
+       "model": {
+        "n": 27,
+        "sem": 0.963,
+        "sem_ci95": [
+         0.8172,
+         0.9934
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 5075.8,
+        "p95_ms": 10690.609999999999,
+        "mean_tokens": 4086.3,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4590.55,
+       "transcript_p95_ms": 10813.025000000001,
+       "rule_first": {
+        "n": 27,
+        "sem": 0.963,
+        "sem_ci95": [
+         0.8172,
+         0.9934
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 5075.8,
+        "p95_ms": 10690.609999999999,
+        "mean_tokens": 4086.3,
+        "error_rate": 0.0
+       }
+      },
+      "adversarial": {
+       "n": 31,
+       "model": {
+        "n": 31,
+        "sem": 1.0,
+        "sem_ci95": [
+         0.8897,
+         1.0
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4589.7,
+        "p95_ms": 8712.65,
+        "mean_tokens": 4086.6,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 3822.1,
+       "transcript_p95_ms": 12131.5,
+       "rule_first": {
+        "n": 31,
+        "sem": 1.0,
+        "sem_ci95": [
+         0.8897,
+         1.0
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4589.7,
+        "p95_ms": 8712.65,
+        "mean_tokens": 4086.6,
+        "error_rate": 0.0
+       }
+      }
+     },
+     "t_speech_stopped_p50_ms": 2991.25,
+     "vs_baseline": {
+      "accuracy_delta_pp_model": {
+       "delta_pp": 0.63,
+       "ci95_pp": [
+        -1.9,
+        3.16
+       ],
+       "n_pairs": 158
+      },
+      "accuracy_delta_pp_rule_first": {
+       "delta_pp": 0.63,
+       "ci95_pp": [
+        -1.9,
+        3.16
+       ],
+       "n_pairs": 158
+      },
+      "latency_delta": {
+       "micro_p50": {
+        "model": {
+         "base": 4890,
+         "exp": 5077,
+         "delta_ms": 187,
+         "ci95_ms": [
+          -845,
+          1179
+         ]
+        },
+        "rule_first": {
+         "base": 4758,
+         "exp": 4844,
+         "delta_ms": 86,
+         "ci95_ms": [
+          -904,
+          1049
+         ]
+        }
+       },
+       "emergency_p50": {
+        "model": {
+         "base": 4328,
+         "exp": 4603,
+         "delta_ms": 275,
+         "ci95_ms": [
+          -1470,
+          1483
+         ]
+        },
+        "rule_first": {
+         "base": 4185,
+         "exp": 3758,
+         "delta_ms": -428,
+         "ci95_ms": [
+          -1794,
+          665
+         ]
+        }
+       },
+       "operation_p95": {
+        "model": {
+         "base": 8560,
+         "exp": 12235,
+         "delta_ms": 3675,
+         "ci95_ms": [
+          -10001,
+          17861
+         ]
+        },
+        "rule_first": {
+         "base": 8560,
+         "exp": 12235,
+         "delta_ms": 3675,
+         "ci95_ms": [
+          -10001,
+          17861
+         ]
+        }
+       },
+       "macro_p95": {
+        "model": {
+         "base": 6868,
+         "exp": 10691,
+         "delta_ms": 3822,
+         "ci95_ms": [
+          157,
+          4852
+         ]
+        },
+        "rule_first": {
+         "base": 6868,
+         "exp": 10691,
+         "delta_ms": 3822,
+         "ci95_ms": [
+          157,
+          4852
+         ]
+        }
+       },
+       "all_p50": {
+        "model": {
+         "base": 4750,
+         "exp": 5040,
+         "delta_ms": 290,
+         "ci95_ms": [
+          -161,
+          717
+         ]
+        },
+        "rule_first": {
+         "base": 4732,
+         "exp": 4879,
+         "delta_ms": 146,
+         "ci95_ms": [
+          -249,
+          524
+         ]
+        }
+       },
+       "all_p95": {
+        "model": {
+         "base": 9327,
+         "exp": 11342,
+         "delta_ms": 2015,
+         "ci95_ms": [
+          -1063,
+          4263
+         ]
+        },
+        "rule_first": {
+         "base": 9327,
+         "exp": 11194,
+         "delta_ms": 1867,
+         "ci95_ms": [
+          -1283,
+          4167
+         ]
+        }
+       }
+      },
+      "tier_latency_checks": [
+       {
+        "tier": "micro",
+        "stat": "p50_ms",
+        "base": 4890,
+        "exp": 5077,
+        "improves": false
+       },
+       {
+        "tier": "emergency",
+        "stat": "p50_ms",
+        "base": 4328,
+        "exp": 4603,
+        "improves": false
+       },
+       {
+        "tier": "operation",
+        "stat": "p95_ms",
+        "base": 8560,
+        "exp": 12235,
+        "improves": false
+       },
+       {
+        "tier": "macro",
+        "stat": "p95_ms",
+        "base": 6868,
+        "exp": 10691,
+        "improves": false
+       }
+      ],
+      "unsafe_all": 0.0,
+      "criteria": {
+       "accuracy_delta_gt_-2pp": true,
+       "unsafe_le_2pct": true,
+       "latency_improves": false
+      },
+      "verdict": "DROP"
+     }
+    },
+    "rt:gpt-realtime:semhigh:both": {
+     "short": "semhigh:both",
+     "n": 158,
+     "rule_hits": 26,
+     "rule_hit_rate": 0.165,
+     "auth": {
+      "direct_key": 158
+     },
+     "call_errors": 0,
+     "tiers": {
+      "all": {
+       "n": 158,
+       "model": {
+        "n": 158,
+        "sem": 0.9494,
+        "sem_ci95": [
+         0.9033,
+         0.9741
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 5283.549999999999,
+        "p95_ms": 11982.410000000009,
+        "mean_tokens": 4100.6,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4356.2,
+       "transcript_p95_ms": 14190.85999999998,
+       "rule_first": {
+        "n": 158,
+        "sem": 0.9494,
+        "sem_ci95": [
+         0.9033,
+         0.9741
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4922.5,
+        "p95_ms": 11684.79,
+        "mean_tokens": 4100.6,
+        "error_rate": 0.0
+       }
+      },
+      "micro": {
+       "n": 32,
+       "model": {
+        "n": 32,
+        "sem": 1.0,
+        "sem_ci95": [
+         0.8928,
+         1.0
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4897.4,
+        "p95_ms": 13307.234999999997,
+        "mean_tokens": 4083.7,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4224.2,
+       "transcript_p95_ms": 11782.65,
+       "rule_first": {
+        "n": 32,
+        "sem": 1.0,
+        "sem_ci95": [
+         0.8928,
+         1.0
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4586.450000000001,
+        "p95_ms": 10179.069999999998,
+        "mean_tokens": 4083.7,
+        "error_rate": 0.0
+       }
+      },
+      "emergency": {
+       "n": 22,
+       "model": {
+        "n": 22,
+        "sem": 0.9091,
+        "sem_ci95": [
+         0.7218,
+         0.9747
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 5735.5,
+        "p95_ms": 8145.105,
+        "mean_tokens": 4072.3,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4481.8,
+       "transcript_p95_ms": 7759.409999999999,
+       "rule_first": {
+        "n": 22,
+        "sem": 0.9545,
+        "sem_ci95": [
+         0.782,
+         0.9919
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4481.8,
+        "p95_ms": 8161.87,
+        "mean_tokens": 4072.3,
+        "error_rate": 0.0
+       }
+      },
+      "operation": {
+       "n": 46,
+       "model": {
+        "n": 46,
+        "sem": 0.913,
+        "sem_ci95": [
+         0.7968,
+         0.9657
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 5476.200000000001,
+        "p95_ms": 14726.25,
+        "mean_tokens": 4144.8,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4360.9,
+       "transcript_p95_ms": 16023.219999999996,
+       "rule_first": {
+        "n": 46,
+        "sem": 0.8913,
+        "sem_ci95": [
+         0.7696,
+         0.9527
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 5381.5,
+        "p95_ms": 14726.25,
+        "mean_tokens": 4144.8,
+        "error_rate": 0.0
+       }
+      },
+      "macro": {
+       "n": 27,
+       "model": {
+        "n": 27,
+        "sem": 0.9259,
+        "sem_ci95": [
+         0.7663,
+         0.9794
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 5543.8,
+        "p95_ms": 11385.8,
+        "mean_tokens": 4087.7,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4837.4,
+       "transcript_p95_ms": 14974.929999999998,
+       "rule_first": {
+        "n": 27,
+        "sem": 0.9259,
+        "sem_ci95": [
+         0.7663,
+         0.9794
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 5543.8,
+        "p95_ms": 11385.8,
+        "mean_tokens": 4087.7,
+        "error_rate": 0.0
+       }
+      },
+      "adversarial": {
+       "n": 31,
+       "model": {
+        "n": 31,
+        "sem": 1.0,
+        "sem_ci95": [
+         0.8897,
+         1.0
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4517.1,
+        "p95_ms": 10298.2,
+        "mean_tokens": 4083.5,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 3536.8,
+       "transcript_p95_ms": 10670.744999999997,
+       "rule_first": {
+        "n": 31,
+        "sem": 1.0,
+        "sem_ci95": [
+         0.8897,
+         1.0
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4517.1,
+        "p95_ms": 10298.2,
+        "mean_tokens": 4083.5,
+        "error_rate": 0.0
+       }
+      }
+     },
+     "t_speech_stopped_p50_ms": 3309.75,
+     "vs_baseline": {
+      "accuracy_delta_pp_model": {
+       "delta_pp": 0.63,
+       "ci95_pp": [
+        -1.9,
+        3.16
+       ],
+       "n_pairs": 158
+      },
+      "accuracy_delta_pp_rule_first": {
+       "delta_pp": 0.0,
+       "ci95_pp": [
+        -2.53,
+        2.53
+       ],
+       "n_pairs": 158
+      },
+      "latency_delta": {
+       "micro_p50": {
+        "model": {
+         "base": 4890,
+         "exp": 4897,
+         "delta_ms": 8,
+         "ci95_ms": [
+          -966,
+          1512
+         ]
+        },
+        "rule_first": {
+         "base": 4758,
+         "exp": 4586,
+         "delta_ms": -171,
+         "ci95_ms": [
+          -1485,
+          1155
+         ]
+        }
+       },
+       "emergency_p50": {
+        "model": {
+         "base": 4328,
+         "exp": 5736,
+         "delta_ms": 1407,
+         "ci95_ms": [
+          -909,
+          2337
+         ]
+        },
+        "rule_first": {
+         "base": 4185,
+         "exp": 4482,
+         "delta_ms": 296,
+         "ci95_ms": [
+          -1459,
+          2103
+         ]
+        }
+       },
+       "operation_p95": {
+        "model": {
+         "base": 8560,
+         "exp": 14726,
+         "delta_ms": 6166,
+         "ci95_ms": [
+          -9283,
+          10599
+         ]
+        },
+        "rule_first": {
+         "base": 8560,
+         "exp": 14726,
+         "delta_ms": 6166,
+         "ci95_ms": [
+          -9283,
+          10599
+         ]
+        }
+       },
+       "macro_p95": {
+        "model": {
+         "base": 6868,
+         "exp": 11386,
+         "delta_ms": 4517,
+         "ci95_ms": [
+          -1016,
+          9349
+         ]
+        },
+        "rule_first": {
+         "base": 6868,
+         "exp": 11386,
+         "delta_ms": 4517,
+         "ci95_ms": [
+          -1016,
+          9349
+         ]
+        }
+       },
+       "all_p50": {
+        "model": {
+         "base": 4750,
+         "exp": 5284,
+         "delta_ms": 533,
+         "ci95_ms": [
+          -66,
+          915
+         ]
+        },
+        "rule_first": {
+         "base": 4732,
+         "exp": 4922,
+         "delta_ms": 190,
+         "ci95_ms": [
+          -292,
+          706
+         ]
+        }
+       },
+       "all_p95": {
+        "model": {
+         "base": 9327,
+         "exp": 11982,
+         "delta_ms": 2656,
+         "ci95_ms": [
+          -47,
+          7791
+         ]
+        },
+        "rule_first": {
+         "base": 9327,
+         "exp": 11685,
+         "delta_ms": 2358,
+         "ci95_ms": [
+          -894,
+          7736
+         ]
+        }
+       }
+      },
+      "tier_latency_checks": [
+       {
+        "tier": "micro",
+        "stat": "p50_ms",
+        "base": 4890,
+        "exp": 4897,
+        "improves": false
+       },
+       {
+        "tier": "emergency",
+        "stat": "p50_ms",
+        "base": 4328,
+        "exp": 5736,
+        "improves": false
+       },
+       {
+        "tier": "operation",
+        "stat": "p95_ms",
+        "base": 8560,
+        "exp": 14726,
+        "improves": false
+       },
+       {
+        "tier": "macro",
+        "stat": "p95_ms",
+        "base": 6868,
+        "exp": 11386,
+        "improves": false
+       }
+      ],
+      "unsafe_all": 0.0,
+      "criteria": {
+       "accuracy_delta_gt_-2pp": true,
+       "unsafe_le_2pct": true,
+       "latency_improves": false
+      },
+      "verdict": "DROP"
+     }
+    },
+    "rt:gpt-realtime:vad350:lean1": {
+     "short": "vad350:lean1",
+     "n": 158,
+     "rule_hits": 27,
+     "rule_hit_rate": 0.171,
+     "auth": {
+      "direct_key": 157,
+      "mint": 1
+     },
+     "call_errors": 0,
+     "tiers": {
+      "all": {
+       "n": 158,
+       "model": {
+        "n": 158,
+        "sem": 0.9304,
+        "sem_ci95": [
+         0.8796,
+         0.9607
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4561.55,
+        "p95_ms": 12860.510000000002,
+        "mean_tokens": 3625.2,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4089.5,
+       "transcript_p95_ms": 12914.589999999995,
+       "rule_first": {
+        "n": 158,
+        "sem": 0.9304,
+        "sem_ci95": [
+         0.8796,
+         0.9607
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4558.8,
+        "p95_ms": 12860.425000000003,
+        "mean_tokens": 3625.2,
+        "error_rate": 0.0
+       }
+      },
+      "micro": {
+       "n": 32,
+       "model": {
+        "n": 32,
+        "sem": 1.0,
+        "sem_ci95": [
+         0.8928,
+         1.0
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 5304.2,
+        "p95_ms": 13357.234999999999,
+        "mean_tokens": 3611.9,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 5112.2,
+       "transcript_p95_ms": 13588.650000000001,
+       "rule_first": {
+        "n": 32,
+        "sem": 1.0,
+        "sem_ci95": [
+         0.8928,
+         1.0
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 5204.95,
+        "p95_ms": 13357.18,
+        "mean_tokens": 3611.9,
+        "error_rate": 0.0
+       }
+      },
+      "emergency": {
+       "n": 22,
+       "model": {
+        "n": 22,
+        "sem": 0.9545,
+        "sem_ci95": [
+         0.782,
+         0.9919
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4340.25,
+        "p95_ms": 7539.224999999999,
+        "mean_tokens": 3598.5,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4261.6,
+       "transcript_p95_ms": 8322.179999999998,
+       "rule_first": {
+        "n": 22,
+        "sem": 1.0,
+        "sem_ci95": [
+         0.8513,
+         1.0
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4261.6,
+        "p95_ms": 6225.78,
+        "mean_tokens": 3598.5,
+        "error_rate": 0.0
+       }
+      },
+      "operation": {
+       "n": 46,
+       "model": {
+        "n": 46,
+        "sem": 0.9348,
+        "sem_ci95": [
+         0.825,
+         0.9776
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4789.4,
+        "p95_ms": 9166.75,
+        "mean_tokens": 3661.1,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 3988.6,
+       "transcript_p95_ms": 7845.619999999998,
+       "rule_first": {
+        "n": 46,
+        "sem": 0.913,
+        "sem_ci95": [
+         0.7968,
+         0.9657
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4789.4,
+        "p95_ms": 9166.75,
+        "mean_tokens": 3661.1,
+        "error_rate": 0.0
+       }
+      },
+      "macro": {
+       "n": 27,
+       "model": {
+        "n": 27,
+        "sem": 0.7778,
+        "sem_ci95": [
+         0.5924,
+         0.8939
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4024.9,
+        "p95_ms": 12798.289999999999,
+        "mean_tokens": 3611.0,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 3364.6,
+       "transcript_p95_ms": 9734.289999999999,
+       "rule_first": {
+        "n": 27,
+        "sem": 0.7778,
+        "sem_ci95": [
+         0.5924,
+         0.8939
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4024.9,
+        "p95_ms": 12798.289999999999,
+        "mean_tokens": 3611.0,
+        "error_rate": 0.0
+       }
+      },
+      "adversarial": {
+       "n": 31,
+       "model": {
+        "n": 31,
+        "sem": 0.9677,
+        "sem_ci95": [
+         0.8381,
+         0.9943
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4464.4,
+        "p95_ms": 14580.8,
+        "mean_tokens": 3617.1,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 3700.2,
+       "transcript_p95_ms": 14707.494999999992,
+       "rule_first": {
+        "n": 31,
+        "sem": 0.9677,
+        "sem_ci95": [
+         0.8381,
+         0.9943
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4464.4,
+        "p95_ms": 14580.8,
+        "mean_tokens": 3617.1,
+        "error_rate": 0.0
+       }
+      }
+     },
+     "t_speech_stopped_p50_ms": 2595.8,
+     "vs_baseline": {
+      "accuracy_delta_pp_model": {
+       "delta_pp": -1.27,
+       "ci95_pp": [
+        -5.06,
+        2.53
+       ],
+       "n_pairs": 158
+      },
+      "accuracy_delta_pp_rule_first": {
+       "delta_pp": -1.9,
+       "ci95_pp": [
+        -5.7,
+        1.9
+       ],
+       "n_pairs": 158
+      },
+      "latency_delta": {
+       "micro_p50": {
+        "model": {
+         "base": 4890,
+         "exp": 5304,
+         "delta_ms": 415,
+         "ci95_ms": [
+          -735,
+          1518
+         ]
+        },
+        "rule_first": {
+         "base": 4758,
+         "exp": 5205,
+         "delta_ms": 447,
+         "ci95_ms": [
+          -757,
+          1343
+         ]
+        }
+       },
+       "emergency_p50": {
+        "model": {
+         "base": 4328,
+         "exp": 4340,
+         "delta_ms": 12,
+         "ci95_ms": [
+          -1449,
+          899
+         ]
+        },
+        "rule_first": {
+         "base": 4185,
+         "exp": 4262,
+         "delta_ms": 76,
+         "ci95_ms": [
+          -1547,
+          1190
+         ]
+        }
+       },
+       "operation_p95": {
+        "model": {
+         "base": 8560,
+         "exp": 9167,
+         "delta_ms": 607,
+         "ci95_ms": [
+          -12919,
+          2345
+         ]
+        },
+        "rule_first": {
+         "base": 8560,
+         "exp": 9167,
+         "delta_ms": 607,
+         "ci95_ms": [
+          -12919,
+          2345
+         ]
+        }
+       },
+       "macro_p95": {
+        "model": {
+         "base": 6868,
+         "exp": 12798,
+         "delta_ms": 5930,
+         "ci95_ms": [
+          -1334,
+          12920
+         ]
+        },
+        "rule_first": {
+         "base": 6868,
+         "exp": 12798,
+         "delta_ms": 5930,
+         "ci95_ms": [
+          -1334,
+          12920
+         ]
+        }
+       },
+       "all_p50": {
+        "model": {
+         "base": 4750,
+         "exp": 4562,
+         "delta_ms": -189,
+         "ci95_ms": [
+          -603,
+          242
+         ]
+        },
+        "rule_first": {
+         "base": 4732,
+         "exp": 4559,
+         "delta_ms": -173,
+         "ci95_ms": [
+          -611,
+          227
+         ]
+        }
+       },
+       "all_p95": {
+        "model": {
+         "base": 9327,
+         "exp": 12861,
+         "delta_ms": 3534,
+         "ci95_ms": [
+          -332,
+          6051
+         ]
+        },
+        "rule_first": {
+         "base": 9327,
+         "exp": 12860,
+         "delta_ms": 3534,
+         "ci95_ms": [
+          -1020,
+          5958
+         ]
+        }
+       }
+      },
+      "tier_latency_checks": [
+       {
+        "tier": "micro",
+        "stat": "p50_ms",
+        "base": 4890,
+        "exp": 5304,
+        "improves": false
+       },
+       {
+        "tier": "emergency",
+        "stat": "p50_ms",
+        "base": 4328,
+        "exp": 4340,
+        "improves": false
+       },
+       {
+        "tier": "operation",
+        "stat": "p95_ms",
+        "base": 8560,
+        "exp": 9167,
+        "improves": false
+       },
+       {
+        "tier": "macro",
+        "stat": "p95_ms",
+        "base": 6868,
+        "exp": 12798,
+        "improves": false
+       }
+      ],
+      "unsafe_all": 0.0,
+      "criteria": {
+       "accuracy_delta_gt_-2pp": true,
+       "unsafe_le_2pct": true,
+       "latency_improves": false
+      },
+      "verdict": "DROP"
+     }
+    },
+    "rt:gpt-realtime:vad350:lean2": {
+     "short": "vad350:lean2",
+     "n": 158,
+     "rule_hits": 27,
+     "rule_hit_rate": 0.171,
+     "auth": {
+      "direct_key": 157,
+      "mint": 1
+     },
+     "call_errors": 0,
+     "tiers": {
+      "all": {
+       "n": 158,
+       "model": {
+        "n": 158,
+        "sem": 0.9177,
+        "sem_ci95": [
+         0.8643,
+         0.9513
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4613.45,
+        "p95_ms": 9467.530000000002,
+        "mean_tokens": 3430.7,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4198.8,
+       "transcript_p95_ms": 10634.8,
+       "rule_first": {
+        "n": 158,
+        "sem": 0.9241,
+        "sem_ci95": [
+         0.8719,
+         0.956
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4607.9,
+        "p95_ms": 10087.185000000003,
+        "mean_tokens": 3430.7,
+        "error_rate": 0.0
+       }
+      },
+      "micro": {
+       "n": 32,
+       "model": {
+        "n": 32,
+        "sem": 1.0,
+        "sem_ci95": [
+         0.8928,
+         1.0
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4602.85,
+        "p95_ms": 12502.25,
+        "mean_tokens": 3418.2,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4390.55,
+       "transcript_p95_ms": 11364.224999999999,
+       "rule_first": {
+        "n": 32,
+        "sem": 1.0,
+        "sem_ci95": [
+         0.8928,
+         1.0
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4602.85,
+        "p95_ms": 12217.845,
+        "mean_tokens": 3418.2,
+        "error_rate": 0.0
+       }
+      },
+      "emergency": {
+       "n": 22,
+       "model": {
+        "n": 22,
+        "sem": 0.9091,
+        "sem_ci95": [
+         0.7218,
+         0.9747
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4760.75,
+        "p95_ms": 9979.189999999999,
+        "mean_tokens": 3402.6,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4111.9,
+       "transcript_p95_ms": 10715.15,
+       "rule_first": {
+        "n": 22,
+        "sem": 1.0,
+        "sem_ci95": [
+         0.8513,
+         1.0
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4307.9,
+        "p95_ms": 10453.505,
+        "mean_tokens": 3402.6,
+        "error_rate": 0.0
+       }
+      },
+      "operation": {
+       "n": 46,
+       "model": {
+        "n": 46,
+        "sem": 0.8913,
+        "sem_ci95": [
+         0.7696,
+         0.9527
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4387.049999999999,
+        "p95_ms": 9270.0,
+        "mean_tokens": 3476.3,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 3518.65,
+       "transcript_p95_ms": 7524.525000000001,
+       "rule_first": {
+        "n": 46,
+        "sem": 0.8696,
+        "sem_ci95": [
+         0.7433,
+         0.9388
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4387.049999999999,
+        "p95_ms": 9270.0,
+        "mean_tokens": 3476.3,
+        "error_rate": 0.0
+       }
+      },
+      "macro": {
+       "n": 27,
+       "model": {
+        "n": 27,
+        "sem": 0.8148,
+        "sem_ci95": [
+         0.633,
+         0.9182
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 5151.1,
+        "p95_ms": 8266.76,
+        "mean_tokens": 3417.0,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4668.1,
+       "transcript_p95_ms": 8658.05,
+       "rule_first": {
+        "n": 27,
+        "sem": 0.8148,
+        "sem_ci95": [
+         0.633,
+         0.9182
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 5151.1,
+        "p95_ms": 8266.76,
+        "mean_tokens": 3417.0,
+        "error_rate": 0.0
+       }
+      },
+      "adversarial": {
+       "n": 31,
+       "model": {
+        "n": 31,
+        "sem": 0.9677,
+        "sem_ci95": [
+         0.8381,
+         0.9943
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4523.8,
+        "p95_ms": 7791.1,
+        "mean_tokens": 3407.9,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4416.05,
+       "transcript_p95_ms": 9588.534999999996,
+       "rule_first": {
+        "n": 31,
+        "sem": 0.9677,
+        "sem_ci95": [
+         0.8381,
+         0.9943
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4523.8,
+        "p95_ms": 7791.1,
+        "mean_tokens": 3407.9,
+        "error_rate": 0.0
+       }
+      }
+     },
+     "t_speech_stopped_p50_ms": 2887.25,
+     "vs_baseline": {
+      "accuracy_delta_pp_model": {
+       "delta_pp": -2.53,
+       "ci95_pp": [
+        -6.96,
+        1.27
+       ],
+       "n_pairs": 158
+      },
+      "accuracy_delta_pp_rule_first": {
+       "delta_pp": -2.53,
+       "ci95_pp": [
+        -6.96,
+        1.27
+       ],
+       "n_pairs": 158
+      },
+      "latency_delta": {
+       "micro_p50": {
+        "model": {
+         "base": 4890,
+         "exp": 4603,
+         "delta_ms": -287,
+         "ci95_ms": [
+          -1277,
+          705
+         ]
+        },
+        "rule_first": {
+         "base": 4758,
+         "exp": 4603,
+         "delta_ms": -155,
+         "ci95_ms": [
+          -954,
+          644
+         ]
+        }
+       },
+       "emergency_p50": {
+        "model": {
+         "base": 4328,
+         "exp": 4761,
+         "delta_ms": 433,
+         "ci95_ms": [
+          -1079,
+          2088
+         ]
+        },
+        "rule_first": {
+         "base": 4185,
+         "exp": 4308,
+         "delta_ms": 123,
+         "ci95_ms": [
+          -1625,
+          2085
+         ]
+        }
+       },
+       "operation_p95": {
+        "model": {
+         "base": 8560,
+         "exp": 9270,
+         "delta_ms": 710,
+         "ci95_ms": [
+          -12006,
+          9059
+         ]
+        },
+        "rule_first": {
+         "base": 8560,
+         "exp": 9270,
+         "delta_ms": 710,
+         "ci95_ms": [
+          -12006,
+          9059
+         ]
+        }
+       },
+       "macro_p95": {
+        "model": {
+         "base": 6868,
+         "exp": 8267,
+         "delta_ms": 1398,
+         "ci95_ms": [
+          -1708,
+          2543
+         ]
+        },
+        "rule_first": {
+         "base": 6868,
+         "exp": 8267,
+         "delta_ms": 1398,
+         "ci95_ms": [
+          -1708,
+          2543
+         ]
+        }
+       },
+       "all_p50": {
+        "model": {
+         "base": 4750,
+         "exp": 4613,
+         "delta_ms": -137,
+         "ci95_ms": [
+          -521,
+          276
+         ]
+        },
+        "rule_first": {
+         "base": 4732,
+         "exp": 4608,
+         "delta_ms": -124,
+         "ci95_ms": [
+          -468,
+          218
+         ]
+        }
+       },
+       "all_p95": {
+        "model": {
+         "base": 9327,
+         "exp": 9468,
+         "delta_ms": 141,
+         "ci95_ms": [
+          -1422,
+          2674
+         ]
+        },
+        "rule_first": {
+         "base": 9327,
+         "exp": 10087,
+         "delta_ms": 760,
+         "ci95_ms": [
+          -1698,
+          2528
+         ]
+        }
+       }
+      },
+      "tier_latency_checks": [
+       {
+        "tier": "micro",
+        "stat": "p50_ms",
+        "base": 4890,
+        "exp": 4603,
+        "improves": true
+       },
+       {
+        "tier": "emergency",
+        "stat": "p50_ms",
+        "base": 4328,
+        "exp": 4761,
+        "improves": false
+       },
+       {
+        "tier": "operation",
+        "stat": "p95_ms",
+        "base": 8560,
+        "exp": 9270,
+        "improves": false
+       },
+       {
+        "tier": "macro",
+        "stat": "p95_ms",
+        "base": 6868,
+        "exp": 8267,
+        "improves": false
+       }
+      ],
+      "unsafe_all": 0.0,
+      "criteria": {
+       "accuracy_delta_gt_-2pp": false,
+       "unsafe_le_2pct": true,
+       "latency_improves": true
+      },
+      "verdict": "DROP"
+     }
+    }
+   },
+   "missing_configs": [],
+   "completed_counts_raw": {
+    "rt:gpt-realtime:vad350:both": 160,
+    "rt:gpt-realtime:vad200:both": 160,
+    "rt:gpt-realtime:vad500:both": 159,
+    "rt:gpt-realtime:semhigh:both": 159,
+    "rt:gpt-realtime:vad350:lean1": 158,
+    "rt:gpt-realtime:vad350:lean2": 158
+   },
+   "matched_pairs": 158,
+   "matched_rows": 158,
+   "reps_in_matched": [
+    0
+   ],
+   "invocations": [
+    {
+     "configs": [
+      "rt:gpt-realtime:vad350:both",
+      "rt:gpt-realtime:vad200:both",
+      "rt:gpt-realtime:vad500:both",
+      "rt:gpt-realtime:semhigh:both",
+      "rt:gpt-realtime:vad350:lean1",
+      "rt:gpt-realtime:vad350:lean2",
+      "rt:gpt-realtime:vad350:both_tcn"
+     ],
+     "reps": 2,
+     "concurrency": 6,
+     "start": "2026-11-05T23:15:55",
+     "uptime_before": "23:15  up 18 days, 53 mins, 3 users, load averages: 40.75 22.71 15.00",
+     "max_minutes": 27.0,
+     "auth": "direct",
+     "end": "2026-11-05T23:43:06",
+     "uptime_after": "23:43  up 18 days,  1:20, 3 users, load averages: 289.68 144.87 70.74",
+     "elapsed_s": 1631,
+     "stats": {
+      "rt:gpt-realtime:vad350:both": {
+       "done": 100,
+       "cached": 6,
+       "skipped_deadline": 1,
+       "fatal": 0
+      },
+      "rt:gpt-realtime:vad200:both": {
+       "done": 101,
+       "cached": 5,
+       "skipped_deadline": 1,
+       "fatal": 0
+      },
+      "rt:gpt-realtime:vad500:both": {
+       "done": 99,
+       "cached": 6,
+       "skipped_deadline": 1,
+       "fatal": 0
+      },
+      "rt:gpt-realtime:semhigh:both": {
+       "done": 101,
+       "cached": 5,
+       "skipped_deadline": 0,
+       "fatal": 0
+      },
+      "rt:gpt-realtime:vad350:lean1": {
+       "done": 100,
+       "cached": 5,
+       "skipped_deadline": 1,
+       "fatal": 0
+      },
+      "rt:gpt-realtime:vad350:lean2": {
+       "done": 100,
+       "cached": 5,
+       "skipped_deadline": 1,
+       "fatal": 0
+      },
+      "rt:gpt-realtime:vad350:both_tcn": {
+       "done": 100,
+       "cached": 5,
+       "skipped_deadline": 1,
+       "fatal": 0
+      }
+     }
+    },
+    {
+     "configs": [
+      "rt:gpt-realtime:vad350:both",
+      "rt:gpt-realtime:vad200:both",
+      "rt:gpt-realtime:vad500:both",
+      "rt:gpt-realtime:semhigh:both",
+      "rt:gpt-realtime:vad350:lean1",
+      "rt:gpt-realtime:vad350:lean2"
+     ],
+     "reps": 2,
+     "concurrency": 6,
+     "start": "2026-11-05T23:43:40",
+     "uptime_before": "23:43  up 18 days,  1:21, 3 users, load averages: 296.96 160.43 78.95",
+     "max_minutes": 12.0,
+     "auth": "direct",
+     "end": "2026-11-05T23:55:51",
+     "uptime_after": "23:55  up 18 days,  1:33, 3 users, load averages: 314.39 295.97 208.80",
+     "elapsed_s": 732,
+     "stats": {
+      "rt:gpt-realtime:vad350:both": {
+       "done": 54,
+       "cached": 106,
+       "skipped_deadline": 0,
+       "fatal": 0
+      },
+      "rt:gpt-realtime:vad200:both": {
+       "done": 54,
+       "cached": 106,
+       "skipped_deadline": 0,
+       "fatal": 0
+      },
+      "rt:gpt-realtime:vad500:both": {
+       "done": 53,
+       "cached": 106,
+       "skipped_deadline": 1,
+       "fatal": 0
+      },
+      "rt:gpt-realtime:semhigh:both": {
+       "done": 53,
+       "cached": 106,
+       "skipped_deadline": 1,
+       "fatal": 0
+      },
+      "rt:gpt-realtime:vad350:lean1": {
+       "done": 53,
+       "cached": 105,
+       "skipped_deadline": 2,
+       "fatal": 0
+      },
+      "rt:gpt-realtime:vad350:lean2": {
+       "done": 52,
+       "cached": 106,
+       "skipped_deadline": 2,
+       "fatal": 0
+      }
+     }
+    }
+   ]
+  },
+  {
+   "dir": "sweep_20261105",
+   "baseline": "rt:gpt-realtime:vad350:both",
+   "configs": {
+    "rt:gpt-realtime:vad350:both": {
+     "short": "vad350:both",
+     "n": 105,
+     "rule_hits": 18,
+     "rule_hit_rate": 0.171,
+     "auth": {
+      "direct_key": 103,
+      "mint": 2
+     },
+     "call_errors": 0,
+     "tiers": {
+      "all": {
+       "n": 105,
+       "model": {
+        "n": 105,
+        "sem": 0.9333,
+        "sem_ci95": [
+         0.8687,
+         0.9673
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4747.6,
+        "p95_ms": 8700.47,
+        "mean_tokens": 4026.2,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4051.4,
+       "transcript_p95_ms": 10119.2,
+       "rule_first": {
+        "n": 105,
+        "sem": 0.9429,
+        "sem_ci95": [
+         0.8809,
+         0.9736
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4731.0,
+        "p95_ms": 8683.17,
+        "mean_tokens": 4026.2,
+        "error_rate": 0.0
+       }
+      },
+      "micro": {
+       "n": 20,
+       "model": {
+        "n": 20,
+        "sem": 1.0,
+        "sem_ci95": [
+         0.8389,
+         1.0
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4617.700000000001,
+        "p95_ms": 10671.665000000006,
+        "mean_tokens": 4084.9,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4018.15,
+       "transcript_p95_ms": 8438.050000000001,
+       "rule_first": {
+        "n": 20,
+        "sem": 1.0,
+        "sem_ci95": [
+         0.8389,
+         1.0
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4617.700000000001,
+        "p95_ms": 10671.665000000006,
+        "mean_tokens": 4084.9,
+        "error_rate": 0.0
+       }
+      },
+      "emergency": {
+       "n": 17,
+       "model": {
+        "n": 17,
+        "sem": 0.9412,
+        "sem_ci95": [
+         0.7302,
+         0.9895
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4321.3,
+        "p95_ms": 7315.6799999999985,
+        "mean_tokens": 4067.5,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 3568.65,
+       "transcript_p95_ms": 6250.3,
+       "rule_first": {
+        "n": 17,
+        "sem": 1.0,
+        "sem_ci95": [
+         0.8157,
+         1.0
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 3734.2,
+        "p95_ms": 6343.379999999999,
+        "mean_tokens": 4067.5,
+        "error_rate": 0.0
+       }
+      },
+      "operation": {
+       "n": 34,
+       "model": {
+        "n": 34,
+        "sem": 0.9412,
+        "sem_ci95": [
+         0.8091,
+         0.9837
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 5106.1,
+        "p95_ms": 8255.855,
+        "mean_tokens": 4152.1,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4915.6,
+       "transcript_p95_ms": 10904.66,
+       "rule_first": {
+        "n": 34,
+        "sem": 0.9412,
+        "sem_ci95": [
+         0.8091,
+         0.9837
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 5106.1,
+        "p95_ms": 8255.855,
+        "mean_tokens": 4152.1,
+        "error_rate": 0.0
+       }
+      },
+      "macro": {
+       "n": 13,
+       "model": {
+        "n": 13,
+        "sem": 0.7692,
+        "sem_ci95": [
+         0.4974,
+         0.9182
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4664.25,
+        "p95_ms": 7985.464999999998,
+        "mean_tokens": 3772.5,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4655.45,
+       "transcript_p95_ms": 9605.864999999998,
+       "rule_first": {
+        "n": 13,
+        "sem": 0.7692,
+        "sem_ci95": [
+         0.4974,
+         0.9182
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4664.25,
+        "p95_ms": 7985.464999999998,
+        "mean_tokens": 3772.5,
+        "error_rate": 0.0
+       }
+      },
+      "adversarial": {
+       "n": 21,
+       "model": {
+        "n": 21,
+        "sem": 0.9524,
+        "sem_ci95": [
+         0.7733,
+         0.9915
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4750.25,
+        "p95_ms": 8156.535000000001,
+        "mean_tokens": 3890.3,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 3827.6499999999996,
+       "transcript_p95_ms": 8779.345000000001,
+       "rule_first": {
+        "n": 21,
+        "sem": 0.9524,
+        "sem_ci95": [
+         0.7733,
+         0.9915
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 4750.25,
+        "p95_ms": 8156.535000000001,
+        "mean_tokens": 3890.3,
+        "error_rate": 0.0
+       }
+      }
+     },
+     "t_speech_stopped_p50_ms": 3040.7
+    },
+    "rt:gpt-realtime:vad350:both_tcn": {
+     "short": "vad350:both_tcn",
+     "n": 105,
+     "rule_hits": 18,
+     "rule_hit_rate": 0.171,
+     "auth": {
+      "direct_key": 105
+     },
+     "call_errors": 0,
+     "tiers": {
+      "all": {
+       "n": 105,
+       "model": {
+        "n": 105,
+        "sem": 0.2667,
+        "sem_ci95": [
+         0.1914,
+         0.3584
+        ],
+        "unsafe": 0.0,
+        "p50_ms": null,
+        "p95_ms": null,
+        "mean_tokens": 4103.7,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 3809.3,
+       "transcript_p95_ms": 9312.429999999997,
+       "rule_first": {
+        "n": 105,
+        "sem": 0.2667,
+        "sem_ci95": [
+         0.1914,
+         0.3584
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 3676.3,
+        "p95_ms": 5768.589999999999,
+        "mean_tokens": 4103.7,
+        "error_rate": 0.0
+       }
+      },
+      "micro": {
+       "n": 20,
+       "model": {
+        "n": 20,
+        "sem": 0.35,
+        "sem_ci95": [
+         0.1812,
+         0.5671
+        ],
+        "unsafe": 0.0,
+        "p50_ms": null,
+        "p95_ms": null,
+        "mean_tokens": 4084.2,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 3864.2,
+       "transcript_p95_ms": 5330.1,
+       "rule_first": {
+        "n": 20,
+        "sem": 0.35,
+        "sem_ci95": [
+         0.1812,
+         0.5671
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 3219.5,
+        "p95_ms": 4788.639999999999,
+        "mean_tokens": 4084.2,
+        "error_rate": 0.0
+       }
+      },
+      "emergency": {
+       "n": 17,
+       "model": {
+        "n": 17,
+        "sem": 0.7647,
+        "sem_ci95": [
+         0.5274,
+         0.9045
+        ],
+        "unsafe": 0.0,
+        "p50_ms": null,
+        "p95_ms": null,
+        "mean_tokens": 4069.3,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 4381.05,
+       "transcript_p95_ms": 5849.45,
+       "rule_first": {
+        "n": 17,
+        "sem": 0.7647,
+        "sem_ci95": [
+         0.5274,
+         0.9045
+        ],
+        "unsafe": 0.0,
+        "p50_ms": 3809.3,
+        "p95_ms": 5970.739999999999,
+        "mean_tokens": 4069.3,
+        "error_rate": 0.0
+       }
+      },
+      "operation": {
+       "n": 34,
+       "model": {
+        "n": 34,
+        "sem": 0.0,
+        "sem_ci95": [
+         0.0,
+         0.1015
+        ],
+        "unsafe": 0.0,
+        "p50_ms": null,
+        "p95_ms": null,
+        "mean_tokens": 4153.3,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 3986.2,
+       "transcript_p95_ms": 10897.029999999995,
+       "rule_first": {
+        "n": 34,
+        "sem": 0.0,
+        "sem_ci95": [
+         0.0,
+         0.1015
+        ],
+        "unsafe": 0.0,
+        "p50_ms": null,
+        "p95_ms": null,
+        "mean_tokens": 4153.3,
+        "error_rate": 0.0
+       }
+      },
+      "macro": {
+       "n": 13,
+       "model": {
+        "n": 13,
+        "sem": 0.0,
+        "sem_ci95": [
+         0.0,
+         0.2281
+        ],
+        "unsafe": 0.0,
+        "p50_ms": null,
+        "p95_ms": null,
+        "mean_tokens": 4085.2,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 3241.75,
+       "transcript_p95_ms": 8470.164999999997,
+       "rule_first": {
+        "n": 13,
+        "sem": 0.0,
+        "sem_ci95": [
+         0.0,
+         0.2281
+        ],
+        "unsafe": 0.0,
+        "p50_ms": null,
+        "p95_ms": null,
+        "mean_tokens": 4085.2,
+        "error_rate": 0.0
+       }
+      },
+      "adversarial": {
+       "n": 21,
+       "model": {
+        "n": 21,
+        "sem": 0.381,
+        "sem_ci95": [
+         0.2075,
+         0.5912
+        ],
+        "unsafe": 0.0,
+        "p50_ms": null,
+        "p95_ms": null,
+        "mean_tokens": 4081.0,
+        "error_rate": 0.0
+       },
+       "transcript_p50_ms": 3664.4,
+       "transcript_p95_ms": 17579.309999999994,
+       "rule_first": {
+        "n": 21,
+        "sem": 0.381,
+        "sem_ci95": [
+         0.2075,
+         0.5912
+        ],
+        "unsafe": 0.0,
+        "p50_ms": null,
+        "p95_ms": null,
+        "mean_tokens": 4081.0,
+        "error_rate": 0.0
+       }
+      }
+     },
+     "t_speech_stopped_p50_ms": 2911.7,
+     "vs_baseline": {
+      "accuracy_delta_pp_model": {
+       "delta_pp": -66.67,
+       "ci95_pp": [
+        -76.19,
+        -57.14
+       ],
+       "n_pairs": 105
+      },
+      "accuracy_delta_pp_rule_first": {
+       "delta_pp": -67.62,
+       "ci95_pp": [
+        -77.14,
+        -58.1
+       ],
+       "n_pairs": 105
+      },
+      "latency_delta": {
+       "micro_p50": {
+        "model": null,
+        "rule_first": {
+         "base": 4618,
+         "exp": 3220,
+         "delta_ms": -1398,
+         "ci95_ms": [
+          -2696,
+          184
+         ]
+        }
+       },
+       "emergency_p50": {
+        "model": null,
+        "rule_first": {
+         "base": 3734,
+         "exp": 3809,
+         "delta_ms": 75,
+         "ci95_ms": [
+          -1564,
+          2071
+         ]
+        }
+       },
+       "operation_p95": {
+        "model": null,
+        "rule_first": null
+       },
+       "macro_p95": {
+        "model": null,
+        "rule_first": null
+       },
+       "all_p50": {
+        "model": null,
+        "rule_first": {
+         "base": 4731,
+         "exp": 3676,
+         "delta_ms": -1055,
+         "ci95_ms": [
+          -1784,
+          324
+         ]
+        }
+       },
+       "all_p95": {
+        "model": null,
+        "rule_first": {
+         "base": 8683,
+         "exp": 5769,
+         "delta_ms": -2915,
+         "ci95_ms": [
+          -4199,
+          -1658
+         ]
+        }
+       }
+      },
+      "tier_latency_checks": [],
+      "unsafe_all": 0.0,
+      "criteria": {
+       "accuracy_delta_gt_-2pp": false,
+       "unsafe_le_2pct": true,
+       "latency_improves": false
+      },
+      "verdict": "DROP"
+     }
+    }
+   },
+   "missing_configs": [],
+   "completed_counts_raw": {
+    "rt:gpt-realtime:vad350:both": 160,
+    "rt:gpt-realtime:vad350:both_tcn": 105
+   },
+   "matched_pairs": 105,
+   "matched_rows": 105,
+   "reps_in_matched": [
+    0
+   ],
+   "invocations": [
+    {
+     "configs": [
+      "rt:gpt-realtime:vad350:both",
+      "rt:gpt-realtime:vad200:both",
+      "rt:gpt-realtime:vad500:both",
+      "rt:gpt-realtime:semhigh:both",
+      "rt:gpt-realtime:vad350:lean1",
+      "rt:gpt-realtime:vad350:lean2",
+      "rt:gpt-realtime:vad350:both_tcn"
+     ],
+     "reps": 2,
+     "concurrency": 6,
+     "start": "2026-11-05T23:15:55",
+     "uptime_before": "23:15  up 18 days, 53 mins, 3 users, load averages: 40.75 22.71 15.00",
+     "max_minutes": 27.0,
+     "auth": "direct",
+     "end": "2026-11-05T23:43:06",
+     "uptime_after": "23:43  up 18 days,  1:20, 3 users, load averages: 289.68 144.87 70.74",
+     "elapsed_s": 1631,
+     "stats": {
+      "rt:gpt-realtime:vad350:both": {
+       "done": 100,
+       "cached": 6,
+       "skipped_deadline": 1,
+       "fatal": 0
+      },
+      "rt:gpt-realtime:vad200:both": {
+       "done": 101,
+       "cached": 5,
+       "skipped_deadline": 1,
+       "fatal": 0
+      },
+      "rt:gpt-realtime:vad500:both": {
+       "done": 99,
+       "cached": 6,
+       "skipped_deadline": 1,
+       "fatal": 0
+      },
+      "rt:gpt-realtime:semhigh:both": {
+       "done": 101,
+       "cached": 5,
+       "skipped_deadline": 0,
+       "fatal": 0
+      },
+      "rt:gpt-realtime:vad350:lean1": {
+       "done": 100,
+       "cached": 5,
+       "skipped_deadline": 1,
+       "fatal": 0
+      },
+      "rt:gpt-realtime:vad350:lean2": {
+       "done": 100,
+       "cached": 5,
+       "skipped_deadline": 1,
+       "fatal": 0
+      },
+      "rt:gpt-realtime:vad350:both_tcn": {
+       "done": 100,
+       "cached": 5,
+       "skipped_deadline": 1,
+       "fatal": 0
+      }
+     }
+    },
+    {
+     "configs": [
+      "rt:gpt-realtime:vad350:both",
+      "rt:gpt-realtime:vad200:both",
+      "rt:gpt-realtime:vad500:both",
+      "rt:gpt-realtime:semhigh:both",
+      "rt:gpt-realtime:vad350:lean1",
+      "rt:gpt-realtime:vad350:lean2"
+     ],
+     "reps": 2,
+     "concurrency": 6,
+     "start": "2026-11-05T23:43:40",
+     "uptime_before": "23:43  up 18 days,  1:21, 3 users, load averages: 296.96 160.43 78.95",
+     "max_minutes": 12.0,
+     "auth": "direct",
+     "end": "2026-11-05T23:55:51",
+     "uptime_after": "23:55  up 18 days,  1:33, 3 users, load averages: 314.39 295.97 208.80",
+     "elapsed_s": 732,
+     "stats": {
+      "rt:gpt-realtime:vad350:both": {
+       "done": 54,
+       "cached": 106,
+       "skipped_deadline": 0,
+       "fatal": 0
+      },
+      "rt:gpt-realtime:vad200:both": {
+       "done": 54,
+       "cached": 106,
+       "skipped_deadline": 0,
+       "fatal": 0
+      },
+      "rt:gpt-realtime:vad500:both": {
+       "done": 53,
+       "cached": 106,
+       "skipped_deadline": 1,
+       "fatal": 0
+      },
+      "rt:gpt-realtime:semhigh:both": {
+       "done": 53,
+       "cached": 106,
+       "skipped_deadline": 1,
+       "fatal": 0
+      },
+      "rt:gpt-realtime:vad350:lean1": {
+       "done": 53,
+       "cached": 105,
+       "skipped_deadline": 2,
+       "fatal": 0
+      },
+      "rt:gpt-realtime:vad350:lean2": {
+       "done": 52,
+       "cached": 106,
+       "skipped_deadline": 2,
+       "fatal": 0
+      }
+     }
+    }
+   ]
+  }
+ ],
+ "warm_probe": {
+  "uptime_before": "23:17  up 18 days, 55 mins, 3 users, load averages: 16.07 19.34 14.64",
+  "start": "2026-11-05T23:17:51",
+  "rows": [
+   "mic-008",
+   "eme-011",
+   "ope-034",
+   "mac-005",
+   "adv-017",
+   "mic-024",
+   "eme-022",
+   "ope-026",
+   "mac-007",
+   "adv-021",
+   "mic-026",
+   "eme-007"
+  ],
+  "cold_starts": [
+   {
+    "mint_ms": 4400.9,
+    "mint_status": 200,
+    "auth": "mint",
+    "ws_open_ms": 2305.7,
+    "session_update_ms": 344.1
+   },
+   {
+    "mint_ms": 1100.9,
+    "mint_status": 200,
+    "auth": "mint",
+    "ws_open_ms": 4294.2,
+    "session_update_ms": 614.7
+   },
+   {
+    "mint_ms": 1570.4,
+    "mint_status": 200,
+    "auth": "mint",
+    "ws_open_ms": 2757.6,
+    "session_update_ms": 350.9
+   },
+   {
+    "mint_ms": 1296.4,
+    "mint_status": 200,
+    "auth": "mint",
+    "ws_open_ms": 2930.3,
+    "session_update_ms": 4022.3
+   },
+   {
+    "mint_ms": 1522.1,
+    "mint_status": 429,
+    "mint_body": "{\"error\":{\"code\":\"realtime_client_secret_capacity_exhausted\",\"message\":\"Realtime client secret capacity exhausted\",\"para",
+    "auth": "direct_key",
+    "ws_open_ms": 4217.1,
+    "session_update_ms": 4520.4
+   },
+   {
+    "mint_ms": 2216.2,
+    "mint_status": 429,
+    "mint_body": "{\"error\":{\"code\":\"realtime_client_secret_capacity_exhausted\",\"message\":\"Realtime client secret capacity exhausted\",\"para",
+    "auth": "direct_key",
+    "ws_open_ms": 2277.0,
+    "session_update_ms": 2849.1
+   },
+   {
+    "mint_ms": 1853.5,
+    "mint_status": 429,
+    "mint_body": "{\"error\":{\"code\":\"realtime_client_secret_capacity_exhausted\",\"message\":\"Realtime client secret capacity exhausted\",\"para",
+    "auth": "direct_key",
+    "ws_open_ms": 2285.2,
+    "session_update_ms": 3552.0
+   },
+   {
+    "mint_ms": 3531.2,
+    "mint_status": 429,
+    "mint_body": "{\"error\":{\"code\":\"realtime_client_secret_capacity_exhausted\",\"message\":\"Realtime client secret capacity exhausted\",\"para",
+    "auth": "direct_key",
+    "ws_open_ms": 3265.3,
+    "session_update_ms": 7547.0
+   },
+   {
+    "mint_ms": 1992.3,
+    "mint_status": 200,
+    "auth": "mint",
+    "ws_open_ms": 2442.7,
+    "session_update_ms": 975.6
+   },
+   {
+    "mint_ms": 768.5,
+    "mint_status": 429,
+    "mint_body": "{\"error\":{\"code\":\"realtime_client_secret_capacity_exhausted\",\"message\":\"Realtime client secret capacity exhausted\",\"para",
+    "auth": "direct_key",
+    "ws_open_ms": 2400.1,
+    "session_update_ms": 13796.6
+   },
+   {
+    "mint_ms": 6860.1,
+    "mint_status": 429,
+    "mint_body": "{\"error\":{\"code\":\"realtime_client_secret_capacity_exhausted\",\"message\":\"Realtime client secret capacity exhausted\",\"para",
+    "auth": "direct_key",
+    "ws_open_ms": 4475.1,
+    "session_update_ms": 15885.9
+   },
+   {
+    "mint_ms": 2454.9,
+    "mint_status": 200,
+    "auth": "mint",
+    "ws_open_ms": 4939.4,
+    "session_update_ms": 351.2
+   }
+  ],
+  "cold_start_summary": {
+   "mint_ms": {
+    "n": 12,
+    "p50": 1922.9,
+    "p95": 5507.539999999998,
+    "mean": 2464.0
+   },
+   "ws_open_ms": {
+    "n": 12,
+    "p50": 2843.95,
+    "p95": 4684.035,
+    "mean": 3215.8
+   },
+   "session_update_ms": {
+    "n": 12,
+    "p50": 3200.55,
+    "p95": 14736.784999999998,
+    "mean": 4567.5
+   },
+   "mint_http_status": {
+    "200": 6,
+    "429": 6
+   }
+  },
+  "summary": {
+   "cold_first": {
+    "n": 24,
+    "n_total": 24,
+    "t_tool_call_ms": {
+     "n": 24,
+     "p50": 4157.450000000001,
+     "p95": 9217.134999999998,
+     "mean": 5566.8
+    },
+    "t_transcript_ms": {
+     "n": 22,
+     "p50": 3810.05,
+     "p95": 9286.56,
+     "mean": 5232.2
+    }
+   },
+   "warm": {
+    "n": 24,
+    "n_total": 24,
+    "t_tool_call_ms": {
+     "n": 24,
+     "p50": 3234.15,
+     "p95": 8383.345,
+     "mean": 3863.3
+    },
+    "t_transcript_ms": {
+     "n": 24,
+     "p50": 1983.15,
+     "p95": 3708.5399999999986,
+     "mean": 2486.0
+    }
+   },
+   "paired_warm_minus_cold_tool_ms": {
+    "n": 24,
+    "median": -481.90000000000055,
+    "mean": -1703.5
+   },
+   "warm_first_vs_rest_tool_ms": {
+    "first": {
+     "n": 2,
+     "p50": 7146.95,
+     "p95": 9484.295,
+     "mean": 7146.9
+    },
+    "rest": {
+     "n": 22,
+     "p50": 3134.3,
+     "p95": 7978.809999999998,
+     "mean": 3564.8
+    }
+   }
+  },
+  "uptime_after": "23:26  up 18 days,  1:03, 3 users, load averages: 14.14 16.33 14.96",
+  "end": "2026-11-05T23:26:06"
+ },
+ "notes": "## Read this first (run conditions and caveats)\n\n- **Scope actually completed:** one interleaved sweep (2 invocations of `latency_sweep.py`, same cache dir `runs_shipped/sweep_20261105`, one shared pool of 6 workers, rep-major/row-shuffled/config-round-robin order). Only **rep 0** was completed for the six server_vad/semantic configs (E0 160, E1 160, E2 159, E3 159, E4 158, E5 158 of 160 rows; tables use the 158 rows finished by all six). **Rep 1 was not run** (time cap), so n = 158 calls per config (1 rep), not 2 x 160. E6 (`vad350:both_tcn`) has only 105 rows (it was dropped from invocation 2 after it proved non-functional, see below) and is compared on those 105 matched rows only. E7 (best silence + best prompt) was **not run**: no experiment passed ADOPT.\n- **Machine load was extreme and rising:** invocation 1 (23:15:55-23:43:06) started at load average 40.75 22.71 15.00 and ended at 289.68 144.87 70.74; invocation 2 (23:43:40-23:55:51) started at 296.96 160.43 78.95 and ended at 314.39 295.97 208.80. Absolute latencies (p50 ~4.7 s, p95 9-13 s) are therefore load-inflated and noisy; all comparisons are only valid *within* this interleaved run, and nearly every latency delta CI spans 0.\n- **Auth:** the proxy answered 429 `realtime_client_secret_capacity_exhausted` for secret minting, so the sweep used `--auth direct` (long-lived key + the identical `session.update` for every config; per-record `auth` field = `direct_key`). Session setup precedes the latency timer.\n- **`tcn` (tool_choice = named function) is functionally broken on this proxy/model:** the session is accepted (`session.updated` echoes `tool_choice={type:function,name:submit_command}`) but the model answers with an assistant *message* whose text is the JSON arguments (`response.output[0].type == \"message\"`), never a `function_call`, so no tool-call event ever fires. Model-path accuracy 26.7 % (only emergencies the deterministic layer catches by transcript are correct). DROP regardless of latency.\n- **Latency numbers are measured as in `pipelines.py`:** end of speech (last speech sample sent, trailing silence streamed in real time) -> `response.function_call_arguments.done`; `t_transcript_ms` = same origin -> `conversation.item.input_audio_transcription.completed`. Rule-first view = `realtime_intent.match_fast_path` or exact emergency phrase (`web_gui._micromachine_request_is_emergency`) hit on the recorded transcript -> decision from the transcript alone at `t_transcript_ms`; other rows keep the model path. Rule hits are ~16 % of calls.\n- **Verdict rule applied literally with point estimates** (ADOPT iff accuracy delta > -2 pp AND unsafe <= 2 % AND micro/emergency p50 or operation/macro p95 (<= 10 s) improves). With CIs this wide none of the latency changes is distinguishable from noise; \"DROP\" here means \"no demonstrated benefit under this load\", not \"proven worse\".\n- The semantic-VAD configs stream 8 s of trailing silence instead of 2.5 s (semantic_vad can wait longer); server_vad configs stream 2.5 s.\n- Warm/cold probe (below) ran concurrently with the first sweep invocation (cold-first and warm tasks of a rep ran concurrently with each other; 12 cold starts ran before them), so it shares the same overloaded machine/proxy.\n\n"
+}

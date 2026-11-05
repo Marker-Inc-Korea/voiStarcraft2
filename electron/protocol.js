@@ -171,7 +171,7 @@ function validateRealtimeSession(input) {
 }
 function validateIntentRequest(input) {
   plainObject(input, "intent request");
-  if (Object.keys(input).some(key => !["tool_arguments", "transcript", "latency_ms"].includes(key))) throw new TypeError("unexpected intent field");
+  if (Object.keys(input).some(key => !["tool_arguments", "transcript", "latency_ms", "fast", "path"].includes(key))) throw new TypeError("unexpected intent field");
   const transcript = typeof input.transcript === "string" ? input.transcript.trim().slice(0, 2000) : "";
   let toolArguments;
   if (input.tool_arguments !== undefined) {
@@ -179,12 +179,17 @@ function validateIntentRequest(input) {
     if (JSON.stringify(toolArguments).length > 32768) throw new TypeError("tool_arguments too large");
   }
   if (!toolArguments && !transcript) throw new TypeError("intent needs tool_arguments or transcript");
+  if (input.fast !== undefined && typeof input.fast !== "boolean") throw new TypeError("fast must be a boolean");
+  if (input.fast && toolArguments) throw new TypeError("a fast rule request carries no tool_arguments");
+  if (input.path !== undefined && input.path !== "rule" && input.path !== "model") throw new TypeError("path must be rule or model");
   const latency = {};
   for (const [key, value] of Object.entries(input.latency_ms && typeof input.latency_ms === "object" ? input.latency_ms : {})) {
     if (/^[a-z_]{1,48}$/.test(key) && (value === null || (typeof value === "number" && Number.isFinite(value)))) latency[key] = value === null ? null : Math.round(value);
   }
   const body = {transcript, latency_ms: latency};
   if (toolArguments) body.tool_arguments = toolArguments;
+  if (input.fast) body.fast = true;
+  if (input.path) body.path = input.path;
   return body;
 }
 // BOARD: cards published by the HUD renderer (board:publish) and forwarded to the tactical board window (board:cards).

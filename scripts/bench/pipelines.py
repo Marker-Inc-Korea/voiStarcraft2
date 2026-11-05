@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextvars
 import json
 import random
 import time
@@ -44,7 +45,7 @@ class Config:
     kind: str  # rt | tx | fp
     model: str = ""
     variant: str = "full"  # schema/instruction variant
-    endpoint: str = "manual"  # rt: manual | vad500 | vad300
+    endpoint: str = "manual"  # rt: manual | vadNNN (server_vad silence ms) | semhigh | semauto (semantic_vad eagerness; shipped mode)
     reasoning_effort: str = ""  # tx
     asr: bool = False  # rt: also request input transcription (records transcript; may add server load)
     transcript_source: str = "gold"  # tx: gold | asr (use recorded realtime transcripts)
@@ -158,8 +159,7 @@ async def _mint_shipped(cfg: Config) -> tuple[str | None, dict]:
     mint is not retried for 60 s (circuit breaker) so a capacity outage does not stall the whole run.
     Mint time is NOT part of the measured latency (the app mints before the user speaks)."""
     global _SHIPPED_MINT_DOWN_UNTIL
-    vad = None if cfg.endpoint == "manual" else int(cfg.endpoint.replace("vad", ""))
-    body = S.realtime_session_body(cfg.model, cfg.variant, vad_silence_ms=vad, transcription=True)
+    body = S.realtime_session_body(cfg.model, cfg.variant, endpoint=cfg.endpoint, transcription=True)
     n429 = 0
     t_start = time.perf_counter()
     if time.time() < _SHIPPED_MINT_DOWN_UNTIL:
@@ -196,9 +196,18 @@ async def _mint(cfg: Config) -> str | None:
     return r.json()["value"]
 
 
+# Optional pre-minted secret for the first _realtime_once in this task (latency_sweep.py mints the NEXT call's secret while the
+# current call runs; mint time is outside the measured latency either way, this only keeps it from occupying a session slot).
+PREMINTED: contextvars.ContextVar = contextvars.ContextVar("premint", default=None)
+
+
 async def _realtime_once(cfg: Config, pcm: bytes) -> dict:
     mint_info: dict = {}
-    if SHIPPED_MODE:
+    pre = PREMINTED.get()
+    if SHIPPED_MODE and pre is not None and not pre.get("used"):
+        pre["used"] = True
+        token, mint_info = pre["token"], pre["info"]
+    elif SHIPPED_MODE:
         token, mint_info = await _mint_shipped(cfg)
     else:
         token = await _mint(cfg)
@@ -215,6 +224,7 @@ async def _realtime_once(cfg: Config, pcm: bytes) -> dict:
                     "transcript": None, "t_transcript": None, "error": None, "resp_status": None}
         t0_box: dict = {}
         st["session_updated"] = asyncio.Event()
+        st["resp_done"] = asyncio.Event()
 
         async def reader():
             async for raw in ws:
@@ -226,6 +236,7 @@ async def _realtime_once(cfg: Config, pcm: bytes) -> dict:
                 if ty == "error":
                     st["error"] = json.dumps(ev.get("error", ev))[:300]
                     st["session_updated"].set()
+                    st["resp_done"].set()
                     return
                 if ty == "response.function_call_arguments.delta" and st["t_first"] is None:
                     st["t_first"] = now
@@ -237,6 +248,8 @@ async def _realtime_once(cfg: Config, pcm: bytes) -> dict:
                 elif ty == "conversation.item.input_audio_transcription.completed":
                     st["t_transcript"] = now
                     st["transcript"] = ev.get("transcript")
+                    if st["resp_done"].is_set() and st["args"] is not None:
+                        return
                 elif ty == "response.done":
                     r = ev.get("response", {})
                     st["usage"] = r.get("usage")
@@ -247,17 +260,17 @@ async def _realtime_once(cfg: Config, pcm: bytes) -> dict:
                             if item.get("type") == "function_call":
                                 st["args"] = item.get("arguments")
                                 st["t_done"] = st["t_done"] or now
-                    if cfg.asr and st["args"] is not None:
-                        for _ in range(100 if SHIPPED_MODE else 30):  # let the (async) input transcription land for recording
-                            if st["t_transcript"] is not None:
-                                break
-                            await asyncio.sleep(0.1)
-                    return
+                    st["out_types"] = [i.get("type") for i in r.get("output", [])]
+                    st["resp_done"].set()
+                    if not (cfg.asr and st["args"] is not None) or st["t_transcript"] is not None:
+                        return
+                    # keep READING events (the transcription may complete after response.done); the caller bounds the wait
 
         rtask = asyncio.create_task(reader())
         try:
             if auth == "direct_key":
-                sess = (S.realtime_session_body(cfg.model, cfg.variant, vad_silence_ms=None if cfg.endpoint == "manual" else int(cfg.endpoint.replace("vad", "")), transcription=True)["session"]
+                # identical session to the minted one (same builder) so both auth paths send the same knobs
+                sess = (S.realtime_session_body(cfg.model, cfg.variant, endpoint=cfg.endpoint, transcription=True)["session"]
                         if SHIPPED_MODE else realtime_session(cfg))
                 sess.pop("model", None)
                 await ws.send(json.dumps({"type": "session.update", "session": sess}))
@@ -274,12 +287,18 @@ async def _realtime_once(cfg: Config, pcm: bytes) -> dict:
                 await ws.send(json.dumps({"type": "response.create"}))
             else:
                 silence = base64.b64encode(b"\x00" * CHUNK_BYTES).decode()
-                for _ in range(int(2.5 / SILENCE_PACE_S)):
+                tail_s = 8.0 if cfg.endpoint.startswith("sem") else 2.5  # semantic_vad may wait longer for 'finished' speech
+                for _ in range(int(tail_s / SILENCE_PACE_S)):
                     if rtask.done() or st["t_done"] is not None:
                         break
                     await ws.send(json.dumps({"type": "input_audio_buffer.append", "audio": silence}))
                     await asyncio.sleep(SILENCE_PACE_S)
-            await asyncio.wait_for(rtask, timeout=60)
+            await asyncio.wait_for(st["resp_done"].wait(), timeout=60)
+            if not rtask.done():  # response.done seen; give the (async) input transcription up to 10 s to land for recording
+                try:
+                    await asyncio.wait_for(asyncio.shield(rtask), timeout=10)
+                except asyncio.TimeoutError:
+                    pass
         finally:
             if not rtask.done():
                 rtask.cancel()
@@ -319,7 +338,8 @@ async def run_realtime(cfg: Config, row: dict, rep: int) -> dict:
             "t_speech_stopped_ms": _ms(t0, res["t_speech_stopped"]) if res["t_speech_stopped"] else None,
             "t_transcript_ms": _ms(t0, res["t_transcript"]) if res["t_transcript"] else None,
             "total_ms": _ms(t0, res["t_done"]) if res["t_done"] else None,
-            "transcript": res["transcript"], "tokens": _rt_tokens(res["usage"])}
+            "transcript": res["transcript"], "out_types": res.get("out_types"), "resp_status": res.get("resp_status"),
+            "tokens": _rt_tokens(res["usage"])}
 
 
 # ---------------------------------------------------------------------------
