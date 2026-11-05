@@ -164,7 +164,7 @@ async def _mint_shipped(cfg: Config) -> tuple[str | None, dict]:
     t_start = time.perf_counter()
     if time.time() < _SHIPPED_MINT_DOWN_UNTIL:
         return None, {"mint_429": 0, "mint_ms": None, "mint_skipped_circuit_open": True}
-    for attempt in range(3):
+    for attempt in range(4):
         MINT_STATS["calls"] += 1
         r = await http().post("/realtime/client_secrets", json=body)
         if r.status_code == 200:
@@ -178,7 +178,7 @@ async def _mint_shipped(cfg: Config) -> tuple[str | None, dict]:
             continue
         raise RuntimeError(f"client_secrets {r.status_code} {r.text[:200]}")
     MINT_STATS["retries_exhausted"] += 1
-    _SHIPPED_MINT_DOWN_UNTIL = time.time() + 60
+    _SHIPPED_MINT_DOWN_UNTIL = time.time() + 45
     return None, {"mint_429": n429, "mint_ms": None, "mint_fallback_direct_key": True}
 
 
@@ -257,7 +257,8 @@ async def _realtime_once(cfg: Config, pcm: bytes) -> dict:
         rtask = asyncio.create_task(reader())
         try:
             if auth == "direct_key":
-                sess = realtime_session(cfg)
+                sess = (S.realtime_session_body(cfg.model, cfg.variant, vad_silence_ms=None if cfg.endpoint == "manual" else int(cfg.endpoint.replace("vad", "")), transcription=True)["session"]
+                        if SHIPPED_MODE else realtime_session(cfg))
                 sess.pop("model", None)
                 await ws.send(json.dumps({"type": "session.update", "session": sess}))
                 await asyncio.wait_for(st["session_updated"].wait(), 20)
@@ -441,12 +442,10 @@ TX_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "claude-haiku-5-5",
 def registry() -> dict[str, Config]:
     cfgs: list[Config] = []
     if SHIPPED_MODE:
-        for m in ("gpt-realtime", "gpt-realtime-mini"):
-            for ep in ("vad350", "manual"):
-                for v in S.VARIANTS:
-                    cfgs.append(rt_config(m, ep, v, asr=True))
+        for v in S.VARIANTS:
+            cfgs.append(rt_config("gpt-realtime", "vad350", v, asr=True))
         for m in ("gemini-3.5-flash-lite", "gpt-5.6-sol"):
-            for v in S.VARIANTS:
+            for v in ("shipped", "both"):
                 cfgs.append(tx_config(m, v))
                 cfgs.append(tx_config(m, v, "", "asr"))
         for w in ("shipped_regex", "shipped_fast", "ext_rules"):

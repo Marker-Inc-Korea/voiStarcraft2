@@ -5319,6 +5319,17 @@ def _micromachine_request_is_emergency(
     return isinstance(emergency, Mapping) and any(bool(value) for value in emergency.values())
 
 
+def _realtime_call_is_clarification(tool_arguments: Mapping[str, object] | None) -> bool:
+    """True when the model's tool call is a clarification question (nothing executable)."""
+
+    if not isinstance(tool_arguments, Mapping):
+        return False
+    try:
+        return realtime_intent.classify_tier(tool_arguments) == realtime_intent.TIER_CLARIFICATION
+    except ValueError:
+        return False
+
+
 def _realtime_call_is_named_operation_cancel(
     tool_arguments: Mapping[str, object] | None,
     transcript: str,
@@ -5343,6 +5354,137 @@ def _realtime_call_is_named_operation_cancel(
         and bool(str(item.get("operation_id", "") or "").strip())
         for item in operations
     )
+
+
+@dataclass(frozen=True)
+class _RealtimeDecision:
+    """What ``/api/realtime/intent`` does with a (transcript, tool_arguments) pair; pure, no I/O."""
+
+    kind: str  # executed | clarification | blocked | unresolved
+    tier: str
+    source: str
+    provider_output: Mapping[str, object] | None = None
+    status: str = ""
+    message: str = ""
+    family: str = ""
+
+
+_NEGATION_MESSAGE = "발화가 해당 행동을 부정하고 있어 실행하지 않았습니다."
+_RAW_CONTROL_MESSAGE = (
+    "좌표·유닛 태그·클릭·코드 호출이나 지시 무시 요청은 실행하지 않습니다. "
+    "'적 앞마당 공격'처럼 장소 이름으로 말씀해 주세요."
+)
+
+
+def _decide_realtime_intent(
+    transcript: str,
+    tool_arguments: Mapping[str, object] | None,
+) -> _RealtimeDecision:
+    """Deterministic routing for a Realtime intent. Raises ``ValueError`` for an invalid tool call.
+
+    Order: raw-control/injection refusal -> exact emergency phrases -> extended deterministic fast path (also
+    overrides a model call for the same utterance) -> the model's tool call (with negation guards) ->
+    transcript-only guards/micro fast path -> text LLM lane.
+    """
+
+    if transcript and realtime_intent.transcript_is_raw_control_or_injection(transcript):
+        return _RealtimeDecision(
+            "blocked",
+            realtime_intent.TIER_CLARIFICATION,
+            "raw_control_guard",
+            status="refused_raw_control",
+            message=_RAW_CONTROL_MESSAGE,
+        )
+    # The model heard the audio; the transcript may have lost words (the benchmark's injection row was transcribed as just
+    # "Emergency retreat."). An explicit model clarification therefore outranks every transcript-driven override: nothing
+    # executes and the user is asked to restate. Measured cost: the model clarified 0 of 230 recorded gold-emergency calls.
+    if _realtime_call_is_clarification(tool_arguments):
+        return _RealtimeDecision(
+            "clarification",
+            realtime_intent.TIER_CLARIFICATION,
+            "tool_call",
+            realtime_intent.tool_arguments_to_provider_output(tool_arguments),
+        )
+    emergency_text = bool(transcript) and _micromachine_request_is_emergency(transcript, None)
+    if emergency_text and _realtime_call_is_named_operation_cancel(tool_arguments, transcript):
+        # "정찰 작전 취소해" cancels one named force; only an explicit retreat word may widen it.
+        emergency_text = False
+    if emergency_text:
+        return _RealtimeDecision(
+            "executed",
+            realtime_intent.TIER_EMERGENCY,
+            "emergency_fast_path" if tool_arguments is None else "emergency_override",
+            _micromachine_emergency_safety_output(transcript),
+        )
+    fast = (
+        realtime_intent.match_fast_path(transcript)
+        if transcript and not _realtime_call_is_named_operation_cancel(tool_arguments, transcript)
+        else None
+    )
+    if fast is not None:
+        output = realtime_intent.tool_arguments_to_provider_output(fast.arguments)
+        return _RealtimeDecision(
+            "executed",
+            realtime_intent.classify_tier(fast.arguments),
+            (
+                "micro_fast_path"
+                if fast.family.startswith("micro:") and tool_arguments is None
+                else "fast_path"
+                if tool_arguments is None
+                else "fast_path_override"
+            ),
+            output,
+            family=fast.family,
+        )
+    if tool_arguments is not None:
+        tier = realtime_intent.classify_tier(tool_arguments)
+        if tier == realtime_intent.TIER_CLARIFICATION:
+            return _RealtimeDecision(
+                "clarification",
+                tier,
+                "tool_call",
+                realtime_intent.tool_arguments_to_provider_output(tool_arguments),
+            )
+        negated = (
+            tier == realtime_intent.TIER_EMERGENCY
+            and realtime_intent.transcript_negates_emergency(transcript)
+        ) or (
+            tier == realtime_intent.TIER_MICRO
+            and realtime_intent.micro_phrase_is_negated(transcript)
+        )
+        if negated:
+            return _RealtimeDecision(
+                "blocked",
+                tier,
+                "tool_call",
+                status="negation_blocked",
+                message=_NEGATION_MESSAGE,
+            )
+        return _RealtimeDecision(
+            "executed",
+            tier,
+            "tool_call",
+            realtime_intent.tool_arguments_to_provider_output(tool_arguments),
+        )
+    legacy = realtime_intent.match_micro_fast_path(transcript)
+    if legacy is not None:
+        return _RealtimeDecision(
+            "executed",
+            realtime_intent.TIER_MICRO,
+            "micro_fast_path",
+            realtime_intent.tool_arguments_to_provider_output(legacy),
+        )
+    if realtime_intent.transcript_is_pure_negated_emergency(
+        transcript
+    ) or realtime_intent.micro_phrase_is_negated(transcript):
+        return _RealtimeDecision(
+            "blocked",
+            realtime_intent.TIER_CLARIFICATION,
+            "negation_guard",
+            status="negation_blocked",
+            message=_NEGATION_MESSAGE,
+        )
+    return _RealtimeDecision("unresolved", "unresolved", "text_llm")
 
 
 def _micromachine_emergency_wants_retreat(text: str) -> bool:
@@ -12802,101 +12944,13 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         source = ""
         text = transcript
         try:
-            emergency_text = bool(transcript) and _micromachine_request_is_emergency(
-                transcript,
-                None,
-            )
-            if emergency_text and _realtime_call_is_named_operation_cancel(
-                tool_arguments, transcript
-            ):
-                # "정찰 작전 취소해" cancels one named force; only an explicit
-                # retreat word may widen that into an army-wide emergency.
-                emergency_text = False
-            if emergency_text:
-                provider_output = _micromachine_emergency_safety_output(transcript)
-                tier = realtime_intent.TIER_EMERGENCY
-                source = (
-                    "emergency_fast_path"
-                    if tool_arguments is None
-                    else "emergency_override"
-                )
-            elif tool_arguments is not None:
-                source = "tool_call"
-                tier = realtime_intent.classify_tier(tool_arguments)
-                if tier == realtime_intent.TIER_CLARIFICATION:
-                    provider_output = realtime_intent.tool_arguments_to_provider_output(
-                        tool_arguments
-                    )
-                else:
-                    negated = (
-                        tier == realtime_intent.TIER_EMERGENCY
-                        and realtime_intent.transcript_negates_emergency(transcript)
-                    ) or (
-                        tier == realtime_intent.TIER_MICRO
-                        and realtime_intent.micro_phrase_is_negated(transcript)
-                    )
-                    if negated:
-                        self._finish_realtime_intent(
-                            HTTPStatus.OK,
-                            {
-                                "accepted": False,
-                                "ok": False,
-                                "status": "negation_blocked",
-                                "error": (
-                                    "발화가 해당 행동을 부정하고 있어 실행하지 않았습니다."
-                                ),
-                            },
-                            tier=tier,
-                            source=source,
-                            transcript=transcript,
-                            latency_ms=latency_ms,
-                            started=started,
-                            direct_runtime=direct_runtime,
-                            blackboard_dir=blackboard_dir,
-                        )
-                        return
-                    provider_output = realtime_intent.tool_arguments_to_provider_output(
-                        tool_arguments
-                    )
-                    text = transcript or str(provider_output.get("goal", ""))
-            else:
-                fast_arguments = realtime_intent.match_micro_fast_path(transcript)
-                if fast_arguments is not None:
-                    provider_output = realtime_intent.tool_arguments_to_provider_output(
-                        fast_arguments
-                    )
-                    tier = realtime_intent.TIER_MICRO
-                    source = "micro_fast_path"
-                elif (
-                    realtime_intent.transcript_is_pure_negated_emergency(transcript)
-                    or realtime_intent.micro_phrase_is_negated(transcript)
-                ):
-                    self._finish_realtime_intent(
-                        HTTPStatus.OK,
-                        {
-                            "accepted": False,
-                            "ok": False,
-                            "status": "negation_blocked",
-                            "error": "발화가 해당 행동을 부정하고 있어 실행하지 않았습니다.",
-                        },
-                        tier=realtime_intent.TIER_CLARIFICATION,
-                        source="negation_guard",
-                        transcript=transcript,
-                        latency_ms=latency_ms,
-                        started=started,
-                        direct_runtime=direct_runtime,
-                        blackboard_dir=blackboard_dir,
-                    )
-                    return
-                else:
-                    tier = "unresolved"
-                    source = "text_llm"
+            decision = _decide_realtime_intent(transcript, tool_arguments)
         except ValueError as error:
             self._finish_realtime_intent(
                 HTTPStatus.BAD_REQUEST,
                 {"accepted": False, "ok": False, "status": "invalid_intent", "error": str(error)},
-                tier=tier or "invalid",
-                source=source or "tool_call",
+                tier="invalid",
+                source="tool_call",
                 transcript=transcript,
                 latency_ms=latency_ms,
                 started=started,
@@ -12904,6 +12958,29 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
                 blackboard_dir=blackboard_dir,
             )
             return
+        tier = decision.tier
+        source = decision.source
+        provider_output = decision.provider_output
+        if decision.kind == "blocked":
+            self._finish_realtime_intent(
+                HTTPStatus.OK,
+                {
+                    "accepted": False,
+                    "ok": False,
+                    "status": decision.status,
+                    "error": decision.message,
+                },
+                tier=tier,
+                source=source,
+                transcript=transcript,
+                latency_ms=latency_ms,
+                started=started,
+                direct_runtime=direct_runtime,
+                blackboard_dir=blackboard_dir,
+            )
+            return
+        if decision.kind == "executed" and tool_arguments is not None and source == "tool_call":
+            text = transcript or str((provider_output or {}).get("goal", ""))
 
         if tier == realtime_intent.TIER_CLARIFICATION:
             assert provider_output is not None

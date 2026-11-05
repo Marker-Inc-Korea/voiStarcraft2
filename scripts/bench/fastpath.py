@@ -164,35 +164,25 @@ FASTPATHS = {"prod_regex": prod_regex, "ext_rules": ext_rules}
 
 
 def run_named(which: str, text: str):
-    """Dispatch any deterministic path. In shipped mode the result is a shipped-contract tool call (or None).
+    """Dispatch a deterministic path; result is a shipped-contract tool call or None.
 
-    shipped_regex : web_gui._micromachine_request_is_emergency + _micromachine_emergency_safety_output only (current code)
-    shipped_fast  : the full shipped deterministic layer = emergency regex, micro fast path, negation guards
-                    (returns a sentinel tool call so the handler emulation reproduces the same outcome)
-    ext_rules     : extended grammar (this benchmark), converted to a shipped tool call
-    prod_regex    : legacy alias of shipped_regex kept for the private-schema run
+    shipped_regex : web_gui emergency regex only (current code)
+    shipped_fast  : baseline deterministic layer = emergency regex + match_micro_fast_path + negation guards
+    ext_rules     : the extended grammar as promoted into the product (realtime_intent.match_fast_path); the private
+                    bench grammar in this file is kept only for the private-schema run
     """
-    if which in FASTPATHS and which != "prod_regex":
-        old = FASTPATHS[which](text)
-        try:
-            import shipped_schema as SS  # noqa: WPS433
+    from starcraft_commander import realtime_intent as RI
 
-            return SS.fast_outcome_from_ext_rules(old)
-        except ImportError:
-            return old
-    if which in ("shipped_regex", "prod_regex"):
-        w = _prod()
+    w = _prod()
+    if which == "ext_rules":
+        m = RI.match_fast_path(text)
+        return None if m is None else m.arguments
+    if which in ("shipped_regex", "prod_regex", "shipped_fast"):
         if w._micromachine_request_is_emergency(text, None):
             out = w._micromachine_emergency_safety_output(text)
             return {"command_layer": "emergency", "goal": text, "emergency": {k: v for k, v in out["emergency"].items() if v}}
-        return None
-    if which == "shipped_fast":
-        from starcraft_commander import realtime_intent as RI
-
-        w = _prod()
-        if w._micromachine_request_is_emergency(text, None):
-            out = w._micromachine_emergency_safety_output(text)
-            return {"command_layer": "emergency", "goal": text, "emergency": {k: v for k, v in out["emergency"].items() if v}}
+        if which != "shipped_fast":
+            return None
         micro = RI.match_micro_fast_path(text)
         if micro is not None:
             return micro

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="980" height="640" font-family="Helvetica,Arial,sans-serif" font-size="11">
 <rect width="980" height="640" fill="white"/>
-<text x="490.0" y="24" text-anchor="middle" font-size="16" font-weight="bold">Voice intent benchmark - shipped schema, real ASR (160 rows)</text>
+<text x="490.0" y="24" text-anchor="middle" font-size="16" font-weight="bold">Shipped realtime path: baseline vs applied policy (160 rows, real ASR)</text>
 <line x1="70" x2="950" y1="570.0" y2="570.0" stroke="#eee"/>
 <text x="62" y="574.0" text-anchor="end">70%</text>
 <line x1="70" x2="950" y1="518.0" y2="518.0" stroke="#eee"/>
@@ -25,42 +25,27 @@
 <text x="62" y="54.0" text-anchor="end">100%</text>
 <line x1="70.0" x2="70.0" y1="50" y2="570" stroke="#eee"/>
 <text x="70.0" y="586" text-anchor="middle">0s</text>
-<line x1="167.4" x2="167.4" y1="50" y2="570" stroke="#eee"/>
-<text x="167.4" y="586" text-anchor="middle">1s</text>
-<line x1="264.7" x2="264.7" y1="50" y2="570" stroke="#eee"/>
-<text x="264.7" y="586" text-anchor="middle">2s</text>
-<line x1="362.1" x2="362.1" y1="50" y2="570" stroke="#eee"/>
-<text x="362.1" y="586" text-anchor="middle">3s</text>
-<line x1="459.5" x2="459.5" y1="50" y2="570" stroke="#eee"/>
-<text x="459.5" y="586" text-anchor="middle">4s</text>
-<line x1="556.9" x2="556.9" y1="50" y2="570" stroke="#eee"/>
-<text x="556.9" y="586" text-anchor="middle">5s</text>
-<line x1="654.2" x2="654.2" y1="50" y2="570" stroke="#eee"/>
-<text x="654.2" y="586" text-anchor="middle">6s</text>
-<line x1="751.6" x2="751.6" y1="50" y2="570" stroke="#eee"/>
-<text x="751.6" y="586" text-anchor="middle">7s</text>
-<line x1="849.0" x2="849.0" y1="50" y2="570" stroke="#eee"/>
-<text x="849.0" y="586" text-anchor="middle">8s</text>
-<line x1="946.3" x2="946.3" y1="50" y2="570" stroke="#eee"/>
-<text x="946.3" y="586" text-anchor="middle">9s</text>
+<line x1="242.1" x2="242.1" y1="50" y2="570" stroke="#eee"/>
+<text x="242.1" y="586" text-anchor="middle">1s</text>
+<line x1="414.1" x2="414.1" y1="50" y2="570" stroke="#eee"/>
+<text x="414.1" y="586" text-anchor="middle">2s</text>
+<line x1="586.2" x2="586.2" y1="50" y2="570" stroke="#eee"/>
+<text x="586.2" y="586" text-anchor="middle">3s</text>
+<line x1="758.3" x2="758.3" y1="50" y2="570" stroke="#eee"/>
+<text x="758.3" y="586" text-anchor="middle">4s</text>
+<line x1="930.3" x2="930.3" y1="50" y2="570" stroke="#eee"/>
+<text x="930.3" y="586" text-anchor="middle">5s</text>
 <line x1="70" x2="950" y1="570" y2="570" stroke="#333"/><line x1="70" x2="70" y1="50" y2="570" stroke="#333"/>
 <text x="510.0" y="612" text-anchor="middle" font-size="13">p50 latency, end of speech → tool call (s)  [lower is better]</text>
 <text transform="translate(18,310.0) rotate(-90)" text-anchor="middle" font-size="13">exact-semantic accuracy, all tiers (%)  [higher is better]</text>
-<polyline points="254.3,238.2" fill="none" stroke="#ff7f0e" stroke-width="2" stroke-dasharray="6 3"/>
-<circle cx="260.3" cy="311.1" r="4" fill="#1f77b4" fill-opacity="0.75" stroke="none"><title>rt:gpt-realtime:vad350:shipped: 84.9% p50 1.95s unsafe 0.6%</title></circle>
-<circle cx="260.5" cy="270.7" r="4" fill="#1f77b4" fill-opacity="0.75" stroke="none"><title>rt:gpt-realtime:vad350:shipped_fewshot: 87.3% p50 1.96s unsafe 0.4%</title></circle>
-<circle cx="256.1" cy="282.1" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext>gpt-realtime:vad350:shipped: 86.6% p50 1.91s unsafe 0.6%</title></circle>
-<circle cx="257.6" cy="303.8" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:shipfast>gpt-realtime:vad350:shipped: 85.4% p50 1.93s unsafe 0.6%</title></circle>
-<circle cx="422.6" cy="376.4" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime:vad350:shipped+gemini:shipped: 81.2% p50 3.62s unsafe 0.4%</title></circle>
-<circle cx="394.6" cy="329.2" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext>veto:gpt-realtime:vad350:shipped+gemini:shipped: 83.9% p50 3.33s unsafe 0.4%</title></circle>
-<circle cx="411.6" cy="358.2" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:shipfast>veto:gpt-realtime:vad350:shipped+gemini:shipped: 82.2% p50 3.51s unsafe 0.4%</title></circle>
-<circle cx="254.3" cy="238.2" r="6" fill="#d62728" fill-opacity="0.75" stroke="black"><title>cascade:ext>gpt-realtime:vad350:shipped_fewshot: 89.1% p50 1.89s unsafe 0.4%</title></circle>
-<text x="262.3" y="232.2" font-size="10">c:ext>gpt-realtime:vad350:shipped_fewshot</text>
-<circle cx="255.9" cy="252.6" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:shipfast>gpt-realtime:vad350:shipped_fewshot: 88.3% p50 1.91s unsafe 0.4%</title></circle>
-<circle cx="395.9" cy="310.5" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:veto:gpt-realtime:vad350:shipped_fewshot+gemini:shipped_fewshot: 85.0% p50 3.35s unsafe 0.4%</title></circle>
-<circle cx="376.4" cy="267.1" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext>veto:gpt-realtime:vad350:shipped_fewshot+gemini:shipped_fewshot: 87.5% p50 3.15s unsafe 0.4%</title></circle>
-<circle cx="389.5" cy="292.4" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:shipfast>veto:gpt-realtime:vad350:shipped_fewshot+gemini:shipped_fewshot: 86.0% p50 3.28s unsafe 0.4%</title></circle>
-<circle cx="908.1" cy="297.6" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:ext>sol:shipped_fewshot: 85.7% p50 8.61s unsafe 0.0%</title></circle>
+<polyline points="796.9,234.2 877.8,142.1" fill="none" stroke="#ff7f0e" stroke-width="2" stroke-dasharray="6 3"/>
+<circle cx="908.1" cy="353.3" r="4" fill="#1f77b4" fill-opacity="0.75" stroke="none"><title>rt:BASELINE main (prompt as-is): 82.5% p50 4.87s unsafe 0.6%</title></circle>
+<circle cx="877.8" cy="142.1" r="6" fill="#d62728" fill-opacity="0.75" stroke="black"><title>cascade:NEW product (rules+few-shot+guard+fast path): 94.7% p50 4.69s unsafe 0.0%</title></circle>
+<text x="885.8" y="136.1" font-size="10">c:NEW product (rules+few-shot+guard+fast path)</text>
+<circle cx="908.1" cy="310.0" r="4" fill="#d62728" fill-opacity="0.75" stroke="none"><title>cascade:baseline prompt + guard + fast path: 85.0% p50 4.87s unsafe 0.2%</title></circle>
+<circle cx="877.8" cy="163.8" r="4" fill="#1f77b4" fill-opacity="0.75" stroke="none"><title>rt:rules+few-shot only: 93.4% p50 4.69s unsafe 0.0%</title></circle>
+<circle cx="796.9" cy="234.2" r="6" fill="#1f77b4" fill-opacity="0.75" stroke="black"><title>rt:hints only (dropped): 89.4% p50 4.22s unsafe 0.6%</title></circle>
+<text x="804.9" y="228.2" font-size="10">rt:hints only (dropped)</text>
 <circle cx="760" cy="62" r="5" fill="#1f77b4"/><text x="772" y="66">realtime audio</text>
 <circle cx="760" cy="78" r="5" fill="#2ca02c"/><text x="772" y="82">text LLM (transcript)</text>
 <circle cx="760" cy="94" r="5" fill="#7f7f7f"/><text x="772" y="98">deterministic fast path</text>

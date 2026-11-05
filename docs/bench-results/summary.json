@@ -3119,6 +3119,219 @@
   }
  },
  "routing_policy": {
+  "name": "deterministic guard + promoted fast path, then shipped Realtime with rules+few-shot prompt",
+  "chosen_config": "prompt rules & few-shot + guard + fast path (no hints)",
+  "steps": [
+   {
+    "step": 1,
+    "id": "raw_control_guard",
+    "impl": "realtime_intent.transcript_is_raw_control_or_injection via web_gui._decide_realtime_intent"
+   },
+   {
+    "step": 2,
+    "id": "model_clarification_precedence"
+   },
+   {
+    "step": 3,
+    "id": "emergency regex (unchanged) with named-operation-cancel exception"
+   },
+   {
+    "step": 4,
+    "id": "promoted_fast_path",
+    "impl": "realtime_intent.match_fast_path",
+    "families": [
+     "emergency:cancel_attacks",
+     "emergency:evacuate_workers",
+     "emergency:force_retreat",
+     "emergency:hold_position",
+     "emergency:stop_expansion",
+     "macro:expand",
+     "macro:production",
+     "macro:research_combatshield",
+     "macro:research_stimpack",
+     "micro:auto_turret",
+     "micro:banshee_cloak",
+     "micro:ghost_cloak",
+     "micro:marauder_stimpack",
+     "micro:marine_stimpack",
+     "micro:medivac_load",
+     "micro:medivac_unload_all",
+     "micro:siege_mode",
+     "micro:stimpack",
+     "micro:tactical_nuke",
+     "micro:yamato"
+    ]
+   },
+   {
+    "step": 5,
+    "id": "realtime_tool_call",
+    "prompt": "build_realtime_instructions() (rules 8-14 + 9 examples)",
+    "transcription": "plain gpt-4o-mini-transcribe (hints opt-in)"
+   }
+  ],
+  "measured": {
+   "all": {
+    "n": 320,
+    "sem": 0.946875,
+    "sem_ci": [
+     0.9165774595278625,
+     0.9665703510066704
+    ],
+    "p50_ms": 4694.65,
+    "p95_ms": 7874.125000000001,
+    "schema_valid": 0.990625,
+    "unsafe": 0.0,
+    "strict": 0.890625
+   },
+   "micro": {
+    "n": 66,
+    "sem": 1.0,
+    "sem_ci": [
+     0.9449955327483907,
+     1.0000000000000002
+    ],
+    "p50_ms": 4531.05,
+    "p95_ms": 7561.1,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "strict": 0.9545454545454546
+   },
+   "emergency": {
+    "n": 46,
+    "sem": 0.9130434782608695,
+    "sem_ci": [
+     0.7967506436477582,
+     0.9656646881232924
+    ],
+    "p50_ms": 4459.8,
+    "p95_ms": 7951.474999999999,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "strict": 0.6304347826086957
+   },
+   "operation": {
+    "n": 92,
+    "sem": 0.9130434782608695,
+    "sem_ci": [
+     0.8376957293056828,
+     0.9552793462356268
+    ],
+    "p50_ms": 5281.05,
+    "p95_ms": 7445.295,
+    "schema_valid": 0.9782608695652174,
+    "unsafe": 0.0,
+    "strict": 0.9130434782608695
+   },
+   "macro": {
+    "n": 54,
+    "sem": 0.9629629629629629,
+    "sem_ci": [
+     0.8746459065659667,
+     0.9897838464145869
+    ],
+    "p50_ms": 4592.75,
+    "p95_ms": 9577.534999999998,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "strict": 0.9259259259259259
+   },
+   "adversarial": {
+    "n": 62,
+    "sem": 0.9516129032258065,
+    "sem_ci": [
+     0.8671174961524586,
+     0.983408614999154
+    ],
+    "p50_ms": 4038.5,
+    "p95_ms": 7079.114999999998,
+    "schema_valid": 0.9838709677419355,
+    "unsafe": 0.0,
+    "strict": 0.9516129032258065
+   }
+  },
+  "baseline": {
+   "all": {
+    "n": 480,
+    "sem": 0.825,
+    "sem_ci": [
+     0.7884642215873015,
+     0.8563749158494133
+    ],
+    "p50_ms": 4870.8,
+    "p95_ms": 8817.849999999993,
+    "schema_valid": 0.9708333333333333,
+    "unsafe": 0.00625,
+    "strict": 0.76875
+   },
+   "micro": {
+    "n": 99,
+    "sem": 0.8686868686868687,
+    "sem_ci": [
+     0.7882011546038707,
+     0.9216283307405814
+    ],
+    "p50_ms": 5276.4,
+    "p95_ms": 8359.519999999999,
+    "schema_valid": 0.9797979797979798,
+    "unsafe": 0.0,
+    "strict": 0.8383838383838383
+   },
+   "emergency": {
+    "n": 69,
+    "sem": 0.8840579710144928,
+    "sem_ci": [
+     0.7875404685083914,
+     0.9400657345404159
+    ],
+    "p50_ms": 4512.3,
+    "p95_ms": 10110.579999999989,
+    "schema_valid": 0.9855072463768116,
+    "unsafe": 0.0,
+    "strict": 0.5507246376811594
+   },
+   "operation": {
+    "n": 138,
+    "sem": 0.8188405797101449,
+    "sem_ci": [
+     0.7462349631812845,
+     0.8741754100801564
+    ],
+    "p50_ms": 5198.0,
+    "p95_ms": 10148.385000000004,
+    "schema_valid": 0.9710144927536232,
+    "unsafe": 0.0,
+    "strict": 0.8115942028985508
+   },
+   "macro": {
+    "n": 81,
+    "sem": 0.7654320987654321,
+    "sem_ci": [
+     0.6624506582197045,
+     0.8443761814438567
+    ],
+    "p50_ms": 4516.4,
+    "p95_ms": 7617.9,
+    "schema_valid": 0.9753086419753086,
+    "unsafe": 0.0,
+    "strict": 0.7654320987654321
+   },
+   "adversarial": {
+    "n": 93,
+    "sem": 0.7956989247311828,
+    "sem_ci": [
+     0.7028131210677944,
+     0.8651246246943572
+    ],
+    "p50_ms": 4744.8,
+    "p95_ms": 7930.979999999995,
+    "schema_valid": 0.946236559139785,
+    "unsafe": 0.03225806451612903,
+    "strict": 0.7956989247311828
+   }
+  }
+ },
+ "previous_private_schema_gold_transcripts": "docs/bench-results/private-schema-gold-transcripts/summary.json (superseded: private schema, gold transcripts, long-lived-key fallback)",
+ "routing_policy_previous": {
   "name": "ext_rules fast path, else shipped-schema Realtime (server_vad 350 ms) with few-shot instructions",
   "chosen_config": "cascade:ext>gpt-realtime:vad350:shipped_fewshot",
   "evidence": "160 rows x 3 reps (n=479 calls), shipped realtime_intent schema + web_gui handler emulation, REAL ASR text for the fast path, ephemeral-secret path with 429 backoff (see infra)",
@@ -3435,5 +3648,987 @@
    "one adversarial injection row (adv-030) executes a retreat in 2/3 reps without the veto step"
   ]
  },
- "previous_private_schema_gold_transcripts": "docs/bench-results/private-schema-gold-transcripts/summary.json (superseded: private schema, gold transcripts, long-lived-key fallback)"
+ "apply": {
+  "generated_note": "post-change A/B on the shipped code; the pre-change numbers are in `before` and unchanged",
+  "rule": "adopt iff delta accuracy > -2.0 pp AND unsafe <= 2% AND p95 delta <= 300 ms",
+  "baseline": {
+   "all": {
+    "n": 480,
+    "sem": 0.825,
+    "sem_ci": [
+     0.7884642215873015,
+     0.8563749158494133
+    ],
+    "p50_ms": 4870.8,
+    "p95_ms": 8817.849999999993,
+    "schema_valid": 0.9708333333333333,
+    "unsafe": 0.00625,
+    "strict": 0.76875
+   },
+   "micro": {
+    "n": 99,
+    "sem": 0.8686868686868687,
+    "sem_ci": [
+     0.7882011546038707,
+     0.9216283307405814
+    ],
+    "p50_ms": 5276.4,
+    "p95_ms": 8359.519999999999,
+    "schema_valid": 0.9797979797979798,
+    "unsafe": 0.0,
+    "strict": 0.8383838383838383
+   },
+   "emergency": {
+    "n": 69,
+    "sem": 0.8840579710144928,
+    "sem_ci": [
+     0.7875404685083914,
+     0.9400657345404159
+    ],
+    "p50_ms": 4512.3,
+    "p95_ms": 10110.579999999989,
+    "schema_valid": 0.9855072463768116,
+    "unsafe": 0.0,
+    "strict": 0.5507246376811594
+   },
+   "operation": {
+    "n": 138,
+    "sem": 0.8188405797101449,
+    "sem_ci": [
+     0.7462349631812845,
+     0.8741754100801564
+    ],
+    "p50_ms": 5198.0,
+    "p95_ms": 10148.385000000004,
+    "schema_valid": 0.9710144927536232,
+    "unsafe": 0.0,
+    "strict": 0.8115942028985508
+   },
+   "macro": {
+    "n": 81,
+    "sem": 0.7654320987654321,
+    "sem_ci": [
+     0.6624506582197045,
+     0.8443761814438567
+    ],
+    "p50_ms": 4516.4,
+    "p95_ms": 7617.9,
+    "schema_valid": 0.9753086419753086,
+    "unsafe": 0.0,
+    "strict": 0.7654320987654321
+   },
+   "adversarial": {
+    "n": 93,
+    "sem": 0.7956989247311828,
+    "sem_ci": [
+     0.7028131210677944,
+     0.8651246246943572
+    ],
+    "p50_ms": 4744.8,
+    "p95_ms": 7930.979999999995,
+    "schema_valid": 0.946236559139785,
+    "unsafe": 0.03225806451612903,
+    "strict": 0.7956989247311828
+   }
+  },
+  "new_product": {
+   "all": {
+    "n": 320,
+    "sem": 0.946875,
+    "sem_ci": [
+     0.9165774595278625,
+     0.9665703510066704
+    ],
+    "p50_ms": 4694.65,
+    "p95_ms": 7874.125000000001,
+    "schema_valid": 0.990625,
+    "unsafe": 0.0,
+    "strict": 0.890625
+   },
+   "micro": {
+    "n": 66,
+    "sem": 1.0,
+    "sem_ci": [
+     0.9449955327483907,
+     1.0000000000000002
+    ],
+    "p50_ms": 4531.05,
+    "p95_ms": 7561.1,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "strict": 0.9545454545454546
+   },
+   "emergency": {
+    "n": 46,
+    "sem": 0.9130434782608695,
+    "sem_ci": [
+     0.7967506436477582,
+     0.9656646881232924
+    ],
+    "p50_ms": 4459.8,
+    "p95_ms": 7951.474999999999,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "strict": 0.6304347826086957
+   },
+   "operation": {
+    "n": 92,
+    "sem": 0.9130434782608695,
+    "sem_ci": [
+     0.8376957293056828,
+     0.9552793462356268
+    ],
+    "p50_ms": 5281.05,
+    "p95_ms": 7445.295,
+    "schema_valid": 0.9782608695652174,
+    "unsafe": 0.0,
+    "strict": 0.9130434782608695
+   },
+   "macro": {
+    "n": 54,
+    "sem": 0.9629629629629629,
+    "sem_ci": [
+     0.8746459065659667,
+     0.9897838464145869
+    ],
+    "p50_ms": 4592.75,
+    "p95_ms": 9577.534999999998,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "strict": 0.9259259259259259
+   },
+   "adversarial": {
+    "n": 62,
+    "sem": 0.9516129032258065,
+    "sem_ci": [
+     0.8671174961524586,
+     0.983408614999154
+    ],
+    "p50_ms": 4038.5,
+    "p95_ms": 7079.114999999998,
+    "schema_valid": 0.9838709677419355,
+    "unsafe": 0.0,
+    "strict": 0.9516129032258065
+   }
+  },
+  "ablations": {
+   "+ guard (raw-control/injection refusal)": {
+    "measured": {
+     "all": {
+      "n": 480,
+      "sem": 0.8354166666666667,
+      "sem_ci": [
+       0.7996056972460812,
+       0.8659013612623233
+      ],
+      "p50_ms": 4870.8,
+      "p95_ms": 8817.849999999993,
+      "schema_valid": 0.9729166666666667,
+      "unsafe": 0.0020833333333333333,
+      "strict": 0.7791666666666667
+     },
+     "micro": {
+      "n": 99,
+      "sem": 0.8686868686868687,
+      "sem_ci": [
+       0.7882011546038707,
+       0.9216283307405814
+      ],
+      "p50_ms": 5276.4,
+      "p95_ms": 8359.519999999999,
+      "schema_valid": 0.9797979797979798,
+      "unsafe": 0.0,
+      "strict": 0.8383838383838383
+     },
+     "emergency": {
+      "n": 69,
+      "sem": 0.8840579710144928,
+      "sem_ci": [
+       0.7875404685083914,
+       0.9400657345404159
+      ],
+      "p50_ms": 4512.3,
+      "p95_ms": 10110.579999999989,
+      "schema_valid": 0.9855072463768116,
+      "unsafe": 0.0,
+      "strict": 0.5507246376811594
+     },
+     "operation": {
+      "n": 138,
+      "sem": 0.8188405797101449,
+      "sem_ci": [
+       0.7462349631812845,
+       0.8741754100801564
+      ],
+      "p50_ms": 5198.0,
+      "p95_ms": 10148.385000000004,
+      "schema_valid": 0.9710144927536232,
+      "unsafe": 0.0,
+      "strict": 0.8115942028985508
+     },
+     "macro": {
+      "n": 81,
+      "sem": 0.7654320987654321,
+      "sem_ci": [
+       0.6624506582197045,
+       0.8443761814438567
+      ],
+      "p50_ms": 4516.4,
+      "p95_ms": 7617.9,
+      "schema_valid": 0.9753086419753086,
+      "unsafe": 0.0,
+      "strict": 0.7654320987654321
+     },
+     "adversarial": {
+      "n": 93,
+      "sem": 0.8494623655913979,
+      "sem_ci": [
+       0.7630400864073413,
+       0.9081590676752017
+      ],
+      "p50_ms": 4744.8,
+      "p95_ms": 7930.979999999995,
+      "schema_valid": 0.956989247311828,
+      "unsafe": 0.010752688172043012,
+      "strict": 0.8494623655913979
+     }
+    },
+    "delta_vs_baseline": {
+     "delta_pp": 1.04,
+     "ci95_pp": [
+      0.21,
+      2.29
+     ],
+     "n_pairs": 480,
+     "unsafe_base_new": [
+      0.0063,
+      0.0021
+     ],
+     "p95_ms_base_new": [
+      8818,
+      8818
+     ],
+     "p95_delta_ms": 0,
+     "adopt": true
+    }
+   },
+   "+ fast path (promoted families)": {
+    "measured": {
+     "all": {
+      "n": 480,
+      "sem": 0.8395833333333333,
+      "sem_ci": [
+       0.8040751429059796,
+       0.8696990840311006
+      ],
+      "p50_ms": 4870.8,
+      "p95_ms": 8817.849999999993,
+      "schema_valid": 0.9708333333333333,
+      "unsafe": 0.00625,
+      "strict": 0.7979166666666667
+     },
+     "micro": {
+      "n": 99,
+      "sem": 0.9090909090909091,
+      "sem_ci": [
+       0.8361842304768151,
+       0.9514347875081247
+      ],
+      "p50_ms": 5276.4,
+      "p95_ms": 8359.519999999999,
+      "schema_valid": 0.9797979797979798,
+      "unsafe": 0.0,
+      "strict": 0.898989898989899
+     },
+     "emergency": {
+      "n": 69,
+      "sem": 0.8985507246376812,
+      "sem_ci": [
+       0.8050790434713212,
+       0.9499839974283846
+      ],
+      "p50_ms": 4512.3,
+      "p95_ms": 10110.579999999989,
+      "schema_valid": 0.9855072463768116,
+      "unsafe": 0.0,
+      "strict": 0.6376811594202898
+     },
+     "operation": {
+      "n": 138,
+      "sem": 0.8188405797101449,
+      "sem_ci": [
+       0.7462349631812845,
+       0.8741754100801564
+      ],
+      "p50_ms": 5198.0,
+      "p95_ms": 10148.385000000004,
+      "schema_valid": 0.9710144927536232,
+      "unsafe": 0.0,
+      "strict": 0.8115942028985508
+     },
+     "macro": {
+      "n": 81,
+      "sem": 0.7901234567901234,
+      "sem_ci": [
+       0.6893441473231284,
+       0.8646293750998338
+      ],
+      "p50_ms": 4516.4,
+      "p95_ms": 7617.9,
+      "schema_valid": 0.9753086419753086,
+      "unsafe": 0.0,
+      "strict": 0.7901234567901234
+     },
+     "adversarial": {
+      "n": 93,
+      "sem": 0.7956989247311828,
+      "sem_ci": [
+       0.7028131210677944,
+       0.8651246246943572
+      ],
+      "p50_ms": 4744.8,
+      "p95_ms": 7930.979999999995,
+      "schema_valid": 0.946236559139785,
+      "unsafe": 0.03225806451612903,
+      "strict": 0.7956989247311828
+     }
+    },
+    "delta_vs_baseline": {
+     "delta_pp": 1.46,
+     "ci95_pp": [
+      0.42,
+      2.71
+     ],
+     "n_pairs": 480,
+     "unsafe_base_new": [
+      0.0063,
+      0.0063
+     ],
+     "p95_ms_base_new": [
+      8818,
+      8818
+     ],
+     "p95_delta_ms": 0,
+     "adopt": true
+    }
+   },
+   "+ guard + fast path (decision layer only)": {
+    "measured": {
+     "all": {
+      "n": 480,
+      "sem": 0.85,
+      "sem_ci": [
+       0.8152829232916575,
+       0.8791592247171123
+      ],
+      "p50_ms": 4870.8,
+      "p95_ms": 8817.849999999993,
+      "schema_valid": 0.9729166666666667,
+      "unsafe": 0.0020833333333333333,
+      "strict": 0.8083333333333333
+     },
+     "micro": {
+      "n": 99,
+      "sem": 0.9090909090909091,
+      "sem_ci": [
+       0.8361842304768151,
+       0.9514347875081247
+      ],
+      "p50_ms": 5276.4,
+      "p95_ms": 8359.519999999999,
+      "schema_valid": 0.9797979797979798,
+      "unsafe": 0.0,
+      "strict": 0.898989898989899
+     },
+     "emergency": {
+      "n": 69,
+      "sem": 0.8985507246376812,
+      "sem_ci": [
+       0.8050790434713212,
+       0.9499839974283846
+      ],
+      "p50_ms": 4512.3,
+      "p95_ms": 10110.579999999989,
+      "schema_valid": 0.9855072463768116,
+      "unsafe": 0.0,
+      "strict": 0.6376811594202898
+     },
+     "operation": {
+      "n": 138,
+      "sem": 0.8188405797101449,
+      "sem_ci": [
+       0.7462349631812845,
+       0.8741754100801564
+      ],
+      "p50_ms": 5198.0,
+      "p95_ms": 10148.385000000004,
+      "schema_valid": 0.9710144927536232,
+      "unsafe": 0.0,
+      "strict": 0.8115942028985508
+     },
+     "macro": {
+      "n": 81,
+      "sem": 0.7901234567901234,
+      "sem_ci": [
+       0.6893441473231284,
+       0.8646293750998338
+      ],
+      "p50_ms": 4516.4,
+      "p95_ms": 7617.9,
+      "schema_valid": 0.9753086419753086,
+      "unsafe": 0.0,
+      "strict": 0.7901234567901234
+     },
+     "adversarial": {
+      "n": 93,
+      "sem": 0.8494623655913979,
+      "sem_ci": [
+       0.7630400864073413,
+       0.9081590676752017
+      ],
+      "p50_ms": 4744.8,
+      "p95_ms": 7930.979999999995,
+      "schema_valid": 0.956989247311828,
+      "unsafe": 0.010752688172043012,
+      "strict": 0.8494623655913979
+     }
+    },
+    "delta_vs_baseline": {
+     "delta_pp": 2.5,
+     "ci95_pp": [
+      1.04,
+      4.37
+     ],
+     "n_pairs": 480,
+     "unsafe_base_new": [
+      0.0063,
+      0.0021
+     ],
+     "p95_ms_base_new": [
+      8818,
+      8818
+     ],
+     "p95_delta_ms": 0,
+     "adopt": true
+    }
+   },
+   "+ prompt rules & few-shot (decision = baseline)": {
+    "measured": {
+     "all": {
+      "n": 320,
+      "sem": 0.934375,
+      "sem_ci": [
+       0.9017641103527031,
+       0.9566802649221225
+      ],
+      "p50_ms": 4694.65,
+      "p95_ms": 7874.125000000001,
+      "schema_valid": 0.9875,
+      "unsafe": 0.0,
+      "strict": 0.846875
+     },
+     "micro": {
+      "n": 66,
+      "sem": 0.9848484848484849,
+      "sem_ci": [
+       0.9190388760177447,
+       0.9973204284655433
+      ],
+      "p50_ms": 4531.05,
+      "p95_ms": 7561.1,
+      "schema_valid": 1.0,
+      "unsafe": 0.0,
+      "strict": 0.8939393939393939
+     },
+     "emergency": {
+      "n": 46,
+      "sem": 0.9130434782608695,
+      "sem_ci": [
+       0.7967506436477582,
+       0.9656646881232924
+      ],
+      "p50_ms": 4459.8,
+      "p95_ms": 7951.474999999999,
+      "schema_valid": 1.0,
+      "unsafe": 0.0,
+      "strict": 0.4782608695652174
+     },
+     "operation": {
+      "n": 92,
+      "sem": 0.9130434782608695,
+      "sem_ci": [
+       0.8376957293056828,
+       0.9552793462356268
+      ],
+      "p50_ms": 5281.05,
+      "p95_ms": 7445.295,
+      "schema_valid": 0.9782608695652174,
+      "unsafe": 0.0,
+      "strict": 0.9130434782608695
+     },
+     "macro": {
+      "n": 54,
+      "sem": 0.9444444444444444,
+      "sem_ci": [
+       0.8489254853651705,
+       0.980927077496161
+      ],
+      "p50_ms": 4592.75,
+      "p95_ms": 9577.534999999998,
+      "schema_valid": 1.0,
+      "unsafe": 0.0,
+      "strict": 0.9074074074074074
+     },
+     "adversarial": {
+      "n": 62,
+      "sem": 0.9193548387096774,
+      "sem_ci": [
+       0.8247120779251881,
+       0.9650621681441662
+      ],
+      "p50_ms": 4038.5,
+      "p95_ms": 7079.114999999998,
+      "schema_valid": 0.967741935483871,
+      "unsafe": 0.0,
+      "strict": 0.9193548387096774
+     }
+    },
+    "delta_vs_baseline": {
+     "delta_pp": 8.12,
+     "ci95_pp": [
+      3.12,
+      13.12
+     ],
+     "n_pairs": 320,
+     "unsafe_base_new": [
+      0.0063,
+      0.0
+     ],
+     "p95_ms_base_new": [
+      8818,
+      7874
+     ],
+     "p95_delta_ms": -944,
+     "adopt": true
+    }
+   },
+   "+ transcription hints only (decision = baseline)": {
+    "measured": {
+     "all": {
+      "n": 160,
+      "sem": 0.89375,
+      "sem_ci": [
+       0.8364366789581195,
+       0.9325987796799797
+      ],
+      "p50_ms": 4224.3,
+      "p95_ms": 9873.084999999983,
+      "schema_valid": 0.975,
+      "unsafe": 0.00625,
+      "strict": 0.83125
+     },
+     "micro": {
+      "n": 33,
+      "sem": 0.8787878787878788,
+      "sem_ci": [
+       0.7267415674973484,
+       0.9518391673241577
+      ],
+      "p50_ms": 4985.0,
+      "p95_ms": 12318.119999999997,
+      "schema_valid": 0.9696969696969697,
+      "unsafe": 0.0,
+      "strict": 0.8181818181818182
+     },
+     "emergency": {
+      "n": 23,
+      "sem": 0.9565217391304348,
+      "sem_ci": [
+       0.7900841350594088,
+       0.9922835330378733
+      ],
+      "p50_ms": 3581.8,
+      "p95_ms": 6343.299999999998,
+      "schema_valid": 1.0,
+      "unsafe": 0.0,
+      "strict": 0.6086956521739131
+     },
+     "operation": {
+      "n": 46,
+      "sem": 0.9130434782608695,
+      "sem_ci": [
+       0.7967506436477582,
+       0.9656646881232924
+      ],
+      "p50_ms": 4566.15,
+      "p95_ms": 7643.949999999999,
+      "schema_valid": 0.9782608695652174,
+      "unsafe": 0.0,
+      "strict": 0.9130434782608695
+     },
+     "macro": {
+      "n": 27,
+      "sem": 0.8888888888888888,
+      "sem_ci": [
+       0.7194181745602705,
+       0.9614803521050128
+      ],
+      "p50_ms": 4083.9,
+      "p95_ms": 7335.99,
+      "schema_valid": 0.9629629629629629,
+      "unsafe": 0.0,
+      "strict": 0.8888888888888888
+     },
+     "adversarial": {
+      "n": 31,
+      "sem": 0.8387096774193549,
+      "sem_ci": [
+       0.6736529727502113,
+       0.9290748009456007
+      ],
+      "p50_ms": 4010.3,
+      "p95_ms": 13212.150000000001,
+      "schema_valid": 0.967741935483871,
+      "unsafe": 0.03225806451612903,
+      "strict": 0.8387096774193549
+     }
+    },
+    "delta_vs_baseline": {
+     "delta_pp": 5.0,
+     "ci95_pp": [
+      0.62,
+      9.38
+     ],
+     "n_pairs": 160,
+     "unsafe_base_new": [
+      0.0063,
+      0.0063
+     ],
+     "p95_ms_base_new": [
+      8818,
+      9873
+     ],
+     "p95_delta_ms": 1055,
+     "adopt": false
+    }
+   },
+   "+ prompt rules & few-shot + hints (decision = baseline)": {
+    "measured": {
+     "all": {
+      "n": 480,
+      "sem": 0.9104166666666667,
+      "sem_ci": [
+       0.8815031594590188,
+       0.9328129307655505
+      ],
+      "p50_ms": 4737.700000000001,
+      "p95_ms": 8952.719999999998,
+      "schema_valid": 0.9958333333333333,
+      "unsafe": 0.0020833333333333333,
+      "strict": 0.8229166666666666
+     },
+     "micro": {
+      "n": 99,
+      "sem": 0.9595959595959596,
+      "sem_ci": [
+       0.9006783167602219,
+       0.9841776170253277
+      ],
+      "p50_ms": 5188.3,
+      "p95_ms": 9017.779999999999,
+      "schema_valid": 1.0,
+      "unsafe": 0.0,
+      "strict": 0.8484848484848485
+     },
+     "emergency": {
+      "n": 69,
+      "sem": 0.8985507246376812,
+      "sem_ci": [
+       0.8050790434713212,
+       0.9499839974283846
+      ],
+      "p50_ms": 4715.3,
+      "p95_ms": 7109.459999999998,
+      "schema_valid": 1.0,
+      "unsafe": 0.0,
+      "strict": 0.4927536231884058
+     },
+     "operation": {
+      "n": 138,
+      "sem": 0.9130434782608695,
+      "sem_ci": [
+       0.8541549491137557,
+       0.949558488974929
+      ],
+      "p50_ms": 4966.0,
+      "p95_ms": 8799.935000000001,
+      "schema_valid": 0.9927536231884058,
+      "unsafe": 0.0,
+      "strict": 0.9130434782608695
+     },
+     "macro": {
+      "n": 81,
+      "sem": 0.8888888888888888,
+      "sem_ci": [
+       0.8021271435356178,
+       0.9404331099249486
+      ],
+      "p50_ms": 4637.6,
+      "p95_ms": 12187.8,
+      "schema_valid": 1.0,
+      "unsafe": 0.0,
+      "strict": 0.8518518518518519
+     },
+     "adversarial": {
+      "n": 93,
+      "sem": 0.8817204301075269,
+      "sem_ci": [
+       0.8004996842701593,
+       0.9326563148046185
+      ],
+      "p50_ms": 4366.2,
+      "p95_ms": 9154.999999999989,
+      "schema_valid": 0.989247311827957,
+      "unsafe": 0.010752688172043012,
+      "strict": 0.8817204301075269
+     }
+    },
+    "delta_vs_baseline": {
+     "delta_pp": 8.54,
+     "ci95_pp": [
+      3.96,
+      13.33
+     ],
+     "n_pairs": 480,
+     "unsafe_base_new": [
+      0.0063,
+      0.0021
+     ],
+     "p95_ms_base_new": [
+      8818,
+      8953
+     ],
+     "p95_delta_ms": 135,
+     "adopt": true
+    }
+   },
+   "NEW (prompt+hints+guard+fast path)": {
+    "measured": {
+     "all": {
+      "n": 480,
+      "sem": 0.93125,
+      "sem_ci": [
+       0.9050212174649628,
+       0.9506307149029858
+      ],
+      "p50_ms": 4737.700000000001,
+      "p95_ms": 8952.719999999998,
+      "schema_valid": 0.9979166666666667,
+      "unsafe": 0.0,
+      "strict": 0.8729166666666667
+     },
+     "micro": {
+      "n": 99,
+      "sem": 0.98989898989899,
+      "sem_ci": [
+       0.9449833445859679,
+       0.9982147386799481
+      ],
+      "p50_ms": 5188.3,
+      "p95_ms": 9017.779999999999,
+      "schema_valid": 1.0,
+      "unsafe": 0.0,
+      "strict": 0.9393939393939394
+     },
+     "emergency": {
+      "n": 69,
+      "sem": 0.8840579710144928,
+      "sem_ci": [
+       0.7875404685083914,
+       0.9400657345404159
+      ],
+      "p50_ms": 4715.3,
+      "p95_ms": 7109.459999999998,
+      "schema_valid": 1.0,
+      "unsafe": 0.0,
+      "strict": 0.5942028985507246
+     },
+     "operation": {
+      "n": 138,
+      "sem": 0.9130434782608695,
+      "sem_ci": [
+       0.8541549491137557,
+       0.949558488974929
+      ],
+      "p50_ms": 4966.0,
+      "p95_ms": 8799.935000000001,
+      "schema_valid": 0.9927536231884058,
+      "unsafe": 0.0,
+      "strict": 0.9130434782608695
+     },
+     "macro": {
+      "n": 81,
+      "sem": 0.9382716049382716,
+      "sem_ci": [
+       0.8635057380689226,
+       0.9733478809104459
+      ],
+      "p50_ms": 4637.6,
+      "p95_ms": 12187.8,
+      "schema_valid": 1.0,
+      "unsafe": 0.0,
+      "strict": 0.9012345679012346
+     },
+     "adversarial": {
+      "n": 93,
+      "sem": 0.9247311827956989,
+      "sem_ci": [
+       0.8527013398161072,
+       0.9630637859149834
+      ],
+      "p50_ms": 4366.2,
+      "p95_ms": 9154.999999999989,
+      "schema_valid": 1.0,
+      "unsafe": 0.0,
+      "strict": 0.9247311827956989
+     }
+    },
+    "delta_vs_baseline": {
+     "delta_pp": 10.63,
+     "ci95_pp": [
+      5.83,
+      15.62
+     ],
+     "n_pairs": 480,
+     "unsafe_base_new": [
+      0.0063,
+      0.0
+     ],
+     "p95_ms_base_new": [
+      8818,
+      8953
+     ],
+     "p95_delta_ms": 135,
+     "adopt": true
+    }
+   },
+   "prompt rules & few-shot + guard + fast path (no hints)": {
+    "measured": {
+     "all": {
+      "n": 320,
+      "sem": 0.946875,
+      "sem_ci": [
+       0.9165774595278625,
+       0.9665703510066704
+      ],
+      "p50_ms": 4694.65,
+      "p95_ms": 7874.125000000001,
+      "schema_valid": 0.990625,
+      "unsafe": 0.0,
+      "strict": 0.890625
+     },
+     "micro": {
+      "n": 66,
+      "sem": 1.0,
+      "sem_ci": [
+       0.9449955327483907,
+       1.0000000000000002
+      ],
+      "p50_ms": 4531.05,
+      "p95_ms": 7561.1,
+      "schema_valid": 1.0,
+      "unsafe": 0.0,
+      "strict": 0.9545454545454546
+     },
+     "emergency": {
+      "n": 46,
+      "sem": 0.9130434782608695,
+      "sem_ci": [
+       0.7967506436477582,
+       0.9656646881232924
+      ],
+      "p50_ms": 4459.8,
+      "p95_ms": 7951.474999999999,
+      "schema_valid": 1.0,
+      "unsafe": 0.0,
+      "strict": 0.6304347826086957
+     },
+     "operation": {
+      "n": 92,
+      "sem": 0.9130434782608695,
+      "sem_ci": [
+       0.8376957293056828,
+       0.9552793462356268
+      ],
+      "p50_ms": 5281.05,
+      "p95_ms": 7445.295,
+      "schema_valid": 0.9782608695652174,
+      "unsafe": 0.0,
+      "strict": 0.9130434782608695
+     },
+     "macro": {
+      "n": 54,
+      "sem": 0.9629629629629629,
+      "sem_ci": [
+       0.8746459065659667,
+       0.9897838464145869
+      ],
+      "p50_ms": 4592.75,
+      "p95_ms": 9577.534999999998,
+      "schema_valid": 1.0,
+      "unsafe": 0.0,
+      "strict": 0.9259259259259259
+     },
+     "adversarial": {
+      "n": 62,
+      "sem": 0.9516129032258065,
+      "sem_ci": [
+       0.8671174961524586,
+       0.983408614999154
+      ],
+      "p50_ms": 4038.5,
+      "p95_ms": 7079.114999999998,
+      "schema_valid": 0.9838709677419355,
+      "unsafe": 0.0,
+      "strict": 0.9516129032258065
+     }
+    },
+    "delta_vs_baseline": {
+     "delta_pp": 9.38,
+     "ci95_pp": [
+      4.06,
+      14.38
+     ],
+     "n_pairs": 320,
+     "unsafe_base_new": [
+      0.0063,
+      0.0
+     ],
+     "p95_ms_base_new": [
+      8818,
+      7874
+     ],
+     "p95_delta_ms": -944,
+     "adopt": true
+    }
+   }
+  },
+  "adopted": [
+   "raw-control/injection guard (decision layer)",
+   "promoted fast-path families",
+   "model-clarification precedence",
+   "prompt rules 8-14 + 9 few-shot examples"
+  ],
+  "dropped": [
+   "transcription language/prompt hints as DEFAULT (opt-in via VOI_REALTIME_TRANSCRIBE_HINTS=1): +5.0 pp alone but p95 +1.06 s alone (fails the +0.3 s rule) and +0.6 pp [-1.9,+3.1] on top of the prompt (noise)"
+  ],
+  "not_done": [
+   "3rd rep of the final product prompt (151/160 rows finished; incomplete rep dropped) -> n=2 reps for the final prompt, 3 reps for baseline",
+   "hints-only and rules-only ablations: 1-2 reps",
+   "text/veto steps were not re-run on the new prompt"
+  ],
+  "infra": {
+   "note": "all realtime calls used the minted-secret path first (4 tries, backoff on 429); see doc"
+  }
+ }
 }
