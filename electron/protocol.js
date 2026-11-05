@@ -187,7 +187,38 @@ function validateIntentRequest(input) {
   if (toolArguments) body.tool_arguments = toolArguments;
   return body;
 }
+// BOARD: cards published by the HUD renderer (board:publish) and forwarded to the tactical board window (board:cards).
+const BOARD_TIERS = Object.freeze(["macro", "operation", "micro", "emergency", ""]);
+const BOARD_STAGE_STATES = Object.freeze(["done", "active", "todo", "blocked", "ended", "sim"]);
+const BOARD_MAX_CARDS = 24;
+const BOARD_STAGE_COUNT = 5;
+function validateBoardCards(input) {
+  if (!Array.isArray(input)) throw new TypeError("board cards must be an array");
+  if (input.length > BOARD_MAX_CARDS) throw new TypeError(`board cards are limited to ${BOARD_MAX_CARDS}`);
+  const seen = new Set();
+  return input.map(raw => {
+    plainObject(raw, "board card");
+    if (Object.keys(raw).some(key => !["id", "name", "tier", "stages", "blockedReason", "sim"].includes(key))) throw new TypeError("unexpected board card field");
+    if (typeof raw.id !== "string" || !raw.id || raw.id.length > 64) throw new TypeError("board card id must be 1..64 characters");
+    if (seen.has(raw.id)) throw new TypeError("duplicate board card id");
+    seen.add(raw.id);
+    if (typeof raw.name !== "string" || raw.name.length > 80) throw new TypeError("board card name must be a string up to 80 characters");
+    const tier = raw.tier === undefined || raw.tier === null ? "" : raw.tier;
+    if (!BOARD_TIERS.includes(tier)) throw new TypeError("unknown board card tier");
+    if (!Array.isArray(raw.stages) || raw.stages.length !== BOARD_STAGE_COUNT) throw new TypeError(`board card needs ${BOARD_STAGE_COUNT} stages`);
+    const stages = raw.stages.map(stage => {
+      const state = stage && typeof stage === "object" && !Array.isArray(stage) ? stage.state : stage;
+      if (!BOARD_STAGE_STATES.includes(state)) throw new TypeError("unknown board stage state");
+      return state;
+    });
+    const reason = raw.blockedReason === undefined || raw.blockedReason === null ? "" : raw.blockedReason;
+    if (typeof reason !== "string" || reason.length > 200) throw new TypeError("board blockedReason must be a string up to 200 characters");
+    if (raw.sim !== undefined && typeof raw.sim !== "boolean") throw new TypeError("board sim must be a boolean");
+    return { id: raw.id, name: raw.name.trim(), tier, stages, blockedReason: reason, sim: raw.sim === true };
+  });
+}
 module.exports = {
+  validateBoardCards, BOARD_MAX_CARDS, BOARD_TIERS, BOARD_STAGE_STATES,
   validateCommand, validateBaseUrl, validateCursor, validateTargetPin,
   VOICE_STATES, OVERLAY_STATES, DOCK_MODES, ATTENTION_REASONS, MAX_AUDIO_CHUNK_BYTES,
   validateVoiceControl, validateVoiceAudio, validateVoiceLevel, validateMicError, validateOverlayState, overlayStateForVoice,
