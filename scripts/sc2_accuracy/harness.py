@@ -1,0 +1,225 @@
+"""Offline SC2 raw-protocol harness: real python-sc2 ``Unit``/``BotAI``/``GameData`` over stableid.json.
+
+No StarCraft II binary is involved.  ``build_game_data`` constructs a genuine
+``sc2.game_data.GameData`` from a ``ResponseData`` protobuf populated from
+``stableid.json`` (every Unit/Ability/Upgrade id and name) plus python-sc2's own
+creation/research ability tables, so ``Unit.train/build/research`` resolve ability
+ids exactly like they do in a live game.  Commands the product issues are
+collected through the *real* ``BotAI.do`` and lowered with python-sc2's own
+``combine_actions`` into ``s2clientprotocol`` ``ActionRaw`` messages, which are then
+wrapped in a ``RequestAction`` and round-tripped through serialization.
+
+This proves request SHAPE (ability id, unit tags, target kind, queue flag). It does
+not prove that SC2 accepts the order in a given game state.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+from pathlib import Path
+from typing import Any
+
+from s2clientprotocol import raw_pb2, sc2api_pb2
+from sc2.action import combine_actions
+from sc2.bot_ai import BotAI
+from sc2.data import Attribute, Race
+from sc2.dicts.unit_research_abilities import RESEARCH_INFO
+from sc2.dicts.unit_train_build_abilities import TRAIN_INFO
+from sc2.game_data import GameData
+from sc2.ids.ability_id import AbilityId
+from sc2.ids.unit_typeid import UnitTypeId
+from sc2.position import Point2
+from sc2.unit import Unit
+from sc2.units import Units
+
+from scripts.sc2_accuracy import audit
+
+ENUMS = audit.load_header_enums()
+ABILITY_TARGET_KIND = {int(num): target for num, (_, target) in ENUMS["abilities"].items()}
+"""s2client-api (C++) ability id -> declared target kind ("None", "Point", "Unit", ...)."""
+
+
+def stableid_available() -> bool:
+    return audit.stableid_path().is_file()
+
+
+def _structure_type_ids() -> set[int]:
+    built = {u.value for m in TRAIN_INFO.values() for u in m if u in TRAIN_INFO.get(UnitTypeId.SCV, {})}
+    addons = {
+        UnitTypeId.BARRACKSTECHLAB, UnitTypeId.BARRACKSREACTOR, UnitTypeId.FACTORYTECHLAB,
+        UnitTypeId.FACTORYREACTOR, UnitTypeId.STARPORTTECHLAB, UnitTypeId.STARPORTREACTOR,
+        UnitTypeId.ORBITALCOMMAND, UnitTypeId.PLANETARYFORTRESS,
+    }
+    return built | {u.value for u in addons}
+
+
+def build_game_data() -> GameData:
+    stable = audit.load_stableid()
+    if stable is None:
+        raise FileNotFoundError(f"stableid.json not found at {audit.stableid_path()}")
+    response = sc2api_pb2.ResponseData()
+    for ability in stable["Abilities"]:
+        proto = response.abilities.add()
+        proto.ability_id = ability["id"]
+        proto.link_name = ability["name"]
+        proto.button_name = ability.get("buttonname", "")
+        proto.friendly_name = ability.get("friendlyname", "")
+        if "remapid" in ability:
+            proto.remaps_to_ability_id = ability["remapid"]
+        kind = ABILITY_TARGET_KIND.get(ability["id"])
+        code = {"None": 1, "Point": 2, "Unit": 3, "Unit, Point": 4, "Point, Unit": 4}.get(kind or "")
+        if code:  # data_pb2.AbilityData.Target; ids newer than the header keep proto default
+            proto.target = code
+    created: dict[int, int] = {}
+    for producer_table in TRAIN_INFO.values():
+        for unit, info in producer_table.items():
+            created[unit.value] = info["ability"].value
+    structures = _structure_type_ids()
+    for unit in stable["Units"]:
+        proto = response.units.add()
+        proto.unit_id = unit["id"]
+        proto.name = unit["name"]
+        proto.available = True
+        proto.race = Race.Terran.value
+        if unit["id"] in created:
+            proto.ability_id = created[unit["id"]]
+        if unit["id"] in structures:
+            proto.attributes.append(Attribute.Structure.value)
+    researched: dict[int, int] = {}
+    for research_table in RESEARCH_INFO.values():
+        for upgrade, info in research_table.items():
+            researched[upgrade.value] = info["ability"].value
+    for upgrade in stable["Upgrades"]:
+        proto = response.upgrades.add()
+        proto.upgrade_id = upgrade["id"]
+        proto.name = upgrade["name"]
+        if upgrade["id"] in researched:
+            proto.ability_id = researched[upgrade["id"]]
+    return GameData(response)
+
+
+class HarnessBot(BotAI):
+    """A real ``BotAI`` whose world queries are permissive and whose units are protos."""
+
+    def __init__(self, game_data: GameData) -> None:
+        super().__init__()
+        self.game_data = game_data
+        self.race = Race.Terran
+        self.state = _State()
+        self.minerals = 100000
+        self.vespene = 100000
+        self.supply_left = 200
+        self.supply_cap = 200
+        self._next_tag = 0x100000001
+
+    # -- world queries are permissive: the harness validates request shape, not map logic
+    def in_map_bounds(self, pos) -> bool:  # type: ignore[override]
+        return True
+
+    def in_placement_grid(self, pos) -> bool:  # type: ignore[override]
+        return True
+
+    def in_pathing_grid(self, pos) -> bool:  # type: ignore[override]
+        return True
+
+    def is_visible(self, pos) -> bool:  # type: ignore[override]
+        return True
+
+    async def can_place_single(self, building, position) -> bool:  # type: ignore[override]
+        return True
+
+    async def can_place(self, building, positions):  # type: ignore[override]
+        return [True for _ in positions]
+
+    # -- unit factory
+    def add_unit(self, unit_type: UnitTypeId, *, x: float = 20.0, y: float = 20.0, structure: bool = False,
+                 orders: tuple[AbilityId, ...] = (), health: float = 100.0, health_max: float = 100.0) -> Unit:
+        self._next_tag += 1
+        proto = raw_pb2.Unit(
+            tag=self._next_tag, unit_type=unit_type.value, alliance=1, build_progress=1.0,
+            health=health, health_max=health_max,
+        )
+        proto.pos.x, proto.pos.y = x, y
+        for ability in orders:
+            proto.orders.add().ability_id = ability.value
+        unit = Unit(proto, self)
+        group = self.structures if (structure or unit.is_structure) else self.units
+        group.append(unit)
+        if unit_type == UnitTypeId.SCV:
+            self.workers.append(unit)
+        self.all_own_units.append(unit)
+        return unit
+
+    # -- request extraction
+    def drain_actions(self) -> list[Any]:
+        """Lower and clear everything issued through ``BotAI.do``; returns ``ActionRaw`` messages."""
+
+        commands = list(self.actions)
+        self.actions.clear()
+        return list(combine_actions(commands))
+
+
+class _State:
+    game_loop = 1
+    upgrades: set = set()
+
+
+def make_bot(*units: tuple[UnitTypeId, int]) -> HarnessBot:
+    """Bot with ``count`` units of each type; structures are detected from game data."""
+
+    bot = HarnessBot(build_game_data())
+    for index, (unit_type, count) in enumerate(units):
+        for offset in range(count):
+            bot.add_unit(unit_type, x=20.0 + index + offset * 0.5, y=20.0 + index)
+    return bot
+
+
+def request_action(action_raws: list[Any]) -> sc2api_pb2.Request:
+    """Wrap ``ActionRaw`` messages in a ``RequestAction`` (what ``Client.actions`` sends) and round-trip it."""
+
+    request = sc2api_pb2.Request()
+    for raw in action_raws:
+        request.action.actions.add().action_raw.CopyFrom(raw)
+    return sc2api_pb2.Request.FromString(request.SerializeToString())
+
+
+def command_view(action_raw: Any) -> dict[str, Any]:
+    """Flat, assertion-friendly view of one ``ActionRawUnitCommand``."""
+
+    command = action_raw.unit_command
+    kind = command.WhichOneof("target")
+    return {
+        "ability_id": command.ability_id,
+        "ability_name": AbilityId(command.ability_id).name,
+        "unit_tags": sorted(command.unit_tags),
+        "target": kind,  # None | "target_world_space_pos" | "target_unit_tag"
+        "pos": (command.target_world_space_pos.x, command.target_world_space_pos.y) if kind == "target_world_space_pos" else None,
+        "unit_tag": command.target_unit_tag if kind == "target_unit_tag" else None,
+        "queue": command.queue_command,
+        "declared_target_kind": ABILITY_TARGET_KIND.get(command.ability_id),
+    }
+
+
+def target_shape_ok(view: dict[str, Any]) -> bool:
+    """Does the request's target field agree with the ability's declared target kind (s2client-api header)?"""
+
+    declared = view["declared_target_kind"]
+    if declared is None:  # id newer than the 2019 header: cannot judge
+        return True
+    allowed = {
+        "None": {None},
+        "Point": {"target_world_space_pos"},
+        "Unit": {"target_unit_tag"},
+        "Unit, Point": {"target_world_space_pos", "target_unit_tag"},
+        "Point, Unit": {"target_world_space_pos", "target_unit_tag"},
+    }.get(declared)
+    return True if allowed is None else view["target"] in allowed
+
+
+_SAFE = re.compile(r"[^A-Za-z0-9]+")
+
+
+def env_stableid_hint() -> str:
+    return os.environ.get("VOI_SC2_STABLEID", "") or str(Path(audit.DEFAULT_STABLEID))
