@@ -135,16 +135,20 @@ class HarnessBot(BotAI):
 
     # -- unit factory
     def add_unit(self, unit_type: UnitTypeId, *, x: float = 20.0, y: float = 20.0, structure: bool = False,
-                 orders: tuple[AbilityId, ...] = (), health: float = 100.0, health_max: float = 100.0) -> Unit:
+                 orders: tuple[AbilityId, ...] = (), health: float = 100.0, health_max: float = 100.0,
+                 enemy: bool = False, add_on_tag: int = 0) -> Unit:
         self._next_tag += 1
         proto = raw_pb2.Unit(
-            tag=self._next_tag, unit_type=unit_type.value, alliance=1, build_progress=1.0,
-            health=health, health_max=health_max,
+            tag=self._next_tag, unit_type=unit_type.value, alliance=4 if enemy else 1, build_progress=1.0,
+            health=health, health_max=health_max, add_on_tag=add_on_tag,
         )
         proto.pos.x, proto.pos.y = x, y
         for ability in orders:
             proto.orders.add().ability_id = ability.value
         unit = Unit(proto, self)
+        if enemy:
+            (self.enemy_structures if unit.is_structure else self.enemy_units).append(unit)
+            return unit
         group = self.structures if (structure or unit.is_structure) else self.units
         group.append(unit)
         if unit_type == UnitTypeId.SCV:
@@ -164,6 +168,62 @@ class HarnessBot(BotAI):
 class _State:
     game_loop = 1
     upgrades: set = set()
+
+
+def make_adapter(bot: HarnessBot):
+    """The product's real ``PythonSC2BotAdapter`` over the harness bot with fixed semantic map points."""
+
+    from starcraft_commander.map_resolver import MapPoint, SC2MapResolver
+    from starcraft_commander.python_sc2_adapter import PythonSC2BotAdapter
+
+    return PythonSC2BotAdapter(
+        bot=bot,
+        map_resolver=SC2MapResolver(
+            positions={
+                "self_main": MapPoint(20.0, 20.0),
+                "self_ramp": MapPoint(26.0, 24.0),
+                "self_natural": MapPoint(50.0, 50.0),
+                "self_third": MapPoint(80.0, 40.0),
+                "self_mineral_line": MapPoint(18.0, 22.0),
+                "self_geyser": MapPoint(24.0, 16.0),
+                "enemy_main": MapPoint(180.0, 180.0),
+                "enemy_natural": MapPoint(150.0, 150.0),
+                "enemy_mineral_line": MapPoint(176.0, 184.0),
+            }
+        ),
+    )
+
+
+def run_plan(bot: HarnessBot, *actions, adapter=None):
+    """Execute Direct actions through the real ``SC2RuntimeExecutor`` and return ``(result, views, warnings)``.
+
+    ``views`` are the flattened raw ``ActionRawUnitCommand`` requests that left ``BotAI.do``
+    (after python-sc2's own ``combine_actions``), each verified to survive a ``RequestAction``
+    serialize/parse round trip.  ``warnings`` are python-sc2 ``Unit.__call__`` target-kind warnings.
+    """
+
+    import asyncio
+    import warnings as _warnings
+
+    from starcraft_commander.contracts import SC2ExecutionPlan
+    from starcraft_commander.sc2_executor import SC2RuntimeExecutor
+
+    adapter = adapter or make_adapter(bot)
+    executor = SC2RuntimeExecutor(bot=adapter)
+    plan = SC2ExecutionPlan(intent_name="sc2_accuracy", ordered_actions=actions)
+    with _warnings.catch_warnings(record=True) as caught:
+        _warnings.simplefilter("always")
+        result = asyncio.run(executor.execute(plan))
+    raws = bot.drain_actions()
+    request_action(raws)  # must serialize + parse
+    views = [command_view(raw) for raw in raws]
+    messages = [str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)]
+    return result, views, messages
+
+
+def action_reports(result) -> list[dict[str, Any]]:
+    reports = result.audit.get("action_reports", {})
+    return [reports[key] for key in sorted(reports, key=int)]
 
 
 def make_bot(*units: tuple[UnitTypeId, int]) -> HarnessBot:
