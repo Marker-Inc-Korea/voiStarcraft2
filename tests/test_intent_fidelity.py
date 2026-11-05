@@ -1112,6 +1112,163 @@ class RawCoordinateRefusalTest(unittest.TestCase):
         self.assertTrue(any("note_to_self" in w for w in result.warnings))
 
 
+class _ProjectionHarness:
+    """Typed blackboard projection (what MicroMachine reads), no Direct runtime."""
+
+    def __init__(self) -> None:
+        self._directory = tempfile.TemporaryDirectory()
+        self.backend = MicroMachineFilesystemBlackboard(self._directory.name)
+
+    def close(self) -> None:
+        self._directory.cleanup()
+
+    def submit(self, text, output, *, frame, update_id):
+        live = MicroMachineLiveTextSession(
+            self.backend,
+            StaticJsonPolicyModulationProvider(output),
+            publish_non_macro_projection=True,
+        )
+        return live.submit_text(text, current_frame=frame, update_id=update_id)
+
+
+def _standing_marines():
+    return {
+        "goal": "마린 계속 생산",
+        "command_layer": "macro",
+        "production": {"queue_biases": {"TERRAN_MARINE": 0.9}},
+        "tactical_task": {
+            "task_type": "sustain_production",
+            "production_targets": ["TERRAN_MARINE"],
+        },
+        "lifetime": {
+            "mode": "standing_order",
+            "completion_conditions": ["cancelled_by_user"],
+            "completion_state": "active",
+        },
+    }
+
+
+def _retreat(**flags):
+    return {
+        "goal": "후퇴",
+        "override_level": "emergency",
+        "ttl_seconds": 45,
+        "emergency": {"force_retreat": True, "cancel_attacks": True, **flags},
+    }
+
+
+class EmergencyKeepsStandingMacroTest(unittest.TestCase):
+    """H-3: "후퇴" must not erase the user's standing "마린 계속 뽑아"."""
+
+    def setUp(self) -> None:
+        self.harness = _ProjectionHarness()
+        self.addCleanup(self.harness.close)
+
+    def test_standing_production_survives_an_emergency_retreat(self) -> None:
+        self.harness.submit("마린 계속 뽑아", _standing_marines(), frame=100, update_id="h3-macro")
+        self.harness.submit(
+            "마린 4기 공격",
+            _operation_output(_operation("atk", "pressure_with_main_army", "enemy_natural", 4)),
+            frame=120,
+            update_id="h3-attack",
+        )
+        retreat = self.harness.submit("후퇴", _retreat(), frame=160, update_id="h3-retreat")
+
+        self.assertTrue(retreat.ok, retreat.to_dict())
+        self.assertEqual(["macro", "emergency"], retreat.command_queue["active_command_layers"])
+        vector = retreat.update.vector
+        self.assertTrue(vector.emergency.force_retreat)
+        self.assertGreaterEqual(vector.production.queue_biases.to_dict()["TERRAN_MARINE"], 0.9)
+        self.assertEqual((), vector.operations, "the attack operation IS preempted")
+        self.assertEqual("emergency", vector.command_layer.value)
+
+    def test_the_next_command_still_sees_the_standing_macro(self) -> None:
+        self.harness.submit("마린 계속 뽑아", _standing_marines(), frame=100, update_id="h3b-macro")
+        self.harness.submit("후퇴", _retreat(), frame=140, update_id="h3b-retreat")
+        scout = self.harness.submit(
+            "마린 2기 정찰",
+            _operation_output(_operation("sc", "scout_with_units", "enemy_main", 2)),
+            frame=400,
+            update_id="h3b-scout",
+        )
+        self.assertEqual(["macro", "operation"], scout.command_queue["active_command_layers"])
+        self.assertIn("TERRAN_MARINE", scout.update.vector.production.queue_biases.to_dict())
+
+    def test_emergency_without_a_prior_macro_is_unchanged(self) -> None:
+        retreat = self.harness.submit("후퇴", _retreat(), frame=100, update_id="h3c-retreat")
+        self.assertEqual(["emergency"], retreat.command_queue["active_command_layers"])
+        self.assertEqual({}, retreat.update.vector.production.queue_biases.to_dict())
+
+    def test_emergency_that_stops_expansion_still_drops_expansion_bias(self) -> None:
+        macro = _standing_marines()
+        macro["production"]["queue_biases"]["TERRAN_COMMANDCENTER"] = 0.8
+        self.harness.submit("확장하며 마린", macro, frame=100, update_id="h3d-macro")
+        retreat = self.harness.submit(
+            "확장 중단하고 후퇴", _retreat(stop_expansion=True), frame=140, update_id="h3d-retreat"
+        )
+        biases = retreat.update.vector.production.queue_biases.to_dict()
+        self.assertIn("TERRAN_MARINE", biases)
+        self.assertNotIn("TERRAN_COMMANDCENTER", biases)
+
+
+class CancelledMacroDoesNotResurrectTest(unittest.TestCase):
+    """H-9: an order the user cancelled must not come back with the next command."""
+
+    def setUp(self) -> None:
+        self.harness = _ProjectionHarness()
+        self.addCleanup(self.harness.close)
+
+    def _scout(self, frame, update_id):
+        return self.harness.submit(
+            "마린 2기 정찰",
+            _operation_output(_operation("sc", "scout_with_units", "enemy_main", 2)),
+            frame=frame,
+            update_id=update_id,
+        )
+
+    def test_explicitly_cancelled_macro_is_not_merged_into_later_commands(self) -> None:
+        self.harness.submit("마린 계속 뽑아", _standing_marines(), frame=100, update_id="h9-macro")
+        cancel = self.harness.submit(
+            "마린 생산 그만",
+            {
+                "goal": "마린 생산 그만",
+                "command_layer": "macro",
+                "lifetime": {
+                    "mode": "ttl",
+                    "completion_state": "cancelled",
+                    "completion_conditions": ["cancelled_by_user"],
+                },
+            },
+            frame=140,
+            update_id="h9-cancel",
+        )
+        self.assertTrue(cancel.ok, cancel.to_dict())
+        self.assertNotIn("macro", cancel.command_queue["active_command_layers"])
+        self.assertEqual({}, cancel.update.vector.production.queue_biases.to_dict())
+
+        scout = self._scout(200, "h9-scout")
+        self.assertEqual(["operation"], scout.command_queue["active_command_layers"])
+        self.assertEqual({}, scout.update.vector.production.queue_biases.to_dict())
+
+    def test_macro_the_telemetry_reports_completed_is_not_revived(self) -> None:
+        from starcraft_commander.micromachine_bridge import MicroMachineTelemetry
+
+        self.harness.submit("마린 계속 뽑아", _standing_marines(), frame=100, update_id="h9t-macro")
+        self.harness.backend.ingest_telemetry(
+            MicroMachineTelemetry(
+                frame=150,
+                managers={"ProductionManager": {"update_id": "h9t-macro", "completion_state": "completed"}},
+            )
+        )
+        scout = self._scout(200, "h9t-scout")
+        self.assertNotIn("macro", scout.command_queue["active_command_layers"])
+
+    def test_uncancelled_standing_macro_still_persists(self) -> None:
+        self.harness.submit("마린 계속 뽑아", _standing_marines(), frame=100, update_id="h9p-macro")
+        scout = self._scout(40_000, "h9p-scout")
+        self.assertEqual(["macro", "operation"], scout.command_queue["active_command_layers"])
+
+
 # ---------------------------------------------------------------------------
 # Whole-corpus invariants (scripts/fidelity/replay_chain.py)
 # ---------------------------------------------------------------------------

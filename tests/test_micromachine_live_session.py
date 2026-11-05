@@ -795,9 +795,16 @@ class MicroMachineLiveTextSessionTest(unittest.TestCase):
             "overwrite_all_layers",
             emergency.command_queue["layer_action"],
         )
+        # Decided policy (H-3): an emergency preempts only the tactical layers
+        # (operation/micro). The earlier standing macro order is not part of
+        # the emergency and survives; it used to be erased here.
         self.assertEqual(
-            ["emergency"],
+            ["macro", "emergency"],
             emergency.command_queue["active_command_layers"],
+        )
+        self.assertEqual(
+            ["operation", "micro"],
+            emergency.command_queue["superseded_command_layers"],
         )
 
     def test_parallel_operation_issued_frame_is_server_authoritative(self) -> None:

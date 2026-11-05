@@ -2,7 +2,7 @@
 
 Scope: offline_python_chain_only; SC2 not available; not live evidence. Production-mode Direct runtime: `dry_run_fake_bot` (scripted fake bot).
 
-Cases: 67. Open invariant violations: 6. Expectation mismatches: 0.
+Cases: 68. Open invariant violations: 4. Expectation mismatches: 0.
 
 ## par-scout-attack
 
@@ -213,13 +213,24 @@ Cases: 67. Open invariant violations: 6. Expectation mismatches: 0.
 ## macro-default-ttl-expiry
 
 - **Utterance:** 마린 생산해 (이후 한참 뒤 정찰)
-- **Semantic ask:** A macro order published at frame 100 expires at 19900 (900 s cap) but is still merged into a command issued at frame 40000 (open finding F-9).
+- **Semantic ask:** A production macro is until_cancelled by design (no TTL): it is still merged into a command issued at frame 40000. Only an explicit cancel ends it (see macro-cancel-no-resurrection).
 - step 0 (frame 100): `마린 생산`
   - projection: status `published` compile `compiled` published=True layers=['macro'] ops=[—] direct=`—` → UI: published [none] — Telemetry has not consumed the latest update id.
   - production: status `published` compile `compiled` published=True layers=['macro'] ops=[—] direct=`—` → UI: published [none]
 - step 1 (frame 40000): `정찰`
   - projection: status `published` compile `compiled` published=True layers=['macro', 'operation'] ops=[sc#1×2] direct=`—` → UI: published [none] — OperationDirector has not reported receipt for this operation.
   - production: status `direct_executed` compile `compiled` published=False layers=[] ops=[sc#1×2] direct=`executed` → UI: simulated [simulated]
+
+## macro-cancel-no-resurrection
+
+- **Utterance:** 마린 생산 그만 (이후 정찰)
+- **Semantic ask:** A production order the user explicitly cancelled must not be merged back into the next command.
+- step 0 (frame 100): `마린 계속 생산`
+  - projection: status `published` compile `compiled` published=True layers=['macro'] ops=[—] direct=`—` → UI: published [none] — Telemetry has not consumed the latest update id.
+- step 1 (frame 140): `마린 생산 그만`
+  - projection: status `published` compile `compiled` published=True layers=[] ops=[—] direct=`—` → UI: published [none] — Telemetry has not consumed the latest update id.
+- step 2 (frame 200): `정찰`
+  - projection: status `published` compile `compiled` published=True layers=['operation'] ops=[sc#1×2] direct=`—` → UI: published [none] — OperationDirector has not reported receipt for this operation.
 
 ## macro-standing-survives-gap
 
@@ -268,11 +279,9 @@ Cases: 67. Open invariant violations: 6. Expectation mismatches: 0.
   - projection: status `published` compile `compiled` published=True layers=['macro', 'operation'] ops=[atk#1×4] direct=`—` → UI: published [none] — OperationDirector has not reported receipt for this operation.
   - production: status `direct_executed` compile `compiled` published=False layers=[] ops=[atk#1×4] direct=`executed` → UI: simulated [simulated]
 - step 2 (frame 160): `후퇴`
-  - projection: status `published` compile `compiled` published=True layers=['emergency'] ops=[—] direct=`—` → UI: published [none] — Telemetry has not consumed the latest update id.
+  - projection: status `published` compile `compiled` published=True layers=['macro', 'emergency'] ops=[—] direct=`—` → UI: published [none] — Telemetry has not consumed the latest update id.
   - production: status `direct_executed` compile `compiled` published=False layers=[] ops=[—] direct=`executed` → UI: simulated [simulated]
 - ⚠ **no_silent_clamp** (projection, step 2): ttl asked 45, applied 60
-- ⚠ **emergency_preempts_only_affected_layers** (projection, step 2): layers lost ['macro'] (kept ['emergency'])
-- ⚠ **emergency_preempts_only_affected_layers** (projection, step 2): macro standing order ['TERRAN_MARINE'] erased by emergency
 
 ## emergency-preempts-direct-lease
 
@@ -291,7 +300,7 @@ Cases: 67. Open invariant violations: 6. Expectation mismatches: 0.
   - projection: status `published` compile `compiled` published=True layers=['emergency'] ops=[—] direct=`—` → UI: published [none] — Telemetry has not consumed the latest update id.
   - production: status `direct_executed` compile `compiled` published=False layers=[] ops=[—] direct=`executed` → UI: simulated [simulated]
 - step 1 (frame 160): `다시 마린 생산`
-  - projection: status `published` compile `compiled` published=True layers=['macro', 'emergency'] ops=[—] direct=`—` → UI: published [none] — Telemetry has not consumed the latest update id.
+  - projection: status `published` compile `compiled` published=True layers=['macro'] ops=[—] direct=`—` → UI: published [none] — Telemetry has not consumed the latest update id.
   - production: status `published` compile `compiled` published=True layers=['macro'] ops=[—] direct=`—` → UI: published [none]
 - ⚠ **no_silent_clamp** (projection, step 0): ttl asked 45, applied 60
 

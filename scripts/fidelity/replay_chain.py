@@ -57,10 +57,9 @@ DIRECT_RUNTIME_KIND = "dry_run_fake_bot"
 #: Invariant violations the replay is EXPECTED to find today.  Each is an open
 #: handoff item documented in docs/intent-fidelity-audit.md; the unit test pins
 #: this list exactly so a fix (or a new regression) changes it visibly.
+#: H-4: the live reducer rewrites an emergency TTL (45 -> 60) without a warning.
+#: Fixed in a separate commit because it changes the pre-live journey evidence.
 EXPECTED_OPEN_VIOLATIONS: tuple[str, ...] = (
-    # H-3: an emergency overwrite erases the standing macro order.
-    "emergency-keeps-macro::emergency_preempts_only_affected_layers",
-    # H-4: the reducer rewrites an emergency TTL (45 -> 60) without a warning.
     "emergency-hold::no_silent_clamp",
     "emergency-keeps-macro::no_silent_clamp",
     "emergency-retreat-ko::no_silent_clamp",
@@ -1077,8 +1076,14 @@ CASES: list[dict[str, Any]] = [
     C("macro-supersede", "마린 말고 탱크 생산해", "A newer macro command replaces the old production focus, not merges forever.",
       [S("마린 생산", macro(M), 100), S("마린 말고 탱크 생산해", macro(T, goal="탱크 생산"), 140, expect={"macro_biases": ["TERRAN_SIEGETANK"], "layer_action": "supersede_same_layer"})]),
     C("macro-default-ttl-expiry", "마린 생산해 (이후 한참 뒤 정찰)",
-      "A macro order published at frame 100 expires at 19900 (900 s cap) but is still merged into a command issued at frame 40000 (open finding F-9).",
+      "A production macro is until_cancelled by design (no TTL): it is still merged into a command issued at frame 40000. Only an explicit cancel ends it (see macro-cancel-no-resurrection).",
       [S("마린 생산", macro(M), 100), S("정찰", operations(op("sc", "scout_with_units", "enemy_main", 2)), 40_000, expect={"layers": ["macro", "operation"]})]),
+    C("macro-cancel-no-resurrection", "마린 생산 그만 (이후 정찰)",
+      "A production order the user explicitly cancelled must not be merged back into the next command.",
+      [S("마린 계속 생산", macro(standing=True), 100),
+       S("마린 생산 그만", {"goal": "마린 생산 그만", "command_layer": "macro", "lifetime": {"mode": "ttl", "completion_state": "cancelled", "completion_conditions": ["cancelled_by_user"]}}, 140,
+         expect={"layers": [], "macro_biases": []}),
+       S("정찰", operations(op("sc", "scout_with_units", "enemy_main", 2)), 200, expect={"layers": ["operation"], "macro_biases": []})], modes=("projection",)),
     C("macro-standing-survives-gap", "마린 계속 생산하고 한참 뒤 정찰",
       "A standing_order macro survives past the default TTL.",
       [S("마린 계속 생산", macro(standing=True), 100), S("정찰", operations(op("sc", "scout_with_units", "enemy_main", 2)), 40_000, expect={"layers": ["macro", "operation"]})]),
@@ -1096,7 +1101,7 @@ CASES: list[dict[str, Any]] = [
     C("emergency-keeps-macro", "마린 계속 생산 중에 후퇴",
       "Retreat preempts attack/scout layers but must not erase the standing production order.",
       [S("마린 계속 생산", macro(standing=True), 100), S("공격", operations(op("atk", "pressure_with_main_army", "enemy_natural", 4)), 120),
-       S("후퇴", emergency(), 160, expect={"layers": ["emergency"]})]),
+       S("후퇴", emergency(), 160, expect={"layers": ["macro", "emergency"], "macro_biases.0": "TERRAN_MARINE", "ops.len": 0})]),
     C("emergency-preempts-direct-lease", "공격 중 후퇴", "Retreat releases the attack lease (and only combat leases).",
       [S("마린 4기 공격", operations(op("atk", "pressure_with_main_army", "enemy_natural", 4)), 100),
        S("후퇴", emergency(), 140, worker_job=True,
