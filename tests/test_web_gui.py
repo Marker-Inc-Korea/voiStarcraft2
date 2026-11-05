@@ -15188,6 +15188,37 @@ class SessionLoopBridgeTest(unittest.TestCase):
             )
             self.assertEqual("superseded", stream["stale-normal"]["status"])
 
+    def test_compile_result_history_is_ordered_by_acceptance_not_completion(self):
+        # A superseded request can finish AFTER the request that replaced it; its receipt
+        # must still sort before the newer request, exactly like the latest-result rule.
+        with tempfile.TemporaryDirectory() as directory:
+            older = {
+                "update_id": "older-accepted-first",
+                "status": "superseded",
+                "accepted_at_unix_ns": 1_000,
+                "acceptance_ordinal": 1,
+                "written_at_unix": 200.0,  # completed LAST
+            }
+            newer = {
+                "update_id": "newer-accepted-second",
+                "status": "published",
+                "accepted_at_unix_ns": 2_000,
+                "acceptance_ordinal": 2,
+                "written_at_unix": 100.0,  # completed first
+            }
+            for document in (newer, older):
+                web_gui._atomic_write_json(
+                    web_gui._micromachine_compile_result_history_path(
+                        directory, document["update_id"]
+                    ),
+                    document,
+                )
+            ids = [
+                str(item.get("update_id"))
+                for item in web_gui._read_micromachine_compile_result_history(directory)
+            ]
+            self.assertEqual(["older-accepted-first", "newer-accepted-second"], ids)
+
     def test_emergency_safety_path_bypasses_llm_and_keeps_latest_runnable(self):
         class RejectEmergencyLLMControl(FakeConfiguredLLMControl):
             def __init__(self):
@@ -15232,6 +15263,15 @@ class SessionLoopBridgeTest(unittest.TestCase):
 
                 self.assertEqual("replacement-emergency", latest.get("update_id"))
                 self.assertEqual(0, control._call_count)
+                # The latest result is written first and its history receipt right after;
+                # wait for the receipt instead of reading history in that window.
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    history = web_gui._read_micromachine_compile_result_history(directory)
+                    archive_ids = [str(item.get("update_id")) for item in history]
+                    if "replacement-emergency" in archive_ids:
+                        break
+                    time.sleep(0.02)
                 history = web_gui._read_micromachine_compile_result_history(directory)
                 archive_ids = [str(item.get("update_id")) for item in history]
                 self.assertEqual("replacement-emergency", archive_ids[-1])

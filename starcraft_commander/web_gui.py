@@ -630,10 +630,21 @@ def _prune_micromachine_compile_result_history(blackboard_dir: str) -> None:
         ]
     except OSError:
         return
-    paths.sort(
-        key=lambda path: os.path.getmtime(path),
-        reverse=True,
-    )
+    # Keep the most recently ACCEPTED receipts (file mtime is completion order, which a slow
+    # superseded request can invert). Unreadable files sort oldest so they are pruned first.
+    def _acceptance_key(path: str) -> tuple[int, int]:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            return (-1, -1)
+        return (
+            _micromachine_compile_result_order(payload)
+            if isinstance(payload, Mapping)
+            else (-1, -1)
+        )
+
+    paths.sort(key=_acceptance_key, reverse=True)
     for path in paths[_MICROMACHINE_COMPILE_RESULT_HISTORY_LIMIT:]:
         try:
             os.unlink(path)
@@ -683,9 +694,9 @@ def _read_micromachine_compile_result_history(
             continue
         if isinstance(payload, Mapping):
             documents.append(dict(payload))
-    documents.sort(
-        key=lambda item: float(item.get("written_at_unix", 0.0) or 0.0)
-    )
+    # Same key as the latest-result rule: order by request acceptance, never by completion time.
+    # A superseded request often finishes after the request that replaced it.
+    documents.sort(key=_micromachine_compile_result_order)
     return tuple(documents[-_MICROMACHINE_COMPILE_RESULT_HISTORY_LIMIT:])
 
 
