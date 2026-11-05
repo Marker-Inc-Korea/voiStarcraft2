@@ -122,7 +122,11 @@ def test_unit_tokens_have_consistent_ids_in_all_three_sources() -> None:
 
 def test_every_semantic_ability_resolves_to_an_id_its_caster_can_cast() -> None:
     report = audit.run_audit()
-    problems = [(r["ability_token"], r["status"]) for r in report["abilities"] if r["status"] not in {"ok", "ok(no caster check)"}]
+    problems = [
+        (r["ability_token"], r["status"])
+        for r in report["abilities"]
+        if not r["status"].startswith("ok")
+    ]
     assert problems == []
     for row in report["abilities"]:
         # Resolved id exists in stableid AND in the s2client-api header when the header knows it.
@@ -213,7 +217,6 @@ VOICE_CASES = [
     ("auto_turret", ((U.RAVEN, 1),), ENEMY_ARMY, "BUILDAUTOTURRET_AUTOTURRET", "target_world_space_pos"),
     ("interference_matrix", ((U.RAVEN, 1),), ENEMY_ARMY, "EFFECT_INTERFERENCEMATRIX", "target_unit_tag"),
     ("anti_armor_missile", ((U.RAVEN, 1),), ENEMY_ARMY, "EFFECT_ANTIARMORMISSILE", "target_world_space_pos"),
-    ("tactical_jump", ((U.BATTLECRUISER, 1),), ENEMY_ARMY, "EFFECT_TACTICALJUMP", "target_world_space_pos"),
 ]
 
 
@@ -228,15 +231,33 @@ def test_voice_ability_lowers_to_the_exact_raw_command(ability, units, enemies, 
         assert {t for v in views for t in v["unit_tags"]} == casters, (ability, views)
 
 
+def test_tactical_jump_needs_an_explicit_destination_and_sends_a_point() -> None:
+    bot = harness.make_bot((U.BATTLECRUISER, 2))
+    bare = SC2CommandAction(SC2ActionType.EXECUTE_ABILITY, "BATTLECRUISER", count=0, metadata={"ability": "tactical_jump"})
+    result, views, _ = harness.run_plan(bot, bare)
+    assert views == [] and "target_required" in harness.action_reports(result)[0]["detail"]
+    aimed = SC2CommandAction(
+        SC2ActionType.EXECUTE_ABILITY, "BATTLECRUISER", target="enemy_main", count=0, metadata={"ability": "tactical_jump"}
+    )
+    _, views, warns = harness.run_plan(bot, aimed)
+    _assert_shape(views, warns, ability="EFFECT_TACTICALJUMP")
+    assert {v["target"] for v in views} == {"target_world_space_pos"}
+
+
 def test_medivac_load_heal_unload_use_the_documented_target_kinds() -> None:
     own = ((U.MARINE, 20.0, 21.0), (U.MARINE, 21.0, 21.0))
-    _, _, load, warns = run_voice("medivac_load", (U.MEDIVAC, 2), own_extra=own)
+    bot, _, load, warns = run_voice("medivac_load", (U.MEDIVAC, 2), own_extra=own)
     _assert_shape(load, warns, ability="LOAD_MEDIVAC")
     assert {v["target"] for v in load} == {"target_unit_tag"}
+    marines = {u.tag for u in bot.units if u.type_id == U.MARINE}
+    assert {v["unit_tag"] for v in load} == marines, "each medivac must load a different marine"
     _, _, unload, warns = run_voice("medivac_unload_all", (U.MEDIVAC, 2))
     _assert_shape(unload, warns, ability="UNLOADALLAT_MEDIVAC")
-    _, _, heal, warns = run_voice("medivac_heal", (U.MEDIVAC, 1), own_extra=((U.MARINE, 20.0, 21.0),))
-    assert {v["ability_name"] for v in heal} == {"MEDIVACHEAL_HEAL"}
+    bot = harness.make_bot((U.MEDIVAC, 1))
+    hurt = bot.add_unit(U.MARINE, x=21.0, y=21.0, health=10.0, health_max=45.0)
+    _, heal, warns = harness.run_plan(bot, *lower_micro("medivac_heal"))
+    _assert_shape(heal, warns, ability="MEDIVACHEAL_HEAL")
+    assert heal[0]["target"] == "target_unit_tag" and heal[0]["unit_tag"] == hurt.tag
 
 
 def test_unit_target_ability_without_any_enemy_is_refused_not_sent_with_a_point() -> None:
@@ -261,7 +282,7 @@ def test_mixed_stim_default_covers_every_unit_class_the_user_named() -> None:
     """"스팀팩" with no unit named means every stim-capable unit class (marine AND marauder)."""
 
     bot = harness.make_bot((U.MARINE, 3), (U.MARAUDER, 2), (U.SIEGETANK, 1))
-    _, views, warns = harness.run_plan(bot, *lower_micro("stimpack"))[1:]
+    _, views, warns = harness.run_plan(bot, *lower_micro("stimpack"))
     _assert_shape(views, warns, ability="EFFECT_STIM")
     expected = {u.tag for u in bot.units if u.type_id in {U.MARINE, U.MARAUDER}}
     assert {t for v in views for t in v["unit_tags"]} == expected

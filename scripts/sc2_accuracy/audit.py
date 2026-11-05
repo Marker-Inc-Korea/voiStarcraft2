@@ -256,7 +256,27 @@ def audit_abilities(product, stable, sc2, header) -> list[dict[str, Any]]:
             redirected = {generic.get(a, a) for a in allowed}
             row["caster_abilities_contains_exact"] = resolved in allowed
             row["caster_abilities_contains_via_generic"] = resolved in redirected
-            row["status"] = "ok" if (resolved in allowed or resolved in redirected) else "CASTER_CANNOT_CAST"
+            # python-sc2's UNIT_ABILITIES lists only the primary button of a toggle/transport
+            # pair (CloakOn but not CloakOff, Load but not UnloadAllAt).  stableid groups both
+            # buttons under one link ``name``; a sibling of a listed ability is castable too.
+            link = (sid or {}).get("name")
+            sibling = any(
+                (abilities_by_id.get(a.value) or {}).get("name") == link for a in allowed
+            ) if link else False
+            row["caster_listed_sibling_link"] = sibling
+            header_caster = header.get("unit_abilities", {}).get(caster_token, [])
+            header_generic = (header_entry[0] if header_entry else "")
+            row["s2client_header_caster_lists_ability"] = bool(header_generic) and header_generic in header_caster
+            if resolved in allowed or resolved in redirected:
+                row["status"] = "ok"
+            elif sibling:
+                row["status"] = "ok(via link-name sibling)"
+            elif row["s2client_header_caster_lists_ability"]:
+                # python-sc2's UNIT_ABILITIES has a data hole (e.g. Ghost NukeCalldown) that the
+                # s2client-api unit table does not; stableid + header agree, so accept and report.
+                row["status"] = "ok(python-sc2 UNIT_ABILITIES omits; s2client-api lists)"
+            else:
+                row["status"] = "CASTER_CANNOT_CAST"
         else:
             row["status"] = "ok(no caster check)"
         rows.append(row)

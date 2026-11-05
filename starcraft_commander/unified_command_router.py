@@ -654,16 +654,25 @@ def _append_task_actions(
             or tuple(getattr(scope, "unit_classes", ()))
             or ("available combat units",)
         )
-        actions.append(
-            SC2CommandAction(
-                action_type=SC2ActionType.EXECUTE_ABILITY,
-                subject=_direct_unit_subject(units[0]),
-                target=target,
-                count=min_units,
-                priority=priority,
-                metadata={**metadata, "ability": ability},
-            )
+        # A bare ability ("탱크 시즈모드", "스팀팩") addresses EVERY eligible caster
+        # (count 0 = whole group, the same convention emergency stop/hold uses);
+        # only an explicit number ("탱크 두 대") bounds it.  Every unit class the
+        # user named gets its own action: stim with marines+marauders must stim both.
+        explicit_count = int(
+            getattr(scope, "min_units", 0) or getattr(task, "min_units", 0) or 0
         )
+        subjects = tuple(dict.fromkeys(_direct_unit_subject(unit) for unit in units))
+        for subject in subjects:
+            actions.append(
+                SC2CommandAction(
+                    action_type=SC2ActionType.EXECUTE_ABILITY,
+                    subject=subject,
+                    target=target,
+                    count=explicit_count,
+                    priority=priority,
+                    metadata={**metadata, "ability": ability},
+                )
+            )
         return
 
     direct_action_types = {

@@ -41,6 +41,22 @@ ABILITY_TARGET_KIND = {int(num): target for num, (_, target) in ENUMS["abilities
 """s2client-api (C++) ability id -> declared target kind ("None", "Point", "Unit", ...)."""
 
 
+def _remap_kinds() -> dict[int, str]:
+    """General (remapped) ids such as 3793 HoldPosition inherit the kind of the id that remaps to them."""
+
+    stable = audit.load_stableid() or {"Abilities": []}
+    out: dict[int, str] = {}
+    for ability in stable["Abilities"]:
+        remap = ability.get("remapid")
+        kind = ABILITY_TARGET_KIND.get(ability["id"])
+        if remap and kind and remap not in ABILITY_TARGET_KIND:
+            out.setdefault(remap, kind)
+    return out
+
+
+ABILITY_TARGET_KIND = {**_remap_kinds(), **ABILITY_TARGET_KIND}
+
+
 def stableid_available() -> bool:
     return audit.stableid_path().is_file()
 
@@ -53,6 +69,12 @@ def _structure_type_ids() -> set[int]:
         UnitTypeId.ORBITALCOMMAND, UnitTypeId.PLANETARYFORTRESS,
     }
     return built | {u.value for u in addons}
+
+
+BIOLOGICAL_TERRAN = {
+    UnitTypeId.MARINE.value, UnitTypeId.MARAUDER.value, UnitTypeId.REAPER.value,
+    UnitTypeId.GHOST.value, UnitTypeId.SCV.value,
+}
 
 
 def build_game_data() -> GameData:
@@ -70,8 +92,10 @@ def build_game_data() -> GameData:
             proto.remaps_to_ability_id = ability["remapid"]
         kind = ABILITY_TARGET_KIND.get(ability["id"])
         code = {"None": 1, "Point": 2, "Unit": 3, "Unit, Point": 4, "Point, Unit": 4}.get(kind or "")
-        if code:  # data_pb2.AbilityData.Target; ids newer than the header keep proto default
-            proto.target = code
+        # data_pb2.AbilityData.Target.  Ids the 2019 header does not list (remapped general ids
+        # such as 3795 Patrol, and post-2019 abilities) are declared PointOrUnit so python-sc2's own
+        # target-kind warning cannot fire spuriously; ``target_shape_ok`` skips them as unverified.
+        proto.target = code or 4
     created: dict[int, int] = {}
     for producer_table in TRAIN_INFO.values():
         for unit, info in producer_table.items():
@@ -87,6 +111,9 @@ def build_game_data() -> GameData:
             proto.ability_id = created[unit["id"]]
         if unit["id"] in structures:
             proto.attributes.append(Attribute.Structure.value)
+        if unit["id"] in BIOLOGICAL_TERRAN:
+            # stableid.json carries no unit attributes; the harness supplies the (stable, public) bio set.
+            proto.attributes.append(Attribute.Biological.value)
     researched: dict[int, int] = {}
     for research_table in RESEARCH_INFO.values():
         for upgrade, info in research_table.items():
@@ -108,6 +135,7 @@ class HarnessBot(BotAI):
         self.game_data = game_data
         self.race = Race.Terran
         self.state = _State()
+        self._expansion_positions_list = [Point2((20.0, 20.0)), Point2((50.0, 50.0))]
         self.minerals = 100000
         self.vespene = 100000
         self.supply_left = 200

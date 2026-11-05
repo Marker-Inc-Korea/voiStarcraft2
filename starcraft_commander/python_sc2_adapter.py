@@ -252,6 +252,73 @@ _UNSET: Final[object] = object()
 _LEADING_COUNT_PATTERN: Final[re.Pattern[str]] = re.compile(r"\s*(\d+)")
 """Leading integer parser for free-text unit groups such as '2 Marines'."""
 
+# Semantic ability token -> (python-sc2 ``AbilityId`` member name, target mode,
+# caster unit-type names).  Every id below was verified offline against
+# stableid.json, burnysc2 ``sc2.ids`` and the s2client-api header
+# (scripts/sc2_accuracy/audit.py, tests/test_sc2_api_accuracy.py).  The target
+# mode follows the ability's declared SC2 target kind: "none" (no target),
+# "enemy_unit" (Unit), "enemy_point" (Point), "caster_point"/"explicit_point"
+# (Point), "own_cargo"/"own_damaged_bio" (own Unit).  Ids newer than the 2019
+# header (3747 interference matrix, 3753 anti-armor missile) have an
+# INFERRED target kind; the audit reports them as header-unverified.
+SC2_SEMANTIC_ABILITIES: Final[dict[str, tuple[str, str, tuple[str, ...]]]] = {
+    "stimpack": ("EFFECT_STIM", "none", ("MARINE", "MARAUDER")),
+    "marine_stimpack": ("EFFECT_STIM_MARINE", "none", ("MARINE",)),
+    "marauder_stimpack": ("EFFECT_STIM_MARAUDER", "none", ("MARAUDER",)),
+    "kd8_charge": ("KD8CHARGE_KD8CHARGE", "enemy_unit", ("REAPER",)),
+    "emp": ("EMP_EMP", "enemy_point", ("GHOST",)),
+    "snipe": ("EFFECT_GHOSTSNIPE", "enemy_unit", ("GHOST",)),
+    "ghost_cloak": ("BEHAVIOR_CLOAKON_GHOST", "none", ("GHOST",)),
+    "ghost_decloak": ("BEHAVIOR_CLOAKOFF_GHOST", "none", ("GHOST",)),
+    "tactical_nuke": ("TACNUKESTRIKE_NUKECALLDOWN", "enemy_point", ("GHOST",)),
+    "widow_mine_burrow": ("BURROWDOWN_WIDOWMINE", "none", ("WIDOWMINE",)),
+    "widow_mine_unburrow": ("BURROWUP_WIDOWMINE", "none", ("WIDOWMINEBURROWED",)),
+    "lock_on": ("LOCKON_LOCKON", "enemy_unit", ("CYCLONE",)),
+    "siege_mode": ("SIEGEMODE_SIEGEMODE", "none", ("SIEGETANK",)),
+    "unsiege": ("UNSIEGE_UNSIEGE", "none", ("SIEGETANKSIEGED",)),
+    "hellbat_mode": ("MORPH_HELLBAT", "none", ("HELLION",)),
+    "hellion_mode": ("MORPH_HELLION", "none", ("HELLIONTANK",)),
+    "thor_high_impact_mode": ("MORPH_THORHIGHIMPACTMODE", "none", ("THOR",)),
+    "thor_explosive_mode": ("MORPH_THOREXPLOSIVEMODE", "none", ("THORAP",)),
+    "medivac_afterburners": ("EFFECT_MEDIVACIGNITEAFTERBURNERS", "none", ("MEDIVAC",)),
+    "medivac_heal": ("MEDIVACHEAL_HEAL", "own_damaged_bio", ("MEDIVAC",)),
+    "medivac_load": ("LOAD_MEDIVAC", "own_cargo", ("MEDIVAC",)),
+    "medivac_unload_all": ("UNLOADALLAT_MEDIVAC", "caster_point", ("MEDIVAC",)),
+    "viking_fighter_mode": ("MORPH_VIKINGFIGHTERMODE", "none", ("VIKINGASSAULT",)),
+    "viking_assault_mode": ("MORPH_VIKINGASSAULTMODE", "none", ("VIKINGFIGHTER",)),
+    "liberator_defender_mode": ("MORPH_LIBERATORAGMODE", "enemy_point", ("LIBERATOR",)),
+    "liberator_fighter_mode": ("MORPH_LIBERATORAAMODE", "none", ("LIBERATORAG",)),
+    "banshee_cloak": ("BEHAVIOR_CLOAKON_BANSHEE", "none", ("BANSHEE",)),
+    "banshee_decloak": ("BEHAVIOR_CLOAKOFF_BANSHEE", "none", ("BANSHEE",)),
+    "auto_turret": ("BUILDAUTOTURRET_AUTOTURRET", "caster_point", ("RAVEN",)),
+    "interference_matrix": ("EFFECT_INTERFERENCEMATRIX", "enemy_unit", ("RAVEN",)),
+    "anti_armor_missile": ("EFFECT_ANTIARMORMISSILE", "enemy_point", ("RAVEN",)),
+    "yamato": ("YAMATO_YAMATOGUN", "enemy_unit", ("BATTLECRUISER",)),
+    "tactical_jump": ("EFFECT_TACTICALJUMP", "explicit_point", ("BATTLECRUISER",)),
+}
+
+_SEMANTIC_ABILITY_ALIASES: Final[dict[str, str]] = {
+    **{token.upper(): spec[0] for token, spec in SC2_SEMANTIC_ABILITIES.items()},
+    "STIM": "EFFECT_STIM",
+    "SIEGE": "SIEGEMODE_SIEGEMODE",
+    "SIEGEMODE": "SIEGEMODE_SIEGEMODE",
+    "NUKE": "TACNUKESTRIKE_NUKECALLDOWN",
+}
+
+# Semantic research token (underscores stripped, upper) -> UpgradeId member name.
+# ``COMBATSHIELD`` is a different (research-less) id than the one the game
+# researches (``SHIELDWALL`` at the Barracks Tech Lab).
+_SEMANTIC_UPGRADE_ALIASES: Final[dict[str, str]] = {
+    "COMBATSHIELD": "SHIELDWALL",
+    "GHOSTCLOAK": "PERSONALCLOAKING",
+    "YAMATOCANNON": "BATTLECRUISERENABLESPECIALIZATIONS",
+}
+
+# Structures that all train the same units (SCV from CC / Orbital / Planetary).
+_PRODUCER_EQUIVALENTS: Final[dict[str, frozenset[str]]] = {
+    "COMMANDCENTER": frozenset({"COMMANDCENTER", "ORBITALCOMMAND", "PLANETARYFORTRESS"}),
+}
+
 
 @runtime_checkable
 class SC2BotAdapterInterface(Protocol):
@@ -834,8 +901,8 @@ class PythonSC2BotAdapter:
         is resolved through python-sc2's ``AbilityId`` when that package exists.
         """
 
-        if action.count <= 0:
-            return _refusal_report(action.count, "non_positive_count")
+        if action.count < 0:
+            return _refusal_report(action.count, "negative_count")
         ability_name = str(
             action.metadata.get("ability_id")
             or action.metadata.get("ability")
@@ -846,17 +913,33 @@ class PythonSC2BotAdapter:
         ability = self._resolve_ability(ability_name)
         if ability is None:
             return _refusal_report(action.count, "unresolvable_ability")
-        units = self._action_units(action)
+        units = (
+            self._units_by_tags(action.metadata["_direct_unit_tags"])
+            if "_direct_unit_tags" in action.metadata
+            else self._ability_casters(action)
+        )
         if not units:
             return _refusal_report(action.count, "no_matching_caster")
-        target = None
+        # Count 0 is the whole eligible group ("탱크 시즈모드" sieges every
+        # tank); a positive count is exactly that many casters.
+        if "_direct_requested_count" in action.metadata:
+            requested = int(action.metadata["_direct_requested_count"])
+        else:
+            requested = action.count or len(units)
+        spec = SC2_SEMANTIC_ABILITIES.get(self._ability_token(ability_name))
+        mode = spec[1] if spec is not None else ""
+        explicit_point = None
         target_name = str(action.target or "").strip()
         if target_name:
-            target_point = self._resolve_target_point(target_name)
-            if target_point is not None:
-                target = _game_point(target_point)
+            explicit_point = self._resolve_target_point(target_name)
         issued = 0
-        for unit in units[: action.count]:
+        detail = "insufficient_casters"
+        claimed: set[int] = set()
+        for unit in units[:requested]:
+            target, refusal = self._ability_target(mode, unit, explicit_point, claimed)
+            if refusal:
+                detail = refusal
+                continue
             use_ability = getattr(unit, "use_ability", None)
             caller = use_ability if callable(use_ability) else unit
             if not callable(caller):
@@ -868,7 +951,99 @@ class PythonSC2BotAdapter:
             )
             if applied:
                 issued += 1
-        return _issuance_report(action.count, issued, "insufficient_casters")
+        return _issuance_report(requested, issued, detail)
+
+    @staticmethod
+    def _ability_token(ability_name: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "_", str(ability_name).strip().lower()).strip("_")
+
+    def _ability_casters(self, action: SC2CommandAction) -> list[object]:
+        """Own units of the named family that are in a form able to cast the ability."""
+
+        ability_name = str(
+            action.metadata.get("ability_id") or action.metadata.get("ability") or ""
+        )
+        spec = SC2_SEMANTIC_ABILITIES.get(self._ability_token(ability_name))
+        family = canonical_terran_unit_family(action.subject)
+        if family:
+            pool = [
+                unit
+                for unit in _materialize(getattr(self.bot, "units", None))
+                if canonical_terran_unit_family(_entity_type_name(unit) or "") == family
+            ]
+        else:
+            pool = self._select_group(action.subject)
+        if spec is not None and spec[2]:
+            pool = [unit for unit in pool if _entity_type_name(unit) in spec[2]]
+        return pool
+
+    def _ability_target(
+        self,
+        mode: str,
+        unit: object,
+        explicit_point: MapPoint | None,
+        claimed: set[int],
+    ) -> tuple[object | None, str]:
+        """Pick the SC2 target a caster's ability requires; refuse rather than send none."""
+
+        if mode in {"", "none"}:
+            # Unknown abilities keep the historical behaviour: an explicit
+            # resolved point is passed, otherwise the ability is target-less.
+            if mode == "" and explicit_point is not None:
+                return _game_point(explicit_point), ""
+            return None, ""
+        caster_point = _entity_point(unit)
+        if mode == "explicit_point":
+            if explicit_point is None:
+                return None, "target_required: explicit_point_required"
+            return _game_point(explicit_point), ""
+        if mode == "caster_point":
+            point = explicit_point or caster_point
+            return (_game_point(point), "") if point is not None else (None, "target_required: no_caster_position")
+        enemies = _materialize(getattr(self.bot, "enemy_units", None)) + _materialize(
+            getattr(self.bot, "enemy_structures", None)
+        )
+        anchor = explicit_point or caster_point
+        if mode in {"enemy_unit", "enemy_point"}:
+            enemy = _nearest_entity(enemies, anchor)
+            if enemy is None:
+                if mode == "enemy_point" and explicit_point is not None:
+                    return _game_point(explicit_point), ""
+                return None, "target_required: no_enemy_target"
+            if mode == "enemy_unit":
+                return enemy, ""
+            point = explicit_point or _entity_point(enemy)
+            return (_game_point(point), "") if point is not None else (None, "target_required: no_enemy_position")
+        if mode == "own_cargo":
+            candidates = [
+                entity
+                for entity in _materialize(getattr(self.bot, "units", None))
+                if entity is not unit
+                and _entity_tag(entity) not in claimed
+                and not _truthy_flag(entity, "is_structure", default=False)
+                and not _truthy_flag(entity, "is_flying", default=False)
+                and _entity_type_name(entity) not in {SC2_WORKER_TYPE_NAME, "MEDIVAC"}
+            ]
+            cargo = _nearest_entity(candidates, anchor)
+            if cargo is None:
+                return None, "target_required: no_cargo_unit"
+            tag = _entity_tag(cargo)
+            if tag is not None:
+                claimed.add(tag)
+            return cargo, ""
+        if mode == "own_damaged_bio":
+            candidates = [
+                entity
+                for entity in _materialize(getattr(self.bot, "units", None))
+                if entity is not unit
+                and _is_damaged(entity)
+                and _truthy_flag(entity, "is_biological", default=True)
+            ]
+            patient = _nearest_entity(candidates, anchor)
+            if patient is None:
+                return None, "target_required: no_damaged_biological_unit"
+            return patient, ""
+        return None, f"target_required: unknown_target_mode_{mode}"
 
     async def observe(self, action: SC2CommandAction) -> Mapping[str, object]:
         """Resolve and return the commander state snapshot as a mapping.
@@ -2045,16 +2220,7 @@ class PythonSC2BotAdapter:
         """Resolve a semantic ability name without importing python-sc2 eagerly."""
 
         normalized = re.sub(r"[^A-Za-z0-9]+", "_", ability_name).strip("_").upper()
-        aliases = {
-            "STIM": "EFFECT_STIM",
-            "STIMPACK": "EFFECT_STIM",
-            "SIEGE": "SIEGEMODE_SIEGEMODE",
-            "SIEGEMODE": "SIEGEMODE_SIEGEMODE",
-            "UNSIEGE": "UNSIEGE_UNSIEGE",
-            "YAMATO": "YAMATO_YAMATO",
-            "TACTICAL_NUKE": "TACNUKE_CALLDOWN",
-            "NUKE": "TACNUKE_CALLDOWN",
-        }
+        aliases = _SEMANTIC_ABILITY_ALIASES
         candidates = tuple(
             dict.fromkeys(
                 (
@@ -2109,6 +2275,7 @@ class PythonSC2BotAdapter:
         normalized = re.sub(r"[^A-Za-z0-9]+", "", str(upgrade_name)).upper()
         if not normalized:
             return None
+        normalized = _SEMANTIC_UPGRADE_ALIASES.get(normalized, normalized)
         bot_resolver = getattr(self.bot, "upgrade_id_resolver", None)
         if callable(bot_resolver):
             resolved = bot_resolver(upgrade_name)
@@ -2234,8 +2401,8 @@ class PythonSC2BotAdapter:
             # can participate in this command, but never a zero-sized lease.
             requested = min(max(1, action.count), len(pool))
         elif kind == "execute_ability":
-            pool = self._select_group(action.subject)
-            requested = action.count
+            pool = self._ability_casters(clean)
+            requested = action.count if action.count > 0 else len(pool)
         else:
             pool = self._select_group(action.subject)
             requested = self._group_requested_count(
@@ -2294,10 +2461,12 @@ class PythonSC2BotAdapter:
             return [
                 structure
                 for structure in self._ready_idle_structures()
-                if _entity_type_name(structure) == producer_name
+                if _producer_matches(structure, producer_name)
             ]
         if kind == "research_upgrade":
-            researcher_name = _normalized_name(action.metadata.get("researcher"))
+            researcher_name = self._effective_researcher(
+                action, _normalized_name(action.metadata.get("researcher"))
+            )
             return [
                 structure
                 for structure in self._ready_idle_structures()
@@ -2315,6 +2484,24 @@ class PythonSC2BotAdapter:
             ]
         return []
 
+    def _effective_researcher(
+        self, action: SC2CommandAction, requested: str | None
+    ) -> str | None:
+        """The structure SC2 actually researches this upgrade at, when python-sc2 knows it.
+
+        A research ability is addressed to the research building (Stimpack to the
+        Barracks *Tech Lab*), never to the parent structure a planner may name.
+        """
+
+        upgrade = self._resolve_upgrade(action.subject)
+        try:
+            from sc2.dicts.upgrade_researched_from import UPGRADE_RESEARCHED_FROM
+
+            owner = UPGRADE_RESEARCHED_FROM.get(upgrade)
+        except (ImportError, TypeError):
+            owner = None
+        return _normalized_name(owner.name) if owner is not None else requested
+
     def _producer_structures(
         self,
         action: SC2CommandAction,
@@ -2330,7 +2517,7 @@ class PythonSC2BotAdapter:
         return [
             structure
             for structure in candidates
-            if _entity_type_name(structure) == producer_name
+            if _producer_matches(structure, producer_name)
             and _truthy_flag(structure, "is_ready", default=True)
             and _truthy_flag(structure, "is_idle", default=True)
         ]
@@ -2347,6 +2534,7 @@ class PythonSC2BotAdapter:
             if "_direct_unit_tags" in action.metadata
             else self._ready_idle_structures()
         )
+        researcher_name = self._effective_researcher(action, researcher_name)
         return [
             structure
             for structure in candidates
@@ -2984,6 +3172,13 @@ def _entity_type_name(entity: object) -> str | None:
     if type_id is None:
         return None
     return _normalized_name(getattr(type_id, "name", None))
+
+
+def _producer_matches(structure: object, producer_name: str) -> bool:
+    """A structure is a valid producer if it IS the named type or an SC2-equivalent trainer."""
+
+    name = _entity_type_name(structure)
+    return name == producer_name or name in _PRODUCER_EQUIVALENTS.get(producer_name, ())
 
 
 def _loose_name_match(name: str | None, target: str | None) -> bool:
