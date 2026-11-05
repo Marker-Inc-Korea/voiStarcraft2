@@ -100,6 +100,17 @@ def build_game_data() -> GameData:
     for producer_table in TRAIN_INFO.values():
         for unit, info in producer_table.items():
             created[unit.value] = info["ability"].value
+    # python-sc2's TRAIN_INFO has no add-on rows; the live game data does (s2client-api header:
+    # BUILD_TECHLAB_* / BUILD_REACTOR_* are the creation abilities, Target: None).
+    for addon, ability in (
+        (UnitTypeId.BARRACKSTECHLAB, AbilityId.BUILD_TECHLAB_BARRACKS),
+        (UnitTypeId.BARRACKSREACTOR, AbilityId.BUILD_REACTOR_BARRACKS),
+        (UnitTypeId.FACTORYTECHLAB, AbilityId.BUILD_TECHLAB_FACTORY),
+        (UnitTypeId.FACTORYREACTOR, AbilityId.BUILD_REACTOR_FACTORY),
+        (UnitTypeId.STARPORTTECHLAB, AbilityId.BUILD_TECHLAB_STARPORT),
+        (UnitTypeId.STARPORTREACTOR, AbilityId.BUILD_REACTOR_STARPORT),
+    ):
+        created[addon.value] = ability.value
     structures = _structure_type_ids()
     for unit in stable["Units"]:
         proto = response.units.add()

@@ -360,6 +360,32 @@ def test_build_structure_issues_a_point_targeted_terranbuild_on_an_scv(structure
     assert views[0]["unit_tags"][0] in {u.tag for u in bot.workers}
 
 
+@pytest.mark.parametrize(
+    "subject,parent,ability_name",
+    [
+        ("BARRACKS_TECHLAB", U.BARRACKS, "BUILD_TECHLAB_BARRACKS"),
+        ("BARRACKS_REACTOR", U.BARRACKS, "BUILD_REACTOR_BARRACKS"),
+        ("FACTORY_TECHLAB", U.FACTORY, "BUILD_TECHLAB_FACTORY"),
+        ("FACTORY_REACTOR", U.FACTORY, "BUILD_REACTOR_FACTORY"),
+        ("STARPORT_TECHLAB", U.STARPORT, "BUILD_TECHLAB_STARPORT"),
+        ("STARPORT_REACTOR", U.STARPORT, "BUILD_REACTOR_STARPORT"),
+        ("ORBITALCOMMAND", U.COMMANDCENTER, "UPGRADETOORBITAL_ORBITALCOMMAND"),
+        ("PLANETARYFORTRESS", U.COMMANDCENTER, "UPGRADETOPLANETARYFORTRESS_PLANETARYFORTRESS"),
+    ],
+)
+def test_addons_and_townhall_morphs_are_no_target_orders_on_the_idle_parent_not_an_scv(subject, parent, ability_name) -> None:
+    bot = harness.make_bot((U.SCV, 2), (parent, 1))
+    scv_tags = {u.tag for u in bot.workers}
+    action = SC2CommandAction(
+        SC2ActionType.BUILD_STRUCTURE, subject, target="self_main", metadata={"building_type": subject}
+    )
+    result, views, warns = harness.run_plan(bot, action)
+    _assert_shape(views, warns, ability=ability_name)
+    assert views[0]["target"] is None
+    parent_tag = next(s.tag for s in bot.structures if s.type_id == parent)
+    assert views[0]["unit_tags"] == [parent_tag] and not (set(views[0]["unit_tags"]) & scv_tags)
+
+
 def test_refinery_targets_a_geyser_unit_not_a_point() -> None:
     bot = harness.make_bot((U.SCV, 2))
     geyser = bot.add_unit(U.VESPENEGEYSER, x=24.0, y=16.0, enemy=False)
@@ -391,6 +417,26 @@ def test_train_unit_uses_the_creation_ability_on_every_structure_that_can_train_
     _assert_shape(views, warns, ability=ability_name)
     assert {v["target"] for v in views} == {None}
     assert views[0]["unit_tags"] == [producer_units and bot.structures[0].tag]
+
+
+TRAINABLE = [
+    "SCV", "MARINE", "MARAUDER", "REAPER", "GHOST", "HELLION", "SIEGETANK", "CYCLONE", "THOR", "WIDOWMINE",
+    "MEDIVAC", "VIKINGFIGHTER", "LIBERATOR", "BANSHEE", "RAVEN", "BATTLECRUISER",
+]
+
+
+@pytest.mark.parametrize("unit", TRAINABLE)
+def test_every_trainable_dsl_unit_gets_the_producer_python_sc2_says_trains_it(unit) -> None:
+    """The router's producer metadata must agree with python-sc2 UNIT_TRAINED_FROM for every unit it can lower."""
+
+    sc2 = audit._sc2()
+    producers = sc2["TRAINED_FROM"][getattr(U, unit)]
+    (action,) = lower_direct("train_unit", [f"TERRAN_{unit}"])
+    assert action.metadata.get("producer") in {p.name for p in producers}, (unit, action.metadata)
+    bot = harness.make_bot(*[(next(iter(producers)), 1)])
+    _, views, warns = harness.run_plan(bot, action)
+    _assert_shape(views, warns)
+    assert AbilityId(views[0]["ability_id"]) == bot.game_data.units[getattr(U, unit).value].creation_ability.exact_id
 
 
 def test_research_is_a_no_target_command_on_the_techlab_not_the_barracks() -> None:

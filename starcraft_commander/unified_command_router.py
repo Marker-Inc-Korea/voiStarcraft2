@@ -739,6 +739,7 @@ def _append_task_actions(
                     "SIEGETANK": "FACTORY",
                     "CYCLONE": "FACTORY",
                     "THOR": "FACTORY",
+                    "WIDOWMINE": "FACTORY",
                     "MEDIVAC": "STARPORT",
                     "VIKINGFIGHTER": "STARPORT",
                     "LIBERATOR": "STARPORT",
