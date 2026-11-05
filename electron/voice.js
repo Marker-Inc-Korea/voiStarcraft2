@@ -3,6 +3,7 @@
 // ephemeral secret: it only streams pcm16 chunks in and receives state/transcript/intent events.
 const { createVoiceMachine, TOOL_NAME } = require("./voice_state.js");
 const { validateRealtimeSession, validateIntentRequest } = require("./protocol.js");
+const { matchFastRule } = require("./fast_rules.js");
 
 const REALTIME_UA = "curl/8.7.1"; // the Cloudflare-fronted proxy rejects the default Node UA (error 1010)
 const SECRET_MIN_REMAINING_S = 30;
@@ -167,13 +168,66 @@ function createVoiceClient(options) {
   function runEffect(effect, mine) {
     switch (effect.type) {
       case "speech_started": onTranscript({ turn: effect.turn.id, text: "", partial: true, final: false, started: true }); break;
-      case "transcript": onTranscript({ turn: effect.turn.id, text: effect.turn.transcript || effect.turn.partial, partial: effect.partial, final: !effect.partial }); break;
+      case "speech_stopped": if (effect.turn.transcript) tryRule(effect.turn.id, mine).catch(error => onLog(`rule failed: ${error.message}`)); break;
+      case "transcript":
+        onTranscript({ turn: effect.turn.id, text: effect.turn.transcript || effect.turn.partial, partial: effect.partial, final: !effect.partial });
+        // Rule-first: act on the FINAL transcript (a delta prefix such as "후퇴" can still become "후퇴하지 마").
+        if (!effect.partial && effect.turn.transcript) tryRule(effect.turn.id, mine).catch(error => onLog(`rule failed: ${error.message}`));
+        break;
+      case "cancel_response": cancelResponse(effect.responseId); break;
+      case "tool_call_ignored": onLog(`model tool call ignored for turn ${effect.turn && effect.turn.id}: ${effect.reason}`); break;
       case "tool_call": submitIntent(effect, mine).catch(error => onLog(`intent failed: ${error.message}`)); break;
       case "no_command": onIntent({ turn: effect.turn.id, ok: false, kind: "no_command", error: "명령으로 인식되지 않았습니다", transcript: effect.turn.transcript }); break;
       case "bad_tool_arguments": onIntent({ turn: effect.turn ? effect.turn.id : 0, ok: false, kind: "bad_arguments", error: "음성 명령 인자를 해석하지 못했습니다" }); break;
       case "unexpected_tool": onIntent({ turn: effect.turn ? effect.turn.id : 0, ok: false, kind: "unexpected_tool", error: `허용되지 않은 도구 호출: ${effect.name.slice(0, 40)}` }); break;
       default: break;
     }
+  }
+
+  function cancelResponse(responseId) {
+    const id = send(responseId ? { type: "response.cancel", response_id: responseId } : { type: "response.cancel" });
+    if (id) { benignEventIds.add(id); if (benignEventIds.size > 64) benignEventIds.delete(benignEventIds.values().next().value); }
+  }
+
+  // Deterministic rule path: the transcript alone decides for the (<= 5) promoted families, so the intent is posted right
+  // away (`fast: true`) instead of after the model's tool call; the model response is then cancelled and its later
+  // tool call ignored (dedupe by turn/response id in voice_state). A miss or a failed request releases the turn to the model.
+  async function tryRule(turnId, mine) {
+    if (getPrefs().fastRules === false) return;
+    const snapshot = machine.getTurn(turnId);
+    if (!snapshot || !snapshot.transcript) return;
+    const hit = matchFastRule(snapshot.transcript);
+    if (!hit) return;
+    const claim = machine.beginRule(turnId);
+    if (!claim) return;
+    if (actingTimer) { clearTimer(actingTimer); actingTimer = null; }
+    const decidedAt = now();
+    const speechEnd = claim.speechStoppedAt || decidedAt;
+    const latency = { speech_end_to_decision: Math.max(0, decidedAt - speechEnd), speech_ms: snapshot.speechMs };
+    let handled = false;
+    let ok = false;
+    let response = null;
+    let failure = "";
+    try {
+      const body = validateIntentRequest({ transcript: snapshot.transcript, fast: true, path: "rule", latency_ms: { ...latency, decision_to_publish: null } });
+      response = await requestJson("/api/realtime/intent", { method: "POST", body: JSON.stringify(body) });
+      latency.decision_to_publish = now() - decidedAt;
+      latency.speech_end_to_tool_call = latency.speech_end_to_decision; latency.tool_call_to_publish = latency.decision_to_publish; // the HUD latency readout keeps its keys
+      handled = Boolean(response) && response.status !== "fast_miss";
+      ok = handled && response.accepted !== false;
+    } catch (error) {
+      failure = String(error && error.message || error).slice(0, 240);
+      latency.decision_to_publish = now() - decidedAt;
+    }
+    const outcome = machine.finishRule(turnId, { handled, ok });
+    if (handled) {
+      if (outcome.responseId) cancelResponse(outcome.responseId);
+      onIntent({ turn: turnId, ok, kind: "submitted", path: "rule", family: hit.family, transcript: snapshot.transcript, tier: response && response.tier || "", response, latency_ms: latency, tool_arguments: null });
+      if (ok) actingTimer = setTimer(() => { actingTimer = null; machine.setHoldActing(false); }, ACTING_HOLD_MS);
+      return;
+    }
+    if (failure) onLog(`rule request failed, falling back to the model: ${failure}`);
+    if (outcome.deferred) runEffect(outcome.deferred, mine);
   }
 
   async function submitIntent(effect, mine) {
@@ -186,16 +240,17 @@ function createVoiceClient(options) {
       const turn = machine.getTurn(turnId);
       transcript = turn ? turn.transcript || turn.partial : "";
     }
-    const latency = { speech_end_to_tool_call: effect.speechEndToToolCall, speech_ms: effect.speechMs, transcript_wait: now() - startedAt };
+    const latency = { speech_end_to_tool_call: effect.speechEndToToolCall, speech_end_to_decision: effect.speechEndToToolCall, speech_ms: effect.speechMs, transcript_wait: now() - startedAt };
     let ok = false;
     try {
-      const body = validateIntentRequest({ tool_arguments: effect.args, transcript, latency_ms: { ...latency, tool_call_to_publish: null } });
+      const body = validateIntentRequest({ tool_arguments: effect.args, transcript, path: "model", latency_ms: { ...latency, tool_call_to_publish: null } });
       const publishStart = now();
       const response = await requestJson("/api/realtime/intent", { method: "POST", body: JSON.stringify(body) });
       latency.tool_call_to_publish = now() - startedAt;
       latency.publish_request = now() - publishStart;
+      latency.decision_to_publish = latency.publish_request;
       ok = Boolean(response && response.accepted !== false);
-      onIntent({ turn: turnId, ok, kind: "submitted", transcript, tier: response && response.tier || "", response, latency_ms: latency, tool_arguments: effect.args });
+      onIntent({ turn: turnId, ok, kind: "submitted", path: "model", transcript, tier: response && response.tier || "", response, latency_ms: latency, tool_arguments: effect.args });
     } catch (error) {
       latency.tool_call_to_publish = now() - startedAt;
       onIntent({ turn: turnId, ok: false, kind: "failed", transcript, error: String(error && error.message || error).slice(0, 240), latency_ms: latency, tool_arguments: effect.args });
