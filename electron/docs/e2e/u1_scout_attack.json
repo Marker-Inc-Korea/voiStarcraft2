@@ -1,0 +1,728 @@
+{
+  "name": "u1_scout_attack",
+  "startedAt": "2026-11-04T15:56:24.895Z",
+  "events": [
+    {
+      "t": 1793807785611,
+      "type": "voice-state",
+      "state": "connecting",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807790686,
+      "type": "session"
+    },
+    {
+      "t": 1793807793385,
+      "type": "voice-state",
+      "state": "idle",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807795529,
+      "type": "voice-state",
+      "state": "listening",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807795531,
+      "type": "transcript",
+      "text": "",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807795550,
+      "type": "dock-state"
+    },
+    {
+      "t": 1793807801836,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802089,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802089,
+      "type": "transcript",
+      "text": "마",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802089,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802090,
+      "type": "transcript",
+      "text": "마린",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802090,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802090,
+      "type": "transcript",
+      "text": "마린 두",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802091,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802091,
+      "type": "transcript",
+      "text": "마린 두 개",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802277,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802277,
+      "type": "transcript",
+      "text": "마린 두 개는",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802277,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802277,
+      "type": "transcript",
+      "text": "마린 두 개는 적",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802277,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802281,
+      "type": "transcript",
+      "text": "마린 두 개는 적 본",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802281,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802281,
+      "type": "transcript",
+      "text": "마린 두 개는 적 본진",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802281,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802281,
+      "type": "transcript",
+      "text": "마린 두 개는 적 본진을",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802281,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802281,
+      "type": "transcript",
+      "text": "마린 두 개는 적 본진을 정",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802281,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802282,
+      "type": "transcript",
+      "text": "마린 두 개는 적 본진을 정찰",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802282,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802282,
+      "type": "transcript",
+      "text": "마린 두 개는 적 본진을 정찰하고",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802282,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802282,
+      "type": "transcript",
+      "text": "마린 두 개는 적 본진을 정찰하고 마",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802282,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802282,
+      "type": "transcript",
+      "text": "마린 두 개는 적 본진을 정찰하고 마린",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802282,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802282,
+      "type": "transcript",
+      "text": "마린 두 개는 적 본진을 정찰하고 마린 네",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802282,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802282,
+      "type": "transcript",
+      "text": "마린 두 개는 적 본진을 정찰하고 마린 네 개",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802282,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802282,
+      "type": "transcript",
+      "text": "마린 두 개는 적 본진을 정찰하고 마린 네 개는",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802282,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802282,
+      "type": "transcript",
+      "text": "마린 두 개는 적 본진을 정찰하고 마린 네 개는 오른",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802367,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802367,
+      "type": "transcript",
+      "text": "마린 두 개는 적 본진을 정찰하고 마린 네 개는 오른쪽",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802367,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802367,
+      "type": "transcript",
+      "text": "마린 두 개는 적 본진을 정찰하고 마린 네 개는 오른쪽 길",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802367,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802367,
+      "type": "transcript",
+      "text": "마린 두 개는 적 본진을 정찰하고 마린 네 개는 오른쪽 길로",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802367,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802367,
+      "type": "transcript",
+      "text": "마린 두 개는 적 본진을 정찰하고 마린 네 개는 오른쪽 길로 적",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802367,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802367,
+      "type": "transcript",
+      "text": "마린 두 개는 적 본진을 정찰하고 마린 네 개는 오른쪽 길로 적 멀",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802367,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802367,
+      "type": "transcript",
+      "text": "마린 두 개는 적 본진을 정찰하고 마린 네 개는 오른쪽 길로 적 멀티",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802367,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802367,
+      "type": "transcript",
+      "text": "마린 두 개는 적 본진을 정찰하고 마린 네 개는 오른쪽 길로 적 멀티를",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802367,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802367,
+      "type": "transcript",
+      "text": "마린 두 개는 적 본진을 정찰하고 마린 네 개는 오른쪽 길로 적 멀티를 공격",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802367,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802367,
+      "type": "transcript",
+      "text": "마린 두 개는 적 본진을 정찰하고 마린 네 개는 오른쪽 길로 적 멀티를 공격해",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802367,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802367,
+      "type": "transcript",
+      "text": "마린 두 개는 적 본진을 정찰하고 마린 네 개는 오른쪽 길로 적 멀티를 공격해.",
+      "partial": true,
+      "final": false,
+      "turn": 1
+    },
+    {
+      "t": 1793807802368,
+      "type": "voice-state",
+      "state": "thinking",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807802368,
+      "type": "transcript",
+      "text": "마린 두 개는 적 본진을 정찰하고 마린 네 개는 오른쪽 길로 적 멀티를 공격해.",
+      "partial": false,
+      "final": true,
+      "turn": 1
+    },
+    {
+      "t": 1793807803904,
+      "type": "voice-state",
+      "state": "acting",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807803909,
+      "type": "intent",
+      "turn": 1,
+      "ok": true,
+      "kind": "submitted",
+      "tier": "operation",
+      "transcript": "마린 두 개는 적 본진을 정찰하고 마린 네 개는 오른쪽 길로 적 멀티를 공격해.",
+      "latency_ms": {
+        "speech_end_to_tool_call": 2094,
+        "speech_ms": 6282,
+        "transcript_wait": 0,
+        "tool_call_to_publish": 5,
+        "publish_request": 5
+      },
+      "tool_arguments": {
+        "command_layer": "operation",
+        "operations": [
+          {
+            "task_type": "scout_with_units",
+            "composition": [
+              {
+                "unit_type": "TERRAN_MARINE",
+                "count": 2
+              }
+            ],
+            "location": "enemy_main",
+            "goal": "마린 2기는 적 본진을 정찰"
+          },
+          {
+            "task_type": "pressure_with_main_army",
+            "composition": [
+              {
+                "unit_type": "TERRAN_MARINE",
+                "count": 4
+              }
+            ],
+            "route_type": "flank_right",
+            "location": "enemy_natural",
+            "goal": "마린 4기는 오른쪽 길로 적 멀티를 공격"
+          }
+        ],
+        "goal": "마린 2기는 적 본진을 정찰하고 마린 4기는 오른쪽 길로 적 멀티를 공격"
+      },
+      "response": {
+        "accepted": true,
+        "status": "queued",
+        "tier": "operation",
+        "source": "tool_call",
+        "update_id": "voi-mm-0d914632391543cf99d40fa164d16bb7",
+        "direct_runtime": {
+          "kind": "dry_run_fake_bot",
+          "evidence": "executor drives the scripted DemoFakeBotAI (--dry-run); operation/micro/emergency vectors are simulated, only macro vectors reach the MicroMachine blackboard"
+        },
+        "latency_ms": {
+          "speech_end_to_tool_call": 2094,
+          "speech_ms": 6282,
+          "transcript_wait": 0,
+          "backend_handle": 2.9
+        }
+      }
+    },
+    {
+      "t": 1793807803909,
+      "type": "voice-state",
+      "state": "acting",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807805310,
+      "type": "voice-state",
+      "state": "idle",
+      "active": true,
+      "reason": ""
+    },
+    {
+      "t": 1793807805334,
+      "type": "dock-state"
+    },
+    {
+      "t": 1793807805335,
+      "type": "settings"
+    }
+  ],
+  "overlay": [
+    {
+      "t": 1793807785646,
+      "state": "off",
+      "visible": false
+    },
+    {
+      "t": 1793807795551,
+      "state": "listening",
+      "visible": true
+    },
+    {
+      "t": 1793807801836,
+      "state": "thinking",
+      "visible": true
+    },
+    {
+      "t": 1793807803924,
+      "state": "off",
+      "visible": true
+    },
+    {
+      "t": 1793807804309,
+      "state": "off",
+      "visible": false
+    }
+  ],
+  "shots": [
+    {
+      "name": "1-ready",
+      "file": "u1_scout_attack-1-ready.png",
+      "t": 1793807793565,
+      "ok": true
+    },
+    {
+      "name": "2-listening",
+      "file": "u1_scout_attack-2-listening.png",
+      "t": 1793807796233,
+      "ok": true
+    },
+    {
+      "name": "3-thinking",
+      "file": "u1_scout_attack-3-thinking.png",
+      "t": 1793807802015,
+      "ok": true
+    },
+    {
+      "name": "4-acting",
+      "file": "u1_scout_attack-4-acting.png",
+      "t": 1793807804784,
+      "ok": true
+    },
+    {
+      "name": "5-cards",
+      "file": "u1_scout_attack-5-cards.png",
+      "t": 1793807811481,
+      "ok": true
+    }
+  ],
+  "checks": [],
+  "notes": [
+    "orb clicked; waiting for Realtime session (429 capacity errors retry with back-off inside voice.js)",
+    "session ready after 7810 ms (includes any 429 retries)"
+  ],
+  "armedAt": 1793807785610,
+  "readyAt": 1793807793420,
+  "preReadyErrors": [],
+  "overlayDuringListening": {
+    "state": "listening",
+    "visible": true,
+    "bounds": {
+      "x": 0,
+      "y": 0,
+      "width": 1512,
+      "height": 982
+    }
+  },
+  "dom": {
+    "transcript": "마린 두 개는 적 본진을 정찰하고 마린 네 개는 오른쪽 길로 적 멀티를 공격해.",
+    "cards": [
+      {
+        "utterance": "마린 두 개는 적 본진을 정찰하고 마린 네 개는 오른쪽 길로 적 멀티를 공격해.",
+        "ops": [
+          {
+            "name": "마린 2기는 적 본진을 정찰",
+            "tier": "작전",
+            "badges": [
+              "시뮬"
+            ],
+            "stages": [
+              "heard:done",
+              "understood:done",
+              "assigned:sim",
+              "ordered:sim",
+              "effect:todo"
+            ],
+            "reason": "",
+            "reasonTitle": ""
+          },
+          {
+            "name": "마린 4기는 오른쪽 길로 적 멀티를 공격",
+            "tier": "작전",
+            "badges": [
+              "시뮬"
+            ],
+            "stages": [
+              "heard:done",
+              "understood:done",
+              "assigned:sim",
+              "ordered:sim",
+              "effect:todo"
+            ],
+            "reason": "",
+            "reasonTitle": ""
+          }
+        ]
+      }
+    ],
+    "voiceBody": "idle"
+  },
+  "backendVoiceIntents": [],
+  "backendOperations": [
+    {
+      "operation_id": "scout",
+      "mission": "scouting",
+      "disposition": "pending",
+      "transport_status": "direct_executed",
+      "consumption_status": "not_published",
+      "layer": "operation",
+      "goal": "마린 2기는 적 본진을 정찰",
+      "stages": []
+    },
+    {
+      "operation_id": "attack",
+      "mission": "attack",
+      "disposition": "pending",
+      "transport_status": "direct_executed",
+      "consumption_status": "not_published",
+      "layer": "operation",
+      "goal": "마린 4기는 오른쪽 길로 적 멀티를 공격",
+      "stages": []
+    }
+  ],
+  "directRuntime": {
+    "kind": "dry_run_fake_bot",
+    "evidence": "executor drives the scripted DemoFakeBotAI (--dry-run); operation/micro/emergency vectors are simulated, only macro vectors reach the MicroMachine blackboard"
+  },
+  "latestRequest": {
+    "status": "compiled",
+    "consumption_status": "pending_consumption",
+    "update_id": "voi-mm-0d914632391543cf99d40fa164d16bb7"
+  }
+}

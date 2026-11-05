@@ -35,6 +35,7 @@ from starcraft_commander.direct_command_lifecycle import (
     DirectCommandLifecycle,
     DirectCommandOwnershipConflict,
 )
+from starcraft_commander.direct_binding import bind_plan_actions
 from starcraft_commander.direct_command_registry import DirectCommandRegistry
 from starcraft_commander.sc2_api_inventory import inspect_python_sc2_surface
 from starcraft_commander.policy_modulation import (
@@ -1015,7 +1016,9 @@ def create_command_tool_registry(
         bind_action = getattr(getattr(direct_executor, "bot", None), "bind_direct_action", None)
         if callable(bind_action):
             try:
-                bound_actions = tuple(bind_action(action) for action in plan.actions)
+                bound_actions = bind_plan_actions(
+                    bind_action, plan.actions, trust_pinned=False
+                )
             except Exception as error:  # noqa: BLE001 - binding is a structured refusal.
                 return {
                     "ok": False,

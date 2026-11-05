@@ -50,6 +50,9 @@ from starcraft_commander.map_resolver import (
     SC2MapResolverInterface,
     SC2RuntimeMapResolver,
 )
+from starcraft_commander.micromachine_terran_capabilities import (
+    canonical_terran_unit_family,
+)
 from starcraft_commander.sc2_executor import SC2_UNIT_TYPE_IDS
 from starcraft_commander.state_resolver import (
     DEFAULT_SC2_STATE_RESOLVER,
@@ -2182,7 +2185,12 @@ class PythonSC2BotAdapter:
                 issued += 1
         return _issuance_report(requested, issued, "insufficient_units")
 
-    def bind_direct_action(self, action: SC2CommandAction) -> SC2CommandAction:
+    def bind_direct_action(
+        self,
+        action: SC2CommandAction,
+        *,
+        exclude_tags: frozenset[int] = frozenset(),
+    ) -> SC2CommandAction:
         """Pin controlled units from the current own-unit observation, without I/O.
 
         Called before lease admission, so the complete plan's tag union is
@@ -2190,6 +2198,12 @@ class PythonSC2BotAdapter:
         metadata is always rebuilt; callers cannot choose raw tags through MCP.
         Builder workers and producer/research/warp structures use the same
         concrete reservation as squad actions when runtime tags are present.
+
+        ``exclude_tags`` are units already reserved by earlier operations of the
+        same plan: an operation-keyed squad selection never reuses them (one
+        unit, one operation).  When fewer units remain than requested the
+        shortfall is kept in ``_direct_requested_count`` and surfaces as a
+        partial application.
         """
 
         metadata = {
@@ -2209,6 +2223,7 @@ class PythonSC2BotAdapter:
         kind = action.action_type.value
         if kind not in worker_actions | producer_actions | group_actions:
             return clean
+        operation_keyed = bool(metadata.get("operation_id"))
         if kind in worker_actions:
             pool = self._worker_pool()
             requested = 1 if kind in {"build_structure", "expand_now"} else action.count
@@ -2227,7 +2242,12 @@ class PythonSC2BotAdapter:
                 clean,
                 pool,
                 default_all=kind in {"move_group", "attack_move", "smart", "patrol"},
+                explicit=operation_keyed,
             )
+        if operation_keyed and kind in group_actions and exclude_tags:
+            pool = [
+                unit for unit in pool if getattr(unit, "tag", None) not in exclude_tags
+            ]
         selected = pool[:max(0, requested)]
         tags = tuple(getattr(unit, "tag", None) for unit in selected)
         # Offline fakes may omit python-sc2's tag attribute entirely. In that
@@ -2366,11 +2386,16 @@ class PythonSC2BotAdapter:
         units: Sequence[object],
         *,
         default_all: bool = False,
+        explicit: bool = False,
     ) -> int:
         if "_direct_requested_count" in action.metadata:
             return int(action.metadata["_direct_requested_count"])
         if _leading_count(action.subject) is not None:
             return _leading_count(action.subject) or 0
+        # An operation-keyed action carries the user's exact count ("마린 1기"
+        # is one marine). Only count 0 means "the whole selected group".
+        if explicit and action.count > 0:
+            return action.count
         if default_all and action.count in {0, 1}:
             return len(units)
         return len(units) if action.count == 0 else action.count
@@ -2400,6 +2425,18 @@ class PythonSC2BotAdapter:
             return typed
         if normalized_subject in _KNOWN_UNIT_TYPE_NAMES:
             return []
+        # A named Terran unit class the adapter has no type id for (Viking,
+        # SiegeTank, Medivac, ...) selects exactly that family, in any form
+        # (sieged/assault/burrowed), or nothing. It must never fall through to
+        # the generic "any army unit" branch: that made Marines obey a Viking
+        # order and still report success.
+        family = canonical_terran_unit_family(subject)
+        if family:
+            return [
+                unit
+                for unit in units
+                if canonical_terran_unit_family(_entity_type_name(unit) or "") == family
+            ]
         cap = _leading_count(subject)
         type_token = _unit_type_token(subject)
         if type_token is not None:

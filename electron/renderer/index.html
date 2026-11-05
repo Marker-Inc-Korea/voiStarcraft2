@@ -1,1 +1,57 @@
-<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>voiStarcraft2 Commander</title><link rel="stylesheet" href="./style.css"></head><body><main><header><p class="eyebrow">voiStarcraft2 / DIRECT COMMAND</p><h1>전술 명령창</h1><span id="status">연결 확인 중…</span></header><section class="panel"><form id="command-form"><label for="command">명령</label><div class="row"><input id="command" autocomplete="off" placeholder="예: 앞마당을 방어해"><button>전송</button></div></form><p id="feedback" role="status"></p></section><section class="panel"><h2>최근 응답</h2><pre id="result">아직 명령이 없습니다.</pre></section><section class="panel"><h2>Clarification / lifecycle</h2><p id="lifecycle">이벤트를 기다리는 중…</p><pre id="events">아직 이벤트가 없습니다.</pre></section><section class="panel"><h2>Semantic target pin</h2><form id="pin-form"><div class="row"><input id="pin-name" required maxlength="128" placeholder="이름 (예: 앞마당 입구)"><select id="pin-target" required aria-label="semantic target"><option value="enemy_natural">enemy_natural · 적 앞마당</option><option value="enemy_main">enemy_main · 적 본진</option><option value="enemy_front">enemy_front · 적 전방</option><option value="enemy_ramp">enemy_ramp · 적 입구</option><option value="self_ramp">self_ramp · 우리 입구</option><option value="self_main">self_main · 우리 본진</option><option value="self_natural">self_natural · 우리 앞마당</option><option value="self_third">self_third · 우리 3멀티</option><option value="self_mineral_line">self_mineral_line · 우리 미네랄 라인</option><option value="enemy_mineral_line">enemy_mineral_line · 적 미네랄 라인</option><option value="scout_location">scout_location · 정찰 위치</option><option value="last_seen_enemy_area">last_seen_enemy_area · 마지막 적 위치</option></select><button>저장</button></div></form><p id="pin-feedback" role="status"></p><pre id="registry">registry를 불러오는 중…</pre></section></main><script src="./renderer.js"></script></body></html>
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>voiStarcraft2</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body data-dock="bottom" data-revealed="false" data-voice="off" data-settings="closed" data-motion="on">
+  <div class="handle" id="handle" aria-hidden="true"></div>
+
+  <section class="panel" id="panel">
+    <canvas id="space" aria-hidden="true"></canvas>
+    <div class="sheen" aria-hidden="true"></div>
+    <div class="sweep" aria-hidden="true"></div>
+    <div class="rim" aria-hidden="true"></div>
+
+    <div class="panel-body">
+      <section class="deck" id="deck" aria-live="polite"><div class="cards" id="cards"></div></section>
+
+      <section class="settings" id="settings" aria-label="설정">
+        <nav class="tabs" id="tabs" role="tablist"></nav>
+        <div class="rows" id="rows"></div>
+      </section>
+
+      <footer class="bar" id="bar">
+        <button class="orb" id="orb" type="button" aria-pressed="false" aria-label="음성">
+          <span class="orb-halo" aria-hidden="true"></span>
+          <span class="orb-ring" aria-hidden="true"><i class="moon"></i></span>
+          <span class="orb-core" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22"><path d="M12 15.5a3.5 3.5 0 0 0 3.5-3.5V6.5a3.5 3.5 0 1 0-7 0V12a3.5 3.5 0 0 0 3.5 3.5Z" fill="currentColor"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          </span>
+        </button>
+        <div class="bar-main">
+          <p class="transcript" id="transcript" data-empty="true"></p>
+          <form class="cmd-form" id="cmd-form" autocomplete="off">
+            <input id="cmd-input" type="text" maxlength="2000" spellcheck="false" placeholder="명령" aria-label="명령">
+          </form>
+        </div>
+        <button class="retreat" id="btn-retreat" type="button"><span id="retreat-word">후퇴</span></button>
+        <button class="gear" id="btn-gear" type="button" aria-pressed="false" aria-label="설정" data-backend="unknown">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 8.6a3.4 3.4 0 1 0 0 6.8 3.4 3.4 0 0 0 0-6.8Zm8 4.1v-1.4l-1.9-.7a6.6 6.6 0 0 0-.6-1.4l.9-1.8-1-1-1.8.9c-.4-.3-.9-.5-1.4-.6l-.7-1.9h-1.4l-.7 1.9c-.5.1-1 .3-1.4.6l-1.8-.9-1 1 .9 1.8c-.3.4-.5.9-.6 1.4l-1.9.7v1.4l1.9.7c.1.5.3 1 .6 1.4l-.9 1.8 1 1 1.8-.9c.4.3.9.5 1.4.6l.7 1.9h1.4l.7-1.9c.5-.1 1-.3 1.4-.6l1.8.9 1-1-.9-1.8c.3-.4.5-.9.6-1.4l1.9-.7Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+          <i class="gear-dot" aria-hidden="true"></i>
+        </button>
+      </footer>
+    </div>
+  </section>
+
+  <script src="./stages.js"></script>
+  <script src="./settings.js"></script>
+  <script src="./sky.js"></script>
+  <script src="./i18n.js"></script>
+  <script src="./space.js"></script>
+  <script src="./mic.js"></script>
+  <script src="./renderer.js"></script>
+</body>
+</html>

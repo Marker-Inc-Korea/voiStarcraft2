@@ -232,6 +232,7 @@ HARD_OPERATION_BLOCK_REASONS: Final[frozenset[str]] = frozenset(
 TRANSIENT_OPERATION_BLOCK_REASONS: Final[frozenset[str]] = frozenset(
     {
         "composition_prerequisites_pending",
+        "composition_assignment_pending",
         "no_available_units",
         "insufficient_units",
         "emergency_retreat_preempted",
@@ -319,6 +320,23 @@ class MicroMachineCommandExecutionReport:
     active_plan: Mapping[str, object] = field(default_factory=dict)
     stages: tuple[MicroMachineCommandStage, ...] = ()
     scenarios: tuple[MicroMachineLiveQAScenarioResult, ...] = ()
+    shortfall: Mapping[str, object] = field(default_factory=dict)
+
+    @property
+    def achieved_stage(self) -> str:
+        """Last lifecycle stage reached with every earlier stage proven.
+
+        ``state`` names the first *missing* stage (``consumed_by_manager`` can
+        mean "waiting to be consumed"); a UI must render this field instead
+        when it wants to say what has actually happened.
+        """
+
+        reached = ""
+        for stage in self.stages:
+            if not stage.ok:
+                break
+            reached = stage.name
+        return reached
 
     @property
     def ok(self) -> bool:
@@ -339,6 +357,8 @@ class MicroMachineCommandExecutionReport:
             "active_plan": dict(self.active_plan),
             "stages": [stage.to_dict() for stage in self.stages],
             "scenarios": [scenario.to_dict() for scenario in self.scenarios],
+            "shortfall": dict(self.shortfall),
+            "achieved_stage": self.achieved_stage,
         }
 
 
@@ -604,8 +624,16 @@ def _classify_operation_execution(
         status == "expired" or blocked_reason in EXPIRY_OPERATION_REASONS
     )
     transient_blocked = bool(
-        status == "blocked"
-        and blocked_reason in TRANSIENT_OPERATION_BLOCK_REASONS
+        (
+            status == "blocked"
+            and blocked_reason in TRANSIENT_OPERATION_BLOCK_REASONS
+        )
+        # The director's own unit-starvation state (recorded QA30 scenarios 16
+        # and 27) is a wait, never a failure.
+        or (
+            status == "waiting_for_units"
+            and blocked_reason in TRANSIENT_OPERATION_BLOCK_REASONS
+        )
     )
     hard_blocked = bool(
         not terminal_cancelled
@@ -881,11 +909,25 @@ def _classify_operation_execution(
             )
         )
     )
+    # The director itself closed the operation because its objective was
+    # observed; the per-family row repeats that terminal reason as a
+    # "blocker". That is a completed-without-full-evidence state, never a
+    # hard failure (recorded QA30 scenarios 15/22/29 hit this).
+    objective_observed_complete = bool(
+        terminal_completed
+        and not terminal_cancelled
+        and blocked_reason == OBJECTIVE_OBSERVED_COMPLETE_REASON
+    )
     family_hard_blocked = bool(
         family_lifecycle["hard_blocked"]
         and not terminal_cancelled
         and not expiry_signal
         and not transient_blocked
+        and not (
+            objective_observed_complete
+            and family_lifecycle["blocker_reason"]
+            == OBJECTIVE_OBSERVED_COMPLETE_REASON
+        )
     )
     family_transient_blocked = bool(
         family_lifecycle["transient_blocked"]
@@ -963,6 +1005,9 @@ def _classify_operation_execution(
             family_lifecycle["blocker_reason"]
             or "A requested Terran family is waiting for a prerequisite."
         )
+    elif objective_observed_complete:
+        blocker_manager = ""
+        blocker_reason = ""
     elif first_blocker is not None:
         blocker_manager = first_blocker.manager
         blocker_reason = first_blocker.reason
@@ -979,6 +1024,8 @@ def _classify_operation_execution(
             if status in HARD_OPERATION_STATUSES or status == "blocked"
             else "failed"
         )
+    elif objective_observed_complete:
+        state = OBJECTIVE_OBSERVED_COMPLETE_REASON
     elif expired:
         state = "expired"
     elif transient_blocked or family_transient_blocked:
@@ -1008,7 +1055,58 @@ def _classify_operation_execution(
         active_plan=dict(operation),
         stages=stages,
         scenarios=(),
+        shortfall=_operation_unit_shortfall(
+            operation,
+            assigned_count=assigned_count,
+            terminal=bool(terminal_completed or terminal_cancelled),
+        ),
     )
+
+
+def _operation_unit_shortfall(
+    operation: Mapping[str, object],
+    *,
+    assigned_count: int,
+    terminal: bool,
+) -> dict[str, object]:
+    """Requested-vs-assigned unit counts, surfaced instead of implied.
+
+    ``{}`` when the user's count is met, unknown, or the operation already
+    ended (a finished operation's assignment is legitimately released).
+    """
+
+    if terminal:
+        return {}
+    task = operation.get("tactical_task")
+    scope = operation.get("scope")
+    task = task if isinstance(task, Mapping) else {}
+    scope = scope if isinstance(scope, Mapping) else {}
+    requested = max(
+        _int_value(task.get("min_units")),
+        _int_value(scope.get("min_units")),
+    )
+    if requested <= 0 or assigned_count >= requested:
+        return {}
+    allow_partial = bool(
+        task.get("allow_partial", True) and scope.get("allow_partial_scope", True)
+    )
+    return {
+        "requested": requested,
+        "assigned": assigned_count,
+        "missing": requested - assigned_count,
+        "allow_partial": allow_partial,
+        "reason": (
+            f"Only {assigned_count} of {requested} requested units are assigned"
+            + (
+                " (partial fulfilment allowed)."
+                if allow_partial
+                else "; partial fulfilment was not allowed."
+            )
+        ),
+    }
+
+
+OBJECTIVE_OBSERVED_COMPLETE_REASON: Final[str] = "objective_observed_complete"
 
 
 def _operation_routing_evidence(
@@ -1045,9 +1143,21 @@ def _operation_routing_evidence(
         mismatches.append(
             f"task_type={reported_task_type} expected={expected_task_type}"
         )
+    # A squad that has not been assigned any unit yet legitimately reports
+    # ``idle``/``none`` (recorded QA30 scenarios 16 and 27: status
+    # WAITING_FOR_UNITS).  That is waiting, not wrong routing; only a
+    # *different concrete order* or an idle squad after assignment counts.
+    still_unassigned = (
+        _int_value(telemetry_payload.get("assigned_frame")) <= 0
+        and str(telemetry_payload.get("status", "") or "").strip().lower()
+        in {"waiting_for_units", "blocked", "received", "cancelled", "canceled"}
+    )
     if (
         reported_squad_order
         and reported_squad_order != expected_squad_order
+        and not (
+            still_unassigned and reported_squad_order in {"idle", "none"}
+        )
     ):
         mismatches.append(
             "squad_order="

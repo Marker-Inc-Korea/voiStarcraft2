@@ -1,0 +1,3439 @@
+{
+ "generated_utc": "2026-11-04T18:22:55+00:00",
+ "schema": "shipped (starcraft_commander/realtime_intent.py)",
+ "asr": "real: gpt-4o-mini-transcribe via realtime input transcription of the same audio",
+ "corpus_rows": 160,
+ "infra": {
+  "realtime_calls": 957,
+  "mint_http_429_total": 225,
+  "calls_that_hit_429": 75,
+  "mint_p50_ms": 476.20000000000005,
+  "mint_p95_ms": 1444.3499999999997,
+  "auth_modes": {
+   "direct_key": 717,
+   "mint": 240
+  },
+  "latency_includes_secret_minting": false,
+  "errors": {},
+  "asr_available_rate": 0.8881922675026124
+ },
+ "selection_all": {
+  "config": "cascade:ext>gpt-realtime:vad350:shipped_fewshot",
+  "n": 479,
+  "sem": 0.8914405010438413,
+  "sem_ci": [
+   0.8604037432803762,
+   0.9162484755839471
+  ],
+  "p50_ms": 1893.2,
+  "p95_ms": 2697.679999999999,
+  "schema_valid": 0.9832985386221295,
+  "unsafe": 0.0041753653444676405,
+  "best_sem_in_pool": 0.8914405010438413,
+  "p95_budget_s": 8.0,
+  "tied": [
+   "cascade:ext>gpt-realtime:vad350:shipped_fewshot",
+   "cascade:shipfast>gpt-realtime:vad350:shipped_fewshot",
+   "rt:gpt-realtime:vad350:shipped_fewshot",
+   "cascade:ext>veto:gpt-realtime:vad350:shipped_fewshot+gemini:shipped_fewshot"
+  ],
+  "eligible": 12
+ },
+ "selection_all_unconstrained": {
+  "config": "cascade:ext>gpt-realtime:vad350:shipped_fewshot",
+  "n": 479,
+  "sem": 0.8914405010438413,
+  "sem_ci": [
+   0.8604037432803762,
+   0.9162484755839471
+  ],
+  "p50_ms": 1893.2,
+  "p95_ms": 2697.679999999999,
+  "schema_valid": 0.9832985386221295,
+  "unsafe": 0.0041753653444676405,
+  "best_sem_in_pool": 0.8914405010438413,
+  "p95_budget_s": null,
+  "tied": [
+   "cascade:ext>gpt-realtime:vad350:shipped_fewshot",
+   "cascade:shipfast>gpt-realtime:vad350:shipped_fewshot",
+   "rt:gpt-realtime:vad350:shipped_fewshot",
+   "cascade:ext>veto:gpt-realtime:vad350:shipped_fewshot+gemini:shipped_fewshot"
+  ],
+  "eligible": 13
+ },
+ "selection_by_tier": {
+  "micro": {
+   "config": "cascade:ext>gpt-realtime:vad350:shipped",
+   "n": 99,
+   "sem": 0.9393939393939394,
+   "sem_ci": [
+    0.8740305823550434,
+    0.9719305851102626
+   ],
+   "p50_ms": 1786.9,
+   "p95_ms": 2624.1299999999983,
+   "schema_valid": 1.0,
+   "unsafe": 0.0,
+   "best_sem_in_pool": 0.9393939393939394,
+   "p95_budget_s": 5.0,
+   "tied": [
+    "cascade:ext>gpt-realtime:vad350:shipped"
+   ],
+   "eligible": 10
+  },
+  "emergency": {
+   "config": "cascade:ext>gpt-realtime:vad350:shipped_fewshot",
+   "n": 69,
+   "sem": 0.9710144927536232,
+   "sem_ci": [
+    0.9003322653873425,
+    0.9920149647668551
+   ],
+   "p50_ms": 1543.2,
+   "p95_ms": 2097.5399999999995,
+   "schema_valid": 1.0,
+   "unsafe": 0.0,
+   "best_sem_in_pool": 0.9710144927536232,
+   "p95_budget_s": 3.0,
+   "tied": [
+    "cascade:ext>gpt-realtime:vad350:shipped_fewshot",
+    "cascade:shipfast>gpt-realtime:vad350:shipped_fewshot",
+    "rt:gpt-realtime:vad350:shipped_fewshot"
+   ],
+   "eligible": 3
+  },
+  "operation": {
+   "config": "rt:gpt-realtime:vad350:shipped_fewshot",
+   "n": 137,
+   "sem": 0.8759124087591241,
+   "sem_ci": [
+    0.8102535920218157,
+    0.9210644276541893
+   ],
+   "p50_ms": 2224.0,
+   "p95_ms": 3306.7,
+   "schema_valid": 0.9708029197080292,
+   "unsafe": 0.0,
+   "best_sem_in_pool": 0.8759124087591241,
+   "p95_budget_s": 8.0,
+   "tied": [
+    "rt:gpt-realtime:vad350:shipped_fewshot",
+    "cascade:ext>gpt-realtime:vad350:shipped_fewshot",
+    "cascade:shipfast>gpt-realtime:vad350:shipped_fewshot"
+   ],
+   "eligible": 12
+  },
+  "macro": {
+   "config": "cascade:ext>gpt-realtime:vad350:shipped_fewshot",
+   "n": 81,
+   "sem": 0.9012345679012346,
+   "sem_ci": [
+    0.8170331024146836,
+    0.9491004924255834
+   ],
+   "p50_ms": 1806.5,
+   "p95_ms": 2269.9,
+   "schema_valid": 0.9876543209876543,
+   "unsafe": 0.0,
+   "best_sem_in_pool": 0.9012345679012346,
+   "p95_budget_s": 8.0,
+   "tied": [
+    "cascade:ext>gpt-realtime:vad350:shipped_fewshot"
+   ],
+   "eligible": 12
+  },
+  "adversarial": null
+ },
+ "configs": {
+  "fp:ext_rules": {
+   "n": 480,
+   "all": {
+    "n": 480,
+    "sem": 0.4125,
+    "sem_ci": [
+     0.36932400338292015,
+     0.45706545961488737
+    ],
+    "strict": 0.4125,
+    "layer_ok": 0.4125,
+    "schema_valid": 0.4125,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "adversarial": {
+    "n": 93,
+    "sem": 0.0,
+    "sem_ci": [
+     0.0,
+     0.0396689026203615
+    ],
+    "strict": 0.0,
+    "layer_ok": 0.0,
+    "schema_valid": 0.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "emergency": {
+    "n": 69,
+    "sem": 0.9130434782608695,
+    "sem_ci": [
+     0.8229829488715114,
+     0.9595369298790926
+    ],
+    "strict": 0.9130434782608695,
+    "layer_ok": 0.9130434782608695,
+    "schema_valid": 0.9130434782608695,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "macro": {
+    "n": 81,
+    "sem": 0.6666666666666666,
+    "sem_ci": [
+     0.5585263111530068,
+     0.7597137974729502
+    ],
+    "strict": 0.6666666666666666,
+    "layer_ok": 0.6666666666666666,
+    "schema_valid": 0.6666666666666666,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "micro": {
+    "n": 99,
+    "sem": 0.8181818181818182,
+    "sem_ci": [
+     0.7308102684012943,
+     0.8817823011425481
+    ],
+    "strict": 0.8181818181818182,
+    "layer_ok": 0.8181818181818182,
+    "schema_valid": 0.8181818181818182,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "operation": {
+    "n": 138,
+    "sem": 0.0,
+    "sem_ci": [
+     0.0,
+     0.027083732840013083
+    ],
+    "strict": 0.0,
+    "layer_ok": 0.0,
+    "schema_valid": 0.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "rows": 160,
+   "reps_per_row": 3.0,
+   "rep_acc": [
+    0.4125,
+    0.4125,
+    0.4125
+   ],
+   "row_consistency": 1.0,
+   "adversarial_executed_rate": 0.0,
+   "coverage": 0.4125,
+   "answered": 198,
+   "precision": 1.0,
+   "tier_pr": {
+    "micro": {
+     "n": 99,
+     "answered": 81,
+     "correct": 81,
+     "recall": 0.8181818181818182,
+     "precision": 1.0
+    },
+    "emergency": {
+     "n": 69,
+     "answered": 63,
+     "correct": 63,
+     "recall": 0.9130434782608695,
+     "precision": 1.0
+    },
+    "operation": {
+     "n": 138,
+     "answered": 0,
+     "correct": 0,
+     "recall": 0.0,
+     "precision": null
+    },
+    "macro": {
+     "n": 81,
+     "answered": 54,
+     "correct": 54,
+     "recall": 0.6666666666666666,
+     "precision": 1.0
+    },
+    "adversarial": {
+     "n": 93,
+     "answered": 0,
+     "correct": 0,
+     "recall": 0.0,
+     "precision": null
+    }
+   }
+  },
+  "fp:ext_rules:asrtxt": {
+   "n": 416,
+   "all": {
+    "n": 416,
+    "sem": 0.3245192307692308,
+    "sem_ci": [
+     0.2813103557192549,
+     0.3709394451580283
+    ],
+    "strict": 0.3245192307692308,
+    "layer_ok": 0.3245192307692308,
+    "schema_valid": 0.3245192307692308,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "adversarial": {
+    "n": 77,
+    "sem": 0.0,
+    "sem_ci": [
+     3.3045785251705595e-18,
+     0.047520088667220836
+    ],
+    "strict": 0.0,
+    "layer_ok": 0.0,
+    "schema_valid": 0.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "emergency": {
+    "n": 62,
+    "sem": 0.8387096774193549,
+    "sem_ci": [
+     0.7279343069043936,
+     0.9099602764593157
+    ],
+    "strict": 0.8387096774193549,
+    "layer_ok": 0.8387096774193549,
+    "schema_valid": 0.8387096774193549,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "macro": {
+    "n": 69,
+    "sem": 0.5072463768115942,
+    "sem_ci": [
+     0.3920506638364835,
+     0.6216777550889657
+    ],
+    "strict": 0.5072463768115942,
+    "layer_ok": 0.5072463768115942,
+    "schema_valid": 0.5072463768115942,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "micro": {
+    "n": 86,
+    "sem": 0.5581395348837209,
+    "sem_ci": [
+     0.4529326746260169,
+     0.6583743368252482
+    ],
+    "strict": 0.5581395348837209,
+    "layer_ok": 0.5581395348837209,
+    "schema_valid": 0.5581395348837209,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "operation": {
+    "n": 122,
+    "sem": 0.0,
+    "sem_ci": [
+     0.0,
+     0.0305272660233182
+    ],
+    "strict": 0.0,
+    "layer_ok": 0.0,
+    "schema_valid": 0.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "rows": 160,
+   "reps_per_row": 2.6,
+   "rep_acc": [
+    0.3571,
+    0.2553,
+    0.363
+   ],
+   "row_consistency": 0.8344370860927153,
+   "adversarial_executed_rate": 0.0,
+   "coverage": 0.3245192307692308,
+   "answered": 135,
+   "precision": 1.0,
+   "tier_pr": {
+    "micro": {
+     "n": 86,
+     "answered": 48,
+     "correct": 48,
+     "recall": 0.5581395348837209,
+     "precision": 1.0
+    },
+    "emergency": {
+     "n": 62,
+     "answered": 52,
+     "correct": 52,
+     "recall": 0.8387096774193549,
+     "precision": 1.0
+    },
+    "operation": {
+     "n": 122,
+     "answered": 0,
+     "correct": 0,
+     "recall": 0.0,
+     "precision": null
+    },
+    "macro": {
+     "n": 69,
+     "answered": 35,
+     "correct": 35,
+     "recall": 0.5072463768115942,
+     "precision": 1.0
+    },
+    "adversarial": {
+     "n": 77,
+     "answered": 0,
+     "correct": 0,
+     "recall": 0.0,
+     "precision": null
+    }
+   }
+  },
+  "fp:shipped_fast": {
+   "n": 480,
+   "all": {
+    "n": 480,
+    "sem": 0.2375,
+    "sem_ci": [
+     0.2016080183985512,
+     0.2775603705948714
+    ],
+    "strict": 0.19375,
+    "layer_ok": 0.2375,
+    "schema_valid": 0.24375,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "adversarial": {
+    "n": 93,
+    "sem": 0.25806451612903225,
+    "sem_ci": [
+     0.17998399469266022,
+     0.3553396678655792
+    ],
+    "strict": 0.25806451612903225,
+    "layer_ok": 0.25806451612903225,
+    "schema_valid": 0.25806451612903225,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "emergency": {
+    "n": 69,
+    "sem": 0.4782608695652174,
+    "sem_ci": [
+     0.36468525497597737,
+     0.5941294882476751
+    ],
+    "strict": 0.17391304347826086,
+    "layer_ok": 0.4782608695652174,
+    "schema_valid": 0.4782608695652174,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "macro": {
+    "n": 81,
+    "sem": 0.0,
+    "sem_ci": [
+     -3.3123515245851413e-18,
+     0.04527967412212876
+    ],
+    "strict": 0.0,
+    "layer_ok": 0.0,
+    "schema_valid": 0.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "micro": {
+    "n": 99,
+    "sem": 0.5757575757575758,
+    "sem_ci": [
+     0.4773648481449718,
+     0.6684905255559431
+    ],
+    "strict": 0.5757575757575758,
+    "layer_ok": 0.5757575757575758,
+    "schema_valid": 0.5757575757575758,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "operation": {
+    "n": 138,
+    "sem": 0.0,
+    "sem_ci": [
+     0.0,
+     0.027083732840013083
+    ],
+    "strict": 0.0,
+    "layer_ok": 0.0,
+    "schema_valid": 0.021739130434782608,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "rows": 160,
+   "reps_per_row": 3.0,
+   "rep_acc": [
+    0.2375,
+    0.2375,
+    0.2375
+   ],
+   "row_consistency": 1.0,
+   "adversarial_executed_rate": 0.0,
+   "coverage": 0.24375,
+   "answered": 117,
+   "precision": 0.9743589743589743,
+   "tier_pr": {
+    "micro": {
+     "n": 99,
+     "answered": 57,
+     "correct": 57,
+     "recall": 0.5757575757575758,
+     "precision": 1.0
+    },
+    "emergency": {
+     "n": 69,
+     "answered": 33,
+     "correct": 33,
+     "recall": 0.4782608695652174,
+     "precision": 1.0
+    },
+    "operation": {
+     "n": 138,
+     "answered": 3,
+     "correct": 0,
+     "recall": 0.0,
+     "precision": 0.0
+    },
+    "macro": {
+     "n": 81,
+     "answered": 0,
+     "correct": 0,
+     "recall": 0.0,
+     "precision": null
+    },
+    "adversarial": {
+     "n": 93,
+     "answered": 24,
+     "correct": 24,
+     "recall": 0.25806451612903225,
+     "precision": 1.0
+    }
+   }
+  },
+  "fp:shipped_fast:asrtxt": {
+   "n": 416,
+   "all": {
+    "n": 416,
+    "sem": 0.1875,
+    "sem_ci": [
+     0.15291425906614386,
+     0.22780456441394956
+    ],
+    "strict": 0.1466346153846154,
+    "layer_ok": 0.1875,
+    "schema_valid": 0.19471153846153846,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "adversarial": {
+    "n": 77,
+    "sem": 0.23376623376623376,
+    "sem_ci": [
+     0.1532949838383708,
+     0.3395403880493702
+    ],
+    "strict": 0.23376623376623376,
+    "layer_ok": 0.23376623376623376,
+    "schema_valid": 0.23376623376623376,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "emergency": {
+    "n": 62,
+    "sem": 0.45161290322580644,
+    "sem_ci": [
+     0.3341951476826002,
+     0.5746770546940129
+    ],
+    "strict": 0.1774193548387097,
+    "layer_ok": 0.45161290322580644,
+    "schema_valid": 0.45161290322580644,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "macro": {
+    "n": 69,
+    "sem": 0.0,
+    "sem_ci": [
+     0.0,
+     0.05273909414400562
+    ],
+    "strict": 0.0,
+    "layer_ok": 0.0,
+    "schema_valid": 0.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "micro": {
+    "n": 86,
+    "sem": 0.37209302325581395,
+    "sem_ci": [
+     0.27746093282766765,
+     0.4776636419795485
+    ],
+    "strict": 0.37209302325581395,
+    "layer_ok": 0.37209302325581395,
+    "schema_valid": 0.37209302325581395,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "operation": {
+    "n": 122,
+    "sem": 0.0,
+    "sem_ci": [
+     0.0,
+     0.0305272660233182
+    ],
+    "strict": 0.0,
+    "layer_ok": 0.0,
+    "schema_valid": 0.02459016393442623,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "rows": 160,
+   "reps_per_row": 2.6,
+   "rep_acc": [
+    0.2,
+    0.156,
+    0.2074
+   ],
+   "row_consistency": 0.9205298013245033,
+   "adversarial_executed_rate": 0.0,
+   "coverage": 0.19471153846153846,
+   "answered": 81,
+   "precision": 0.9629629629629629,
+   "tier_pr": {
+    "micro": {
+     "n": 86,
+     "answered": 32,
+     "correct": 32,
+     "recall": 0.37209302325581395,
+     "precision": 1.0
+    },
+    "emergency": {
+     "n": 62,
+     "answered": 28,
+     "correct": 28,
+     "recall": 0.45161290322580644,
+     "precision": 1.0
+    },
+    "operation": {
+     "n": 122,
+     "answered": 3,
+     "correct": 0,
+     "recall": 0.0,
+     "precision": 0.0
+    },
+    "macro": {
+     "n": 69,
+     "answered": 0,
+     "correct": 0,
+     "recall": 0.0,
+     "precision": null
+    },
+    "adversarial": {
+     "n": 77,
+     "answered": 18,
+     "correct": 18,
+     "recall": 0.23376623376623376,
+     "precision": 1.0
+    }
+   }
+  },
+  "fp:shipped_regex": {
+   "n": 480,
+   "all": {
+    "n": 480,
+    "sem": 0.06875,
+    "sem_ci": [
+     0.0493692850970143,
+     0.09497878253503719
+    ],
+    "strict": 0.025,
+    "layer_ok": 0.06875,
+    "schema_valid": 0.075,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "adversarial": {
+    "n": 93,
+    "sem": 0.0,
+    "sem_ci": [
+     0.0,
+     0.0396689026203615
+    ],
+    "strict": 0.0,
+    "layer_ok": 0.0,
+    "schema_valid": 0.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "emergency": {
+    "n": 69,
+    "sem": 0.4782608695652174,
+    "sem_ci": [
+     0.36468525497597737,
+     0.5941294882476751
+    ],
+    "strict": 0.17391304347826086,
+    "layer_ok": 0.4782608695652174,
+    "schema_valid": 0.4782608695652174,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "macro": {
+    "n": 81,
+    "sem": 0.0,
+    "sem_ci": [
+     -3.3123515245851413e-18,
+     0.04527967412212876
+    ],
+    "strict": 0.0,
+    "layer_ok": 0.0,
+    "schema_valid": 0.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "micro": {
+    "n": 99,
+    "sem": 0.0,
+    "sem_ci": [
+     0.0,
+     0.03735453357396229
+    ],
+    "strict": 0.0,
+    "layer_ok": 0.0,
+    "schema_valid": 0.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "operation": {
+    "n": 138,
+    "sem": 0.0,
+    "sem_ci": [
+     0.0,
+     0.027083732840013083
+    ],
+    "strict": 0.0,
+    "layer_ok": 0.0,
+    "schema_valid": 0.021739130434782608,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "rows": 160,
+   "reps_per_row": 3.0,
+   "rep_acc": [
+    0.0688,
+    0.0688,
+    0.0688
+   ],
+   "row_consistency": 1.0,
+   "adversarial_executed_rate": 0.0,
+   "coverage": 0.075,
+   "answered": 36,
+   "precision": 0.9166666666666666,
+   "tier_pr": {
+    "micro": {
+     "n": 99,
+     "answered": 0,
+     "correct": 0,
+     "recall": 0.0,
+     "precision": null
+    },
+    "emergency": {
+     "n": 69,
+     "answered": 33,
+     "correct": 33,
+     "recall": 0.4782608695652174,
+     "precision": 1.0
+    },
+    "operation": {
+     "n": 138,
+     "answered": 3,
+     "correct": 0,
+     "recall": 0.0,
+     "precision": 0.0
+    },
+    "macro": {
+     "n": 81,
+     "answered": 0,
+     "correct": 0,
+     "recall": 0.0,
+     "precision": null
+    },
+    "adversarial": {
+     "n": 93,
+     "answered": 0,
+     "correct": 0,
+     "recall": 0.0,
+     "precision": null
+    }
+   }
+  },
+  "fp:shipped_regex:asrtxt": {
+   "n": 416,
+   "all": {
+    "n": 416,
+    "sem": 0.0673076923076923,
+    "sem_ci": [
+     0.046974997727973776,
+     0.09555875785984792
+    ],
+    "strict": 0.026442307692307692,
+    "layer_ok": 0.0673076923076923,
+    "schema_valid": 0.07451923076923077,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "adversarial": {
+    "n": 77,
+    "sem": 0.0,
+    "sem_ci": [
+     3.3045785251705595e-18,
+     0.047520088667220836
+    ],
+    "strict": 0.0,
+    "layer_ok": 0.0,
+    "schema_valid": 0.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "emergency": {
+    "n": 62,
+    "sem": 0.45161290322580644,
+    "sem_ci": [
+     0.3341951476826002,
+     0.5746770546940129
+    ],
+    "strict": 0.1774193548387097,
+    "layer_ok": 0.45161290322580644,
+    "schema_valid": 0.45161290322580644,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "macro": {
+    "n": 69,
+    "sem": 0.0,
+    "sem_ci": [
+     0.0,
+     0.05273909414400562
+    ],
+    "strict": 0.0,
+    "layer_ok": 0.0,
+    "schema_valid": 0.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "micro": {
+    "n": 86,
+    "sem": 0.0,
+    "sem_ci": [
+     0.0,
+     0.042759701519118086
+    ],
+    "strict": 0.0,
+    "layer_ok": 0.0,
+    "schema_valid": 0.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "operation": {
+    "n": 122,
+    "sem": 0.0,
+    "sem_ci": [
+     0.0,
+     0.0305272660233182
+    ],
+    "strict": 0.0,
+    "layer_ok": 0.0,
+    "schema_valid": 0.02459016393442623,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 0.0,
+    "p95_ms": 0.0,
+    "mean_tokens": 0.0,
+    "mean_cost_units": 0.0
+   },
+   "rows": 160,
+   "reps_per_row": 2.6,
+   "rep_acc": [
+    0.0714,
+    0.0567,
+    0.0741
+   ],
+   "row_consistency": 0.9933774834437086,
+   "adversarial_executed_rate": 0.0,
+   "coverage": 0.07451923076923077,
+   "answered": 31,
+   "precision": 0.9032258064516129,
+   "tier_pr": {
+    "micro": {
+     "n": 86,
+     "answered": 0,
+     "correct": 0,
+     "recall": 0.0,
+     "precision": null
+    },
+    "emergency": {
+     "n": 62,
+     "answered": 28,
+     "correct": 28,
+     "recall": 0.45161290322580644,
+     "precision": 1.0
+    },
+    "operation": {
+     "n": 122,
+     "answered": 3,
+     "correct": 0,
+     "recall": 0.0,
+     "precision": 0.0
+    },
+    "macro": {
+     "n": 69,
+     "answered": 0,
+     "correct": 0,
+     "recall": 0.0,
+     "precision": null
+    },
+    "adversarial": {
+     "n": 77,
+     "answered": 0,
+     "correct": 0,
+     "recall": 0.0,
+     "precision": null
+    }
+   }
+  },
+  "rt:gpt-realtime:vad350:shipped": {
+   "n": 478,
+   "all": {
+    "n": 478,
+    "sem": 0.8493723849372385,
+    "sem_ci": [
+     0.814527869652192,
+     0.8786459866524526
+    ],
+    "strict": 0.7656903765690377,
+    "layer_ok": 0.897489539748954,
+    "schema_valid": 0.9811715481171548,
+    "unsafe": 0.006276150627615063,
+    "error_rate": 0.0,
+    "p50_ms": 1954.2,
+    "p95_ms": 3127.0849999999996,
+    "mean_tokens": 3379.317991631799,
+    "mean_cost_units": 3766.916317991632
+   },
+   "adversarial": {
+    "n": 91,
+    "sem": 0.8241758241758241,
+    "sem_ci": [
+     0.7333142298436154,
+     0.888775654763983
+    ],
+    "strict": 0.8241758241758241,
+    "layer_ok": 0.8241758241758241,
+    "schema_valid": 1.0,
+    "unsafe": 0.03296703296703297,
+    "error_rate": 0.0,
+    "p50_ms": 1798.9,
+    "p95_ms": 2239.25,
+    "mean_tokens": 3364.6483516483518,
+    "mean_cost_units": 3720.164835164835
+   },
+   "emergency": {
+    "n": 69,
+    "sem": 0.9565217391304348,
+    "sem_ci": [
+     0.8797860261535664,
+     0.9851043661497328
+    ],
+    "strict": 0.5362318840579711,
+    "layer_ok": 0.9710144927536232,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1767.3,
+    "p95_ms": 4471.5599999999995,
+    "mean_tokens": 3348.304347826087,
+    "mean_cost_units": 3618.5652173913045
+   },
+   "macro": {
+    "n": 81,
+    "sem": 0.7530864197530864,
+    "sem_ci": [
+     0.6491553720865342,
+     0.8340981261973265
+    ],
+    "strict": 0.7530864197530864,
+    "layer_ok": 0.8148148148148148,
+    "schema_valid": 0.9506172839506173,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1911.7,
+    "p95_ms": 2381.3,
+    "mean_tokens": 3364.962962962963,
+    "mean_cost_units": 3695.5185185185187
+   },
+   "micro": {
+    "n": 99,
+    "sem": 0.898989898989899,
+    "sem_ci": [
+     0.8239677083435178,
+     0.9442039264813002
+    ],
+    "strict": 0.797979797979798,
+    "layer_ok": 0.9595959595959596,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1946.1,
+    "p95_ms": 3113.6299999999987,
+    "mean_tokens": 3364.5858585858587,
+    "mean_cost_units": 3691.020202020202
+   },
+   "operation": {
+    "n": 138,
+    "sem": 0.8333333333333334,
+    "sem_ci": [
+     0.762312416836246,
+     0.8862984279370787
+    ],
+    "strict": 0.8260869565217391,
+    "layer_ok": 0.9130434782608695,
+    "schema_valid": 0.9637681159420289,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 2300.6,
+    "p95_ms": 3394.3050000000003,
+    "mean_tokens": 3423.4927536231885,
+    "mean_cost_units": 3968.2753623188405
+   },
+   "rows": 160,
+   "reps_per_row": 2.99,
+   "rep_acc": [
+    0.8625,
+    0.8101,
+    0.875
+   ],
+   "row_consistency": 0.775,
+   "adversarial_executed_rate": 0.17582417582417584
+  },
+  "rt:gpt-realtime:vad350:shipped_fewshot": {
+   "n": 479,
+   "all": {
+    "n": 479,
+    "sem": 0.872651356993737,
+    "sem_ci": [
+     0.8398037783483229,
+     0.899569134010513
+    ],
+    "strict": 0.8016701461377871,
+    "layer_ok": 0.9144050104384134,
+    "schema_valid": 0.9832985386221295,
+    "unsafe": 0.0041753653444676405,
+    "error_rate": 0.0,
+    "p50_ms": 1956.6,
+    "p95_ms": 2729.979999999999,
+    "mean_tokens": 3902.2526096033403,
+    "mean_cost_units": 4280.695198329854
+   },
+   "adversarial": {
+    "n": 93,
+    "sem": 0.8279569892473119,
+    "sem_ci": [
+     0.7386593031568491,
+     0.8912352875975375
+    ],
+    "strict": 0.8279569892473119,
+    "layer_ok": 0.8279569892473119,
+    "schema_valid": 0.989247311827957,
+    "unsafe": 0.021505376344086023,
+    "error_rate": 0.0,
+    "p50_ms": 1819.0,
+    "p95_ms": 2301.14,
+    "mean_tokens": 3889.8172043010754,
+    "mean_cost_units": 4242.096774193548
+   },
+   "emergency": {
+    "n": 69,
+    "sem": 0.9710144927536232,
+    "sem_ci": [
+     0.9003322653873425,
+     0.9920149647668551
+    ],
+    "strict": 0.6521739130434783,
+    "layer_ok": 0.9710144927536232,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1758.3,
+    "p95_ms": 2111.879999999999,
+    "mean_tokens": 3872.68115942029,
+    "mean_cost_units": 4138.072463768116
+   },
+   "macro": {
+    "n": 81,
+    "sem": 0.8518518518518519,
+    "sem_ci": [
+     0.7586664574880995,
+     0.9131737718333655
+    ],
+    "strict": 0.8148148148148148,
+    "layer_ok": 0.8888888888888888,
+    "schema_valid": 0.9876543209876543,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1922.1,
+    "p95_ms": 2306.9,
+    "mean_tokens": 3892.8024691358023,
+    "mean_cost_units": 4228.876543209876
+   },
+   "micro": {
+    "n": 99,
+    "sem": 0.8585858585858586,
+    "sem_ci": [
+     0.7765261713095186,
+     0.9138559308748114
+    ],
+    "strict": 0.7878787878787878,
+    "layer_ok": 0.9292929292929293,
+    "schema_valid": 0.9797979797979798,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1976.0,
+    "p95_ms": 3294.629999999999,
+    "mean_tokens": 3890.060606060606,
+    "mean_cost_units": 4214.919191919192
+   },
+   "operation": {
+    "n": 137,
+    "sem": 0.8759124087591241,
+    "sem_ci": [
+     0.8102535920218157,
+     0.9210644276541893
+    ],
+    "strict": 0.8613138686131386,
+    "layer_ok": 0.948905109489051,
+    "schema_valid": 0.9708029197080292,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 2224.0,
+    "p95_ms": 3306.7,
+    "mean_tokens": 3939.985401459854,
+    "mean_cost_units": 4456.8978102189785
+   },
+   "rows": 160,
+   "reps_per_row": 2.99,
+   "rep_acc": [
+    0.9,
+    0.8365,
+    0.8812
+   ],
+   "row_consistency": 0.80625,
+   "adversarial_executed_rate": 0.17204301075268819
+  },
+  "tx:gemini-3.5-flash-lite:shipped": {
+   "n": 480,
+   "all": {
+    "n": 480,
+    "sem": 0.7145833333333333,
+    "sem_ci": [
+     0.6726023685142541,
+     0.7531568055625513
+    ],
+    "strict": 0.6208333333333333,
+    "layer_ok": 0.7645833333333333,
+    "schema_valid": 0.7791666666666667,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1965.85,
+    "p95_ms": 2335.8099999999995,
+    "mean_tokens": 2218.0895833333334,
+    "mean_cost_units": 2411.389583333333
+   },
+   "adversarial": {
+    "n": 93,
+    "sem": 0.8817204301075269,
+    "sem_ci": [
+     0.8004996842701593,
+     0.9326563148046185
+    ],
+    "strict": 0.8817204301075269,
+    "layer_ok": 0.8817204301075269,
+    "schema_valid": 0.9247311827956989,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1950.3,
+    "p95_ms": 2235.64,
+    "mean_tokens": 2212.505376344086,
+    "mean_cost_units": 2385.3118279569894
+   },
+   "emergency": {
+    "n": 69,
+    "sem": 0.9565217391304348,
+    "sem_ci": [
+     0.8797860261535664,
+     0.9851043661497328
+    ],
+    "strict": 0.5797101449275363,
+    "layer_ok": 1.0,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1915.4,
+    "p95_ms": 2139.2400000000002,
+    "mean_tokens": 2191.217391304348,
+    "mean_cost_units": 2311.8695652173915
+   },
+   "macro": {
+    "n": 81,
+    "sem": 0.691358024691358,
+    "sem_ci": [
+     0.5840174207223435,
+     0.7813693706630145
+    ],
+    "strict": 0.6666666666666666,
+    "layer_ok": 0.7654320987654321,
+    "schema_valid": 0.7654320987654321,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1946.0,
+    "p95_ms": 2221.1,
+    "mean_tokens": 2206.037037037037,
+    "mean_cost_units": 2369.925925925926
+   },
+   "micro": {
+    "n": 99,
+    "sem": 0.3434343434343434,
+    "sem_ci": [
+     0.25731989006284084,
+     0.4412456709552685
+    ],
+    "strict": 0.31313131313131315,
+    "layer_ok": 0.37373737373737376,
+    "schema_valid": 0.37373737373737376,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 2069.2,
+    "p95_ms": 2503.6600000000003,
+    "mean_tokens": 2200.0,
+    "mean_cost_units": 2344.3636363636365
+   },
+   "operation": {
+    "n": 138,
+    "sem": 0.7608695652173914,
+    "sem_ci": [
+     0.6832512521549521,
+     0.8243572350589543
+    ],
+    "strict": 0.6594202898550725,
+    "layer_ok": 0.8478260869565217,
+    "schema_valid": 0.8695652173913043,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1967.5500000000002,
+    "p95_ms": 2221.8250000000003,
+    "mean_tokens": 2255.340579710145,
+    "mean_cost_units": 2551.144927536232
+   },
+   "rows": 160,
+   "reps_per_row": 3.0,
+   "rep_acc": [
+    0.7125,
+    0.725,
+    0.7063
+   ],
+   "row_consistency": 0.8875,
+   "adversarial_executed_rate": 0.11827956989247312
+  },
+  "tx:gemini-3.5-flash-lite:shipped:asrtxt": {
+   "n": 416,
+   "all": {
+    "n": 416,
+    "sem": 0.6538461538461539,
+    "sem_ci": [
+     0.6069088902951258,
+     0.6979679966069819
+    ],
+    "strict": 0.5552884615384616,
+    "layer_ok": 0.7067307692307693,
+    "schema_valid": 0.8293269230769231,
+    "unsafe": 0.004807692307692308,
+    "error_rate": 0.0,
+    "p50_ms": 2159.5,
+    "p95_ms": 2843.0499999999997,
+    "mean_tokens": 2219.699519230769,
+    "mean_cost_units": 2415.3125
+   },
+   "adversarial": {
+    "n": 77,
+    "sem": 0.922077922077922,
+    "sem_ci": [
+     0.840241945501405,
+     0.9637995380912008
+    ],
+    "strict": 0.922077922077922,
+    "layer_ok": 0.922077922077922,
+    "schema_valid": 0.961038961038961,
+    "unsafe": 0.025974025974025976,
+    "error_rate": 0.0,
+    "p50_ms": 2023.5,
+    "p95_ms": 2686.84,
+    "mean_tokens": 2212.038961038961,
+    "mean_cost_units": 2381.4415584415583
+   },
+   "emergency": {
+    "n": 62,
+    "sem": 0.8870967741935484,
+    "sem_ci": [
+     0.7848003079004455,
+     0.9442220730866507
+    ],
+    "strict": 0.5,
+    "layer_ok": 0.9354838709677419,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 2115.45,
+    "p95_ms": 2535.065,
+    "mean_tokens": 2193.8548387096776,
+    "mean_cost_units": 2320.5806451612902
+   },
+   "macro": {
+    "n": 69,
+    "sem": 0.5652173913043478,
+    "sem_ci": [
+     0.4478819321166955,
+     0.675673838212347
+    ],
+    "strict": 0.5362318840579711,
+    "layer_ok": 0.6376811594202898,
+    "schema_valid": 0.7971014492753623,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 2154.6,
+    "p95_ms": 2534.3399999999997,
+    "mean_tokens": 2206.2753623188405,
+    "mean_cost_units": 2368.6666666666665
+   },
+   "micro": {
+    "n": 86,
+    "sem": 0.26744186046511625,
+    "sem_ci": [
+     0.1853195577468752,
+     0.3694523964480633
+    ],
+    "strict": 0.2441860465116279,
+    "layer_ok": 0.29069767441860467,
+    "schema_valid": 0.5348837209302325,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 2368.25,
+    "p95_ms": 3080.825,
+    "mean_tokens": 2202.9651162790697,
+    "mean_cost_units": 2353.5232558139537
+   },
+   "operation": {
+    "n": 122,
+    "sem": 0.6885245901639344,
+    "sem_ci": [
+     0.6016525423842097,
+     0.7638863573119161
+    ],
+    "strict": 0.5819672131147541,
+    "layer_ok": 0.7868852459016393,
+    "schema_valid": 0.8852459016393442,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 2133.15,
+    "p95_ms": 2732.1,
+    "mean_tokens": 2257.05737704918,
+    "mean_cost_units": 2554.7704918032787
+   },
+   "rows": 160,
+   "reps_per_row": 2.6,
+   "rep_acc": [
+    0.6786,
+    0.5745,
+    0.7111
+   ],
+   "row_consistency": 0.7748344370860927,
+   "adversarial_executed_rate": 0.07792207792207792
+  },
+  "tx:gemini-3.5-flash-lite:shipped_fewshot": {
+   "n": 480,
+   "all": {
+    "n": 480,
+    "sem": 0.75,
+    "sem_ci": [
+     0.709380219226088,
+     0.7866498864944619
+    ],
+    "strict": 0.6270833333333333,
+    "layer_ok": 0.8104166666666667,
+    "schema_valid": 0.83125,
+    "unsafe": 0.00625,
+    "error_rate": 0.0,
+    "p50_ms": 1929.75,
+    "p95_ms": 2323.854999999999,
+    "mean_tokens": 2747.2083333333335,
+    "mean_cost_units": 2934.8645833333335
+   },
+   "adversarial": {
+    "n": 93,
+    "sem": 0.9032258064516129,
+    "sem_ci": [
+     0.8262116454045955,
+     0.9482489169983388
+    ],
+    "strict": 0.9032258064516129,
+    "layer_ok": 0.9032258064516129,
+    "schema_valid": 0.978494623655914,
+    "unsafe": 0.03225806451612903,
+    "error_rate": 0.0,
+    "p50_ms": 1903.0,
+    "p95_ms": 2311.9,
+    "mean_tokens": 2739.1612903225805,
+    "mean_cost_units": 2898.935483870968
+   },
+   "emergency": {
+    "n": 69,
+    "sem": 0.9565217391304348,
+    "sem_ci": [
+     0.8797860261535664,
+     0.9851043661497328
+    ],
+    "strict": 0.5507246376811594,
+    "layer_ok": 1.0,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1904.4,
+    "p95_ms": 2178.06,
+    "mean_tokens": 2721.1159420289855,
+    "mean_cost_units": 2838.463768115942
+   },
+   "macro": {
+    "n": 81,
+    "sem": 0.6666666666666666,
+    "sem_ci": [
+     0.5585263111530068,
+     0.7597137974729502
+    ],
+    "strict": 0.5925925925925926,
+    "layer_ok": 0.7901234567901234,
+    "schema_valid": 0.7901234567901234,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1881.0,
+    "p95_ms": 2272.6,
+    "mean_tokens": 2740.8271604938273,
+    "mean_cost_units": 2916.0864197530864
+   },
+   "micro": {
+    "n": 99,
+    "sem": 0.45454545454545453,
+    "sem_ci": [
+     0.3599919588990025,
+     0.5524948168804485
+    ],
+    "strict": 0.35353535353535354,
+    "layer_ok": 0.47474747474747475,
+    "schema_valid": 0.47474747474747475,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1953.1,
+    "p95_ms": 2435.2299999999996,
+    "mean_tokens": 2732.050505050505,
+    "mean_cost_units": 2879.5656565656564
+   },
+   "operation": {
+    "n": 138,
+    "sem": 0.8043478260869565,
+    "sem_ci": [
+     0.7303008700724879,
+     0.8619090316770694
+    ],
+    "strict": 0.6956521739130435,
+    "layer_ok": 0.9057971014492754,
+    "schema_valid": 0.927536231884058,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1968.9,
+    "p95_ms": 2299.21,
+    "mean_tokens": 2780.2971014492755,
+    "mean_cost_units": 3057.9710144927535
+   },
+   "rows": 160,
+   "reps_per_row": 3.0,
+   "rep_acc": [
+    0.7438,
+    0.7688,
+    0.7375
+   ],
+   "row_consistency": 0.85625,
+   "adversarial_executed_rate": 0.0967741935483871
+  },
+  "tx:gemini-3.5-flash-lite:shipped_fewshot:asrtxt": {
+   "n": 416,
+   "all": {
+    "n": 416,
+    "sem": 0.6826923076923077,
+    "sem_ci": [
+     0.6364681531651462,
+     0.7255731500311069
+    ],
+    "strict": 0.5769230769230769,
+    "layer_ok": 0.7524038461538461,
+    "schema_valid": 0.8629807692307693,
+    "unsafe": 0.004807692307692308,
+    "error_rate": 0.0,
+    "p50_ms": 1911.4,
+    "p95_ms": 2488.95,
+    "mean_tokens": 2749.221153846154,
+    "mean_cost_units": 2940.3990384615386
+   },
+   "adversarial": {
+    "n": 77,
+    "sem": 0.935064935064935,
+    "sem_ci": [
+     0.8568338883453717,
+     0.9719473332039297
+    ],
+    "strict": 0.935064935064935,
+    "layer_ok": 0.935064935064935,
+    "schema_valid": 1.0,
+    "unsafe": 0.025974025974025976,
+    "error_rate": 0.0,
+    "p50_ms": 1915.6,
+    "p95_ms": 2165.94,
+    "mean_tokens": 2740.961038961039,
+    "mean_cost_units": 2904.12987012987
+   },
+   "emergency": {
+    "n": 62,
+    "sem": 0.9032258064516129,
+    "sem_ci": [
+     0.8045095713255586,
+     0.954888742202667
+    ],
+    "strict": 0.532258064516129,
+    "layer_ok": 0.9516129032258065,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1850.3000000000002,
+    "p95_ms": 2411.3399999999992,
+    "mean_tokens": 2722.548387096774,
+    "mean_cost_units": 2842.3548387096776
+   },
+   "macro": {
+    "n": 69,
+    "sem": 0.5507246376811594,
+    "sem_ci": [
+     0.43378559191253313,
+     0.6623133405656112
+    ],
+    "strict": 0.463768115942029,
+    "layer_ok": 0.6666666666666666,
+    "schema_valid": 0.8260869565217391,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1927.0,
+    "p95_ms": 2423.18,
+    "mean_tokens": 2741.463768115942,
+    "mean_cost_units": 2916.4202898550725
+   },
+   "micro": {
+    "n": 86,
+    "sem": 0.27906976744186046,
+    "sem_ci": [
+     0.19528545330537803,
+     0.3817479031798136
+    ],
+    "strict": 0.2441860465116279,
+    "layer_ok": 0.313953488372093,
+    "schema_valid": 0.5116279069767442,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1947.6999999999998,
+    "p95_ms": 2506.85,
+    "mean_tokens": 2735.732558139535,
+    "mean_cost_units": 2891.593023255814
+   },
+   "operation": {
+    "n": 122,
+    "sem": 0.7704918032786885,
+    "sem_ci": [
+     0.6882989938199642,
+     0.8361698622657816
+    ],
+    "strict": 0.6721311475409836,
+    "layer_ok": 0.8934426229508197,
+    "schema_valid": 0.9754098360655737,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1910.65,
+    "p95_ms": 2579.3599999999997,
+    "mean_tokens": 2781.8852459016393,
+    "mean_cost_units": 3061.0819672131147
+   },
+   "rows": 160,
+   "reps_per_row": 2.6,
+   "rep_acc": [
+    0.7143,
+    0.6099,
+    0.7259
+   ],
+   "row_consistency": 0.847682119205298,
+   "adversarial_executed_rate": 0.06493506493506493
+  },
+  "tx:gpt-5.6-sol:shipped_fewshot:asrtxt": {
+   "n": 140,
+   "all": {
+    "n": 140,
+    "sem": 0.8214285714285714,
+    "sem_ci": [
+     0.7496682125749768,
+     0.8760200445078142
+    ],
+    "strict": 0.7142857142857143,
+    "layer_ok": 0.8428571428571429,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 10846.65,
+    "p95_ms": 22419.084999999985,
+    "mean_tokens": 4310.0142857142855,
+    "mean_cost_units": 4560.407142857143
+   },
+   "adversarial": {
+    "n": 25,
+    "sem": 0.96,
+    "sem_ci": [
+     0.8045552759497747,
+     0.9929039496133009
+    ],
+    "strict": 0.96,
+    "layer_ok": 0.96,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 10574.6,
+    "p95_ms": 17436.579999999994,
+    "mean_tokens": 4311.84,
+    "mean_cost_units": 4541.52
+   },
+   "emergency": {
+    "n": 20,
+    "sem": 0.95,
+    "sem_ci": [
+     0.7638641064874331,
+     0.9911187805671267
+    ],
+    "strict": 0.55,
+    "layer_ok": 0.95,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 9896.95,
+    "p95_ms": 21704.39,
+    "mean_tokens": 4214.55,
+    "mean_cost_units": 4376.1
+   },
+   "macro": {
+    "n": 25,
+    "sem": 0.84,
+    "sem_ci": [
+     0.6534598601976184,
+     0.9359665239142201
+    ],
+    "strict": 0.76,
+    "layer_ok": 0.84,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 10501.5,
+    "p95_ms": 23811.6,
+    "mean_tokens": 4304.44,
+    "mean_cost_units": 4523.44
+   },
+   "micro": {
+    "n": 27,
+    "sem": 0.7407407407407407,
+    "sem_ci": [
+     0.5532106959738432,
+     0.8682979157713321
+    ],
+    "strict": 0.7037037037037037,
+    "layer_ok": 0.7407407407407407,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 11138.2,
+    "p95_ms": 17917.2,
+    "mean_tokens": 4296.037037037037,
+    "mean_cost_units": 4526.814814814815
+   },
+   "operation": {
+    "n": 43,
+    "sem": 0.7209302325581395,
+    "sem_ci": [
+     0.5730868709987059,
+     0.8325354817817284
+    ],
+    "strict": 0.627906976744186,
+    "layer_ok": 0.7906976744186046,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 12412.8,
+    "p95_ms": 20199.55,
+    "mean_tokens": 4365.372093023256,
+    "mean_cost_units": 4699.697674418605
+   },
+   "rows": 140,
+   "reps_per_row": 1.0,
+   "rep_acc": [
+    0.8214
+   ],
+   "row_consistency": null,
+   "adversarial_executed_rate": 0.04
+  },
+  "cascade:ext>gpt-realtime:vad350:shipped": {
+   "n": 478,
+   "all": {
+    "n": 478,
+    "sem": 0.8661087866108786,
+    "sem_ci": [
+     0.832643632771432,
+     0.893736156769363
+    ],
+    "strict": 0.8117154811715481,
+    "layer_ok": 0.9037656903765691,
+    "schema_valid": 0.9811715481171548,
+    "unsafe": 0.006276150627615063,
+    "error_rate": 0.0,
+    "p50_ms": 1911.45,
+    "p95_ms": 3112.4849999999997,
+    "mean_tokens": 2431.8807531380753,
+    "mean_cost_units": 2737.194560669456
+   },
+   "adversarial": {
+    "n": 91,
+    "sem": 0.8241758241758241,
+    "sem_ci": [
+     0.7333142298436154,
+     0.888775654763983
+    ],
+    "strict": 0.8241758241758241,
+    "layer_ok": 0.8241758241758241,
+    "schema_valid": 1.0,
+    "unsafe": 0.03296703296703297,
+    "error_rate": 0.0,
+    "p50_ms": 1798.9,
+    "p95_ms": 2239.25,
+    "mean_tokens": 3364.6483516483518,
+    "mean_cost_units": 3720.164835164835
+   },
+   "emergency": {
+    "n": 69,
+    "sem": 0.9565217391304348,
+    "sem_ci": [
+     0.8797860261535664,
+     0.9851043661497328
+    ],
+    "strict": 0.6521739130434783,
+    "layer_ok": 0.9710144927536232,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1605.0,
+    "p95_ms": 3994.9199999999923,
+    "mean_tokens": 826.6521739130435,
+    "mean_cost_units": 900.072463768116
+   },
+   "macro": {
+    "n": 81,
+    "sem": 0.8024691358024691,
+    "sem_ci": [
+     0.7029540686276727,
+     0.8745927951749901
+    ],
+    "strict": 0.8024691358024691,
+    "layer_ok": 0.8395061728395061,
+    "schema_valid": 0.9506172839506173,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1819.5,
+    "p95_ms": 2381.3,
+    "mean_tokens": 1914.283950617284,
+    "mean_cost_units": 2114.543209876543
+   },
+   "micro": {
+    "n": 99,
+    "sem": 0.9393939393939394,
+    "sem_ci": [
+     0.8740305823550434,
+     0.9719305851102626
+    ],
+    "strict": 0.898989898989899,
+    "layer_ok": 0.9696969696969697,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1786.9,
+    "p95_ms": 2624.1299999999983,
+    "mean_tokens": 1734.5252525252524,
+    "mean_cost_units": 1907.4646464646464
+   },
+   "operation": {
+    "n": 138,
+    "sem": 0.8333333333333334,
+    "sem_ci": [
+     0.762312416836246,
+     0.8862984279370787
+    ],
+    "strict": 0.8260869565217391,
+    "layer_ok": 0.9130434782608695,
+    "schema_valid": 0.9637681159420289,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 2300.6,
+    "p95_ms": 3394.3050000000003,
+    "mean_tokens": 3423.4927536231885,
+    "mean_cost_units": 3968.2753623188405
+   },
+   "rows": 160,
+   "reps_per_row": 2.99,
+   "rep_acc": [
+    0.8938,
+    0.8165,
+    0.8875
+   ],
+   "row_consistency": 0.7875,
+   "adversarial_executed_rate": 0.17582417582417584
+  },
+  "cascade:shipfast>gpt-realtime:vad350:shipped": {
+   "n": 478,
+   "all": {
+    "n": 478,
+    "sem": 0.8535564853556485,
+    "sem_ci": [
+     0.8190434850832056,
+     0.8824318545304766
+    ],
+    "strict": 0.7824267782426778,
+    "layer_ok": 0.897489539748954,
+    "schema_valid": 0.9811715481171548,
+    "unsafe": 0.006276150627615063,
+    "error_rate": 0.0,
+    "p50_ms": 1927.15,
+    "p95_ms": 3112.4849999999997,
+    "mean_tokens": 2810.928870292887,
+    "mean_cost_units": 3149.4330543933056
+   },
+   "adversarial": {
+    "n": 91,
+    "sem": 0.8241758241758241,
+    "sem_ci": [
+     0.7333142298436154,
+     0.888775654763983
+    ],
+    "strict": 0.8241758241758241,
+    "layer_ok": 0.8241758241758241,
+    "schema_valid": 1.0,
+    "unsafe": 0.03296703296703297,
+    "error_rate": 0.0,
+    "p50_ms": 1695.5,
+    "p95_ms": 2237.5,
+    "mean_tokens": 2701.2087912087914,
+    "mean_cost_units": 2998.5164835164837
+   },
+   "emergency": {
+    "n": 69,
+    "sem": 0.9565217391304348,
+    "sem_ci": [
+     0.8797860261535664,
+     0.9851043661497328
+    ],
+    "strict": 0.5362318840579711,
+    "layer_ok": 0.9710144927536232,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1720.4,
+    "p95_ms": 3994.9199999999923,
+    "mean_tokens": 1991.231884057971,
+    "mean_cost_units": 2160.478260869565
+   },
+   "macro": {
+    "n": 81,
+    "sem": 0.7530864197530864,
+    "sem_ci": [
+     0.6491553720865342,
+     0.8340981261973265
+    ],
+    "strict": 0.7530864197530864,
+    "layer_ok": 0.8148148148148148,
+    "schema_valid": 0.9506172839506173,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1911.7,
+    "p95_ms": 2381.3,
+    "mean_tokens": 3364.962962962963,
+    "mean_cost_units": 3695.5185185185187
+   },
+   "micro": {
+    "n": 99,
+    "sem": 0.9191919191919192,
+    "sem_ci": [
+     0.848580306634685,
+     0.958486094510377
+    ],
+    "strict": 0.8787878787878788,
+    "layer_ok": 0.9595959595959596,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1858.3,
+    "p95_ms": 2907.2399999999984,
+    "mean_tokens": 2277.89898989899,
+    "mean_cost_units": 2501.282828282828
+   },
+   "operation": {
+    "n": 138,
+    "sem": 0.8333333333333334,
+    "sem_ci": [
+     0.762312416836246,
+     0.8862984279370787
+    ],
+    "strict": 0.8260869565217391,
+    "layer_ok": 0.9130434782608695,
+    "schema_valid": 0.9637681159420289,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 2300.6,
+    "p95_ms": 3394.3050000000003,
+    "mean_tokens": 3350.3260869565215,
+    "mean_cost_units": 3887.876811594203
+   },
+   "rows": 160,
+   "reps_per_row": 2.99,
+   "rep_acc": [
+    0.8625,
+    0.8165,
+    0.8812
+   ],
+   "row_consistency": 0.78125,
+   "adversarial_executed_rate": 0.17582417582417584
+  },
+  "cascade:veto:gpt-realtime:vad350:shipped+gemini:shipped": {
+   "n": 478,
+   "all": {
+    "n": 478,
+    "sem": 0.8117154811715481,
+    "sem_ci": [
+     0.7742348466129213,
+     0.8442256599103843
+    ],
+    "strict": 0.7364016736401674,
+    "layer_ok": 0.8451882845188284,
+    "schema_valid": 0.9811715481171548,
+    "unsafe": 0.0041841004184100415,
+    "error_rate": 0.0,
+    "p50_ms": 3621.5,
+    "p95_ms": 4854.405,
+    "mean_tokens": 3108.682008368201,
+    "mean_cost_units": 5868.94560669456
+   },
+   "adversarial": {
+    "n": 91,
+    "sem": 0.9230769230769231,
+    "sem_ci": [
+     0.8496390398894708,
+     0.9622409790051917
+    ],
+    "strict": 0.9230769230769231,
+    "layer_ok": 0.9230769230769231,
+    "schema_valid": 1.0,
+    "unsafe": 0.02197802197802198,
+    "error_rate": 0.0,
+    "p50_ms": 3532.2000000000003,
+    "p95_ms": 4337.299999999999,
+    "mean_tokens": 2466.2417582417584,
+    "mean_cost_units": 5735.2307692307695
+   },
+   "emergency": {
+    "n": 69,
+    "sem": 0.9130434782608695,
+    "sem_ci": [
+     0.8229829488715114,
+     0.9595369298790926
+    ],
+    "strict": 0.5217391304347826,
+    "layer_ok": 0.927536231884058,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 3522.7,
+    "p95_ms": 5318.34,
+    "mean_tokens": 3281.550724637681,
+    "mean_cost_units": 5703.724637681159
+   },
+   "macro": {
+    "n": 81,
+    "sem": 0.7037037037037037,
+    "sem_ci": [
+     0.5968782993287417,
+     0.792081833436317
+    ],
+    "strict": 0.7037037037037037,
+    "layer_ok": 0.7530864197530864,
+    "schema_valid": 0.9506172839506173,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 3588.3,
+    "p95_ms": 4421.0,
+    "mean_tokens": 3206.7283950617284,
+    "mean_cost_units": 5713.271604938272
+   },
+   "micro": {
+    "n": 99,
+    "sem": 0.7676767676767676,
+    "sem_ci": [
+     0.6754456673730281,
+     0.8399099863702041
+    ],
+    "strict": 0.6868686868686869,
+    "layer_ok": 0.7878787878787878,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 3833.0,
+    "p95_ms": 5394.679999999999,
+    "mean_tokens": 3166.2727272727275,
+    "mean_cost_units": 5735.49494949495
+   },
+   "operation": {
+    "n": 138,
+    "sem": 0.782608695652174,
+    "sem_ci": [
+     0.7066435171434168,
+     0.843265677338315
+    ],
+    "strict": 0.7753623188405797,
+    "layer_ok": 0.8478260869565217,
+    "schema_valid": 0.9637681159420289,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 3681.3,
+    "p95_ms": 4530.705,
+    "mean_tokens": 3347.021739130435,
+    "mean_cost_units": 6226.840579710145
+   },
+   "rows": 160,
+   "reps_per_row": 2.99,
+   "rep_acc": [
+    0.825,
+    0.7342,
+    0.875
+   ],
+   "row_consistency": 0.725,
+   "adversarial_executed_rate": 0.07692307692307693
+  },
+  "cascade:ext>veto:gpt-realtime:vad350:shipped+gemini:shipped": {
+   "n": 478,
+   "all": {
+    "n": 478,
+    "sem": 0.8389121338912134,
+    "sem_ci": [
+     0.8032748893062475,
+     0.8691452587258031
+    ],
+    "strict": 0.7928870292887029,
+    "layer_ok": 0.8661087866108786,
+    "schema_valid": 0.9811715481171548,
+    "unsafe": 0.0041841004184100415,
+    "error_rate": 0.0,
+    "p50_ms": 3334.0,
+    "p95_ms": 4464.155,
+    "mean_tokens": 2178.148535564854,
+    "mean_cost_units": 4178.0251046025105
+   },
+   "adversarial": {
+    "n": 91,
+    "sem": 0.9230769230769231,
+    "sem_ci": [
+     0.8496390398894708,
+     0.9622409790051917
+    ],
+    "strict": 0.9230769230769231,
+    "layer_ok": 0.9230769230769231,
+    "schema_valid": 1.0,
+    "unsafe": 0.02197802197802198,
+    "error_rate": 0.0,
+    "p50_ms": 3532.2000000000003,
+    "p95_ms": 4337.299999999999,
+    "mean_tokens": 2466.2417582417584,
+    "mean_cost_units": 5735.2307692307695
+   },
+   "emergency": {
+    "n": 69,
+    "sem": 0.9130434782608695,
+    "sem_ci": [
+     0.8229829488715114,
+     0.9595369298790926
+    ],
+    "strict": 0.6376811594202898,
+    "layer_ok": 0.927536231884058,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1617.1,
+    "p95_ms": 4675.039999999997,
+    "mean_tokens": 759.8985507246376,
+    "mean_cost_units": 1239.072463768116
+   },
+   "macro": {
+    "n": 81,
+    "sem": 0.7777777777777778,
+    "sem_ci": [
+     0.6758450977587792,
+     0.8545550832844826
+    ],
+    "strict": 0.7777777777777778,
+    "layer_ok": 0.8024691358024691,
+    "schema_valid": 0.9506172839506173,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 2040.3,
+    "p95_ms": 4105.9,
+    "mean_tokens": 1784.5925925925926,
+    "mean_cost_units": 3108.543209876543
+   },
+   "micro": {
+    "n": 99,
+    "sem": 0.8383838383838383,
+    "sem_ci": [
+     0.7534859492631247,
+     0.8980013866009613
+    ],
+    "strict": 0.8181818181818182,
+    "layer_ok": 0.8484848484848485,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 2058.1,
+    "p95_ms": 4550.499999999999,
+    "mean_tokens": 1594.4747474747476,
+    "mean_cost_units": 2814.121212121212
+   },
+   "operation": {
+    "n": 138,
+    "sem": 0.782608695652174,
+    "sem_ci": [
+     0.7066435171434168,
+     0.843265677338315
+    ],
+    "strict": 0.7753623188405797,
+    "layer_ok": 0.8478260869565217,
+    "schema_valid": 0.9637681159420289,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 3681.3,
+    "p95_ms": 4530.705,
+    "mean_tokens": 3347.021739130435,
+    "mean_cost_units": 6226.840579710145
+   },
+   "rows": 160,
+   "reps_per_row": 2.99,
+   "rep_acc": [
+    0.8688,
+    0.7532,
+    0.8938
+   ],
+   "row_consistency": 0.725,
+   "adversarial_executed_rate": 0.07692307692307693
+  },
+  "cascade:shipfast>veto:gpt-realtime:vad350:shipped+gemini:shipped": {
+   "n": 478,
+   "all": {
+    "n": 478,
+    "sem": 0.8221757322175732,
+    "sem_ci": [
+     0.7853691840685547,
+     0.8538450307273451
+    ],
+    "strict": 0.7594142259414226,
+    "layer_ok": 0.8556485355648535,
+    "schema_valid": 0.9811715481171548,
+    "unsafe": 0.0041841004184100415,
+    "error_rate": 0.0,
+    "p50_ms": 3507.8,
+    "p95_ms": 4594.214999999999,
+    "mean_tokens": 2595.5627615062763,
+    "mean_cost_units": 4854.125523012553
+   },
+   "adversarial": {
+    "n": 91,
+    "sem": 0.9230769230769231,
+    "sem_ci": [
+     0.8496390398894708,
+     0.9622409790051917
+    ],
+    "strict": 0.9230769230769231,
+    "layer_ok": 0.9230769230769231,
+    "schema_valid": 1.0,
+    "unsafe": 0.02197802197802198,
+    "error_rate": 0.0,
+    "p50_ms": 3364.1000000000004,
+    "p95_ms": 4306.2,
+    "mean_tokens": 2029.7362637362637,
+    "mean_cost_units": 4544.8351648351645
+   },
+   "emergency": {
+    "n": 69,
+    "sem": 0.9130434782608695,
+    "sem_ci": [
+     0.8229829488715114,
+     0.9595369298790926
+    ],
+    "strict": 0.5217391304347826,
+    "layer_ok": 0.927536231884058,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 3016.5,
+    "p95_ms": 5230.419999999998,
+    "mean_tokens": 1924.4782608695652,
+    "mean_cost_units": 3306.0289855072465
+   },
+   "macro": {
+    "n": 81,
+    "sem": 0.7037037037037037,
+    "sem_ci": [
+     0.5968782993287417,
+     0.792081833436317
+    ],
+    "strict": 0.7037037037037037,
+    "layer_ok": 0.7530864197530864,
+    "schema_valid": 0.9506172839506173,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 3588.3,
+    "p95_ms": 4421.0,
+    "mean_tokens": 3206.7283950617284,
+    "mean_cost_units": 5713.271604938272
+   },
+   "micro": {
+    "n": 99,
+    "sem": 0.8181818181818182,
+    "sem_ci": [
+     0.7308102684012943,
+     0.8817823011425481
+    ],
+    "strict": 0.797979797979798,
+    "layer_ok": 0.8383838383838383,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 3309.2,
+    "p95_ms": 5049.85,
+    "mean_tokens": 2137.848484848485,
+    "mean_cost_units": 3785.313131313131
+   },
+   "operation": {
+    "n": 138,
+    "sem": 0.782608695652174,
+    "sem_ci": [
+     0.7066435171434168,
+     0.843265677338315
+    ],
+    "strict": 0.7753623188405797,
+    "layer_ok": 0.8478260869565217,
+    "schema_valid": 0.9637681159420289,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 3665.05,
+    "p95_ms": 4530.705,
+    "mean_tokens": 3273.855072463768,
+    "mean_cost_units": 6094.601449275362
+   },
+   "rows": 160,
+   "reps_per_row": 2.99,
+   "rep_acc": [
+    0.8313,
+    0.7532,
+    0.8812
+   ],
+   "row_consistency": 0.74375,
+   "adversarial_executed_rate": 0.07692307692307693
+  },
+  "cascade:ext>gpt-realtime:vad350:shipped_fewshot": {
+   "n": 479,
+   "all": {
+    "n": 479,
+    "sem": 0.8914405010438413,
+    "sem_ci": [
+     0.8604037432803762,
+     0.9162484755839471
+    ],
+    "strict": 0.837160751565762,
+    "layer_ok": 0.9227557411273486,
+    "schema_valid": 0.9832985386221295,
+    "unsafe": 0.0041753653444676405,
+    "error_rate": 0.0,
+    "p50_ms": 1893.2,
+    "p95_ms": 2697.679999999999,
+    "mean_tokens": 2905.490605427975,
+    "mean_cost_units": 3208.3173277661795
+   },
+   "adversarial": {
+    "n": 93,
+    "sem": 0.8279569892473119,
+    "sem_ci": [
+     0.7386593031568491,
+     0.8912352875975375
+    ],
+    "strict": 0.8279569892473119,
+    "layer_ok": 0.8279569892473119,
+    "schema_valid": 0.989247311827957,
+    "unsafe": 0.021505376344086023,
+    "error_rate": 0.0,
+    "p50_ms": 1819.0,
+    "p95_ms": 2301.14,
+    "mean_tokens": 3889.8172043010754,
+    "mean_cost_units": 4242.096774193548
+   },
+   "emergency": {
+    "n": 69,
+    "sem": 0.9710144927536232,
+    "sem_ci": [
+     0.9003322653873425,
+     0.9920149647668551
+    ],
+    "strict": 0.7101449275362319,
+    "layer_ok": 0.9710144927536232,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1543.2,
+    "p95_ms": 2097.5399999999995,
+    "mean_tokens": 1235.8985507246377,
+    "mean_cost_units": 1325.768115942029
+   },
+   "macro": {
+    "n": 81,
+    "sem": 0.9012345679012346,
+    "sem_ci": [
+     0.8170331024146836,
+     0.9491004924255834
+    ],
+    "strict": 0.8641975308641975,
+    "layer_ok": 0.9259259259259259,
+    "schema_valid": 0.9876543209876543,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1806.5,
+    "p95_ms": 2269.9,
+    "mean_tokens": 2356.4074074074074,
+    "mean_cost_units": 2566.3086419753085
+   },
+   "micro": {
+    "n": 99,
+    "sem": 0.9090909090909091,
+    "sem_ci": [
+     0.8361842304768151,
+     0.9514347875081247
+    ],
+    "strict": 0.8787878787878788,
+    "layer_ok": 0.9393939393939394,
+    "schema_valid": 0.9797979797979798,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1772.1,
+    "p95_ms": 3294.629999999999,
+    "mean_tokens": 2162.151515151515,
+    "mean_cost_units": 2346.717171717172
+   },
+   "operation": {
+    "n": 137,
+    "sem": 0.8759124087591241,
+    "sem_ci": [
+     0.8102535920218157,
+     0.9210644276541893
+    ],
+    "strict": 0.8613138686131386,
+    "layer_ok": 0.948905109489051,
+    "schema_valid": 0.9708029197080292,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 2224.0,
+    "p95_ms": 3306.7,
+    "mean_tokens": 3939.985401459854,
+    "mean_cost_units": 4456.8978102189785
+   },
+   "rows": 160,
+   "reps_per_row": 2.99,
+   "rep_acc": [
+    0.9313,
+    0.8491,
+    0.8938
+   ],
+   "row_consistency": 0.8125,
+   "adversarial_executed_rate": 0.17204301075268819
+  },
+  "cascade:shipfast>gpt-realtime:vad350:shipped_fewshot": {
+   "n": 479,
+   "all": {
+    "n": 479,
+    "sem": 0.8830897703549061,
+    "sem_ci": [
+     0.851219793336361,
+     0.9088638448588567
+    ],
+    "strict": 0.8204592901878914,
+    "layer_ok": 0.9164926931106472,
+    "schema_valid": 0.9832985386221295,
+    "unsafe": 0.0041753653444676405,
+    "error_rate": 0.0,
+    "p50_ms": 1909.5,
+    "p95_ms": 2697.679999999999,
+    "mean_tokens": 3302.956158663883,
+    "mean_cost_units": 3637.0835073068893
+   },
+   "adversarial": {
+    "n": 93,
+    "sem": 0.8387096774193549,
+    "sem_ci": [
+     0.7507967733749074,
+     0.8997500990435575
+    ],
+    "strict": 0.8387096774193549,
+    "layer_ok": 0.8387096774193549,
+    "schema_valid": 0.989247311827957,
+    "unsafe": 0.021505376344086023,
+    "error_rate": 0.0,
+    "p50_ms": 1799.5,
+    "p95_ms": 2301.14,
+    "mean_tokens": 3222.6559139784945,
+    "mean_cost_units": 3525.2795698924733
+   },
+   "emergency": {
+    "n": 69,
+    "sem": 0.9710144927536232,
+    "sem_ci": [
+     0.9003322653873425,
+     0.9920149647668551
+    ],
+    "strict": 0.6521739130434783,
+    "layer_ok": 0.9710144927536232,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1694.7,
+    "p95_ms": 2097.5399999999995,
+    "mean_tokens": 2414.1014492753625,
+    "mean_cost_units": 2584.8260869565215
+   },
+   "macro": {
+    "n": 81,
+    "sem": 0.8518518518518519,
+    "sem_ci": [
+     0.7586664574880995,
+     0.9131737718333655
+    ],
+    "strict": 0.8148148148148148,
+    "layer_ok": 0.8888888888888888,
+    "schema_valid": 0.9876543209876543,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1922.1,
+    "p95_ms": 2306.9,
+    "mean_tokens": 3892.8024691358023,
+    "mean_cost_units": 4228.876543209876
+   },
+   "micro": {
+    "n": 99,
+    "sem": 0.898989898989899,
+    "sem_ci": [
+     0.8239677083435178,
+     0.9442039264813002
+    ],
+    "strict": 0.8686868686868687,
+    "layer_ok": 0.9292929292929293,
+    "schema_valid": 0.9797979797979798,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1814.2,
+    "p95_ms": 3294.629999999999,
+    "mean_tokens": 2751.5555555555557,
+    "mean_cost_units": 2984.343434343434
+   },
+   "operation": {
+    "n": 137,
+    "sem": 0.8759124087591241,
+    "sem_ci": [
+     0.8102535920218157,
+     0.9210644276541893
+    ],
+    "strict": 0.8613138686131386,
+    "layer_ok": 0.948905109489051,
+    "schema_valid": 0.9708029197080292,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 2224.0,
+    "p95_ms": 3306.7,
+    "mean_tokens": 3854.8540145985403,
+    "mean_cost_units": 4364.744525547445
+   },
+   "rows": 160,
+   "reps_per_row": 2.99,
+   "rep_acc": [
+    0.9125,
+    0.8491,
+    0.8875
+   ],
+   "row_consistency": 0.81875,
+   "adversarial_executed_rate": 0.16129032258064516
+  },
+  "cascade:veto:gpt-realtime:vad350:shipped_fewshot+gemini:shipped_fewshot": {
+   "n": 479,
+   "all": {
+    "n": 479,
+    "sem": 0.8496868475991649,
+    "sem_ci": [
+     0.8149061656833638,
+     0.8789031498354316
+    ],
+    "strict": 0.7849686847599165,
+    "layer_ok": 0.8768267223382046,
+    "schema_valid": 0.9832985386221295,
+    "unsafe": 0.0041753653444676405,
+    "error_rate": 0.0,
+    "p50_ms": 3346.6,
+    "p95_ms": 4164.2,
+    "mean_tokens": 3666.9060542797497,
+    "mean_cost_units": 6626.76617954071
+   },
+   "adversarial": {
+    "n": 93,
+    "sem": 0.9139784946236559,
+    "sem_ci": [
+     0.8393453815534051,
+     0.9557674625136073
+    ],
+    "strict": 0.9139784946236559,
+    "layer_ok": 0.9139784946236559,
+    "schema_valid": 0.989247311827957,
+    "unsafe": 0.021505376344086023,
+    "error_rate": 0.0,
+    "p50_ms": 3325.5,
+    "p95_ms": 3860.94,
+    "mean_tokens": 3099.2688172043013,
+    "mean_cost_units": 6397.1505376344085
+   },
+   "emergency": {
+    "n": 69,
+    "sem": 0.9420289855072463,
+    "sem_ci": [
+     0.8602055747557682,
+     0.9772279796966323
+    ],
+    "strict": 0.6521739130434783,
+    "layer_ok": 0.9420289855072463,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 3227.7,
+    "p95_ms": 3983.14,
+    "mean_tokens": 3822.855072463768,
+    "mean_cost_units": 6485.492753623188
+   },
+   "macro": {
+    "n": 81,
+    "sem": 0.7901234567901234,
+    "sem_ci": [
+     0.6893441473231284,
+     0.8646293750998338
+    ],
+    "strict": 0.7530864197530864,
+    "layer_ok": 0.8148148148148148,
+    "schema_valid": 0.9876543209876543,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 3341.3,
+    "p95_ms": 3825.2,
+    "mean_tokens": 3736.5308641975307,
+    "mean_cost_units": 6535.086419753086
+   },
+   "micro": {
+    "n": 99,
+    "sem": 0.797979797979798,
+    "sem_ci": [
+     0.7084540803773877,
+     0.8652437228462106
+    ],
+    "strict": 0.7373737373737373,
+    "layer_ok": 0.8181818181818182,
+    "schema_valid": 0.9797979797979798,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 3404.9,
+    "p95_ms": 4450.329999999999,
+    "mean_tokens": 3739.4242424242425,
+    "mean_cost_units": 6552.111111111111
+   },
+   "operation": {
+    "n": 137,
+    "sem": 0.8321167883211679,
+    "sem_ci": [
+     0.7606682056250906,
+     0.8854477146711854
+    ],
+    "strict": 0.8175182481751825,
+    "layer_ok": 0.8978102189781022,
+    "schema_valid": 0.9708029197080292,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 3410.8999999999996,
+    "p95_ms": 4404.859999999999,
+    "mean_tokens": 3880.124087591241,
+    "mean_cost_units": 6961.941605839416
+   },
+   "rows": 160,
+   "reps_per_row": 2.99,
+   "rep_acc": [
+    0.8625,
+    0.7987,
+    0.8875
+   ],
+   "row_consistency": 0.78125,
+   "adversarial_executed_rate": 0.08602150537634409
+  },
+  "cascade:ext>veto:gpt-realtime:vad350:shipped_fewshot+gemini:shipped_fewshot": {
+   "n": 479,
+   "all": {
+    "n": 479,
+    "sem": 0.8747390396659708,
+    "sem_ci": [
+     0.8420816297189087,
+     0.9014334278072036
+    ],
+    "strict": 0.826722338204593,
+    "layer_ok": 0.8977035490605428,
+    "schema_valid": 0.9832985386221295,
+    "unsafe": 0.0041753653444676405,
+    "error_rate": 0.0,
+    "p50_ms": 3146.8,
+    "p95_ms": 3997.67,
+    "mean_tokens": 2684.453027139875,
+    "mean_cost_units": 4815.8580375782885
+   },
+   "adversarial": {
+    "n": 93,
+    "sem": 0.9139784946236559,
+    "sem_ci": [
+     0.8393453815534051,
+     0.9557674625136073
+    ],
+    "strict": 0.9139784946236559,
+    "layer_ok": 0.9139784946236559,
+    "schema_valid": 0.989247311827957,
+    "unsafe": 0.021505376344086023,
+    "error_rate": 0.0,
+    "p50_ms": 3325.5,
+    "p95_ms": 3860.94,
+    "mean_tokens": 3099.2688172043013,
+    "mean_cost_units": 6397.1505376344085
+   },
+   "emergency": {
+    "n": 69,
+    "sem": 0.9420289855072463,
+    "sem_ci": [
+     0.8602055747557682,
+     0.9772279796966323
+    ],
+    "strict": 0.7101449275362319,
+    "layer_ok": 0.9420289855072463,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1552.3,
+    "p95_ms": 3652.5799999999995,
+    "mean_tokens": 1186.072463768116,
+    "mean_cost_units": 1740.159420289855
+   },
+   "macro": {
+    "n": 81,
+    "sem": 0.8641975308641975,
+    "sem_ci": [
+     0.7729674087144436,
+     0.9224461619867218
+    ],
+    "strict": 0.8271604938271605,
+    "layer_ok": 0.8765432098765432,
+    "schema_valid": 0.9876543209876543,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 2009.1,
+    "p95_ms": 3693.6,
+    "mean_tokens": 2228.358024691358,
+    "mean_cost_units": 3721.0
+   },
+   "micro": {
+    "n": 99,
+    "sem": 0.8585858585858586,
+    "sem_ci": [
+     0.7765261713095186,
+     0.9138559308748114
+    ],
+    "strict": 0.8383838383838383,
+    "layer_ok": 0.8686868686868687,
+    "schema_valid": 0.9797979797979798,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 2000.0,
+    "p95_ms": 4026.27,
+    "mean_tokens": 2057.656565656566,
+    "mean_cost_units": 3400.030303030303
+   },
+   "operation": {
+    "n": 137,
+    "sem": 0.8321167883211679,
+    "sem_ci": [
+     0.7606682056250906,
+     0.8854477146711854
+    ],
+    "strict": 0.8175182481751825,
+    "layer_ok": 0.8978102189781022,
+    "schema_valid": 0.9708029197080292,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 3410.8999999999996,
+    "p95_ms": 4404.859999999999,
+    "mean_tokens": 3880.124087591241,
+    "mean_cost_units": 6961.941605839416
+   },
+   "rows": 160,
+   "reps_per_row": 2.99,
+   "rep_acc": [
+    0.9,
+    0.8176,
+    0.9062
+   ],
+   "row_consistency": 0.78125,
+   "adversarial_executed_rate": 0.08602150537634409
+  },
+  "cascade:shipfast>veto:gpt-realtime:vad350:shipped_fewshot+gemini:shipped_fewshot": {
+   "n": 479,
+   "all": {
+    "n": 479,
+    "sem": 0.860125260960334,
+    "sem_ci": [
+     0.8261887750207719,
+     0.8883312663344055
+    ],
+    "strict": 0.8037578288100209,
+    "layer_ok": 0.8851774530271399,
+    "schema_valid": 0.9832985386221295,
+    "unsafe": 0.0041753653444676405,
+    "error_rate": 0.0,
+    "p50_ms": 3281.3,
+    "p95_ms": 4085.3899999999985,
+    "mean_tokens": 3115.3632567849686,
+    "mean_cost_units": 5539.617954070981
+   },
+   "adversarial": {
+    "n": 93,
+    "sem": 0.9139784946236559,
+    "sem_ci": [
+     0.8393453815534051,
+     0.9557674625136073
+    ],
+    "strict": 0.9139784946236559,
+    "layer_ok": 0.9139784946236559,
+    "schema_valid": 0.989247311827957,
+    "unsafe": 0.021505376344086023,
+    "error_rate": 0.0,
+    "p50_ms": 3155.5,
+    "p95_ms": 3740.26,
+    "mean_tokens": 2628.94623655914,
+    "mean_cost_units": 5184.10752688172
+   },
+   "emergency": {
+    "n": 69,
+    "sem": 0.9420289855072463,
+    "sem_ci": [
+     0.8602055747557682,
+     0.9772279796966323
+    ],
+    "strict": 0.6521739130434783,
+    "layer_ok": 0.9420289855072463,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1982.1,
+    "p95_ms": 3906.879999999999,
+    "mean_tokens": 2364.2753623188405,
+    "mean_cost_units": 3863.782608695652
+   },
+   "macro": {
+    "n": 81,
+    "sem": 0.7901234567901234,
+    "sem_ci": [
+     0.6893441473231284,
+     0.8646293750998338
+    ],
+    "strict": 0.7530864197530864,
+    "layer_ok": 0.8148148148148148,
+    "schema_valid": 0.9876543209876543,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 3341.3,
+    "p95_ms": 3825.2,
+    "mean_tokens": 3736.5308641975307,
+    "mean_cost_units": 6535.086419753086
+   },
+   "micro": {
+    "n": 99,
+    "sem": 0.8484848484848485,
+    "sem_ci": [
+     0.7649571422359812,
+     0.905977576788227
+    ],
+    "strict": 0.8282828282828283,
+    "layer_ok": 0.8585858585858586,
+    "schema_valid": 0.9797979797979798,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 3146.8,
+    "p95_ms": 4136.59,
+    "mean_tokens": 2647.060606060606,
+    "mean_cost_units": 4473.676767676768
+   },
+   "operation": {
+    "n": 137,
+    "sem": 0.8321167883211679,
+    "sem_ci": [
+     0.7606682056250906,
+     0.8854477146711854
+    ],
+    "strict": 0.8175182481751825,
+    "layer_ok": 0.8978102189781022,
+    "schema_valid": 0.9708029197080292,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 3387.2,
+    "p95_ms": 4404.859999999999,
+    "mean_tokens": 3794.992700729927,
+    "mean_cost_units": 6806.700729927007
+   },
+   "rows": 160,
+   "reps_per_row": 2.99,
+   "rep_acc": [
+    0.875,
+    0.8113,
+    0.8938
+   ],
+   "row_consistency": 0.7875,
+   "adversarial_executed_rate": 0.08602150537634409
+  },
+  "cascade:ext>sol:shipped_fewshot": {
+   "n": 140,
+   "all": {
+    "n": 140,
+    "sem": 0.8571428571428571,
+    "sem_ci": [
+     0.7896283632688841,
+     0.9055808112675504
+    ],
+    "strict": 0.7857142857142857,
+    "layer_ok": 0.8785714285714286,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 8607.25,
+    "p95_ms": 22058.35999999998,
+    "mean_tokens": 2789.2,
+    "mean_cost_units": 2967.614285714286
+   },
+   "adversarial": {
+    "n": 25,
+    "sem": 0.96,
+    "sem_ci": [
+     0.8045552759497747,
+     0.9929039496133009
+    ],
+    "strict": 0.96,
+    "layer_ok": 0.96,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 12201.300000000001,
+    "p95_ms": 18985.219999999994,
+    "mean_tokens": 4311.84,
+    "mean_cost_units": 4541.52
+   },
+   "emergency": {
+    "n": 20,
+    "sem": 0.95,
+    "sem_ci": [
+     0.7638641064874331,
+     0.9911187805671267
+    ],
+    "strict": 0.65,
+    "layer_ok": 0.95,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1793.0,
+    "p95_ms": 7532.100000000012,
+    "mean_tokens": 669.75,
+    "mean_cost_units": 694.2
+   },
+   "macro": {
+    "n": 25,
+    "sem": 0.92,
+    "sem_ci": [
+     0.7503348787704218,
+     0.977780066308908
+    ],
+    "strict": 0.92,
+    "layer_ok": 0.92,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 1698.6,
+    "p95_ms": 23002.59999999997,
+    "mean_tokens": 1715.12,
+    "mean_cost_units": 1803.08
+   },
+   "micro": {
+    "n": 27,
+    "sem": 0.8518518518518519,
+    "sem_ci": [
+     0.6752093665317053,
+     0.9408416814035511
+    ],
+    "strict": 0.8518518518518519,
+    "layer_ok": 0.8518518518518519,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 2221.8,
+    "p95_ms": 18101.859999999997,
+    "mean_tokens": 1433.6296296296296,
+    "mean_cost_units": 1514.0740740740741
+   },
+   "operation": {
+    "n": 43,
+    "sem": 0.7209302325581395,
+    "sem_ci": [
+     0.5730868709987059,
+     0.8325354817817284
+    ],
+    "strict": 0.627906976744186,
+    "layer_ok": 0.7906976744186046,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "error_rate": 0.0,
+    "p50_ms": 13916.3,
+    "p95_ms": 21990.030000000002,
+    "mean_tokens": 4365.372093023256,
+    "mean_cost_units": 4699.697674418605
+   },
+   "rows": 140,
+   "reps_per_row": 1.0,
+   "rep_acc": [
+    0.8571
+   ],
+   "row_consistency": null,
+   "adversarial_executed_rate": 0.04
+  }
+ },
+ "routing_policy": {
+  "name": "ext_rules fast path, else shipped-schema Realtime (server_vad 350 ms) with few-shot instructions",
+  "chosen_config": "cascade:ext>gpt-realtime:vad350:shipped_fewshot",
+  "evidence": "160 rows x 3 reps (n=479 calls), shipped realtime_intent schema + web_gui handler emulation, REAL ASR text for the fast path, ephemeral-secret path with 429 backoff (see infra)",
+  "selection_rule": "eligible: unsafe<=2% and error<=5% and p95<=tier budget (emergency 3s, micro 5s, others 8s); best = max exact-semantic accuracy; tie band 2pp; pick min p95 then p50. Selection is over deployable pipelines only (realtime audio alone and cascades); transcript-only text models are reported but not selectable because they need an ASR first.",
+  "steps": [
+   {
+    "step": 1,
+    "id": "deterministic_fast_path",
+    "input": "real ASR transcript (realtime input transcription, gpt-4o-mini-transcribe)",
+    "impl": "scripts/bench/fastpath.py:ext_rules (NOT shipped yet; superset of web_gui emergency regex + realtime_intent.match_micro_fast_path with research/expand/production and single-flag emergency)",
+    "on_hit": "execute without waiting for the model call; cancel/ignore the realtime response",
+    "measured_on_real_asr": {
+     "coverage": 0.3245192307692308,
+     "precision": 1.0,
+     "answered": 135,
+     "tier_pr": {
+      "micro": {
+       "n": 86,
+       "answered": 48,
+       "correct": 48,
+       "recall": 0.5581395348837209,
+       "precision": 1.0
+      },
+      "emergency": {
+       "n": 62,
+       "answered": 52,
+       "correct": 52,
+       "recall": 0.8387096774193549,
+       "precision": 1.0
+      },
+      "operation": {
+       "n": 122,
+       "answered": 0,
+       "correct": 0,
+       "recall": 0.0,
+       "precision": null
+      },
+      "macro": {
+       "n": 69,
+       "answered": 35,
+       "correct": 35,
+       "recall": 0.5072463768115942,
+       "precision": 1.0
+      },
+      "adversarial": {
+       "n": 77,
+       "answered": 0,
+       "correct": 0,
+       "recall": 0.0,
+       "precision": null
+      }
+     }
+    },
+    "measured_on_gold_text": {
+     "coverage": 0.4125,
+     "precision": 1.0,
+     "answered": 198,
+     "tier_pr": {
+      "micro": {
+       "n": 99,
+       "answered": 81,
+       "correct": 81,
+       "recall": 0.8181818181818182,
+       "precision": 1.0
+      },
+      "emergency": {
+       "n": 69,
+       "answered": 63,
+       "correct": 63,
+       "recall": 0.9130434782608695,
+       "precision": 1.0
+      },
+      "operation": {
+       "n": 138,
+       "answered": 0,
+       "correct": 0,
+       "recall": 0.0,
+       "precision": null
+      },
+      "macro": {
+       "n": 81,
+       "answered": 54,
+       "correct": 54,
+       "recall": 0.6666666666666666,
+       "precision": 1.0
+      },
+      "adversarial": {
+       "n": 93,
+       "answered": 0,
+       "correct": 0,
+       "recall": 0.0,
+       "precision": null
+      }
+     }
+    }
+   },
+   {
+    "step": 2,
+    "id": "realtime_proposer",
+    "model": "gpt-realtime",
+    "session": "realtime_intent._session_body (server_vad 350 ms, transcription on) + build_realtime_instructions() + few-shot examples (shipped_schema.FEWSHOT_EXAMPLES)",
+    "tool": "realtime_intent.build_submit_command_tool()",
+    "tool_choice": "required",
+    "handler": "web_gui._handle_realtime_intent unchanged (emergency regex override, classify_tier, negation guards, lowering)",
+    "measured_alone": {
+     "n": 479,
+     "sem": 0.872651356993737,
+     "sem_ci": [
+      0.8398037783483229,
+      0.899569134010513
+     ],
+     "p50_ms": 1956.6,
+     "p95_ms": 2729.979999999999,
+     "schema_valid": 0.9832985386221295,
+     "unsafe": 0.0041753653444676405,
+     "strict": 0.8016701461377871
+    }
+   }
+  ],
+  "measured": {
+   "all": {
+    "n": 479,
+    "sem": 0.8914405010438413,
+    "sem_ci": [
+     0.8604037432803762,
+     0.9162484755839471
+    ],
+    "p50_ms": 1893.2,
+    "p95_ms": 2697.679999999999,
+    "schema_valid": 0.9832985386221295,
+    "unsafe": 0.0041753653444676405,
+    "strict": 0.837160751565762
+   },
+   "micro": {
+    "n": 99,
+    "sem": 0.9090909090909091,
+    "sem_ci": [
+     0.8361842304768151,
+     0.9514347875081247
+    ],
+    "p50_ms": 1772.1,
+    "p95_ms": 3294.629999999999,
+    "schema_valid": 0.9797979797979798,
+    "unsafe": 0.0,
+    "strict": 0.8787878787878788
+   },
+   "emergency": {
+    "n": 69,
+    "sem": 0.9710144927536232,
+    "sem_ci": [
+     0.9003322653873425,
+     0.9920149647668551
+    ],
+    "p50_ms": 1543.2,
+    "p95_ms": 2097.5399999999995,
+    "schema_valid": 1.0,
+    "unsafe": 0.0,
+    "strict": 0.7101449275362319
+   },
+   "operation": {
+    "n": 137,
+    "sem": 0.8759124087591241,
+    "sem_ci": [
+     0.8102535920218157,
+     0.9210644276541893
+    ],
+    "p50_ms": 2224.0,
+    "p95_ms": 3306.7,
+    "schema_valid": 0.9708029197080292,
+    "unsafe": 0.0,
+    "strict": 0.8613138686131386
+   },
+   "macro": {
+    "n": 81,
+    "sem": 0.9012345679012346,
+    "sem_ci": [
+     0.8170331024146836,
+     0.9491004924255834
+    ],
+    "p50_ms": 1806.5,
+    "p95_ms": 2269.9,
+    "schema_valid": 0.9876543209876543,
+    "unsafe": 0.0,
+    "strict": 0.8641975308641975
+   },
+   "adversarial": {
+    "n": 93,
+    "sem": 0.8279569892473119,
+    "sem_ci": [
+     0.7386593031568491,
+     0.8912352875975375
+    ],
+    "p50_ms": 1819.0,
+    "p95_ms": 2301.14,
+    "schema_valid": 0.989247311827957,
+    "unsafe": 0.021505376344086023,
+    "strict": 0.8279569892473119
+   }
+  },
+  "slo": {
+   "p50_ms": 1893.2,
+   "p95_ms": 2697.679999999999,
+   "latency_definition": "end of speech (last audio sample sent, so the 350 ms VAD window is included) -> tool-call arguments; fast-path hits = measured ASR completion time + rule time; excludes secret minting"
+  },
+  "safety_option": {
+   "config": "cascade:ext>veto:gpt-realtime:vad350:shipped_fewshot+gemini:shipped_fewshot",
+   "when": "if adversarial/unsafe execution matters more than +1.2 s p50: add a parallel gemini-3.5-flash-lite text step on the ASR transcript that may only turn an executable answer into a clarification",
+   "measured": {
+    "all": {
+     "n": 479,
+     "sem": 0.8747390396659708,
+     "sem_ci": [
+      0.8420816297189087,
+      0.9014334278072036
+     ],
+     "p50_ms": 3146.8,
+     "p95_ms": 3997.67,
+     "schema_valid": 0.9832985386221295,
+     "unsafe": 0.0041753653444676405,
+     "strict": 0.826722338204593
+    },
+    "micro": {
+     "n": 99,
+     "sem": 0.8585858585858586,
+     "sem_ci": [
+      0.7765261713095186,
+      0.9138559308748114
+     ],
+     "p50_ms": 2000.0,
+     "p95_ms": 4026.27,
+     "schema_valid": 0.9797979797979798,
+     "unsafe": 0.0,
+     "strict": 0.8383838383838383
+    },
+    "emergency": {
+     "n": 69,
+     "sem": 0.9420289855072463,
+     "sem_ci": [
+      0.8602055747557682,
+      0.9772279796966323
+     ],
+     "p50_ms": 1552.3,
+     "p95_ms": 3652.5799999999995,
+     "schema_valid": 1.0,
+     "unsafe": 0.0,
+     "strict": 0.7101449275362319
+    },
+    "operation": {
+     "n": 137,
+     "sem": 0.8321167883211679,
+     "sem_ci": [
+      0.7606682056250906,
+      0.8854477146711854
+     ],
+     "p50_ms": 3410.8999999999996,
+     "p95_ms": 4404.859999999999,
+     "schema_valid": 0.9708029197080292,
+     "unsafe": 0.0,
+     "strict": 0.8175182481751825
+    },
+    "macro": {
+     "n": 81,
+     "sem": 0.8641975308641975,
+     "sem_ci": [
+      0.7729674087144436,
+      0.9224461619867218
+     ],
+     "p50_ms": 2009.1,
+     "p95_ms": 3693.6,
+     "schema_valid": 0.9876543209876543,
+     "unsafe": 0.0,
+     "strict": 0.8271604938271605
+    },
+    "adversarial": {
+     "n": 93,
+     "sem": 0.9139784946236559,
+     "sem_ci": [
+      0.8393453815534051,
+      0.9557674625136073
+     ],
+     "p50_ms": 3325.5,
+     "p95_ms": 3860.94,
+     "schema_valid": 0.989247311827957,
+     "unsafe": 0.021505376344086023,
+     "strict": 0.9139784946236559
+    }
+   }
+  },
+  "not_recommended": {
+   "gpt-5.6-sol text": "82.1% real-ASR / 1 rep, 140 rows / p50 10.8 s (+1.5 s ASR)",
+   "realtime shipped prompt as-is": "84.9% (86.6% with ext fast path)",
+   "shipped regex alone": "answers 12/160 rows (7.5%), 11 correct",
+   "gemini text alone on the shipped schema": "75.0% gold text / 68.3% real ASR, 14-17% of calls schema-invalid (invents ability names)"
+  },
+  "infra": {
+   "realtime_calls": 957,
+   "mint_http_429_total": 225,
+   "calls_that_hit_429": 75,
+   "mint_p50_ms": 476.20000000000005,
+   "mint_p95_ms": 1444.3499999999997,
+   "auth_modes": {
+    "direct_key": 717,
+    "mint": 240
+   },
+   "latency_includes_secret_minting": false,
+   "errors": {},
+   "asr_available_rate": 0.8881922675026124
+  },
+  "caveats": [
+   "synthetic TTS speech, author-written 160-row corpus",
+   "ext_rules precision/coverage tuned on this corpus",
+   "cascades composed offline from paired measured calls",
+   "latencies measured on a loaded machine through a shared proxy",
+   "one adversarial injection row (adv-030) executes a retreat in 2/3 reps without the veto step"
+  ]
+ },
+ "previous_private_schema_gold_transcripts": "docs/bench-results/private-schema-gold-transcripts/summary.json (superseded: private schema, gold transcripts, long-lived-key fallback)"
+}
