@@ -9,6 +9,8 @@ const Settings = require("./renderer/settings.js");
 const { createVoiceClient } = require("./voice.js");
 const { layoutFor, createDockController, inside } = require("./dock_state.js");
 const Displays = require("./displays.js");
+// BOARD
+const Board = require("./board.js");
 
 const ENV_URL = P.validateBaseUrl(process.env.VOI_COMMANDER_URL || "http://127.0.0.1:8765");
 let baseUrl = ENV_URL;
@@ -59,6 +61,8 @@ let currentLayout = null;
 let lastSession = { model: "", tierHint: "" };
 let shortcutStatus = { toggle: true, settings: true };
 let pttToggled = false;
+// BOARD
+let board = null;
 
 async function requestJson(pathname, options = {}) {
   const response = await fetch(new URL(pathname, baseUrl), {
@@ -131,6 +135,8 @@ function applySettings(patch) {
   }
   if (changed("rainbow") && "screen" in patch.rainbow) syncOverlays();
   if (changed("rainbow") || changed("glass")) { updateOverlay(); sendOverlaySettings(); }
+  // BOARD: re-pace / re-place the tactical board (also picks up skin + language from glass/voice)
+  if (board && (changed("board") || changed("layout") || changed("glass") || changed("voice"))) board.configure();
   saveSettingsSoon();
   broadcastSettings();
   return settingsSnapshot();
@@ -158,6 +164,7 @@ function placeDock(displayId, why = "") {
   }
   syncOverlays();
   pushDock(true);
+  if (board) board.relayout(); // BOARD: follows the display the HUD is on
 }
 // setBounds can land off by a rounding step when the window moves between displays of different scale factors;
 // re-apply until the window is where we asked (bounded, no loop forever).
@@ -440,6 +447,9 @@ function registerIpc() {
     if (overlayState === "listening" && settings.rainbow.reactive) for (const win of liveOverlays()) win.webContents.send(CHANNELS.overlayLevel, level);
   });
   listen(CHANNELS.voicePtt, input => { voice.pttSet(P.validatePushToTalk(input).down); });
+  // BOARD: HUD renderer publishes its derived card view-model; main validates and forwards it to the board window.
+  listen(Board.CHANNELS.publish, input => { if (board) board.setCards(P.validateBoardCards(input)); });
+  ipcMain.on(Board.CHANNELS.page, (event, input) => { if (board && board.ownsWebContents(event.sender) && input && (input.delta === 1 || input.delta === -1)) board.page(input.delta); });
   listen(CHANNELS.voiceMicError, input => { voice.micFailed(P.validateMicError(input).reason); });
 }
 
@@ -453,7 +463,8 @@ function installPermissions(ses) {
   ses.setDevicePermissionHandler(() => false);
   ses.webRequest.onHeadersReceived((details, callback) => {
     const isOverlay = liveOverlays().some(win => win.webContents.id === details.webContentsId);
-    callback({ responseHeaders: { ...details.responseHeaders, "Content-Security-Policy": [isOverlay ? OVERLAY_CSP : RENDERER_CSP] } });
+    const isBoard = Boolean(board && board.getWindow() && !board.getWindow().isDestroyed() && board.getWindow().webContents.id === details.webContentsId); // BOARD
+    callback({ responseHeaders: { ...details.responseHeaders, "Content-Security-Policy": [isOverlay ? OVERLAY_CSP : isBoard ? Board.BOARD_CSP : RENDERER_CSP] } });
   });
 }
 
@@ -479,6 +490,18 @@ function createDockWindow() {
   return mainWindow;
 }
 
+// BOARD: owns the tactical board window. It follows the HUD's display and keeps clear of the HUD's visible panel.
+function boardDockRect() { return revealed ? panelScreenRect() : null; } // only the VISIBLE panel; the collapsed window is transparent click-through
+
+function createBoardController() {
+  board = Board.createBoard({
+    BrowserWindow, getSettings: () => settings, getDisplay: () => displayById(dockDisplayId), getDockRect: boardDockRect, getCursor: currentCursor,
+    registerGlobal, unregisterGlobal,
+    onShortcutStatus: ok => { shortcutStatus = { ...shortcutStatus, board: ok }; broadcastSettings(); },
+  });
+  board.start();
+}
+
 function onDisplaysChanged(event) {
   trace({ ev: "display-event", cursor: currentCursor() });
   follower.reset();
@@ -494,6 +517,7 @@ app.whenReady().then(() => {
   voice = createVoice();
   registerIpc();
   createDockWindow();
+  createBoardController(); // BOARD
   syncOverlays();
   for (const eventName of ["display-added", "display-removed", "display-metrics-changed"]) screen.on(eventName, onDisplaysChanged);
   registerToggleShortcut();
@@ -503,7 +527,7 @@ app.whenReady().then(() => {
   app.on("activate", () => { startPolling(); });
 });
 app.on("window-all-closed", () => app.quit());
-app.on("will-quit", () => { saveSettingsNow(); globalShortcut.unregisterAll(); stopPolling(); });
+app.on("will-quit", () => { if (board) board.stop(); saveSettingsNow(); globalShortcut.unregisterAll(); stopPolling(); });
 app.on("before-quit", () => { if (voice) voice.stop(); });
 
 module.exports = {
@@ -512,7 +536,7 @@ module.exports = {
   _internals: {
     getTrace: () => dockTrace.slice(), getMain: () => mainWindow, getOverlay: () => liveOverlays()[0] || null, getOverlays: () => liveOverlays(), getDockDisplayId: () => dockDisplayId, getVoice: () => voice, getOverlayState: () => overlayState,
     setFakeCursor: point => { fakeCursor = point; },
-    tick, toggleShortcut, nudgeGlass, applySettings, setSettingsOpen, previewRainbow,
+    tick, toggleShortcut, nudgeGlass, getBoard: () => board, applySettings, setSettingsOpen, previewRainbow,
     getSettings: () => settings,
     dockInfo: () => ({ revealed, ignoring, focusable: windowFocusable, focused: Boolean(mainWindow && mainWindow.isFocused()), dock: settings.layout.dock, glass: settings.glass, reason: lastReason, bounds: mainWindow && mainWindow.getBounds(), panelRect, layout: currentLayout, shortcutOpen, settingsOpen, baseUrl }),
     setOverlay,

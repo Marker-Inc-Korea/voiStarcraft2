@@ -63,6 +63,21 @@
     server: {
       url: text(64, "http://127.0.0.1:8765"),
     },
+    // BOARD: separate tactical board window (electron/board/*). anchor: upper-left | left edge; sizes are DIP.
+    board: {
+      enabled: bool(true),
+      anchor: oneOf(["upper-left", "left"], "upper-left"),
+      pageSize: int(3, 4, 3),
+      width: int(300, 340, 320, { unit: "px" }),
+      autoAdvanceSec: int(0, 30, 6, { unit: "s" }),
+      offsetX: int(0, 200, 12, { unit: "px" }),
+      offsetY: int(0, 300, 64, { unit: "px" }),
+      hideWhenEmpty: bool(false),
+      ageOutSec: int(0, 600, 45, { unit: "s" }),
+      opacity: num(0.1, 1, 0.62, { decimals: 2, unit: "%", scale: 100 }),
+      pageUpShortcut: text(48, "CommandOrControl+Shift+PageUp", ACCELERATOR),
+      pageDownShortcut: text(48, "CommandOrControl+Shift+PageDown", ACCELERATOR),
+    },
   });
   const GROUPS = Object.freeze(Object.keys(SCHEMA));
 

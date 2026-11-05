@@ -91,3 +91,17 @@ E2E_NAME=u1_scout_attack VOI_COMMANDER_URL=http://127.0.0.1:18765 npx electron s
 ```
 
 Not verified: real microphone speech, real SC2, the overlay over macOS fullscreen apps, canvas CPU cost.
+
+## Tactical board (separate window)
+
+Operation cards do not live in the HUD. The HUD renderer publishes its derived card list (`commander.board.publish(cards)` -> `board:publish`);
+main validates it (`protocol.validateBoardCards`: <= 24 cards, 5 stage states each) and `electron/board.js` owns a small translucent,
+frameless, non-focusable, always-on-top window (`electron/board/*`) on the display the HUD is on.
+
+- Geometry (`board/layout.js`): 300-340 px wide, upper-left (`board.anchor` = `upper-left` | `left`), 12 px / 64 px offsets, height capped at 40 % of the display,
+  never past the screen centre or into the lower 40 % (minimap / bottom HUD), moves clear of the HUD panel.
+- Paging (`board/paging.js`): 3 or 4 cards per page, `1/3` label, auto-advance (`board.autoAdvanceSec`, 0 = off; paused while hovered), jump to the page of a
+  new / changed / blocked / emergency card and back after 4 s, Cmd/Ctrl+Shift+PageUp/PageDown (only registered while there is more than one page), click/scroll in the window.
+  Finished cards age out (`board.ageOutSec`). No operations: a tiny `작전 0` tab (or hidden with `board.hideWhenEmpty`).
+- Click-through (`setIgnoreMouseEvents(true, {forward: true})`) except while the cursor is over the board; never focused (`showInactive`).
+- Skin follows `glass.skin` (`cosmic` | `terminal`). `효과` only when the backend reported effect_observed; fake bot shows `시뮬`.

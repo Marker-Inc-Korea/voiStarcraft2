@@ -28,6 +28,8 @@
     lat_speech: "말끝→호출", lat_publish: "호출→게시",
     // server
     server_url: "주소", server_status: "상태", connected: "연결됨", disconnected: "끊김", checking: "확인중", apply: "적용",
+    // BOARD (tactical board window)
+    tab_board: "전술판", board_enabled: "사용", board_anchor: "위치", board_pageSize: "한 쪽 카드", board_width: "너비", board_autoAdvanceSec: "자동 넘김", board_offsetX: "가로 여백", board_offsetY: "세로 여백", board_hideWhenEmpty: "비면 숨김", board_ageOutSec: "종료 후 숨김", board_opacity: "투명도", board_pageUpShortcut: "이전 쪽 키", board_pageDownShortcut: "다음 쪽 키", anchor_upperleft: "좌상단", anchor_left: "왼쪽",
     // reset
     reset_all: "전체", confirm: "확인", on: "켜짐",
   };
@@ -46,6 +48,8 @@
     mode_always: "Always", mode_ptt: "Push", lang_ko: "한국어", lang_en: "English", lang_auto: "Auto", recordShortcut: "Record", pressKeys: "Press keys", shortcutUsed: "In use", defaultDevice: "Default", off: "Off",
     lat_speech: "speech→call", lat_publish: "call→post",
     server_url: "URL", server_status: "Status", connected: "Online", disconnected: "Offline", checking: "Checking", apply: "Apply",
+    // BOARD (tactical board window)
+    tab_board: "Board", board_enabled: "Enabled", board_anchor: "Position", board_pageSize: "Cards per page", board_width: "Width", board_autoAdvanceSec: "Auto page", board_offsetX: "Left offset", board_offsetY: "Top offset", board_hideWhenEmpty: "Hide if empty", board_ageOutSec: "Hide after end", board_opacity: "Opacity", board_pageUpShortcut: "Prev page key", board_pageDownShortcut: "Next page key", anchor_upperleft: "Upper-left", anchor_left: "Left",
     reset_all: "All", confirm: "Confirm", on: "On",
   };
   const tables = { ko, en };
