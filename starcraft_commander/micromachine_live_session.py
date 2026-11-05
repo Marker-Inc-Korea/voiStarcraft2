@@ -2230,11 +2230,18 @@ def _reduce_live_command_queue(
     reduced_payload["ttl_seconds"] = update_lifetime["ttl_seconds"]
     if category is LiveCommandCategory.EMERGENCY:
         reduced_payload["override_level"] = PolicyOverrideLevel.EMERGENCY.value
+    declared_terminal = (
+        category is not LiveCommandCategory.EMERGENCY
+        and not _operation_ids(vector_payload)
+        and _declares_terminal_lifetime(vector_payload)
+    )
     reduced_payload["lifetime"] = {
         "mode": update_lifetime["mode"],
         "completion_conditions": update_lifetime["completion_conditions"],
-        "completion_state": str(
-            update_lifetime.get("completion_state", "active") or "active"
+        "completion_state": (
+            str(_mapping_value(vector_payload, "lifetime")["completion_state"]).lower()
+            if declared_terminal
+            else str(update_lifetime.get("completion_state", "active") or "active")
         ),
         "reason": update_lifetime["reason"],
     }
@@ -2260,6 +2267,38 @@ def _reduce_live_command_queue(
         incoming_lifetime=transient_lifetime,
         operation_generation_high_water=operation_generation_high_water,
     )
+    if command_layer == CommandLayer.EMERGENCY.value and (
+        CommandLayer.MACRO.value in layer_state
+    ):
+        macro_payload = _lift_task_to_persistent_biases(
+            _live_layer_payload(layer_state[CommandLayer.MACRO.value])
+        )
+        for domain in _PERSISTENT_LIVE_DOMAINS:
+            standing = _mapping_value(macro_payload, domain)
+            incoming = _mapping_value(reduced_payload, domain)
+            if standing or incoming:
+                reduced_payload[domain] = _merge_previous_signal(standing, incoming)
+        if _stop_expansion_requested(reduced_payload):
+            _clear_expansion_biases(reduced_payload)
+    if (
+        command_layer
+        and command_layer != CommandLayer.EMERGENCY.value
+        and command_layer not in layer_state
+    ):
+        # The command ended its own layer (declared cancelled/completed).
+        stale_tag = f"active_command_layer:{command_layer}"
+        reduced_payload["tags"] = [
+            tag for tag in reduced_payload.get("tags", ()) if tag != stale_tag
+        ]
+        queue_summary["active_command_layers"] = [
+            layer
+            for layer in queue_summary["active_command_layers"]
+            if layer != command_layer
+        ]
+        queue_summary["superseded_command_layers"] = list(
+            dict.fromkeys((*queue_summary["superseded_command_layers"], command_layer))
+        )
+        queue_summary["superseded_previous"] = True
     current_layer_entry = layer_state.get(command_layer)
     if current_layer_entry is not None:
         authoritative_operations = _explicit_operations(
@@ -2397,8 +2436,23 @@ def _reduced_command_layers(
     layer_action: str,
 ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     previous = tuple(dict.fromkeys(str(layer) for layer in previous_layers if layer))
+    if layer_action != "overwrite_all_layers" and command_layer != CommandLayer.EMERGENCY.value:
+        # ``_updated_live_layer_state`` drops the emergency window as soon as a
+        # later non-emergency command arrives; the summary must say the same.
+        previous = tuple(
+            layer for layer in previous if layer != CommandLayer.EMERGENCY.value
+        )
     if layer_action == "overwrite_all_layers":
-        return (), previous, (CommandLayer.EMERGENCY.value,)
+        # An emergency preempts the tactical layers it affects (operation,
+        # micro).  The user's standing macro/production order is not part of
+        # the emergency and survives until the user cancels it.
+        preserved = tuple(
+            layer for layer in previous if layer == CommandLayer.MACRO.value
+        )
+        superseded = tuple(layer for layer in previous if layer not in preserved)
+        return preserved, superseded, _ordered_command_layers(
+            (*preserved, CommandLayer.EMERGENCY.value)
+        )
     if layer_action == "supersede_same_layer":
         preserved = tuple(layer for layer in previous if layer != command_layer)
         superseded = (command_layer,) if command_layer in previous else ()
@@ -2441,6 +2495,8 @@ def _active_live_command_layers(
             telemetry=telemetry,
         )
         return _ordered_command_layers(tuple(active_state))
+    if _declares_terminal_lifetime(payload) and not _operation_ids(payload):
+        return ()
     layers = _active_command_layers(payload)
     if (
         previous_update is not None
@@ -2491,6 +2547,20 @@ def _command_queue_summary_for_compile_failure(
     }
 
 
+_TERMINAL_COMPLETION_STATES = frozenset(
+    {"cancelled", "completed", "expired", "failed", "superseded"}
+)
+
+
+def _declares_terminal_lifetime(payload: Mapping[str, object]) -> bool:
+    """True when the payload itself says it cancels/ends the order it names."""
+
+    state = str(
+        _mapping_value(payload, "lifetime").get("completion_state", "") or ""
+    ).strip().lower()
+    return state in _TERMINAL_COMPLETION_STATES
+
+
 def _live_command_category(
     command_text: str,
     payload: Mapping[str, object] | None,
@@ -2518,7 +2588,9 @@ def _live_command_category(
             return LiveCommandCategory.TACTICAL
         if operation_task_types <= _PRODUCTION_TASK_TYPES:
             return LiveCommandCategory.PRODUCTION
-    if _has_cancel_text_intent(normalized_text):
+    if _has_cancel_text_intent(normalized_text) and not _declares_terminal_lifetime(
+        payload
+    ):
         return LiveCommandCategory.EMERGENCY
     if (
         _has_defensive_text_intent(normalized_text)
@@ -2934,7 +3006,11 @@ def _updated_live_layer_state(
         current_frame=current_frame,
         telemetry=telemetry,
     )
-    if not stored_state and previous_payload:
+    if (
+        not stored_state
+        and previous_payload
+        and not _declares_terminal_lifetime(previous_payload)
+    ):
         previous_layers = _active_command_layers(previous_payload)
         if len(previous_layers) == 1:
             state[previous_layers[0]] = _live_layer_state_entry(
@@ -2962,6 +3038,22 @@ def _updated_live_layer_state(
     generation_high_water = _normalize_operation_generation_high_water(
         operation_generation_high_water
     )
+    if (
+        incoming_layer != CommandLayer.EMERGENCY.value
+        and not _operation_ids(incoming_payload)
+        and _declares_terminal_lifetime(incoming_payload)
+    ):
+        # "마린 생산 그만": the layer ends here.  It must not be stored as an
+        # active standing order that the next command would merge back in.
+        state.pop(incoming_layer, None)
+        return (
+            {
+                layer: state[layer]
+                for layer in _ordered_command_layers(tuple(state))
+                if layer in state
+            },
+            generation_high_water,
+        )
     if (
         previous_same_layer is not None
         and incoming_layer
@@ -3061,7 +3153,12 @@ def _updated_live_layer_state(
             ]
         incoming_entry["metadata"] = incoming_metadata
     if incoming_layer == CommandLayer.EMERGENCY.value:
-        return {incoming_layer: incoming_entry}, generation_high_water
+        surviving = {
+            layer: state[layer]
+            for layer in (CommandLayer.MACRO.value,)
+            if layer in state
+        }
+        return {**surviving, incoming_layer: incoming_entry}, generation_high_water
     state.pop(CommandLayer.EMERGENCY.value, None)
     state[incoming_layer] = incoming_entry
     return (
@@ -3901,6 +3998,8 @@ def _lift_task_to_persistent_biases(payload: Mapping[str, object]) -> dict[str, 
     """Convert production-like bounded tasks into standing manager biases."""
 
     result = deepcopy(dict(payload))
+    if _declares_terminal_lifetime(result):
+        return result
     tactical_task = _mapping_value(result, "tactical_task")
     task_type = str(tactical_task.get("task_type", "") or "")
     raw_targets = tactical_task.get("production_targets", ())

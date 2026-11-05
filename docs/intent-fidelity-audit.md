@@ -4,8 +4,8 @@ Scope: Python side only, replayed offline. **StarCraft II is not available on th
 fidelity is unproven.** Nothing below is evidence that MicroMachine moved a unit. The only live evidence in
 the repo is the recorded QA30 run (structured blackboard input, not natural language or voice).
 
-Reproduce: `python -m scripts.fidelity.replay_chain --markdown out.md` (67 cases, 8 are recorded QA30
-fixtures; 5 expected open violations remain: H-3 x1, H-4 x4) and `pytest tests/test_intent_fidelity.py`. A full per-case rendering is committed as
+Reproduce: `python -m scripts.fidelity.replay_chain --markdown out.md` (68 cases, 8 are recorded QA30
+fixtures; 4 open invariant violations, all H-4) and `pytest tests/test_intent_fidelity.py`. A full per-case rendering is committed as
 `docs/intent-fidelity-replay.generated.md`.
 
 ## 1. Chain
@@ -92,20 +92,21 @@ failures for D1-D6 in the first run; D7-D12 each red individually, see section 7
 | D15 (H-6) | Viking/Medivac/Tank/Banshee/Thor orders were executed by Marines and reported `direct_executed` (`python_sc2_adapter.py:240` knows only SCV/Marine/Hellion) | `_select_group` selects the named Terran FAMILY in any form (sieged tank, assault viking...) or nothing; nothing -> refused `no_matching_units`, zero SC2 orders | `UnitClassSelectionTest` (3) |
 | D16 (H-2) | regex fast path "공격 취소" also forced a retreat home | `web_gui._micromachine_emergency_safety_output`: `force_retreat` only when the utterance contains a retreat word (after negation stripping); cancel-only gets `cancelled_by_user`, `regroup_bias 0`; "공격 취소하고 후퇴" retreats | `EmergencyFastPathScopeTest` (4) |
 | D17 (H-8) | `x`/`coordinates`/`position`/`map_point`/`location_xy`... were dropped with a warning and the command published with a DIFFERENT target | `policy_modulation_provider._refuse_coordinate_key`: refuse the whole command, reason names the key; unrelated unknown keys still only warn | `RawCoordinateRefusalTest` (2, 18 subtests) |
+| D18 (H-3) | An emergency overwrote every layer: "마린 계속 뽑아" then "후퇴" erased the standing production order, and the next command did not bring it back | `micromachine_live_session.py`: `_reduced_command_layers` / `_updated_live_layer_state` keep the macro layer through an emergency; the reducer merges the standing persistent domains into the emergency vector (`stop_expansion` still clears expansion). Layers affected by the emergency (operation, micro) are reported in `superseded_command_layers` | `EmergencyKeepsStandingMacroTest` (4); existing `test_command_layers_merge_supersede_and_emergency_overwrite` updated to the decided policy |
+| D19 (H-9) | An explicitly cancelled macro ("마린 생산 그만", `completion_state: cancelled`) was classified as a safety EMERGENCY by the text heuristic, stored as an active layer, still produced marines (bias 0.65) and came back with the next command | a payload that declares a terminal `completion_state` ends its own layer: `_declares_terminal_lifetime` is excluded from the cancel-text emergency heuristic, the layer is dropped from the stored state, `_lift_task_to_persistent_biases` no longer re-lifts it, queue summary lists it as superseded | `CancelledMacroDoesNotResurrectTest` (3) |
+
 
 Existing suites touched by the changed files: see section 7.
 
 ### Open items: handoff (not in my files, or no safe fix)
 
-Fixed since the first report and removed from this table: H-1 -> D13/D14, H-2 -> D16, H-6 -> D15, H-8 -> D17. H-3/H-9 were evaluated and left documented: both change when a standing order stops being applied, which is a product decision (does "후퇴" end "계속 생산"?), and the safe fix needs telemetry-aware pruning in the reducer, not a one-line change.
+Fixed since the first report and removed from this table: H-1 -> D13/D14, H-2 -> D16, H-6 -> D15, H-8 -> D17, H-3 -> D18, H-9 -> D19. Finding while fixing H-9: a PRODUCTION macro is `until_cancelled` by design (reducer lifetime table), so it has no TTL to expire; the "expired macro resurrected" in the first report was a standing order behaving as designed. What cannot silently survive is an order the user CANCELLED, and that is what D19 fixes. A finite-TTL operation layer does expire (probed: scout `ttl_seconds=30` is gone at frame 30000).
 
 | ID | Where | Problem | Surfaces as |
 |---|---|---|---|
-| H-3 | `micromachine_live_session.py:2578` area (`_updated_live_layer_state`, emergency returns `{emergency: entry}`) | An emergency overwrite deletes the standing macro order (production). Retreat should not stop marine production. Also `_active_live_command_layers`: the macro reappears only because of a later merge | `emergency-keeps-macro` |
-| H-4 | `micromachine_live_session.py` reducer `_live_command_lifetime` | Reducer rewrites ttl (45 -> 60, 120/300/900) without a warning; compile-stage clamps (D11) are now reported, reducer ones are not | `no_silent_clamp` x4 |
+| H-4 | `micromachine_live_session.py` reducer `_live_command_lifetime` / `_reduce_live_command_queue` | Reducer rewrites ttl (emergency 45 -> 60, others to 120/300/900) without a warning. The fix (warning `ttl_seconds rewritten by live reducer`) is committed separately because it adds a string to `compile_result.warnings`, which is part of the pre-live journey evidence of ALL 14 journeys | `no_silent_clamp` x4 |
 | H-5 | `web_gui.py:13275-13308`, `local_cockpit.py:885` | Direct runtime is the scripted fake bot. Responses say `runtime_attached: true`. Main already assigned `direct_runtime.kind` to VoiceAgent | UI must render "simulated" |
 | H-7 | `demo_sc2.py:155` | `DemoUnit` has no `stop`/`hold_position`, so the dry-run bot refuses every emergency stop (`insufficient_units`). The tests add the two verbs locally | emergency refused in the shipped cockpit |
-| H-9 | `micromachine_live_session.py` `_prune_live_layer_state` | A published macro order carries `expires_at_frame` (19900) yet is merged into a command issued at frame 40000. Expired standing orders are not pruned unless telemetry says so; with no telemetry they come back. Pinned in `macro-default-ttl-expiry` | stale production resurrected |
 | H-10 | `web_gui.py:3714-3830` `_micromachine_intervention_summary` | Consumes legacy `state`; UI must switch to `achieved_stage` / `shortfall` / `direct_outcome` (section 5) | overclaim risk |
 | H-11 | `transfer_*` edits need `before_composition` (`policy_modulation.py`) | The Realtime tool schema must produce `unit_selection` AND `before_composition` for "move 1 marine from scout to attack" or the command is refused (surfaced, not silent) | refusal |
 
@@ -113,15 +114,15 @@ Fixed since the first report and removed from this table: H-1 -> D13/D14, H-2 ->
 
 | Invariant | Result |
 |---|---|
-| no silent unit-count downgrade | PASS after D1 (and shortfall visible, D7) |
+| no silent unit-count downgrade / clamp | PASS for counts (D1, D7) and compile-stage ttl (D11); reducer ttl rewrite open (H-4) |
 | same operation_id upserts, new id parallel, generation +1, cancelled op stops counting | PASS (`same-id-retarget`, `reinforce-count`, `different-id-parallel`, `cancel-one-keep-other`, `restart-after-cancel`) |
 | one unit one operation | PASS in Direct plans after D13 (disjoint tags, shortfall surfaced; `par-*`, `cancel-one-keep-other`, `transfer-between-ops` replays); telemetry-level overlap blocks both ops (`ownership-conflict-telemetry`) |
-| emergency preempts only affected layers | Direct leases PASS (D4, worker lease kept); blackboard layers **FAIL (H-3)** |
+| emergency preempts only affected layers | PASS: Direct leases (D4, worker lease kept) and blackboard layers (D18: macro survives, operation/micro superseded) |
 | `published` never presented as `effect_observed` | PASS: published-only -> `ui.label=published`; every `effect_observed` claim required `assigned` and `ordered` (asserted in the unit test) |
 | cancelled/superseded ops release ownership | PASS on Direct (D2/D3, `direct-cancel-releases`, TTL release); blackboard cancel is director-reported (`evidence-cancelled`) |
 | clarification_required never publishes | PASS: 0 writes, 0 orders, 0 tools (`clarify-ambiguous`) |
 | refusal reasons in a displayable field | PASS after D5/D9/D17: `compile_result.refusal_reason`, `clarification_prompt`, `command_queue.direct_outcome.reasons`, `command_queue.failure.reason` |
-| macro persistence | persists across op/micro; replaced by newer macro; expired macro is resurrected (H-9) |
+| macro persistence | persists across op/micro and emergency; replaced by a newer macro; an explicitly cancelled macro does not return (D19) |
 
 ## 5. Overclaim risks in UI status text
 
