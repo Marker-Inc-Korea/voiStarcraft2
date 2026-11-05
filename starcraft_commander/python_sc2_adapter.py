@@ -319,6 +319,28 @@ _PRODUCER_EQUIVALENTS: Final[dict[str, frozenset[str]]] = {
     "COMMANDCENTER": frozenset({"COMMANDCENTER", "ORBITALCOMMAND", "PLANETARYFORTRESS"}),
 }
 
+# "Build" subjects that SC2 performs as a no-target order on an idle PARENT
+# structure (never an SCV): add-ons (BUILD_TECHLAB_*/BUILD_REACTOR_*) and the
+# Command Center upgrades (MORPH_ORBITALCOMMAND / MORPH_PLANETARYFORTRESS, which
+# stableid names UPGRADETOORBITAL_ORBITALCOMMAND / UPGRADETOPLANETARYFORTRESS_...).
+# subject -> (parent structure type name, AbilityId member name)
+_STRUCTURE_MORPHS: Final[dict[str, tuple[str, str]]] = {
+    "BARRACKSTECHLAB": ("BARRACKS", "BUILD_TECHLAB_BARRACKS"),
+    "BARRACKSREACTOR": ("BARRACKS", "BUILD_REACTOR_BARRACKS"),
+    "FACTORYTECHLAB": ("FACTORY", "BUILD_TECHLAB_FACTORY"),
+    "FACTORYREACTOR": ("FACTORY", "BUILD_REACTOR_FACTORY"),
+    "STARPORTTECHLAB": ("STARPORT", "BUILD_TECHLAB_STARPORT"),
+    "STARPORTREACTOR": ("STARPORT", "BUILD_REACTOR_STARPORT"),
+    "ORBITALCOMMAND": ("COMMANDCENTER", "UPGRADETOORBITAL_ORBITALCOMMAND"),
+    "PLANETARYFORTRESS": ("COMMANDCENTER", "UPGRADETOPLANETARYFORTRESS_PLANETARYFORTRESS"),
+}
+
+
+def _structure_morph_spec(action: SC2CommandAction) -> tuple[str, str] | None:
+    if action.action_type is not SC2ActionType.BUILD_STRUCTURE:
+        return None
+    return _STRUCTURE_MORPHS.get(_normalized_name(action.subject) or "")
+
 
 @runtime_checkable
 class SC2BotAdapterInterface(Protocol):
@@ -476,6 +498,34 @@ class PythonSC2BotAdapter:
 
         return await self.assign_workers(action)
 
+    async def _morph_structure(
+        self, action: SC2CommandAction, spec: tuple[str, str]
+    ) -> SC2ActionReport:
+        """Issue a no-target add-on / townhall-upgrade order on an idle parent structure."""
+
+        parent_name, ability_name = spec
+        ability = self._resolve_ability(ability_name)
+        if ability is None:
+            return _refusal_report(1, "unresolvable_ability")
+        if "_direct_unit_tags" in action.metadata:
+            candidates = self._structures_by_tags(action.metadata["_direct_unit_tags"])
+        else:
+            candidates = self._ready_idle_structures()
+        parents = [
+            structure
+            for structure in candidates
+            if _entity_type_name(structure) == parent_name
+            and _truthy_flag(structure, "is_ready", default=True)
+            and _truthy_flag(structure, "is_idle", default=True)
+        ]
+        if not parents:
+            return _refusal_report(1, f"no_ready_idle_{parent_name.lower()}")
+        caller = parents[0]
+        use_ability = getattr(caller, "use_ability", None)
+        order = use_ability if callable(use_ability) else caller
+        applied = await self._issue_unit_order(order, ability)
+        return _issuance_report(1, 1 if applied else 0, "morph_refused")
+
     async def build_structure(self, action: SC2CommandAction) -> bool | SC2ActionReport:
         """Build ``action.subject`` near the resolved semantic map target.
 
@@ -492,6 +542,9 @@ class PythonSC2BotAdapter:
         free geyser or worker exists.
         """
 
+        morph = _structure_morph_spec(action)
+        if morph is not None:
+            return await self._morph_structure(action, morph)
         type_id = self._resolve_unit_type(action.subject)
         if not await self._is_affordable(type_id):
             return False
@@ -2391,9 +2444,19 @@ class PythonSC2BotAdapter:
         if kind not in worker_actions | producer_actions | group_actions:
             return clean
         operation_keyed = bool(metadata.get("operation_id"))
-        if kind in worker_actions:
+        if kind in worker_actions and _structure_morph_spec(clean) is None:
             pool = self._worker_pool()
             requested = 1 if kind in {"build_structure", "expand_now"} else action.count
+        elif kind == "build_structure":
+            # Add-ons and townhall upgrades are orders to an idle parent
+            # structure, never to an SCV.
+            parent_name = _structure_morph_spec(clean)[0]
+            pool = [
+                structure
+                for structure in self._ready_idle_structures()
+                if _entity_type_name(structure) == parent_name
+            ]
+            requested = 1
         elif kind in producer_actions:
             pool = self._producer_candidates(clean, kind)
             # A train/warp count is the number of orders, while a research
