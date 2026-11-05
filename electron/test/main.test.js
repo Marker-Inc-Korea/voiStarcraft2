@@ -23,15 +23,20 @@ const i18n=require("../renderer/i18n.js");for(const lang of ["ko","en"])for(cons
 test("rainbow overlay is a feathered edge glow, not a stroke",()=>{const css=fs.readFileSync(path.join(__dirname,"..","overlay","overlay.css"),"utf8"),html=fs.readFileSync(path.join(__dirname,"..","overlay","index.html"),"utf8");
 assert.match(css,/--edge-depth: 90px/);assert.match(css,/mask-composite: add/);assert.match(css,/mix-blend-mode: screen/);assert.match(css,/conic-gradient/);assert.match(css,/@keyframes rotate/);assert.match(css,/prefers-reduced-motion/);assert.match(css,/pointer-events: none/);
 assert.doesNotMatch(css,/\bborder\s*:/);assert.doesNotMatch(css,/xor|exclude/);assert.match(html,/id="bloom"/);});
-test("cards are glass shards: no left stripe/divider/accent bar, no coloured edge (star dust texture is allowed)",()=>{const css=fs.readFileSync(path.join(__dirname,"..","renderer","style.css"),"utf8"),js=fs.readFileSync(path.join(__dirname,"..","renderer","renderer.js"),"utf8");
-assert.doesNotMatch(css,/border-left/);assert.doesNotMatch(css,/data-overall/);assert.doesNotMatch(js,/data-overall|dataset\.overall/);
-assert.doesNotMatch(css,/\.(card|op)\[[^\]]*\][^{]*\{[^}]*border-color/);
-// any ::before/::after on .card must be a full-surface texture (inset:0), never a thin bar anchored to one side
-for(const m of css.matchAll(/\.card[^{,]*::(?:before|after)\s*\{([^}]*)\}/g)){const body=m[1];assert.match(body,/inset:\s*0/,"card pseudo-element must cover the whole card: "+body);assert.doesNotMatch(body,/\bwidth:\s*\d+px/);assert.doesNotMatch(body,/\bleft:\s*0[;\s]/);assert.doesNotMatch(body,/box-shadow:[^;]*var\(--(violet|red|green|cyan)\)/);}
-const rule=css.match(/\n\.card \{[^}]*\}/)[0];assert.doesNotMatch(rule,/inset\s+-?\d+px\s+0\s+0/);assert.match(rule,/border-radius/);});
-test("cosmic finish: additive canvas, gradient rim, sweep, planet orb, star-dot rail, reduced-motion respected",()=>{const css=fs.readFileSync(path.join(__dirname,"..","renderer","style.css"),"utf8"),html=fs.readFileSync(path.join(__dirname,"..","renderer","index.html"),"utf8"),space=fs.readFileSync(path.join(__dirname,"..","renderer","space.js"),"utf8");
-assert.match(css,/#space \{[^}]*mix-blend-mode: plus-lighter/);assert.match(space,/globalCompositeOperation = "lighter"/);
-assert.match(css,/\.rim \{[^}]*mask-composite: exclude/);assert.match(html,/class="rim"/);assert.match(html,/class="sweep"/);assert.match(html,/class="orb-ring"[^>]*><i class="moon"><\/i><\/span>/);
-assert.match(css,/\.panel:hover \.sweep::before/);assert.match(css,/@keyframes starPulse/);assert.match(css,/@keyframes orbit/);
-assert.match(space,/requestAnimationFrame/);assert.match(space,/visible\(\)/);assert.match(space,/prefers-reduced-motion/);
-assert.doesNotMatch(css,/\.panel-body[^{]*\{[^}]*font-family/);assert.match(css,/\.panel-body \{[^}]*color: #fff/);});
+
+test("HUD renders no operation cards: the renderer only derives + publishes them to the board window",()=>{const dir=path.join(__dirname,"..");const html=fs.readFileSync(path.join(dir,"renderer","index.html"),"utf8"),js=fs.readFileSync(path.join(dir,"renderer","renderer.js"),"utf8"),css=fs.readFileSync(path.join(dir,"renderer","style.css"),"utf8"),preload=fs.readFileSync(path.join(dir,"preload.js"),"utf8");
+assert.doesNotMatch(html,/id="cards"|class="deck"|class="cards"/);assert.doesNotMatch(js,/class: "card"|renderCards|railBlock|rail5|tierBadge/);assert.doesNotMatch(css,/^\.card\b|^\.rail\b|^\.stage\b/m);
+assert.match(js,/api\.board\.publish\(cards\)/);assert.match(preload,/board:publish/);assert.match(html,/id="ops"/);});
+test("emergency parity: three always-visible words, one IPC route, validated enum, forwarded to /api/emergency",()=>{const dir=path.join(__dirname,"..");const html=fs.readFileSync(path.join(dir,"renderer","index.html"),"utf8"),js=fs.readFileSync(path.join(dir,"renderer","renderer.js"),"utf8"),main=fs.readFileSync(path.join(dir,"main.js"),"utf8"),preload=fs.readFileSync(path.join(dir,"preload.js"),"utf8");
+for(const id of ["btn-retreat","btn-hold","btn-stop"])assert.match(html,new RegExp(`id="${id}"`));assert.match(preload,/commander:emergency/);assert.match(main,/emergency: "commander:emergency"/);assert.match(main,/validateEmergency/);assert.match(main,/"\/api\/emergency"/);
+assert.match(js,/api\.emergency\(action\)/);assert.doesNotMatch(js,/긴급 후퇴", \{ tier/);
+const {validateEmergency}=require("../protocol.js");for(const action of ["retreat","hold","stop"])assert.deepEqual(validateEmergency({action}),{action});for(const bad of [{action:"attack"},{action:""},{},{action:"hold",x:1},null,"hold"])assert.throws(()=>validateEmergency(bad));});
+test("HUD is a clipped trapezoid with polygon hit-testing and both skins ship in the stylesheet",()=>{const dir=path.join(__dirname,"..");const css=fs.readFileSync(path.join(dir,"renderer","style.css"),"utf8"),html=fs.readFileSync(path.join(dir,"renderer","index.html"),"utf8"),js=fs.readFileSync(path.join(dir,"renderer","renderer.js"),"utf8"),main=fs.readFileSync(path.join(dir,"main.js"),"utf8");
+assert.match(js,/style\.clipPath = shape\.clipPath/);assert.match(main,/HudShape\.containsPoint/);assert.doesNotMatch(main,/overPanel = revealed && panel && inside/);
+assert.match(html,/id="outline"/);assert.match(html,/class="term-fx"/);assert.match(html,/data-skin="cosmic"/);
+assert.match(css,/body\[data-skin="terminal"\]/);assert.match(css,/#2cff7a/);assert.match(css,/SF Mono/);assert.match(css,/repeating-linear-gradient\(180deg/);assert.match(css,/@keyframes blink/);assert.match(css,/clip-path: polygon\(/);
+assert.match(css,/#space \{[^}]*mix-blend-mode: plus-lighter/);assert.match(css,/@keyframes orbit/);assert.match(css,/prefers-reduced-motion: reduce/);
+assert.match(css,/color-mix\(in srgb, var\(--tint\) calc\(var\(--glass-alpha\) \* 100%\), transparent\)/);assert.match(css,/color-mix\(in srgb, rgb\(var\(--term-bg\)\) calc\(var\(--glass-alpha\) \* 100%\), transparent\)/);});
+test("cosmic skin keeps the additive canvas, gradient rim, sweep and planet orb",()=>{const dir=path.join(__dirname,"..");const html=fs.readFileSync(path.join(dir,"renderer","index.html"),"utf8"),space=fs.readFileSync(path.join(dir,"renderer","space.js"),"utf8");
+assert.match(space,/globalCompositeOperation = "lighter"/);assert.match(html,/class="sweep"/);assert.match(html,/class="orb-ring"[^>]*><i class="moon"><\/i><\/span>/);assert.match(space,/requestAnimationFrame/);assert.match(space,/visible\(\)/);assert.match(space,/prefers-reduced-motion/);
+assert.match(space,/cfg\.enabled !== false/);});

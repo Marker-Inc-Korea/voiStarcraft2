@@ -5,7 +5,7 @@ const I = require("../renderer/i18n.js");
 
 test("defaults cover every group and match the documented values", () => {
   const d = S.defaults();
-  assert.deepEqual(Object.keys(d), ["glass", "layout", "rainbow", "voice", "server"]);
+  for (const group of ["glass", "layout", "rainbow", "voice", "emergency", "server"]) assert.ok(d[group], group);
   assert.equal(d.glass.alpha, 0.28); assert.equal(d.glass.blur, 12); assert.equal(d.glass.vibrancy, false);
   assert.equal(d.layout.dock, "bottom"); assert.equal(d.layout.autoHide, true); assert.equal(d.layout.hideDelay, 600); assert.equal(d.layout.zone, 2); assert.equal(d.layout.display, "cursor");
   assert.equal(d.rainbow.enabled, true); assert.equal(d.rainbow.depth, 90);

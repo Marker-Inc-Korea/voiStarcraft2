@@ -97,6 +97,14 @@ function validateDockRect(input) {
   if (out.width < 1 || out.height < 1) throw new TypeError("dock rect must be non-empty");
   return out;
 }
+// Emergency parity: the three always-visible buttons and their global shortcuts all send exactly one of these words.
+const EMERGENCY_ACTIONS = Object.freeze(["retreat", "hold", "stop"]);
+function validateEmergency(input) {
+  plainObject(input, "emergency");
+  if (Object.keys(input).some(key => key !== "action")) throw new TypeError("unexpected emergency field");
+  if (!EMERGENCY_ACTIONS.includes(input.action)) throw new TypeError(`emergency action must be one of ${EMERGENCY_ACTIONS.join("|")}`);
+  return { action: input.action };
+}
 function validateDockAttention(input) {
   plainObject(input, "dock attention");
   if (Object.keys(input).some(key => key !== "reason")) throw new TypeError("unexpected dock attention field");
@@ -183,7 +191,7 @@ module.exports = {
   validateCommand, validateBaseUrl, validateCursor, validateTargetPin,
   VOICE_STATES, OVERLAY_STATES, DOCK_MODES, ATTENTION_REASONS, MAX_AUDIO_CHUNK_BYTES,
   validateVoiceControl, validateVoiceAudio, validateVoiceLevel, validateMicError, validateOverlayState, overlayStateForVoice,
-  validateDockFocus, validateDockRect, validateDockAttention,
+  validateDockFocus, validateDockRect, validateDockAttention, EMERGENCY_ACTIONS, validateEmergency,
   validateSettingsPatch, validateSettingsReset, validateSettingsOpen, validateServerProbe, validateShortcutPreview, validateRainbowPreview, validatePushToTalk,
   validateRealtimeWsUrl, validateRealtimeSession, validateIntentRequest,
 };

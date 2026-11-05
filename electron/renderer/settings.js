@@ -16,6 +16,7 @@
   // Order = order shown in the settings panel. `unit` is display-only; `scale` multiplies the stored value for display.
   const SCHEMA = Object.freeze({
     glass: {
+      skin: oneOf(["cosmic", "terminal"], "cosmic"),
       alpha: num(0.08, 0.9, 0.28, { decimals: 2, unit: "%", scale: 100 }),
       blur: int(0, 40, 12, { unit: "px" }),
       vibrancy: bool(false),
@@ -23,6 +24,7 @@
       saturation: int(0, 100, 55, { unit: "%" }),
       borderGlow: int(0, 100, 35, { unit: "%" }),
       radius: int(0, 40, 22, { unit: "px" }),
+      slant: int(0, 30, 14, { unit: "°" }),
       stars: int(0, 100, 50, { unit: "%" }),
       starSpeed: int(0, 100, 40, { unit: "%" }),
       nebula: int(0, 100, 50, { unit: "%" }),
@@ -59,6 +61,12 @@
       mode: oneOf(["always", "ptt"], "always"),
       shortcut: text(48, "CommandOrControl+Shift+Space", ACCELERATOR),
       language: oneOf(["ko", "en", "auto"], "ko"),
+    },
+    // Emergency parity: global accelerators for the three always-visible buttons (retreat / hold / stop).
+    emergency: {
+      retreat: text(48, "CommandOrControl+Shift+R", ACCELERATOR),
+      hold: text(48, "CommandOrControl+Shift+H", ACCELERATOR),
+      stop: text(48, "CommandOrControl+Shift+X", ACCELERATOR),
     },
     server: {
       url: text(64, "http://127.0.0.1:8765"),

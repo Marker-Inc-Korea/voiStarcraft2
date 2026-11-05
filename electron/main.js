@@ -9,6 +9,9 @@ const Settings = require("./renderer/settings.js");
 const { createVoiceClient } = require("./voice.js");
 const { layoutFor, createDockController, inside } = require("./dock_state.js");
 const Displays = require("./displays.js");
+const HudShape = require("./renderer/hud_shape.js");
+const Skins = require("./renderer/skins.js");
+const { createShortcutRegistry, createEmergencyShortcuts } = require("./shortcuts.js");
 
 const ENV_URL = P.validateBaseUrl(process.env.VOI_COMMANDER_URL || "http://127.0.0.1:8765");
 let baseUrl = ENV_URL;
@@ -21,7 +24,7 @@ const CHANNELS = Object.freeze({
   registry: "commander:registry", targetPin: "commander:target-pin", events: "commander:events",
   voiceStart: "voice:start", voiceStop: "voice:stop", voiceState: "voice:state", voiceAudio: "voice:audio", voiceMicError: "voice:mic-error", voiceLevel: "voice:level", voicePtt: "voice:ptt",
   settingsGet: "settings:get", settingsSet: "settings:set", settingsReset: "settings:reset", settingsOpen: "settings:open", serverProbe: "server:probe", shortcutCheck: "shortcut:check", rainbowPreview: "rainbow:preview",
-  dockState: "dock:state", dockFocus: "dock:focus", dockRect: "dock:rect", dockAttention: "dock:attention",
+  dockState: "dock:state", dockFocus: "dock:focus", dockRect: "dock:rect", dockAttention: "dock:attention", emergency: "commander:emergency",
   push: "commander:push", overlayState: "overlay:state", overlayLevel: "overlay:level", overlaySettings: "overlay:settings",
 });
 const POLL_MS = 50;
@@ -57,7 +60,7 @@ let lastDockPush = "";
 let lastReason = "";
 let currentLayout = null;
 let lastSession = { model: "", tierHint: "" };
-let shortcutStatus = { toggle: true, settings: true };
+let shortcutStatus = { toggle: true, settings: true, emergency: { retreat: true, hold: true, stop: true } };
 let pttToggled = false;
 
 async function requestJson(pathname, options = {}) {
@@ -124,6 +127,7 @@ function applySettings(patch) {
     placeDock(dockDisplayId, "settings");
   }
   if (changed("server") && settings.server.url !== before.server.url) { baseUrl = settings.server.url; if (voice && voice.snapshot().active) voice.stop(); }
+  if (changed("emergency")) registerEmergencyShortcuts();
   if (changed("voice")) {
     if ("shortcut" in patch.voice) registerToggleShortcut();
     if (voice) voice.reconfigure();
@@ -169,6 +173,18 @@ function applyBounds(win, want) {
     win.setBounds(want, false);
   }
   return Displays.withinRounding(win.getBounds(), want, 1);
+}
+// The visible HUD is a trapezoid inside that rectangle (renderer/hud_shape.js, the SAME function the renderer clips with):
+// pointer hit-testing uses the polygon, so the slanted corners and everything outside it stay click-through to the game.
+function panelPolygon() {
+  const rect = panelScreenRect();
+  if (!rect) return null;
+  const shape = HudShape.shape(settings.layout.dock, rect.width, rect.height, { slantDeg: settings.glass.slant, chamfer: Skins.chamferFor(settings.glass.skin) });
+  return HudShape.translate(shape.points, rect.x, rect.y);
+}
+function pointerOverPanel(cursor) {
+  const polygon = panelPolygon();
+  return Boolean(polygon && HudShape.containsPoint(polygon, cursor.x, cursor.y));
 }
 function panelScreenRect() {
   if (!mainWindow || mainWindow.isDestroyed() || !currentLayout) return null;
@@ -323,9 +339,8 @@ function tick() {
     if (revealed) { if (!mainWindow.isVisible()) mainWindow.showInactive(); registerRevealedShortcuts(); } else { releaseFocus(); shortcutOpen = false; setSettingsOpen(false); unregisterRevealedShortcuts(); }
     pushDock(true);
   }
-  // Interactive only where the glass panel actually is; everything else stays click-through to the game.
-  const panel = panelScreenRect();
-  const overPanel = revealed && panel && inside(cursor, panel);
+  // Interactive only where the trapezoid glass actually is; everything else stays click-through to the game.
+  const overPanel = revealed && pointerOverPanel(cursor);
   setIgnore(!overPanel);
   return decision;
 }
@@ -359,19 +374,24 @@ function toggleShortcut() {
 }
 
 // ---- global shortcuts (Electron cannot see key-up, so PTT-by-shortcut is press/press) ----------
-const registered = new Map();
-function registerGlobal(accelerator, callback) {
-  unregisterGlobal(accelerator);
-  let ok = false;
-  try { ok = globalShortcut.register(accelerator, callback); } catch { ok = false; }
-  if (ok) registered.set(accelerator, callback);
-  else if (process.env.VOI_DEBUG) console.log(`[shortcut] could not register ${accelerator}`);
-  return ok;
+const shortcutRegistry = createShortcutRegistry(globalShortcut, { onDebug: message => { if (process.env.VOI_DEBUG) console.log(`[shortcut] ${message}`); } });
+const registerGlobal = (accelerator, callback) => shortcutRegistry.register(accelerator, callback);
+const unregisterGlobal = accelerator => shortcutRegistry.unregister(accelerator);
+// Emergency parity: retreat / hold / stop have always-visible buttons AND global shortcuts that take the same route
+// (deterministic POST /api/emergency, no model). A shortcut that cannot be registered is reported, never silent.
+const emergencyShortcuts = createEmergencyShortcuts(shortcutRegistry, action => { runEmergency(action, "shortcut").catch(() => {}); });
+function registerEmergencyShortcuts() {
+  const status = emergencyShortcuts.bind(settings.emergency);
+  shortcutStatus = { ...shortcutStatus, emergency: status };
+  return status;
 }
-function unregisterGlobal(accelerator) {
-  if (!registered.has(accelerator)) return;
-  try { globalShortcut.unregister(accelerator); } catch { /* ignore */ }
-  registered.delete(accelerator);
+async function runEmergency(action, origin) {
+  attentionUntil = Date.now() + ATTENTION_PULSE_MS; // a pressed emergency key always shows its result, even if the bar was collapsed
+  let result;
+  try { result = { ok: true, action, response: await requestJson("/api/emergency", { method: "POST", body: JSON.stringify({ action }), timeoutMs: 4000 }) }; }
+  catch (error) { result = { ok: false, action, error: String((error && error.message) || error).slice(0, 240) }; }
+  if (origin === "shortcut") pushToRenderer({ type: "emergency", origin, ...result });
+  return result;
 }
 let toggleAccelerator = "";
 function registerToggleShortcut() {
@@ -424,12 +444,14 @@ function registerIpc() {
   handle(CHANNELS.shortcutCheck, input => { // can this accelerator be claimed? (does not keep it registered)
     const { accelerator } = P.validateShortcutPreview(input);
     if (accelerator === toggleAccelerator) return { ok: true, own: true };
-    if (registered.has(accelerator)) return { ok: false, reason: "used" };
+    if (Object.values(emergencyShortcuts.bound()).includes(accelerator)) return { ok: true, own: true };
+    if (shortcutRegistry.has(accelerator)) return { ok: false, reason: "used" };
     let ok = false;
     try { ok = globalShortcut.register(accelerator, () => {}); if (ok) globalShortcut.unregister(accelerator); } catch { ok = false; }
     return { ok, reason: ok ? "" : "used" };
   });
   handle(CHANNELS.rainbowPreview, input => { P.validateRainbowPreview(input); previewRainbow(); return { ms: PREVIEW_MS }; });
+  handle(CHANNELS.emergency, input => runEmergency(P.validateEmergency(input).action, "ui"));
   handle(CHANNELS.dockState, () => dockSnapshot());
   handle(CHANNELS.dockFocus, input => { const { focus } = P.validateDockFocus(input); if (focus) return { focused: focusDock() }; releaseFocus(); return { focused: false }; });
   listen(CHANNELS.dockRect, input => { panelRect = P.validateDockRect(input); });
@@ -497,6 +519,7 @@ app.whenReady().then(() => {
   syncOverlays();
   for (const eventName of ["display-added", "display-removed", "display-metrics-changed"]) screen.on(eventName, onDisplaysChanged);
   registerToggleShortcut();
+  registerEmergencyShortcuts();
   registerGlobal(SHORTCUT_OPACITY_UP, () => nudgeGlass(1));
   registerGlobal(SHORTCUT_OPACITY_DOWN, () => nudgeGlass(-1));
   startPolling();
@@ -513,7 +536,7 @@ module.exports = {
     getTrace: () => dockTrace.slice(), getMain: () => mainWindow, getOverlay: () => liveOverlays()[0] || null, getOverlays: () => liveOverlays(), getDockDisplayId: () => dockDisplayId, getVoice: () => voice, getOverlayState: () => overlayState,
     setFakeCursor: point => { fakeCursor = point; },
     tick, toggleShortcut, nudgeGlass, applySettings, setSettingsOpen, previewRainbow,
-    getSettings: () => settings,
+    getSettings: () => settings, panelPolygon, pointerOverPanel,
     dockInfo: () => ({ revealed, ignoring, focusable: windowFocusable, focused: Boolean(mainWindow && mainWindow.isFocused()), dock: settings.layout.dock, glass: settings.glass, reason: lastReason, bounds: mainWindow && mainWindow.getBounds(), panelRect, layout: currentLayout, shortcutOpen, settingsOpen, baseUrl }),
     setOverlay,
   },

@@ -87,14 +87,7 @@ async function main() {
     await shot("5-cards");
     const dom = await js(`(()=>({
       transcript: document.getElementById('transcript').textContent,
-      cards: [...document.querySelectorAll('.card')].map(c=>({
-        utterance: (c.querySelector('.utterance')||{}).textContent||'',
-        ops: [...c.querySelectorAll('.op')].map(o=>({
-          name:(o.querySelector('.op-name')||{}).textContent||'', tier:(o.querySelector('.tier')||{}).textContent||'',
-          badges:[...o.querySelectorAll('.word-badge')].map(b=>b.textContent),
-          stages:[...o.querySelectorAll('.stage')].map(s=>s.dataset.stage+':'+s.dataset.state),
-          reason:(o.querySelector('.reason')||{}).textContent||'', reasonTitle:(o.querySelector('.reason')||{}).title||'' }))
-      })),
+      ops: document.getElementById('ops-count').textContent,
       voiceBody: document.body.dataset.voice
     }))()`);
     result.dom = dom;

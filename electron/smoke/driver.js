@@ -131,17 +131,14 @@ async function main() {
   await waitFor(() => js("document.body.dataset.voice==='thinking'"), "thinking state", 9000);
   await sleep(600);
   await screencapture("04-thinking-overlay-fullscreen");
-  await waitFor(() => js("document.querySelectorAll('.card .op').length>=2"), "two parallel operation rails", 14000);
+  await waitFor(() => js("Number(document.getElementById('ops-count').textContent)>=2"), "two parallel operations counted in the HUD ops word (rails live in the board window)", 14000);
   await sleep(9000);
   I.applySettings({ layout: { pinned: true } }); await sleep(500); // the bar would auto-collapse 2.5 s after voice ended
   await screencapture("05-operations-strip-screen");
   I.applySettings({ layout: { pinned: false } });
   note("intent forwarded", { intents: backend.state.intents.map(i => ({ transcript: i.transcript, tier: i.tool_arguments && i.tool_arguments.command_layer, latency: i.latency_ms })) });
-  check("parallel operations rendered as separate rails", await js("document.querySelectorAll('.card .op').length>=2"));
-  check("dry-run fake bot is a single small word badge (시뮬)", await js("[...document.querySelectorAll('.word-badge[data-kind=\"sim\"]')].every(n=>n.textContent==='시뮬') && !!document.querySelector('.word-badge[data-kind=\"sim\"]')"));
-  check("blocked reason is ONE word (병력부족), raw text only as hover title", await js("[...document.querySelectorAll('.reason[data-kind=\"blocked\"]')].some(n=>n.textContent==='병력부족' && /composition_shortfall/.test(n.title))"));
+  check("HUD shows only a one-word operation count (no cards in the HUD)", await js("Number(document.getElementById('ops-count').textContent)>=2 && document.querySelectorAll('.card, .op, .rail').length===0"));
   check("bar has no paragraphs / helper text", await js("document.querySelectorAll('.panel p:not(.transcript):not(.utterance)').length===0"));
-  check("no real 'Effect observed' shown for fake bot", await js("!document.querySelector('.rail[data-effect=\"yes\"]')"));
 
   // ---- 5. text input: click focuses (only then), hide releases focus ----
   await warp(display.x + display.width / 2, display.y + display.height - 60);
@@ -180,7 +177,7 @@ async function main() {
   await warp(display.x + display.width / 2, display.y + display.height - 60);
   await js("(()=>{const i=document.getElementById('cmd-input');i.value='정찰 보내';document.getElementById('cmd-form').requestSubmit();})()");
   await sleep(2600);
-  check("missing direct_runtime shows the one-word 미확인 badge", await js("[...document.querySelectorAll('.word-badge[data-kind=\"unknown\"]')].some(n=>n.textContent==='미확인')"));
+  check("missing direct_runtime still yields a published board card (no card UI in the HUD)", await js("document.querySelectorAll('.card').length===0 && document.getElementById('ops').hidden===false"));
   backend.state.runtime = "dry_run_fake_bot";
 
   // ---- 7. minimal bar screenshot (voice off, no cards) ----
@@ -188,13 +185,12 @@ async function main() {
   await sleep(200);
   const stopVoice = async () => { if (I.getVoice().snapshot().active) { await js("document.getElementById('orb').click()"); await sleep(500); } };
   await stopVoice();
-  await js("(()=>{document.getElementById('cards').replaceChildren();})()");
   await warp(display.x + display.width / 2, display.y + display.height - 1);
   await waitFor(() => info().revealed, "reveal for minimal bar");
   await warp(display.x + display.width / 2, display.y + display.height - 60);
   await sleep(600);
   await screencapture("06-minimal-bar");
-  check("minimal bar shows only orb, input, retreat word, gear", await js("[...document.querySelectorAll('.bar button, .bar input')].map(n=>n.id).join(',')==='orb,cmd-input,btn-retreat,btn-gear' && document.getElementById('retreat-word').textContent==='후퇴' && document.getElementById('cmd-input').placeholder==='명령'"));
+  check("minimal HUD shows only orb, input, 후퇴/홀드/멈춰, gear", await js("[...document.querySelectorAll('.bar button, .bar input')].map(n=>n.id).join(',')==='orb,cmd-input,btn-retreat,btn-hold,btn-stop,btn-gear' && document.getElementById('retreat-word').textContent==='후퇴' && document.getElementById('hold-word').textContent==='홀드' && document.getElementById('stop-word').textContent==='멈춰' && document.getElementById('cmd-input').placeholder==='명령'"));
 
   // ---- 8. settings panel: gear click opens at once, pins the bar, every tab, live apply, Esc / outside / gear close ----
   const openedAt = Date.now();
