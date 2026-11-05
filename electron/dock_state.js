@@ -7,6 +7,7 @@ const Displays = require("./displays.js");
 const DOCK_MODES = Displays.DOCK_SIDES;
 const DEFAULTS = Object.freeze({
   edgePx: 2,            // trigger zone thickness at the display edge
+  sharedEdgeDwellMs: 450, // an edge that is entirely a seam to another display: crossing it must not open the bar, resting on it must
   edgeDwellMs: 120,     // cursor must stay in the zone this long (SC2 edge-scroll would otherwise pop the bar open)
   slopPx: 12,           // panel rect inflation while revealed
   hideDelayMs: 600,     // cursor must stay outside panel+slop this long before collapsing
@@ -45,6 +46,18 @@ function edgeIsShared(mode, bounds, point, displays) {
   return displays.some(display => inside(probe, display.bounds));
 }
 
+// True when EVERY point of the trigger zone has another display beyond it (the edge is nothing but a seam).
+function edgeFullyShared(mode, bounds, trigger, displays) {
+  const n = 9;
+  for (let i = 0; i < n; i += 1) {
+    const point = mode === "bottom" || mode === "top"
+      ? { x: trigger.x + Math.floor((trigger.width * (i + 0.5)) / n), y: trigger.y }
+      : { x: trigger.x, y: trigger.y + Math.floor((trigger.height * (i + 0.5)) / n) };
+    if (!edgeIsShared(mode, bounds, point, displays)) return false;
+  }
+  return true;
+}
+
 function createDockController(options = {}) {
   let revealed = false;
   let outsideSince = null;
@@ -71,11 +84,17 @@ function createDockController(options = {}) {
     if (!revealed) {
       // Moving the dock to another display is main's debounced follower (displays.createFollower), not decided here.
       const onDockDisplay = cursorDisplay.id === dockDisplay.id && Displays.inside(cursor, dockDisplay.bounds);
-      const inEdge = Boolean(onDockDisplay) && inside(cursor, layout.trigger) && !edgeIsShared(mode, dockDisplay.bounds, cursor, displays);
+      const inZone = Boolean(onDockDisplay) && inside(cursor, layout.trigger);
+      const shared = inZone && edgeIsShared(mode, dockDisplay.bounds, cursor, displays);
+      // A seam point normally never opens the bar (the cursor is just crossing screens). If the whole edge is a seam the
+      // bar would be unreachable, so there the user must rest on it for the longer shared-edge dwell instead.
+      const fullySharedEdge = shared && edgeFullyShared(mode, dockDisplay.bounds, layout.trigger, displays);
+      const inEdge = inZone && (!shared || fullySharedEdge);
+      const dwellMs = fullySharedEdge ? o.sharedEdgeDwellMs : o.edgeDwellMs;
       if (inEdge) { if (edgeSince === null) edgeSince = now; } else edgeSince = null;
       if (pinned) { revealed = true; reason = "pinned"; }
       else if (forced) { revealed = true; reason = "attention"; }
-      else if (inEdge && now - edgeSince >= o.edgeDwellMs) { revealed = true; reason = "edge"; }
+      else if (inEdge && now - edgeSince >= dwellMs) { revealed = true; reason = "edge"; }
       if (revealed) { outsideSince = null; edgeSince = null; }
     } else {
       if (inside(cursor, hold)) outsideSince = null;
@@ -92,4 +111,4 @@ function createDockController(options = {}) {
   return { update, get revealed() { return revealed; }, reset() { revealed = false; outsideSince = null; edgeSince = null; lastForceAt = -Infinity; } };
 }
 
-module.exports = { DOCK_MODES, DEFAULTS, layoutFor, createDockController, displayContaining, inside, inflate, edgeIsShared };
+module.exports = { DOCK_MODES, DEFAULTS, layoutFor, createDockController, displayContaining, inside, inflate, edgeIsShared, edgeFullyShared };

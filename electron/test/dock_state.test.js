@@ -184,3 +184,60 @@ test("settings override hide delay, zone, autoHide and follow-cursor per update"
   const c4 = createDockController();
   c4.update(at(p, 0)); assert.equal(c4.update(at(p, 200)).revealed, false);
 });
+
+// The user's real layout (read from Electron's screen API): built-in below, an ultra-wide directly above it
+// (its whole bottom edge IS the built-in's top edge), and a portrait display to the ultra-wide's right.
+const BUILTIN = { id: 1, bounds: { x: 0, y: 0, width: 1512, height: 982 } };
+const PORTRAIT = { id: 2, bounds: { x: 2549, y: -1598, width: 1080, height: 1920 } };
+const ULTRA = { id: 3, bounds: { x: -891, y: -1440, width: 3440, height: 1440 } };
+const REAL = [BUILTIN, PORTRAIT, ULTRA];
+const dockOn = (id, mode) => ({ ...base, displays: REAL, dockDisplayId: id, mode });
+const triggerMid = (id, mode) => { const d = REAL.find(x => x.id === id); const t = layoutFor(mode, d.bounds).trigger; return { x: t.x + Math.floor(t.width / 2), y: t.y + Math.floor(t.height / 2) }; };
+
+test("real layout: the ultra-wide's bottom edge is entirely a seam, so a quick pass over it must not open the bar", () => {
+  const edge = triggerMid(3, "bottom");
+  assert.equal(edgeIsShared("bottom", ULTRA.bounds, edge, REAL), true);
+  const c = createDockController();
+  c.update({ ...dockOn(3, "bottom"), cursor: edge, now: 1000 });
+  assert.equal(c.update({ ...dockOn(3, "bottom"), cursor: edge, now: 1200 }).revealed, false); // 200 ms: crossing, not intent
+});
+test("real layout: a fully shared edge is still reachable by resting on it for the longer shared-edge dwell", () => {
+  const edge = triggerMid(3, "bottom");
+  const c = createDockController();
+  c.update({ ...dockOn(3, "bottom"), cursor: edge, now: 1000 });
+  assert.equal(c.update({ ...dockOn(3, "bottom"), cursor: edge, now: 1300 }).revealed, false);
+  const r = c.update({ ...dockOn(3, "bottom"), cursor: edge, now: 1500 });
+  assert.equal(r.revealed, true); assert.equal(r.reason, "edge");
+});
+test("real layout: ultra-wide right edge (portrait beyond it) and built-in top edge are also fully shared yet reachable", () => {
+  for (const [id, mode] of [[3, "right"], [1, "top"]]) {
+    const edge = triggerMid(id, mode);
+    const c = createDockController();
+    c.update({ ...dockOn(id, mode), cursor: edge, now: 0 });
+    assert.equal(c.update({ ...dockOn(id, mode), cursor: edge, now: 200 }).revealed, false, `${id}/${mode} quick pass`);
+    assert.equal(c.update({ ...dockOn(id, mode), cursor: edge, now: 500 }).revealed, true, `${id}/${mode} rested`);
+  }
+});
+test("real layout: outer edges keep the normal short dwell", () => {
+  for (const [id, mode] of [[1, "bottom"], [3, "top"], [2, "bottom"]]) {
+    const edge = triggerMid(id, mode);
+    const c = createDockController();
+    c.update({ ...dockOn(id, mode), cursor: edge, now: 0 });
+    assert.equal(c.update({ ...dockOn(id, mode), cursor: edge, now: 150 }).revealed, true, `${id}/${mode}`);
+  }
+});
+test("a partly shared edge still blocks the shared part (only a FULLY shared edge relaxes)", () => {
+  // BUILTIN's left edge: x=0..2 at y 0..982; the ultra-wide (x<2549, y<=0) lies beyond only for y<=0 -> none inside; use a synthetic partial case.
+  const A = { id: 7, bounds: { x: 0, y: 0, width: 1000, height: 1000 } };
+  const B = { id: 8, bounds: { x: 1000, y: 0, width: 1000, height: 400 } }; // right of A, covers only its top 40 %
+  const ds = [A, B];
+  const c = createDockController();
+  const inShared = { x: 999, y: 200 };
+  assert.equal(edgeIsShared("right", A.bounds, inShared, ds), true);
+  const o = { ...base, displays: ds, dockDisplayId: 7, mode: "right" };
+  c.update({ ...o, cursor: inShared, now: 0 });
+  assert.equal(c.update({ ...o, cursor: inShared, now: 2000 }).revealed, false);
+  const outer = { x: 999, y: 800 };
+  c.update({ ...o, cursor: outer, now: 3000 });
+  assert.equal(c.update({ ...o, cursor: outer, now: 3200 }).revealed, true);
+});
