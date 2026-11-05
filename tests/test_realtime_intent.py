@@ -511,6 +511,20 @@ class _UpstreamHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
+def _tree_snapshot(directory):
+    """Sorted ``(relative path, mtime)`` pairs; files the worker deletes mid-scan are skipped."""
+
+    entries = []
+    for root, _dirs, files in os.walk(directory):
+        for name in files:
+            path = os.path.join(root, name)
+            try:
+                entries.append((os.path.relpath(path, directory), os.path.getmtime(path)))
+            except FileNotFoundError:
+                continue  # atomic-write temp file already replaced
+    return sorted(entries)
+
+
 class EndpointTest(unittest.TestCase):
     def setUp(self):
         session, _bot = build_dry_run_session()
@@ -698,11 +712,7 @@ class EndpointTest(unittest.TestCase):
             stable = 0
             while time.monotonic() < deadline:
                 latest = web_gui._read_micromachine_compile_result(directory) or {}
-                snapshot = sorted(
-                    (os.path.relpath(os.path.join(root, name), directory), os.path.getmtime(os.path.join(root, name)))
-                    for root, _dirs, files in os.walk(directory)
-                    for name in files
-                )
+                snapshot = _tree_snapshot(directory)
                 if latest.get("update_id") == update_id and snapshot == previous:
                     stable += 1
                     if stable >= 5:
