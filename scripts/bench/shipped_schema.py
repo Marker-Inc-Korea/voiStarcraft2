@@ -22,26 +22,24 @@ from starcraft_commander import policy_modulation as PM  # noqa: E402
 from starcraft_commander import realtime_intent as RI  # noqa: E402
 from starcraft_commander import web_gui as WG  # noqa: E402
 
+import os as _os
+
+DECISION_MODE = _os.environ.get("BENCH_DECISION", "new")  # see MODES below;  # 'baseline' = main before this change; 'new' = shipped web_gui._decide_realtime_intent
+
 TOOL_NAME = RI.SUBMIT_COMMAND_TOOL_NAME
-VARIANTS = ("shipped", "shipped_fewshot")
 CANON_IS_VECTOR = True  # scoring.score_prediction uses canonicalize() below
 
-# --- few-shot additions. Every user text below was checked NOT to occur in corpus.jsonl (see test_scoring). -----------------
-FEWSHOT_EXAMPLES = [
-    ("군수공장 하나 지어줘", {"command_layer": "macro", "goal": "군수공장 건설", "macro": {"task_type": "tech_transition", "building_tasks": [{"building_type": "TERRAN_FACTORY", "count": 1}]}}),
-    ("토르 중심으로 가자", {"command_layer": "macro", "goal": "토르 중심 운영", "macro": {"task_type": "sustain_production", "production_targets": ["TERRAN_THOR"], "standing_order": True}}),
-    ("바이킹 두 기는 정찰, 탱크 세 기는 오른쪽 길로 적 본진 공격", {"command_layer": "operation", "goal": "정찰 + 우회 공격", "operations": [
-        {"task_type": "scout_with_units", "composition": [{"unit_type": "TERRAN_VIKINGFIGHTER", "count": 2}]},
-        {"task_type": "pressure_with_main_army", "composition": [{"unit_type": "TERRAN_SIEGETANK", "count": 3}], "route_type": "flank_right", "location": "enemy_main"}]}),
-    ("공격 부대에 탱크 두 기 더 보내", {"command_layer": "operation", "goal": "공격 증원", "operations": [
-        {"operation_id": "attack", "operation_action": "reinforce", "composition": [{"unit_type": "TERRAN_SIEGETANK", "count": 2}]}]}),
-    ("공격 병력을 마린 여섯 기로 줄여", {"command_layer": "operation", "goal": "공격 병력 축소", "operations": [
-        {"operation_id": "attack", "operation_action": "resize", "composition": [{"unit_type": "TERRAN_MARINE", "count": 6}]}]}),
-    ("그 자리에서 멈춰", {"command_layer": "emergency", "goal": "제자리 정지", "emergency": {"hold_position": True}}),
-    ("야마토 쏘지 마", {"command_layer": "micro", "goal": "야마토 금지", "clarification": "야마토를 쏘지 않을게요. 대신 무엇을 할까요?"}),
-    ("맵 좌표 30, 40 으로 가", {"command_layer": "operation", "goal": "좌표 요청", "clarification": "좌표 대신 '적 앞마당으로 이동'처럼 장소 이름으로 말씀해 주세요."}),
-    ("저글링 뽑아", {"command_layer": "macro", "goal": "비지원 종족", "clarification": "테란 유닛만 지원해요. 어떤 유닛을 생산할까요?"}),
-]
+# --- A/B variants over the SHIPPED prompt -----------------------------------------------------------------------------
+# "shipped"  = main as of the baseline (byte-identical to the original build_realtime_instructions, no transcription hints)
+# "rules"    = + rules 8-14;  "fewshot" = + nine extra examples;  "both" = + both;
+# a "_h" suffix = transcription language/prompt hints in the minted session ("both_h" is the product default).
+VARIANTS = ("shipped", "rules", "fewshot", "both", "shipped_h", "both_h")
+_INSTR = {"shipped": (False, False), "rules": (True, False), "fewshot": (False, True), "both": (True, True),
+          "shipped_h": (False, False), "both_h": (True, True)}
+
+
+def variant_has_hints(variant: str) -> bool:
+    return variant.endswith("_h")
 
 
 def build_tool(variant: str = "shipped") -> dict:
@@ -56,24 +54,19 @@ def to_chat_tool(tool: dict) -> dict:
 
 
 def build_instructions(variant: str = "shipped") -> str:
-    base = RI.build_realtime_instructions()
-    if variant == "shipped":
-        return base
-    if variant == "shipped_fewshot":
-        import json
-
-        shots = "\n".join(
-            f"'{u}' -> " + json.dumps(a, ensure_ascii=False, separators=(",", ":")) for u, a in FEWSHOT_EXAMPLES
-        )
-        return base + "ADDITIONAL EXAMPLES / 추가 예시 (arguments as sent):\n" + shots + "\n"
-    raise ValueError(variant)
+    rules, fewshot = _INSTR[variant]
+    return RI.build_realtime_instructions(rules=rules, fewshot=fewshot)
 
 
 def realtime_session_body(model: str, variant: str, *, vad_silence_ms: int | None, transcription: bool = True) -> dict:
     """The exact /realtime/client_secrets body the shipped backend sends (optionally swapping instructions / endpointing)."""
+    hints = variant_has_hints(variant)
     cfg = RI.RealtimeUpstreamConfig(base_url=RI.DEFAULT_REALTIME_BASE_URL, model=model, api_key="",
-                                    vad_silence_ms=vad_silence_ms or RI.DEFAULT_VAD_SILENCE_MS)
-    body = RI._session_body(cfg, transcription=transcription, text_output=True)
+                                    vad_silence_ms=vad_silence_ms or RI.DEFAULT_VAD_SILENCE_MS,
+                                    transcribe_language=RI.HINTS_TRANSCRIBE_LANGUAGE if hints else "",
+                                    transcribe_prompt=RI.HINTS_TRANSCRIBE_PROMPT if hints else "")
+    body = RI._session_body(cfg, transcription=transcription, text_output=True,
+                            transcription_hints=variant_has_hints(variant))
     sess = body["session"]
     sess["instructions"] = build_instructions(variant)
     if vad_silence_ms is None:  # manual commit endpointing
@@ -105,31 +98,61 @@ def tool_args_to_provider_output(args):
     return RI.tool_arguments_to_provider_output(args)
 
 
+def _baseline_decide(transcript: str, tool_args):
+    """Decision logic of main BEFORE this change (emergency regex + named-cancel guard, tool call + negation guards,
+    legacy micro fast path, negation guard). Kept verbatim for the A/B."""
+    if transcript and WG._micromachine_request_is_emergency(transcript, None) and not WG._realtime_call_is_named_operation_cancel(tool_args, transcript):
+        return {"kind": "executed", "tier": "emergency", "source": "emergency_override" if tool_args is not None else "emergency_fast_path",
+                "provider_output": WG._micromachine_emergency_safety_output(transcript)}
+    if tool_args is not None:
+        tier = RI.classify_tier(tool_args)
+        if tier == RI.TIER_CLARIFICATION:
+            RI.tool_arguments_to_provider_output(tool_args)
+            return {"kind": "clarification", "tier": tier, "source": "tool_call"}
+        if (tier == RI.TIER_EMERGENCY and RI.transcript_negates_emergency(transcript)) or (
+                tier == RI.TIER_MICRO and RI.micro_phrase_is_negated(transcript)):
+            return {"kind": "blocked", "tier": tier, "source": "negation_blocked"}
+        return {"kind": "executed", "tier": tier, "source": "tool_call", "provider_output": RI.tool_arguments_to_provider_output(tool_args)}
+    fast = RI.match_micro_fast_path(transcript)
+    if fast is not None:
+        return {"kind": "executed", "tier": RI.TIER_MICRO, "source": "micro_fast_path", "provider_output": RI.tool_arguments_to_provider_output(fast)}
+    if RI.transcript_is_pure_negated_emergency(transcript) or RI.micro_phrase_is_negated(transcript):
+        return {"kind": "blocked", "tier": RI.TIER_CLARIFICATION, "source": "negation_guard"}
+    return {"kind": "unresolved", "tier": "unresolved", "source": "text_llm"}
+
+
+MODES = ("baseline", "guard", "fast", "new")  # decision layers: pre-change | +raw-control guard | +fast path | both (= product)
+
+
+def set_mode(mode: str) -> None:
+    global DECISION_MODE
+    if mode not in MODES:
+        raise ValueError(mode)
+    DECISION_MODE = mode
+
+
 def handler_outcome(transcript: str, tool_args) -> dict:
-    """Emulate web_gui._handle_realtime_intent. kind: executed | clarification | blocked | invalid | unresolved."""
+    """Emulate web_gui `/api/realtime/intent`. kind: executed | clarification | blocked | invalid | unresolved.
+
+    Modes: baseline = decision logic of main before this change; guard = shipped function with the extended fast path
+    disabled; fast = shipped function with the raw-control/injection guard disabled; new = the shipped function."""
+    import contextlib
+    from unittest import mock
+
     transcript = " ".join((transcript or "").split())[:2000]
     try:
-        if transcript and WG._micromachine_request_is_emergency(transcript, None):
-            return {"kind": "executed", "tier": "emergency", "source": "emergency_override" if tool_args is not None else "emergency_fast_path",
-                    "provider_output": WG._micromachine_emergency_safety_output(transcript)}
-        if tool_args is not None:
-            tier = RI.classify_tier(tool_args)
-            if tier == RI.TIER_CLARIFICATION:
-                RI.tool_arguments_to_provider_output(tool_args)
-                return {"kind": "clarification", "tier": tier, "source": "tool_call"}
-            negated = (tier == RI.TIER_EMERGENCY and RI.transcript_negates_emergency(transcript)) or (
-                tier == RI.TIER_MICRO and RI.micro_phrase_is_negated(transcript))
-            if negated:
-                return {"kind": "blocked", "tier": tier, "source": "negation_blocked"}
-            return {"kind": "executed", "tier": tier, "source": "tool_call",
-                    "provider_output": RI.tool_arguments_to_provider_output(tool_args)}
-        fast = RI.match_micro_fast_path(transcript)
-        if fast is not None:
-            return {"kind": "executed", "tier": RI.TIER_MICRO, "source": "micro_fast_path",
-                    "provider_output": RI.tool_arguments_to_provider_output(fast)}
-        if RI.transcript_is_pure_negated_emergency(transcript) or RI.micro_phrase_is_negated(transcript):
-            return {"kind": "blocked", "tier": RI.TIER_CLARIFICATION, "source": "negation_guard"}
-        return {"kind": "unresolved", "tier": "unresolved", "source": "text_llm"}
+        if DECISION_MODE == "baseline":
+            return _baseline_decide(transcript, tool_args)
+        with contextlib.ExitStack() as stack:
+            if DECISION_MODE == "guard":
+                stack.enter_context(mock.patch.object(RI, "match_fast_path", lambda t: None))
+            if DECISION_MODE == "fast":
+                stack.enter_context(mock.patch.object(RI, "transcript_is_raw_control_or_injection", lambda t: False))
+            d = WG._decide_realtime_intent(transcript, tool_args)
+        out = {"kind": d.kind, "tier": d.tier, "source": d.source, "family": d.family}
+        if d.provider_output is not None:
+            out["provider_output"] = d.provider_output
+        return out
     except (ValueError, TypeError, KeyError) as exc:
         return {"kind": "invalid", "tier": "invalid", "source": "tool_call", "error": str(exc)[:160]}
 
@@ -224,7 +247,7 @@ def canonicalize(args, transcript: str | None, outcome: dict | None = None):
     return canon, layer, True, "ok", outcome
 
 
-def fast_outcome_from_ext_rules(old_args: dict | None) -> dict | None:
+def _unused_fast_outcome_from_ext_rules(old_args: dict | None) -> dict | None:
     """Convert a fastpath.ext_rules result (private-schema shape) into a shipped tool call, then run it through the
     shipped lowering (so it is DSL-validated like everything else)."""
     if old_args is None:
