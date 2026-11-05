@@ -686,19 +686,33 @@ class EndpointTest(unittest.TestCase):
         status, payload = self.post(
             "/api/realtime/intent", {"blackboard_dir": directory, **doc}, **kwargs
         )
-        # Accepted intents are published asynchronously; let the worker finish
-        # writing into ``directory`` before the caller's TemporaryDirectory is
-        # torn down (slow CI runners otherwise race the cleanup).
+        # Accepted intents are published asynchronously: the worker writes the
+        # latest record, archives it, then prunes history inside ``directory``.
+        # Return only once that tree has stopped changing so the caller's
+        # TemporaryDirectory is never removed under the worker (slow CI runners
+        # otherwise race the cleanup).
         update_id = payload.get("update_id") if isinstance(payload, dict) else None
         if status == 202 and update_id:
             deadline = time.monotonic() + 10
+            previous = None
+            stable = 0
             while time.monotonic() < deadline:
                 latest = web_gui._read_micromachine_compile_result(directory) or {}
-                if latest.get("update_id") == update_id:
-                    break
-                time.sleep(0.01)
+                snapshot = sorted(
+                    (os.path.relpath(os.path.join(root, name), directory), os.path.getmtime(os.path.join(root, name)))
+                    for root, _dirs, files in os.walk(directory)
+                    for name in files
+                )
+                if latest.get("update_id") == update_id and snapshot == previous:
+                    stable += 1
+                    if stable >= 5:
+                        break
+                else:
+                    stable = 0
+                previous = snapshot
+                time.sleep(0.02)
             else:
-                self.fail(f"compile result for {update_id!r} never appeared")
+                self.fail(f"compile result for {update_id!r} never settled")
         return status, payload
 
     def test_tool_call_parallel_operations_are_submitted_and_compiled(self):
