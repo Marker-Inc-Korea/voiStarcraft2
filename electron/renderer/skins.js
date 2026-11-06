@@ -8,12 +8,14 @@
 })(typeof self !== "undefined" ? self : this, function () {
   const SKINS = Object.freeze(["cosmic", "terminal"]);
   const DEFAULT_SKIN = "cosmic";
-  const CHAMFER = Object.freeze({ cosmic: 0, terminal: 12 });
+  // Corner smoothing per skin (0 = circular arc, 1 = most continuous "squircle"): every corner of every skin is rounded;
+  // the terminal keeps its green/black monospace look as colour and effect only, never as angular geometry.
+  const SMOOTH = Object.freeze({ cosmic: 0.6, terminal: 0.45 });
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
   const fixed = (value, digits = 2) => value.toFixed(digits);
 
   const normalize = skin => (SKINS.includes(skin) ? skin : DEFAULT_SKIN);
-  const chamferFor = skin => CHAMFER[normalize(skin)];
+  const smoothFor = skin => SMOOTH[normalize(skin)];
 
   // alpha = glass.alpha (0.08..0.9). Lower alpha = more see-through = stronger text halo / line scrim.
   function legibility(skin, alpha) {
@@ -33,5 +35,5 @@
     };
   }
 
-  return { SKINS, DEFAULT_SKIN, CHAMFER, normalize, chamferFor, legibility, cssVars };
+  return { SKINS, DEFAULT_SKIN, SMOOTH, normalize, smoothFor, legibility, cssVars };
 });

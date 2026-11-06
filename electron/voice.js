@@ -7,6 +7,7 @@ const { matchFastRule } = require("./fast_rules.js");
 
 const REALTIME_UA = "curl/8.7.1"; // the Cloudflare-fronted proxy rejects the default Node UA (error 1010)
 const SECRET_MIN_REMAINING_S = 30;
+const WARM_REFRESH_LEAD_S = 60;
 const SESSION_ROTATE_MS = 55 * 60 * 1000; // Realtime sessions are capped at 60 minutes.
 const TRANSCRIPT_GRACE_MS = 350;
 const ACTING_HOLD_MS = 1400;
@@ -48,6 +49,8 @@ function createVoiceClient(options) {
   let eventCounter = 0;
   const benignEventIds = new Set();
   let sessionReadyTimer = null;
+  let warmTimer = null;
+  const warmPool = () => getPrefs().warmPool !== false; // pre-minted secret on by default (measured: docs/voice-intent-benchmark.md round 3)
   let pttHeld = false;
   let pttItem = 0;
 
@@ -78,7 +81,27 @@ function createVoiceClient(options) {
     const payload = await requestJson("/api/realtime/session", { method: "POST", body: "{}" });
     session = { ...validateRealtimeSession(payload), fetchedAt: now() };
     onSession({ model: session.model, tierHint: session.tierHint });
+    scheduleWarmRefresh();
     return session;
+  }
+  // Warm pool (prefs.warmPool, default on): keep a pre-minted client secret so arming voice skips the mint round trip. Secrets live ~10 min
+  // and can open several sockets; re-mint WARM_REFRESH_LEAD_S before expiry while voice is idle.
+  function scheduleWarmRefresh() {
+    if (!warmPool()) return;
+    if (warmTimer) { clearTimer(warmTimer); warmTimer = null; }
+    if (!session || session.expiresAt === null) return;
+    // Cap at 30 min: setTimeout delays above 2^31-1 ms fire immediately, and unref(): the pool must never keep the process alive.
+    const delay = Math.min(30 * 60 * 1000, Math.max(5000, (session.expiresAt - now() / 1000 - WARM_REFRESH_LEAD_S) * 1000));
+    warmTimer = setTimer(() => {
+      warmTimer = null;
+      if (machine.snapshot().active) { scheduleWarmRefresh(); return; } // the live socket outlives its secret; reconnects mint on demand
+      prefetch().catch(() => {});
+    }, delay);
+    if (warmTimer && typeof warmTimer.unref === "function") warmTimer.unref();
+  }
+  async function prefetch() {
+    if (!warmPool()) return false;
+    try { await ensureSession(true); return true; } catch (error) { onLog(`prefetch failed: ${String(error && error.message || error).slice(0, 160)}`); return false; }
   }
   function scheduleReconnect(reason) {
     if (!machine.snapshot().active) return;
@@ -264,6 +287,8 @@ function createVoiceClient(options) {
 
   return {
     machine,
+    // Pre-mint the client secret (call once at app start; refreshes itself WARM_REFRESH_LEAD_S before expiry while voice is idle).
+    prefetch,
     async start() {
       if (machine.snapshot().active) return machine.snapshot();
       attempts = 0;
@@ -278,7 +303,7 @@ function createVoiceClient(options) {
       if (reconnectTimer) { clearTimer(reconnectTimer); reconnectTimer = null; }
       if (actingTimer) { clearTimer(actingTimer); actingTimer = null; }
       teardownSocket();
-      session = null;
+      if (!(warmPool() && secretUsable())) session = null; // warm pool: the unexpired secret serves the next arming without a mint round trip
       return machine.setActive(false);
     },
     // Called with a validated pcm16 Buffer; silently dropped unless the socket is ready.

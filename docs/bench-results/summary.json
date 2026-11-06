@@ -4994,5 +4994,122 @@
    "tool_choice_named": "DROP (non-functional)",
    "warm_socket": "already shipped"
   }
+ },
+ "round3": {
+  "load_caveat": "all absolute ms load-inflated (r1 load5 54-143, r2 65-78, r3 ~225); no quiet-machine absolute latency measured",
+  "tables": "docs/bench-results/round3_stage_tables.json (scripts/bench/round3_report.py)",
+  "dominant_stage": {
+   "rule words (emergency+micro)": "a_vad",
+   "micro model path": "a_vad/c_model",
+   "operation": "c_model",
+   "macro": "a_vad/c_model"
+  },
+  "ack_ms_p50_p95": {
+   "r2_vad450_load70": {
+    "rule": [
+     1535.1,
+     1589.2
+    ],
+    "micro_model": [
+     2144.6,
+     2476.1
+    ],
+    "operation": [
+     2620.0,
+     3626.2
+    ],
+    "macro": [
+     2093.3,
+     2188.8
+    ]
+   },
+   "r3_base450_load225": {
+    "rule": [
+     2500.1,
+     3640.4
+    ],
+    "micro_model": [
+     3643.6,
+     5500.6
+    ],
+    "operation": [
+     3961.8,
+     10983.6
+    ],
+    "macro": [
+     3812.5,
+     7976.4
+    ]
+   }
+  },
+  "decisions": {
+   "lifecycle_refresh_skip": "adopted (compile-after-return p50 327/692/3445/3487 ms -> 17/22/16/18 ms by history bucket; 32/32 journey members byte-identical)",
+   "warm_pool_prefetch": "adopted (start-to-ready p50 6641 -> 3552 ms, load-inflated paired; one mint across 3 armings)",
+   "vad_silence_250_300_350": "dropped, keep 450 (accuracy)",
+   "energy_endpointing": "dropped (insufficient evidence)",
+   "early_fire_on_deltas": "dropped (unsafe: 5-24% wrong fires incl. hold/retreat on negated utterances; own-client gain p50 21 ms)"
+  },
+  "early_fire_replay": {
+   "0": {
+    "fires": 193,
+    "correct": 146,
+    "wrong": 47,
+    "wrong_pct": 24.4,
+    "wrong_on_negated_final": 28,
+    "wrong_emergency": 36,
+    "gain_p50": 4.2,
+    "gain_p95": 1157.4,
+    "positive_gain": 72
+   },
+   "120": {
+    "fires": 46,
+    "correct": 40,
+    "wrong": 6,
+    "wrong_pct": 13.0,
+    "wrong_on_negated_final": 3,
+    "wrong_emergency": 3,
+    "gain_p50": 238.3,
+    "gain_p95": 2737.6,
+    "positive_gain": 37
+   },
+   "250": {
+    "fires": 36,
+    "correct": 31,
+    "wrong": 5,
+    "wrong_pct": 13.9,
+    "wrong_on_negated_final": 3,
+    "wrong_emergency": 3,
+    "gain_p50": 792.2,
+    "gain_p95": 2607.6,
+    "positive_gain": 31
+   },
+   "400": {
+    "fires": 20,
+    "correct": 19,
+    "wrong": 1,
+    "wrong_pct": 5.0,
+    "wrong_on_negated_final": 1,
+    "wrong_emergency": 1,
+    "gain_p50": 757.4,
+    "gain_p95": 2553.5,
+    "positive_gain": 19
+   },
+   "600": {
+    "fires": 17,
+    "correct": 16,
+    "wrong": 1,
+    "wrong_pct": 5.9,
+    "wrong_on_negated_final": 1,
+    "wrong_emergency": 1,
+    "gain_p50": 603.4,
+    "gain_p95": 2353.5,
+    "positive_gain": 16
+   }
+  },
+  "lifecycle_skip_ab": "docs/bench-results/lifecycle_skip_ab.json",
+  "not_done": [
+   "quiet-machine absolute latency",
+   "f_publish harness artifact on rule path not re-measured with concurrent polling"
+  ]
  }
 }

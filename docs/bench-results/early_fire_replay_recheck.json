@@ -1,0 +1,57 @@
+{
+ "0": {
+  "fires": 193,
+  "correct": 146,
+  "wrong": 47,
+  "wrong_pct": 24.4,
+  "wrong_on_negated_final": 28,
+  "wrong_emergency": 36,
+  "gain_p50": 4.2,
+  "gain_p95": 1157.4,
+  "positive_gain": 72
+ },
+ "120": {
+  "fires": 46,
+  "correct": 40,
+  "wrong": 6,
+  "wrong_pct": 13.0,
+  "wrong_on_negated_final": 3,
+  "wrong_emergency": 3,
+  "gain_p50": 238.3,
+  "gain_p95": 2737.6,
+  "positive_gain": 37
+ },
+ "250": {
+  "fires": 36,
+  "correct": 31,
+  "wrong": 5,
+  "wrong_pct": 13.9,
+  "wrong_on_negated_final": 3,
+  "wrong_emergency": 3,
+  "gain_p50": 792.2,
+  "gain_p95": 2607.6,
+  "positive_gain": 31
+ },
+ "400": {
+  "fires": 20,
+  "correct": 19,
+  "wrong": 1,
+  "wrong_pct": 5.0,
+  "wrong_on_negated_final": 1,
+  "wrong_emergency": 1,
+  "gain_p50": 757.4,
+  "gain_p95": 2553.5,
+  "positive_gain": 19
+ },
+ "600": {
+  "fires": 17,
+  "correct": 16,
+  "wrong": 1,
+  "wrong_pct": 5.9,
+  "wrong_on_negated_final": 1,
+  "wrong_emergency": 1,
+  "gain_p50": 603.4,
+  "gain_p95": 2353.5,
+  "positive_gain": 16
+ }
+}

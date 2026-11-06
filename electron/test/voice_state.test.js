@@ -102,6 +102,16 @@ class FakeWs extends EventEmitter {
   server(event) { this.emit("message", JSON.stringify(event)); }
 }
 const flush = () => new Promise(resolve => setImmediate(() => setImmediate(resolve)));
+// Poll for a condition instead of sleeping a fixed time: real timers are late on a loaded machine.
+async function until(check, { timeoutMs = 4000, stepMs = 5 } = {}) {
+  const t0 = Date.now();
+  for (;;) {
+    if (check()) return true;
+    if (Date.now() - t0 > timeoutMs) return false;
+    await new Promise(resolve => setTimeout(resolve, stepMs));
+  }
+}
+
 function client(overrides = {}) {
   const log = { states: [], transcripts: [], intents: [], requests: [] };
   let t = 5000;
@@ -169,7 +179,7 @@ test("client: full turn posts intent with tool args, transcript and latency; sta
   const done = log.intents.find(i => i.kind === "submitted");
   assert.equal(done.ok, true); assert.equal(done.tier, "operation"); assert.equal(typeof done.latency_ms.tool_call_to_publish, "number");
   assert.ok(log.states.includes("listening") && log.states.includes("thinking") && log.states.includes("acting"));
-  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.ok(await until(() => c.snapshot().state === "idle"), "returns to idle once the acting hold elapses");
   assert.equal(c.snapshot().state, "idle");
   c.stop();
 });
@@ -198,7 +208,7 @@ test("client: socket close while armed -> error then reconnect with a fresh sock
   const first = FakeWs.last; first.server({ type: "session.updated" });
   first.emit("close", 1006, Buffer.from("gone"));
   assert.equal(c.snapshot().state, "error"); assert.match(c.snapshot().reason, /1006/);
-  await new Promise(resolve => setTimeout(resolve, 30)); await flush();
+  assert.ok(await until(() => FakeWs.last !== first), "a reconnect opens a new socket"); await flush();
   assert.notEqual(FakeWs.last, first);
   FakeWs.last.server({ type: "session.updated" });
   assert.equal(c.snapshot().state, "idle");
@@ -210,7 +220,7 @@ test("client: expired secret is re-minted on reconnect", async () => {
   await c.start(); await flush();
   const first = FakeWs.last; first.server({ type: "session.updated" });
   first.emit("close", 1006, Buffer.from(""));
-  await new Promise(resolve => setTimeout(resolve, 30)); await flush();
+  assert.ok(await until(() => mints === 2), "the reconnect mints a fresh secret"); await flush();
   assert.equal(mints, 2);
   assert.equal(FakeWs.last.options.headers.Authorization, `${"Bear" + "er"} ek_secret_2xxx`);
   c.stop();
@@ -335,7 +345,7 @@ test("rule-first: a model call arriving while the rule request is pending is dro
   assert.equal(rc.log.posts.length, 1, "parked model call must not post");
   assert.equal(rc.c.snapshot().state, "acting");
   assert.equal(cancels(ws).length, 1);
-  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.ok(await until(() => rc.c.snapshot().state === "idle"), "returns to idle once the acting hold elapses");
   assert.equal(rc.c.snapshot().state, "idle");
   rc.c.stop();
 });
@@ -372,4 +382,32 @@ test("rule-first can be switched off by preference", async () => {
   await flush();
   assert.equal(rc.log.posts.length, 0);
   off.c.stop();
+});
+
+test("warm pool: prefetch pre-mints the secret, arming reuses it and a stop/start cycle does not mint again", async () => {
+  const { c, log } = client();
+  assert.equal(await c.prefetch(), true);
+  assert.equal(log.requests.filter(r => r.pathname === "/api/realtime/session").length, 1);
+  await c.start(); await flush();
+  FakeWs.last.server({ type: "session.updated" });
+  assert.equal(log.requests.filter(r => r.pathname === "/api/realtime/session").length, 1, "start() must reuse the pre-minted secret");
+  c.stop();
+  await c.start(); await flush();
+  assert.equal(log.requests.filter(r => r.pathname === "/api/realtime/session").length, 1, "stop() keeps an unexpired secret");
+  c.stop();
+});
+test("warm pool: an expiring secret is not reused, and warmPool:false restores mint-per-arming", async () => {
+  const log = { sessions: 0 };
+  const mk = prefs => createVoiceClient({
+    requestJson: async pathname => { if (pathname === "/api/realtime/session") { log.sessions += 1; return { client_secret: "ek_testsecret", expires_at: Math.floor(Date.now() / 1000) + 10, ws_url: "wss://rt.example/v1/realtime?model=m", model: "m", tools: [] }; } return {}; },
+    WebSocketImpl: FakeWs, env: {}, getPrefs: () => prefs, setTimer: () => 0, clearTimer: () => {},
+  });
+  const a = mk({}); await a.prefetch(); await a.start(); await flush(); a.stop();
+  assert.equal(log.sessions, 2, "a secret with < 30 s left must be re-minted");
+  log.sessions = 0;
+  const b = mk({ warmPool: false });
+  assert.equal(await b.prefetch(), false);
+  assert.equal(log.sessions, 0);
+  await b.start(); await flush(); b.stop();
+  assert.equal(log.sessions, 1);
 });

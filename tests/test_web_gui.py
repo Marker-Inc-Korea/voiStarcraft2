@@ -11753,6 +11753,21 @@ function response(payload) {
         self.server.stop()  # Second stop must be a quiet no-op.
 
 
+@contextlib.contextmanager
+def _tempdir_after_bridge_stop(bridge):
+    """A TemporaryDirectory whose bridge worker is stopped BEFORE the directory is removed.
+
+    ``addCleanup(bridge.stop)`` runs only after a ``with tempfile.TemporaryDirectory()`` block exits, so a worker that is
+    still writing/pruning compile results races the directory removal (``OSError: Directory not empty``, py3.10 CI).
+    """
+
+    with tempfile.TemporaryDirectory() as directory:
+        try:
+            yield directory
+        finally:
+            bridge.stop()
+
+
 class SessionLoopBridgeTest(unittest.TestCase):
     """Bridge lifecycle, protocol conformance, and honesty tests (no HTTP)."""
 
@@ -14716,7 +14731,7 @@ class SessionLoopBridgeTest(unittest.TestCase):
         bridge.start()
         self.addCleanup(bridge.stop)
 
-        with tempfile.TemporaryDirectory() as directory:
+        with _tempdir_after_bridge_stop(bridge) as directory:
             first = bridge.submit_micromachine_modulation_background(
                 "탱크로 수비해",
                 blackboard_dir=directory,
@@ -14813,7 +14828,7 @@ class SessionLoopBridgeTest(unittest.TestCase):
         self.addCleanup(bridge.stop)
         self.addCleanup(release_first.set)
 
-        with tempfile.TemporaryDirectory() as directory:
+        with _tempdir_after_bridge_stop(bridge) as directory:
             first = bridge.submit_micromachine_modulation_background(
                 "오래된 수비 명령",
                 blackboard_dir=directory,
@@ -14876,7 +14891,7 @@ class SessionLoopBridgeTest(unittest.TestCase):
         self.addCleanup(bridge.stop)
         publish_frame = {"value": 10}
 
-        with tempfile.TemporaryDirectory() as directory:
+        with _tempdir_after_bridge_stop(bridge) as directory:
             bridge.submit_micromachine_modulation_background(
                 "탱크로 수비해",
                 blackboard_dir=directory,
@@ -14918,7 +14933,7 @@ class SessionLoopBridgeTest(unittest.TestCase):
         bridge.start()
         self.addCleanup(bridge.stop)
 
-        with tempfile.TemporaryDirectory() as directory:
+        with _tempdir_after_bridge_stop(bridge) as directory:
             bridge.submit_micromachine_modulation_background(
                 "탱크로 수비해",
                 blackboard_dir=directory,
@@ -14953,7 +14968,7 @@ class SessionLoopBridgeTest(unittest.TestCase):
         def fail_frame_resolution() -> int:
             raise OSError("validated snapshot unavailable")
 
-        with tempfile.TemporaryDirectory() as directory:
+        with _tempdir_after_bridge_stop(bridge) as directory:
             bridge.submit_micromachine_modulation_background(
                 "긴급 즉시 후퇴",
                 blackboard_dir=directory,
@@ -15113,7 +15128,7 @@ class SessionLoopBridgeTest(unittest.TestCase):
         )
         bridge.start()
         self.addCleanup(bridge.stop)
-        with tempfile.TemporaryDirectory() as directory:
+        with _tempdir_after_bridge_stop(bridge) as directory:
             bridge.submit_micromachine_modulation_background(
                 "긴급 즉시 후퇴",
                 blackboard_dir=directory,

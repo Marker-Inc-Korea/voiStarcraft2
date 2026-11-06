@@ -1,0 +1,91 @@
+/* Design tokens shared by the HUD (style.css) and the tactical board (board/board.css).
+   Values follow the Apple HIG material language and the public design tokens of the Aside app:
+   a 4 px spacing unit, a corner scale multiplied by a squircle factor of 1.4, blur steps 4/8/12/16/24/64,
+   in-out and out easings, and a neutral low-chroma oklch palette with an alpha ladder (.85 / .55 / .15 / .10).
+   Dark is the base; light follows prefers-color-scheme. A skin may re-declare the base channels below
+   (--fg-l, --fg-chroma, --fg-hue, --scrim-rgb, ...) on <body>: every derived token is declared on `:root, body`
+   so it is re-evaluated from the skin's channels. */
+
+:root {
+  color-scheme: dark light;
+
+  /* spacing: 4 px unit */
+  --space-1: .25rem; --space-2: .5rem; --space-3: .75rem; --space-4: 1rem;
+  --space-5: 1.25rem; --space-6: 1.5rem; --space-8: 2rem;
+
+  /* corners: squircle factor 1.4 (continuous curvature where the engine supports corner-shape) */
+  --squircle: 1.4;
+  --radius-xs: calc(.125rem * var(--squircle));
+  --radius-sm: calc(.25rem * var(--squircle));
+  --radius-md: calc(.375rem * var(--squircle));
+  --radius-lg: calc(.5rem * var(--squircle));
+  --radius-xl: calc(.75rem * var(--squircle));
+  --radius-2xl: calc(1rem * var(--squircle));
+  --radius-3xl: calc(1.5rem * var(--squircle));
+  --radius-pill: 1000px;
+
+  /* blur steps */
+  --blur-xs: 4px; --blur-sm: 8px; --blur-md: 12px; --blur-lg: 16px; --blur-xl: 24px; --blur-2xl: 64px;
+
+  /* motion: ease-out for entrances and press feedback, in-out for state changes */
+  --ease-in-out: cubic-bezier(.4, 0, .2, 1);
+  --ease-out: cubic-bezier(0, 0, .2, 1);
+  --dur-press: 120ms; --dur-fast: 150ms; --dur: 220ms; --dur-slow: 250ms;
+
+  /* type: system font stack first (SF on macOS); weights 400/500/600/700; tabular numerals for counters */
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Apple SD Gothic Neo", "Pretendard", "Noto Sans KR", sans-serif;
+  --font-mono: "Berkeley Mono", "Geist Mono", "JetBrains Mono", "SF Mono", ui-monospace, Menlo, "IBM Plex Mono", "Apple SD Gothic Neo", "Noto Sans Mono CJK KR", monospace;
+  --fs-2xs: 10px; --fs-xs: 11px; --fs-sm: 12px; --fs-base: 13px; --fs-md: 15px; --fs-lg: 17px; --fs-xl: 22px;
+  --fw-regular: 400; --fw-medium: 500; --fw-semibold: 600; --fw-bold: 700;
+
+  /* base channels: dark appearance */
+  --fg-l: 98.5%; --fg-chroma: 0; --fg-hue: 0;
+  --scrim-rgb: 4 5 16;       /* legibility scrim behind words */
+  --halo-rgb: 2 3 14;        /* text halo */
+  --shadow-rgb: 0 0 0;
+  --tint-l: 14%;             /* glass tint lightness */
+  --hl-a: .22;               /* inner top highlight alpha */
+  --seg-on: oklch(98.5% 0 0 / .18);
+  --destructive: oklch(70.4% .191 22.2);   /* red-400 */
+  --warn: oklch(83% .15 85);
+  --ok: oklch(79% .19 150);
+  --thumb: oklch(100% 0 0);
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --fg-l: 14.5%;
+    --scrim-rgb: 255 255 255;
+    --halo-rgb: 255 255 255;
+    --shadow-rgb: 20 24 40;
+    --tint-l: 95%;
+    --hl-a: .7;
+    --seg-on: oklch(100% 0 0 / .85);
+    --destructive: oklch(57.7% .245 27.3);  /* red-600 */
+    --warn: oklch(58% .14 70);
+    --ok: oklch(62% .19 150);
+  }
+}
+
+/* derived tokens: re-evaluated on <body> so a skin overriding the base channels recolours everything */
+:root, body {
+  --fg: oklch(var(--fg-l) var(--fg-chroma) var(--fg-hue));
+  --fg-primary: oklch(var(--fg-l) var(--fg-chroma) var(--fg-hue) / .85);
+  --fg-muted: oklch(var(--fg-l) var(--fg-chroma) var(--fg-hue) / .55);
+  --fill-muted: oklch(var(--fg-l) var(--fg-chroma) var(--fg-hue) / .15);
+  --fill-accent: oklch(var(--fg-l) var(--fg-chroma) var(--fg-hue) / .10);
+  --fill-faint: oklch(var(--fg-l) var(--fg-chroma) var(--fg-hue) / .06);
+  --border: oklch(var(--fg-l) var(--fg-chroma) var(--fg-hue) / .10);
+  --border-strong: oklch(var(--fg-l) var(--fg-chroma) var(--fg-hue) / .20);
+  --ring: oklch(var(--fg-l) var(--fg-chroma) var(--fg-hue) / .08);
+  --highlight: oklch(100% 0 0 / var(--hl-a));
+  --accent: hsl(var(--hue, 250) 85% 68%);
+  --focus: color-mix(in oklch, var(--accent) 70%, transparent);
+
+  /* shadow scale: soft, layered, low alpha */
+  --shadow-sm: 0 1px 2px rgb(var(--shadow-rgb) / .14), 0 0 0 .5px rgb(var(--shadow-rgb) / .06);
+  --shadow-md: 0 2px 6px rgb(var(--shadow-rgb) / .10), 0 8px 20px -4px rgb(var(--shadow-rgb) / .20);
+  --shadow-lg: 0 4px 12px rgb(var(--shadow-rgb) / .10), 0 16px 40px -8px rgb(var(--shadow-rgb) / .30);
+  /* material edge: hairline + inner top highlight (visionOS-like) */
+  --edge: inset 0 0 0 1px var(--border), inset 0 1px 0 var(--highlight);
+}
