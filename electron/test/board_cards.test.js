@@ -40,3 +40,32 @@ test("open count: live operations count, blocked ones do not; a vanished operati
   const gone = B.cardsFor([c], { operations: [] });
   assert.equal(gone.open, 0); assert.equal(gone.cards.length, 1);
 });
+test("ops count semantics: shows OPEN operations (falls as they block/complete), total only once none is open", () => {
+  const c = card(1, { updateId: "u1" });
+  const two = B.cardsFor([c], { operations: [op("a"), op("b")] });
+  assert.equal(two.open, 2); assert.equal(B.opsCount(two.cards.length, two.open), 2);
+  const oneBlocked = B.cardsFor([c], { operations: [op("a"), op("b", { disposition: "blocked", active: false })] });
+  assert.equal(oneBlocked.cards.length, 2); assert.equal(oneBlocked.open, 1); assert.equal(B.opsCount(oneBlocked.cards.length, oneBlocked.open), 1);
+  const oneDone = B.cardsFor([c], { operations: [op("a"), op("b", { disposition: "completed" })] });
+  assert.equal(oneDone.open, 1);
+  const none = B.cardsFor([c], { operations: [op("a", { disposition: "blocked" }), op("b", { disposition: "completed" })] });
+  assert.equal(none.open, 0); assert.equal(B.opsCount(none.cards.length, none.open), 2, "nothing open: shows the session total, never 0 beside history");
+});
+test("ops count against the fixture timeline: two open at first, one after the scripted blocker (the smoke check is time-dependent)", async () => {
+  const { createFakeBackend } = require("../fixtures/fake_backend.js");
+  const fb = createFakeBackend({ port: 0 });
+  const RealNow = Date.now; let offset = 0; Date.now = () => RealNow() + offset;
+  try {
+    const port = await fb.listen();
+    const args = { command_layer: "operation", goal: "g", operations: [
+      { operation_id: "scout", goal: "정찰", task_type: "scout" },
+      { operation_id: "strike", goal: "공격", task_type: "attack", fixture_stop_at: 4, fixture_blocked: "composition_shortfall" } ] };
+    const accepted = await (await fetch(`http://127.0.0.1:${port}/api/realtime/intent`, { method: "POST", body: JSON.stringify({ transcript: "t", tool_arguments: args }) })).json();
+    const c = card(1, { updateId: accepted.update_id, tier: "operation", source: "voice" });
+    const at = async seconds => { offset = seconds * 1000; return B.cardsFor([c], await (await fetch(`http://127.0.0.1:${port}/api/micromachine/status`)).json()); };
+    assert.equal((await at(1)).open, 2);
+    assert.equal((await at(4)).open, 2);
+    const late = await at(9);
+    assert.equal(late.open, 1); assert.equal(late.cards.length, 2); assert.equal(late.cards.filter(x => x.stages.includes("blocked")).length, 1);
+  } finally { Date.now = RealNow; await fb.close(); }
+});

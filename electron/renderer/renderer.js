@@ -113,7 +113,7 @@
     el.hidden = total === 0;
     el.dataset.live = open > 0 ? "yes" : "no";
     $("ops-word").textContent = t("ops");
-    $("ops-count").textContent = String(open || total);
+    $("ops-count").textContent = String(BoardCards.opsCount(total, open));
   }
 
   // ---------- bar: transcript, orb, gear dot ----------
