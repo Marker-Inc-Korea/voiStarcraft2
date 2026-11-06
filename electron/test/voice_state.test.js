@@ -373,3 +373,31 @@ test("rule-first can be switched off by preference", async () => {
   assert.equal(rc.log.posts.length, 0);
   off.c.stop();
 });
+
+test("warm pool: prefetch pre-mints the secret, arming reuses it and a stop/start cycle does not mint again", async () => {
+  const { c, log } = client();
+  assert.equal(await c.prefetch(), true);
+  assert.equal(log.requests.filter(r => r.pathname === "/api/realtime/session").length, 1);
+  await c.start(); await flush();
+  FakeWs.last.server({ type: "session.updated" });
+  assert.equal(log.requests.filter(r => r.pathname === "/api/realtime/session").length, 1, "start() must reuse the pre-minted secret");
+  c.stop();
+  await c.start(); await flush();
+  assert.equal(log.requests.filter(r => r.pathname === "/api/realtime/session").length, 1, "stop() keeps an unexpired secret");
+  c.stop();
+});
+test("warm pool: an expiring secret is not reused, and warmPool:false restores mint-per-arming", async () => {
+  const log = { sessions: 0 };
+  const mk = prefs => createVoiceClient({
+    requestJson: async pathname => { if (pathname === "/api/realtime/session") { log.sessions += 1; return { client_secret: "ek_testsecret", expires_at: Math.floor(Date.now() / 1000) + 10, ws_url: "wss://rt.example/v1/realtime?model=m", model: "m", tools: [] }; } return {}; },
+    WebSocketImpl: FakeWs, env: {}, getPrefs: () => prefs, setTimer: () => 0, clearTimer: () => {},
+  });
+  const a = mk({}); await a.prefetch(); await a.start(); await flush(); a.stop();
+  assert.equal(log.sessions, 2, "a secret with < 30 s left must be re-minted");
+  log.sessions = 0;
+  const b = mk({ warmPool: false });
+  assert.equal(await b.prefetch(), false);
+  assert.equal(log.sessions, 0);
+  await b.start(); await flush(); b.stop();
+  assert.equal(log.sessions, 1);
+});

@@ -1,0 +1,21 @@
+{
+ "uptime": "4:14  up 18 days,  5:51, 3 users, load averages: 54.05 87.08 143.58",
+ "load": [
+  54.0517578125,
+  87.08203125,
+  143.578125
+ ],
+ "steal": [
+  1.97,
+  1.26,
+  1.1
+ ],
+ "net": {
+  "n": 6,
+  "connect_ms_p50": 140.2,
+  "tls_ms_p50": 287.7,
+  "ttfb_ms_p50": 883.1,
+  "uptime": "4:14  up 18 days,  5:51, 3 users, load averages: 53.73 86.47 143.03",
+  "steal": 4.46
+ }
+}

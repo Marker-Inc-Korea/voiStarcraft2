@@ -538,6 +538,7 @@ app.whenReady().then(() => {
   loadSettings();
   dockDisplayId = resolveDockDisplay();
   voice = createVoice();
+  voice.prefetch().catch(() => {}); // warm pool: mint the Realtime secret now so the first arming skips the round trip
   registerIpc();
   createDockWindow();
   createBoardController(); // BOARD
