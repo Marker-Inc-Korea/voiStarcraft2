@@ -50,3 +50,19 @@ def lower_spoken(transcript: str) -> tuple[SC2CommandAction, ...]:
     match = match_fast_path(transcript)
     assert match is not None, f"fast path abstained on {transcript!r}"
     return _plan_actions(tool_arguments_to_provider_output(match.arguments))
+
+
+def lower_tool_args(arguments: dict) -> tuple[SC2CommandAction, ...]:
+    """A realtime ``submit_command`` call exactly as the model emits it -> Direct actions (no fast path)."""
+
+    return _plan_actions(tool_arguments_to_provider_output(arguments))
+
+
+def plan_for_tool_args(arguments: dict):
+    """Like :func:`lower_tool_args` but returns the whole ``SC2ExecutionPlan`` (audit/dependent plans included)."""
+
+    result = compile_policy_modulation_provider_output(tool_arguments_to_provider_output(arguments))
+    assert result.vector is not None, result
+    plan = route_policy_vector(result.vector).direct_plan
+    assert plan is not None
+    return plan
