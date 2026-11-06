@@ -472,3 +472,106 @@ def test_the_fast_rule_cap_is_untouched() -> None:
     assert len(PROMOTED_FAST_PATH_FAMILIES) <= MAX_PROMOTED_FAST_PATH_FAMILIES == 5
     for text in ("스캔", "뮤마", "보급 드롭", "이륙", "착륙", "배럭 띄워"):
         assert match_fast_path(text) is None, text
+
+
+# =========================================================================== ITEM 3: STRUCTURE TECH PREREQUISITES
+# UnitTypeData.tech_requirement = "structure required to build this unit"; the game answers
+# ActionResult.BuildTechRequirementsNotMet.  Table: starcraft_commander/terran_prerequisites.py, cross-checked here.
+
+
+def test_prerequisite_table_matches_burnysc2_and_stableid() -> None:
+    from sc2.constants import TERRAN_TECH_REQUIREMENT
+
+    from starcraft_commander.terran_prerequisites import TERRAN_TECH_REQUIREMENTS
+
+    assert {k.name: v.name for k, v in TERRAN_TECH_REQUIREMENT.items()} == TERRAN_TECH_REQUIREMENTS
+    stable = {u["name"].upper() for u in harness.audit.load_stableid()["Units"]}
+    for unit, required in TERRAN_TECH_REQUIREMENTS.items():
+        assert unit in stable and required in stable, (unit, required)
+
+
+def _train(unit: str, producer: str):
+    return SC2CommandAction(SC2ActionType.TRAIN_UNIT, unit, count=1, metadata={"producer": producer})
+
+
+def _build(structure: str, target="self_main"):
+    return SC2CommandAction(SC2ActionType.BUILD_STRUCTURE, structure, target=target, metadata={"building_type": structure})
+
+
+PREREQ_REFUSALS = [
+    # (name, bot builder, action, expected detail, korean needle)
+    ("Barracks needs a Supply Depot", lambda: harness.make_bot((U.SCV, 2)), _build("BARRACKS"), "missing_prerequisite: SUPPLYDEPOT", "보급고"),
+    ("Factory needs a Barracks", lambda: harness.make_bot((U.SCV, 2), (U.SUPPLYDEPOT, 1)), _build("FACTORY"), "missing_prerequisite: BARRACKS", "병영"),
+    ("Starport needs a Factory", lambda: harness.make_bot((U.SCV, 2), (U.SUPPLYDEPOT, 1), (U.BARRACKS, 1)), _build("STARPORT"), "missing_prerequisite: FACTORY", "군수공장"),
+    ("Bunker needs a Barracks", lambda: harness.make_bot((U.SCV, 2), (U.SUPPLYDEPOT, 1)), _build("BUNKER"), "missing_prerequisite: BARRACKS", "병영"),
+    ("Armory needs a Factory", lambda: harness.make_bot((U.SCV, 2), (U.BARRACKS, 1)), _build("ARMORY"), "missing_prerequisite: FACTORY", "군수공장"),
+    ("Fusion Core needs a Starport", lambda: harness.make_bot((U.SCV, 2), (U.FACTORY, 1)), _build("FUSIONCORE"), "missing_prerequisite: STARPORT", "우주공항"),
+    ("Ghost Academy needs a Barracks", lambda: harness.make_bot((U.SCV, 2)), _build("GHOSTACADEMY"), "missing_prerequisite: BARRACKS", "병영"),
+    ("Ghost needs a Ghost Academy", lambda: harness.make_bot((U.BARRACKS, 1), (U.BARRACKSTECHLAB, 0)), _train("GHOST", "BARRACKS"), "missing_prerequisite: GHOSTACADEMY", "유령 사관학교"),
+    ("Thor needs an Armory", lambda: harness.make_bot((U.FACTORY, 1)), _train("THOR", "FACTORY"), "missing_prerequisite: ARMORY", "무기고"),
+    ("Battlecruiser needs a Fusion Core", lambda: harness.make_bot((U.STARPORT, 1)), _train("BATTLECRUISER", "STARPORT"), "missing_prerequisite: FUSIONCORE", "융합로"),
+    ("Orbital needs a Barracks", lambda: harness.make_bot((U.COMMANDCENTER, 1)), _build("ORBITALCOMMAND", "self_main"), "missing_prerequisite: BARRACKS", "병영"),
+    ("Planetary needs an Engineering Bay", lambda: harness.make_bot((U.COMMANDCENTER, 1)), _build("PLANETARYFORTRESS", "self_main"), "missing_prerequisite: ENGINEERINGBAY", "공학 연구소"),
+    ("a half-built Depot is not a Depot", lambda: _depot_at(0.5), _build("BARRACKS"), "prerequisite_under_construction: SUPPLYDEPOT", "건설 중"),
+]
+
+
+def _depot_at(progress):
+    bot = harness.make_bot((U.SCV, 2))
+    bot.add_unit(U.SUPPLYDEPOT, build_progress=progress)
+    return bot
+
+
+@pytest.mark.parametrize("name,world,action,detail,korean", PREREQ_REFUSALS, ids=[r[0] for r in PREREQ_REFUSALS])
+def test_a_missing_prerequisite_structure_is_a_visible_refusal_not_a_silent_order(name, world, action, detail, korean) -> None:
+    from starcraft_commander.narrator import narrate_sc2_plan_result
+
+    bot = world()
+    if action.subject == "GHOST":
+        for tag_unit in [u for u in bot.structures if u.type_id == U.BARRACKS]:
+            addon = bot.add_unit(U.BARRACKSTECHLAB)
+            tag_unit._proto.add_on_tag = addon.tag
+    result, views = run(bot, action)
+    assert views == [], f"{name}: the game would answer BuildTechRequirementsNotMet, yet an order was sent: {views}"
+    assert reports(result)[0]["detail"] == detail
+    text = narrate_sc2_plan_result(result).response_text
+    assert korean in text and "세부:" not in text, text
+
+
+POSITIVE = [
+    ("Barracks with a Depot", lambda: harness.make_bot((U.SCV, 2), (U.SUPPLYDEPOT, 1)), _build("BARRACKS"), "TERRANBUILD_BARRACKS"),
+    ("Barracks with a LOWERED Depot", lambda: _with(harness.make_bot((U.SCV, 2)), U.SUPPLYDEPOTLOWERED), _build("BARRACKS"), "TERRANBUILD_BARRACKS"),
+    ("Factory with a flying Barracks", lambda: _with(harness.make_bot((U.SCV, 2)), U.BARRACKSFLYING, structure=True), _build("FACTORY"), "TERRANBUILD_FACTORY"),
+    ("Starport with a Factory", lambda: harness.make_bot((U.SCV, 2), (U.FACTORY, 1)), _build("STARPORT"), "TERRANBUILD_STARPORT"),
+    ("Orbital with a Barracks", lambda: harness.make_bot((U.COMMANDCENTER, 1), (U.BARRACKS, 1)), _build("ORBITALCOMMAND"), "UPGRADETOORBITAL_ORBITALCOMMAND"),
+    ("Planetary with an Engineering Bay", lambda: harness.make_bot((U.COMMANDCENTER, 1), (U.ENGINEERINGBAY, 1)), _build("PLANETARYFORTRESS"), "UPGRADETOPLANETARYFORTRESS_PLANETARYFORTRESS"),
+    ("Marine needs only a Barracks", lambda: harness.make_bot((U.BARRACKS, 1)), _train("MARINE", "BARRACKS"), "BARRACKSTRAIN_MARINE"),
+    ("Thor with an Armory", lambda: _thor_world(), _train("THOR", "FACTORY"), "FACTORYTRAIN_THOR"),
+]
+
+
+def _with(bot, unit_type, structure=False):
+    bot.add_unit(unit_type, structure=structure)
+    return bot
+
+
+def _thor_world():
+    bot = harness.make_bot((U.FACTORY, 1), (U.ARMORY, 1))
+    factory = next(u for u in bot.structures if u.type_id == U.FACTORY)
+    factory._proto.add_on_tag = bot.add_unit(U.FACTORYTECHLAB).tag
+    return bot
+
+
+@pytest.mark.parametrize("name,world,action,ability", POSITIVE, ids=[p[0] for p in POSITIVE])
+def test_with_the_prerequisite_present_the_order_is_sent(name, world, action, ability) -> None:
+    bot = world()
+    result, views = run(bot, action)
+    assert views and views[0]["ability_name"] == ability, (name, reports(result))
+
+
+def test_a_tech_lab_unit_without_techlab_keeps_its_own_refusal_and_without_prerequisite_reports_the_structure() -> None:
+    """Ghost needs BOTH a Tech Lab producer (round 3) and a Ghost Academy (round 4); the structure is reported first
+    because it is the one the user cannot fix by choosing a different Barracks."""
+
+    result, views = run(harness.make_bot((U.BARRACKS, 1)), _train("GHOST", "BARRACKS"))
+    assert views == [] and reports(result)[0]["detail"] == "missing_prerequisite: GHOSTACADEMY"
