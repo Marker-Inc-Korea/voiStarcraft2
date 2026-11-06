@@ -1405,6 +1405,31 @@ class EndpointTest(unittest.TestCase):
         self.assertEqual("unknown", unknown["kind"])
 
 
+class LifecycleRefreshSkipTest(unittest.TestCase):
+    """`_micromachine_commander_context(refresh_lifecycle=...)`: voice intents carry their own provider_output, so the
+    status walk that only feeds an LLM provider's context is skipped; an LLM-provider request still refreshes."""
+
+    def setUp(self):
+        session, _bot = build_dry_run_session()
+        self.bridge = SessionLoopBridge(session=session)
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.root, ignore_errors=True))
+        self.bridge._remember_micromachine_command(self.root, "후퇴", {"status": "queued", "update_id": "u-1"})
+
+    def test_request_with_provider_output_skips_the_status_walk_and_keeps_recent_commands(self):
+        with mock.patch.object(self.bridge, "micromachine_status") as status:
+            context = self.bridge._micromachine_commander_context(self.root, {"x": 1}, refresh_lifecycle=False)
+        status.assert_not_called()
+        self.assertEqual(1, context["x"])
+        self.assertEqual(["u-1"], [entry["update_id"] for entry in context["recent_commands"]])
+
+    def test_llm_provider_request_still_refreshes_the_lifecycle(self):
+        with mock.patch.object(self.bridge, "micromachine_status") as status:
+            self.bridge._micromachine_commander_context(self.root, {})
+        status.assert_called_once_with(blackboard_dir=self.root, lightweight=True)
+
+
+
 @pytest.mark.skipif(
     os.environ.get("VOI_LIVE_REALTIME") != "1",
     reason="live proxy test; set VOI_LIVE_REALTIME=1 (needs MYPROXY_API_KEY)",

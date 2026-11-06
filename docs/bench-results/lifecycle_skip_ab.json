@@ -1,0 +1,641 @@
+{
+ "n": 40,
+ "uptime_before": "12:14  up 18 days, 13:52, 3 users, load averages: 51.83 41.97 29.21",
+ "uptime_after": "12:16  up 18 days, 13:54, 3 users, load averages: 85.35 53.94 35.06",
+ "arms": {
+  "baseline": {
+   "buckets": {
+    "history 0-9": {
+     "n": 10,
+     "post_ms_p50": 6.3,
+     "compile_after_return_ms_p50": 327.0,
+     "compile_after_return_ms_p95": 480.5
+    },
+    "history 10-19": {
+     "n": 10,
+     "post_ms_p50": 5.0,
+     "compile_after_return_ms_p50": 691.8,
+     "compile_after_return_ms_p95": 2494.0
+    },
+    "history 20-29": {
+     "n": 10,
+     "post_ms_p50": 7.7,
+     "compile_after_return_ms_p50": 3445.3,
+     "compile_after_return_ms_p95": 4841.9
+    },
+    "history 30+": {
+     "n": 10,
+     "post_ms_p50": 8.4,
+     "compile_after_return_ms_p50": 3486.9,
+     "compile_after_return_ms_p95": 4531.3
+    }
+   },
+   "post_ms_p50": 6.5,
+   "compile_after_return_ms_p50": 2381.7,
+   "compile_after_return_ms_p95": 4371.9,
+   "missing_compile": 0,
+   "statuses": [
+    "queued"
+   ],
+   "rows": [
+    {
+     "i": 0,
+     "text": "후퇴",
+     "post_ms": 13.718666974455118,
+     "compile_after_return_ms": 80.35325002856553,
+     "status": "queued"
+    },
+    {
+     "i": 1,
+     "text": "스팀팩 써",
+     "post_ms": 3.9930420462042093,
+     "compile_after_return_ms": 338.0242078565061,
+     "status": "queued"
+    },
+    {
+     "i": 2,
+     "text": "시즈 모드",
+     "post_ms": 23.214250104501843,
+     "compile_after_return_ms": 110.54987506940961,
+     "status": "queued"
+    },
+    {
+     "i": 3,
+     "text": "홀드",
+     "post_ms": 3.3520839642733335,
+     "compile_after_return_ms": 149.27654108032584,
+     "status": "queued"
+    },
+    {
+     "i": 4,
+     "text": "멈춰",
+     "post_ms": 4.873791942372918,
+     "compile_after_return_ms": 457.1271250024438,
+     "status": "queued"
+    },
+    {
+     "i": 5,
+     "text": "스팀팩",
+     "post_ms": 5.0129578448832035,
+     "compile_after_return_ms": 316.062584053725,
+     "status": "queued"
+    },
+    {
+     "i": 6,
+     "text": "후퇴",
+     "post_ms": 5.429749842733145,
+     "compile_after_return_ms": 494.5165829267353,
+     "status": "queued"
+    },
+    {
+     "i": 7,
+     "text": "스팀팩 써",
+     "post_ms": 7.105208933353424,
+     "compile_after_return_ms": 314.91250009275973,
+     "status": "queued"
+    },
+    {
+     "i": 8,
+     "text": "시즈 모드",
+     "post_ms": 11.696083005517721,
+     "compile_after_return_ms": 371.8151249922812,
+     "status": "queued"
+    },
+    {
+     "i": 9,
+     "text": "홀드",
+     "post_ms": 17.04766694456339,
+     "compile_after_return_ms": 463.28070806339383,
+     "status": "queued"
+    },
+    {
+     "i": 10,
+     "text": "멈춰",
+     "post_ms": 15.395750058814883,
+     "compile_after_return_ms": 442.558583104983,
+     "status": "queued"
+    },
+    {
+     "i": 11,
+     "text": "스팀팩",
+     "post_ms": 4.966208012774587,
+     "compile_after_return_ms": 555.2405840717256,
+     "status": "queued"
+    },
+    {
+     "i": 12,
+     "text": "후퇴",
+     "post_ms": 9.354957845062017,
+     "compile_after_return_ms": 551.30416713655,
+     "status": "queued"
+    },
+    {
+     "i": 13,
+     "text": "스팀팩 써",
+     "post_ms": 5.384332966059446,
+     "compile_after_return_ms": 503.5769999958575,
+     "status": "queued"
+    },
+    {
+     "i": 14,
+     "text": "시즈 모드",
+     "post_ms": 3.4714159555733204,
+     "compile_after_return_ms": 697.1114170737565,
+     "status": "queued"
+    },
+    {
+     "i": 15,
+     "text": "홀드",
+     "post_ms": 7.699582958593965,
+     "compile_after_return_ms": 686.4120420068502,
+     "status": "queued"
+    },
+    {
+     "i": 16,
+     "text": "멈춰",
+     "post_ms": 2.310416894033551,
+     "compile_after_return_ms": 822.981458157301,
+     "status": "queued"
+    },
+    {
+     "i": 17,
+     "text": "스팀팩",
+     "post_ms": 5.030290922150016,
+     "compile_after_return_ms": 2301.5024589840323,
+     "status": "queued"
+    },
+    {
+     "i": 18,
+     "text": "후퇴",
+     "post_ms": 3.2461669761687517,
+     "compile_after_return_ms": 1619.6866249665618,
+     "status": "queued"
+    },
+    {
+     "i": 19,
+     "text": "스팀팩 써",
+     "post_ms": 3.599749878048897,
+     "compile_after_return_ms": 2651.457166997716,
+     "status": "queued"
+    },
+    {
+     "i": 20,
+     "text": "시즈 모드",
+     "post_ms": 4.730457905679941,
+     "compile_after_return_ms": 1282.4050830677152,
+     "status": "queued"
+    },
+    {
+     "i": 21,
+     "text": "홀드",
+     "post_ms": 2.624915912747383,
+     "compile_after_return_ms": 3397.1227922011167,
+     "status": "queued"
+    },
+    {
+     "i": 22,
+     "text": "멈춰",
+     "post_ms": 5.923165939748287,
+     "compile_after_return_ms": 4252.332167001441,
+     "status": "queued"
+    },
+    {
+     "i": 23,
+     "text": "스팀팩",
+     "post_ms": 3.336249850690365,
+     "compile_after_return_ms": 3327.7521659620106,
+     "status": "queued"
+    },
+    {
+     "i": 24,
+     "text": "후퇴",
+     "post_ms": 14.90370905958116,
+     "compile_after_return_ms": 3273.477290989831,
+     "status": "queued"
+    },
+    {
+     "i": 25,
+     "text": "스팀팩 써",
+     "post_ms": 8.29733395949006,
+     "compile_after_return_ms": 3712.651250185445,
+     "status": "queued"
+    },
+    {
+     "i": 26,
+     "text": "시즈 모드",
+     "post_ms": 9.359791874885559,
+     "compile_after_return_ms": 4012.83529214561,
+     "status": "queued"
+    },
+    {
+     "i": 27,
+     "text": "홀드",
+     "post_ms": 9.447250049561262,
+     "compile_after_return_ms": 5324.325833935291,
+     "status": "queued"
+    },
+    {
+     "i": 28,
+     "text": "멈춰",
+     "post_ms": 8.068040944635868,
+     "compile_after_return_ms": 3493.5033749789,
+     "status": "queued"
+    },
+    {
+     "i": 29,
+     "text": "스팀팩",
+     "post_ms": 7.428082870319486,
+     "compile_after_return_ms": 3178.2757921610028,
+     "status": "queued"
+    },
+    {
+     "i": 30,
+     "text": "후퇴",
+     "post_ms": 3.482791129499674,
+     "compile_after_return_ms": 3291.6274999734014,
+     "status": "queued"
+    },
+    {
+     "i": 31,
+     "text": "스팀팩 써",
+     "post_ms": 16.751459101215005,
+     "compile_after_return_ms": 3504.165624966845,
+     "status": "queued"
+    },
+    {
+     "i": 32,
+     "text": "시즈 모드",
+     "post_ms": 8.899250067770481,
+     "compile_after_return_ms": 4355.976541992277,
+     "status": "queued"
+    },
+    {
+     "i": 33,
+     "text": "홀드",
+     "post_ms": 7.936124922707677,
+     "compile_after_return_ms": 4674.835791112855,
+     "status": "queued"
+    },
+    {
+     "i": 34,
+     "text": "멈춰",
+     "post_ms": 21.953457966446877,
+     "compile_after_return_ms": 3685.5154170189053,
+     "status": "queued"
+    },
+    {
+     "i": 35,
+     "text": "스팀팩",
+     "post_ms": 11.359625030308962,
+     "compile_after_return_ms": 2824.614540906623,
+     "status": "queued"
+    },
+    {
+     "i": 36,
+     "text": "후퇴",
+     "post_ms": 3.2796249724924564,
+     "compile_after_return_ms": 2461.950832977891,
+     "status": "queued"
+    },
+    {
+     "i": 37,
+     "text": "스팀팩 써",
+     "post_ms": 5.321166943758726,
+     "compile_after_return_ms": 3541.8879999779165,
+     "status": "queued"
+    },
+    {
+     "i": 38,
+     "text": "시즈 모드",
+     "post_ms": 4.128917120397091,
+     "compile_after_return_ms": 3387.1707909274846,
+     "status": "queued"
+    },
+    {
+     "i": 39,
+     "text": "홀드",
+     "post_ms": 60.44112495146692,
+     "compile_after_return_ms": 3469.6937499102205,
+     "status": "queued"
+    }
+   ]
+  },
+  "skip": {
+   "buckets": {
+    "history 0-9": {
+     "n": 10,
+     "post_ms_p50": 4.5,
+     "compile_after_return_ms_p50": 16.7,
+     "compile_after_return_ms_p95": 190.6
+    },
+    "history 10-19": {
+     "n": 10,
+     "post_ms_p50": 6.7,
+     "compile_after_return_ms_p50": 21.6,
+     "compile_after_return_ms_p95": 40.5
+    },
+    "history 20-29": {
+     "n": 10,
+     "post_ms_p50": 4.4,
+     "compile_after_return_ms_p50": 15.8,
+     "compile_after_return_ms_p95": 33.9
+    },
+    "history 30+": {
+     "n": 10,
+     "post_ms_p50": 4.8,
+     "compile_after_return_ms_p50": 18.3,
+     "compile_after_return_ms_p95": 35.0
+    }
+   },
+   "post_ms_p50": 5.1,
+   "compile_after_return_ms_p50": 18.5,
+   "compile_after_return_ms_p95": 50.3,
+   "missing_compile": 0,
+   "statuses": [
+    "queued"
+   ],
+   "rows": [
+    {
+     "i": 0,
+     "text": "후퇴",
+     "post_ms": 11.21854200027883,
+     "compile_after_return_ms": 82.04054203815758,
+     "status": "queued"
+    },
+    {
+     "i": 1,
+     "text": "스팀팩 써",
+     "post_ms": 3.6400409881025553,
+     "compile_after_return_ms": 279.48033390566707,
+     "status": "queued"
+    },
+    {
+     "i": 2,
+     "text": "시즈 모드",
+     "post_ms": 5.2541249897331,
+     "compile_after_return_ms": 21.712500136345625,
+     "status": "queued"
+    },
+    {
+     "i": 3,
+     "text": "홀드",
+     "post_ms": 3.4287909511476755,
+     "compile_after_return_ms": 14.238833915442228,
+     "status": "queued"
+    },
+    {
+     "i": 4,
+     "text": "멈춰",
+     "post_ms": 6.704333005473018,
+     "compile_after_return_ms": 14.93733306415379,
+     "status": "queued"
+    },
+    {
+     "i": 5,
+     "text": "스팀팩",
+     "post_ms": 6.828082958236337,
+     "compile_after_return_ms": 13.460500165820122,
+     "status": "queued"
+    },
+    {
+     "i": 6,
+     "text": "후퇴",
+     "post_ms": 3.6492920480668545,
+     "compile_after_return_ms": 18.45124992541969,
+     "status": "queued"
+    },
+    {
+     "i": 7,
+     "text": "스팀팩 써",
+     "post_ms": 12.245208024978638,
+     "compile_after_return_ms": 23.149791872128844,
+     "status": "queued"
+    },
+    {
+     "i": 8,
+     "text": "시즈 모드",
+     "post_ms": 3.5914580803364515,
+     "compile_after_return_ms": 11.018374934792519,
+     "status": "queued"
+    },
+    {
+     "i": 9,
+     "text": "홀드",
+     "post_ms": 2.5254159700125456,
+     "compile_after_return_ms": 9.418874979019165,
+     "status": "queued"
+    },
+    {
+     "i": 10,
+     "text": "멈춰",
+     "post_ms": 7.313959067687392,
+     "compile_after_return_ms": 9.050416061654687,
+     "status": "queued"
+    },
+    {
+     "i": 11,
+     "text": "스팀팩",
+     "post_ms": 6.132917013019323,
+     "compile_after_return_ms": 26.642999844625592,
+     "status": "queued"
+    },
+    {
+     "i": 12,
+     "text": "후퇴",
+     "post_ms": 4.639083053916693,
+     "compile_after_return_ms": 19.972417037934065,
+     "status": "queued"
+    },
+    {
+     "i": 13,
+     "text": "스팀팩 써",
+     "post_ms": 4.93041705340147,
+     "compile_after_return_ms": 23.1973750051111,
+     "status": "queued"
+    },
+    {
+     "i": 14,
+     "text": "시즈 모드",
+     "post_ms": 5.617041839286685,
+     "compile_after_return_ms": 19.905958091840148,
+     "status": "queued"
+    },
+    {
+     "i": 15,
+     "text": "홀드",
+     "post_ms": 7.833000039681792,
+     "compile_after_return_ms": 11.314041912555695,
+     "status": "queued"
+    },
+    {
+     "i": 16,
+     "text": "멈춰",
+     "post_ms": 11.941500008106232,
+     "compile_after_return_ms": 27.15874998830259,
+     "status": "queued"
+    },
+    {
+     "i": 17,
+     "text": "스팀팩",
+     "post_ms": 10.436292039230466,
+     "compile_after_return_ms": 30.416457913815975,
+     "status": "queued"
+    },
+    {
+     "i": 18,
+     "text": "후퇴",
+     "post_ms": 6.057916907593608,
+     "compile_after_return_ms": 12.978082988411188,
+     "status": "queued"
+    },
+    {
+     "i": 19,
+     "text": "스팀팩 써",
+     "post_ms": 14.891291037201881,
+     "compile_after_return_ms": 48.672708915546536,
+     "status": "queued"
+    },
+    {
+     "i": 20,
+     "text": "시즈 모드",
+     "post_ms": 3.624875098466873,
+     "compile_after_return_ms": 13.282915810123086,
+     "status": "queued"
+    },
+    {
+     "i": 21,
+     "text": "홀드",
+     "post_ms": 2.793957944959402,
+     "compile_after_return_ms": 19.045708002522588,
+     "status": "queued"
+    },
+    {
+     "i": 22,
+     "text": "멈춰",
+     "post_ms": 3.3159588929265738,
+     "compile_after_return_ms": 12.626875191926956,
+     "status": "queued"
+    },
+    {
+     "i": 23,
+     "text": "스팀팩",
+     "post_ms": 8.577375207096338,
+     "compile_after_return_ms": 34.19341682456434,
+     "status": "queued"
+    },
+    {
+     "i": 24,
+     "text": "후퇴",
+     "post_ms": 5.58666605502367,
+     "compile_after_return_ms": 11.672416934743524,
+     "status": "queued"
+    },
+    {
+     "i": 25,
+     "text": "스팀팩 써",
+     "post_ms": 4.24691685475409,
+     "compile_after_return_ms": 16.01224998012185,
+     "status": "queued"
+    },
+    {
+     "i": 26,
+     "text": "시즈 모드",
+     "post_ms": 4.539625020697713,
+     "compile_after_return_ms": 15.631458023563027,
+     "status": "queued"
+    },
+    {
+     "i": 27,
+     "text": "홀드",
+     "post_ms": 5.051832878962159,
+     "compile_after_return_ms": 33.44845911487937,
+     "status": "queued"
+    },
+    {
+     "i": 28,
+     "text": "멈춰",
+     "post_ms": 3.6464999429881573,
+     "compile_after_return_ms": 14.494042145088315,
+     "status": "queued"
+    },
+    {
+     "i": 29,
+     "text": "스팀팩",
+     "post_ms": 23.319625062868,
+     "compile_after_return_ms": 24.64604191482067,
+     "status": "queued"
+    },
+    {
+     "i": 30,
+     "text": "후퇴",
+     "post_ms": 3.113833023235202,
+     "compile_after_return_ms": 21.836250089108944,
+     "status": "queued"
+    },
+    {
+     "i": 31,
+     "text": "스팀팩 써",
+     "post_ms": 6.500666961073875,
+     "compile_after_return_ms": 22.45470811612904,
+     "status": "queued"
+    },
+    {
+     "i": 32,
+     "text": "시즈 모드",
+     "post_ms": 4.510208033025265,
+     "compile_after_return_ms": 18.063958967104554,
+     "status": "queued"
+    },
+    {
+     "i": 33,
+     "text": "홀드",
+     "post_ms": 3.2027079723775387,
+     "compile_after_return_ms": 12.840667041018605,
+     "status": "queued"
+    },
+    {
+     "i": 34,
+     "text": "멈춰",
+     "post_ms": 2.8054581489413977,
+     "compile_after_return_ms": 14.193000039085746,
+     "status": "queued"
+    },
+    {
+     "i": 35,
+     "text": "스팀팩",
+     "post_ms": 9.326291037723422,
+     "compile_after_return_ms": 17.315292032435536,
+     "status": "queued"
+    },
+    {
+     "i": 36,
+     "text": "후퇴",
+     "post_ms": 2.7069589123129845,
+     "compile_after_return_ms": 18.508666194975376,
+     "status": "queued"
+    },
+    {
+     "i": 37,
+     "text": "스팀팩 써",
+     "post_ms": 5.501666804775596,
+     "compile_after_return_ms": 42.940958170220256,
+     "status": "queued"
+    },
+    {
+     "i": 38,
+     "text": "시즈 모드",
+     "post_ms": 5.217458121478558,
+     "compile_after_return_ms": 12.275333050638437,
+     "status": "queued"
+    },
+    {
+     "i": 39,
+     "text": "홀드",
+     "post_ms": 5.062040872871876,
+     "compile_after_return_ms": 25.18399991095066,
+     "status": "queued"
+    }
+   ]
+  }
+ }
+}
