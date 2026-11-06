@@ -1,0 +1,218 @@
+[
+ {
+  "stable_ms": 0,
+  "calls_with_deltas": 262,
+  "final_rule_hits": 152,
+  "fires": 193,
+  "correct_fires": 146,
+  "premature_fires": 47,
+  "premature_examples": [
+   {
+    "text": "후퇴하지 마",
+    "partial": "후퇴",
+    "final": "후퇴하지 마.",
+    "gap_after_ms": 0.0
+   },
+   {
+    "text": "홀드하지 마",
+    "partial": "홀드",
+    "final": "홀드 하지 마.",
+    "gap_after_ms": 7.9
+   },
+   {
+    "text": "그만하지 마",
+    "partial": "그만",
+    "final": "그만하지 마.",
+    "gap_after_ms": 376.7
+   },
+   {
+    "text": "시즈모드 멈춰",
+    "partial": "시지 모드",
+    "final": "시지 모드 멈춰.",
+    "gap_after_ms": 390.0
+   },
+   {
+    "text": "홀드하지 마",
+    "partial": "홀드",
+    "final": "홀드하지 마.",
+    "gap_after_ms": 385.1
+   },
+   {
+    "text": "스팀팩 멈춰",
+    "partial": "스팀",
+    "final": "스팀팩 멈춰.",
+    "gap_after_ms": 4.0
+   },
+   {
+    "text": "스팀팩 멈춰",
+    "partial": "스팀",
+    "final": "스팀팩 멈춰.",
+    "gap_after_ms": 0.0
+   },
+   {
+    "text": "그만하지 마",
+    "partial": "그만",
+    "final": "그만하지 마.",
+    "gap_after_ms": 5.4
+   },
+   {
+    "text": "그만하지 마",
+    "partial": "그만",
+    "final": "그만하지 마.",
+    "gap_after_ms": 0.0
+   },
+   {
+    "text": "정지하지 마",
+    "partial": "정지",
+    "final": "정지하지 마.",
+    "gap_after_ms": 0.0
+   },
+   {
+    "text": "멈춰 서",
+    "partial": "멈춰",
+    "final": "멈춰서",
+    "gap_after_ms": 0.1
+   },
+   {
+    "text": "후퇴하지 마",
+    "partial": "후퇴",
+    "final": "후퇴하지 마.",
+    "gap_after_ms": 0.0
+   }
+  ],
+  "gain_vs_completed_ms": {
+   "n": 146,
+   "p50": 5.3,
+   "p95": 1191.9,
+   "mean": 245.8,
+   "frac_negative_or_zero": 0.329
+  },
+  "stability_rejected_candidates": 0
+ },
+ {
+  "stable_ms": 120,
+  "calls_with_deltas": 262,
+  "final_rule_hits": 152,
+  "fires": 46,
+  "correct_fires": 40,
+  "premature_fires": 6,
+  "premature_examples": [
+   {
+    "text": "그만하지 마",
+    "partial": "그만",
+    "final": "그만하지 마.",
+    "gap_after_ms": 376.7
+   },
+   {
+    "text": "시즈모드 멈춰",
+    "partial": "시지 모드",
+    "final": "시지 모드 멈춰.",
+    "gap_after_ms": 390.0
+   },
+   {
+    "text": "홀드하지 마",
+    "partial": "홀드",
+    "final": "홀드하지 마.",
+    "gap_after_ms": 385.1
+   },
+   {
+    "text": "스팀팩 멈춰",
+    "partial": "스팀팩",
+    "final": "스팀팩 멈춰.",
+    "gap_after_ms": 120.6
+   },
+   {
+    "text": "스팀팩 멈춰",
+    "partial": "스팀",
+    "final": "스팀팩 멈춰.",
+    "gap_after_ms": 346.9
+   },
+   {
+    "text": "홀드하지 마",
+    "partial": "홀드",
+    "final": "홀드 하지 마.",
+    "gap_after_ms": 1102.5
+   }
+  ],
+  "gain_vs_completed_ms": {
+   "n": 40,
+   "p50": 255.0,
+   "p95": 2742.4,
+   "mean": 737.5,
+   "frac_negative_or_zero": 0.0
+  },
+  "stability_rejected_candidates": 275
+ },
+ {
+  "stable_ms": 250,
+  "calls_with_deltas": 262,
+  "final_rule_hits": 152,
+  "fires": 36,
+  "correct_fires": 31,
+  "premature_fires": 5,
+  "premature_examples": [
+   {
+    "text": "그만하지 마",
+    "partial": "그만",
+    "final": "그만하지 마.",
+    "gap_after_ms": 376.7
+   },
+   {
+    "text": "시즈모드 멈춰",
+    "partial": "시지 모드",
+    "final": "시지 모드 멈춰.",
+    "gap_after_ms": 390.0
+   },
+   {
+    "text": "홀드하지 마",
+    "partial": "홀드",
+    "final": "홀드하지 마.",
+    "gap_after_ms": 385.1
+   },
+   {
+    "text": "스팀팩 멈춰",
+    "partial": "스팀",
+    "final": "스팀팩 멈춰.",
+    "gap_after_ms": 346.9
+   },
+   {
+    "text": "홀드하지 마",
+    "partial": "홀드",
+    "final": "홀드 하지 마.",
+    "gap_after_ms": 1102.5
+   }
+  ],
+  "gain_vs_completed_ms": {
+   "n": 31,
+   "p50": 792.2,
+   "p95": 2655.6,
+   "mean": 809.5,
+   "frac_negative_or_zero": 0.0
+  },
+  "stability_rejected_candidates": 285
+ },
+ {
+  "stable_ms": 400,
+  "calls_with_deltas": 262,
+  "final_rule_hits": 152,
+  "fires": 20,
+  "correct_fires": 19,
+  "premature_fires": 1,
+  "premature_examples": [
+   {
+    "text": "홀드하지 마",
+    "partial": "홀드",
+    "final": "홀드 하지 마.",
+    "gap_after_ms": 1102.5
+   }
+  ],
+  "gain_vs_completed_ms": {
+   "n": 19,
+   "p50": 757.4,
+   "p95": 2602.3,
+   "mean": 1108.7,
+   "frac_negative_or_zero": 0.0
+  },
+  "stability_rejected_candidates": 307
+ }
+]

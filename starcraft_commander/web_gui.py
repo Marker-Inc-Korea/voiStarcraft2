@@ -10332,6 +10332,7 @@ class SessionLoopBridge:
         commander_context = self._micromachine_commander_context(
             root,
             request.commander_context,
+            refresh_lifecycle=request.provider_output is None and not request.emergency,
         )
         try:
             if request.contextual_transfer is not None:
@@ -10448,12 +10449,18 @@ class SessionLoopBridge:
         self,
         blackboard_dir: str,
         supplied_context: Mapping[str, object],
+        *,
+        refresh_lifecycle: bool = True,
     ) -> dict[str, object]:
         context = dict(supplied_context)
         key = os.path.realpath(blackboard_dir)
         with self._micromachine_recent_commands_lock:
             has_history = bool(self._micromachine_recent_commands.get(key))
-        if has_history:
+        # The lifecycle refresh walks the whole status payload (cost grows with the compile-result history: ~0.3 s at
+        # 5 commands, seconds at 30) and only feeds an LLM provider's context. A request that carries its own
+        # provider_output (every voice / rule / emergency intent) uses a static provider that ignores the context;
+        # the next LLM-provider request refreshes the lifecycle itself.
+        if has_history and refresh_lifecycle:
             try:
                 self.micromachine_status(
                     blackboard_dir=blackboard_dir,

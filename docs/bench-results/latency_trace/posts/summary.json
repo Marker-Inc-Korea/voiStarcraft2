@@ -1,0 +1,62 @@
+{
+ "emergency_button": {
+  "n": 30,
+  "post_ms": [
+   4.8,
+   27.5
+  ],
+  "backend_ms_p50": 1.4,
+  "compile_after_return_ms": [
+   430.2,
+   1413.7
+  ],
+  "status": [
+   "queued"
+  ]
+ },
+ "intent_fast_rule": {
+  "n": 30,
+  "post_ms": [
+   5.8,
+   73.6
+  ],
+  "backend_ms_p50": 1.6,
+  "compile_after_return_ms": [
+   1295.6,
+   2035.1
+  ],
+  "status": [
+   "queued"
+  ]
+ },
+ "intent_fast_miss": {
+  "n": 30,
+  "post_ms": [
+   2.0,
+   2.8
+  ],
+  "backend_ms_p50": null,
+  "compile_after_return_ms": [
+   null,
+   null
+  ],
+  "status": [
+   "fast_miss"
+  ]
+ },
+ "intent_fast_stim": {
+  "n": 30,
+  "post_ms": [
+   4.2,
+   6.8
+  ],
+  "backend_ms_p50": 1.8,
+  "compile_after_return_ms": [
+   2029.8,
+   2989.9
+  ],
+  "status": [
+   "queued"
+  ]
+ }
+}
