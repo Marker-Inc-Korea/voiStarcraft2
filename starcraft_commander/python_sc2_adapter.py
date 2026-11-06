@@ -41,10 +41,12 @@ import inspect
 import math
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Final, Protocol, runtime_checkable
 
 from starcraft_commander.terran_prerequisites import required_structure, satisfying_types
+from starcraft_commander.sc2_action_results import SUCCESS_CODE as SUCCESS_RESULT_CODE
+from starcraft_commander.sc2_action_results import GameResultTracker
 from starcraft_commander.contracts import SC2ActionReport, SC2ActionType, SC2CommandAction
 from starcraft_commander.map_resolver import (
     MapPoint,
@@ -502,6 +504,10 @@ class PythonSC2BotAdapter:
     map_resolver: SC2MapResolverInterface | None = None
     state_resolver: SC2StateResolverInterface = DEFAULT_SC2_STATE_RESOLVER
     unit_type_resolver: Callable[[str], object] | None = None
+    game_results: GameResultTracker = field(
+        default_factory=GameResultTracker, init=False, repr=False, compare=False
+    )
+    _ingested_error_frame: int = field(default=-1, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.bot is None:
@@ -789,7 +795,7 @@ class PythonSC2BotAdapter:
         elif action.queue:
             return _refusal_report(1, "queue_requires_pinned_builder")
         else:
-            built = await _call_bot_operation(
+            built = await self._bot_operation(
                 build,
                 type_id,
                 near=destination,
@@ -850,7 +856,7 @@ class PythonSC2BotAdapter:
         build = getattr(self.bot, "build", None)
         if not callable(build):
             return False
-        return await _call_bot_operation(build, type_id, near=geyser)
+        return await self._bot_operation(build, type_id, near=geyser)
 
     def _free_geyser(self, anchor: MapPoint | None) -> object | None:
         """Find the geyser unit nearest the anchor without an own gas building."""
@@ -1510,14 +1516,14 @@ class PythonSC2BotAdapter:
         ):
             method = getattr(self.bot, method_name, None)
             if callable(method):
-                moved = await _call_bot_operation(method, destination)
+                moved = await self._bot_operation(method, destination)
                 return _issuance_report(1, 1 if moved else 0, "camera_refused")
         client = getattr(self.bot, "client", None) or getattr(self.bot, "_client", None)
         if client is not None:
             for method_name in ("move_camera", "center_camera"):
                 method = getattr(client, method_name, None)
                 if callable(method):
-                    moved = await _call_bot_operation(method, destination)
+                    moved = await self._bot_operation(method, destination)
                     return _issuance_report(1, 1 if moved else 0, "camera_refused")
         return _refusal_report(1, "missing_camera_capability")
 
@@ -2166,7 +2172,7 @@ class PythonSC2BotAdapter:
             return _refusal_report(1, "invalid_resource_ratio")
         if not math.isfinite(ratio) or not 0.0 <= ratio <= 10.0:
             return _refusal_report(1, "invalid_resource_ratio")
-        applied = await _call_bot_operation(method, ratio)
+        applied = await self._bot_operation(method, ratio)
         return _issuance_report(1, 1 if applied else 0, "distribute_workers_refused")
 
     async def expand_now(self, action: SC2CommandAction) -> SC2ActionReport:
@@ -2583,20 +2589,169 @@ class PythonSC2BotAdapter:
         the default replaces it.
         """
 
-        command = order_method(*args, queue=True) if queue else order_method(*args)
-        if inspect.isawaitable(command):
-            command = await command
-        if command is None:
-            return none_is_success
-        if not command:
-            return False
-        do = getattr(self.bot, "do", None)
-        if callable(do):
-            outcome = do(command)
-            if inspect.isawaitable(outcome):
-                outcome = await outcome
-            return outcome is None or bool(outcome)
-        return True
+        before = self._pending_actions_len()
+        try:
+            command = order_method(*args, queue=True) if queue else order_method(*args)
+            if inspect.isawaitable(command):
+                command = await command
+            if command is None:
+                return none_is_success
+            if not command:
+                return False
+            do = getattr(self.bot, "do", None)
+            if callable(do):
+                outcome = do(command)
+                if inspect.isawaitable(outcome):
+                    outcome = await outcome
+                return outcome is None or bool(outcome)
+            return True
+        finally:
+            self._register_new_commands(before)
+
+    async def _bot_operation(
+        self,
+        operation: Callable[..., object],
+        *args: object,
+        **kwargs: object,
+    ) -> bool:
+        """``_call_bot_operation`` plus registration of the orders it queued."""
+
+        before = self._pending_actions_len()
+        try:
+            return await _call_bot_operation(operation, *args, **kwargs)
+        finally:
+            self._register_new_commands(before)
+
+    # -- game-response tracking (SC2 ``ActionResult``; see docs/sc2-action-results.md) --
+
+    def _pending_actions_len(self) -> int | None:
+        """Length of python-sc2's per-frame ``bot.actions`` queue, ``None`` for other bots."""
+
+        queue = getattr(self.bot, "actions", None)
+        return len(queue) if isinstance(queue, list) else None
+
+    def _game_frame(self) -> int:
+        loop = getattr(getattr(self.bot, "state", None), "game_loop", None)
+        return loop if type(loop) is int and loop >= 0 else 0
+
+    def _register_new_commands(self, before: int | None) -> None:
+        """Register every ``UnitCommand`` queued since ``before`` so the game can answer for it."""
+
+        if before is None:
+            return
+        queue = getattr(self.bot, "actions", None)
+        if not isinstance(queue, list):
+            return
+        registered = False
+        for command in queue[before:]:
+            tag = _entity_tag(getattr(command, "unit", None))
+            ability = getattr(command, "ability", None)
+            ability_value = getattr(ability, "value", None)
+            if tag is None or type(ability_value) is not int:
+                continue
+            self.game_results.register(
+                tag, _ability_id_aliases(ability), self._game_frame()
+            )
+            registered = True
+        if registered:
+            self._ensure_client_tap()
+
+    def _ensure_client_tap(self) -> None:
+        """Wrap ``bot.client.actions`` once so the per-action ``ActionResult`` list is read.
+
+        python-sc2's ``Client.actions`` drops ``Success`` entries and its callers
+        (``BotAI._do_actions``) discard the list.  The tap asks for every result, maps result
+        *i* onto the *i*-th combined raw action (the same ``combine_actions`` stream that was
+        sent), records it, and returns exactly what the original call would have returned.
+        A length mismatch or a protocol error records nothing: the order stays unknown.
+        """
+
+        client = getattr(self.bot, "client", None)
+        original = getattr(client, "actions", None)
+        if client is None or not callable(original) or getattr(client, "_voi_action_tap", False):
+            return
+        tracker = self.game_results
+        frame_of = self._game_frame
+
+        async def tapped(actions: object, return_successes: bool = False) -> list[object]:
+            batch = actions if isinstance(actions, list) else [actions]
+            results = await original(actions, return_successes=True)
+            try:
+                from sc2.action import combine_actions
+
+                combined = list(combine_actions(batch))
+            except Exception:  # noqa: BLE001 - tap must never break the game loop
+                combined = []
+            if results and len(results) == len(combined):
+                tracker.record_response(
+                    frame_of(),
+                    [
+                        (
+                            tuple(raw.unit_command.unit_tags),
+                            int(raw.unit_command.ability_id),
+                            int(getattr(result, "value", result)),
+                        )
+                        for raw, result in zip(combined, results)
+                    ],
+                )
+            if return_successes:
+                return results
+            return [
+                result
+                for result in results
+                if int(getattr(result, "value", result)) != SUCCESS_RESULT_CODE
+            ]
+
+        try:
+            client.actions = tapped
+            client._voi_action_tap = True
+        except AttributeError:  # pragma: no cover - slotted/immutable client
+            return
+
+    def collect_game_results(self, frame: int | None = None) -> int:
+        """Read ``bot.state.action_errors`` (the observation channel) once per game loop."""
+
+        state = getattr(self.bot, "state", None)
+        errors = getattr(state, "action_errors", None)
+        current = self._game_frame() if frame is None else int(frame)
+        if errors is None or current == self._ingested_error_frame:
+            return 0
+        self._ingested_error_frame = current
+        collected: list[tuple[int, int, int]] = []
+        try:
+            for error in errors:
+                collected.append(
+                    (
+                        int(getattr(error, "unit_tag", 0)),
+                        int(getattr(error, "ability_id", 0)),
+                        int(getattr(error, "result", 0)),
+                    )
+                )
+        except (TypeError, ValueError):
+            return 0
+        return self.game_results.ingest_action_errors(current, collected)
+
+    def game_result_mark(self) -> int:
+        """Sequence mark; pass to :meth:`game_result_since` after issuing orders."""
+
+        return self.game_results.mark
+
+    def game_result_since(
+        self, mark: int, until: int | None = None
+    ) -> dict[str, object] | None:
+        """``game_result`` for the orders registered in ``(mark, until]`` (``None`` if none)."""
+
+        return self.game_results.summarize(since=mark, until=until)
+
+    def game_result_for_lease(
+        self, unit_tags: Sequence[int], min_frame: int
+    ) -> dict[str, object] | None:
+        """``game_result`` for the orders a Direct lease issued (by unit tag, else by frame)."""
+
+        return self.game_results.summarize(
+            unit_tags=tuple(unit_tags) if unit_tags else None,
+            min_frame=int(min_frame),
+        )
 
     async def _order_group(
         self,
@@ -3114,6 +3269,24 @@ class _PlacementSearchResult:
             "rejection_reasons": list(self.rejections),
             "rejected_count": rejected_count,
         }
+
+
+def _ability_id_aliases(ability: object) -> tuple[int, ...]:
+    """Numeric ids an ``ActionError`` may carry for one issued ability (exact and generic)."""
+
+    value = getattr(ability, "value", None)
+    if type(value) is not int:
+        return ()
+    ids = [value]
+    try:
+        from sc2.dicts.generic_redirect_abilities import GENERIC_REDIRECT_ABILITIES
+
+        generic = GENERIC_REDIRECT_ABILITIES.get(ability)
+        if generic is not None:
+            ids.append(int(generic.value))
+    except Exception:  # noqa: BLE001 - alias lookup is best effort
+        pass
+    return tuple(ids)
 
 
 async def _call_bot_operation(
