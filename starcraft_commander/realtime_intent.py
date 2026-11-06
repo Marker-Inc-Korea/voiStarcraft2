@@ -243,12 +243,13 @@ _OPERATION_KEYS: Final[frozenset[str]] = frozenset(
         "standing_order",
         "allow_partial",
         "intensity",
+        "queue",
     }
 )
 _COMPOSITION_KEYS: Final[frozenset[str]] = frozenset(
     {"unit_type", "count", "role"}
 )
-_MICRO_KEYS: Final[frozenset[str]] = frozenset({"ability", "unit_classes"})
+_MICRO_KEYS: Final[frozenset[str]] = frozenset({"ability", "unit_classes", "queue"})
 _MACRO_KEYS: Final[frozenset[str]] = frozenset(
     {
         "task_type",
@@ -260,7 +261,7 @@ _MACRO_KEYS: Final[frozenset[str]] = frozenset(
     }
 )
 _BUILDING_KEYS: Final[frozenset[str]] = frozenset(
-    {"building_type", "placement_intent", "anchor", "offset_direction", "count"}
+    {"building_type", "placement_intent", "anchor", "offset_direction", "count", "queue"}
 )
 
 _DEFAULT_TTL: Final[dict[str, int]] = {
@@ -309,6 +310,13 @@ _RATIONALE: Final[str] = (
 # ---------------------------------------------------------------------------
 # Tool schema + instructions
 # ---------------------------------------------------------------------------
+
+
+QUEUE_DESCRIPTION: Final[str] = (
+    "true ONLY for the follow-up step the user chained with 다음에/이어서/그 다음/끝나면/그리고 나서/"
+    "and then/after that/afterwards: it is APPENDED behind the first step instead of replacing it. "
+    "Omit (false) for the first step and for every fresh order."
+)
 
 
 def _operation_schema() -> dict[str, object]:
@@ -367,6 +375,7 @@ def _operation_schema() -> dict[str, object]:
             "standing_order": {"type": "boolean"},
             "allow_partial": {"type": "boolean"},
             "intensity": {"type": "string", "enum": list(INTENSITIES)},
+            "queue": {"type": "boolean", "description": QUEUE_DESCRIPTION},
         },
     }
 
@@ -419,6 +428,7 @@ def build_submit_command_tool() -> dict[str, object]:
                                 "type": "array",
                                 "items": {"type": "string", "enum": list(UNIT_TYPES)},
                             },
+                            "queue": {"type": "boolean", "description": QUEUE_DESCRIPTION},
                         },
                         "required": ["ability"],
                     },
@@ -442,6 +452,7 @@ def build_submit_command_tool() -> dict[str, object]:
                                     "anchor": {"type": "string", "enum": list(BUILDING_ANCHORS)},
                                     "offset_direction": {"type": "string", "enum": list(BUILDING_DIRECTIONS)},
                                     "count": {"type": "integer", "minimum": 1, "maximum": 20},
+                                    "queue": {"type": "boolean", "description": QUEUE_DESCRIPTION},
                                 },
                                 "required": ["building_type"],
                             },
@@ -494,6 +505,11 @@ _INSTRUCTION_RULES: Final[str] = (
     "14. Glossary: 지뢰=widow mine (매복=widow_mine_burrow, 매복 풀어=widow_mine_unburrow), "
     "핵/전술핵=tactical_nuke (ghost), 시즈=siege_mode (풀어=unsiege), 밴시 클로킹="
     "banshee_cloak, 메디박/의료선=medivac.\n"
+    "15. SEQUENCES / 순서: when the user chains steps with 다음에/이어서/그 다음/끝나면/and then/"
+    "after that ('정찰 갔다가 본진으로 돌아와', '배럭 짓고 다음에 서플', 'siege then stim'), emit ONE "
+    "call with the steps in spoken order and set queue:true on every step AFTER the first "
+    "(operations[], micro[] or macro.building_tasks[]). A fresh order with no such word never "
+    "sets queue.\n"
 )
 # Nine extra examples. Benchmark rule: none of these utterances may appear in scripts/bench/corpus.jsonl.
 _INSTRUCTION_FEWSHOT: Final[str] = (
@@ -632,6 +648,13 @@ def _bool(value: object, name: str) -> bool:
     if type(value) is not bool:
         raise ValueError(f"{name} must be a boolean.")
     return value
+
+
+def _queue_flag(item: Mapping[str, object], name: str) -> bool:
+    """Spoken then-word flag: absent/None/false = a fresh (replacing) order."""
+
+    value = item.get("queue")
+    return False if value is None else _bool(value, name)
 
 
 def _priority(value: object, name: str, default: float) -> float:
@@ -818,6 +841,9 @@ def _lower_operation(
     )
     exact = sum(int(entry["count"]) for entry in composition)
     unit_classes = list(dict.fromkeys(str(entry["unit_type"]) for entry in composition))
+    queue = _queue_flag(item, f"operations[{index}].queue")
+    if queue and (not task_type or action != "create"):
+        raise ValueError(f"operations[{index}].queue needs a new task step (task_type), not an edit of an existing force.")
     task: dict[str, object] = {}
     scope: dict[str, object] = {}
     if task_type:
@@ -833,6 +859,7 @@ def _lower_operation(
             "duration_seconds": duration,
             "allow_partial": allow_partial,
             "safety_margin": 0.05,
+            **({"queue": True} if queue else {}),
         }
         scope = {
             "army_group": "scout" if task_type == "scout_with_units" else "main",
@@ -931,6 +958,7 @@ def _lower_micro(
         if raw_classes not in (None, "")
         else []
     )
+    queue = _queue_flag(item, f"micro[{index}].queue")
     production_targets: list[str] = []
     if ability == "tactical_nuke":
         unit_classes = unit_classes or ["TERRAN_GHOST"]
@@ -945,6 +973,7 @@ def _lower_micro(
         "duration_seconds": 0 if ability == "tactical_nuke" else _DEFAULT_DURATION["execute_ability"],
         "allow_partial": True,
         "safety_margin": 0.05,
+        **({"queue": True} if queue else {}),
     }
 
 
@@ -974,6 +1003,7 @@ def _lower_macro(
                 "offset_direction": _text(entry.get("offset_direction"), f"{name}.offset_direction"),
                 "allow_nearest_valid_fallback": True,
                 "count": _int(count, f"{name}.count", lower=1, upper=20),
+                **({"queue": True} if _queue_flag(entry, f"{name}.queue") else {}),
             }
         )
     task_type = _text(macro.get("task_type"), "macro.task_type")

@@ -221,18 +221,36 @@ def test_tool_schema_and_instructions_teach_the_queue_words() -> None:
 # ---- build orders: '배럭 짓고 다음에 서플' = shift-queue on the SAME SCV; a structure whose prerequisite the first
 # one provides ('배럭 짓고 다음에 벙커') must wait for building_completed, because the game answers
 # BuildTechRequirementsNotMet to a queued Bunker while the Barracks does not exist yet.
+# NOTE: a realtime *macro* call is published to MicroMachine (which consumes only building_tasks.0 and orders its own
+# builds); the Direct SC2 build path is the operation-layer vector (text LLM lane / MCP / one-off build vectors).
+
+
+def direct_build_plan(goal, *tasks):
+    from starcraft_commander.policy_modulation_provider import compile_policy_modulation_provider_output
+    from starcraft_commander.unified_command_router import route_policy_vector
+
+    result = compile_policy_modulation_provider_output(
+        {"goal": goal, "command_layer": "operation", "building_tasks": list(tasks)}
+    )
+    assert result.vector is not None, result
+    plan = route_policy_vector(result.vector).direct_plan
+    assert plan is not None
+    return plan
 
 
 def test_two_independent_builds_are_one_scv_with_the_second_queued() -> None:
-    bot = harness.make_bot((U.SCV, 3), (U.SUPPLYDEPOT, 1))
-    args = macro_builds("서플 짓고 다음에 배럭", bt("TERRAN_BARRACKS", placement_intent="natural"), bt("TERRAN_REFINERY", queue=True))
-    actions = lower_tool_args(args)
-    assert [a.queue for a in actions] == [False, True]
-    assert all(a.action_type is SC2ActionType.BUILD_STRUCTURE for a in actions)
+    plan = direct_build_plan("서플 짓고 다음에 정제소", bt("TERRAN_SUPPLYDEPOT", anchor="self_main"), bt("TERRAN_ENGINEERINGBAY", queue=True, anchor="self_main"))
+    assert [a.queue for a in plan.ordered_actions] == [False, True]
+    assert all(a.action_type is SC2ActionType.BUILD_STRUCTURE for a in plan.ordered_actions)
+    bot = harness.make_bot((U.SCV, 3))
+    result, views = run(bot, *plan.ordered_actions)
+    assert [v["queue"] for v in views] == [False, True], reports(result)
+    assert len(tags_of(views)) == 1, "a queued build continues on the SAME SCV"
+    assert [v["ability_name"] for v in views] == ["TERRANBUILD_SUPPLYDEPOT", "TERRANBUILD_ENGINEERINGBAY"]
 
 
 def test_build_then_dependent_build_waits_for_the_prerequisite_instead_of_queueing() -> None:
-    plan = plan_for_tool_args(macro_builds("배럭 짓고 다음에 벙커", bt("TERRAN_BARRACKS"), bt("TERRAN_BUNKER", queue=True)))
+    plan = direct_build_plan("배럭 짓고 다음에 벙커", bt("TERRAN_BARRACKS"), bt("TERRAN_BUNKER", queue=True))
     assert [a.subject for a in plan.ordered_actions] == ["BARRACKS"]
     dependent = plan.audit["dependent_plans"]
     assert dependent[0]["resume_on"] == ["building_completed"]

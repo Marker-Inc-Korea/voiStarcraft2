@@ -745,7 +745,10 @@ class PythonSC2BotAdapter:
                 type_id,
                 destination,
                 none_is_success=False,
+                queue=action.queue,
             )
+        elif action.queue:
+            return _refusal_report(1, "queue_requires_pinned_builder")
         else:
             built = await _call_bot_operation(
                 build,
@@ -1080,9 +1083,9 @@ class PythonSC2BotAdapter:
             if not callable(caller):
                 continue
             applied = (
-                await self._issue_unit_order(caller, ability, target)
+                await self._issue_unit_order(caller, ability, target, queue=action.queue)
                 if target is not None
-                else await self._issue_unit_order(caller, ability)
+                else await self._issue_unit_order(caller, ability, queue=action.queue)
             )
             if applied:
                 issued += 1
@@ -2445,10 +2448,15 @@ class PythonSC2BotAdapter:
         order_method: Callable[..., object],
         *args: object,
         none_is_success: bool = True,
+        queue: bool = False,
     ) -> bool:
-        """Issue one unit order, preferring ``bot.do`` collection when present."""
+        """Issue one unit order, preferring ``bot.do`` collection when present.
 
-        command = order_method(*args)
+        ``queue=True`` appends behind the unit's current order (``ActionRawUnitCommand.queue_command``);
+        the default replaces it.
+        """
+
+        command = order_method(*args, queue=True) if queue else order_method(*args)
         if inspect.isawaitable(command):
             command = await command
         if command is None:
@@ -2488,7 +2496,7 @@ class PythonSC2BotAdapter:
             order_method = getattr(unit, order_name, None)
             if not callable(order_method):
                 continue
-            if await self._issue_unit_order(order_method, destination):
+            if await self._issue_unit_order(order_method, destination, queue=action.queue):
                 issued += 1
         return _issuance_report(requested, issued, "insufficient_units")
 

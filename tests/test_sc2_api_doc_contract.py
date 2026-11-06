@@ -92,15 +92,14 @@ def test_operation_commands_never_queue_either() -> None:
         assert views and {v["queue"] for v in views} == {False}, kind
 
 
-def test_spoken_then_phrase_reaches_the_dsl_as_a_visible_rejection_not_a_silent_fresh_order() -> None:
-    """Docs: ``queue_command=true`` appends.  The DSL has NO queue field (``realtime_intent._MICRO_KEYS``);
-    a payload that tries to carry one must be rejected loudly rather than dropped so that "탱크 시즈 다음에
-    스팀팩" can never silently become two *replacing* orders.  (Queue support itself is a handoff item.)"""
+def test_a_queue_flag_that_is_not_a_boolean_is_still_rejected_loudly() -> None:
+    """Queue support is real since round 4 (tests/test_sc2_vocab.py); a malformed flag must never silently
+    become a replacing order."""
 
     from starcraft_commander.realtime_intent import tool_arguments_to_provider_output
 
     with pytest.raises(ValueError, match="queue"):
-        tool_arguments_to_provider_output({"goal": "x", "micro": [{"ability": "siege_mode", "queue": True}]})
+        tool_arguments_to_provider_output({"goal": "x", "micro": [{"ability": "siege_mode", "queue": "yes"}]})
 
 
 # ---- target kind per ability: AbilityData::Target (data.proto L21-27) vs the ActionRaw target field
