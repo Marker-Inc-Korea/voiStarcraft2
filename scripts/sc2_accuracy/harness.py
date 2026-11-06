@@ -351,6 +351,20 @@ def make_bot(*units: tuple[UnitTypeId, int]) -> HarnessBot:
     return bot
 
 
+def add_prerequisites(bot: "HarnessBot", subject: str) -> "HarnessBot":
+    """Give ``bot`` the finished structure chain ``subject`` needs (UnitTypeData.tech_requirement), so a fixture about
+    the order SHAPE is not turned into a prerequisite refusal (those have their own tests in test_sc2_vocab.py)."""
+
+    from starcraft_commander.terran_prerequisites import TERRAN_TECH_REQUIREMENTS
+
+    required = TERRAN_TECH_REQUIREMENTS.get(subject)
+    while required:
+        if not any(u.type_id.name == required for u in list(bot.structures) + list(bot.units)):
+            bot.add_unit(getattr(UnitTypeId, required))
+        required = TERRAN_TECH_REQUIREMENTS.get(required)
+    return bot
+
+
 def request_action(action_raws: list[Any]) -> sc2api_pb2.Request:
     """Wrap ``ActionRaw`` messages in a ``RequestAction`` (what ``Client.actions`` sends) and round-trip it."""
 

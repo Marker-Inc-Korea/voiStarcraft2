@@ -341,14 +341,14 @@ def test_units_that_need_a_tech_lab_are_only_ordered_from_a_producer_with_one(un
 
     producer = next(p for p, table in TRAIN_INFO.items() if getattr(U, unit) in table and table[getattr(U, unit)].get("requires_techlab"))
     lab = {U.BARRACKS: U.BARRACKSTECHLAB, U.FACTORY: U.FACTORYTECHLAB, U.STARPORT: U.STARPORTTECHLAB}[producer]
-    bot = harness.make_bot()
+    bot = harness.add_prerequisites(harness.make_bot(), unit)
     naked = bot.add_unit(producer)
     labbed_lab = bot.add_unit(lab)
     labbed = bot.add_unit(producer, add_on_tag=labbed_lab.tag)
     result, views = run(bot, *lower_direct("train_unit", [f"TERRAN_{unit}"]))
     assert tags_of(views) == {labbed.tag}, f"order sent to tech-lab-less {producer.name} {naked.tag}"
     # and with ONLY a naked producer the user is told why instead of getting a silent order
-    bot = harness.make_bot()
+    bot = harness.add_prerequisites(harness.make_bot(), unit)
     bot.add_unit(producer)
     result, views = run(bot, *lower_direct("train_unit", [f"TERRAN_{unit}"]))
     assert views == [] and report(result)["applied"] is False and report(result)["detail"]
