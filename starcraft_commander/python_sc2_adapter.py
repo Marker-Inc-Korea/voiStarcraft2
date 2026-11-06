@@ -305,6 +305,19 @@ _SEMANTIC_ABILITY_ALIASES: Final[dict[str, str]] = {
     "NUKE": "TACNUKESTRIKE_NUKECALLDOWN",
 }
 
+# Caster READINESS rules.  The documentation makes availability an observation, not a guess
+# (``Unit.health``/``energy``/``buffs``/``cargo_*`` and ``QueryInterface::GetAbilitiesForUnit``; refusals come back as
+# ``NotEnoughLife`` / ``NotEnoughEnergy`` / ``NotEnoughRoomToLoadUnit`` / ``NoCargoToUnload``, error.proto).  A unit
+# that is known not to satisfy the rule is never sent the order, so one weak unit cannot burn the user's command.
+# An unobserved field (offline fakes, snapshots) is never a reason to refuse.
+# These numbers are public game rules (not in stableid.json): re-verify them with the live checklist.
+_STIM_HEALTH_COST: Final[dict[str, float]] = {"MARINE": 10.0, "MARAUDER": 20.0}
+_STIM_BUFF_NAMES: Final[dict[str, str]] = {"MARINE": "STIMPACK", "MARAUDER": "STIMPACKMARAUDER"}
+_ABILITY_ENERGY_COST: Final[dict[str, float]] = {
+    "ghost_cloak": 25.0, "banshee_cloak": 25.0, "emp": 75.0, "snipe": 50.0,
+    "auto_turret": 50.0, "interference_matrix": 75.0, "anti_armor_missile": 75.0,
+}
+
 # Semantic research token (underscores stripped, upper) -> UpgradeId member name.
 # ``COMBATSHIELD`` is a different (research-less) id than the one the game
 # researches (``SHIELDWALL`` at the Barracks Tech Lab).
@@ -971,8 +984,20 @@ class PythonSC2BotAdapter:
             if "_direct_unit_tags" in action.metadata
             else self._ability_casters(action)
         )
+        token = self._ability_token(ability_name)
+        units = [unit for unit in units if not _caster_blockers(token, unit)]
         if not units:
-            return _refusal_report(action.count, "no_matching_caster")
+            blockers = sorted(
+                {
+                    reason
+                    for unit in self._ability_casters(action, ready_only=False)
+                    for reason in _caster_blockers(token, unit)
+                }
+            )
+            return _refusal_report(
+                action.count,
+                f"no_ready_caster: {', '.join(blockers)}" if blockers else "no_matching_caster",
+            )
         # Count 0 is the whole eligible group ("탱크 시즈모드" sieges every
         # tank); a positive count is exactly that many casters.
         if "_direct_requested_count" in action.metadata:
@@ -1010,13 +1035,16 @@ class PythonSC2BotAdapter:
     def _ability_token(ability_name: str) -> str:
         return re.sub(r"[^a-z0-9]+", "_", str(ability_name).strip().lower()).strip("_")
 
-    def _ability_casters(self, action: SC2CommandAction) -> list[object]:
-        """Own units of the named family that are in a form able to cast the ability."""
+    def _ability_casters(
+        self, action: SC2CommandAction, *, ready_only: bool = True
+    ) -> list[object]:
+        """Own units of the named family that are in a form AND state able to cast the ability."""
 
         ability_name = str(
             action.metadata.get("ability_id") or action.metadata.get("ability") or ""
         )
-        spec = SC2_SEMANTIC_ABILITIES.get(self._ability_token(ability_name))
+        token = self._ability_token(ability_name)
+        spec = SC2_SEMANTIC_ABILITIES.get(token)
         family = canonical_terran_unit_family(action.subject)
         if family:
             pool = [
@@ -1028,6 +1056,8 @@ class PythonSC2BotAdapter:
             pool = self._select_group(action.subject)
         if spec is not None and spec[2]:
             pool = [unit for unit in pool if _entity_type_name(unit) in spec[2]]
+        if ready_only:
+            pool = [unit for unit in pool if not _caster_blockers(token, unit)]
         return pool
 
     def _ability_target(
@@ -3669,6 +3699,45 @@ def _nearest_entity(
         pointed,
         key=lambda pair: (anchor.distance_to(pair[0]), pair[0].x, pair[0].y),
     )[1]
+
+
+def _observed_number(entity: object, attribute: str) -> float | None:
+    value = getattr(entity, attribute, None)
+    return float(value) if _is_real_number(value) else None
+
+
+def _caster_blockers(token: str, unit: object) -> tuple[str, ...]:
+    """Documented, observable reasons this unit cannot cast ``token`` right now (empty = ready)."""
+
+    blockers: list[str] = []
+    type_name = _entity_type_name(unit) or ""
+    if token in {"stimpack", "marine_stimpack", "marauder_stimpack"} and type_name in _STIM_HEALTH_COST:
+        health = _observed_number(unit, "health")
+        if health is not None and health <= _STIM_HEALTH_COST[type_name]:
+            blockers.append("low_health_for_stim")
+        buff_name = _STIM_BUFF_NAMES[type_name]
+        buffs = getattr(unit, "buffs", None)
+        try:
+            names = {str(getattr(buff, "name", buff)).upper() for buff in (buffs or ())}
+        except TypeError:
+            names = set()
+        if buff_name in names:
+            blockers.append("already_stimmed")
+    cost = _ABILITY_ENERGY_COST.get(token)
+    if cost is not None:
+        energy = _observed_number(unit, "energy")
+        if energy is not None and energy < cost:
+            blockers.append("not_enough_energy")
+    if type_name == "MEDIVAC":
+        if token == "medivac_load":
+            left = _observed_number(unit, "cargo_left")
+            if left is not None and left <= 0:
+                blockers.append("no_cargo_space")
+        elif token == "medivac_unload_all":
+            used = _observed_number(unit, "cargo_used")
+            if used is not None and used <= 0:
+                blockers.append("no_cargo_to_unload")
+    return tuple(blockers)
 
 
 def _is_damaged(entity: object) -> bool:

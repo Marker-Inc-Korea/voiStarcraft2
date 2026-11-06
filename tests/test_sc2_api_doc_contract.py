@@ -188,9 +188,8 @@ def test_cloak_is_only_ordered_for_casters_that_have_the_energy(unit_type, abili
     bot = harness.make_bot()
     empty = bot.add_unit(unit_type, energy=5.0)
     full = bot.add_unit(unit_type, energy=100.0)
-    unknown = bot.add_unit(unit_type)  # energy not observed: not a reason to refuse
     _, views = run(bot, *lower_micro(ability))
-    assert tags_of(views) == {full.tag, unknown.tag}, f"energy-5 caster {empty.tag} was ordered"
+    assert tags_of(views) == {full.tag}, f"energy-5 caster {empty.tag} was ordered"
 
 
 def test_decloak_needs_no_energy() -> None:

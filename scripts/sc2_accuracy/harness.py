@@ -30,6 +30,7 @@ from sc2.dicts.unit_train_build_abilities import TRAIN_INFO
 from sc2.game_data import GameData
 from sc2.ids.ability_id import AbilityId
 from sc2.ids.unit_typeid import UnitTypeId
+from sc2.ids.upgrade_id import UpgradeId
 from sc2.position import Point2
 from sc2.unit import Unit
 from sc2.units import Units
@@ -105,6 +106,7 @@ CARGO_SIZE = {
     UnitTypeId.SIEGETANK: 4, UnitTypeId.THOR: 8,
 }
 MEDIVAC_CARGO_MAX = 8
+ENERGY_CASTERS = {UnitTypeId.GHOST, UnitTypeId.BANSHEE, UnitTypeId.RAVEN, UnitTypeId.MEDIVAC, UnitTypeId.ORBITALCOMMAND}
 
 COSTS = {
     UnitTypeId.SCV: (50, 0), UnitTypeId.MARINE: (50, 0), UnitTypeId.MARAUDER: (100, 25), UnitTypeId.GHOST: (150, 125),
@@ -112,7 +114,13 @@ COSTS = {
     UnitTypeId.SUPPLYDEPOT: (100, 0), UnitTypeId.BARRACKS: (150, 0), UnitTypeId.FACTORY: (150, 100),
     UnitTypeId.STARPORT: (150, 100), UnitTypeId.COMMANDCENTER: (400, 0), UnitTypeId.REFINERY: (75, 0),
     UnitTypeId.ENGINEERINGBAY: (125, 0),
+    UnitTypeId.BARRACKSTECHLAB: (50, 25), UnitTypeId.FACTORYTECHLAB: (50, 25), UnitTypeId.STARPORTTECHLAB: (50, 25),
+    UnitTypeId.BARRACKSREACTOR: (50, 50), UnitTypeId.FACTORYREACTOR: (50, 50), UnitTypeId.STARPORTREACTOR: (50, 50),
+    UnitTypeId.ORBITALCOMMAND: (550, 0), UnitTypeId.PLANETARYFORTRESS: (550, 150),
 }
+
+# (minerals, vespene) research costs (public game data): UpgradeData.mineral_cost / vespene_cost.
+UPGRADE_COSTS = {UpgradeId.STIMPACK: (100, 100), UpgradeId.SHIELDWALL: (100, 100)}
 
 
 def build_game_data() -> GameData:
@@ -179,6 +187,9 @@ def build_game_data() -> GameData:
         proto = response.upgrades.add()
         proto.upgrade_id = upgrade["id"]
         proto.name = upgrade["name"]
+        for known, (minerals, gas) in UPGRADE_COSTS.items():
+            if known.value == upgrade["id"]:
+                proto.mineral_cost, proto.vespene_cost = minerals, gas
         if upgrade["id"] in researched:
             proto.ability_id = researched[upgrade["id"]]
     return GameData(response)
@@ -230,6 +241,8 @@ class HarnessBot(BotAI):
             build_progress=build_progress, health=health, health_max=health_max, add_on_tag=add_on_tag,
             weapon_cooldown=weapon_cooldown,
         )
+        if energy is None and unit_type in ENERGY_CASTERS:
+            energy = 100.0  # a real observation always carries energy for these units
         if energy is not None:
             proto.energy = energy
             proto.energy_max = energy_max if energy_max is not None else 200.0
