@@ -98,6 +98,14 @@ FOOD_REQUIRED = {
 }
 
 # (minerals, vespene) per unit/structure, public game data; stableid.json has none.  Needed for resource-gating contracts.
+# cargo_size per unit (public game data, UnitTypeData.cargo_size in the docs); stableid.json has none.
+CARGO_SIZE = {
+    UnitTypeId.SCV: 1, UnitTypeId.MARINE: 1, UnitTypeId.MARAUDER: 2, UnitTypeId.REAPER: 1, UnitTypeId.GHOST: 2,
+    UnitTypeId.HELLION: 2, UnitTypeId.HELLIONTANK: 2, UnitTypeId.WIDOWMINE: 2, UnitTypeId.CYCLONE: 4,
+    UnitTypeId.SIEGETANK: 4, UnitTypeId.THOR: 8,
+}
+MEDIVAC_CARGO_MAX = 8
+
 COSTS = {
     UnitTypeId.SCV: (50, 0), UnitTypeId.MARINE: (50, 0), UnitTypeId.MARAUDER: (100, 25), UnitTypeId.GHOST: (150, 125),
     UnitTypeId.SIEGETANK: (150, 125), UnitTypeId.MEDIVAC: (100, 100), UnitTypeId.BATTLECRUISER: (400, 300),
@@ -159,6 +167,7 @@ def build_game_data() -> GameData:
             proto.attributes.append(Attribute.Mechanical.value)
         if unit["id"] in FOOD_REQUIRED:
             proto.food_required = FOOD_REQUIRED[unit["id"]]
+        proto.cargo_size = next((c for u, c in CARGO_SIZE.items() if u.value == unit["id"]), 0)
         cost = next((c for u, c in COSTS.items() if u.value == unit["id"]), None)
         if cost is not None:
             proto.mineral_cost, proto.vespene_cost = cost
@@ -214,7 +223,7 @@ class HarnessBot(BotAI):
                  orders: tuple[AbilityId, ...] = (), health: float = 100.0, health_max: float = 100.0,
                  enemy: bool = False, add_on_tag: int = 0, energy: float | None = None,
                  energy_max: float | None = None, build_progress: float = 1.0, weapon_cooldown: float = 0.0,
-                 buff_ids: tuple[int, ...] = ()) -> Unit:
+                 buff_ids: tuple[int, ...] = (), cargo_taken: int = 0) -> Unit:
         self._next_tag += 1
         proto = raw_pb2.Unit(
             tag=self._next_tag, unit_type=unit_type.value, alliance=4 if enemy else 1,
@@ -225,6 +234,13 @@ class HarnessBot(BotAI):
             proto.energy = energy
             proto.energy_max = energy_max if energy_max is not None else 200.0
         proto.buff_ids.extend(buff_ids)
+        if unit_type == UnitTypeId.MEDIVAC:
+            proto.cargo_space_max = MEDIVAC_CARGO_MAX
+            proto.cargo_space_taken = cargo_taken
+        if unit_type in {UnitTypeId.BARRACKSTECHLAB, UnitTypeId.FACTORYTECHLAB, UnitTypeId.STARPORTTECHLAB}:
+            self.techlab_tags.add(self._next_tag)
+        if unit_type in {UnitTypeId.BARRACKSREACTOR, UnitTypeId.FACTORYREACTOR, UnitTypeId.STARPORTREACTOR}:
+            self.reactor_tags.add(self._next_tag)
         proto.pos.x, proto.pos.y = x, y
         for ability in orders:
             proto.orders.add().ability_id = ability.value
