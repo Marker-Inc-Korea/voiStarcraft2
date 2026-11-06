@@ -170,8 +170,10 @@ _TERRAN_ABILITY_ACTION_MARKERS: Final[Mapping[str, tuple[str, ...]]] = {
     "viking_assault_mode": ("MORPH_VIKINGASSAULTMODE",),
     "liberator_defender_mode": ("MORPH_LIBERATORAGMODE",),
     "liberator_fighter_mode": ("MORPH_LIBERATORAAMODE",),
-    "banshee_cloak": ("BEHAVIOR_CLOAKON",),
-    "banshee_decloak": ("BEHAVIOR_CLOAKOFF",),
+    # Patch 0047 / the Direct adapter submit the Banshee-specific ids (392/393); the generic ones stay accepted
+    # because the SC2 ability query may still report the remapped generic id.
+    "banshee_cloak": ("BEHAVIOR_CLOAKON_BANSHEE", "BEHAVIOR_CLOAKON"),
+    "banshee_decloak": ("BEHAVIOR_CLOAKOFF_BANSHEE", "BEHAVIOR_CLOAKOFF"),
     "auto_turret": ("EFFECT_AUTOTURRET",),
     "interference_matrix": ("EFFECT_INTERFERENCEMATRIX", "3747"),
     "anti_armor_missile": ("EFFECT_ANTIARMORMISSILE", "3753"),

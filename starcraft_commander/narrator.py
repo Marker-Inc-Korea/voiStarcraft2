@@ -144,6 +144,8 @@ SC2_ACTION_REFUSAL_KOREAN_REASONS: Final[dict[str, str]] = {
 }
 """Machine-readable adapter refusal details translated into Korean reasons."""
 
+from starcraft_commander.terran_prerequisites import TERRAN_TECH_REQUIREMENT_KOREAN  # noqa: E402
+
 SC2_CASTER_BLOCKER_KOREAN_REASONS: Final[dict[str, str]] = {
     "not_enough_energy": "에너지가 부족합니다 (스캐너 스윕/뮤마/보급 드롭은 에너지 50 필요)",
     "low_health_for_stim": "체력이 낮아 스팀팩을 쓸 수 없습니다",
@@ -717,6 +719,11 @@ def _ability_refusal_reason(detail: str) -> str | None:
 
     head, _, tail = str(detail or "").partition(":")
     parts = [part.strip() for part in tail.split(",") if part.strip()]
+    if head in {"missing_prerequisite", "prerequisite_under_construction"} and parts:
+        structure = TERRAN_TECH_REQUIREMENT_KOREAN.get(parts[0], parts[0])
+        if head == "missing_prerequisite":
+            return f"선행 건물이 없습니다 — {structure}이(가) 먼저 필요합니다"
+        return f"선행 건물 {structure}이(가) 아직 건설 중입니다 — 완성된 뒤에 다시 말해 주세요"
     if head == "no_ready_caster" and parts:
         return "; ".join(SC2_CASTER_BLOCKER_KOREAN_REASONS.get(part, part) for part in parts)
     if head == "target_required" and parts:

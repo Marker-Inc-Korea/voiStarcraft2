@@ -44,6 +44,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Final, Protocol, runtime_checkable
 
+from starcraft_commander.terran_prerequisites import required_structure, satisfying_types
 from starcraft_commander.contracts import SC2ActionReport, SC2ActionType, SC2CommandAction
 from starcraft_commander.map_resolver import (
     MapPoint,
@@ -559,6 +560,9 @@ class PythonSC2BotAdapter:
         """Issue a no-target add-on / townhall-upgrade order on an idle parent structure."""
 
         parent_name, ability_name = spec
+        missing = self._missing_prerequisite(action.subject)
+        if missing:
+            return _refusal_report(1, missing)
         ability = self._resolve_ability(ability_name)
         if ability is None:
             return _refusal_report(1, "unresolvable_ability")
@@ -618,6 +622,9 @@ class PythonSC2BotAdapter:
         morph = _structure_morph_spec(action)
         if morph is not None:
             return await self._morph_structure(action, morph)
+        missing = self._missing_prerequisite(action.subject)
+        if missing:
+            return _refusal_report(1, missing)
         type_id = self._resolve_unit_type(action.subject)
         if not await self._is_affordable(type_id):
             return _refusal_report(1, self._unaffordable_reason(type_id))
@@ -880,6 +887,9 @@ class PythonSC2BotAdapter:
         producer_name = _normalized_name(action.metadata.get("producer"))
         if producer_name is None:
             return _refusal_report(action.count, "missing_producer_metadata")
+        missing = self._missing_prerequisite(action.subject)
+        if missing:
+            return _refusal_report(action.count, missing)
         type_id = self._resolve_unit_type(action.subject)
         producers = self._producer_structures(action, producer_name)
         if not producers:
@@ -915,6 +925,34 @@ class PythonSC2BotAdapter:
                     detail = "production_queue_full"
                 break
         return _issuance_report(action.count, issued, detail)
+
+    def _missing_prerequisite(self, subject: str) -> str:
+        """``UnitTypeData.tech_requirement``: the structure ``subject`` needs, or ``""`` when satisfied/unknown.
+
+        Without it the game answers ``BuildTechRequirementsNotMet``.  Only a bot that exposes a structure
+        observation can be judged; a flying/lowered/morphed form counts, a structure still under construction does
+        not (``tech_requirement_progress`` must reach 1).
+        """
+
+        required = required_structure(subject)
+        if not required or getattr(self.bot, "structures", None) is None:
+            return ""
+        wanted = satisfying_types(required)
+        owned = [
+            entity
+            for entity in _unique_entities(
+                _materialize(getattr(self.bot, "structures", None))
+                + _materialize(getattr(self.bot, "units", None))
+            )
+            if _entity_type_name(entity) in wanted
+        ]
+        if any(_truthy_flag(entity, "is_ready", default=True) for entity in owned):
+            return ""
+        return (
+            f"prerequisite_under_construction: {required}"
+            if owned
+            else f"missing_prerequisite: {required}"
+        )
 
     def _unaffordable_reason(self, item: object) -> str:
         """``supply_blocked`` when supply (not minerals/gas) is what stops the order, else ``unaffordable``."""

@@ -575,3 +575,35 @@ def test_a_tech_lab_unit_without_techlab_keeps_its_own_refusal_and_without_prere
 
     result, views = run(harness.make_bot((U.BARRACKS, 1)), _train("GHOST", "BARRACKS"))
     assert views == [] and reports(result)[0]["detail"] == "missing_prerequisite: GHOSTACADEMY"
+
+
+# =========================================================================== ITEM 4: BANSHEE CLOAK MARKER
+# The adapter sends BEHAVIOR_CLOAKON_BANSHEE (392) and MicroMachine patch 0047 submits the same id, so the telemetry
+# action string is "ability:BEHAVIOR_CLOAKON_BANSHEE".  The evidence matcher must accept it (and keep accepting the
+# generic marker older telemetry carries).
+
+
+def test_banshee_cloak_ids_are_the_unit_specific_ones_in_stableid() -> None:
+    assert AbilityId.BEHAVIOR_CLOAKON_BANSHEE.value == 392 and AbilityId.BEHAVIOR_CLOAKOFF_BANSHEE.value == 393
+    from starcraft_commander.python_sc2_adapter import SC2_SEMANTIC_ABILITIES
+
+    assert SC2_SEMANTIC_ABILITIES["banshee_cloak"][0] == "BEHAVIOR_CLOAKON_BANSHEE"
+    assert SC2_SEMANTIC_ABILITIES["banshee_decloak"][0] == "BEHAVIOR_CLOAKOFF_BANSHEE"
+
+
+@pytest.mark.parametrize(
+    "policy,action,expected",
+    [
+        ("banshee_cloak", "ability:BEHAVIOR_CLOAKON_BANSHEE", True),
+        ("banshee_cloak", "ability:BEHAVIOR_CLOAKON", True),
+        ("banshee_decloak", "ability:BEHAVIOR_CLOAKOFF_BANSHEE", True),
+        ("banshee_decloak", "ability:BEHAVIOR_CLOAKOFF", True),
+        ("banshee_cloak", "ability:BEHAVIOR_CLOAKOFF_BANSHEE", False),
+        ("banshee_cloak", "ability:BEHAVIOR_CLOAKON_GHOST", False),
+        ("ghost_cloak", "ability:BEHAVIOR_CLOAKON_BANSHEE", False),
+    ],
+)
+def test_the_evidence_matcher_accepts_the_banshee_specific_marker(policy, action, expected) -> None:
+    from starcraft_commander import micromachine_command_execution as mce
+
+    assert mce._operation_family_ability_action_matches_request(action, {policy}) is expected
