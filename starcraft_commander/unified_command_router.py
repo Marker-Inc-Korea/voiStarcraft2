@@ -37,6 +37,7 @@ from starcraft_commander.direct_command_lifecycle import (
 )
 from starcraft_commander.direct_binding import bind_plan_actions
 from starcraft_commander.direct_command_registry import DirectCommandRegistry
+from starcraft_commander.terran_prerequisites import required_structure
 from starcraft_commander.sc2_api_inventory import inspect_python_sc2_surface
 from starcraft_commander.policy_modulation import (
     CommandLayer,
@@ -469,6 +470,8 @@ def build_direct_plan_from_vector(
 
     # Building tasks are explicit one-off actions, unlike the standing
     # production/tech biases carried by the macro vector.
+    planned_structures: set[str] = set()
+    deferred_builds: list[SC2CommandAction] = []
     for building in vector.building_tasks:
         target = building.placement_intent or building.anchor or "self_main"
         metadata: dict[str, object] = {
@@ -488,15 +491,34 @@ def build_direct_plan_from_vector(
         if building.target_position:
             metadata["target_position"] = list(building.target_position)
             target = "explicit_coordinate"
+        subject = _direct_structure_subject(building.building_type)
+        # "배럭 짓고 다음에 벙커": a queued build whose prerequisite is the structure an earlier step of THIS
+        # plan is still putting up cannot be shift-queued (the game answers BuildTechRequirementsNotMet while the
+        # Barracks does not exist yet); it waits for building_completed like build -> train does.
+        if building.queue and required_structure(subject) in planned_structures:
+            for _ in range(building.count):
+                deferred_builds.append(
+                    SC2CommandAction(
+                        action_type=SC2ActionType.BUILD_STRUCTURE,
+                        subject=subject,
+                        target=target,
+                        count=1,
+                        priority=100,
+                        metadata=metadata,
+                    )
+                )
+            continue
+        planned_structures.add(subject)
         for _ in range(building.count):
             actions.append(
                 SC2CommandAction(
                     action_type=SC2ActionType.BUILD_STRUCTURE,
-                    subject=_direct_structure_subject(building.building_type),
+                    subject=subject,
                     target=target,
                     count=1,
                     priority=100,
                     metadata=metadata,
+                    queue=building.queue,
                 )
             )
 
@@ -517,13 +539,18 @@ def build_direct_plan_from_vector(
         for index, action in enumerate(actions)
         if action.action_type is SC2ActionType.TRAIN_UNIT
     }
-    if build_indices and train_indices:
-        train_actions = tuple(actions[index] for index in sorted(train_indices))
+    if (build_indices and train_indices) or deferred_builds:
+        train_actions = (
+            tuple(actions[index] for index in sorted(train_indices))
+            if build_indices
+            else ()
+        )
         actions = [
             action
             for index, action in enumerate(actions)
-            if index not in train_indices
+            if index not in train_indices or not build_indices
         ]
+        train_actions = (*train_actions, *deferred_builds)
         dependent_plan = SC2ExecutionPlan(
             intent_name="unified:dependent:train_after_build",
             priority="high",
@@ -642,6 +669,7 @@ def _append_task_actions(
     # against the wrong object.
     target = task_target or scope_target
     priority = int(max(1.0, float(getattr(task, "priority", 0.0) or 0.0)) * 100)
+    queue = bool(getattr(task, "queue", False))
     min_units = int(
         getattr(scope, "min_units", 0) or getattr(task, "min_units", 0) or 1
     )
@@ -671,6 +699,7 @@ def _append_task_actions(
                     count=explicit_count,
                     priority=priority,
                     metadata={**metadata, "ability": ability},
+                    queue=queue,
                 )
             )
         return
@@ -875,6 +904,7 @@ def _append_task_actions(
                 count=count,
                 priority=priority,
                 metadata=action_metadata,
+                queue=queue,
             )
         )
         return
@@ -893,6 +923,7 @@ def _append_task_actions(
                     count=int(getattr(requirement, "count", 1)),
                     priority=priority,
                     metadata=dict(metadata),
+                    queue=queue,
                 )
             )
         return
@@ -921,6 +952,7 @@ def _append_task_actions(
                 count=min_units,
                 priority=priority,
                 metadata=dict(metadata),
+                queue=queue,
             )
         )
 
@@ -1809,6 +1841,7 @@ def execution_plan_from_mapping(value: object) -> SC2ExecutionPlan:
                 count=int(raw.get("count", 1)),
                 priority=int(raw.get("priority", 50)),
                 constraints=tuple(raw.get("constraints", ())),
+                queue=raw.get("queue", False),
                 metadata=(
                     raw.get("metadata", {})
                     if isinstance(raw.get("metadata", {}), Mapping)

@@ -83,12 +83,18 @@ class SC2CommandAction:
     priority: int = SC2_PRIORITY_VALUES["normal"]
     constraints: tuple[str, ...] = ()
     metadata: Mapping[str, object] = field(default_factory=dict)
+    queue: bool = False
+    """``True`` = APPEND to the unit's order queue (``ActionRawUnitCommand.queue_command``);
+    ``False`` (default) = REPLACE its current orders.  Set only by a spoken then-word
+    (다음에/이어서/그 다음/끝나면, and then/after that)."""
 
     def __post_init__(self) -> None:
         action_type = _coerce_action_type(
             self.action_type,
             field_name="SC2 command action action_type",
         )
+        if type(self.queue) is not bool:
+            raise ValueError("SC2 command action queue must be a boolean.")
         if not self.subject.strip():
             raise ValueError("SC2 command action subject must be non-empty.")
         if self.count < 0:
@@ -101,7 +107,7 @@ class SC2CommandAction:
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-ready semantic action payload."""
 
-        return {
+        payload: dict[str, object] = {
             "action_type": self.action_type.value,
             "subject": self.subject,
             "target": self.target,
@@ -110,6 +116,9 @@ class SC2CommandAction:
             "constraints": list(self.constraints),
             "metadata": dict(self.metadata),
         }
+        if self.queue:  # absent == False, so every non-queued payload stays byte-identical
+            payload["queue"] = True
+        return payload
 
 
 @dataclass(frozen=True, init=False)

@@ -78,6 +78,7 @@ from starcraft_commander.policy_modulation import (
     MICROMACHINE_DOCTRINES,
     MICROMACHINE_OPERATION_EDIT_ACTIONS,
     MICROMACHINE_ROUTE_INTENTS,
+    MICROMACHINE_DIRECT_ONLY_ABILITIES,
     MICROMACHINE_TACTICAL_ABILITIES,
     MICROMACHINE_TACTICAL_TASK_TYPES,
     MICROMACHINE_TARGET_INTENTS,
@@ -162,7 +163,15 @@ OPERATION_ACTIONS: Final[tuple[str, ...]] = tuple(
     )
 )
 ABILITIES: Final[tuple[str, ...]] = tuple(
-    sorted(MICROMACHINE_TACTICAL_ABILITIES - {""})
+    sorted((MICROMACHINE_TACTICAL_ABILITIES | MICROMACHINE_DIRECT_ONLY_ABILITIES) - {""})
+)
+# Casters of the Direct-only abilities that are not DSL army/production tokens (Orbital Command, flying buildings).
+DIRECT_CASTER_UNIT_TYPES: Final[tuple[str, ...]] = (
+    "TERRAN_ORBITALCOMMAND",
+    "TERRAN_BARRACKSFLYING",
+    "TERRAN_FACTORYFLYING",
+    "TERRAN_STARPORTFLYING",
+    "TERRAN_COMMANDCENTERFLYING",
 )
 UNIT_ROLES: Final[tuple[str, ...]] = tuple(sorted(MICROMACHINE_UNIT_ROLES - {""}))
 ROUTE_TYPES: Final[tuple[str, ...]] = tuple(
@@ -243,12 +252,13 @@ _OPERATION_KEYS: Final[frozenset[str]] = frozenset(
         "standing_order",
         "allow_partial",
         "intensity",
+        "queue",
     }
 )
 _COMPOSITION_KEYS: Final[frozenset[str]] = frozenset(
     {"unit_type", "count", "role"}
 )
-_MICRO_KEYS: Final[frozenset[str]] = frozenset({"ability", "unit_classes"})
+_MICRO_KEYS: Final[frozenset[str]] = frozenset({"ability", "unit_classes", "queue", "location"})
 _MACRO_KEYS: Final[frozenset[str]] = frozenset(
     {
         "task_type",
@@ -260,7 +270,7 @@ _MACRO_KEYS: Final[frozenset[str]] = frozenset(
     }
 )
 _BUILDING_KEYS: Final[frozenset[str]] = frozenset(
-    {"building_type", "placement_intent", "anchor", "offset_direction", "count"}
+    {"building_type", "placement_intent", "anchor", "offset_direction", "count", "queue"}
 )
 
 _DEFAULT_TTL: Final[dict[str, int]] = {
@@ -309,6 +319,13 @@ _RATIONALE: Final[str] = (
 # ---------------------------------------------------------------------------
 # Tool schema + instructions
 # ---------------------------------------------------------------------------
+
+
+QUEUE_DESCRIPTION: Final[str] = (
+    "true ONLY for the follow-up step the user chained with 다음에/이어서/그 다음/끝나면/그리고 나서/"
+    "and then/after that/afterwards: it is APPENDED behind the first step instead of replacing it. "
+    "Omit (false) for the first step and for every fresh order."
+)
 
 
 def _operation_schema() -> dict[str, object]:
@@ -367,6 +384,7 @@ def _operation_schema() -> dict[str, object]:
             "standing_order": {"type": "boolean"},
             "allow_partial": {"type": "boolean"},
             "intensity": {"type": "string", "enum": list(INTENSITIES)},
+            "queue": {"type": "boolean", "description": QUEUE_DESCRIPTION},
         },
     }
 
@@ -417,8 +435,17 @@ def build_submit_command_tool() -> dict[str, object]:
                             "ability": {"type": "string", "enum": list(ABILITIES)},
                             "unit_classes": {
                                 "type": "array",
-                                "items": {"type": "string", "enum": list(UNIT_TYPES)},
+                                "items": {"type": "string", "enum": [*UNIT_TYPES, *DIRECT_CASTER_UNIT_TYPES]},
                             },
+                            "location": {
+                                "type": "string",
+                                "enum": list(LOCATION_INTENTS),
+                                "description": (
+                                    "Semantic place for a point ability: scanner_sweep (스캐너/스캔 <장소>) and land "
+                                    "(착륙/내려안아 <장소>). Never coordinates."
+                                ),
+                            },
+                            "queue": {"type": "boolean", "description": QUEUE_DESCRIPTION},
                         },
                         "required": ["ability"],
                     },
@@ -442,6 +469,7 @@ def build_submit_command_tool() -> dict[str, object]:
                                     "anchor": {"type": "string", "enum": list(BUILDING_ANCHORS)},
                                     "offset_direction": {"type": "string", "enum": list(BUILDING_DIRECTIONS)},
                                     "count": {"type": "integer", "minimum": 1, "maximum": 20},
+                                    "queue": {"type": "boolean", "description": QUEUE_DESCRIPTION},
                                 },
                                 "required": ["building_type"],
                             },
@@ -494,6 +522,17 @@ _INSTRUCTION_RULES: Final[str] = (
     "14. Glossary: 지뢰=widow mine (매복=widow_mine_burrow, 매복 풀어=widow_mine_unburrow), "
     "핵/전술핵=tactical_nuke (ghost), 시즈=siege_mode (풀어=unsiege), 밴시 클로킹="
     "banshee_cloak, 메디박/의료선=medivac.\n"
+    "16. ORBITAL / BUILDING ABILITIES: 스캐너/스캔/scan = scanner_sweep with location (적 본진 스캔 -> "
+    "enemy_main; 우리 본진 스캔 -> home); 뮤마/자원 채취 뮤마/call down MULE = calldown_mule; 보급 드롭/"
+    "supply drop = supply_drop; 이륙/띄워/lift off = lift_off with unit_classes [TERRAN_BARRACKS|"
+    "TERRAN_FACTORY|TERRAN_STARPORT|TERRAN_COMMANDCENTER]; 착륙/내려안아/land = land with unit_classes "
+    "[TERRAN_BARRACKSFLYING|...FACTORYFLYING|...STARPORTFLYING|...COMMANDCENTERFLYING] and location "
+    "(앞마당에 착륙 -> natural). A scan/land with no place spoken -> clarification asking where.\n"
+    "15. SEQUENCES / 순서: when the user chains steps with 다음에/이어서/그 다음/끝나면/and then/"
+    "after that ('정찰 갔다가 본진으로 돌아와', '배럭 짓고 다음에 서플', 'siege then stim'), emit ONE "
+    "call with the steps in spoken order and set queue:true on every step AFTER the first "
+    "(operations[], micro[] or macro.building_tasks[]). A fresh order with no such word never "
+    "sets queue.\n"
 )
 # Nine extra examples. Benchmark rule: none of these utterances may appear in scripts/bench/corpus.jsonl.
 _INSTRUCTION_FEWSHOT: Final[str] = (
@@ -632,6 +671,16 @@ def _bool(value: object, name: str) -> bool:
     if type(value) is not bool:
         raise ValueError(f"{name} must be a boolean.")
     return value
+
+
+_POINT_ABILITIES: Final[frozenset[str]] = frozenset({"scanner_sweep", "land"})
+
+
+def _queue_flag(item: Mapping[str, object], name: str) -> bool:
+    """Spoken then-word flag: absent/None/false = a fresh (replacing) order."""
+
+    value = item.get("queue")
+    return False if value is None else _bool(value, name)
 
 
 def _priority(value: object, name: str, default: float) -> float:
@@ -818,6 +867,9 @@ def _lower_operation(
     )
     exact = sum(int(entry["count"]) for entry in composition)
     unit_classes = list(dict.fromkeys(str(entry["unit_type"]) for entry in composition))
+    queue = _queue_flag(item, f"operations[{index}].queue")
+    if queue and (not task_type or action != "create"):
+        raise ValueError(f"operations[{index}].queue needs a new task step (task_type), not an edit of an existing force.")
     task: dict[str, object] = {}
     scope: dict[str, object] = {}
     if task_type:
@@ -833,6 +885,7 @@ def _lower_operation(
             "duration_seconds": duration,
             "allow_partial": allow_partial,
             "safety_margin": 0.05,
+            **({"queue": True} if queue else {}),
         }
         scope = {
             "army_group": "scout" if task_type == "scout_with_units" else "main",
@@ -931,6 +984,12 @@ def _lower_micro(
         if raw_classes not in (None, "")
         else []
     )
+    queue = _queue_flag(item, f"micro[{index}].queue")
+    location = _text(item.get("location"), f"micro[{index}].location")
+    if location and location not in LOCATION_INTENTS:
+        raise ValueError(f"micro[{index}].location must be one of: {', '.join(LOCATION_INTENTS)}.")
+    if location and ability not in _POINT_ABILITIES:
+        raise ValueError(f"micro[{index}].location is only valid for: {', '.join(sorted(_POINT_ABILITIES))}.")
     production_targets: list[str] = []
     if ability == "tactical_nuke":
         unit_classes = unit_classes or ["TERRAN_GHOST"]
@@ -945,6 +1004,8 @@ def _lower_micro(
         "duration_seconds": 0 if ability == "tactical_nuke" else _DEFAULT_DURATION["execute_ability"],
         "allow_partial": True,
         "safety_margin": 0.05,
+        **({"location_intent": location} if location else {}),
+        **({"queue": True} if queue else {}),
     }
 
 
@@ -974,6 +1035,7 @@ def _lower_macro(
                 "offset_direction": _text(entry.get("offset_direction"), f"{name}.offset_direction"),
                 "allow_nearest_valid_fallback": True,
                 "count": _int(count, f"{name}.count", lower=1, upper=20),
+                **({"queue": True} if _queue_flag(entry, f"{name}.queue") else {}),
             }
         )
     task_type = _text(macro.get("task_type"), "macro.task_type")
@@ -1275,6 +1337,13 @@ _MICRO_RULES: Final[tuple[_MicroRule, ...]] = (
     _rule("interference_matrix", r"간섭\s*매트릭스|\binterference\s*matrix\b", "TERRAN_RAVEN"),
 )
 _AMBIGUOUS_CLOAK_RE: Final[re.Pattern[str]] = re.compile(r"클로킹|은폐|\bcloak", re.IGNORECASE)
+# Round-4 Direct-only abilities have NO legacy micro rule (that would make a bare "스캔" execute without a place); the
+# words only feed the negation guard so "스캔 하지 마" / "착륙 취소" can never be turned into the cast by a model call.
+_DIRECT_ABILITY_WORD_RE: Final[re.Pattern[str]] = re.compile(
+    r"스캐너|스캔|뮤마|뮬|자원\s*채취|보급\s*드롭|이륙|띄워|띄우|착륙|내려\s*안|"
+    r"\b(?:scan(?:ner)?(?:\s+sweep)?|mule|supply\s*drop|lift\s*off|land)\b",
+    re.IGNORECASE,
+)
 
 
 def match_micro_fast_path(transcript: str) -> dict[str, object] | None:
@@ -1781,8 +1850,10 @@ def micro_phrase_is_negated(transcript: str) -> bool:
         return False
     if _OTHER_INTENT_RE.search(text) or _QUESTION_RE.search(text):
         return False
-    return any(rule.pattern.search(text) for rule in _MICRO_RULES) or bool(
-        _AMBIGUOUS_CLOAK_RE.search(text)
+    return (
+        any(rule.pattern.search(text) for rule in _MICRO_RULES)
+        or bool(_AMBIGUOUS_CLOAK_RE.search(text))
+        or bool(_DIRECT_ABILITY_WORD_RE.search(text))
     )
 
 

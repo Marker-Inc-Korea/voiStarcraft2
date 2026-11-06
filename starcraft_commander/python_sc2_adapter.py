@@ -41,9 +41,12 @@ import inspect
 import math
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Final, Protocol, runtime_checkable
 
+from starcraft_commander.terran_prerequisites import required_structure, satisfying_types
+from starcraft_commander.sc2_action_results import SUCCESS_CODE as SUCCESS_RESULT_CODE
+from starcraft_commander.sc2_action_results import GameResultTracker
 from starcraft_commander.contracts import SC2ActionReport, SC2ActionType, SC2CommandAction
 from starcraft_commander.map_resolver import (
     MapPoint,
@@ -295,7 +298,37 @@ SC2_SEMANTIC_ABILITIES: Final[dict[str, tuple[str, str, tuple[str, ...]]]] = {
     "anti_armor_missile": ("EFFECT_ANTIARMORMISSILE", "enemy_point", ("RAVEN",)),
     "yamato": ("YAMATO_YAMATOGUN", "enemy_unit", ("BATTLECRUISER",)),
     "tactical_jump": ("EFFECT_TACTICALJUMP", "explicit_point", ("BATTLECRUISER",)),
+    # Round 4 (stableid.json ids; s2client-api header target kinds): Orbital Command calldowns and building lift/land.
+    # SCANNERSWEEP_SCAN 399 = Point; CALLDOWNMULE_CALLDOWNMULE 171 = Unit,Point (a mineral patch);
+    # SUPPLYDROP_SUPPLYDROP 255 = Unit (a supply depot); LIFT_* = None; LAND_* = Point.
+    "scanner_sweep": ("SCANNERSWEEP_SCAN", "explicit_point", ("ORBITALCOMMAND",)),
+    "calldown_mule": ("CALLDOWNMULE_CALLDOWNMULE", "mineral_patch", ("ORBITALCOMMAND",)),
+    "supply_drop": ("SUPPLYDROP_SUPPLYDROP", "supply_depot", ("ORBITALCOMMAND",)),
+    "lift_off": ("LIFT", "none", ("BARRACKS", "FACTORY", "STARPORT", "COMMANDCENTER", "ORBITALCOMMAND")),
+    "land": (
+        "LAND", "explicit_point",
+        ("BARRACKSFLYING", "FACTORYFLYING", "STARPORTFLYING", "COMMANDCENTERFLYING", "ORBITALCOMMANDFLYING"),
+    ),
 }
+
+# Lift / Land are building-specific abilities (LIFT_BARRACKS 452, LIFT_FACTORY 485, ... each remaps to the generic
+# LIFT 3679 / LAND 3678): the executable id is chosen per caster type, like the Banshee-specific cloak.
+_TYPE_SPECIFIC_ABILITIES: Final[dict[str, dict[str, str]]] = {
+    "lift_off": {
+        "BARRACKS": "LIFT_BARRACKS", "FACTORY": "LIFT_FACTORY", "STARPORT": "LIFT_STARPORT",
+        "COMMANDCENTER": "LIFT_COMMANDCENTER", "ORBITALCOMMAND": "LIFT_ORBITALCOMMAND",
+    },
+    "land": {
+        "BARRACKSFLYING": "LAND_BARRACKS", "FACTORYFLYING": "LAND_FACTORY", "STARPORTFLYING": "LAND_STARPORT",
+        "COMMANDCENTERFLYING": "LAND_COMMANDCENTER", "ORBITALCOMMANDFLYING": "LAND_ORBITALCOMMAND",
+    },
+}
+# Abilities whose casters are STRUCTURES (python-sc2 keeps them in ``bot.structures``, flying ones possibly in units).
+_STRUCTURE_CASTER_TOKENS: Final[frozenset[str]] = frozenset(
+    {"scanner_sweep", "calldown_mule", "supply_drop", "lift_off", "land"}
+)
+_ORBITAL_TOKENS: Final[frozenset[str]] = frozenset({"scanner_sweep", "calldown_mule", "supply_drop"})
+_SUPPLY_DEPOT_TYPES: Final[frozenset[str]] = frozenset({"SUPPLYDEPOT", "SUPPLYDEPOTLOWERED"})
 
 _SEMANTIC_ABILITY_ALIASES: Final[dict[str, str]] = {
     **{token.upper(): spec[0] for token, spec in SC2_SEMANTIC_ABILITIES.items()},
@@ -316,6 +349,8 @@ _STIM_BUFF_NAMES: Final[dict[str, str]] = {"MARINE": "STIMPACK", "MARAUDER": "ST
 _ABILITY_ENERGY_COST: Final[dict[str, float]] = {
     "ghost_cloak": 25.0, "banshee_cloak": 25.0, "emp": 75.0, "snipe": 50.0,
     "auto_turret": 50.0, "interference_matrix": 75.0, "anti_armor_missile": 75.0,
+    # Orbital Command calldowns: 50 energy each (public rule; live checklist re-verifies via Unit.energy).
+    "scanner_sweep": 50.0, "calldown_mule": 50.0, "supply_drop": 50.0,
 }
 
 # Semantic research token (underscores stripped, upper) -> UpgradeId member name.
@@ -469,6 +504,10 @@ class PythonSC2BotAdapter:
     map_resolver: SC2MapResolverInterface | None = None
     state_resolver: SC2StateResolverInterface = DEFAULT_SC2_STATE_RESOLVER
     unit_type_resolver: Callable[[str], object] | None = None
+    game_results: GameResultTracker = field(
+        default_factory=GameResultTracker, init=False, repr=False, compare=False
+    )
+    _ingested_error_frame: int = field(default=-1, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.bot is None:
@@ -527,6 +566,9 @@ class PythonSC2BotAdapter:
         """Issue a no-target add-on / townhall-upgrade order on an idle parent structure."""
 
         parent_name, ability_name = spec
+        missing = self._missing_prerequisite(action.subject)
+        if missing:
+            return _refusal_report(1, missing)
         ability = self._resolve_ability(ability_name)
         if ability is None:
             return _refusal_report(1, "unresolvable_ability")
@@ -586,6 +628,9 @@ class PythonSC2BotAdapter:
         morph = _structure_morph_spec(action)
         if morph is not None:
             return await self._morph_structure(action, morph)
+        missing = self._missing_prerequisite(action.subject)
+        if missing:
+            return _refusal_report(1, missing)
         type_id = self._resolve_unit_type(action.subject)
         if not await self._is_affordable(type_id):
             return _refusal_report(1, self._unaffordable_reason(type_id))
@@ -745,9 +790,12 @@ class PythonSC2BotAdapter:
                 type_id,
                 destination,
                 none_is_success=False,
+                queue=action.queue,
             )
+        elif action.queue:
+            return _refusal_report(1, "queue_requires_pinned_builder")
         else:
-            built = await _call_bot_operation(
+            built = await self._bot_operation(
                 build,
                 type_id,
                 near=destination,
@@ -808,7 +856,7 @@ class PythonSC2BotAdapter:
         build = getattr(self.bot, "build", None)
         if not callable(build):
             return False
-        return await _call_bot_operation(build, type_id, near=geyser)
+        return await self._bot_operation(build, type_id, near=geyser)
 
     def _free_geyser(self, anchor: MapPoint | None) -> object | None:
         """Find the geyser unit nearest the anchor without an own gas building."""
@@ -845,6 +893,9 @@ class PythonSC2BotAdapter:
         producer_name = _normalized_name(action.metadata.get("producer"))
         if producer_name is None:
             return _refusal_report(action.count, "missing_producer_metadata")
+        missing = self._missing_prerequisite(action.subject)
+        if missing:
+            return _refusal_report(action.count, missing)
         type_id = self._resolve_unit_type(action.subject)
         producers = self._producer_structures(action, producer_name)
         if not producers:
@@ -880,6 +931,34 @@ class PythonSC2BotAdapter:
                     detail = "production_queue_full"
                 break
         return _issuance_report(action.count, issued, detail)
+
+    def _missing_prerequisite(self, subject: str) -> str:
+        """``UnitTypeData.tech_requirement``: the structure ``subject`` needs, or ``""`` when satisfied/unknown.
+
+        Without it the game answers ``BuildTechRequirementsNotMet``.  Only a bot that exposes a structure
+        observation can be judged; a flying/lowered/morphed form counts, a structure still under construction does
+        not (``tech_requirement_progress`` must reach 1).
+        """
+
+        required = required_structure(subject)
+        if not required or getattr(self.bot, "structures", None) is None:
+            return ""
+        wanted = satisfying_types(required)
+        owned = [
+            entity
+            for entity in _unique_entities(
+                _materialize(getattr(self.bot, "structures", None))
+                + _materialize(getattr(self.bot, "units", None))
+            )
+            if _entity_type_name(entity) in wanted
+        ]
+        if any(_truthy_flag(entity, "is_ready", default=True) for entity in owned):
+            return ""
+        return (
+            f"prerequisite_under_construction: {required}"
+            if owned
+            else f"missing_prerequisite: {required}"
+        )
 
     def _unaffordable_reason(self, item: object) -> str:
         """``supply_blocked`` when supply (not minerals/gas) is what stops the order, else ``unaffordable``."""
@@ -1051,16 +1130,18 @@ class PythonSC2BotAdapter:
                     for reason in _caster_blockers(token, unit)
                 }
             )
+            if blockers:
+                return _refusal_report(action.count, f"no_ready_caster: {', '.join(blockers)}")
             return _refusal_report(
                 action.count,
-                f"no_ready_caster: {', '.join(blockers)}" if blockers else "no_matching_caster",
+                "no_orbital_command" if token in _ORBITAL_TOKENS else "no_matching_caster",
             )
         # Count 0 is the whole eligible group ("탱크 시즈모드" sieges every
         # tank); a positive count is exactly that many casters.
         if "_direct_requested_count" in action.metadata:
             requested = int(action.metadata["_direct_requested_count"])
         else:
-            requested = action.count or len(units)
+            requested = action.count or _default_cast_count(token, len(units))
         spec = SC2_SEMANTIC_ABILITIES.get(self._ability_token(ability_name))
         mode = spec[1] if spec is not None else ""
         explicit_point = None
@@ -1079,14 +1160,22 @@ class PythonSC2BotAdapter:
             caller = use_ability if callable(use_ability) else unit
             if not callable(caller):
                 continue
+            unit_ability = self._type_specific_ability(token, unit) or ability
             applied = (
-                await self._issue_unit_order(caller, ability, target)
+                await self._issue_unit_order(caller, unit_ability, target, queue=action.queue)
                 if target is not None
-                else await self._issue_unit_order(caller, ability)
+                else await self._issue_unit_order(caller, unit_ability, queue=action.queue)
             )
             if applied:
                 issued += 1
         return _issuance_report(requested, issued, detail)
+
+    def _type_specific_ability(self, token: str, unit: object) -> object | None:
+        """Lift/Land: the executable id is building specific (LIFT_BARRACKS 452 ...), not the generic remap target."""
+
+        table = _TYPE_SPECIFIC_ABILITIES.get(token)
+        specific = table.get(_entity_type_name(unit) or "") if table else None
+        return self._resolve_ability(specific) if specific else None
 
     @staticmethod
     def _ability_token(ability_name: str) -> str:
@@ -1103,6 +1192,23 @@ class PythonSC2BotAdapter:
         token = self._ability_token(ability_name)
         spec = SC2_SEMANTIC_ABILITIES.get(token)
         family = canonical_terran_unit_family(action.subject)
+        if token in _STRUCTURE_CASTER_TOKENS and spec is not None:
+            wanted = _normalized_name(action.subject) or ""
+            generic = not wanted or wanted.startswith("AVAILABLE") or wanted in {"ORBITALCOMMAND", "COMMANDCENTER"} and token in _ORBITAL_TOKENS
+            pool = [
+                entity
+                for entity in _unique_entities(
+                    _materialize(getattr(self.bot, "structures", None))
+                    + _materialize(getattr(self.bot, "units", None))
+                )
+                if _entity_type_name(entity) in spec[2]
+                and (generic or (_entity_type_name(entity) or "").removesuffix("FLYING") == wanted.removesuffix("FLYING"))
+            ]
+            if ready_only:
+                pool = [unit for unit in pool if not _caster_blockers(token, unit)]
+            if token in _ORBITAL_TOKENS:
+                pool.sort(key=lambda unit: -(_observed_number(unit, "energy") or 0.0))
+            return pool
         if family:
             pool = [
                 unit
@@ -1154,6 +1260,36 @@ class PythonSC2BotAdapter:
                 return enemy, ""
             point = explicit_point or _entity_point(enemy)
             return (_game_point(point), "") if point is not None else (None, "target_required: no_enemy_position")
+        if mode == "mineral_patch":
+            # CalldownMULE targets a mineral patch of the caster's base; every caster in one command takes a
+            # different patch (two MULEs on one patch would waste one).
+            patches = [
+                patch
+                for patch in _materialize(getattr(self.bot, "mineral_field", None))
+                if _entity_tag(patch) not in claimed
+            ]
+            patch = _nearest_entity(patches, caster_point)
+            if patch is None:
+                return None, "target_required: no_mineral_patch"
+            tag = _entity_tag(patch)
+            if tag is not None:
+                claimed.add(tag)
+            return patch, ""
+        if mode == "supply_depot":
+            depots = [
+                structure
+                for structure in _materialize(getattr(self.bot, "structures", None))
+                if _entity_type_name(structure) in _SUPPLY_DEPOT_TYPES
+                and _truthy_flag(structure, "is_ready", default=True)
+                and _entity_tag(structure) not in claimed
+            ]
+            depot = _nearest_entity(depots, caster_point)
+            if depot is None:
+                return None, "target_required: no_supply_depot"
+            tag = _entity_tag(depot)
+            if tag is not None:
+                claimed.add(tag)
+            return depot, ""
         if mode == "own_cargo":
             candidates = [
                 entity
@@ -1380,14 +1516,14 @@ class PythonSC2BotAdapter:
         ):
             method = getattr(self.bot, method_name, None)
             if callable(method):
-                moved = await _call_bot_operation(method, destination)
+                moved = await self._bot_operation(method, destination)
                 return _issuance_report(1, 1 if moved else 0, "camera_refused")
         client = getattr(self.bot, "client", None) or getattr(self.bot, "_client", None)
         if client is not None:
             for method_name in ("move_camera", "center_camera"):
                 method = getattr(client, method_name, None)
                 if callable(method):
-                    moved = await _call_bot_operation(method, destination)
+                    moved = await self._bot_operation(method, destination)
                     return _issuance_report(1, 1 if moved else 0, "camera_refused")
         return _refusal_report(1, "missing_camera_capability")
 
@@ -2036,7 +2172,7 @@ class PythonSC2BotAdapter:
             return _refusal_report(1, "invalid_resource_ratio")
         if not math.isfinite(ratio) or not 0.0 <= ratio <= 10.0:
             return _refusal_report(1, "invalid_resource_ratio")
-        applied = await _call_bot_operation(method, ratio)
+        applied = await self._bot_operation(method, ratio)
         return _issuance_report(1, 1 if applied else 0, "distribute_workers_refused")
 
     async def expand_now(self, action: SC2CommandAction) -> SC2ActionReport:
@@ -2445,23 +2581,177 @@ class PythonSC2BotAdapter:
         order_method: Callable[..., object],
         *args: object,
         none_is_success: bool = True,
+        queue: bool = False,
     ) -> bool:
-        """Issue one unit order, preferring ``bot.do`` collection when present."""
+        """Issue one unit order, preferring ``bot.do`` collection when present.
 
-        command = order_method(*args)
-        if inspect.isawaitable(command):
-            command = await command
-        if command is None:
-            return none_is_success
-        if not command:
-            return False
-        do = getattr(self.bot, "do", None)
-        if callable(do):
-            outcome = do(command)
-            if inspect.isawaitable(outcome):
-                outcome = await outcome
-            return outcome is None or bool(outcome)
-        return True
+        ``queue=True`` appends behind the unit's current order (``ActionRawUnitCommand.queue_command``);
+        the default replaces it.
+        """
+
+        before = self._pending_actions_len()
+        try:
+            command = order_method(*args, queue=True) if queue else order_method(*args)
+            if inspect.isawaitable(command):
+                command = await command
+            if command is None:
+                return none_is_success
+            if not command:
+                return False
+            do = getattr(self.bot, "do", None)
+            if callable(do):
+                outcome = do(command)
+                if inspect.isawaitable(outcome):
+                    outcome = await outcome
+                return outcome is None or bool(outcome)
+            return True
+        finally:
+            self._register_new_commands(before)
+
+    async def _bot_operation(
+        self,
+        operation: Callable[..., object],
+        *args: object,
+        **kwargs: object,
+    ) -> bool:
+        """``_call_bot_operation`` plus registration of the orders it queued."""
+
+        before = self._pending_actions_len()
+        try:
+            return await _call_bot_operation(operation, *args, **kwargs)
+        finally:
+            self._register_new_commands(before)
+
+    # -- game-response tracking (SC2 ``ActionResult``; see docs/sc2-action-results.md) --
+
+    def _pending_actions_len(self) -> int | None:
+        """Length of python-sc2's per-frame ``bot.actions`` queue, ``None`` for other bots."""
+
+        queue = getattr(self.bot, "actions", None)
+        return len(queue) if isinstance(queue, list) else None
+
+    def _game_frame(self) -> int:
+        loop = getattr(getattr(self.bot, "state", None), "game_loop", None)
+        return loop if type(loop) is int and loop >= 0 else 0
+
+    def _register_new_commands(self, before: int | None) -> None:
+        """Register every ``UnitCommand`` queued since ``before`` so the game can answer for it."""
+
+        if before is None:
+            return
+        queue = getattr(self.bot, "actions", None)
+        if not isinstance(queue, list):
+            return
+        registered = False
+        for command in queue[before:]:
+            tag = _entity_tag(getattr(command, "unit", None))
+            ability = getattr(command, "ability", None)
+            ability_value = getattr(ability, "value", None)
+            if tag is None or type(ability_value) is not int:
+                continue
+            self.game_results.register(
+                tag, _ability_id_aliases(ability), self._game_frame()
+            )
+            registered = True
+        if registered:
+            self._ensure_client_tap()
+
+    def _ensure_client_tap(self) -> None:
+        """Wrap ``bot.client.actions`` once so the per-action ``ActionResult`` list is read.
+
+        python-sc2's ``Client.actions`` drops ``Success`` entries and its callers
+        (``BotAI._do_actions``) discard the list.  The tap asks for every result, maps result
+        *i* onto the *i*-th combined raw action (the same ``combine_actions`` stream that was
+        sent), records it, and returns exactly what the original call would have returned.
+        A length mismatch or a protocol error records nothing: the order stays unknown.
+        """
+
+        client = getattr(self.bot, "client", None)
+        original = getattr(client, "actions", None)
+        if client is None or not callable(original) or getattr(client, "_voi_action_tap", False):
+            return
+        tracker = self.game_results
+        frame_of = self._game_frame
+
+        async def tapped(actions: object, return_successes: bool = False) -> list[object]:
+            batch = actions if isinstance(actions, list) else [actions]
+            results = await original(actions, return_successes=True)
+            try:
+                from sc2.action import combine_actions
+
+                combined = list(combine_actions(batch))
+            except Exception:  # noqa: BLE001 - tap must never break the game loop
+                combined = []
+            if results and len(results) == len(combined):
+                tracker.record_response(
+                    frame_of(),
+                    [
+                        (
+                            tuple(raw.unit_command.unit_tags),
+                            int(raw.unit_command.ability_id),
+                            int(getattr(result, "value", result)),
+                        )
+                        for raw, result in zip(combined, results)
+                    ],
+                )
+            if return_successes:
+                return results
+            return [
+                result
+                for result in results
+                if int(getattr(result, "value", result)) != SUCCESS_RESULT_CODE
+            ]
+
+        try:
+            client.actions = tapped
+            client._voi_action_tap = True
+        except AttributeError:  # pragma: no cover - slotted/immutable client
+            return
+
+    def collect_game_results(self, frame: int | None = None) -> int:
+        """Read ``bot.state.action_errors`` (the observation channel) once per game loop."""
+
+        state = getattr(self.bot, "state", None)
+        errors = getattr(state, "action_errors", None)
+        current = self._game_frame() if frame is None else int(frame)
+        if errors is None or current == self._ingested_error_frame:
+            return 0
+        self._ingested_error_frame = current
+        collected: list[tuple[int, int, int]] = []
+        try:
+            for error in errors:
+                collected.append(
+                    (
+                        int(getattr(error, "unit_tag", 0)),
+                        int(getattr(error, "ability_id", 0)),
+                        int(getattr(error, "result", 0)),
+                    )
+                )
+        except (TypeError, ValueError):
+            return 0
+        return self.game_results.ingest_action_errors(current, collected)
+
+    def game_result_mark(self) -> int:
+        """Sequence mark; pass to :meth:`game_result_since` after issuing orders."""
+
+        return self.game_results.mark
+
+    def game_result_since(
+        self, mark: int, until: int | None = None
+    ) -> dict[str, object] | None:
+        """``game_result`` for the orders registered in ``(mark, until]`` (``None`` if none)."""
+
+        return self.game_results.summarize(since=mark, until=until)
+
+    def game_result_for_lease(
+        self, unit_tags: Sequence[int], min_frame: int
+    ) -> dict[str, object] | None:
+        """``game_result`` for the orders a Direct lease issued (by unit tag, else by frame)."""
+
+        return self.game_results.summarize(
+            unit_tags=tuple(unit_tags) if unit_tags else None,
+            min_frame=int(min_frame),
+        )
 
     async def _order_group(
         self,
@@ -2488,7 +2778,7 @@ class PythonSC2BotAdapter:
             order_method = getattr(unit, order_name, None)
             if not callable(order_method):
                 continue
-            if await self._issue_unit_order(order_method, destination):
+            if await self._issue_unit_order(order_method, destination, queue=action.queue):
                 issued += 1
         return _issuance_report(requested, issued, "insufficient_units")
 
@@ -2552,7 +2842,10 @@ class PythonSC2BotAdapter:
             requested = min(max(1, action.count), len(pool))
         elif kind == "execute_ability":
             pool = self._ability_casters(clean)
-            requested = action.count if action.count > 0 else len(pool)
+            requested = action.count if action.count > 0 else _default_cast_count(
+                self._ability_token(str(action.metadata.get("ability_id") or action.metadata.get("ability") or "")),
+                len(pool),
+            )
         else:
             pool = self._select_group(action.subject)
             requested = self._group_requested_count(
@@ -2584,6 +2877,7 @@ class PythonSC2BotAdapter:
         entities = (
             _materialize(getattr(self.bot, "units", None))
             + _materialize(getattr(self.bot, "workers", None))
+            + _materialize(getattr(self.bot, "structures", None))
         )
         by_tag = {getattr(unit, "tag", None): unit for unit in entities}
         return [by_tag[tag] for tag in tags if tag in by_tag]
@@ -2975,6 +3269,24 @@ class _PlacementSearchResult:
             "rejection_reasons": list(self.rejections),
             "rejected_count": rejected_count,
         }
+
+
+def _ability_id_aliases(ability: object) -> tuple[int, ...]:
+    """Numeric ids an ``ActionError`` may carry for one issued ability (exact and generic)."""
+
+    value = getattr(ability, "value", None)
+    if type(value) is not int:
+        return ()
+    ids = [value]
+    try:
+        from sc2.dicts.generic_redirect_abilities import GENERIC_REDIRECT_ABILITIES
+
+        generic = GENERIC_REDIRECT_ABILITIES.get(ability)
+        if generic is not None:
+            ids.append(int(generic.value))
+    except Exception:  # noqa: BLE001 - alias lookup is best effort
+        pass
+    return tuple(ids)
 
 
 async def _call_bot_operation(
@@ -3806,6 +4118,15 @@ def _queue_slots_left(structure: object) -> int:
     return max(0, total - used)
 
 
+def _default_cast_count(token: str, available: int) -> int:
+    """A bare "스캔"/"보급 드롭" is ONE cast (the Orbital with the most energy); a bare "뮤마" uses every ready Orbital;
+    everything else keeps the whole-group convention (count 0 = all eligible casters)."""
+
+    if token in {"scanner_sweep", "supply_drop"}:
+        return min(1, available)
+    return available
+
+
 def _observed_number(entity: object, attribute: str) -> float | None:
     value = getattr(entity, attribute, None)
     return float(value) if _is_real_number(value) else None
@@ -3833,6 +4154,12 @@ def _caster_blockers(token: str, unit: object) -> tuple[str, ...]:
         energy = _observed_number(unit, "energy")
         if energy is not None and energy < cost:
             blockers.append("not_enough_energy")
+    if token in _STRUCTURE_CASTER_TOKENS:
+        if not _truthy_flag(unit, "is_ready", default=True):
+            blockers.append("under_construction")
+        elif token == "lift_off" and not _truthy_flag(unit, "is_idle", default=True):
+            # Lift Off is refused while the structure is training/researching (its queue must be empty).
+            blockers.append("structure_busy")
     if type_name == "MEDIVAC":
         if token == "medivac_load":
             left = _observed_number(unit, "cargo_left")

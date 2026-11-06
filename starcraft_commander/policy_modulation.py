@@ -134,6 +134,25 @@ MICROMACHINE_DIRECT_TASK_TYPES: Final[frozenset[str]] = frozenset(
 )
 """Bounded semantic task tickets owned by the Direct SC2 route."""
 
+MICROMACHINE_DIRECT_QUEUEABLE_TASK_TYPES: Final[frozenset[str]] = frozenset(
+    {
+        "execute_ability",
+        "move_group",
+        "attack_move",
+        "smart",
+        "patrol",
+        "scout_with_units",
+        "pressure_with_main_army",
+        "defend_with_units",
+        "harass_with_units",
+        "regroup_with_units",
+        "build_structure",
+        "train_unit",
+        "research_upgrade",
+    }
+)
+"""Task types whose Direct lowering can append (``queue_command=true``) behind an existing order."""
+
 MICROMACHINE_DIRECT_EMERGENCY_TASK_TYPES: Final[frozenset[str]] = frozenset(
     {"stop_group", "hold_position"}
 )
@@ -235,6 +254,27 @@ MICROMACHINE_TACTICAL_ABILITIES: Final[frozenset[str]] = frozenset(
     }
 )
 """Semantic ability names consumed through ``tactical_task.ability``."""
+
+MICROMACHINE_DIRECT_ONLY_ABILITIES: Final[frozenset[str]] = frozenset(
+    {
+        "scanner_sweep",
+        "calldown_mule",
+        "supply_drop",
+        "lift_off",
+        "land",
+    }
+)
+"""Abilities only the Direct SC2 route executes (Orbital Command calldowns, building lift/land).
+
+They are deliberately NOT in :data:`MICROMACHINE_TACTICAL_ABILITIES`: that set is the contract of the MicroMachine C++
+explicit-ability patches (``tests/test_micromachine_integration_kit.py``), which know none of these.  A Direct micro
+command never reaches MicroMachine, so the manager contract is unchanged.
+"""
+
+MICROMACHINE_DIRECT_ABILITY_CHOICES: Final[frozenset[str]] = (
+    MICROMACHINE_TACTICAL_ABILITIES | MICROMACHINE_DIRECT_ONLY_ABILITIES
+)
+"""Every ability name ``tactical_task.ability`` accepts."""
 
 MICROMACHINE_LIFETIME_MODES: Final[frozenset[str]] = frozenset(
     {
@@ -1315,8 +1355,20 @@ class TacticalTaskModulation:
     duration_seconds: int = 0
     allow_partial: bool = True
     safety_margin: float = 0.0
+    queue: bool = False
+    """Spoken then-word (다음에/이어서/끝나면, and then): APPEND behind the units' current order
+    (``ActionRawUnitCommand.queue_command``) instead of replacing it.  Direct tickets only."""
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "queue",
+            _coerce_bool(self.queue, "queue"),
+        )
+        if self.queue and self.task_type not in MICROMACHINE_DIRECT_QUEUEABLE_TASK_TYPES:
+            raise ValueError(
+                "tactical_task.queue requires a Direct ticket (an ability, move/attack/patrol/smart or build order)."
+            )
         object.__setattr__(
             self,
             "task_type",
@@ -1338,7 +1390,7 @@ class TacticalTaskModulation:
             _optional_choice(
                 "ability",
                 self.ability,
-                set(MICROMACHINE_TACTICAL_ABILITIES),
+                set(MICROMACHINE_DIRECT_ABILITY_CHOICES),
             ),
         )
         if self.query:
@@ -1549,6 +1601,7 @@ class TacticalTaskModulation:
             "duration_seconds": self.duration_seconds,
             "allow_partial": self.allow_partial,
             "safety_margin": self.safety_margin,
+            **({"queue": True} if self.queue else {}),
         }
 
     def _has_task_payload(self) -> bool:
@@ -1572,6 +1625,7 @@ class TacticalTaskModulation:
             or self.duration_seconds != 0
             or self.allow_partial is not True
             or self.safety_margin != 0.0
+            or self.queue
         )
 
 
@@ -1741,8 +1795,11 @@ class BuildingTask:
     allow_nearest_valid_fallback: bool = True
     count: int = 1
     target_position: tuple[float, ...] = ()
+    queue: bool = False
+    """Shift-queue this build behind the previous build's SCV order ('배럭 짓고 다음에 서플')."""
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "queue", _coerce_bool(self.queue, "queue"))
         object.__setattr__(
             self,
             "building_type",
@@ -1807,6 +1864,7 @@ class BuildingTask:
             "allow_nearest_valid_fallback": self.allow_nearest_valid_fallback,
             "count": self.count,
             "target_position": list(self.target_position),
+            **({"queue": True} if self.queue else {}),
         }
 
 

@@ -92,15 +92,14 @@ def test_operation_commands_never_queue_either() -> None:
         assert views and {v["queue"] for v in views} == {False}, kind
 
 
-def test_spoken_then_phrase_reaches_the_dsl_as_a_visible_rejection_not_a_silent_fresh_order() -> None:
-    """Docs: ``queue_command=true`` appends.  The DSL has NO queue field (``realtime_intent._MICRO_KEYS``);
-    a payload that tries to carry one must be rejected loudly rather than dropped so that "탱크 시즈 다음에
-    스팀팩" can never silently become two *replacing* orders.  (Queue support itself is a handoff item.)"""
+def test_a_queue_flag_that_is_not_a_boolean_is_still_rejected_loudly() -> None:
+    """Queue support is real since round 4 (tests/test_sc2_vocab.py); a malformed flag must never silently
+    become a replacing order."""
 
     from starcraft_commander.realtime_intent import tool_arguments_to_provider_output
 
     with pytest.raises(ValueError, match="queue"):
-        tool_arguments_to_provider_output({"goal": "x", "micro": [{"ability": "siege_mode", "queue": True}]})
+        tool_arguments_to_provider_output({"goal": "x", "micro": [{"ability": "siege_mode", "queue": "yes"}]})
 
 
 # ---- target kind per ability: AbilityData::Target (data.proto L21-27) vs the ActionRaw target field
@@ -111,6 +110,7 @@ def test_every_semantic_ability_sends_the_target_field_its_documented_target_kin
 
     expected_field = {
         "none": None, "enemy_unit": "target_unit_tag", "own_cargo": "target_unit_tag",
+        "mineral_patch": "target_unit_tag", "supply_depot": "target_unit_tag",
         "own_damaged_bio": "target_unit_tag", "enemy_point": "target_world_space_pos",
         "caster_point": "target_world_space_pos", "explicit_point": "target_world_space_pos",
     }
@@ -119,6 +119,7 @@ def test_every_semantic_ability_sends_the_target_field_its_documented_target_kin
         "stimpack": U.MARINE, "widow_mine_unburrow": U.WIDOWMINEBURROWED, "unsiege": U.SIEGETANKSIEGED,
         "hellion_mode": U.HELLIONTANK, "thor_explosive_mode": U.THORAP, "viking_fighter_mode": U.VIKINGASSAULT,
         "liberator_fighter_mode": U.LIBERATORAG,
+        "land": U.BARRACKSFLYING, "lift_off": U.BARRACKS,
     }
     for token, (ability_name, mode, casters) in SC2_SEMANTIC_ABILITIES.items():
         caster = caster_unit.get(token) or getattr(U, casters[0])
@@ -132,6 +133,9 @@ def test_every_semantic_ability_sends_the_target_field_its_documented_target_kin
         if token == "medivac_unload_all":
             bot = harness.make_bot()
             bot.add_unit(U.MEDIVAC, cargo_taken=2)
+        if mode in {"mineral_patch", "supply_depot"}:
+            bot.add_unit(U.MINERALFIELD, x=22.0, y=24.0)
+            bot.add_unit(U.SUPPLYDEPOT, x=26.0, y=18.0)
         action = SC2CommandAction(
             SC2ActionType.EXECUTE_ABILITY, casters[0], target="enemy_main" if mode == "explicit_point" else "",
             count=0, metadata={"ability": token},
@@ -139,7 +143,11 @@ def test_every_semantic_ability_sends_the_target_field_its_documented_target_kin
         result, views = run(bot, action)
         assert views, (token, report(result))
         assert {v["target"] for v in views} == {expected_field[mode]}, (token, views)
-        assert AbilityId(views[0]["ability_id"]).name == ability_name
+        from starcraft_commander.python_sc2_adapter import _TYPE_SPECIFIC_ABILITIES
+
+        # Lift/Land are sent as the building-specific id (LIFT_BARRACKS ...), which remaps to the generic one.
+        expected_name = _TYPE_SPECIFIC_ABILITIES.get(token, {}).get(caster.name, ability_name)
+        assert AbilityId(views[0]["ability_id"]).name == expected_name
 
 
 # ---- caster eligibility (Unit.health / energy / buffs / unit_type; E: NotEnoughLife, NotEnoughEnergy)
@@ -209,10 +217,11 @@ def test_tactical_nuke_is_a_ghost_only_point_order_and_refuses_without_a_ghost()
     assert tags_of(views) == {ghost.tag} and {v["target"] for v in views} == {"target_world_space_pos"}
 
 
-def test_abilities_the_dsl_cannot_express_are_loudly_rejected_not_silently_dropped() -> None:
-    """Scanner Sweep (Orbital, 50 energy), Lift/Land, MULE and Supply Drop have no DSL token (handoff)."""
+def test_abilities_the_dsl_still_cannot_express_are_loudly_rejected_not_silently_dropped() -> None:
+    """Scanner Sweep / MULE / Supply Drop / Lift / Land became tokens in round 4 (tests/test_sc2_vocab.py); anything
+    else the DSL has no token for must still be rejected rather than mis-executed."""
 
-    for token in ("scanner_sweep", "lift", "land", "calldown_mule", "supply_drop"):
+    for token in ("lift", "calldown_scv", "salvage_everything"):
         with pytest.raises(ValueError, match="supported abilities"):
             lower_micro(token)
 
@@ -332,14 +341,14 @@ def test_units_that_need_a_tech_lab_are_only_ordered_from_a_producer_with_one(un
 
     producer = next(p for p, table in TRAIN_INFO.items() if getattr(U, unit) in table and table[getattr(U, unit)].get("requires_techlab"))
     lab = {U.BARRACKS: U.BARRACKSTECHLAB, U.FACTORY: U.FACTORYTECHLAB, U.STARPORT: U.STARPORTTECHLAB}[producer]
-    bot = harness.make_bot()
+    bot = harness.add_prerequisites(harness.make_bot(), unit)
     naked = bot.add_unit(producer)
     labbed_lab = bot.add_unit(lab)
     labbed = bot.add_unit(producer, add_on_tag=labbed_lab.tag)
     result, views = run(bot, *lower_direct("train_unit", [f"TERRAN_{unit}"]))
     assert tags_of(views) == {labbed.tag}, f"order sent to tech-lab-less {producer.name} {naked.tag}"
     # and with ONLY a naked producer the user is told why instead of getting a silent order
-    bot = harness.make_bot()
+    bot = harness.add_prerequisites(harness.make_bot(), unit)
     bot.add_unit(producer)
     result, views = run(bot, *lower_direct("train_unit", [f"TERRAN_{unit}"]))
     assert views == [] and report(result)["applied"] is False and report(result)["detail"]

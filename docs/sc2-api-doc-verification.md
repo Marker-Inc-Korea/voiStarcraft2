@@ -127,7 +127,7 @@ Test names are in `tests/test_sc2_api_doc_contract.py` (`DC`) or `tests/test_sc2
 | # | Product behaviour (what the real lowering emits) | Status | Evidence |
 |---|---|---|---|
 | M1 | Every voice command leaves with `queue_command=false` (micro, move/attack/smart/patrol, emergency) | verified-by-test | DC `test_a_fresh_voice_command_replaces_orders…`, `test_operation_commands_never_queue_either` |
-| M2 | **"then / 다음에 / 이어서" cannot be expressed**: the DSL has no queue field (`realtime_intent.py:251 _MICRO_KEYS = {ability, unit_classes}`), and a payload carrying one is rejected loudly (not silently turned into replacing orders). The raw `queue_command=true` path exists in python-sc2 (`Unit.attack(queue=True)`) but nothing in the product sets it | **handoff** | DC `test_spoken_then_phrase_reaches_the_dsl_as_a_visible_rejection…`; owner: `realtime_intent.py` / `policy_modulation_provider.py` / router (not mine) |
+| M2 | **"then / 다음에 / 이어서" cannot be expressed**: the DSL has no queue field (`realtime_intent.py:251 _MICRO_KEYS = {ability, unit_classes}`), and a payload carrying one is rejected loudly (not silently turned into replacing orders). The raw `queue_command=true` path exists in python-sc2 (`Unit.attack(queue=True)`) but nothing in the product sets it | **fixed in round 4** (§6.1) | VOCAB `test_spoken_then_words_reach_the_wire_as_queue_command` |
 | M3 | no-target abilities (stim, siege, cloak, burrow, morphs) send no target; Unit/Point abilities send exactly the field their `AbilityData.Target` requires (all 33 tokens) | verified-by-test | DC `test_every_semantic_ability_sends_the_target_field…`; AC `test_voice_ability_lowers_to_the_exact_raw_command` (30 cases) |
 | M4/M5 | Unit-target ability with no enemy visible = refusal `target_required: no_enemy_target`, never a point | verified-by-test | DC `test_unit_targeted_ability_without_a_target_is_a_visible_refusal`; AC `test_unit_target_ability_without_any_enemy…` |
 | M6 | A group order is combined by python-sc2 into one command per ability when the ability is in `COMBINEABLE_ABILITIES` (STOP, HOLDPOSITION, ATTACK, burrow, lift…) and into one command per unit otherwise (siege, stim, morphs, and `MOVE_MOVE` id 16 — only the generic MOVE 3674 batches). Both are legal; only the bytes-on-the-wire count differs | verified-by-test | DC `test_the_three_emergency_words…` |
@@ -136,11 +136,11 @@ Test names are in `tests/test_sc2_api_doc_contract.py` (`DC`) or `tests/test_sc2
 | M9 | Siege only on `SIEGETANK`, unsiege only on `SIEGETANKSIEGED` (form-specific ability lists) | verified-by-test | DC `test_siege_only_unsieged_tanks…`; AC `test_siege_unsiege_only_address_the_right_form` |
 | M10 | **Cloak needs energy.** Before: a 5-energy Ghost/Banshee was ordered (`NotEnoughEnergy` in the game). Now only casters with observed `energy >= 25` are ordered; decloak needs none; unobserved energy never refuses | **defect-fixed** | DC `test_cloak_is_only_ordered_for_casters_that_have_the_energy[GHOST/BANSHEE]`, `test_decloak_needs_no_energy` |
 | M11 | Nuke is a Ghost-only Point order; with no Ghost = refusal `no_matching_caster`. (Ghost Academy / armed-nuke prerequisite is a live-game rule: cannot-verify-offline) | verified-by-test / cannot-verify-offline | DC `test_tactical_nuke_is_a_ghost_only_point_order…` |
-| M12 | **Scanner Sweep (Orbital, 50 energy), Calldown MULE, Supply Drop have no DSL token** — "스캐너" is rejected (`micro[0].ability must be one of the supported abilities`), not mis-executed | **handoff** (feature gap, DSL) | DC `test_abilities_the_dsl_cannot_express_are_loudly_rejected…`; `policy_modulation.py:199 MICROMACHINE_TACTICAL_ABILITIES` |
+| M12 | **Scanner Sweep (Orbital, 50 energy), Calldown MULE, Supply Drop have no DSL token** — "스캐너" is rejected (`micro[0].ability must be one of the supported abilities`), not mis-executed | **fixed in round 4** (§6.2) | VOCAB `test_new_abilities_reach_the_wire…` |
 | M13 | **Medivac load/unload.** Before: load was ordered on a full medivac and unload on an empty one. Now `cargo_left <= 0` blocks load (`NotEnoughRoomToLoadUnit`) and `cargo_used <= 0` blocks unload (`NoCargoToUnload`); load targets a unit, unload a point | **defect-fixed** | DC `test_medivac_load_skips_a_full_medivac…`, `test_medivac_unload_all_needs_cargo`; AC fixture now loads the medivac |
 | M14 | Heal targets only a damaged **biological** unit (never a tank, never a full-HP marine) | verified-by-test | DC `test_medivac_heal_targets_a_damaged_biological_unit…` |
 | M15 | Cooldown / `weapon_cooldown`: the product does not read it | cannot-verify-offline | §5 item 5 (`GetAbilitiesForUnit` availability) |
-| M17 | **Lift / Land have no DSL token** (rejected loudly). Flying-building add-on room is therefore never checked | **handoff** (feature gap) | DC (same rejection test); doc QI `Placement` with `placing_unit_tag` unused |
+| M17 | **Lift / Land have no DSL token** (rejected loudly). Flying-building add-on room is therefore never checked | **fixed** (tokens, §6.2) / landing placement check still open (§6 item 5) | VOCAB |
 
 ### 3.2 Operation
 
@@ -172,7 +172,7 @@ Test names are in `tests/test_sc2_api_doc_contract.py` (`DC`) or `tests/test_sc2
 | K11 | Research goes to the idle Tech Lab/Engineering Bay, not a busy one; resources checked first | verified-by-test / defect-fixed (resources) | DC `test_research_goes_to_the_tech_lab_that_is_idle…`; AC research tests |
 | K12 | Orbital/Planetary morph = no-target order on an idle CC; cost checked | verified-by-test / defect-fixed (cost) | AC; DC |
 | K13 | `build_progress < 1` structures are never producers (`is_ready`) | verified-by-test | DC (train/add-on tests include a 0.4 / 0.5 progress structure) |
-| K3 | Structure-tech prerequisites (Barracks needs a Depot, Ghost needs a Ghost Academy…) are **not checked by the adapter** (python-sc2 knows `TERRAN_TECH_REQUIREMENT`; `feasibility.py` pre-checks supply/workers only). The game answers `BuildTechRequirementsNotMet` which the product never reads (O10) | **handoff** | `python_sc2_adapter.py train_unit`; §5 item 8 |
+| K3 | Structure-tech prerequisites (Barracks needs a Depot, Ghost needs a Ghost Academy…) are **not checked by the adapter** (python-sc2 knows `TERRAN_TECH_REQUIREMENT`; `feasibility.py` pre-checks supply/workers only). The game answers `BuildTechRequirementsNotMet` which the product never reads (O10) | **fixed in round 4** (§6.3) | VOCAB `test_a_missing_prerequisite_structure_is_a_visible_refusal…` |
 
 ### 3.4 Emergency (the three words)
 
@@ -223,16 +223,72 @@ becomes a new DC test before it is fixed.
 7. **Production** — `unit.orders` of the producer (length ≤ 5, ≤ 8 with Reactor), `build_progress` of structures, `add_on_tag` (Tech Lab attached?), `passengers` / `cargo_space_taken` / `cargo_space_max` for the Medivac, `UnitTypeData.tech_requirement` + `require_attached` + `cargo_size` + `food_required` [UT].
 8. **Rejections** — `ResponseAction.result[]` and `Observation.action_errors` (`ActionResult`: `Cooldown`, `NotEnoughEnergy`, `NotEnoughLife`, `QueueIsFull`, `CantQueueThatOrder`, `AddOnTooFarFromBuilding`, `CantBuildLocationInvalid`, `BuildTechRequirementsNotMet`, `UnitCantMove`…) [E, P]. The product does not read them today (handoff O10): until it does, a game-side rejection is only visible here.
 9. **Placement** — `RequestQueryBuildingPlacement{ability_id,target_pos,placing_unit_tag}` -> `result` for a depot / Barracks + add-on footprint / flying-Barracks landing, compared with the product's `can_place` verdict [Q L47-55, AD `footprint_radius`, `is_instant_placement`].
-10. **Queue** — once a queue field exists (handoff M2): two orders with `queue_command=true` -> `orders` has length 2 in order.
+10. **Queue** — two orders with `queue_command=true` (now emitted for "X 다음에 Y") -> `orders` has length 2 in order; also Scanner Sweep/MULE/Supply Drop: energy before/after (-50) and that a second scan within the cast animation is accepted or rejected; Lift/Land: `unit_type` flips BARRACKS <-> BARRACKSFLYING and `CantLandLocationInvalid` is seen for a bad spot.
 
-## 6. Handoff items (outside the files this branch may change)
+## 6. Handoff items
 
-1. **Queued commands ("…다음에/이어서")** — `starcraft_commander/realtime_intent.py:251` (`_MICRO_KEYS` has no queue field), `policy_modulation.py` (no `queue` on `TacticalTaskModulation`), `unified_command_router.py` (`SC2CommandAction` has no queue flag), `python_sc2_adapter.py` (`_issue_unit_order` never passes `queue=True`). Needs a DSL field + prompt + a flag through the whole chain; touches the journey path.
-2. **Scanner Sweep / MULE / Supply Drop / Lift / Land** — no tokens in `policy_modulation.py:199 MICROMACHINE_TACTICAL_ABILITIES`, `python_sc2_adapter.py SC2_SEMANTIC_ABILITIES`, or the prompt in `realtime_intent.py`.
-3. **ActionResult never consumed** — `live_pipeline.py` / `micromachine_live_session.py`: `ResponseAction.result` and `action_errors` are dropped, so rejections by the game are invisible to the user.
-4. **Structure tech prerequisites** (Depot for Barracks, Ghost Academy for Ghost/Nuke, Armory for Thor…) are not pre-checked in the adapter; `feasibility.py` does supply/workers only.
-5. **Add-on footprint space** (`AddOnTooFarFromBuilding`, `is_instant_placement`) and flying-building landing are not pre-checked; needs map data (`QueryInterface::Placement` with `placing_unit_tag`).
-6. **Banshee cloak marker naming** in `micromachine_command_execution.py:173-174` (from `docs/sc2-api-accuracy.md` §5.1) is still open.
+Round 4 (`tests/test_sc2_vocab.py`, branch `feat/r4-vocab`) resolved items 1, 2, 4 and 6 of the round-3 list; items 3 and 5 are
+still open. Status per item (offline, request-shape evidence only):
+
+| # | Item | Status | Tests (`tests/test_sc2_vocab.py`) |
+|---|---|---|---|
+| 1 | **Queued commands** ("다음에 / 이어서 / 그 다음 / 끝나면 / and then / after that") | **fixed** | `test_spoken_then_words_reach_the_wire_as_queue_command` (12 utterances), `test_a_queued_follow_up_addresses_the_same_units…`, `test_a_non_queued_operation_pair_still_gets_disjoint_units`, `test_the_queue_flag_survives_the_vector_and_the_plan_serialisation`, `test_queue_must_be_a_boolean…`, `test_tool_schema_and_instructions_teach_the_queue_words`, `test_two_independent_builds_are_one_scv_with_the_second_queued`, `test_build_then_dependent_build_waits_for_the_prerequisite…`, `test_two_different_abilities_without_a_then_word_are_two_fresh_orders` |
+| 2 | **Scanner Sweep / MULE / Supply Drop / Lift / Land** | **fixed** (Salvage, Load-into-bunker: **not done**, not trivial: Salvage is a one-way refund (`SalvageBunker` 1626/`SalvageShared` 32 are different ids per structure) and Load-into-Bunker needs a unit target and a free-slot count, neither observable offline) | `test_new_abilities_reach_the_wire…` (17 utterances), `test_scan_is_one_cast…`, `test_mule_goes_to_every_ready_orbital…`, `test_a_queued_scan_appends`, `test_infeasible_ability_is_refused_with_a_visible_korean_reason` (12 cases), `test_every_new_token_is_in_the_realtime_enum…`, `test_a_negated_new_ability_phrase_executes_nothing`, `test_the_fast_rule_cap_is_untouched` |
+| 3 | **ActionResult never consumed** | **not fixed** (owner `live_pipeline.py` / `micromachine_live_session.py`, outside this branch) | — |
+| 4 | **Structure tech prerequisites** | **fixed** (adapter pre-check; `feasibility.py` untouched) | `test_prerequisite_table_matches_burnysc2_and_stableid`, `test_a_missing_prerequisite_structure_is_a_visible_refusal…` (13 cases), `test_with_the_prerequisite_present_the_order_is_sent` (8), `test_a_tech_lab_unit_without_techlab…` |
+| 5 | **Add-on footprint / landing placement** | **not fixed** (needs map data / `QueryInterface::Placement`; a Land order is sent without a placement check and the game may answer `CantLandLocationInvalid`/`AddOnTooFarFromBuilding`) | — |
+| 6 | **Banshee cloak marker** | **fixed**, see below | `test_banshee_cloak_ids_are_the_unit_specific_ones_in_stableid`, `test_the_evidence_matcher_accepts_the_banshee_specific_marker` (7) |
+
+### 6.1 Queueing design (item 1)
+
+* Field: `queue: bool` on `micro[]` items, `operations[]` items and `macro.building_tasks[]` items of the realtime tool; carried as
+  `TacticalTaskModulation.queue` / `BuildingTask.queue` -> `SC2CommandAction.queue` (omitted from `to_dict()` when false, so every
+  non-queued payload is byte-identical to before) -> `PythonSC2BotAdapter._issue_unit_order(..., queue=True)` -> python-sc2
+  `Unit.<order>(…, queue=True)` -> `ActionRawUnitCommand.queue_command = true` (raw.proto L192, AI `UnitCommand(queued_command)`).
+* Rule: the model sets `queue:true` on every step AFTER the first one of a chain it heard joined by the then-words; the prompt (rule 15)
+  and the tool schema say so. A fresh order carries no flag and keeps `queue_command=false` (replaces orders). The flag is a strict boolean;
+  `"yes"` is rejected loudly.
+* Units: a queued step continues the SAME units/SCV as the step it follows (`direct_binding._queued_predecessor`), otherwise
+  "정찰 갔다가 돌아와" would order a second, different squad. Un-queued operations keep disjoint units.
+* `execute_ability` inside `operations[]` was refused by the live operation director. Abilities listed together in `micro[]` are now marked
+  as micro-layer operations (Direct-only) so "시즈하고 스팀팩" (no then-word) is two simultaneous fresh orders instead of a refusal; an
+  unmarked ability inside `operations[]` is still refused (test `test_an_unmarked_ability_inside_operations_is_still_refused`).
+* Builds: a queued build whose prerequisite is the structure the earlier step is still building ("배럭 짓고 다음에 벙커") is **not**
+  shift-queued (the game would answer `BuildTechRequirementsNotMet` while the Barracks does not exist); it becomes a dependent plan
+  released on `building_completed`, like build -> train. A queued build with no such dependency is one shift-queued SCV order.
+* Not done: queueing for train/research/emergency actions is accepted by the data model but only micro, move/attack/patrol/smart and
+  build lowerings are exercised by tests. A realtime *macro* call is published to MicroMachine (which consumes only `building_tasks.0`);
+  the Direct build path is reached by operation-layer vectors (text LLM lane / MCP), which is where the tests drive it.
+
+### 6.2 New abilities (item 2): ids and semantics used
+
+| Token (Korean aliases in the prompt) | Ability (stableid id) | Target kind (header) | Caster | Readiness / refusal |
+|---|---|---|---|---|
+| `scanner_sweep` (스캐너, 스캔) | `SCANNERSWEEP_SCAN` 399 | Point | Orbital Command | energy >= 50 (`Unit.energy`); needs a spoken `location` (else `target_required: explicit_point_required`); no Orbital = `no_orbital_command`; one cast, the Orbital with most energy |
+| `calldown_mule` (뮤마, 자원 채취) | `CALLDOWNMULE_CALLDOWNMULE` 171 | Unit,Point -> a mineral patch | Orbital Command | energy >= 50; every ready Orbital, each on a different patch; no patch = `no_mineral_patch` |
+| `supply_drop` (보급 드롭) | `SUPPLYDROP_SUPPLYDROP` 255 | Unit -> a finished Supply Depot | Orbital Command | energy >= 50; one cast; no depot = `no_supply_depot` |
+| `lift_off` (이륙, 띄워) | `LIFT_BARRACKS` 452 / `LIFT_FACTORY` 485 / `LIFT_STARPORT` 518 / `LIFT_COMMANDCENTER` 417 / `LIFT_ORBITALCOMMAND` 1522 (remap to `LIFT` 3679) | None | the named structure | finished and idle (`structure_busy`, `under_construction`) |
+| `land` (착륙, 내려안아) | `LAND_BARRACKS` 554 / `LAND_FACTORY` 520 / `LAND_STARPORT` 522 / `LAND_COMMANDCENTER` 419 / `LAND_ORBITALCOMMAND` 1524 (remap to `LAND` 3678) | Point | the flying structure | needs `location`; placement is NOT checked (item 5) |
+
+The 50-energy cost, "one scan per command" and the depot/patch targets are public game rules, not in stableid.json: they are on the live checklist (§5 items 3-4).
+The tokens live in `MICROMACHINE_DIRECT_ONLY_ABILITIES` (never in `MICROMACHINE_TACTICAL_ABILITIES`, which is the C++ patch contract), so MicroMachine and
+the pre-live journey evidence do not see them. They are deliberately **not** fast-rule families (cap 5 unchanged; "스캔" alone abstains).
+
+### 6.3 Structure prerequisites (item 4)
+
+`starcraft_commander/terran_prerequisites.py` holds the table (Barracks<-Supply Depot; Factory, Bunker, Ghost Academy, Orbital<-Barracks;
+Starport, Armory<-Factory; Fusion Core<-Starport; Ghost<-Ghost Academy; Thor<-Armory; Battlecruiser<-Fusion Core; Planetary Fortress,
+Turret, Sensor Tower<-Engineering Bay). `test_prerequisite_table_matches_burnysc2_and_stableid` compares it with burnysc2
+`TERRAN_TECH_REQUIREMENT`; **no mismatch was found** (the doc's `UnitTypeData.tech_requirement` ids themselves need live `RequestData`; burnysc2's table is the
+offline authority). Lowered Depots and flying Barracks/Factory/Starport count; a structure with `build_progress < 1` does not (`prerequisite_under_construction`).
+Refusal text is Korean ("선행 건물이 없습니다 — 병영이(가) 먼저 필요합니다"). The check lives in `PythonSC2BotAdapter._missing_prerequisite` and covers
+`build_structure`, add-on/morph (`Orbital`, `Planetary`) and `train_unit`; **research prerequisites are not checked** (no research-tech table here).
+
+### 6.4 Banshee cloak marker (item 6)
+
+`micromachine_command_execution.py` expected the generic `BEHAVIOR_CLOAKON` marker while patch 0047 (and the Direct adapter) use the Banshee-specific id
+392 (`BEHAVIOR_CLOAKOFF_BANSHEE` 393). The marker table now lists the specific id first and keeps the generic one. Impact on journey evidence: see §7
+(journey bundles compared member by member).
 
 ## 7. Journey-evidence check (pre-live provenance)
 
@@ -241,3 +297,11 @@ Journey bundles were built with the CI binary (`binary_sha256 b7f911ab…0dd8`, 
 pristine `8ba4c43` and from this branch with `python -m starcraft_commander.micromachine_pre_live_journeys
 --emit-bundle`: **32 members in each, 0 added/removed, 0 differing (SHA-256 per member)**; the two zips are also
 the same size (16231596 bytes). Machine load during the run was ~180 (only the byte comparison matters, no timing).
+
+### 7.1 Round 4 (`feat/r4-vocab`)
+
+This branch changes `contracts.py`, `policy_modulation.py`, `policy_modulation_provider.py`, `unified_command_router.py`, `direct_binding.py`,
+`python_sc2_adapter.py`, `narrator.py`, `realtime_intent.py` and `micromachine_command_execution.py` (the Banshee marker table). Journey bundles were built with the CI
+binary (`binary_sha256 b7f911ab…0dd8`, status `accepted`, 0 blockers) from pristine `origin/main` (466b675) and from this branch's code commit (`git archive`
+tree vs worktree, `--emit-bundle`): **32 members in each, 0 added/removed, 0 differing (SHA-256 per member)**. So the evidence is byte-identical, including after the
+Banshee marker change (the journeys contain no Banshee-cloak telemetry action; the change only widens an accepted-marker set). The doc-only commit after the comparison cannot affect it.

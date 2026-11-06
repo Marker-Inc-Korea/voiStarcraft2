@@ -68,6 +68,7 @@ from starcraft_commander.narrator import (
     SC2KoreanNarrator,
     SC2_KOREAN_TARGET_NAMES,
     SC2NarratorInterface,
+    narrate_game_rejection,
 )
 from starcraft_commander.sc2_executor import (
     DEFAULT_SC2_ACTION_PLANNER,
@@ -2176,6 +2177,19 @@ def _resolution_alternatives(resolution: object) -> tuple[str, ...]:
         return ()
 
 
+def _first_game_rejection(result: SC2PlanExecutionResult) -> dict[str, object] | None:
+    """The first ``game_result`` the game itself rejected in one execution result, if any."""
+
+    game_results = result.audit.get("game_results")
+    if not isinstance(game_results, Mapping):
+        return None
+    for key in sorted(game_results, key=str):
+        candidate = game_results[key]
+        if isinstance(candidate, Mapping) and candidate.get("accepted") is False:
+            return dict(candidate)
+    return None
+
+
 @dataclass(frozen=True)
 class SC2CommandOutcome:
     """Structured outcome for one commander command (or compound part).
@@ -2830,6 +2844,38 @@ class SC2CommandSession:
             bind_lifecycle = getattr(self.executor, "bind_direct_lifecycle", None)
             if callable(bind_lifecycle):
                 bind_lifecycle(self.direct_lifecycle)
+        add_rejection_listener = getattr(
+            self.executor, "add_game_rejection_listener", None
+        )
+        if callable(add_rejection_listener) and self.event_memory is not None:
+            add_rejection_listener(self._record_game_rejection)
+
+    def _record_game_rejection(self, payload: Mapping[str, object]) -> None:
+        """Tell the commander that SC2 rejected an order AFTER it was reported as issued.
+
+        The observation channel (``action_errors``) answers one game loop later than the
+        narrated outcome, so the rejection is recorded as its own ``blocked`` event
+        (the same event memory the UI history and why-failed answers read).
+        """
+
+        game_result = payload.get("game_result")
+        if not isinstance(game_result, Mapping) or self.event_memory is None:
+            return
+        lease = payload.get("lease")
+        metadata = lease.get("command_metadata") if isinstance(lease, Mapping) else None
+        intent_name = (
+            str(metadata.get("intent_name", "")) if isinstance(metadata, Mapping) else ""
+        )
+        narration = narrate_game_rejection(game_result)
+        self.event_memory.record(
+            {
+                "command_text": str(payload.get("command_id", "")),
+                "status": "blocked",
+                "narration": narration,
+                "intent_name": intent_name,
+                "detail": {"game_result": dict(game_result)},
+            }
+        )
 
     async def process_text(self, command_text: str) -> tuple[SC2CommandOutcome, ...]:
         """Process one commander utterance into one outcome per command part.
@@ -3790,11 +3836,22 @@ class SC2CommandSession:
             if "order_issued" in lease.completion_conditions:
                 lease = lifecycle.record_evidence(command_id, {"order_issued": True})
         else:
-            lease = lifecycle.fail(
-                command_id,
-                reason="direct_execution_failed",
-                evidence={"execution_success": False},
-            )
+            game_rejection = _first_game_rejection(result)
+            if game_rejection is not None:
+                lease = lifecycle.fail(
+                    command_id,
+                    reason="game_rejected",
+                    evidence={
+                        "execution_success": False,
+                        "game_result": game_rejection,
+                    },
+                )
+            else:
+                lease = lifecycle.fail(
+                    command_id,
+                    reason="direct_execution_failed",
+                    evidence={"execution_success": False},
+                )
         audit = dict(result.audit)
         audit["direct_command_lifecycle"] = lease.to_dict()
         return SC2PlanExecutionResult(

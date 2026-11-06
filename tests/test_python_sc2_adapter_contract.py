@@ -186,6 +186,19 @@ class FakeUnitGroup(list):
         return FakeUnitGroup(unit for unit in self if getattr(unit, "is_ready", False))
 
 
+# UnitTypeData.tech_requirement chain per structure (round 4: the adapter refuses an order the game would answer with
+# BuildTechRequirementsNotMet), so fixtures about placement/ownership provide the prerequisite structures.
+PREREQUISITE_STRUCTURES = {
+    "Barracks": ["SupplyDepot"],
+    "Factory": ["SupplyDepot", "Barracks"],
+    "Bunker": ["SupplyDepot", "Barracks"],
+}
+
+
+def prerequisite_structures(structure):
+    return [FakeUnit(name) for name in PREREQUISITE_STRUCTURES.get(structure, [])]
+
+
 class FakeBotAI:
     """Recording python-sc2 BotAI stand-in with complete observation surface."""
 
@@ -1091,7 +1104,10 @@ class BuildStructureTest(unittest.TestCase):
                         geysers=[geyser],
                     )
                 else:
-                    bot = FakeBotAI(workers=[FakeUnit("SCV")])
+                    bot = FakeBotAI(
+                        workers=[FakeUnit("SCV")],
+                        structures=prerequisite_structures(structure),
+                    )
                 adapter = make_adapter(bot)
 
                 result = run(
@@ -1141,6 +1157,7 @@ class BuildStructureTest(unittest.TestCase):
                     center = case["center"]
                     bot = FakeBotAI(
                         workers=[FakeUnit("SCV")],
+                        structures=prerequisite_structures(structure),
                         buildable_points={center.to_tuple(): False},
                     )
                     metadata = {
@@ -1189,6 +1206,7 @@ class BuildStructureTest(unittest.TestCase):
                     blocked = self._blocked_radius_one_candidates(center)
                     bot = FakeBotAI(
                         workers=[FakeUnit("SCV")],
+                        structures=prerequisite_structures(structure),
                         buildable_points=blocked,
                     )
                     metadata = {
@@ -2547,9 +2565,11 @@ class RegistryConcreteOwnershipIntegrationTest(unittest.TestCase):
         replacement_producer = FakeUnit("Barracks")
         original_producer.tag = 832
         replacement_producer.tag = 833
+        depot = FakeUnit("SupplyDepot")
+        depot.tag = 834
         bot = FakeBotAI(
             workers=[builder],
-            structures=[original_producer, replacement_producer],
+            structures=[original_producer, replacement_producer, depot],
         )
         executor = SC2RuntimeExecutor(bot=make_adapter(bot))
         registry = create_command_tool_registry(direct_executor=executor)
@@ -2589,7 +2609,7 @@ class RegistryConcreteOwnershipIntegrationTest(unittest.TestCase):
         # A new observation places another Barracks first. The dependent
         # production lease must bind that current producer, not stale tag 832
         # or a semantic-only MARINE subject.
-        bot.structures = FakeUnitGroup([replacement_producer, original_producer])
+        bot.structures = FakeUnitGroup([replacement_producer, original_producer, depot])
         observed = executor.tick_direct_commands(
             31,
             {"concrete-workflow": {"building_completed": True}},
