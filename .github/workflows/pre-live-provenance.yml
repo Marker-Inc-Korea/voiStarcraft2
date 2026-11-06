@@ -21,7 +21,7 @@ jobs:
     if: >-
       github.event.pull_request.head.repo.id == github.event.repository.id
     name: pre-live-build
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 75
     permissions:
       contents: read
@@ -58,7 +58,7 @@ jobs:
     if: >-
       github.event.pull_request.head.repo.id == github.event.repository.id
     name: pre-live-producer-isolation
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 20
     permissions:
       contents: read
@@ -94,7 +94,7 @@ jobs:
       - pre-live-build
       - pre-live-producer-isolation
     name: pre-live-provenance
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 120
     permissions:
       actions: read

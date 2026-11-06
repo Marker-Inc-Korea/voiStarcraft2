@@ -1603,7 +1603,7 @@ class GitHubSourceAttestationTest(unittest.TestCase):
             "github.event.repository.id\n",
             candidate_job,
         )
-        self.assertIn("    runs-on: macos-14\n", candidate_job)
+        self.assertIn("    runs-on: macos-15\n", candidate_job)
         self.assertIn("    timeout-minutes: 90\n", candidate_job)
         self.assertIn(
             "          persist-credentials: false\n"
