@@ -297,3 +297,11 @@ Journey bundles were built with the CI binary (`binary_sha256 b7f911ab…0dd8`, 
 pristine `8ba4c43` and from this branch with `python -m starcraft_commander.micromachine_pre_live_journeys
 --emit-bundle`: **32 members in each, 0 added/removed, 0 differing (SHA-256 per member)**; the two zips are also
 the same size (16231596 bytes). Machine load during the run was ~180 (only the byte comparison matters, no timing).
+
+### 7.1 Round 4 (`feat/r4-vocab`)
+
+This branch changes `contracts.py`, `policy_modulation.py`, `policy_modulation_provider.py`, `unified_command_router.py`, `direct_binding.py`,
+`python_sc2_adapter.py`, `narrator.py`, `realtime_intent.py` and `micromachine_command_execution.py` (the Banshee marker table). Journey bundles were built with the CI
+binary (`binary_sha256 b7f911ab…0dd8`, status `accepted`, 0 blockers) from pristine `origin/main` (466b675) and from this branch's code commit (`git archive`
+tree vs worktree, `--emit-bundle`): **32 members in each, 0 added/removed, 0 differing (SHA-256 per member)**. So the evidence is byte-identical, including after the
+Banshee marker change (the journeys contain no Banshee-cloak telemetry action; the change only widens an accepted-marker set). The doc-only commit after the comparison cannot affect it.
