@@ -55,11 +55,11 @@ test("both skins produce a rounded HUD shape through the same geometry main hit-
     for (const v of s.vertices) assert.equal(H.containsPoint(s.points, v[0], v[1]), false, `${skin} corner is rounded`);
   }
 });
-test("terminal stylesheet: phosphor green monospace, scanlines, CRT glow, block cursor, chamfer, no cosmic canvas", () => {
+test("terminal stylesheet: phosphor green monospace, scanlines, CRT glow, block cursor, rounded geometry, no cosmic canvas", () => {
   const css = fs.readFileSync(path.join(__dirname, "..", "renderer", "style.css"), "utf8");
   const html = fs.readFileSync(path.join(__dirname, "..", "renderer", "index.html"), "utf8");
   const terminal = css.slice(css.indexOf("TERMINAL SKIN"));
-  for (const needle of ["#2cff7a", '"SF Mono", Menlo, "IBM Plex Mono"', "repeating-linear-gradient(180deg", "radial-gradient(120% 130%", "@keyframes blink", ".cursor", 'content: ">"', "clip-path: polygon(", "outline-brackets", "var(--term-glow)", "var(--scrim)"]) assert.ok(css.includes(needle), needle);
+  for (const needle of ["#2cff7a", '"SF Mono", Menlo, "IBM Plex Mono"', "repeating-linear-gradient(180deg", "radial-gradient(120% 130%", "@keyframes blink", ".cursor", 'content: ">"', "var(--term-glow)", "var(--scrim)"]) assert.ok(css.includes(needle), needle);
   assert.match(terminal, /body\[data-skin="terminal"\] #space[^{]*\{ display: none/);
   assert.match(terminal, /prefers-reduced-motion: reduce[\s\S]*\.cursor/);
   assert.match(html, /<i class="cursor"><\/i>/); assert.match(html, /id="term-word"/);

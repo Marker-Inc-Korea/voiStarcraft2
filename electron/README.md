@@ -47,6 +47,18 @@ effect only, never angular corners). Both skins share opacity/blur/hue settings,
 terminal text scrim/glow are computed from the opacity (`renderer/skins.js`) so it stays legible at 8 % opacity. The switch is
 live (no reload) and persisted (`glass.skin`).
 
+## Design language (Apple HIG + Aside tokens)
+
+`renderer/tokens.css` is the single token layer shared by the HUD (`style.css`) and the tactical board (`board/board.css`): corner scale
+with a 1.4 squircle factor (`--radius-md..3xl`, `--radius-pill`), 4 px spacing unit, blur steps 4/8/12/16/24/64, in-out and out easings,
+a neutral oklch palette with the .85/.55/.15/.10 alpha ladder (dark default; light via `prefers-color-scheme`), a layered low-alpha
+shadow scale and a hairline material edge (1 px border at .10 + inner top highlight). Every surface is a rounded rectangle or a pill:
+settings use a segmented tab control and grouped inset lists with hairline separators, the three emergency words are rounded buttons
+(retreat = destructive, hold = amber, stop = neutral), the gear is a fully round "liquid glass" pill. The HUD silhouette itself
+(clip-path) belongs to `hud_shape.js`. The terminal skin only re-declares the colour tokens (phosphor green, monospace) and adds
+scanline/glow effects, never angular geometry. `test/ui_tokens.test.js` guards against `clip-path: polygon` / square corners in the CSS.
+The system font stack (SF on macOS) is used; no font files are vendored.
+
 ## Cosmic glass (skin 우주)
 
 Inside the panel, on one transparent canvas drawn additively (`lighter` + `mix-blend-mode: plus-lighter`, never opaque):
