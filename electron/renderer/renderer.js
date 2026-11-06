@@ -53,40 +53,37 @@
     reportRect();
   }
 
-  // ---------- trapezoid: one pure polygon (hud_shape.js) drives the clip, the outline/brackets and main's hit-test ----------
+  // ---------- shape: one pure rounded path (hud_shape.js) drives the clip, the outline/glow and main's hit-test ----------
+  // bottom dock = slanted bar with all four corners rounded; every other dock = plain rounded rectangle.
   let lastShapeKey = "";
   function applyShape() {
     const hud = $("hud");
     const width = hud.offsetWidth, height = hud.offsetHeight;
     if (width < 2 || height < 2) return;
     const g = state.settings.glass, dock = state.settings.layout.dock;
-    const slantDeg = g.slant, chamfer = Skins.chamferFor(g.skin, g.radius);
+    const smooth = Skins.smoothFor(g.skin);
     const bar = $("bar");
     const barDepth = (dock === "bottom" || dock === "top") ? bar.offsetHeight + 26 : 0;
-    const key = [dock, width, height, slantDeg, chamfer, barDepth, g.skin].join("|");
+    const key = [dock, width, height, g.slant, g.radius, smooth, barDepth].join("|");
     if (key === lastShapeKey) return;
     lastShapeKey = key;
-    const shape = HudShape.shape(dock, width, height, { slantDeg, chamfer });
+    const shape = HudShape.shape(dock, width, height, { slantDeg: g.slant, radius: g.radius, smooth });
     $("panel").style.clipPath = shape.clipPath;
     const outline = $("outline");
     outline.setAttribute("width", String(width)); outline.setAttribute("height", String(height)); outline.setAttribute("viewBox", `0 0 ${width} ${height}`);
-    const points = HudShape.svgPoints(shape.points);
-    $("outline-poly").setAttribute("points", points); $("outline-glow").setAttribute("points", points);
+    $("outline-poly").setAttribute("d", shape.path); $("outline-glow").setAttribute("d", shape.path);
+    // content stays inside the slanted sides and off the rounded corners: the bar is near the wide base, the settings reach the far edge
     const along = dock === "bottom" || dock === "top";
-    // brackets sit on the far (narrow) corners; the base corners are on the screen edge
-    const far = shape.points.map((point, index) => ({ point, index })).filter(({ point }) => (dock === "bottom" ? point[1] < height - 1 : dock === "top" ? point[1] > 1 : dock === "right" ? point[0] < width - 1 : point[0] > 1)).map(({ index }) => index);
-    $("outline-brackets").setAttribute("d", HudShape.cornerBrackets(shape.points, 16, far));
-    // content stays inside the slanted sides: the bar is near the wide base, the settings reach the narrow far edge
     const depth = along ? height : width;
     const atBar = shape.inset * Math.min(1, barDepth / depth);
-    const full = shape.inset + chamfer * 0.5;
+    const full = shape.inset + shape.radius * 0.35;
     if (along) {
       root.setProperty("--pad-x", `${Math.max(14, Math.round(atBar + 10))}px`);
       root.setProperty("--pad-set", `${Math.max(0, Math.round(full + 6 - Math.max(14, atBar + 10)))}px`);
       root.setProperty("--pad-y", "0px");
     } else {
       root.setProperty("--pad-x", "14px"); root.setProperty("--pad-set", "0px");
-      root.setProperty("--pad-y", `${Math.round(shape.inset + chamfer * 0.5 + 6)}px`);
+      root.setProperty("--pad-y", `${Math.round(shape.radius * 0.35 + 6)}px`);
     }
   }
 
@@ -116,7 +113,7 @@
     el.hidden = total === 0;
     el.dataset.live = open > 0 ? "yes" : "no";
     $("ops-word").textContent = t("ops");
-    $("ops-count").textContent = String(open || total);
+    $("ops-count").textContent = String(BoardCards.opsCount(total, open));
   }
 
   // ---------- bar: transcript, orb, gear dot ----------
@@ -284,7 +281,7 @@
   function reportRect() {
     const hud = $("hud");
     // offset* ignores the CSS slide transform, so main always gets the revealed layout rectangle; main derives the same
-    // trapezoid from it + the dock/slant/skin settings (hud_shape.js) for pointer hit-testing.
+    // rounded shape from it + the dock/slant/radius/skin settings (hud_shape.js) for pointer hit-testing.
     const rect = { x: hud.offsetLeft, y: hud.offsetTop, width: hud.offsetWidth, height: hud.offsetHeight };
     const key = JSON.stringify(rect);
     if (key !== lastRect && rect.width > 0 && rect.height > 0) { lastRect = key; api.dock.reportRect(rect); }

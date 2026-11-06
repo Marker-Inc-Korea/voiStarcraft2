@@ -4,12 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>voiStarcraft2</title>
+  <link rel="stylesheet" href="./tokens.css">
   <link rel="stylesheet" href="./style.css">
 </head>
 <body data-dock="bottom" data-revealed="false" data-voice="off" data-settings="closed" data-motion="on" data-skin="cosmic">
   <div class="handle" id="handle" aria-hidden="true"></div>
 
-  <!-- .hud = the positioned/sliding box; .panel = the clipped trapezoid glass; #outline = unclipped rim + glow of the same polygon -->
+  <!-- .hud = the positioned/sliding box; .panel = the rounded-clipped glass; #outline = unclipped rim + glow of the same polygon -->
   <div class="hud" id="hud">
     <section class="panel" id="panel">
       <canvas id="space" aria-hidden="true"></canvas>
@@ -58,9 +59,8 @@
       <defs>
         <linearGradient id="rim-grad" x1="0" y1="0" x2="1" y2="1"><stop class="rim-a" offset="0"/><stop class="rim-b" offset=".4"/><stop class="rim-c" offset=".75"/><stop class="rim-d" offset="1"/></linearGradient>
       </defs>
-      <polygon id="outline-glow" class="outline-glow"/>
-      <polygon id="outline-poly" class="outline-poly"/>
-      <path id="outline-brackets" class="outline-brackets"/>
+      <path id="outline-glow" class="outline-glow"/>
+      <path id="outline-poly" class="outline-poly"/>
     </svg>
   </div>
 
@@ -73,6 +73,7 @@
   <script src="./i18n.js"></script>
   <script src="./space.js"></script>
   <script src="./mic.js"></script>
+  <script src="./ui_fx.js"></script>
   <script src="./renderer.js"></script>
 </body>
 </html>

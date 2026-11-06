@@ -181,12 +181,13 @@ function applyBounds(win, want) {
   }
   return Displays.withinRounding(win.getBounds(), want, 1);
 }
-// The visible HUD is a trapezoid inside that rectangle (renderer/hud_shape.js, the SAME function the renderer clips with):
-// pointer hit-testing uses the polygon, so the slanted corners and everything outside it stay click-through to the game.
+// The visible HUD is a rounded shape inside that rectangle (renderer/hud_shape.js, the SAME function the renderer clips with):
+// pointer hit-testing uses its densely sampled outline, so the rounded corners, the slanted bar sides and everything
+// outside stay click-through to the game.
 function panelPolygon() {
   const rect = panelScreenRect();
   if (!rect) return null;
-  const shape = HudShape.shape(settings.layout.dock, rect.width, rect.height, { slantDeg: settings.glass.slant, chamfer: Skins.chamferFor(settings.glass.skin) });
+  const shape = HudShape.shape(settings.layout.dock, rect.width, rect.height, { slantDeg: settings.glass.slant, radius: settings.glass.radius, smooth: Skins.smoothFor(settings.glass.skin) });
   return HudShape.translate(shape.points, rect.x, rect.y);
 }
 function pointerOverPanel(cursor) {

@@ -13,11 +13,14 @@ npm test                                     # node --test
 
 ## HUD
 
-A bottom-anchored **trapezoid** control HUD (wide base on the screen edge, narrower far edge; slant 0-30°, default 14°, 유리 > 기울기).
-`renderer/hud_shape.js` is the single pure geometry: it produces the CSS `clip-path`, the SVG outline + corner brackets and
-the polygon main uses for pointer hit-testing, so the slanted corners and everything outside the trapezoid stay click-through
-to the game (`main.js` `pointerOverPanel`, not the rectangle). Words only: orb · one-line transcript · `작전 N` (count of live
-operations) · input (`명령`) · **`후퇴` `홀드` `멈춰`** · gear. **There are no operation cards in the HUD**: the renderer still derives
+A bottom-anchored control HUD: a slanted bar (wide base on the screen edge, narrower far edge; slant 0-30°, default 14°, 유리 > 기울기)
+with **all four corners rounded** (continuous-curvature "squircle" Bézier corners; far corners use `glass.radius`, the two base corners
+on the screen edge use 0.6 x that). Left/right/top docks are plain **rounded rectangles** (no slant, same radius token).
+`renderer/hud_shape.js` is the single pure geometry: it produces the CSS `clip-path: path()`, the SVG outline path for the rim/glow
+and a densely sampled polygon (24 points per corner) that main uses for pointer hit-testing, so the rounded corners, the slanted
+sides and everything outside the shape stay click-through to the game (`main.js` `pointerOverPanel`, not the rectangle). Radii are
+clamped so they never overlap (a radius larger than half the height becomes a pill). Words only: orb · one-line transcript · `작전 N` (count of OPEN
+operations: it falls as they complete or block; only when none is open does it show the session total) · input (`명령`) · **`후퇴` `홀드` `멈춰`** · gear. **There are no operation cards in the HUD**: the renderer still derives
 them from backend evidence (`stages.js` + `board_cards.js`: heard/understood/assigned/ordered/effect; 효과 only for
 `effect_observed`, `시뮬` for the fake bot) and publishes them through `window.commander.board.publish(cards)` -> `board:publish`
 to the tactical board window (`electron/board*`, separate small translucent window, upper-left).
@@ -37,12 +40,24 @@ cannot be registered shows `키불가` on its button and in settings; it is neve
 
 ### Skins (유리 > 스킨)
 
-`cosmic` (우주): the glass + starfield/nebula described below, adapted to the trapezoid. `terminal` (터미널): StarCraft
+`cosmic` (우주): the glass + starfield/nebula described below, adapted to the rounded shape. `terminal` (터미널): StarCraft
 in-game computer console: near-black translucent panel, phosphor green (`#2cff7a`) monospace (`SF Mono`/Menlo/IBM Plex Mono),
-scanlines, faint CRT glow/vignette/flicker, blinking block cursor (`> 명령_`), chamfered Terran key bevels and corner brackets,
-green status LEDs. Both skins share opacity/blur/hue settings, reduced-motion support and the rainbow edge overlay. The
+scanlines, faint CRT glow/vignette/flicker, blinking block cursor (`> 명령_`) and green status LEDs; geometry is rounded like the cosmic skin (the green/black look is colour and
+effect only, never angular corners). Both skins share opacity/blur/hue settings, reduced-motion support and the rainbow edge overlay. The
 terminal text scrim/glow are computed from the opacity (`renderer/skins.js`) so it stays legible at 8 % opacity. The switch is
 live (no reload) and persisted (`glass.skin`).
+
+## Design language (Apple HIG + Aside tokens)
+
+`renderer/tokens.css` is the single token layer shared by the HUD (`style.css`) and the tactical board (`board/board.css`): corner scale
+with a 1.4 squircle factor (`--radius-md..3xl`, `--radius-pill`), 4 px spacing unit, blur steps 4/8/12/16/24/64, in-out and out easings,
+a neutral oklch palette with the .85/.55/.15/.10 alpha ladder (dark default; light via `prefers-color-scheme`), a layered low-alpha
+shadow scale and a hairline material edge (1 px border at .10 + inner top highlight). Every surface is a rounded rectangle or a pill:
+settings use a segmented tab control and grouped inset lists with hairline separators, the three emergency words are rounded buttons
+(retreat = destructive, hold = amber, stop = neutral), the gear is a fully round "liquid glass" pill. The HUD silhouette itself
+(clip-path) belongs to `hud_shape.js`. The terminal skin only re-declares the colour tokens (phosphor green, monospace) and adds
+scanline/glow effects, never angular geometry. `test/ui_tokens.test.js` guards against `clip-path: polygon` / square corners in the CSS.
+The system font stack (SF on macOS) is used; no font files are vendored.
 
 ## Cosmic glass (skin 우주)
 
@@ -96,7 +111,7 @@ expiry, back-off reconnect, session rotation after 55 min. Only the microphone p
 
 ## Verification
 
-`npm test` runs the pure unit tests (validators, HUD trapezoid geometry + polygon hit-test, skins, emergency shortcut registry, board card view-model, settings schema, dock and multi-display logic, voice state machine
+`npm test` runs the pure unit tests (validators, rounded HUD geometry + hit-test, skins, emergency shortcut registry, board card view-model, settings schema, dock and multi-display logic, voice state machine
 and client on a fake `ws`, stage derivation, window flags). They never launch Electron or touch the pointer.
 
 The real-Electron smoke runs take over the mouse pointer and capture the screen, so run them only when the Mac is
