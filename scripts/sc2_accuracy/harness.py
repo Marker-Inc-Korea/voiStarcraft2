@@ -74,6 +74,36 @@ def _structure_type_ids() -> set[int]:
 BIOLOGICAL_TERRAN = {
     UnitTypeId.MARINE.value, UnitTypeId.MARAUDER.value, UnitTypeId.REAPER.value,
     UnitTypeId.GHOST.value, UnitTypeId.SCV.value,
+    # Non-Terran bio the targeting contracts need (public game data; stableid.json has no attributes).
+    UnitTypeId.ZEALOT.value, UnitTypeId.ZERGLING.value,
+}
+
+MECHANICAL_UNITS = {
+    UnitTypeId.SIEGETANK.value, UnitTypeId.SIEGETANKSIEGED.value, UnitTypeId.THOR.value, UnitTypeId.THORAP.value,
+    UnitTypeId.HELLION.value, UnitTypeId.CYCLONE.value, UnitTypeId.WIDOWMINE.value,
+    UnitTypeId.WIDOWMINEBURROWED.value, UnitTypeId.MEDIVAC.value, UnitTypeId.VIKINGFIGHTER.value,
+    UnitTypeId.VIKINGASSAULT.value, UnitTypeId.LIBERATOR.value, UnitTypeId.LIBERATORAG.value,
+    UnitTypeId.BANSHEE.value, UnitTypeId.RAVEN.value, UnitTypeId.BATTLECRUISER.value,
+    UnitTypeId.MULE.value, UnitTypeId.IMMORTAL.value,
+}
+
+# Supply (food_required) per unit, public game data; stableid.json has none.  Needed for supply-gating contracts.
+FOOD_REQUIRED = {
+    UnitTypeId.SCV.value: 1.0, UnitTypeId.MARINE.value: 1.0, UnitTypeId.MARAUDER.value: 2.0,
+    UnitTypeId.REAPER.value: 1.0, UnitTypeId.GHOST.value: 2.0, UnitTypeId.HELLION.value: 2.0,
+    UnitTypeId.HELLIONTANK.value: 2.0, UnitTypeId.SIEGETANK.value: 3.0, UnitTypeId.CYCLONE.value: 3.0,
+    UnitTypeId.THOR.value: 6.0, UnitTypeId.WIDOWMINE.value: 2.0, UnitTypeId.MEDIVAC.value: 2.0,
+    UnitTypeId.VIKINGFIGHTER.value: 2.0, UnitTypeId.LIBERATOR.value: 3.0, UnitTypeId.BANSHEE.value: 3.0,
+    UnitTypeId.RAVEN.value: 2.0, UnitTypeId.BATTLECRUISER.value: 6.0,
+}
+
+# (minerals, vespene) per unit/structure, public game data; stableid.json has none.  Needed for resource-gating contracts.
+COSTS = {
+    UnitTypeId.SCV: (50, 0), UnitTypeId.MARINE: (50, 0), UnitTypeId.MARAUDER: (100, 25), UnitTypeId.GHOST: (150, 125),
+    UnitTypeId.SIEGETANK: (150, 125), UnitTypeId.MEDIVAC: (100, 100), UnitTypeId.BATTLECRUISER: (400, 300),
+    UnitTypeId.SUPPLYDEPOT: (100, 0), UnitTypeId.BARRACKS: (150, 0), UnitTypeId.FACTORY: (150, 100),
+    UnitTypeId.STARPORT: (150, 100), UnitTypeId.COMMANDCENTER: (400, 0), UnitTypeId.REFINERY: (75, 0),
+    UnitTypeId.ENGINEERINGBAY: (125, 0),
 }
 
 
@@ -125,6 +155,13 @@ def build_game_data() -> GameData:
         if unit["id"] in BIOLOGICAL_TERRAN:
             # stableid.json carries no unit attributes; the harness supplies the (stable, public) bio set.
             proto.attributes.append(Attribute.Biological.value)
+        if unit["id"] in MECHANICAL_UNITS:
+            proto.attributes.append(Attribute.Mechanical.value)
+        if unit["id"] in FOOD_REQUIRED:
+            proto.food_required = FOOD_REQUIRED[unit["id"]]
+        cost = next((c for u, c in COSTS.items() if u.value == unit["id"]), None)
+        if cost is not None:
+            proto.mineral_cost, proto.vespene_cost = cost
     researched: dict[int, int] = {}
     for research_table in RESEARCH_INFO.values():
         for upgrade, info in research_table.items():
@@ -175,12 +212,19 @@ class HarnessBot(BotAI):
     # -- unit factory
     def add_unit(self, unit_type: UnitTypeId, *, x: float = 20.0, y: float = 20.0, structure: bool = False,
                  orders: tuple[AbilityId, ...] = (), health: float = 100.0, health_max: float = 100.0,
-                 enemy: bool = False, add_on_tag: int = 0) -> Unit:
+                 enemy: bool = False, add_on_tag: int = 0, energy: float | None = None,
+                 energy_max: float | None = None, build_progress: float = 1.0, weapon_cooldown: float = 0.0,
+                 buff_ids: tuple[int, ...] = ()) -> Unit:
         self._next_tag += 1
         proto = raw_pb2.Unit(
-            tag=self._next_tag, unit_type=unit_type.value, alliance=4 if enemy else 1, build_progress=1.0,
-            health=health, health_max=health_max, add_on_tag=add_on_tag,
+            tag=self._next_tag, unit_type=unit_type.value, alliance=4 if enemy else 1,
+            build_progress=build_progress, health=health, health_max=health_max, add_on_tag=add_on_tag,
+            weapon_cooldown=weapon_cooldown,
         )
+        if energy is not None:
+            proto.energy = energy
+            proto.energy_max = energy_max if energy_max is not None else 200.0
+        proto.buff_ids.extend(buff_ids)
         proto.pos.x, proto.pos.y = x, y
         for ability in orders:
             proto.orders.add().ability_id = ability.value
