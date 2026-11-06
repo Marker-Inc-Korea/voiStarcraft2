@@ -102,6 +102,16 @@ class FakeWs extends EventEmitter {
   server(event) { this.emit("message", JSON.stringify(event)); }
 }
 const flush = () => new Promise(resolve => setImmediate(() => setImmediate(resolve)));
+// Poll for a condition instead of sleeping a fixed time: real timers are late on a loaded machine.
+async function until(check, { timeoutMs = 4000, stepMs = 5 } = {}) {
+  const t0 = Date.now();
+  for (;;) {
+    if (check()) return true;
+    if (Date.now() - t0 > timeoutMs) return false;
+    await new Promise(resolve => setTimeout(resolve, stepMs));
+  }
+}
+
 function client(overrides = {}) {
   const log = { states: [], transcripts: [], intents: [], requests: [] };
   let t = 5000;
@@ -169,7 +179,7 @@ test("client: full turn posts intent with tool args, transcript and latency; sta
   const done = log.intents.find(i => i.kind === "submitted");
   assert.equal(done.ok, true); assert.equal(done.tier, "operation"); assert.equal(typeof done.latency_ms.tool_call_to_publish, "number");
   assert.ok(log.states.includes("listening") && log.states.includes("thinking") && log.states.includes("acting"));
-  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.ok(await until(() => c.snapshot().state === "idle"), "returns to idle once the acting hold elapses");
   assert.equal(c.snapshot().state, "idle");
   c.stop();
 });
@@ -198,7 +208,7 @@ test("client: socket close while armed -> error then reconnect with a fresh sock
   const first = FakeWs.last; first.server({ type: "session.updated" });
   first.emit("close", 1006, Buffer.from("gone"));
   assert.equal(c.snapshot().state, "error"); assert.match(c.snapshot().reason, /1006/);
-  await new Promise(resolve => setTimeout(resolve, 30)); await flush();
+  assert.ok(await until(() => FakeWs.last !== first), "a reconnect opens a new socket"); await flush();
   assert.notEqual(FakeWs.last, first);
   FakeWs.last.server({ type: "session.updated" });
   assert.equal(c.snapshot().state, "idle");
@@ -210,7 +220,7 @@ test("client: expired secret is re-minted on reconnect", async () => {
   await c.start(); await flush();
   const first = FakeWs.last; first.server({ type: "session.updated" });
   first.emit("close", 1006, Buffer.from(""));
-  await new Promise(resolve => setTimeout(resolve, 30)); await flush();
+  assert.ok(await until(() => mints === 2), "the reconnect mints a fresh secret"); await flush();
   assert.equal(mints, 2);
   assert.equal(FakeWs.last.options.headers.Authorization, `${"Bear" + "er"} ek_secret_2xxx`);
   c.stop();
@@ -335,7 +345,7 @@ test("rule-first: a model call arriving while the rule request is pending is dro
   assert.equal(rc.log.posts.length, 1, "parked model call must not post");
   assert.equal(rc.c.snapshot().state, "acting");
   assert.equal(cancels(ws).length, 1);
-  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.ok(await until(() => rc.c.snapshot().state === "idle"), "returns to idle once the acting hold elapses");
   assert.equal(rc.c.snapshot().state, "idle");
   rc.c.stop();
 });
