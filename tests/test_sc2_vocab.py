@@ -355,7 +355,7 @@ def test_new_abilities_reach_the_wire_with_the_documented_id_and_target_kind(utt
     if pos is not None:
         assert {v["pos"] for v in views} == {pos}
     if target == "target_unit_tag":
-        by_tag = {u.tag: u for u in list(bot.units) + list(bot.structures)}
+        by_tag = {u.tag: u for u in list(bot.units) + list(bot.structures) + list(bot.mineral_field)}
         kind = by_tag[views[0]["unit_tag"]].type_id
         assert kind == (U.MINERALFIELD if ability.startswith("CALLDOWNMULE") else U.SUPPLYDEPOT)
 
@@ -392,8 +392,8 @@ REFUSALS = [
     ("scan without a place", lambda: orbital_world(), ability_call("스캔", "scanner_sweep"), "target_required: explicit_point_required", "어디"),
     ("mule without minerals", lambda: _without(orbital_world(), U.MINERALFIELD), ability_call("뮤마", "calldown_mule"), "target_required: no_mineral_patch", "미네랄"),
     ("drop without a depot", lambda: _without(orbital_world(), U.SUPPLYDEPOT), ability_call("보급 드롭", "supply_drop"), "target_required: no_supply_depot", "보급고"),
-    ("lift with no such structure", lambda: harness.make_bot((U.MARINE, 2)), ability_call("배럭 이륙", "lift_off", "TERRAN_BARRACKS"), "no_matching_caster", "건물"),
-    ("land without a flying structure", lambda: harness.make_bot((U.BARRACKS, 1)), ability_call("착륙", "land", "TERRAN_BARRACKSFLYING", location="home"), "no_matching_caster", "건물"),
+    ("lift with no such structure", lambda: harness.make_bot((U.MARINE, 2)), ability_call("배럭 이륙", "lift_off", "TERRAN_BARRACKS"), "no_matching_caster", "유닛/건물"),
+    ("land without a flying structure", lambda: harness.make_bot((U.BARRACKS, 1)), ability_call("착륙", "land", "TERRAN_BARRACKSFLYING", location="home"), "no_matching_caster", "유닛/건물"),
     ("land without a point", lambda: harness.make_bot((U.BARRACKSFLYING, 1)), ability_call("착륙", "land", "TERRAN_BARRACKSFLYING"), "target_required: explicit_point_required", "어디"),
     ("lift while still training", lambda: _busy_barracks(), ability_call("배럭 이륙", "lift_off", "TERRAN_BARRACKS"), "no_ready_caster: structure_busy", "생산"),
     ("lift an unfinished barracks", lambda: _unfinished_barracks(), ability_call("배럭 이륙", "lift_off", "TERRAN_BARRACKS"), "no_ready_caster: under_construction", "건설"),
@@ -401,7 +401,7 @@ REFUSALS = [
 
 
 def _without(bot, unit_type):
-    for group in (bot.units, bot.structures):
+    for group in (bot.units, bot.structures, bot.mineral_field):
         for unit in [u for u in group if u.type_id == unit_type]:
             group.remove(unit)
     return bot

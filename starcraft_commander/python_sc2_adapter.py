@@ -295,7 +295,37 @@ SC2_SEMANTIC_ABILITIES: Final[dict[str, tuple[str, str, tuple[str, ...]]]] = {
     "anti_armor_missile": ("EFFECT_ANTIARMORMISSILE", "enemy_point", ("RAVEN",)),
     "yamato": ("YAMATO_YAMATOGUN", "enemy_unit", ("BATTLECRUISER",)),
     "tactical_jump": ("EFFECT_TACTICALJUMP", "explicit_point", ("BATTLECRUISER",)),
+    # Round 4 (stableid.json ids; s2client-api header target kinds): Orbital Command calldowns and building lift/land.
+    # SCANNERSWEEP_SCAN 399 = Point; CALLDOWNMULE_CALLDOWNMULE 171 = Unit,Point (a mineral patch);
+    # SUPPLYDROP_SUPPLYDROP 255 = Unit (a supply depot); LIFT_* = None; LAND_* = Point.
+    "scanner_sweep": ("SCANNERSWEEP_SCAN", "explicit_point", ("ORBITALCOMMAND",)),
+    "calldown_mule": ("CALLDOWNMULE_CALLDOWNMULE", "mineral_patch", ("ORBITALCOMMAND",)),
+    "supply_drop": ("SUPPLYDROP_SUPPLYDROP", "supply_depot", ("ORBITALCOMMAND",)),
+    "lift_off": ("LIFT", "none", ("BARRACKS", "FACTORY", "STARPORT", "COMMANDCENTER", "ORBITALCOMMAND")),
+    "land": (
+        "LAND", "explicit_point",
+        ("BARRACKSFLYING", "FACTORYFLYING", "STARPORTFLYING", "COMMANDCENTERFLYING", "ORBITALCOMMANDFLYING"),
+    ),
 }
+
+# Lift / Land are building-specific abilities (LIFT_BARRACKS 452, LIFT_FACTORY 485, ... each remaps to the generic
+# LIFT 3679 / LAND 3678): the executable id is chosen per caster type, like the Banshee-specific cloak.
+_TYPE_SPECIFIC_ABILITIES: Final[dict[str, dict[str, str]]] = {
+    "lift_off": {
+        "BARRACKS": "LIFT_BARRACKS", "FACTORY": "LIFT_FACTORY", "STARPORT": "LIFT_STARPORT",
+        "COMMANDCENTER": "LIFT_COMMANDCENTER", "ORBITALCOMMAND": "LIFT_ORBITALCOMMAND",
+    },
+    "land": {
+        "BARRACKSFLYING": "LAND_BARRACKS", "FACTORYFLYING": "LAND_FACTORY", "STARPORTFLYING": "LAND_STARPORT",
+        "COMMANDCENTERFLYING": "LAND_COMMANDCENTER", "ORBITALCOMMANDFLYING": "LAND_ORBITALCOMMAND",
+    },
+}
+# Abilities whose casters are STRUCTURES (python-sc2 keeps them in ``bot.structures``, flying ones possibly in units).
+_STRUCTURE_CASTER_TOKENS: Final[frozenset[str]] = frozenset(
+    {"scanner_sweep", "calldown_mule", "supply_drop", "lift_off", "land"}
+)
+_ORBITAL_TOKENS: Final[frozenset[str]] = frozenset({"scanner_sweep", "calldown_mule", "supply_drop"})
+_SUPPLY_DEPOT_TYPES: Final[frozenset[str]] = frozenset({"SUPPLYDEPOT", "SUPPLYDEPOTLOWERED"})
 
 _SEMANTIC_ABILITY_ALIASES: Final[dict[str, str]] = {
     **{token.upper(): spec[0] for token, spec in SC2_SEMANTIC_ABILITIES.items()},
@@ -316,6 +346,8 @@ _STIM_BUFF_NAMES: Final[dict[str, str]] = {"MARINE": "STIMPACK", "MARAUDER": "ST
 _ABILITY_ENERGY_COST: Final[dict[str, float]] = {
     "ghost_cloak": 25.0, "banshee_cloak": 25.0, "emp": 75.0, "snipe": 50.0,
     "auto_turret": 50.0, "interference_matrix": 75.0, "anti_armor_missile": 75.0,
+    # Orbital Command calldowns: 50 energy each (public rule; live checklist re-verifies via Unit.energy).
+    "scanner_sweep": 50.0, "calldown_mule": 50.0, "supply_drop": 50.0,
 }
 
 # Semantic research token (underscores stripped, upper) -> UpgradeId member name.
@@ -1054,16 +1086,18 @@ class PythonSC2BotAdapter:
                     for reason in _caster_blockers(token, unit)
                 }
             )
+            if blockers:
+                return _refusal_report(action.count, f"no_ready_caster: {', '.join(blockers)}")
             return _refusal_report(
                 action.count,
-                f"no_ready_caster: {', '.join(blockers)}" if blockers else "no_matching_caster",
+                "no_orbital_command" if token in _ORBITAL_TOKENS else "no_matching_caster",
             )
         # Count 0 is the whole eligible group ("탱크 시즈모드" sieges every
         # tank); a positive count is exactly that many casters.
         if "_direct_requested_count" in action.metadata:
             requested = int(action.metadata["_direct_requested_count"])
         else:
-            requested = action.count or len(units)
+            requested = action.count or _default_cast_count(token, len(units))
         spec = SC2_SEMANTIC_ABILITIES.get(self._ability_token(ability_name))
         mode = spec[1] if spec is not None else ""
         explicit_point = None
@@ -1082,14 +1116,22 @@ class PythonSC2BotAdapter:
             caller = use_ability if callable(use_ability) else unit
             if not callable(caller):
                 continue
+            unit_ability = self._type_specific_ability(token, unit) or ability
             applied = (
-                await self._issue_unit_order(caller, ability, target, queue=action.queue)
+                await self._issue_unit_order(caller, unit_ability, target, queue=action.queue)
                 if target is not None
-                else await self._issue_unit_order(caller, ability, queue=action.queue)
+                else await self._issue_unit_order(caller, unit_ability, queue=action.queue)
             )
             if applied:
                 issued += 1
         return _issuance_report(requested, issued, detail)
+
+    def _type_specific_ability(self, token: str, unit: object) -> object | None:
+        """Lift/Land: the executable id is building specific (LIFT_BARRACKS 452 ...), not the generic remap target."""
+
+        table = _TYPE_SPECIFIC_ABILITIES.get(token)
+        specific = table.get(_entity_type_name(unit) or "") if table else None
+        return self._resolve_ability(specific) if specific else None
 
     @staticmethod
     def _ability_token(ability_name: str) -> str:
@@ -1106,6 +1148,23 @@ class PythonSC2BotAdapter:
         token = self._ability_token(ability_name)
         spec = SC2_SEMANTIC_ABILITIES.get(token)
         family = canonical_terran_unit_family(action.subject)
+        if token in _STRUCTURE_CASTER_TOKENS and spec is not None:
+            wanted = _normalized_name(action.subject) or ""
+            generic = not wanted or wanted.startswith("AVAILABLE") or wanted in {"ORBITALCOMMAND", "COMMANDCENTER"} and token in _ORBITAL_TOKENS
+            pool = [
+                entity
+                for entity in _unique_entities(
+                    _materialize(getattr(self.bot, "structures", None))
+                    + _materialize(getattr(self.bot, "units", None))
+                )
+                if _entity_type_name(entity) in spec[2]
+                and (generic or (_entity_type_name(entity) or "").removesuffix("FLYING") == wanted.removesuffix("FLYING"))
+            ]
+            if ready_only:
+                pool = [unit for unit in pool if not _caster_blockers(token, unit)]
+            if token in _ORBITAL_TOKENS:
+                pool.sort(key=lambda unit: -(_observed_number(unit, "energy") or 0.0))
+            return pool
         if family:
             pool = [
                 unit
@@ -1157,6 +1216,36 @@ class PythonSC2BotAdapter:
                 return enemy, ""
             point = explicit_point or _entity_point(enemy)
             return (_game_point(point), "") if point is not None else (None, "target_required: no_enemy_position")
+        if mode == "mineral_patch":
+            # CalldownMULE targets a mineral patch of the caster's base; every caster in one command takes a
+            # different patch (two MULEs on one patch would waste one).
+            patches = [
+                patch
+                for patch in _materialize(getattr(self.bot, "mineral_field", None))
+                if _entity_tag(patch) not in claimed
+            ]
+            patch = _nearest_entity(patches, caster_point)
+            if patch is None:
+                return None, "target_required: no_mineral_patch"
+            tag = _entity_tag(patch)
+            if tag is not None:
+                claimed.add(tag)
+            return patch, ""
+        if mode == "supply_depot":
+            depots = [
+                structure
+                for structure in _materialize(getattr(self.bot, "structures", None))
+                if _entity_type_name(structure) in _SUPPLY_DEPOT_TYPES
+                and _truthy_flag(structure, "is_ready", default=True)
+                and _entity_tag(structure) not in claimed
+            ]
+            depot = _nearest_entity(depots, caster_point)
+            if depot is None:
+                return None, "target_required: no_supply_depot"
+            tag = _entity_tag(depot)
+            if tag is not None:
+                claimed.add(tag)
+            return depot, ""
         if mode == "own_cargo":
             candidates = [
                 entity
@@ -2560,7 +2649,10 @@ class PythonSC2BotAdapter:
             requested = min(max(1, action.count), len(pool))
         elif kind == "execute_ability":
             pool = self._ability_casters(clean)
-            requested = action.count if action.count > 0 else len(pool)
+            requested = action.count if action.count > 0 else _default_cast_count(
+                self._ability_token(str(action.metadata.get("ability_id") or action.metadata.get("ability") or "")),
+                len(pool),
+            )
         else:
             pool = self._select_group(action.subject)
             requested = self._group_requested_count(
@@ -2592,6 +2684,7 @@ class PythonSC2BotAdapter:
         entities = (
             _materialize(getattr(self.bot, "units", None))
             + _materialize(getattr(self.bot, "workers", None))
+            + _materialize(getattr(self.bot, "structures", None))
         )
         by_tag = {getattr(unit, "tag", None): unit for unit in entities}
         return [by_tag[tag] for tag in tags if tag in by_tag]
@@ -3814,6 +3907,15 @@ def _queue_slots_left(structure: object) -> int:
     return max(0, total - used)
 
 
+def _default_cast_count(token: str, available: int) -> int:
+    """A bare "스캔"/"보급 드롭" is ONE cast (the Orbital with the most energy); a bare "뮤마" uses every ready Orbital;
+    everything else keeps the whole-group convention (count 0 = all eligible casters)."""
+
+    if token in {"scanner_sweep", "supply_drop"}:
+        return min(1, available)
+    return available
+
+
 def _observed_number(entity: object, attribute: str) -> float | None:
     value = getattr(entity, attribute, None)
     return float(value) if _is_real_number(value) else None
@@ -3841,6 +3943,12 @@ def _caster_blockers(token: str, unit: object) -> tuple[str, ...]:
         energy = _observed_number(unit, "energy")
         if energy is not None and energy < cost:
             blockers.append("not_enough_energy")
+    if token in _STRUCTURE_CASTER_TOKENS:
+        if not _truthy_flag(unit, "is_ready", default=True):
+            blockers.append("under_construction")
+        elif token == "lift_off" and not _truthy_flag(unit, "is_idle", default=True):
+            # Lift Off is refused while the structure is training/researching (its queue must be empty).
+            blockers.append("structure_busy")
     if type_name == "MEDIVAC":
         if token == "medivac_load":
             left = _observed_number(unit, "cargo_left")

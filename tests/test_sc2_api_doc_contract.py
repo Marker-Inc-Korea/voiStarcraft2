@@ -110,6 +110,7 @@ def test_every_semantic_ability_sends_the_target_field_its_documented_target_kin
 
     expected_field = {
         "none": None, "enemy_unit": "target_unit_tag", "own_cargo": "target_unit_tag",
+        "mineral_patch": "target_unit_tag", "supply_depot": "target_unit_tag",
         "own_damaged_bio": "target_unit_tag", "enemy_point": "target_world_space_pos",
         "caster_point": "target_world_space_pos", "explicit_point": "target_world_space_pos",
     }
@@ -118,6 +119,7 @@ def test_every_semantic_ability_sends_the_target_field_its_documented_target_kin
         "stimpack": U.MARINE, "widow_mine_unburrow": U.WIDOWMINEBURROWED, "unsiege": U.SIEGETANKSIEGED,
         "hellion_mode": U.HELLIONTANK, "thor_explosive_mode": U.THORAP, "viking_fighter_mode": U.VIKINGASSAULT,
         "liberator_fighter_mode": U.LIBERATORAG,
+        "land": U.BARRACKSFLYING, "lift_off": U.BARRACKS,
     }
     for token, (ability_name, mode, casters) in SC2_SEMANTIC_ABILITIES.items():
         caster = caster_unit.get(token) or getattr(U, casters[0])
@@ -131,6 +133,9 @@ def test_every_semantic_ability_sends_the_target_field_its_documented_target_kin
         if token == "medivac_unload_all":
             bot = harness.make_bot()
             bot.add_unit(U.MEDIVAC, cargo_taken=2)
+        if mode in {"mineral_patch", "supply_depot"}:
+            bot.add_unit(U.MINERALFIELD, x=22.0, y=24.0)
+            bot.add_unit(U.SUPPLYDEPOT, x=26.0, y=18.0)
         action = SC2CommandAction(
             SC2ActionType.EXECUTE_ABILITY, casters[0], target="enemy_main" if mode == "explicit_point" else "",
             count=0, metadata={"ability": token},
@@ -138,7 +143,11 @@ def test_every_semantic_ability_sends_the_target_field_its_documented_target_kin
         result, views = run(bot, action)
         assert views, (token, report(result))
         assert {v["target"] for v in views} == {expected_field[mode]}, (token, views)
-        assert AbilityId(views[0]["ability_id"]).name == ability_name
+        from starcraft_commander.python_sc2_adapter import _TYPE_SPECIFIC_ABILITIES
+
+        # Lift/Land are sent as the building-specific id (LIFT_BARRACKS ...), which remaps to the generic one.
+        expected_name = _TYPE_SPECIFIC_ABILITIES.get(token, {}).get(caster.name, ability_name)
+        assert AbilityId(views[0]["ability_id"]).name == expected_name
 
 
 # ---- caster eligibility (Unit.health / energy / buffs / unit_type; E: NotEnoughLife, NotEnoughEnergy)
@@ -208,10 +217,11 @@ def test_tactical_nuke_is_a_ghost_only_point_order_and_refuses_without_a_ghost()
     assert tags_of(views) == {ghost.tag} and {v["target"] for v in views} == {"target_world_space_pos"}
 
 
-def test_abilities_the_dsl_cannot_express_are_loudly_rejected_not_silently_dropped() -> None:
-    """Scanner Sweep (Orbital, 50 energy), Lift/Land, MULE and Supply Drop have no DSL token (handoff)."""
+def test_abilities_the_dsl_still_cannot_express_are_loudly_rejected_not_silently_dropped() -> None:
+    """Scanner Sweep / MULE / Supply Drop / Lift / Land became tokens in round 4 (tests/test_sc2_vocab.py); anything
+    else the DSL has no token for must still be rejected rather than mis-executed."""
 
-    for token in ("scanner_sweep", "lift", "land", "calldown_mule", "supply_drop"):
+    for token in ("lift", "calldown_scv", "salvage_everything"):
         with pytest.raises(ValueError, match="supported abilities"):
             lower_micro(token)
 

@@ -261,6 +261,9 @@ class HarnessBot(BotAI):
         if enemy:
             (self.enemy_structures if unit.is_structure else self.enemy_units).append(unit)
             return unit
+        if unit_type == UnitTypeId.MINERALFIELD:
+            self.mineral_field.append(unit)
+            return unit
         group = self.structures if (structure or unit.is_structure) else self.units
         group.append(unit)
         if unit_type == UnitTypeId.SCV:

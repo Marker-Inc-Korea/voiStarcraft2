@@ -21,6 +21,7 @@ from starcraft_commander.policy_modulation import (
     MICROMACHINE_COMPLETION_CONDITIONS,
     MICROMACHINE_COMPLETION_STATES,
     MICROMACHINE_LIFETIME_MODES,
+    MICROMACHINE_DIRECT_ONLY_ABILITIES,
     POLICY_MODULATION_RAW_CONTROL_KEYS,
     PolicyModulationSource,
     PolicyModulationVector,
@@ -2739,6 +2740,10 @@ def _repair_micromachine_ability_task_defaults(
         task_type = "execute_ability"
         tactical_task["task_type"] = task_type
     if task_type != "execute_ability":
+        return
+    if ability in MICROMACHINE_DIRECT_ONLY_ABILITIES:
+        # Direct-only (Orbital calldowns, building lift/land): MicroMachine never sees them, so none of the manager
+        # production/role prerequisites below apply -- the adapter resolves casters from the live observation.
         return
     if is_nuke:
         target_intent = _first_non_empty_text(

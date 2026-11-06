@@ -255,6 +255,27 @@ MICROMACHINE_TACTICAL_ABILITIES: Final[frozenset[str]] = frozenset(
 )
 """Semantic ability names consumed through ``tactical_task.ability``."""
 
+MICROMACHINE_DIRECT_ONLY_ABILITIES: Final[frozenset[str]] = frozenset(
+    {
+        "scanner_sweep",
+        "calldown_mule",
+        "supply_drop",
+        "lift_off",
+        "land",
+    }
+)
+"""Abilities only the Direct SC2 route executes (Orbital Command calldowns, building lift/land).
+
+They are deliberately NOT in :data:`MICROMACHINE_TACTICAL_ABILITIES`: that set is the contract of the MicroMachine C++
+explicit-ability patches (``tests/test_micromachine_integration_kit.py``), which know none of these.  A Direct micro
+command never reaches MicroMachine, so the manager contract is unchanged.
+"""
+
+MICROMACHINE_DIRECT_ABILITY_CHOICES: Final[frozenset[str]] = (
+    MICROMACHINE_TACTICAL_ABILITIES | MICROMACHINE_DIRECT_ONLY_ABILITIES
+)
+"""Every ability name ``tactical_task.ability`` accepts."""
+
 MICROMACHINE_LIFETIME_MODES: Final[frozenset[str]] = frozenset(
     {
         "",
@@ -1369,7 +1390,7 @@ class TacticalTaskModulation:
             _optional_choice(
                 "ability",
                 self.ability,
-                set(MICROMACHINE_TACTICAL_ABILITIES),
+                set(MICROMACHINE_DIRECT_ABILITY_CHOICES),
             ),
         )
         if self.query:
