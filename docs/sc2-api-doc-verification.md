@@ -233,3 +233,11 @@ becomes a new DC test before it is fixed.
 4. **Structure tech prerequisites** (Depot for Barracks, Ghost Academy for Ghost/Nuke, Armory for Thor…) are not pre-checked in the adapter; `feasibility.py` does supply/workers only.
 5. **Add-on footprint space** (`AddOnTooFarFromBuilding`, `is_instant_placement`) and flying-building landing are not pre-checked; needs map data (`QueryInterface::Placement` with `placing_unit_tag`).
 6. **Banshee cloak marker naming** in `micromachine_command_execution.py:173-174` (from `docs/sc2-api-accuracy.md` §5.1) is still open.
+
+## 7. Journey-evidence check (pre-live provenance)
+
+This branch changes `python_sc2_adapter.py` and `narrator.py` (not the router, executor or live session).
+Journey bundles were built with the CI binary (`binary_sha256 b7f911ab…0dd8`, status `accepted`, 0 blockers) from
+pristine `8ba4c43` and from this branch with `python -m starcraft_commander.micromachine_pre_live_journeys
+--emit-bundle`: **32 members in each, 0 added/removed, 0 differing (SHA-256 per member)**; the two zips are also
+the same size (16231596 bytes). Machine load during the run was ~180 (only the byte comparison matters, no timing).
