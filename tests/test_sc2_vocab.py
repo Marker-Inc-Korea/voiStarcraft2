@@ -256,3 +256,22 @@ def test_build_then_dependent_build_waits_for_the_prerequisite_instead_of_queuei
     assert dependent[0]["resume_on"] == ["building_completed"]
     step = dependent[0]["plan"]["ordered_actions"][0]
     assert step["subject"] == "BUNKER" and not step.get("queue", False)
+
+
+# ---- independent abilities in one utterance ("시즈하고 스팀팩"): two simultaneous fresh orders, not a refusal
+
+def test_two_different_abilities_without_a_then_word_are_two_fresh_orders() -> None:
+    args = micro_call("시즈하고 스팀팩", micro("siege_mode", "TERRAN_SIEGETANK"), micro("stimpack", "TERRAN_MARINE"))
+    bot = harness.make_bot((U.SIEGETANK, 2), (U.MARINE, 2))
+    result, views = run(bot, *lower_tool_args(args))
+    assert pairs(views) == {("SIEGEMODE_SIEGEMODE", False), ("EFFECT_STIM", False)}, reports(result)
+
+
+def test_an_unmarked_ability_inside_operations_is_still_refused() -> None:
+    from starcraft_commander.policy_modulation_provider import compile_policy_modulation_provider_output
+
+    result = compile_policy_modulation_provider_output(
+        {"source": "llm", "goal": "g", "operations": [{"operation_id": "a", "tactical_task": {
+            "task_type": "execute_ability", "ability": "unsiege", "unit_classes": ["TERRAN_SIEGETANKSIEGED"]}}]}
+    )
+    assert not result.ok and "live operation director" in result.refusal_reason

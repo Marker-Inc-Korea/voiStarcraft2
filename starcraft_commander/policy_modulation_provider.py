@@ -1656,15 +1656,6 @@ def _normalize_provider_operations(
         raise ValueError("operations must be a sequence.")
     normalized: list[dict[str, object]] = []
     warnings: list[str] = []
-    # A spoken sequence ("시즈 다음에 스팀팩", "이동하고 다음에 시즈") is one Direct chain: its ability steps are
-    # lowered by the Direct router (queue_command), never published to the live operation director, so the
-    # director-only rejection below applies to un-chained abilities only.
-    chained = any(
-        isinstance(item, Mapping)
-        and isinstance(item.get("tactical_task"), Mapping)
-        and item["tactical_task"].get("queue") is True
-        for item in value
-    )
     for index, item in enumerate(value):
         if not isinstance(item, Mapping):
             raise ValueError(f"operations[{index}] must be a mapping.")
@@ -1677,7 +1668,10 @@ def _normalize_provider_operations(
         if (
             isinstance(tactical_task, Mapping)
             and tactical_task.get("task_type") == "execute_ability"
-            and not chained
+            # The realtime lowering marks a spoken list of abilities ("시즈하고 스팀팩", "시즈 다음에 스팀팩") as
+            # explicit micro-layer operations: the Direct router lowers each to its own SC2 action and the live
+            # operation director never sees them.  An un-marked ability here is still refused.
+            and operation.get("command_layer") != "micro"
         ):
             raise ValueError(
                 f"operations[{index}].tactical_task.task_type='execute_ability' "
