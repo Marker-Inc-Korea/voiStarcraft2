@@ -21,6 +21,7 @@ body[data-paged="yes"] .head { display: flex; }
 body[data-mode="tab"] .board { padding: 0; }
 body[data-mode="tab"] .head, body[data-mode="tab"] .cards { display: none; }
 body[data-mode="tab"] .tab { display: flex; width: 100%; height: 100%; align-items: center; justify-content: center; font-size: var(--fs-xs); font-weight: var(--fw-semibold); letter-spacing: .03em; font-variant-numeric: tabular-nums; color: var(--ink-dim); border-radius: var(--radius-pill); background: var(--pill-bg); box-shadow: var(--edge); -webkit-backdrop-filter: blur(var(--blur-sm)); backdrop-filter: blur(var(--blur-sm)); }
+@media (prefers-color-scheme: light) { :root { --sim: oklch(52% .16 265); } }
 body[data-mode="hidden"] .board { display: none; }
 
 .card { height: 54px; padding: var(--space-2) var(--space-3); border-radius: var(--radius-xl); background: var(--card-bg); -webkit-backdrop-filter: blur(var(--blur-md)) saturate(1.3); backdrop-filter: blur(var(--blur-md)) saturate(1.3); box-shadow: var(--card-shadow); display: flex; flex-direction: column; justify-content: space-between; overflow: hidden;
