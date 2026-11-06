@@ -261,6 +261,9 @@ class HarnessBot(BotAI):
         if enemy:
             (self.enemy_structures if unit.is_structure else self.enemy_units).append(unit)
             return unit
+        if unit_type == UnitTypeId.MINERALFIELD:
+            self.mineral_field.append(unit)
+            return unit
         group = self.structures if (structure or unit.is_structure) else self.units
         group.append(unit)
         if unit_type == UnitTypeId.SCV:
@@ -345,6 +348,20 @@ def make_bot(*units: tuple[UnitTypeId, int]) -> HarnessBot:
     for index, (unit_type, count) in enumerate(units):
         for offset in range(count):
             bot.add_unit(unit_type, x=20.0 + index + offset * 0.5, y=20.0 + index)
+    return bot
+
+
+def add_prerequisites(bot: "HarnessBot", subject: str) -> "HarnessBot":
+    """Give ``bot`` the finished structure chain ``subject`` needs (UnitTypeData.tech_requirement), so a fixture about
+    the order SHAPE is not turned into a prerequisite refusal (those have their own tests in test_sc2_vocab.py)."""
+
+    from starcraft_commander.terran_prerequisites import TERRAN_TECH_REQUIREMENTS
+
+    required = TERRAN_TECH_REQUIREMENTS.get(subject)
+    while required:
+        if not any(u.type_id.name == required for u in list(bot.structures) + list(bot.units)):
+            bot.add_unit(getattr(UnitTypeId, required))
+        required = TERRAN_TECH_REQUIREMENTS.get(required)
     return bot
 
 

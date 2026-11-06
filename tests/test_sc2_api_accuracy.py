@@ -354,7 +354,7 @@ def test_emergency_stop_hold_retreat_shapes() -> None:
     ],
 )
 def test_build_structure_issues_a_point_targeted_terranbuild_on_an_scv(structure, ability_name, kind) -> None:
-    bot = harness.make_bot((U.SCV, 3))
+    bot = harness.add_prerequisites(harness.make_bot((U.SCV, 3)), structure)
     target = "self_natural" if structure == "COMMANDCENTER" else "self_main"
     action = SC2CommandAction(SC2ActionType.BUILD_STRUCTURE, structure, target=target, metadata={"building_type": structure})
     result, views, warns = harness.run_plan(bot, action)
@@ -378,7 +378,7 @@ def test_build_structure_issues_a_point_targeted_terranbuild_on_an_scv(structure
     ],
 )
 def test_addons_and_townhall_morphs_are_no_target_orders_on_the_idle_parent_not_an_scv(subject, parent, ability_name) -> None:
-    bot = harness.make_bot((U.SCV, 2), (parent, 1))
+    bot = harness.add_prerequisites(harness.make_bot((U.SCV, 2), (parent, 1)), subject)
     scv_tags = {u.tag for u in bot.workers}
     action = SC2CommandAction(
         SC2ActionType.BUILD_STRUCTURE, subject, target="self_main", metadata={"building_type": subject}
@@ -452,7 +452,7 @@ def test_every_trainable_dsl_unit_gets_the_producer_python_sc2_says_trains_it(un
     (action,) = lower_direct("train_unit", [f"TERRAN_{unit}"])
     assert action.metadata.get("producer") in {p.name for p in producers}, (unit, action.metadata)
     producer = next(iter(producers))
-    bot = harness.make_bot()
+    bot = harness.add_prerequisites(harness.make_bot(), unit)
     lab = {U.BARRACKS: U.BARRACKSTECHLAB, U.FACTORY: U.FACTORYTECHLAB, U.STARPORT: U.STARPORTTECHLAB}.get(producer)
     if lab is not None and harness.build_game_data().units[getattr(U, unit).value].creation_ability is not None and _needs_lab(unit):
         # UnitTypeData.require_attached: tech-lab units are only trainable from a producer that carries one.

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 
 from starcraft_commander.contracts import SC2CommandAction
 
@@ -46,8 +47,22 @@ def bind_plan_actions(
     bound: list[SC2CommandAction] = []
     for action in actions:
         operation_keyed = bool(action.metadata.get("operation_id"))
+        previous = _queued_predecessor(action, bound)
         if trust_pinned and action.metadata.get("_direct_unit_tags"):
             result = action
+        elif previous is not None:
+            # A queued step is the SAME force/worker continuing its chain ("정찰 갔다가 돌아와",
+            # "배럭 짓고 다음에 서플"): it appends behind the predecessor's order on the predecessor's own units
+            # instead of being handed a disjoint set.
+            tags = tuple(previous.metadata["_direct_unit_tags"])
+            result = replace(
+                action,
+                metadata={
+                    **{k: v for k, v in action.metadata.items() if k not in {"_direct_unit_tags", "_direct_requested_count"}},
+                    "_direct_unit_tags": tags,
+                    "_direct_requested_count": len(tags),
+                },
+            )
         elif accepts and operation_keyed:
             result = binder(action, exclude_tags=frozenset(reserved))
         else:
@@ -60,3 +75,24 @@ def bind_plan_actions(
             )
         bound.append(result)
     return tuple(bound)
+
+
+_BUILD_KINDS = frozenset({"build_structure"})
+
+
+def _queued_predecessor(
+    action: SC2CommandAction, bound: Sequence[SC2CommandAction]
+) -> SC2CommandAction | None:
+    """The earlier, already pinned action a ``queue=True`` action continues (same units), if any."""
+
+    if not action.queue:
+        return None
+    for earlier in reversed(bound):
+        if not earlier.metadata.get("_direct_unit_tags"):
+            continue
+        kind, earlier_kind = action.action_type.value, earlier.action_type.value
+        if kind in _BUILD_KINDS and earlier_kind in _BUILD_KINDS:
+            return earlier
+        if kind not in _BUILD_KINDS and earlier_kind not in _BUILD_KINDS and action.subject == earlier.subject:
+            return earlier
+    return None

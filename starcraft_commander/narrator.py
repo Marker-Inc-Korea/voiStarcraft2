@@ -138,9 +138,36 @@ SC2_ACTION_REFUSAL_KOREAN_REASONS: Final[dict[str, str]] = {
     "ambiguous_camera_target": "카메라 대상 위치가 여러 후보와 맞아 하나로 확정할 수 없습니다",
     "unknown_camera_target": "지정한 카메라 대상이 지원되는 semantic target이 아닙니다",
     "unscouted_camera_target": "지정한 카메라 대상은 아직 정찰/관측되지 않아 안전하게 이동할 수 없습니다",
+    "no_matching_caster": "이 능력을 쓸 수 있는 유닛/건물이 없습니다",
+    "no_orbital_command": "궤도 사령부가 없습니다 — 스캐너 스윕/뮤마/보급 드롭은 궤도 사령부(병영 필요)로 사령부를 업그레이드해야 합니다",
+    "queue_requires_pinned_builder": "이어서 지을 건설 일꾼을 확정하지 못했습니다",
 }
 """Machine-readable adapter refusal details translated into Korean reasons."""
 
+from starcraft_commander.terran_prerequisites import TERRAN_TECH_REQUIREMENT_KOREAN  # noqa: E402
+
+SC2_CASTER_BLOCKER_KOREAN_REASONS: Final[dict[str, str]] = {
+    "not_enough_energy": "에너지가 부족합니다 (스캐너 스윕/뮤마/보급 드롭은 에너지 50 필요)",
+    "low_health_for_stim": "체력이 낮아 스팀팩을 쓸 수 없습니다",
+    "already_stimmed": "이미 스팀팩이 적용 중입니다",
+    "no_cargo_space": "수송 공간이 없습니다",
+    "no_cargo_to_unload": "내릴 화물이 없습니다",
+    "structure_busy": "생산/연구 중인 건물은 이륙할 수 없습니다 — 대기열이 빌 때까지 기다리거나 취소하세요",
+    "under_construction": "아직 건설 중인 건물입니다",
+}
+"""``no_ready_caster: <blocker>, ...`` blockers (adapter ``_caster_blockers``) in Korean."""
+
+SC2_TARGET_REQUIRED_KOREAN_REASONS: Final[dict[str, str]] = {
+    "explicit_point_required": "어디에 쓸지 위치가 필요합니다 (예: 적 본진 스캔 / 앞마당에 착륙)",
+    "no_enemy_target": "대상으로 삼을 보이는 적이 없습니다",
+    "no_mineral_patch": "뮤마를 내릴 미네랄 광맥이 없습니다",
+    "no_supply_depot": "보급 드롭을 받을 완성된 보급고가 없습니다",
+    "no_cargo_unit": "태울 수 있는 아군 유닛이 없습니다",
+    "no_damaged_biological_unit": "치료할 부상 생체 유닛이 없습니다",
+    "no_caster_position": "시전 유닛의 위치를 알 수 없습니다",
+    "no_enemy_position": "적의 위치를 알 수 없습니다",
+}
+"""``target_required: <reason>`` details (adapter ``_ability_target``) in Korean."""
 DEFAULT_SC2_REJECTION_ALTERNATIVE: Final[str] = (
     "명령을 하나로 구체화해 다시 말해 주세요. "
     "예: 상태 알려줘 / SCV 계속 찍어 / 본진에 배럭 지어."
@@ -662,7 +689,7 @@ def _error_line(error: SC2ExecutionError) -> str:
         if error.action_type is not None:
             label = SC2_ACTION_TYPE_KOREAN_LABELS.get(error.action_type, label)
         detail = str(error.metadata.get("detail", ""))
-        reason = SC2_ACTION_REFUSAL_KOREAN_REASONS.get(detail)
+        reason = SC2_ACTION_REFUSAL_KOREAN_REASONS.get(detail) or _ability_refusal_reason(detail)
         if reason is None:
             reason = _sanitized_action_refusal_reason(detail or error.message)
         if reason is None:
@@ -685,6 +712,23 @@ def _error_line(error: SC2ExecutionError) -> str:
         if label is not None:
             return f"{label} 동작 실패: {error.message}"
     return f"실행 실패: {error.message}"
+
+
+def _ability_refusal_reason(detail: str) -> str | None:
+    """Korean text for ``no_ready_caster: a, b`` and ``target_required: x`` adapter details."""
+
+    head, _, tail = str(detail or "").partition(":")
+    parts = [part.strip() for part in tail.split(",") if part.strip()]
+    if head in {"missing_prerequisite", "prerequisite_under_construction"} and parts:
+        structure = TERRAN_TECH_REQUIREMENT_KOREAN.get(parts[0], parts[0])
+        if head == "missing_prerequisite":
+            return f"선행 건물이 없습니다 — {structure}이(가) 먼저 필요합니다"
+        return f"선행 건물 {structure}이(가) 아직 건설 중입니다 — 완성된 뒤에 다시 말해 주세요"
+    if head == "no_ready_caster" and parts:
+        return "; ".join(SC2_CASTER_BLOCKER_KOREAN_REASONS.get(part, part) for part in parts)
+    if head == "target_required" and parts:
+        return SC2_TARGET_REQUIRED_KOREAN_REASONS.get(parts[0])
+    return None
 
 
 def _sanitized_action_refusal_reason(detail: str) -> str | None:
