@@ -1,0 +1,3692 @@
+{
+ "runs": {
+  "r1": {
+   "load": {
+    "before": [
+     54.0517578125,
+     87.08203125,
+     143.578125
+    ],
+    "after": [
+     82.42431640625,
+     98.822265625,
+     116.31005859375
+    ]
+   },
+   "configs": {
+    "energy": {
+     "label": "energy",
+     "n_utterances": 120,
+     "ready": {
+      "kind": "ready",
+      "label": "energy",
+      "ok": true,
+      "ms": 3907,
+      "mint": {
+       "status": 200,
+       "ms": 910,
+       "attempts": 1
+      },
+      "auth": "mint",
+      "startupLogs": [],
+      "state": "idle"
+     },
+     "tiers": {
+      "macro": {
+       "n": 35,
+       "n_with_intent": 35,
+       "sem_acc": 0.857,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 152.5,
+        "p95": 404.1,
+        "n": 35
+       },
+       "b_asr": {
+        "p50": 902.3,
+        "p95": 1267.4,
+        "n": 35
+       },
+       "c_model": {
+        "p50": 1536.0,
+        "p95": 1869.9,
+        "n": 35
+       },
+       "e_client": {
+        "p50": 0.2,
+        "p95": 1.4,
+        "n": 35
+       },
+       "d_server": {
+        "p50": 12.0,
+        "p95": 542.1,
+        "n": 35
+       },
+       "d_backend": {
+        "p50": 2.7,
+        "p95": 442.3,
+        "n": 35
+       },
+       "f_publish": {
+        "p50": 1099.3,
+        "p95": 3738.6,
+        "n": 16
+       },
+       "e2e_ack": {
+        "p50": 1880.7,
+        "p95": 2368.7,
+        "n": 35
+       },
+       "e2e_compile": {
+        "p50": 2909.6,
+        "p95": 5361.9,
+        "n": 16
+       },
+       "e2e_ack_norm": {
+        "p50": 1803.7,
+        "p95": 2074.0,
+        "n": 35
+       },
+       "e2e_compile_norm": {
+        "p50": 2548.8,
+        "p95": 3677.6,
+        "n": 16
+       },
+       "steal_p50": 3.6,
+       "dominant_stage": "c_model"
+      },
+      "macro (no intent)": {
+       "n": 1,
+       "n_with_intent": 0,
+       "sem_acc": 0.0,
+       "unsafe": 0.0,
+       "no_intent": 1,
+       "a_vad": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "b_asr": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "c_model": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e_client": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "d_server": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "d_backend": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "f_publish": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_ack": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_compile": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_ack_norm": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_compile_norm": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "steal_p50": null,
+       "dominant_stage": null
+      },
+      "micro (model path)": {
+       "n": 28,
+       "n_with_intent": 28,
+       "sem_acc": 0.643,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 126.2,
+        "p95": 401.6,
+        "n": 28
+       },
+       "b_asr": {
+        "p50": 932.4,
+        "p95": 1251.3,
+        "n": 28
+       },
+       "c_model": {
+        "p50": 1574.8,
+        "p95": 1924.1,
+        "n": 28
+       },
+       "e_client": {
+        "p50": 0.3,
+        "p95": 7.3,
+        "n": 28
+       },
+       "d_server": {
+        "p50": 8.7,
+        "p95": 1019.7,
+        "n": 28
+       },
+       "d_backend": {
+        "p50": 3.7,
+        "p95": 879.7,
+        "n": 28
+       },
+       "f_publish": {
+        "p50": 1117.7,
+        "p95": 3492.2,
+        "n": 17
+       },
+       "e2e_ack": {
+        "p50": 1680.5,
+        "p95": 2628.3,
+        "n": 28
+       },
+       "e2e_compile": {
+        "p50": 2833.7,
+        "p95": 5129.5,
+        "n": 17
+       },
+       "e2e_ack_norm": {
+        "p50": 1630.6,
+        "p95": 2034.7,
+        "n": 28
+       },
+       "e2e_compile_norm": {
+        "p50": 2395.9,
+        "p95": 3742.0,
+        "n": 17
+       },
+       "steal_p50": 1.9,
+       "dominant_stage": "c_model"
+      },
+      "operation": {
+       "n": 34,
+       "n_with_intent": 34,
+       "sem_acc": 0.765,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 399.4,
+        "p95": 411.1,
+        "n": 34
+       },
+       "b_asr": {
+        "p50": 966.7,
+        "p95": 1281.9,
+        "n": 34
+       },
+       "c_model": {
+        "p50": 2013.2,
+        "p95": 2788.0,
+        "n": 34
+       },
+       "e_client": {
+        "p50": 0.2,
+        "p95": 1.9,
+        "n": 34
+       },
+       "d_server": {
+        "p50": 12.6,
+        "p95": 871.2,
+        "n": 34
+       },
+       "d_backend": {
+        "p50": 3.8,
+        "p95": 799.9,
+        "n": 34
+       },
+       "f_publish": {
+        "p50": 1062.0,
+        "p95": 3859.1,
+        "n": 21
+       },
+       "e2e_ack": {
+        "p50": 2294.7,
+        "p95": 3635.6,
+        "n": 34
+       },
+       "e2e_compile": {
+        "p50": 3551.0,
+        "p95": 6420.9,
+        "n": 21
+       },
+       "e2e_ack_norm": {
+        "p50": 2291.4,
+        "p95": 3198.7,
+        "n": 34
+       },
+       "e2e_compile_norm": {
+        "p50": 3036.1,
+        "p95": 5199.6,
+        "n": 21
+       },
+       "steal_p50": 1.5,
+       "dominant_stage": "c_model"
+      },
+      "operation (no intent)": {
+       "n": 2,
+       "n_with_intent": 0,
+       "sem_acc": 0.0,
+       "unsafe": 0.0,
+       "no_intent": 2,
+       "a_vad": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "b_asr": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "c_model": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e_client": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "d_server": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "d_backend": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "f_publish": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_ack": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_compile": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_ack_norm": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_compile_norm": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "steal_p50": null,
+       "dominant_stage": null
+      },
+      "rule words (emergency+micro)": {
+       "n": 20,
+       "n_with_intent": 20,
+       "sem_acc": 0.95,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 151.0,
+        "p95": 401.8,
+        "n": 20
+       },
+       "b_asr": {
+        "p50": 930.4,
+        "p95": 1189.8,
+        "n": 20
+       },
+       "c_model": {
+        "p50": 1495.0,
+        "p95": 1651.7,
+        "n": 20
+       },
+       "e_client": {
+        "p50": 0.2,
+        "p95": 3.0,
+        "n": 20
+       },
+       "d_server": {
+        "p50": 7.3,
+        "p95": 206.2,
+        "n": 20
+       },
+       "d_backend": {
+        "p50": 2.8,
+        "p95": 136.6,
+        "n": 20
+       },
+       "f_publish": {
+        "p50": 1219.4,
+        "p95": 3095.5,
+        "n": 16
+       },
+       "e2e_ack": {
+        "p50": 1186.9,
+        "p95": 1433.4,
+        "n": 20
+       },
+       "e2e_compile": {
+        "p50": 2333.5,
+        "p95": 4377.3,
+        "n": 16
+       },
+       "e2e_ack_norm": {
+        "p50": 1092.8,
+        "p95": 1366.3,
+        "n": 20
+       },
+       "e2e_compile_norm": {
+        "p50": 2123.4,
+        "p95": 3050.8,
+        "n": 16
+       },
+       "steal_p50": 1.4,
+       "dominant_stage": "b_asr"
+      }
+     }
+    },
+    "vad200": {
+     "label": "vad200",
+     "n_utterances": 120,
+     "ready": {
+      "kind": "ready",
+      "label": "vad200",
+      "ok": true,
+      "ms": 3633,
+      "mint": {
+       "status": 200,
+       "ms": 910,
+       "attempts": 1
+      },
+      "auth": "mint",
+      "startupLogs": [],
+      "state": "idle"
+     },
+     "tiers": {
+      "emergency (model path)": {
+       "n": 1,
+       "n_with_intent": 1,
+       "sem_acc": 1.0,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 941.6,
+        "p95": 941.6,
+        "n": 1
+       },
+       "b_asr": {
+        "p50": 289.3,
+        "p95": 289.3,
+        "n": 1
+       },
+       "c_model": {
+        "p50": 750.2,
+        "p95": 750.2,
+        "n": 1
+       },
+       "e_client": {
+        "p50": 2.4,
+        "p95": 2.4,
+        "n": 1
+       },
+       "d_server": {
+        "p50": 6.6,
+        "p95": 6.6,
+        "n": 1
+       },
+       "d_backend": {
+        "p50": 3.3,
+        "p95": 3.3,
+        "n": 1
+       },
+       "f_publish": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_ack": {
+        "p50": 1700.8,
+        "p95": 1700.8,
+        "n": 1
+       },
+       "e2e_compile": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_ack_norm": {
+        "p50": 1694.2,
+        "p95": 1694.2,
+        "n": 1
+       },
+       "e2e_compile_norm": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "steal_p50": 3.8,
+       "dominant_stage": "a_vad"
+      },
+      "macro": {
+       "n": 36,
+       "n_with_intent": 36,
+       "sem_acc": 0.778,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 993.2,
+        "p95": 1262.5,
+        "n": 35
+       },
+       "b_asr": {
+        "p50": 358.4,
+        "p95": 614.7,
+        "n": 35
+       },
+       "c_model": {
+        "p50": 892.6,
+        "p95": 2068.2,
+        "n": 35
+       },
+       "e_client": {
+        "p50": 0.2,
+        "p95": 4.7,
+        "n": 36
+       },
+       "d_server": {
+        "p50": 10.6,
+        "p95": 1064.9,
+        "n": 36
+       },
+       "d_backend": {
+        "p50": 4.6,
+        "p95": 858.2,
+        "n": 36
+       },
+       "f_publish": {
+        "p50": 1018.2,
+        "p95": 3321.2,
+        "n": 18
+       },
+       "e2e_ack": {
+        "p50": 1974.8,
+        "p95": 3365.1,
+        "n": 36
+       },
+       "e2e_compile": {
+        "p50": 2842.2,
+        "p95": 5950.3,
+        "n": 18
+       },
+       "e2e_ack_norm": {
+        "p50": 1907.0,
+        "p95": 3275.9,
+        "n": 36
+       },
+       "e2e_compile_norm": {
+        "p50": 2519.9,
+        "p95": 4246.7,
+        "n": 18
+       },
+       "steal_p50": 4.5,
+       "dominant_stage": "a_vad"
+      },
+      "micro (model path)": {
+       "n": 26,
+       "n_with_intent": 26,
+       "sem_acc": 0.846,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 990.9,
+        "p95": 1227.3,
+        "n": 26
+       },
+       "b_asr": {
+        "p50": 444.7,
+        "p95": 659.8,
+        "n": 26
+       },
+       "c_model": {
+        "p50": 931.1,
+        "p95": 1940.1,
+        "n": 26
+       },
+       "e_client": {
+        "p50": 0.3,
+        "p95": 7.9,
+        "n": 26
+       },
+       "d_server": {
+        "p50": 11.1,
+        "p95": 824.3,
+        "n": 26
+       },
+       "d_backend": {
+        "p50": 3.8,
+        "p95": 589.7,
+        "n": 26
+       },
+       "f_publish": {
+        "p50": 1322.8,
+        "p95": 3390.3,
+        "n": 17
+       },
+       "e2e_ack": {
+        "p50": 1948.8,
+        "p95": 3184.3,
+        "n": 26
+       },
+       "e2e_compile": {
+        "p50": 3077.0,
+        "p95": 5910.9,
+        "n": 17
+       },
+       "e2e_ack_norm": {
+        "p50": 1924.0,
+        "p95": 2910.4,
+        "n": 26
+       },
+       "e2e_compile_norm": {
+        "p50": 2770.4,
+        "p95": 4064.2,
+        "n": 17
+       },
+       "steal_p50": 1.8,
+       "dominant_stage": "a_vad"
+      },
+      "operation": {
+       "n": 35,
+       "n_with_intent": 35,
+       "sem_acc": 0.857,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 992.5,
+        "p95": 1174.5,
+        "n": 34
+       },
+       "b_asr": {
+        "p50": 526.9,
+        "p95": 804.4,
+        "n": 34
+       },
+       "c_model": {
+        "p50": 1188.0,
+        "p95": 2003.3,
+        "n": 34
+       },
+       "e_client": {
+        "p50": 0.2,
+        "p95": 1.4,
+        "n": 35
+       },
+       "d_server": {
+        "p50": 8.8,
+        "p95": 1626.7,
+        "n": 35
+       },
+       "d_backend": {
+        "p50": 4.2,
+        "p95": 1449.3,
+        "n": 35
+       },
+       "f_publish": {
+        "p50": 1202.3,
+        "p95": 3700.0,
+        "n": 24
+       },
+       "e2e_ack": {
+        "p50": 2160.4,
+        "p95": 3952.1,
+        "n": 35
+       },
+       "e2e_compile": {
+        "p50": 3306.3,
+        "p95": 6871.7,
+        "n": 24
+       },
+       "e2e_ack_norm": {
+        "p50": 2146.8,
+        "p95": 3095.2,
+        "n": 35
+       },
+       "e2e_compile_norm": {
+        "p50": 2878.4,
+        "p95": 4240.9,
+        "n": 24
+       },
+       "steal_p50": 1.9,
+       "dominant_stage": "c_model"
+      },
+      "operation (no intent)": {
+       "n": 1,
+       "n_with_intent": 0,
+       "sem_acc": 0.0,
+       "unsafe": 0.0,
+       "no_intent": 1,
+       "a_vad": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "b_asr": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "c_model": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e_client": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "d_server": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "d_backend": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "f_publish": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_ack": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_compile": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_ack_norm": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_compile_norm": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "steal_p50": null,
+       "dominant_stage": null
+      },
+      "rule words (emergency+micro)": {
+       "n": 21,
+       "n_with_intent": 21,
+       "sem_acc": 0.905,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 996.3,
+        "p95": 1261.6,
+        "n": 21
+       },
+       "b_asr": {
+        "p50": 309.4,
+        "p95": 600.2,
+        "n": 21
+       },
+       "c_model": {
+        "p50": 819.8,
+        "p95": 979.2,
+        "n": 21
+       },
+       "e_client": {
+        "p50": 0.3,
+        "p95": 9.9,
+        "n": 21
+       },
+       "d_server": {
+        "p50": 8.3,
+        "p95": 398.2,
+        "n": 21
+       },
+       "d_backend": {
+        "p50": 2.7,
+        "p95": 252.6,
+        "n": 21
+       },
+       "f_publish": {
+        "p50": 1209.3,
+        "p95": 3569.2,
+        "n": 16
+       },
+       "e2e_ack": {
+        "p50": 1354.4,
+        "p95": 2193.0,
+        "n": 21
+       },
+       "e2e_compile": {
+        "p50": 2513.4,
+        "p95": 4945.1,
+        "n": 16
+       },
+       "e2e_ack_norm": {
+        "p50": 1352.5,
+        "p95": 1591.3,
+        "n": 21
+       },
+       "e2e_compile_norm": {
+        "p50": 2117.0,
+        "p95": 3113.2,
+        "n": 16
+       },
+       "steal_p50": 1.3,
+       "dominant_stage": "a_vad"
+      }
+     }
+    },
+    "vad300": {
+     "label": "vad300",
+     "n_utterances": 120,
+     "ready": {
+      "kind": "ready",
+      "label": "vad300",
+      "ok": true,
+      "ms": 3444,
+      "mint": {
+       "status": 200,
+       "ms": 898,
+       "attempts": 1
+      },
+      "auth": "mint",
+      "startupLogs": [],
+      "state": "idle"
+     },
+     "tiers": {
+      "macro": {
+       "n": 27,
+       "n_with_intent": 27,
+       "sem_acc": 0.889,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1096.0,
+        "p95": 1262.5,
+        "n": 27
+       },
+       "b_asr": {
+        "p50": 296.1,
+        "p95": 370.4,
+        "n": 27
+       },
+       "c_model": {
+        "p50": 1050.5,
+        "p95": 1958.9,
+        "n": 27
+       },
+       "e_client": {
+        "p50": 0.2,
+        "p95": 4.2,
+        "n": 27
+       },
+       "d_server": {
+        "p50": 11.5,
+        "p95": 334.0,
+        "n": 27
+       },
+       "d_backend": {
+        "p50": 3.9,
+        "p95": 235.5,
+        "n": 27
+       },
+       "f_publish": {
+        "p50": 1227.1,
+        "p95": 3459.7,
+        "n": 12
+       },
+       "e2e_ack": {
+        "p50": 2249.9,
+        "p95": 3641.0,
+        "n": 27
+       },
+       "e2e_compile": {
+        "p50": 3418.1,
+        "p95": 6363.7,
+        "n": 12
+       },
+       "e2e_ack_norm": {
+        "p50": 2164.4,
+        "p95": 3168.7,
+        "n": 27
+       },
+       "e2e_compile_norm": {
+        "p50": 3248.5,
+        "p95": 4682.6,
+        "n": 12
+       },
+       "steal_p50": 5.1,
+       "dominant_stage": "a_vad"
+      },
+      "macro (no intent)": {
+       "n": 9,
+       "n_with_intent": 0,
+       "sem_acc": 0.0,
+       "unsafe": 0.0,
+       "no_intent": 9,
+       "a_vad": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "b_asr": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "c_model": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e_client": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "d_server": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "d_backend": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "f_publish": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_ack": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_compile": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_ack_norm": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_compile_norm": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "steal_p50": null,
+       "dominant_stage": null
+      },
+      "micro (model path)": {
+       "n": 21,
+       "n_with_intent": 21,
+       "sem_acc": 0.905,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1092.6,
+        "p95": 1182.8,
+        "n": 21
+       },
+       "b_asr": {
+        "p50": 299.8,
+        "p95": 574.2,
+        "n": 21
+       },
+       "c_model": {
+        "p50": 1063.3,
+        "p95": 2095.8,
+        "n": 21
+       },
+       "e_client": {
+        "p50": 0.4,
+        "p95": 21.7,
+        "n": 21
+       },
+       "d_server": {
+        "p50": 12.1,
+        "p95": 561.1,
+        "n": 21
+       },
+       "d_backend": {
+        "p50": 5.6,
+        "p95": 531.4,
+        "n": 21
+       },
+       "f_publish": {
+        "p50": 595.7,
+        "p95": 1873.6,
+        "n": 9
+       },
+       "e2e_ack": {
+        "p50": 2159.2,
+        "p95": 3812.4,
+        "n": 21
+       },
+       "e2e_compile": {
+        "p50": 2754.9,
+        "p95": 4632.6,
+        "n": 9
+       },
+       "e2e_ack_norm": {
+        "p50": 2158.1,
+        "p95": 3285.3,
+        "n": 21
+       },
+       "e2e_compile_norm": {
+        "p50": 2644.4,
+        "p95": 4101.0,
+        "n": 9
+       },
+       "steal_p50": 3.0,
+       "dominant_stage": "a_vad"
+      },
+      "micro (no intent)": {
+       "n": 5,
+       "n_with_intent": 0,
+       "sem_acc": 0.4,
+       "unsafe": 0.0,
+       "no_intent": 5,
+       "a_vad": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "b_asr": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "c_model": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e_client": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "d_server": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "d_backend": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "f_publish": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_ack": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_compile": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_ack_norm": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_compile_norm": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "steal_p50": null,
+       "dominant_stage": null
+      },
+      "operation": {
+       "n": 31,
+       "n_with_intent": 31,
+       "sem_acc": 0.839,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1095.2,
+        "p95": 1311.7,
+        "n": 30
+       },
+       "b_asr": {
+        "p50": 327.3,
+        "p95": 553.5,
+        "n": 30
+       },
+       "c_model": {
+        "p50": 1501.2,
+        "p95": 2772.3,
+        "n": 30
+       },
+       "e_client": {
+        "p50": 0.2,
+        "p95": 5.8,
+        "n": 31
+       },
+       "d_server": {
+        "p50": 10.7,
+        "p95": 1628.3,
+        "n": 31
+       },
+       "d_backend": {
+        "p50": 4.3,
+        "p95": 1389.8,
+        "n": 31
+       },
+       "f_publish": {
+        "p50": 976.3,
+        "p95": 2867.6,
+        "n": 19
+       },
+       "e2e_ack": {
+        "p50": 2650.2,
+        "p95": 4356.9,
+        "n": 31
+       },
+       "e2e_compile": {
+        "p50": 3707.4,
+        "p95": 6392.1,
+        "n": 19
+       },
+       "e2e_ack_norm": {
+        "p50": 2615.0,
+        "p95": 3982.8,
+        "n": 31
+       },
+       "e2e_compile_norm": {
+        "p50": 3203.2,
+        "p95": 5120.4,
+        "n": 19
+       },
+       "steal_p50": 2.1,
+       "dominant_stage": "c_model"
+      },
+      "operation (no intent)": {
+       "n": 5,
+       "n_with_intent": 0,
+       "sem_acc": 0.0,
+       "unsafe": 0.0,
+       "no_intent": 5,
+       "a_vad": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "b_asr": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "c_model": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e_client": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "d_server": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "d_backend": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "f_publish": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_ack": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_compile": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_ack_norm": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_compile_norm": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "steal_p50": null,
+       "dominant_stage": null
+      },
+      "rule words (emergency+micro)": {
+       "n": 22,
+       "n_with_intent": 22,
+       "sem_acc": 0.909,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1094.4,
+        "p95": 1144.3,
+        "n": 22
+       },
+       "b_asr": {
+        "p50": 291.2,
+        "p95": 353.3,
+        "n": 22
+       },
+       "c_model": {
+        "p50": 930.1,
+        "p95": 1295.4,
+        "n": 21
+       },
+       "e_client": {
+        "p50": 0.2,
+        "p95": 1.9,
+        "n": 22
+       },
+       "d_server": {
+        "p50": 8.4,
+        "p95": 231.3,
+        "n": 22
+       },
+       "d_backend": {
+        "p50": 3.2,
+        "p95": 177.3,
+        "n": 22
+       },
+       "f_publish": {
+        "p50": 688.5,
+        "p95": 2877.6,
+        "n": 22
+       },
+       "e2e_ack": {
+        "p50": 1402.6,
+        "p95": 1627.0,
+        "n": 22
+       },
+       "e2e_compile": {
+        "p50": 2156.9,
+        "p95": 4302.7,
+        "n": 22
+       },
+       "e2e_ack_norm": {
+        "p50": 1395.9,
+        "p95": 1481.9,
+        "n": 22
+       },
+       "e2e_compile_norm": {
+        "p50": 1948.7,
+        "p95": 3393.3,
+        "n": 22
+       },
+       "steal_p50": 1.4,
+       "dominant_stage": "a_vad"
+      }
+     }
+    },
+    "vad450": {
+     "label": "vad450",
+     "n_utterances": 120,
+     "ready": {
+      "kind": "ready",
+      "label": "vad450",
+      "ok": true,
+      "ms": 3532,
+      "mint": {
+       "status": 200,
+       "ms": 895,
+       "attempts": 1
+      },
+      "auth": "mint",
+      "startupLogs": [],
+      "state": "idle"
+     },
+     "tiers": {
+      "macro": {
+       "n": 36,
+       "n_with_intent": 36,
+       "sem_acc": 0.944,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1248.4,
+        "p95": 1522.0,
+        "n": 36
+       },
+       "b_asr": {
+        "p50": 374.0,
+        "p95": 673.5,
+        "n": 36
+       },
+       "c_model": {
+        "p50": 913.4,
+        "p95": 1113.9,
+        "n": 36
+       },
+       "e_client": {
+        "p50": 0.2,
+        "p95": 3.2,
+        "n": 36
+       },
+       "d_server": {
+        "p50": 11.6,
+        "p95": 899.3,
+        "n": 36
+       },
+       "d_backend": {
+        "p50": 3.3,
+        "p95": 828.1,
+        "n": 36
+       },
+       "f_publish": {
+        "p50": 927.4,
+        "p95": 3601.7,
+        "n": 18
+       },
+       "e2e_ack": {
+        "p50": 2243.4,
+        "p95": 3073.1,
+        "n": 36
+       },
+       "e2e_compile": {
+        "p50": 3082.5,
+        "p95": 5779.8,
+        "n": 18
+       },
+       "e2e_ack_norm": {
+        "p50": 2196.8,
+        "p95": 2537.9,
+        "n": 36
+       },
+       "e2e_compile_norm": {
+        "p50": 2852.0,
+        "p95": 4196.1,
+        "n": 18
+       },
+       "steal_p50": 2.0,
+       "dominant_stage": "a_vad"
+      },
+      "micro (model path)": {
+       "n": 25,
+       "n_with_intent": 25,
+       "sem_acc": 1.0,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1243.9,
+        "p95": 1310.0,
+        "n": 25
+       },
+       "b_asr": {
+        "p50": 372.4,
+        "p95": 591.3,
+        "n": 25
+       },
+       "c_model": {
+        "p50": 942.2,
+        "p95": 1034.2,
+        "n": 25
+       },
+       "e_client": {
+        "p50": 0.2,
+        "p95": 1.4,
+        "n": 25
+       },
+       "d_server": {
+        "p50": 9.0,
+        "p95": 258.6,
+        "n": 25
+       },
+       "d_backend": {
+        "p50": 2.7,
+        "p95": 217.6,
+        "n": 25
+       },
+       "f_publish": {
+        "p50": 1480.1,
+        "p95": 3562.1,
+        "n": 15
+       },
+       "e2e_ack": {
+        "p50": 2204.2,
+        "p95": 2470.4,
+        "n": 25
+       },
+       "e2e_compile": {
+        "p50": 3473.1,
+        "p95": 5686.7,
+        "n": 15
+       },
+       "e2e_ack_norm": {
+        "p50": 2169.9,
+        "p95": 2365.5,
+        "n": 25
+       },
+       "e2e_compile_norm": {
+        "p50": 3170.9,
+        "p95": 4374.4,
+        "n": 15
+       },
+       "steal_p50": 2.7,
+       "dominant_stage": "a_vad"
+      },
+      "micro (no intent)": {
+       "n": 1,
+       "n_with_intent": 0,
+       "sem_acc": 1.0,
+       "unsafe": 0.0,
+       "no_intent": 1,
+       "a_vad": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "b_asr": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "c_model": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e_client": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "d_server": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "d_backend": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "f_publish": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_ack": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_compile": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_ack_norm": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_compile_norm": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "steal_p50": null,
+       "dominant_stage": null
+      },
+      "operation": {
+       "n": 36,
+       "n_with_intent": 36,
+       "sem_acc": 0.944,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1250.3,
+        "p95": 1446.5,
+        "n": 36
+       },
+       "b_asr": {
+        "p50": 532.3,
+        "p95": 652.0,
+        "n": 36
+       },
+       "c_model": {
+        "p50": 1298.3,
+        "p95": 2671.4,
+        "n": 36
+       },
+       "e_client": {
+        "p50": 0.2,
+        "p95": 2.9,
+        "n": 36
+       },
+       "d_server": {
+        "p50": 9.6,
+        "p95": 1002.1,
+        "n": 36
+       },
+       "d_backend": {
+        "p50": 4.7,
+        "p95": 869.3,
+        "n": 36
+       },
+       "f_publish": {
+        "p50": 1427.6,
+        "p95": 3480.9,
+        "n": 22
+       },
+       "e2e_ack": {
+        "p50": 2633.9,
+        "p95": 4261.4,
+        "n": 36
+       },
+       "e2e_compile": {
+        "p50": 4127.1,
+        "p95": 6900.6,
+        "n": 22
+       },
+       "e2e_ack_norm": {
+        "p50": 2595.5,
+        "p95": 3966.2,
+        "n": 36
+       },
+       "e2e_compile_norm": {
+        "p50": 3568.6,
+        "p95": 4668.8,
+        "n": 22
+       },
+       "steal_p50": 2.2,
+       "dominant_stage": "c_model"
+      },
+      "rule words (emergency+micro)": {
+       "n": 22,
+       "n_with_intent": 22,
+       "sem_acc": 0.909,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1251.5,
+        "p95": 1301.3,
+        "n": 22
+       },
+       "b_asr": {
+        "p50": 356.2,
+        "p95": 577.9,
+        "n": 22
+       },
+       "c_model": {
+        "p50": 860.1,
+        "p95": 1168.6,
+        "n": 22
+       },
+       "e_client": {
+        "p50": 0.3,
+        "p95": 21.9,
+        "n": 22
+       },
+       "d_server": {
+        "p50": 12.7,
+        "p95": 921.8,
+        "n": 22
+       },
+       "d_backend": {
+        "p50": 4.6,
+        "p95": 656.4,
+        "n": 22
+       },
+       "f_publish": {
+        "p50": 1485.7,
+        "p95": 4358.4,
+        "n": 15
+       },
+       "e2e_ack": {
+        "p50": 1655.6,
+        "p95": 2733.0,
+        "n": 22
+       },
+       "e2e_compile": {
+        "p50": 3075.9,
+        "p95": 5977.6,
+        "n": 15
+       },
+       "e2e_ack_norm": {
+        "p50": 1615.2,
+        "p95": 1892.9,
+        "n": 22
+       },
+       "e2e_compile_norm": {
+        "p50": 2483.9,
+        "p95": 3286.4,
+        "n": 15
+       },
+       "steal_p50": 2.5,
+       "dominant_stage": "a_vad"
+      }
+     }
+    }
+   }
+  },
+  "r2": {
+   "load": {
+    "before": [
+     65.10107421875,
+     73.3076171875,
+     78.3525390625
+    ],
+    "after": [
+     66.08740234375,
+     67.7265625,
+     72.5498046875
+    ]
+   },
+   "configs": {
+    "vad250": {
+     "label": "vad250",
+     "n_utterances": 120,
+     "ready": {
+      "kind": "ready",
+      "label": "vad250",
+      "ok": true,
+      "ms": 3774,
+      "mint": {
+       "status": 200,
+       "ms": 977,
+       "attempts": 1
+      },
+      "auth": "mint",
+      "startupLogs": [],
+      "state": "idle"
+     },
+     "tiers": {
+      "macro": {
+       "n": 36,
+       "n_with_intent": 36,
+       "sem_acc": 0.889,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1003.7,
+        "p95": 1233.2,
+        "n": 36
+       },
+       "b_asr": {
+        "p50": 310.5,
+        "p95": 358.6,
+        "n": 36
+       },
+       "c_model": {
+        "p50": 899.4,
+        "p95": 1293.8,
+        "n": 36
+       },
+       "e_client": {
+        "p50": 0.1,
+        "p95": 0.3,
+        "n": 36
+       },
+       "d_server": {
+        "p50": 6.4,
+        "p95": 13.1,
+        "n": 36
+       },
+       "d_backend": {
+        "p50": 2.2,
+        "p95": 5.9,
+        "n": 36
+       },
+       "f_publish": {
+        "p50": 38.5,
+        "p95": 54.2,
+        "n": 35
+       },
+       "e2e_ack": {
+        "p50": 1906.7,
+        "p95": 2416.7,
+        "n": 36
+       },
+       "e2e_compile": {
+        "p50": 1952.2,
+        "p95": 2480.4,
+        "n": 35
+       },
+       "e2e_ack_norm": {
+        "p50": 1905.0,
+        "p95": 2414.5,
+        "n": 36
+       },
+       "e2e_compile_norm": {
+        "p50": 1943.5,
+        "p95": 2472.5,
+        "n": 35
+       },
+       "steal_p50": 1.2,
+       "dominant_stage": "a_vad"
+      },
+      "micro (model path)": {
+       "n": 27,
+       "n_with_intent": 27,
+       "sem_acc": 0.963,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 978.2,
+        "p95": 1148.1,
+        "n": 27
+       },
+       "b_asr": {
+        "p50": 308.7,
+        "p95": 373.1,
+        "n": 27
+       },
+       "c_model": {
+        "p50": 915.3,
+        "p95": 1153.5,
+        "n": 27
+       },
+       "e_client": {
+        "p50": 0.1,
+        "p95": 0.4,
+        "n": 27
+       },
+       "d_server": {
+        "p50": 7.2,
+        "p95": 26.2,
+        "n": 27
+       },
+       "d_backend": {
+        "p50": 2.5,
+        "p95": 9.1,
+        "n": 27
+       },
+       "f_publish": {
+        "p50": 31.1,
+        "p95": 59.9,
+        "n": 27
+       },
+       "e2e_ack": {
+        "p50": 1929.1,
+        "p95": 2265.6,
+        "n": 27
+       },
+       "e2e_compile": {
+        "p50": 1951.9,
+        "p95": 2444.3,
+        "n": 27
+       },
+       "e2e_ack_norm": {
+        "p50": 1928.3,
+        "p95": 2261.7,
+        "n": 27
+       },
+       "e2e_compile_norm": {
+        "p50": 1947.8,
+        "p95": 2290.1,
+        "n": 27
+       },
+       "steal_p50": 1.2,
+       "dominant_stage": "a_vad"
+      },
+      "operation": {
+       "n": 36,
+       "n_with_intent": 36,
+       "sem_acc": 0.806,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 977.7,
+        "p95": 1227.3,
+        "n": 35
+       },
+       "b_asr": {
+        "p50": 348.9,
+        "p95": 519.3,
+        "n": 35
+       },
+       "c_model": {
+        "p50": 1296.0,
+        "p95": 2113.9,
+        "n": 35
+       },
+       "e_client": {
+        "p50": 0.1,
+        "p95": 0.3,
+        "n": 36
+       },
+       "d_server": {
+        "p50": 6.7,
+        "p95": 19.5,
+        "n": 36
+       },
+       "d_backend": {
+        "p50": 3.1,
+        "p95": 9.2,
+        "n": 36
+       },
+       "f_publish": {
+        "p50": 35.5,
+        "p95": 55.5,
+        "n": 36
+       },
+       "e2e_ack": {
+        "p50": 2279.1,
+        "p95": 3149.6,
+        "n": 36
+       },
+       "e2e_compile": {
+        "p50": 2306.1,
+        "p95": 3197.1,
+        "n": 36
+       },
+       "e2e_ack_norm": {
+        "p50": 2278.7,
+        "p95": 3146.5,
+        "n": 36
+       },
+       "e2e_compile_norm": {
+        "p50": 2302.6,
+        "p95": 3181.7,
+        "n": 36
+       },
+       "steal_p50": 1.2,
+       "dominant_stage": "c_model"
+      },
+      "rule words (emergency+micro)": {
+       "n": 21,
+       "n_with_intent": 21,
+       "sem_acc": 0.905,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 980.4,
+        "p95": 1075.5,
+        "n": 21
+       },
+       "b_asr": {
+        "p50": 304.1,
+        "p95": 369.5,
+        "n": 21
+       },
+       "c_model": {
+        "p50": 867.1,
+        "p95": 957.2,
+        "n": 21
+       },
+       "e_client": {
+        "p50": 0.2,
+        "p95": 4.2,
+        "n": 21
+       },
+       "d_server": {
+        "p50": 4.7,
+        "p95": 12.6,
+        "n": 21
+       },
+       "d_backend": {
+        "p50": 2.0,
+        "p95": 5.3,
+        "n": 21
+       },
+       "f_publish": {
+        "p50": 589.8,
+        "p95": 629.8,
+        "n": 21
+       },
+       "e2e_ack": {
+        "p50": 1310.5,
+        "p95": 1449.4,
+        "n": 21
+       },
+       "e2e_compile": {
+        "p50": 1900.2,
+        "p95": 2050.3,
+        "n": 21
+       },
+       "e2e_ack_norm": {
+        "p50": 1301.7,
+        "p95": 1448.6,
+        "n": 21
+       },
+       "e2e_compile_norm": {
+        "p50": 1747.8,
+        "p95": 1947.4,
+        "n": 21
+       },
+       "steal_p50": 1.2,
+       "dominant_stage": "a_vad"
+      }
+     }
+    },
+    "vad350": {
+     "label": "vad350",
+     "n_utterances": 120,
+     "ready": {
+      "kind": "ready",
+      "label": "vad350",
+      "ok": true,
+      "ms": 3939,
+      "mint": {
+       "status": 200,
+       "ms": 1200,
+       "attempts": 1
+      },
+      "auth": "mint",
+      "startupLogs": [],
+      "state": "idle"
+     },
+     "tiers": {
+      "macro": {
+       "n": 36,
+       "n_with_intent": 36,
+       "sem_acc": 0.861,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1131.8,
+        "p95": 1270.0,
+        "n": 36
+       },
+       "b_asr": {
+        "p50": 340.2,
+        "p95": 391.7,
+        "n": 36
+       },
+       "c_model": {
+        "p50": 949.5,
+        "p95": 1130.6,
+        "n": 36
+       },
+       "e_client": {
+        "p50": 0.1,
+        "p95": 0.2,
+        "n": 36
+       },
+       "d_server": {
+        "p50": 4.9,
+        "p95": 15.5,
+        "n": 36
+       },
+       "d_backend": {
+        "p50": 2.0,
+        "p95": 4.5,
+        "n": 36
+       },
+       "f_publish": {
+        "p50": 41.3,
+        "p95": 65.4,
+        "n": 32
+       },
+       "e2e_ack": {
+        "p50": 2086.0,
+        "p95": 2284.3,
+        "n": 36
+       },
+       "e2e_compile": {
+        "p50": 2118.8,
+        "p95": 2312.9,
+        "n": 32
+       },
+       "e2e_ack_norm": {
+        "p50": 2084.7,
+        "p95": 2284.0,
+        "n": 36
+       },
+       "e2e_compile_norm": {
+        "p50": 2110.8,
+        "p95": 2302.4,
+        "n": 32
+       },
+       "steal_p50": 1.2,
+       "dominant_stage": "a_vad"
+      },
+      "micro (model path)": {
+       "n": 26,
+       "n_with_intent": 26,
+       "sem_acc": 0.962,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1092.4,
+        "p95": 1306.8,
+        "n": 26
+       },
+       "b_asr": {
+        "p50": 352.1,
+        "p95": 547.2,
+        "n": 26
+       },
+       "c_model": {
+        "p50": 988.1,
+        "p95": 1231.2,
+        "n": 26
+       },
+       "e_client": {
+        "p50": 0.1,
+        "p95": 0.4,
+        "n": 26
+       },
+       "d_server": {
+        "p50": 5.9,
+        "p95": 16.8,
+        "n": 26
+       },
+       "d_backend": {
+        "p50": 2.5,
+        "p95": 6.7,
+        "n": 26
+       },
+       "f_publish": {
+        "p50": 43.4,
+        "p95": 100.3,
+        "n": 26
+       },
+       "e2e_ack": {
+        "p50": 2115.0,
+        "p95": 2700.1,
+        "n": 26
+       },
+       "e2e_compile": {
+        "p50": 2152.2,
+        "p95": 3111.9,
+        "n": 26
+       },
+       "e2e_ack_norm": {
+        "p50": 2113.9,
+        "p95": 2618.8,
+        "n": 26
+       },
+       "e2e_compile_norm": {
+        "p50": 2145.8,
+        "p95": 2670.9,
+        "n": 26
+       },
+       "steal_p50": 1.2,
+       "dominant_stage": "a_vad"
+      },
+      "operation": {
+       "n": 36,
+       "n_with_intent": 36,
+       "sem_acc": 0.944,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1136.1,
+        "p95": 1341.3,
+        "n": 36
+       },
+       "b_asr": {
+        "p50": 500.6,
+        "p95": 765.3,
+        "n": 36
+       },
+       "c_model": {
+        "p50": 1297.7,
+        "p95": 2715.4,
+        "n": 36
+       },
+       "e_client": {
+        "p50": 0.1,
+        "p95": 0.2,
+        "n": 36
+       },
+       "d_server": {
+        "p50": 6.4,
+        "p95": 18.5,
+        "n": 36
+       },
+       "d_backend": {
+        "p50": 3.0,
+        "p95": 13.5,
+        "n": 36
+       },
+       "f_publish": {
+        "p50": 38.4,
+        "p95": 55.5,
+        "n": 36
+       },
+       "e2e_ack": {
+        "p50": 2450.9,
+        "p95": 3828.4,
+        "n": 36
+       },
+       "e2e_compile": {
+        "p50": 2502.2,
+        "p95": 3874.3,
+        "n": 36
+       },
+       "e2e_ack_norm": {
+        "p50": 2448.8,
+        "p95": 3826.4,
+        "n": 36
+       },
+       "e2e_compile_norm": {
+        "p50": 2489.9,
+        "p95": 3863.3,
+        "n": 36
+       },
+       "steal_p50": 1.2,
+       "dominant_stage": "c_model"
+      },
+      "rule words (emergency+micro)": {
+       "n": 22,
+       "n_with_intent": 22,
+       "sem_acc": 0.864,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1113.4,
+        "p95": 1254.1,
+        "n": 22
+       },
+       "b_asr": {
+        "p50": 358.8,
+        "p95": 580.1,
+        "n": 22
+       },
+       "c_model": {
+        "p50": 865.6,
+        "p95": 1053.8,
+        "n": 22
+       },
+       "e_client": {
+        "p50": 0.2,
+        "p95": 1.2,
+        "n": 22
+       },
+       "d_server": {
+        "p50": 5.8,
+        "p95": 10.0,
+        "n": 22
+       },
+       "d_backend": {
+        "p50": 2.4,
+        "p95": 3.1,
+        "n": 22
+       },
+       "f_publish": {
+        "p50": 526.5,
+        "p95": 713.1,
+        "n": 22
+       },
+       "e2e_ack": {
+        "p50": 1459.0,
+        "p95": 1742.0,
+        "n": 22
+       },
+       "e2e_compile": {
+        "p50": 2076.7,
+        "p95": 2202.5,
+        "n": 22
+       },
+       "e2e_ack_norm": {
+        "p50": 1457.6,
+        "p95": 1740.9,
+        "n": 22
+       },
+       "e2e_compile_norm": {
+        "p50": 1975.4,
+        "p95": 2148.9,
+        "n": 22
+       },
+       "steal_p50": 1.2,
+       "dominant_stage": "a_vad"
+      }
+     }
+    },
+    "vad450": {
+     "label": "vad450",
+     "n_utterances": 120,
+     "ready": {
+      "kind": "ready",
+      "label": "vad450",
+      "ok": true,
+      "ms": 3713,
+      "mint": {
+       "status": 200,
+       "ms": 919,
+       "attempts": 1
+      },
+      "auth": "mint",
+      "startupLogs": [],
+      "state": "idle"
+     },
+     "tiers": {
+      "macro": {
+       "n": 36,
+       "n_with_intent": 36,
+       "sem_acc": 0.917,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1250.2,
+        "p95": 1301.1,
+        "n": 36
+       },
+       "b_asr": {
+        "p50": 285.0,
+        "p95": 294.0,
+        "n": 36
+       },
+       "c_model": {
+        "p50": 822.6,
+        "p95": 930.1,
+        "n": 36
+       },
+       "e_client": {
+        "p50": 0.1,
+        "p95": 0.3,
+        "n": 36
+       },
+       "d_server": {
+        "p50": 5.3,
+        "p95": 17.3,
+        "n": 36
+       },
+       "d_backend": {
+        "p50": 2.2,
+        "p95": 4.2,
+        "n": 36
+       },
+       "f_publish": {
+        "p50": 40.8,
+        "p95": 59.6,
+        "n": 33
+       },
+       "e2e_ack": {
+        "p50": 2093.3,
+        "p95": 2188.8,
+        "n": 36
+       },
+       "e2e_compile": {
+        "p50": 2141.8,
+        "p95": 2237.8,
+        "n": 33
+       },
+       "e2e_ack_norm": {
+        "p50": 2092.5,
+        "p95": 2187.4,
+        "n": 36
+       },
+       "e2e_compile_norm": {
+        "p50": 2132.5,
+        "p95": 2220.9,
+        "n": 33
+       },
+       "steal_p50": 1.2,
+       "dominant_stage": "a_vad"
+      },
+      "micro (model path)": {
+       "n": 27,
+       "n_with_intent": 27,
+       "sem_acc": 0.963,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1250.6,
+        "p95": 1484.3,
+        "n": 27
+       },
+       "b_asr": {
+        "p50": 286.3,
+        "p95": 320.0,
+        "n": 27
+       },
+       "c_model": {
+        "p50": 878.9,
+        "p95": 1013.5,
+        "n": 27
+       },
+       "e_client": {
+        "p50": 0.1,
+        "p95": 0.5,
+        "n": 27
+       },
+       "d_server": {
+        "p50": 7.1,
+        "p95": 19.6,
+        "n": 27
+       },
+       "d_backend": {
+        "p50": 2.3,
+        "p95": 14.5,
+        "n": 27
+       },
+       "f_publish": {
+        "p50": 31.2,
+        "p95": 66.4,
+        "n": 27
+       },
+       "e2e_ack": {
+        "p50": 2144.6,
+        "p95": 2476.1,
+        "n": 27
+       },
+       "e2e_compile": {
+        "p50": 2201.7,
+        "p95": 2537.0,
+        "n": 27
+       },
+       "e2e_ack_norm": {
+        "p50": 2143.6,
+        "p95": 2474.0,
+        "n": 27
+       },
+       "e2e_compile_norm": {
+        "p50": 2176.1,
+        "p95": 2490.5,
+        "n": 27
+       },
+       "steal_p50": 1.2,
+       "dominant_stage": "a_vad"
+      },
+      "operation": {
+       "n": 36,
+       "n_with_intent": 36,
+       "sem_acc": 0.917,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1254.6,
+        "p95": 1566.0,
+        "n": 36
+       },
+       "b_asr": {
+        "p50": 286.7,
+        "p95": 516.4,
+        "n": 36
+       },
+       "c_model": {
+        "p50": 1279.5,
+        "p95": 2376.9,
+        "n": 36
+       },
+       "e_client": {
+        "p50": 0.1,
+        "p95": 0.3,
+        "n": 36
+       },
+       "d_server": {
+        "p50": 6.1,
+        "p95": 19.3,
+        "n": 36
+       },
+       "d_backend": {
+        "p50": 3.0,
+        "p95": 7.8,
+        "n": 36
+       },
+       "f_publish": {
+        "p50": 37.4,
+        "p95": 61.3,
+        "n": 36
+       },
+       "e2e_ack": {
+        "p50": 2620.0,
+        "p95": 3626.2,
+        "n": 36
+       },
+       "e2e_compile": {
+        "p50": 2652.2,
+        "p95": 3703.3,
+        "n": 36
+       },
+       "e2e_ack_norm": {
+        "p50": 2616.9,
+        "p95": 3624.9,
+        "n": 36
+       },
+       "e2e_compile_norm": {
+        "p50": 2643.9,
+        "p95": 3690.8,
+        "n": 36
+       },
+       "steal_p50": 1.3,
+       "dominant_stage": "c_model"
+      },
+      "rule words (emergency+micro)": {
+       "n": 21,
+       "n_with_intent": 21,
+       "sem_acc": 0.905,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1250.5,
+        "p95": 1296.5,
+        "n": 21
+       },
+       "b_asr": {
+        "p50": 283.8,
+        "p95": 287.1,
+        "n": 21
+       },
+       "c_model": {
+        "p50": 714.0,
+        "p95": 876.2,
+        "n": 21
+       },
+       "e_client": {
+        "p50": 0.2,
+        "p95": 1.6,
+        "n": 21
+       },
+       "d_server": {
+        "p50": 4.5,
+        "p95": 7.8,
+        "n": 21
+       },
+       "d_backend": {
+        "p50": 2.0,
+        "p95": 3.5,
+        "n": 21
+       },
+       "f_publish": {
+        "p50": 537.7,
+        "p95": 656.9,
+        "n": 21
+       },
+       "e2e_ack": {
+        "p50": 1535.1,
+        "p95": 1589.2,
+        "n": 21
+       },
+       "e2e_compile": {
+        "p50": 2002.5,
+        "p95": 2152.4,
+        "n": 21
+       },
+       "e2e_ack_norm": {
+        "p50": 1534.4,
+        "p95": 1587.7,
+        "n": 21
+       },
+       "e2e_compile_norm": {
+        "p50": 1937.3,
+        "p95": 2062.5,
+        "n": 21
+       },
+       "steal_p50": 1.2,
+       "dominant_stage": "a_vad"
+      }
+     }
+    }
+   }
+  },
+  "r3": {
+   "load": {
+    "before": [
+     224.14208984375,
+     224.90185546875,
+     226.10107421875
+    ],
+    "after": [
+     58.2646484375,
+     129.17236328125,
+     181.3662109375
+    ]
+   },
+   "configs": {
+    "base450": {
+     "label": "base450",
+     "n_utterances": 120,
+     "ready": {
+      "kind": "ready",
+      "label": "base450",
+      "ok": true,
+      "ms": 5976,
+      "mint": {
+       "status": 200,
+       "ms": 1835,
+       "attempts": 1
+      },
+      "auth": "mint",
+      "startupLogs": [],
+      "state": "idle"
+     },
+     "tiers": {
+      "emergency (model path)": {
+       "n": 1,
+       "n_with_intent": 1,
+       "sem_acc": 1.0,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 4296.4,
+        "p95": 4296.4,
+        "n": 1
+       },
+       "b_asr": {
+        "p50": 0.2,
+        "p95": 0.2,
+        "n": 1
+       },
+       "c_model": {
+        "p50": 1.0,
+        "p95": 1.0,
+        "n": 1
+       },
+       "e_client": {
+        "p50": 0.1,
+        "p95": 0.1,
+        "n": 1
+       },
+       "d_server": {
+        "p50": 15.1,
+        "p95": 15.1,
+        "n": 1
+       },
+       "d_backend": {
+        "p50": 9.2,
+        "p95": 9.2,
+        "n": 1
+       },
+       "f_publish": {
+        "p50": 41.2,
+        "p95": 41.2,
+        "n": 1
+       },
+       "e2e_ack": {
+        "p50": 4312.7,
+        "p95": 4312.7,
+        "n": 1
+       },
+       "e2e_compile": {
+        "p50": 4353.9,
+        "p95": 4353.9,
+        "n": 1
+       },
+       "e2e_ack_norm": {
+        "p50": 4309.1,
+        "p95": 4309.1,
+        "n": 1
+       },
+       "e2e_compile_norm": {
+        "p50": 4340.7,
+        "p95": 4340.7,
+        "n": 1
+       },
+       "steal_p50": 1.3,
+       "dominant_stage": "a_vad"
+      },
+      "macro": {
+       "n": 36,
+       "n_with_intent": 36,
+       "sem_acc": 0.917,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1733.3,
+        "p95": 3825.5,
+        "n": 36
+       },
+       "b_asr": {
+        "p50": 900.6,
+        "p95": 1677.2,
+        "n": 36
+       },
+       "c_model": {
+        "p50": 1644.1,
+        "p95": 3451.3,
+        "n": 36
+       },
+       "e_client": {
+        "p50": 0.1,
+        "p95": 9.6,
+        "n": 36
+       },
+       "d_server": {
+        "p50": 11.6,
+        "p95": 2417.5,
+        "n": 36
+       },
+       "d_backend": {
+        "p50": 3.1,
+        "p95": 938.4,
+        "n": 36
+       },
+       "f_publish": {
+        "p50": 42.6,
+        "p95": 616.2,
+        "n": 31
+       },
+       "e2e_ack": {
+        "p50": 3812.5,
+        "p95": 7976.4,
+        "n": 36
+       },
+       "e2e_compile": {
+        "p50": 3818.8,
+        "p95": 8419.5,
+        "n": 31
+       },
+       "e2e_ack_norm": {
+        "p50": 3742.3,
+        "p95": 5654.6,
+        "n": 36
+       },
+       "e2e_compile_norm": {
+        "p50": 3798.5,
+        "p95": 5279.9,
+        "n": 31
+       },
+       "steal_p50": 1.5,
+       "dominant_stage": "a_vad"
+      },
+      "micro (model path)": {
+       "n": 28,
+       "n_with_intent": 28,
+       "sem_acc": 1.0,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1505.4,
+        "p95": 2806.6,
+        "n": 28
+       },
+       "b_asr": {
+        "p50": 992.5,
+        "p95": 2283.6,
+        "n": 28
+       },
+       "c_model": {
+        "p50": 1614.7,
+        "p95": 3769.2,
+        "n": 28
+       },
+       "e_client": {
+        "p50": 0.1,
+        "p95": 0.3,
+        "n": 28
+       },
+       "d_server": {
+        "p50": 7.2,
+        "p95": 34.6,
+        "n": 28
+       },
+       "d_backend": {
+        "p50": 2.9,
+        "p95": 16.0,
+        "n": 28
+       },
+       "f_publish": {
+        "p50": 34.1,
+        "p95": 196.3,
+        "n": 28
+       },
+       "e2e_ack": {
+        "p50": 3643.6,
+        "p95": 5500.6,
+        "n": 28
+       },
+       "e2e_compile": {
+        "p50": 3673.6,
+        "p95": 5567.7,
+        "n": 28
+       },
+       "e2e_ack_norm": {
+        "p50": 3578.2,
+        "p95": 5498.4,
+        "n": 28
+       },
+       "e2e_compile_norm": {
+        "p50": 3608.1,
+        "p95": 5514.0,
+        "n": 28
+       },
+       "steal_p50": 1.4,
+       "dominant_stage": "c_model"
+      },
+      "micro (no intent)": {
+       "n": 1,
+       "n_with_intent": 0,
+       "sem_acc": 0.0,
+       "unsafe": 0.0,
+       "no_intent": 1,
+       "a_vad": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "b_asr": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "c_model": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e_client": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "d_server": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "d_backend": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "f_publish": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_ack": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_compile": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_ack_norm": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_compile_norm": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "steal_p50": null,
+       "dominant_stage": null
+      },
+      "operation": {
+       "n": 36,
+       "n_with_intent": 36,
+       "sem_acc": 0.972,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1574.9,
+        "p95": 2830.4,
+        "n": 36
+       },
+       "b_asr": {
+        "p50": 941.0,
+        "p95": 2491.7,
+        "n": 36
+       },
+       "c_model": {
+        "p50": 2347.4,
+        "p95": 7468.5,
+        "n": 36
+       },
+       "e_client": {
+        "p50": 0.1,
+        "p95": 2.9,
+        "n": 36
+       },
+       "d_server": {
+        "p50": 12.4,
+        "p95": 1684.7,
+        "n": 36
+       },
+       "d_backend": {
+        "p50": 3.5,
+        "p95": 735.0,
+        "n": 36
+       },
+       "f_publish": {
+        "p50": 44.6,
+        "p95": 239.8,
+        "n": 33
+       },
+       "e2e_ack": {
+        "p50": 3961.8,
+        "p95": 10983.6,
+        "n": 36
+       },
+       "e2e_compile": {
+        "p50": 3924.0,
+        "p95": 9631.2,
+        "n": 33
+       },
+       "e2e_ack_norm": {
+        "p50": 3958.9,
+        "p95": 9377.5,
+        "n": 36
+       },
+       "e2e_compile_norm": {
+        "p50": 3899.5,
+        "p95": 9556.3,
+        "n": 33
+       },
+       "steal_p50": 1.5,
+       "dominant_stage": "c_model"
+      },
+      "rule words (emergency+micro)": {
+       "n": 18,
+       "n_with_intent": 18,
+       "sem_acc": 0.944,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1795.1,
+        "p95": 3236.4,
+        "n": 18
+       },
+       "b_asr": {
+        "p50": 730.2,
+        "p95": 1673.4,
+        "n": 18
+       },
+       "c_model": {
+        "p50": 1613.1,
+        "p95": 3542.6,
+        "n": 18
+       },
+       "e_client": {
+        "p50": 0.3,
+        "p95": 2.4,
+        "n": 18
+       },
+       "d_server": {
+        "p50": 7.2,
+        "p95": 23.1,
+        "n": 18
+       },
+       "d_backend": {
+        "p50": 2.3,
+        "p95": 7.5,
+        "n": 18
+       },
+       "f_publish": {
+        "p50": 945.9,
+        "p95": 2645.4,
+        "n": 18
+       },
+       "e2e_ack": {
+        "p50": 2500.1,
+        "p95": 3640.4,
+        "n": 18
+       },
+       "e2e_compile": {
+        "p50": 3727.3,
+        "p95": 5281.2,
+        "n": 18
+       },
+       "e2e_ack_norm": {
+        "p50": 2498.2,
+        "p95": 3637.9,
+        "n": 18
+       },
+       "e2e_compile_norm": {
+        "p50": 3285.6,
+        "p95": 4910.4,
+        "n": 18
+       },
+       "steal_p50": 1.5,
+       "dominant_stage": "a_vad"
+      }
+     }
+    },
+    "vad250": {
+     "label": "vad250",
+     "n_utterances": 120,
+     "ready": {
+      "kind": "ready",
+      "label": "vad250",
+      "ok": true,
+      "ms": 5973,
+      "mint": {
+       "status": 200,
+       "ms": 1616,
+       "attempts": 1
+      },
+      "auth": "mint",
+      "startupLogs": [],
+      "state": "idle"
+     },
+     "tiers": {
+      "emergency (model path)": {
+       "n": 1,
+       "n_with_intent": 1,
+       "sem_acc": 1.0,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1256.8,
+        "p95": 1256.8,
+        "n": 1
+       },
+       "b_asr": {
+        "p50": 1527.7,
+        "p95": 1527.7,
+        "n": 1
+       },
+       "c_model": {
+        "p50": 1530.6,
+        "p95": 1530.6,
+        "n": 1
+       },
+       "e_client": {
+        "p50": 0.4,
+        "p95": 0.4,
+        "n": 1
+       },
+       "d_server": {
+        "p50": 5.8,
+        "p95": 5.8,
+        "n": 1
+       },
+       "d_backend": {
+        "p50": 2.3,
+        "p95": 2.3,
+        "n": 1
+       },
+       "f_publish": {
+        "p50": 12.7,
+        "p95": 12.7,
+        "n": 1
+       },
+       "e2e_ack": {
+        "p50": 2793.5,
+        "p95": 2793.5,
+        "n": 1
+       },
+       "e2e_compile": {
+        "p50": 2806.2,
+        "p95": 2806.2,
+        "n": 1
+       },
+       "e2e_ack_norm": {
+        "p50": 2792.3,
+        "p95": 2792.3,
+        "n": 1
+       },
+       "e2e_compile_norm": {
+        "p50": 2802.5,
+        "p95": 2802.5,
+        "n": 1
+       },
+       "steal_p50": 1.2,
+       "dominant_stage": "c_model"
+      },
+      "macro": {
+       "n": 32,
+       "n_with_intent": 32,
+       "sem_acc": 0.906,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1283.1,
+        "p95": 2685.9,
+        "n": 32
+       },
+       "b_asr": {
+        "p50": 874.1,
+        "p95": 2107.4,
+        "n": 32
+       },
+       "c_model": {
+        "p50": 1714.8,
+        "p95": 4178.3,
+        "n": 32
+       },
+       "e_client": {
+        "p50": 0.1,
+        "p95": 2.5,
+        "n": 32
+       },
+       "d_server": {
+        "p50": 10.4,
+        "p95": 2728.3,
+        "n": 32
+       },
+       "d_backend": {
+        "p50": 3.1,
+        "p95": 1561.3,
+        "n": 32
+       },
+       "f_publish": {
+        "p50": 50.3,
+        "p95": 3272.3,
+        "n": 30
+       },
+       "e2e_ack": {
+        "p50": 3602.3,
+        "p95": 6840.1,
+        "n": 32
+       },
+       "e2e_compile": {
+        "p50": 3659.8,
+        "p95": 8604.3,
+        "n": 30
+       },
+       "e2e_ack_norm": {
+        "p50": 3338.6,
+        "p95": 5518.8,
+        "n": 32
+       },
+       "e2e_compile_norm": {
+        "p50": 3365.9,
+        "p95": 6133.5,
+        "n": 30
+       },
+       "steal_p50": 2.0,
+       "dominant_stage": "c_model"
+      },
+      "macro (no intent)": {
+       "n": 4,
+       "n_with_intent": 0,
+       "sem_acc": 0.0,
+       "unsafe": 0.0,
+       "no_intent": 4,
+       "a_vad": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "b_asr": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "c_model": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e_client": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "d_server": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "d_backend": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "f_publish": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_ack": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_compile": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_ack_norm": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_compile_norm": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "steal_p50": null,
+       "dominant_stage": null
+      },
+      "micro (model path)": {
+       "n": 21,
+       "n_with_intent": 21,
+       "sem_acc": 0.762,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1284.3,
+        "p95": 2254.4,
+        "n": 21
+       },
+       "b_asr": {
+        "p50": 821.7,
+        "p95": 2458.0,
+        "n": 21
+       },
+       "c_model": {
+        "p50": 1890.6,
+        "p95": 4870.0,
+        "n": 21
+       },
+       "e_client": {
+        "p50": 0.1,
+        "p95": 0.5,
+        "n": 21
+       },
+       "d_server": {
+        "p50": 7.4,
+        "p95": 35.0,
+        "n": 21
+       },
+       "d_backend": {
+        "p50": 3.2,
+        "p95": 10.6,
+        "n": 21
+       },
+       "f_publish": {
+        "p50": 40.3,
+        "p95": 408.6,
+        "n": 20
+       },
+       "e2e_ack": {
+        "p50": 3428.9,
+        "p95": 6937.7,
+        "n": 21
+       },
+       "e2e_compile": {
+        "p50": 3577.7,
+        "p95": 6326.4,
+        "n": 20
+       },
+       "e2e_ack_norm": {
+        "p50": 3422.8,
+        "p95": 6055.5,
+        "n": 21
+       },
+       "e2e_compile_norm": {
+        "p50": 3554.9,
+        "p95": 6305.3,
+        "n": 20
+       },
+       "steal_p50": 1.4,
+       "dominant_stage": "c_model"
+      },
+      "micro (no intent)": {
+       "n": 6,
+       "n_with_intent": 0,
+       "sem_acc": 0.333,
+       "unsafe": 0.0,
+       "no_intent": 6,
+       "a_vad": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "b_asr": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "c_model": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e_client": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "d_server": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "d_backend": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "f_publish": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_ack": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_compile": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_ack_norm": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_compile_norm": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "steal_p50": null,
+       "dominant_stage": null
+      },
+      "operation": {
+       "n": 34,
+       "n_with_intent": 34,
+       "sem_acc": 0.794,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1300.1,
+        "p95": 2401.8,
+        "n": 33
+       },
+       "b_asr": {
+        "p50": 935.9,
+        "p95": 2701.8,
+        "n": 33
+       },
+       "c_model": {
+        "p50": 2621.8,
+        "p95": 4999.0,
+        "n": 33
+       },
+       "e_client": {
+        "p50": 0.1,
+        "p95": 0.5,
+        "n": 34
+       },
+       "d_server": {
+        "p50": 9.0,
+        "p95": 60.6,
+        "n": 34
+       },
+       "d_backend": {
+        "p50": 3.3,
+        "p95": 22.4,
+        "n": 34
+       },
+       "f_publish": {
+        "p50": 46.8,
+        "p95": 900.0,
+        "n": 34
+       },
+       "e2e_ack": {
+        "p50": 3574.8,
+        "p95": 6517.8,
+        "n": 34
+       },
+       "e2e_compile": {
+        "p50": 3613.1,
+        "p95": 6570.7,
+        "n": 34
+       },
+       "e2e_ack_norm": {
+        "p50": 3573.6,
+        "p95": 6511.4,
+        "n": 34
+       },
+       "e2e_compile_norm": {
+        "p50": 3604.7,
+        "p95": 6549.1,
+        "n": 34
+       },
+       "steal_p50": 1.5,
+       "dominant_stage": "c_model"
+      },
+      "operation (no intent)": {
+       "n": 2,
+       "n_with_intent": 0,
+       "sem_acc": 0.0,
+       "unsafe": 0.0,
+       "no_intent": 2,
+       "a_vad": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "b_asr": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "c_model": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e_client": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "d_server": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "d_backend": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "f_publish": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_ack": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_compile": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_ack_norm": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "e2e_compile_norm": {
+        "p50": null,
+        "p95": null,
+        "n": 0
+       },
+       "steal_p50": null,
+       "dominant_stage": null
+      },
+      "rule words (emergency+micro)": {
+       "n": 20,
+       "n_with_intent": 20,
+       "sem_acc": 0.95,
+       "unsafe": 0.0,
+       "no_intent": 0,
+       "a_vad": {
+        "p50": 1503.5,
+        "p95": 2154.8,
+        "n": 20
+       },
+       "b_asr": {
+        "p50": 612.9,
+        "p95": 2036.7,
+        "n": 20
+       },
+       "c_model": {
+        "p50": 1904.4,
+        "p95": 2889.1,
+        "n": 20
+       },
+       "e_client": {
+        "p50": 0.1,
+        "p95": 1.2,
+        "n": 20
+       },
+       "d_server": {
+        "p50": 6.7,
+        "p95": 162.8,
+        "n": 20
+       },
+       "d_backend": {
+        "p50": 2.2,
+        "p95": 6.7,
+        "n": 20
+       },
+       "f_publish": {
+        "p50": 1537.8,
+        "p95": 2437.4,
+        "n": 15
+       },
+       "e2e_ack": {
+        "p50": 2179.8,
+        "p95": 3889.0,
+        "n": 20
+       },
+       "e2e_compile": {
+        "p50": 3751.9,
+        "p95": 6053.6,
+        "n": 15
+       },
+       "e2e_ack_norm": {
+        "p50": 2176.5,
+        "p95": 3758.7,
+        "n": 20
+       },
+       "e2e_compile_norm": {
+        "p50": 3252.3,
+        "p95": 4018.9,
+        "n": 15
+       },
+       "steal_p50": 1.4,
+       "dominant_stage": "a_vad"
+      }
+     }
+    }
+   }
+  }
+ },
+ "pooled_accuracy_by_silence_ms": {
+  "200": {
+   "micro (model path)": {
+    "n": 26,
+    "sem": 22,
+    "unsafe": 0,
+    "no_intent": 0,
+    "sem_acc": 0.846,
+    "unsafe_rate": 0.0
+   },
+   "rule words (emergency+micro)": {
+    "n": 21,
+    "sem": 19,
+    "unsafe": 0,
+    "no_intent": 0,
+    "sem_acc": 0.905,
+    "unsafe_rate": 0.0
+   },
+   "macro": {
+    "n": 36,
+    "sem": 28,
+    "unsafe": 0,
+    "no_intent": 0,
+    "sem_acc": 0.778,
+    "unsafe_rate": 0.0
+   },
+   "operation": {
+    "n": 35,
+    "sem": 30,
+    "unsafe": 0,
+    "no_intent": 0,
+    "sem_acc": 0.857,
+    "unsafe_rate": 0.0
+   },
+   "operation (no intent)": {
+    "n": 1,
+    "sem": 0,
+    "unsafe": 0,
+    "no_intent": 1,
+    "sem_acc": 0.0,
+    "unsafe_rate": 0.0
+   },
+   "emergency (model path)": {
+    "n": 1,
+    "sem": 1,
+    "unsafe": 0,
+    "no_intent": 0,
+    "sem_acc": 1.0,
+    "unsafe_rate": 0.0
+   }
+  },
+  "300": {
+   "micro (model path)": {
+    "n": 21,
+    "sem": 19,
+    "unsafe": 0,
+    "no_intent": 0,
+    "sem_acc": 0.905,
+    "unsafe_rate": 0.0
+   },
+   "rule words (emergency+micro)": {
+    "n": 22,
+    "sem": 20,
+    "unsafe": 0,
+    "no_intent": 0,
+    "sem_acc": 0.909,
+    "unsafe_rate": 0.0
+   },
+   "macro": {
+    "n": 27,
+    "sem": 24,
+    "unsafe": 0,
+    "no_intent": 0,
+    "sem_acc": 0.889,
+    "unsafe_rate": 0.0
+   },
+   "operation": {
+    "n": 31,
+    "sem": 26,
+    "unsafe": 0,
+    "no_intent": 0,
+    "sem_acc": 0.839,
+    "unsafe_rate": 0.0
+   },
+   "macro (no intent)": {
+    "n": 9,
+    "sem": 0,
+    "unsafe": 0,
+    "no_intent": 9,
+    "sem_acc": 0.0,
+    "unsafe_rate": 0.0
+   },
+   "operation (no intent)": {
+    "n": 5,
+    "sem": 0,
+    "unsafe": 0,
+    "no_intent": 5,
+    "sem_acc": 0.0,
+    "unsafe_rate": 0.0
+   },
+   "micro (no intent)": {
+    "n": 5,
+    "sem": 2,
+    "unsafe": 0,
+    "no_intent": 5,
+    "sem_acc": 0.4,
+    "unsafe_rate": 0.0
+   }
+  },
+  "450": {
+   "micro (model path)": {
+    "n": 80,
+    "sem": 79,
+    "unsafe": 0,
+    "no_intent": 0,
+    "sem_acc": 0.988,
+    "unsafe_rate": 0.0
+   },
+   "rule words (emergency+micro)": {
+    "n": 61,
+    "sem": 56,
+    "unsafe": 0,
+    "no_intent": 0,
+    "sem_acc": 0.918,
+    "unsafe_rate": 0.0
+   },
+   "macro": {
+    "n": 108,
+    "sem": 100,
+    "unsafe": 0,
+    "no_intent": 0,
+    "sem_acc": 0.926,
+    "unsafe_rate": 0.0
+   },
+   "operation": {
+    "n": 108,
+    "sem": 102,
+    "unsafe": 0,
+    "no_intent": 0,
+    "sem_acc": 0.944,
+    "unsafe_rate": 0.0
+   },
+   "micro (no intent)": {
+    "n": 2,
+    "sem": 1,
+    "unsafe": 0,
+    "no_intent": 2,
+    "sem_acc": 0.5,
+    "unsafe_rate": 0.0
+   },
+   "emergency (model path)": {
+    "n": 1,
+    "sem": 1,
+    "unsafe": 0,
+    "no_intent": 0,
+    "sem_acc": 1.0,
+    "unsafe_rate": 0.0
+   }
+  },
+  "250": {
+   "micro (model path)": {
+    "n": 48,
+    "sem": 42,
+    "unsafe": 0,
+    "no_intent": 0,
+    "sem_acc": 0.875,
+    "unsafe_rate": 0.0
+   },
+   "rule words (emergency+micro)": {
+    "n": 41,
+    "sem": 38,
+    "unsafe": 0,
+    "no_intent": 0,
+    "sem_acc": 0.927,
+    "unsafe_rate": 0.0
+   },
+   "macro": {
+    "n": 68,
+    "sem": 61,
+    "unsafe": 0,
+    "no_intent": 0,
+    "sem_acc": 0.897,
+    "unsafe_rate": 0.0
+   },
+   "operation": {
+    "n": 70,
+    "sem": 56,
+    "unsafe": 0,
+    "no_intent": 0,
+    "sem_acc": 0.8,
+    "unsafe_rate": 0.0
+   },
+   "micro (no intent)": {
+    "n": 6,
+    "sem": 2,
+    "unsafe": 0,
+    "no_intent": 6,
+    "sem_acc": 0.333,
+    "unsafe_rate": 0.0
+   },
+   "macro (no intent)": {
+    "n": 4,
+    "sem": 0,
+    "unsafe": 0,
+    "no_intent": 4,
+    "sem_acc": 0.0,
+    "unsafe_rate": 0.0
+   },
+   "emergency (model path)": {
+    "n": 1,
+    "sem": 1,
+    "unsafe": 0,
+    "no_intent": 0,
+    "sem_acc": 1.0,
+    "unsafe_rate": 0.0
+   },
+   "operation (no intent)": {
+    "n": 2,
+    "sem": 0,
+    "unsafe": 0,
+    "no_intent": 2,
+    "sem_acc": 0.0,
+    "unsafe_rate": 0.0
+   }
+  },
+  "350": {
+   "micro (model path)": {
+    "n": 26,
+    "sem": 25,
+    "unsafe": 0,
+    "no_intent": 0,
+    "sem_acc": 0.962,
+    "unsafe_rate": 0.0
+   },
+   "rule words (emergency+micro)": {
+    "n": 22,
+    "sem": 19,
+    "unsafe": 0,
+    "no_intent": 0,
+    "sem_acc": 0.864,
+    "unsafe_rate": 0.0
+   },
+   "macro": {
+    "n": 36,
+    "sem": 31,
+    "unsafe": 0,
+    "no_intent": 0,
+    "sem_acc": 0.861,
+    "unsafe_rate": 0.0
+   },
+   "operation": {
+    "n": 36,
+    "sem": 34,
+    "unsafe": 0,
+    "no_intent": 0,
+    "sem_acc": 0.944,
+    "unsafe_rate": 0.0
+   }
+  }
+ }
+}

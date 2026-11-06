@@ -387,8 +387,6 @@ test("warm pool: prefetch pre-mints the secret, arming reuses it and a stop/star
   c.stop();
 });
 test("warm pool: an expiring secret is not reused, and warmPool:false restores mint-per-arming", async () => {
-  const soon = client({ now: () => 1e12 }); // expires_at 4e9 s is far; force 'about to expire' through a short-lived secret below
-  soon.c.stop();
   const log = { sessions: 0 };
   const mk = prefs => createVoiceClient({
     requestJson: async pathname => { if (pathname === "/api/realtime/session") { log.sessions += 1; return { client_secret: "ek_testsecret", expires_at: Math.floor(Date.now() / 1000) + 10, ws_url: "wss://rt.example/v1/realtime?model=m", model: "m", tools: [] }; } return {}; },

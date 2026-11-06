@@ -306,8 +306,11 @@ def summarize(utts: list[dict]) -> dict:
             entry[k] = {"p50": pct(vals, 0.5), "p95": pct(vals, 0.95), "n": sum(v is not None for v in vals)}
         entry["steal_p50"] = pct([s["steal"] for s in ss], 0.5)
         stage_p50 = {k: entry[k]["p50"] for k in ("a_vad", "b_asr", "c_model", "e_client", "d_server", "f_publish") if entry[k]["p50"] is not None}
-        # dominant: for the model path ASR runs concurrently with the model, so only a/c/e/d/f are on the critical path
-        crit = {k: v for k, v in stage_p50.items() if not (k == "b_asr" and any(s["path"] == "model" for s in ss))}
+        # critical path: model path = a (VAD) + c (model tool call; ASR b runs concurrently) + e + d; rule path = a + b (the rule fires on the
+        # completed transcript, the model's tool call is not waited for) + e + d. f (async publish) is not part of the user-visible ack.
+        rule_class = cls.startswith("rule")
+        skip = {"c_model", "f_publish"} if rule_class else {"b_asr", "f_publish"}
+        crit = {k: v for k, v in stage_p50.items() if k not in skip}
         entry["dominant_stage"] = max(crit, key=crit.get) if crit else None
         out["tiers"][cls] = entry
     return out

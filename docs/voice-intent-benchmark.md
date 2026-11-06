@@ -1,5 +1,70 @@
 # Voice intent → PolicyModulationVector benchmark (shipped schema, real ASR)
 
+# Round 3 — latency + accuracy, stage-decomposed (branch `feat/r3-lat`)
+
+**Load caveat (read first).** Every absolute millisecond below is **LOAD-INFLATED**: r1 ran at load5 ≈ 54–143, r2 at ≈ 65–78, r3 at load5 ≈ 225 (≈ 218 CoreSimulator processes of the user's, not ours; `uptime` is stored in every `env_*.json`). A quiet machine (load5 < 20) was never available, so **no absolute "p50 = X s" claim is made**: the evidence is the stage decomposition, the dominant stage per tier and paired A/B comparisons run concurrently inside the same run. Re-run on a quiet machine with:
+`python scripts/bench/latency_trace.py run --out docs/bench-results/latency_trace/quiet --reps 3 --configs base450:silence=450` then `python scripts/bench/round3_report.py` (needs `source ~/.zshenv` for the proxy key). **Not done: quiet-machine absolute latency.**
+
+Every number was recomputed from the raw `latency_trace/{r1,r2,r3,posts,cold}/*.jsonl` by `scripts/bench/round3_report.py` (output: `round3_stage_tables.json`); the previous agent's tables were not trusted. Real client (`electron/voice.js` in plain Node), real proxy, local `web_gui --dry-run`, TTS audio streamed at real-time pace. 40 corpus rows × 3 reps: 8 rule-matched (4 emergency + 4 micro), 8 micro non-rule, 12 operation, 12 macro.
+
+## R3-A. Where the time goes (per stage, p50 ms; r2 = load ≈ 70, r3 base450 = load ≈ 225)
+
+Stages: a = VAD silence wait (last voiced chunk → `speech_stopped`), b = ASR (`speech_stopped` → transcript completed), c = model tool call (`speech_stopped` → `function_call_arguments.done`), e = our client (decision → POST), d = our server (POST round trip), f = async compile after return.
+
+| tier (path) | a VAD | b ASR | c model | e client | d server | dominant on the critical path |
+|---|---|---|---|---|---|---|
+| emergency/micro words that hit a rule (rule path: a + b + e + d) | 1251 / 1795 | 284 / 730 | not waited for | 0.2 / 0.3 | 4.5 / 7.2 | **a — VAD silence** (r2 and r3) |
+| micro, no rule (model path: a + c + e + d) | 1251 / 1505 | (parallel) | 879 / 1615 | 0.1 | 7.1 / 7.2 | a (r2), c (r3) |
+| operation | 1255 / 1575 | (parallel) | 1280 / 2347 | 0.1 | 6.1 / 12.4 | **c — model tool call** (r2, r3) |
+| macro | 1250 / 1733 | (parallel) | 823 / 1644 | 0.1 | 5.3 / 11.6 | a (r2, base450), c (r3 vad250) |
+
+Our own code is not the bottleneck: client time e ≤ 0.3 ms, rule matching ≈ µs (`fast_rule_timer.js`), the POST round trip d ≈ 5–12 ms (posts-only run: emergency button 4.8 ms p50, rule POST 5.8 ms p50, 74 ms p95; `latency_trace/posts/summary.json`). What the user waits for is **VAD silence + ASR + (model tools only) the model**.
+
+**VAD wait vs configured silence** (server_vad, r2, wall a p50): silence 250 → 979, 350 → 1131, 450 → 1251 ms. Slope ≈ 1 ms per ms configured, **but a constant ≈ 730 ms remains** on top of the configured silence (server span minus our energy-gated voiced span = 690/784/908 ms at 250/350/450). I could not split that remainder (TTS tail below our RMS gate, 300 ms prefix padding handling, server VAD frame granularity, network) from the data; it is NOT attributed to anything specific.
+
+**Harness caveat on `f` (async publish).** `latency_trace_client.js` only starts polling the compile-result file after the utterance loop ends (after `response.done`), so for the rule path `f` is bounded below by "model still answering" (in 64/64 r2 rule rows `f` is within 250 ms of model `tool_done − POST end`). `f` for rule rows (≈ 540–1500 ms) is therefore an **artifact, not publish time**, and `f` is excluded from "dominant" and from the user-visible ack. The real post-return publish cost was measured separately (R3-C: ≈ 17–22 ms in `lifecycle_skip_ab.py`, which polls immediately after the POST returns).
+
+## R3-B. Per-tier end to end vs targets (ack = command accepted by the executor, `POST end − last voiced audio`), load-inflated
+
+| tier | target | r2 vad450 ack p50 / p95 (load ≈ 70) | r3 base450 ack p50 / p95 (load ≈ 225) | verdict |
+|---|---|---|---|---|
+| emergency + micro rule words | as fast as possible | 1535 / 1589 | 2500 / 3640 | fastest tier; silence-bound (a). Not "as fast as possible": 450 ms silence + ≈ 730 ms constant + ASR. Fires only after the transcript completes (see early-fire: dropped) |
+| micro, no rule | as fast as possible | 2145 / 2476 | 3644 / 5501 | model-bound |
+| operation | ≤ 10 s | 2620 / 3626 | 3962 / **10984** | under load 70 well inside the budget; at load 225 the p95 (one tail call) exceeds 10 s: **load-inflated, not verifiable as met/unmet on a quiet machine** |
+| macro | ≤ 10 s | 2093 / 2189 | 3813 / 7976 | inside the budget in both runs |
+
+Accuracy on the same calls (pooled over every `server_vad` run, same scorer as the earlier rounds, shipped schema + real ASR; `pooled_accuracy_by_silence_ms` in `round3_stage_tables.json`; unsafe = 0 in every cell, 0 of 1,090 scored utterances):
+
+| silence | rule words | micro (model path) | operation | macro | no-intent calls |
+|---|---|---|---|---|---|
+| 250 (r2+r3, 240 utt) | 38/41 = 93% | 42/48 = 88% | 56/70 = 80% | 61/68 = 90% | 12 |
+| 350 (r2, 120 utt) | 19/22 = 86% | 25/26 = 96% | 34/36 = 94% | 31/36 = 86% | 0 |
+| 450 (r1+r2+r3, 360 utt) | 56/61 = 92% | 79/80 = 99% | 102/108 = 94% | 100/108 = 93% | 3 |
+
+Short silence (250, 300) cuts utterances (no-intent: 12 at 250, 19 at 300, vs 3 at 450) and costs accuracy on operation (80% vs 94%) and micro (88% vs 99%). Cells are n ≈ 22–108, so a 350 vs 450 difference is within noise. **Decision: keep 450** (the shipped default). The saving of lowering it is ≤ 1 ms per ms and accuracy is the user's first priority.
+
+## R3-C. Adopt / drop table
+
+| candidate | effect (measured) | accuracy / safety | decision |
+|---|---|---|---|
+| **Lifecycle-refresh skip** for requests that carry their own `provider_output` (voice, rule, emergency; `web_gui._micromachine_commander_context(refresh_lifecycle=…)`) | Paired concurrent A/B (`scripts/bench/lifecycle_skip_ab.py`, pristine origin/main vs this branch, same 40 rule intents, load ≈ 50–85): compile-after-return p50 baseline **327 → 692 → 3445 → 3487 ms** at history 0–9 / 10–19 / 20–29 / 30+ vs skip **17 / 22 / 16 / 18 ms** (p95 baseline up to 4842 ms, skip ≤ 191 ms). POST round trip unchanged (≈ 5–8 ms). The cost of the skipped status walk grows with the compile-result history, so a long game degraded every voice command. | Static providers ignore `commander_context` (`StaticJsonPolicyModulationProvider.propose_policy_modulation` never reads the request); only `_LocalLLMPolicyModulationProvider` uses it, and requests without `provider_output` (and non-emergency) still refresh (unit tests: `LifecycleRefreshSkipTest`, the first fails on pristine origin/main with `TypeError`). Journey evidence: bundles built from pristine 8ba4c43 and from this branch with the CI native binary → **32/32 zip members byte-identical**. CAVEAT: the journeys do not call `_process_one_micromachine_request`, so this identity shows the shaping/status code paths are untouched, not the skipped refresh itself; the side effects of the skipped `micromachine_status` (recent-command lifecycle fields, timeline `observe`) still happen on the GUI's own status polls and on the next LLM-provider request. | **Adopted** |
+| **Warm-pool prefetch + keep unexpired secret across stop** (`voice.prefetch()` at startup, `warmPool` pref default on, re-mint 60 s before expiry while idle) | Cold start `start()`→ready, 8 paired concurrent runs each, real proxy, load ≈ 85: p50 **6641 → 3552 ms** (min 4857 → 2914); mint round trip p50 3142 ms removed from the arming path (it moves to app start). Real-proxy reuse check: 3 stop/start cycles with ONE mint, all 3 armings accepted by the proxy (ready in ≈ 2.7–2.9 s, load ≈ 65–86, remainder = WebSocket connect + `session.update`). | Unit tests in `electron/test/voice_state.test.js` (pre-mint reused, stop keeps unexpired secret, secret with < 30 s left is re-minted, `warmPool:false` restores mint-per-arming); 401/403 on the socket and the 55-minute rotation still clear the secret. | **Adopted** |
+| Server VAD silence 250 / 300 / 350 | −1 ms per ms of silence | accuracy drops at ≤ 300 (see R3-B) | **Dropped** (keep 450) |
+| Energy/PTT endpointing (r1 `energy`) | a p50 ≈ 150 ms (vs ≈ 1000+) but ASR b ≈ 900 and model c ≈ 1500 under load 54–143; operation accuracy 76% | n = 20–35 per tier, load-inflated | **Dropped** (not enough evidence; PTT stays an explicit user mode) |
+| **Early fire on transcription DELTAS** (fire the rule on a partial transcript) | Probe replay (260 real-ASR calls with deltas): stable 0 ms: 193 fires, **47 wrong (24%)**; 120 ms: 46 / 6 wrong (13%); 250 ms: 36 / 5 (14%); 400 ms: 20 / 1 (5%). Gain vs completed (correct fires) p50 4 / 238 / 792 / 757 ms. In the 837 traces of our own client the gain is tiny: stable 120: 27 fires, gain p50 21 ms / p95 140 ms; stable 250: 3 fires. | **UNSAFE by construction**: a wrong fire is a retreat/hold/stop executed on a negated utterance (`홀드` fired, final `홀드 하지 마`, 385 ms after the delta; 28 of the 47 stable-0 errors have a negated final). Even at 400 ms 1 of 20 fires executes `hold_position` on a negated command (5% ≫ the 2% cap, and emergency needs ≈ 0). A delta stream cannot know a negating suffix will follow, so no stability threshold makes it safe. | **Dropped**. `scripts/bench/early_fire_replay.py`, `early_fire_replay_recheck.json` |
+| Rule path waits for model | none: the rule fires on the completed transcript and does not wait for the model (already shipped, round 2) | – | unchanged |
+
+## R3-D. Not done / limits
+
+- Absolute quiet-machine latency (load5 < 20): not measured, the machine never got below load5 ≈ 54 during this round (load5 ≈ 225 at the r3 run).
+- r3 ran 2 configs concurrently (450 and 250 ms) at 3 reps; tier cells are 18–36 calls, so p95 is a handful of calls.
+- The `f` (async publish) column of the stage tables for the rule path is a harness artifact (R3-A).
+- The lifecycle journey comparison cannot prove invariance of the skipped refresh itself (R3-C caveat).
+- The ≈ 730 ms constant in the VAD wait is not decomposed.
+- No SC2, no Electron, no GUI: this is a voice-to-executor-ack measurement; time to the unit's reaction in game is outside it.
+
+
+---
 # Round 2 — rule-first routing, five promoted families, emergency endpoint (branch `feat/r2-speed`)
 
 Everything here is offline (recorded real-ASR calls, unit tests) or a measurement against the real Realtime proxy. SC2 was not involved. **Every latency number in this section was measured on an overloaded machine** (load average 40 → 300 during the sweep, 28 → 245 during the ASR probe; see `docs/bench-results/latency_sweep.md` and `asr_words_probe.md`); p50 4.7 s here corresponds to ≈1.9 s on a quiet machine in the earlier run. Compare only inside one table.
