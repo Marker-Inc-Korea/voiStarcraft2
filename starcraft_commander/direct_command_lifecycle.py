@@ -80,6 +80,7 @@ class DirectCommandLifecycle:
         self.game_loops_per_second = float(game_loops_per_second)
         self.on_release = on_release
         self._leases: dict[str, DirectCommandLease] = {}
+        self._completion_holds: dict[str, int] = {}
 
     def dispatch(
         self,
@@ -206,9 +207,26 @@ class DirectCommandLifecycle:
         evidence_map = {**dict(lease.evidence), **dict(evidence or {})}
         if frame >= lease.expires_at_frame:
             return self._replace(lease, DirectCommandState.EXPIRED, "ttl_expired", evidence_map)
-        if _conditions_satisfied(lease.completion_conditions, evidence_map):
+        hold_until = self._completion_holds.get(command_id)
+        held = hold_until is not None and frame < hold_until
+        if (
+            not held
+            and _conditions_satisfied(lease.completion_conditions, evidence_map)
+        ):
             return self._replace(lease, DirectCommandState.COMPLETED, "completion_conditions", evidence_map)
         return self._replace(lease, DirectCommandState.ACTIVE, "", evidence_map)
+
+    def hold_completion(self, command_id: str, until_frame: int | None) -> None:
+        """Defer completion (never expiry) until ``until_frame``; ``None`` clears the hold.
+
+        Used while the game has not yet answered an issued order: ``order_issued`` alone
+        must not release control before SC2 had the chance to reject the order.
+        """
+
+        if until_frame is None:
+            self._completion_holds.pop(command_id, None)
+        else:
+            self._completion_holds[command_id] = int(until_frame)
 
     def record_evidence(
         self,
@@ -348,6 +366,12 @@ class DirectCommandLifecycle:
             evidence=dict(evidence),
         )
         self._leases[lease.command_id] = updated
+        if state not in {
+            DirectCommandState.PENDING,
+            DirectCommandState.DISPATCHED,
+            DirectCommandState.ACTIVE,
+        }:
+            self._completion_holds.pop(lease.command_id, None)
         if (
             lease.state
             in {

@@ -331,8 +331,14 @@ def _render_full_success(result: SC2PlanExecutionResult) -> SC2NarrationResponse
         _action_line(action, _action_issue(result, action))
         for action in result.applied_actions
     )
+    unconfirmed = _game_response_pending(result)
+    suffix = (
+        " 게임이 주문을 받아들였는지는 아직 확인되지 않았습니다."
+        if unconfirmed
+        else ""
+    )
     return SC2NarrationResponse(
-        response_text=f"명령을 실행했습니다. {', '.join(action_lines)}.",
+        response_text=f"명령을 실행했습니다. {', '.join(action_lines)}.{suffix}",
         status="executed",
         intent_name=result.plan.intent_name,
         detail_lines=action_lines,
@@ -644,9 +650,43 @@ def _action_line(
     return renderer(action, issue)
 
 
+def _game_response_pending(result: SC2PlanExecutionResult) -> bool:
+    """True when some order was handed to SC2 but the game has not answered it yet."""
+
+    game_results = result.audit.get("game_results")
+    if not isinstance(game_results, Mapping):
+        return False
+    return any(
+        isinstance(item, Mapping) and item.get("accepted") is None
+        for item in game_results.values()
+    )
+
+
+def narrate_game_rejection(game_result: Mapping[str, object]) -> str:
+    """Korean sentence for an order the game itself rejected (``game_result.accepted is False``).
+
+    The wording is the user-visible status ``게임이 거부함: <이유>`` (stage Blocked); the
+    reason text comes from :mod:`starcraft_commander.sc2_action_results`.
+    """
+
+    reason = str(game_result.get("reason_ko") or "").strip()
+    if not reason:
+        code = game_result.get("code")
+        reason = f"게임이 주문을 거부했습니다 (코드 {code})"
+    return f"게임이 거부함: {reason}"
+
+
 def _error_line(error: SC2ExecutionError) -> str:
     """Render one structured execution error into a Korean reason line."""
 
+    if error.exception_type == "GameRejectedOrder":
+        game_result = error.metadata.get("game_result")
+        label = "명령"
+        if error.action_type is not None:
+            label = SC2_ACTION_TYPE_KOREAN_LABELS.get(error.action_type, label)
+        if isinstance(game_result, Mapping):
+            return f"{label}: {narrate_game_rejection(game_result)}"
+        return f"{label}: 게임이 거부함"
     if error.exception_type == "PartialActionApplication":
         requested = error.metadata.get("requested_count")
         issued = error.metadata.get("issued_count")

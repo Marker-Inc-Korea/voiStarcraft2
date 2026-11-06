@@ -24,6 +24,7 @@ from starcraft_commander.contracts import (
     SC2PlanExecutionResult,
 )
 from starcraft_commander.direct_binding import bind_plan_actions
+from starcraft_commander.sc2_action_results import is_rejected
 from starcraft_commander.direct_command_lifecycle import DirectCommandLifecycle
 from starcraft_commander.direct_command_lifecycle import DirectCommandLease
 from starcraft_commander.direct_release import (
@@ -592,6 +593,16 @@ class SC2RuntimeExecutor:
     _native_release_writer: DirectLeaseEventWriter | None = field(
         default=None, init=False, repr=False
     )
+    _game_rejection_listeners: list[Callable[[Mapping[str, object]], object]] = field(
+        default_factory=list,
+        init=False,
+        repr=False,
+    )
+    _last_game_result_by_command: dict[str, str] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         self._started = self.bot is not None
@@ -755,6 +766,104 @@ class SC2RuntimeExecutor:
             self._release_listeners.add(callback)
         lifecycle.on_release = self._handle_direct_release
 
+    def add_game_rejection_listener(
+        self, callback: Callable[[Mapping[str, object]], object]
+    ) -> None:
+        """Be told once per Direct command the game itself rejected.
+
+        The payload is ``{"command_id", "game_result", "lease"}``; ``game_result`` is the
+        ``accepted=False`` mapping from :mod:`starcraft_commander.sc2_action_results`.
+        """
+
+        if callback not in self._game_rejection_listeners:
+            self._game_rejection_listeners.append(callback)
+
+    def collect_game_results(self, current_frame: int) -> tuple[dict[str, object], ...]:
+        """Fold the game's answers (request response + ``action_errors``) into Direct leases.
+
+        Runs before every lease observation, so a rejection that arrived during the previous
+        game loop is seen BEFORE an ``order_issued`` condition can complete the lease.  A rejected
+        lease is failed with ``release_reason="game_rejected"`` and ``evidence.game_result``;
+        a lease with orders but no answer yet carries ``evidence.game_result`` with
+        ``accepted=None``.  Returns the rejection payloads produced by this call.
+        """
+
+        bot = self.bot
+        collect = getattr(bot, "collect_game_results", None)
+        lease_summary = getattr(bot, "game_result_for_lease", None)
+        if not callable(lease_summary):
+            return ()
+        if callable(collect):
+            try:
+                collect(int(current_frame))
+            except Exception as error:  # noqa: BLE001 - never break the game loop
+                self._lifecycle_errors.append(
+                    SC2ExecutionError(
+                        message=f"game result collection failed: {error}",
+                        exception_type=type(error).__name__,
+                    )
+                )
+        rejections: list[dict[str, object]] = []
+        window = int(getattr(getattr(bot, "game_results", None), "response_window_loops", 112))
+        for lease in self.direct_lifecycle.active_leases():
+            if not lease.owned_unit_tags:
+                continue
+            try:
+                summary = lease_summary(lease.owned_unit_tags, lease.issued_at_frame)
+            except Exception as error:  # noqa: BLE001
+                self._lifecycle_errors.append(
+                    SC2ExecutionError(
+                        message=f"game result summary failed: {error}",
+                        exception_type=type(error).__name__,
+                        metadata={"command_id": lease.command_id},
+                    )
+                )
+                continue
+            if summary is None:
+                continue
+            fingerprint = repr(sorted((k, repr(v)) for k, v in summary.items()))
+            if self._last_game_result_by_command.get(lease.command_id) == fingerprint:
+                continue
+            self._last_game_result_by_command[lease.command_id] = fingerprint
+            if is_rejected(summary):
+                failed = self.direct_lifecycle.fail(
+                    lease.command_id,
+                    reason="game_rejected",
+                    evidence={**dict(lease.evidence), "game_result": summary},
+                )
+                self._last_game_result_by_command.pop(lease.command_id, None)
+                payload = {
+                    "command_id": lease.command_id,
+                    "game_result": summary,
+                    "lease": failed.to_dict(),
+                }
+                rejections.append(payload)
+                for listener in tuple(self._game_rejection_listeners):
+                    try:
+                        listener(payload)
+                    except Exception as error:  # noqa: BLE001 - listeners are best effort
+                        self._lifecycle_errors.append(
+                            SC2ExecutionError(
+                                message=f"game rejection listener failed: {error}",
+                                exception_type=type(error).__name__,
+                                metadata={"command_id": lease.command_id},
+                            )
+                        )
+            else:
+                self.direct_lifecycle.record_evidence(
+                    lease.command_id, {"game_result": summary}
+                )
+                # Until the game answered every order, "order_issued" must not
+                # release control.
+                pending = summary.get("pending_count")
+                if type(pending) is int and pending > 0:
+                    self.direct_lifecycle.hold_completion(
+                        lease.command_id, lease.issued_at_frame + window
+                    )
+                else:
+                    self.direct_lifecycle.hold_completion(lease.command_id, None)
+        return tuple(rejections)
+
     def observe_direct_commands(
         self,
         *,
@@ -768,6 +877,7 @@ class SC2RuntimeExecutor:
         seam without creating separate registries that lose squad ownership.
         """
 
+        self.collect_game_results(current_frame)
         supplied = evidence_by_command or {}
         observed_evidence: dict[str, Mapping[str, object]] = {}
         for lease in self.direct_lifecycle.active_leases():
@@ -1144,8 +1254,13 @@ class SC2RuntimeExecutor:
         errors: list[SC2ExecutionError] = []
         observations: dict[str, dict[str, object]] = {}
         action_reports: dict[str, dict[str, object]] = {}
+        game_results: dict[str, dict[str, object]] = {}
+        result_mark = getattr(bot, "game_result_mark", None)
+        result_since = getattr(bot, "game_result_since", None)
+        track_results = callable(result_mark) and callable(result_since)
 
         for action_index, action in enumerate(plan.actions):
+            order_mark = result_mark() if track_results else 0
             try:
                 application = await _apply_action(bot, action)
             except Exception as exc:
@@ -1178,30 +1293,45 @@ class SC2RuntimeExecutor:
             if application.observation is not None:
                 observations[str(action_index)] = dict(application.observation)
             report = application.report
+            game_result = (
+                result_since(order_mark, result_mark()) if track_results else None
+            )
             if report is not None:
                 action_reports[str(action_index)] = report.to_dict()
                 if report.is_partial:
                     errors.append(_partial_application_error(action, action_index, report))
                 elif not report.applied and report.detail:
                     errors.append(_refused_action_error(action, action_index, report))
-            if application.applied:
+            applied_by_game = application.applied
+            if game_result is not None:
+                game_results[str(action_index)] = game_result
+                if str(action_index) in action_reports:
+                    action_reports[str(action_index)]["game_result"] = game_result
+                if is_rejected(game_result):
+                    errors.append(_game_rejected_error(action, action_index, game_result))
+                    applied_by_game = False
+            if applied_by_game:
                 applied.append(action)
             else:
                 skipped.append(action)
 
+        audit: dict[str, object] = {
+            "runtime_adapter": type(bot).__name__,
+            "executor_started": self._started,
+            "planned_action_count": len(plan.actions),
+            "observations": observations,
+            "action_reports": action_reports,
+        }
+        if game_results:
+            # Additive: absent unless the runtime queued real game orders.
+            audit["game_results"] = game_results
         return SC2PlanExecutionResult(
             plan=plan,
             attempted_actions=plan.actions,
             applied_actions=tuple(applied),
             skipped_actions=tuple(skipped),
             errors=tuple((*self._drain_lifecycle_errors(), *errors)),
-            audit={
-                "runtime_adapter": type(bot).__name__,
-                "executor_started": self._started,
-                "planned_action_count": len(plan.actions),
-                "observations": observations,
-                "action_reports": action_reports,
-            },
+            audit=audit,
         )
 
     def _drain_lifecycle_errors(self) -> tuple[SC2ExecutionError, ...]:
@@ -1526,6 +1656,25 @@ def _refused_action_error(
         action_index=action_index,
         exception_type="ActionRefused",
         metadata=metadata,
+    )
+
+
+def _game_rejected_error(
+    action: SC2CommandAction,
+    action_index: int,
+    game_result: Mapping[str, object],
+) -> SC2ExecutionError:
+    """Structured error for an order SC2 itself rejected (``ActionResult`` != Success)."""
+
+    return SC2ExecutionError(
+        message=(
+            f"the game rejected the '{action.action_type.value}' order: "
+            f"{game_result.get('reason_en')}."
+        ),
+        action_type=action.action_type,
+        action_index=action_index,
+        exception_type="GameRejectedOrder",
+        metadata={"game_result": dict(game_result)},
     )
 
 
