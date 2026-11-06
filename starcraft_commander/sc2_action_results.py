@@ -239,6 +239,7 @@ _TARGET_NOUNS: Final[dict[str, tuple[str, str]]] = {
     "UnstoppableUnits": ("저지 불가 유닛", "unstoppable units"),
     "User1": ("지정 속성 유닛", "user-flag units"),
     "WorkerUnits": ("일꾼", "worker units"),
+    "YourOwnUnits": ("내 유닛", "your own units"),
     # MustTarget* only
     "Inventory": ("인벤토리가 있는 대상", "an inventory"),
     "PawnableUnit": ("처분 가능한 유닛", "a pawnable unit"),
@@ -265,7 +266,7 @@ def _resolve_by_name(name: str) -> _Row | None:
                 return None
             noun_ko, noun_en, category, fixable = spec
             if template == "not_enough":
-                return (category, f"{noun_ko}이(가) 부족합니다", f"not enough {noun_en}", fixable, category in {"energy", "unit_state"})
+                return (category, f"{noun_ko}이(가) 부족합니다", f"not enough {noun_en}", fixable, category in {"energy", "unit_state", "supply", "resources"})
             return (category, f"{noun_ko}이(가) 이미 가득 찼습니다", f"too much {noun_en}", False, False)
     if name.endswith("Suppressed"):
         spec = _RESOURCES.get(name[: -len("Suppressed")])
@@ -537,6 +538,8 @@ def summarize_orders(orders: Sequence[OrderRecord]) -> dict[str, object] | None:
     result["accepted_count"] = len(accepted)
     result["rejected_count"] = len(rejected)
     result["pending_count"] = len(pending)
+    frames = [o.resolved_frame for o in orders if o.resolved_frame is not None]
+    result["last_resolved_frame"] = max(frames) if frames else None
     return result
 
 

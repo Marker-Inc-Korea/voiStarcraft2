@@ -822,8 +822,9 @@ class SC2RuntimeExecutor:
             if summary is None:
                 continue
             fingerprint = repr(sorted((k, repr(v)) for k, v in summary.items()))
-            if self._last_game_result_by_command.get(lease.command_id) == fingerprint:
-                continue
+            unchanged = (
+                self._last_game_result_by_command.get(lease.command_id) == fingerprint
+            )
             self._last_game_result_by_command[lease.command_id] = fingerprint
             if is_rejected(summary):
                 failed = self.direct_lifecycle.fail(
@@ -850,13 +851,21 @@ class SC2RuntimeExecutor:
                             )
                         )
             else:
-                self.direct_lifecycle.record_evidence(
-                    lease.command_id, {"game_result": summary}
-                )
+                if not unchanged:
+                    self.direct_lifecycle.record_evidence(
+                        lease.command_id, {"game_result": summary}
+                    )
                 # Until the game answered every order, "order_issued" must not
                 # release control.
+                # A ``Success`` request response can still be followed by an
+                # ``action_errors`` entry in the next observation, so settle only
+                # once a later game loop has been observed.
                 pending = summary.get("pending_count")
-                if type(pending) is int and pending > 0:
+                resolved_at = summary.get("last_resolved_frame")
+                settled = (
+                    type(resolved_at) is int and int(current_frame) > resolved_at
+                )
+                if (type(pending) is int and pending > 0) or not settled:
                     self.direct_lifecycle.hold_completion(
                         lease.command_id, lease.issued_at_frame + window
                     )

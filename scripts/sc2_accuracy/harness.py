@@ -280,6 +280,7 @@ class HarnessBot(BotAI):
 class _State:
     game_loop = 1
     upgrades: set = set()
+    action_errors: list = []
 
 
 def make_adapter(bot: HarnessBot):
@@ -395,3 +396,121 @@ _SAFE = re.compile(r"[^A-Za-z0-9]+")
 
 def env_stableid_hint() -> str:
     return os.environ.get("VOI_SC2_STABLEID", "") or str(Path(audit.DEFAULT_STABLEID))
+
+
+# --------------------------------------------------------------------------- game answers (offline)
+# SC2 answers an order in two channels: ``ResponseAction.result`` (one ``ActionResult`` per submitted raw
+# action) and ``ResponseObservation.action_errors`` (``ActionError{unit_tag, ability_id, result}``).  The
+# fakes below replay scripted answers through python-sc2's REAL ``BotAI._do_actions``/``combine_actions``
+# so the product's capture code sees exactly the shapes a live game would produce.  This proves the
+# plumbing only; which answer a live game gives for a real order is NOT proven here.
+
+
+class FakeActionClient:
+    """Stand-in for ``sc2.client.Client`` whose ``actions`` mimics the real one but answers from a script.
+
+    ``answers`` maps an ability name (``AbilityId.<NAME>``) or ``"*"`` to an ``error_pb2.ActionResult``
+    name/int; unscripted abilities get ``Success``.  ``short`` truncates the reply (a malformed response).
+    """
+
+    def __init__(self, answers: dict[str, Any] | None = None, *, short: bool = False, protocol_error: bool = False) -> None:
+        self.answers = dict(answers or {})
+        self.short = short
+        self.protocol_error = protocol_error
+        self.requests: list[sc2api_pb2.Request] = []
+
+    async def actions(self, actions, return_successes: bool = False):  # mirrors sc2.client.Client.actions
+        from s2clientprotocol import error_pb2
+        from sc2.data import ActionResult
+
+        if not actions:
+            return []
+        if not isinstance(actions, list):
+            actions = [actions]
+        raws = list(combine_actions(actions))
+        self.requests.append(request_action(raws))
+        if self.protocol_error:
+            return []
+        results = []
+        for raw in raws:
+            name = AbilityId(raw.unit_command.ability_id).name
+            answer = self.answers.get(name, self.answers.get("*", "Success"))
+            code = answer if isinstance(answer, int) else error_pb2.ActionResult.Value(answer)
+            results.append(code)
+        if self.short:
+            results = results[:-1]
+        if return_successes:
+            return [ActionResult(code) for code in results]
+        return [ActionResult(code) for code in results if ActionResult(code) != ActionResult.Success]
+
+
+class FakeActionError:
+    """Shape of ``sc2.game_state.ActionError`` (``unit_tag``, ``ability_id``, ``result``)."""
+
+    def __init__(self, unit_tag: int, ability: AbilityId | int, result: Any) -> None:
+        from s2clientprotocol import error_pb2
+
+        self.unit_tag = unit_tag
+        self.ability_id = ability.value if isinstance(ability, AbilityId) else int(ability)
+        self.result = result if isinstance(result, int) else error_pb2.ActionResult.Value(result)
+
+
+class GameRun:
+    """Everything one scripted order produced: the executor, adapter, plan result and the unit tags ordered."""
+
+    def __init__(self, bot, adapter, executor, result, tags, client) -> None:
+        self.bot, self.adapter, self.executor, self.result, self.tags, self.client = bot, adapter, executor, result, tags, client
+
+    def commit_frame(self, frame: int = 1) -> None:
+        """What python-sc2's ``_after_step`` does: send the frame's queued commands, read the answers."""
+
+        import asyncio
+
+        self.bot.state.game_loop = frame
+        asyncio.run(self.bot._do_actions(self.bot.actions))
+        self.bot.actions.clear()
+
+    def next_observation(self, frame: int, errors: list[FakeActionError] | None = None) -> None:
+        """A later observation: new game loop and its ``action_errors``."""
+
+        self.bot.state.game_loop = frame
+        self.bot.state.action_errors = list(errors or [])
+
+    def lease(self, *, command_id: str = "cmd-1", ttl_seconds: int = 120, conditions=("order_issued",), frame: int = 1):
+        """Admit a Direct lease over the ordered units, exactly like the live session does after execute()."""
+
+        lifecycle = self.executor.direct_lifecycle
+        lifecycle.pending(
+            command_id=command_id,
+            issued_at_frame=frame,
+            ttl_seconds=ttl_seconds,
+            completion_conditions=conditions,
+            owned_unit_tags=tuple(sorted(set(self.tags))),
+        )
+        lifecycle.mark_dispatched(command_id)
+        active = lifecycle.activate(command_id)
+        if "order_issued" in active.completion_conditions:
+            lifecycle.record_evidence(command_id, {"order_issued": True})
+        return lifecycle.get(command_id)
+
+
+def run_with_game(bot: HarnessBot, *actions, answers: dict[str, Any] | None = None, adapter=None, client: FakeActionClient | None = None) -> GameRun:
+    """Execute ``actions`` through the real executor/adapter; the queued orders are NOT yet sent (as in a live frame)."""
+
+    import asyncio
+    import warnings as _warnings
+
+    from starcraft_commander.contracts import SC2ExecutionPlan
+    from starcraft_commander.sc2_executor import SC2RuntimeExecutor
+
+    client = client or FakeActionClient(answers)
+    bot.client = client
+    bot.state.action_errors = []
+    adapter = adapter or make_adapter(bot)
+    executor = SC2RuntimeExecutor(bot=adapter)
+    plan = SC2ExecutionPlan(intent_name="sc2_action_results", ordered_actions=actions)
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore")
+        result = asyncio.run(executor.execute(plan))
+    tags = [command.unit.tag for command in bot.actions]
+    return GameRun(bot, adapter, executor, result, tags, client)
