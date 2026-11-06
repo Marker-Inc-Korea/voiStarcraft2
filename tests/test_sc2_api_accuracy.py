@@ -251,7 +251,11 @@ def test_medivac_load_heal_unload_use_the_documented_target_kinds() -> None:
     assert {v["target"] for v in load} == {"target_unit_tag"}
     marines = {u.tag for u in bot.units if u.type_id == U.MARINE}
     assert {v["unit_tag"] for v in load} == marines, "each medivac must load a different marine"
-    _, _, unload, warns = run_voice("medivac_unload_all", (U.MEDIVAC, 2))
+    # NoCargoToUnload (error.proto): a real unload order needs passengers, so the medivacs carry cargo here.
+    loaded = harness.make_bot()
+    loaded.add_unit(U.MEDIVAC, cargo_taken=2)
+    loaded.add_unit(U.MEDIVAC, x=21.0, cargo_taken=3)
+    _, unload, warns = harness.run_plan(loaded, *lower_micro("medivac_unload_all"))
     _assert_shape(unload, warns, ability="UNLOADALLAT_MEDIVAC")
     bot = harness.make_bot((U.MEDIVAC, 1))
     hurt = bot.add_unit(U.MARINE, x=21.0, y=21.0, health=10.0, health_max=45.0)
@@ -411,7 +415,15 @@ def test_refinery_targets_a_geyser_unit_not_a_point() -> None:
     ],
 )
 def test_train_unit_uses_the_creation_ability_on_every_structure_that_can_train_it(unit, producer_units, ability_name) -> None:
-    bot = harness.make_bot(*[(p, 1) for p in producer_units])
+    bot = harness.make_bot()
+    lab = {U.BARRACKS: U.BARRACKSTECHLAB, U.FACTORY: U.FACTORYTECHLAB}.get(producer_units[0])
+    if unit in {"MARAUDER", "SIEGETANK"}:  # UnitTypeData.require_attached: these need a Tech Lab on the producer
+        lab_unit = bot.add_unit(lab)
+        bot.add_unit(producer_units[0], add_on_tag=lab_unit.tag)
+        bot.structures.sort(key=lambda s: s.type_id == lab)  # the producer stays structures[0]
+    else:
+        for p in producer_units:
+            bot.add_unit(p)
     actions = lower_direct("train_unit", [f"TERRAN_{unit}"])
     _, views, warns = harness.run_plan(bot, *actions)
     _assert_shape(views, warns, ability=ability_name)
@@ -425,6 +437,12 @@ TRAINABLE = [
 ]
 
 
+def _needs_lab(unit: str) -> bool:
+    from sc2.dicts.unit_train_build_abilities import TRAIN_INFO
+
+    return any(bool(t[getattr(U, unit)].get("requires_techlab")) for t in TRAIN_INFO.values() if getattr(U, unit) in t)
+
+
 @pytest.mark.parametrize("unit", TRAINABLE)
 def test_every_trainable_dsl_unit_gets_the_producer_python_sc2_says_trains_it(unit) -> None:
     """The router's producer metadata must agree with python-sc2 UNIT_TRAINED_FROM for every unit it can lower."""
@@ -433,7 +451,14 @@ def test_every_trainable_dsl_unit_gets_the_producer_python_sc2_says_trains_it(un
     producers = sc2["TRAINED_FROM"][getattr(U, unit)]
     (action,) = lower_direct("train_unit", [f"TERRAN_{unit}"])
     assert action.metadata.get("producer") in {p.name for p in producers}, (unit, action.metadata)
-    bot = harness.make_bot(*[(next(iter(producers)), 1)])
+    producer = next(iter(producers))
+    bot = harness.make_bot()
+    lab = {U.BARRACKS: U.BARRACKSTECHLAB, U.FACTORY: U.FACTORYTECHLAB, U.STARPORT: U.STARPORTTECHLAB}.get(producer)
+    if lab is not None and harness.build_game_data().units[getattr(U, unit).value].creation_ability is not None and _needs_lab(unit):
+        # UnitTypeData.require_attached: tech-lab units are only trainable from a producer that carries one.
+        bot.add_unit(producer, add_on_tag=bot.add_unit(lab).tag)
+    else:
+        bot.add_unit(producer)
     _, views, warns = harness.run_plan(bot, action)
     _assert_shape(views, warns)
     assert AbilityId(views[0]["ability_id"]) == bot.game_data.units[getattr(U, unit).value].creation_ability.exact_id

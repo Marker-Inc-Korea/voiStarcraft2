@@ -327,6 +327,16 @@ _SEMANTIC_UPGRADE_ALIASES: Final[dict[str, str]] = {
     "YAMATOCANNON": "BATTLECRUISERENABLESPECIALIZATIONS",
 }
 
+# Own units that are NOT part of "the army" for 후퇴/홀드/멈춰: a MULE is a (temporary) worker, the rest are
+# stationary or one-shot summons.  Ordering them would pull a MULE off the minerals / waste a nuke target.
+_NON_ARMY_TYPE_NAMES: Final[frozenset[str]] = frozenset(
+    {"MULE", "AUTOTURRET", "POINTDEFENSEDRONE", "NUKE", "KD8CHARGE", "LARVA", "EGG"}
+)
+
+# Production queue depth per structure: 5 slots, 8 with a Reactor (SC2 rule; error.proto ``QueueIsFull``).
+_PRODUCER_QUEUE_SLOTS: Final[int] = 5
+_PRODUCER_QUEUE_SLOTS_REACTOR: Final[int] = 8
+
 # Structures that all train the same units (SCV from CC / Orbital / Planetary).
 _PRODUCER_EQUIVALENTS: Final[dict[str, frozenset[str]]] = {
     "COMMANDCENTER": frozenset({"COMMANDCENTER", "ORBITALCOMMAND", "PLANETARYFORTRESS"}),
@@ -524,20 +534,38 @@ class PythonSC2BotAdapter:
             candidates = self._structures_by_tags(action.metadata["_direct_unit_tags"])
         else:
             candidates = self._ready_idle_structures()
+        is_addon = ability_name.startswith(("BUILD_TECHLAB_", "BUILD_REACTOR_"))
         parents = [
             structure
             for structure in candidates
             if _entity_type_name(structure) == parent_name
             and _truthy_flag(structure, "is_ready", default=True)
             and _truthy_flag(structure, "is_idle", default=True)
+            # one add-on per parent (Unit.add_on_tag): a second order would be refused by the game
+            and not (is_addon and _has_any_addon(structure))
         ]
         if not parents:
+            if is_addon and any(_entity_type_name(c) == parent_name and _has_any_addon(c) for c in candidates):
+                return _refusal_report(1, f"{parent_name.lower()}_already_has_addon")
             return _refusal_report(1, f"no_ready_idle_{parent_name.lower()}")
+        morph_type = self._morph_result_type(action)
+        if morph_type is not None and not await self._is_affordable(morph_type):
+            return _refusal_report(1, self._unaffordable_reason(morph_type))
         caller = parents[0]
         use_ability = getattr(caller, "use_ability", None)
         order = use_ability if callable(use_ability) else caller
         applied = await self._issue_unit_order(order, ability)
         return _issuance_report(1, 1 if applied else 0, "morph_refused")
+
+    def _morph_result_type(self, action: SC2CommandAction) -> object | None:
+        """UnitTypeId produced by an add-on / townhall morph (for cost checks), when python-sc2 knows it."""
+
+        name = _normalized_name(action.subject)
+        try:
+            from sc2.ids.unit_typeid import UnitTypeId
+        except ImportError:
+            return None
+        return getattr(UnitTypeId, name or "", None)
 
     async def build_structure(self, action: SC2CommandAction) -> bool | SC2ActionReport:
         """Build ``action.subject`` near the resolved semantic map target.
@@ -560,7 +588,7 @@ class PythonSC2BotAdapter:
             return await self._morph_structure(action, morph)
         type_id = self._resolve_unit_type(action.subject)
         if not await self._is_affordable(type_id):
-            return False
+            return _refusal_report(1, self._unaffordable_reason(type_id))
         structure_name = _action_structure_name(action)
         if _normalized_name(action.subject) in SC2_GAS_STRUCTURE_TYPE_NAMES:
             return await self._build_gas_structure(action, type_id)
@@ -821,6 +849,12 @@ class PythonSC2BotAdapter:
         producers = self._producer_structures(action, producer_name)
         if not producers:
             return _refusal_report(action.count, "no_ready_idle_producer")
+        if _unit_needs_techlab(type_id):
+            equipped = [p for p in producers if _has_addon_kind(p, "techlab") is not False]
+            if not equipped:
+                return _refusal_report(action.count, "producer_needs_techlab")
+            producers = equipped
+        slots = {id(producer): _queue_slots_left(producer) for producer in producers}
         issued = 0
         detail = "producers_stalled"
         while issued < action.count:
@@ -828,17 +862,38 @@ class PythonSC2BotAdapter:
             for producer in producers:
                 if issued >= action.count:
                     break
+                if slots[id(producer)] <= 0:
+                    continue
                 if not await self._is_affordable(type_id):
-                    return _issuance_report(action.count, issued, "unaffordable")
+                    return _issuance_report(
+                        action.count, issued, self._unaffordable_reason(type_id)
+                    )
                 train = getattr(producer, "train", None)
                 if not callable(train):
                     continue
                 if await self._issue_unit_order(train, type_id):
                     issued += 1
                     issued_in_pass += 1
+                    slots[id(producer)] -= 1
             if issued_in_pass == 0:
+                if issued < action.count and all(v <= 0 for v in slots.values()):
+                    detail = "production_queue_full"
                 break
         return _issuance_report(action.count, issued, detail)
+
+    def _unaffordable_reason(self, item: object) -> str:
+        """``supply_blocked`` when supply (not minerals/gas) is what stops the order, else ``unaffordable``."""
+
+        supply_left = getattr(self.bot, "supply_left", None)
+        calculate = getattr(self.bot, "calculate_supply_cost", None)
+        if _is_real_number(supply_left) and callable(calculate):
+            try:
+                need = calculate(item)
+            except Exception:  # noqa: BLE001 - reason only; never block the refusal
+                return "unaffordable"
+            if _is_real_number(need) and float(need) > float(supply_left):
+                return "supply_blocked"
+        return "unaffordable"
 
     async def research_upgrade(self, action: SC2CommandAction) -> SC2ActionReport:
         """Research an upgrade on ready idle structures exposing ``research``."""
@@ -852,6 +907,8 @@ class PythonSC2BotAdapter:
         structures = self._research_structures(action, researcher_name)
         if not structures:
             return _refusal_report(action.count, "no_ready_idle_researcher")
+        if not await self._is_affordable(upgrade):
+            return _refusal_report(action.count, "unaffordable")
         issued = 0
         for structure in structures:
             if issued >= action.count:
@@ -2551,11 +2608,19 @@ class PythonSC2BotAdapter:
             producer_name = _normalized_name(action.metadata.get("producer"))
             if producer_name is None:
                 return []
-            return [
+            candidates = [
                 structure
                 for structure in self._ready_idle_structures()
                 if _producer_matches(structure, producer_name)
             ]
+            try:
+                needs_techlab = _unit_needs_techlab(self._resolve_unit_type(action.subject))
+            except (ValueError, MissingPythonSC2Error):
+                needs_techlab = False
+            if needs_techlab:
+                # UnitTypeData.require_attached: the producer must carry the Tech Lab (Unit.add_on_tag)
+                candidates = [c for c in candidates if _has_addon_kind(c, "techlab") is not False]
+            return candidates
         if kind == "research_upgrade":
             researcher_name = self._effective_researcher(
                 action, _normalized_name(action.metadata.get("researcher"))
@@ -2742,6 +2807,7 @@ class PythonSC2BotAdapter:
             for unit in units
             if (name := _entity_type_name(unit)) is not None
             and name != SC2_WORKER_TYPE_NAME
+            and name not in _NON_ARMY_TYPE_NAMES
         ]
         if cap is not None:
             army = army[:cap]
@@ -3699,6 +3765,45 @@ def _nearest_entity(
         pointed,
         key=lambda pair: (anchor.distance_to(pair[0]), pair[0].x, pair[0].y),
     )[1]
+
+
+def _unit_needs_techlab(type_id: object) -> bool:
+    """python-sc2 ``TRAIN_INFO[..]['requires_techlab']`` (UnitTypeData.tech_requirement + require_attached)."""
+
+    try:
+        from sc2.dicts.unit_train_build_abilities import TRAIN_INFO
+    except ImportError:
+        return False
+    return any(
+        bool(table[type_id].get("requires_techlab")) for table in TRAIN_INFO.values() if type_id in table
+    )
+
+
+def _has_addon_kind(structure: object, kind: str) -> bool | None:
+    """``has_techlab`` / ``has_reactor``; ``None`` when the observation cannot say."""
+
+    value = getattr(structure, f"has_{kind}", None)
+    return bool(value) if isinstance(value, bool) else None
+
+
+def _has_any_addon(structure: object) -> bool:
+    tag = getattr(structure, "add_on_tag", 0)
+    return bool(tag) if _is_real_number(tag) else False
+
+
+def _queue_slots_left(structure: object) -> int:
+    """Free production-queue slots: 5, or 8 with a Reactor, minus the orders already queued."""
+
+    total = (
+        _PRODUCER_QUEUE_SLOTS_REACTOR
+        if _has_addon_kind(structure, "reactor")
+        else _PRODUCER_QUEUE_SLOTS
+    )
+    try:
+        used = len(getattr(structure, "orders", ()) or ())
+    except TypeError:
+        used = 0
+    return max(0, total - used)
 
 
 def _observed_number(entity: object, attribute: str) -> float | None:
