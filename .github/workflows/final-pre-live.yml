@@ -385,7 +385,7 @@ jobs:
       }}
     needs:
       - event_admission
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 90
     permissions:
       contents: read
@@ -556,7 +556,7 @@ jobs:
     needs:
       - event_admission
       - build_identity
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 90
     permissions:
       actions: read
@@ -1090,7 +1090,7 @@ jobs:
     needs:
       - event_admission
       - build_identity
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 150
     permissions:
       actions: read
