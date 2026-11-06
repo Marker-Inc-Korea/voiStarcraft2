@@ -62,5 +62,9 @@
     return { cards: out, open, views };
   }
 
-  return { MAX_CARDS, viewFor, opName, isOpen, cardsFor };
+  // The one number the HUD shows: how many operations are OPEN right now (falls as they complete or block). When none is
+  // open any more it keeps showing how many operations this session had, so the word never reads "0" next to history.
+  const opsCount = (total, open) => open || total;
+
+  return { MAX_CARDS, viewFor, opName, isOpen, cardsFor, opsCount };
 });

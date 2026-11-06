@@ -132,12 +132,16 @@ async function main() {
   await sleep(600);
   await screencapture("04-thinking-overlay-fullscreen");
   await waitFor(() => js("Number(document.getElementById('ops-count').textContent)>=2"), "two parallel operations counted in the HUD ops word (rails live in the board window)", 14000);
+  const peakOps = Number(await js("document.getElementById('ops-count').textContent")); // the count is OPEN operations: it only falls from here
   await sleep(9000);
   I.applySettings({ layout: { pinned: true } }); await sleep(500); // the bar would auto-collapse 2.5 s after voice ended
   await screencapture("05-operations-strip-screen");
   I.applySettings({ layout: { pinned: false } });
   note("intent forwarded", { intents: backend.state.intents.map(i => ({ transcript: i.transcript, tier: i.tool_arguments && i.tool_arguments.command_layer, latency: i.latency_ms })) });
-  check("HUD shows only a one-word operation count (no cards in the HUD)", await js("Number(document.getElementById('ops-count').textContent)>=2 && document.querySelectorAll('.card, .op, .rail').length===0"));
+  // The fake backend blocks the "strike" operation ~5.5 s after it starts, so after the 9 s wait the OPEN count has legitimately fallen
+  // from 2 to 1 (the product shows open operations, see board_cards.opsCount). Assert the invariant, not a time-dependent number.
+  const nowOps = Number(await js("document.getElementById('ops-count').textContent"));
+  check("HUD shows only a one-word operation count (no cards in the HUD)", peakOps >= 2 && Number.isInteger(nowOps) && nowOps >= 1 && nowOps <= peakOps && await js("document.querySelectorAll('.card, .op, .rail').length===0"), { peakOps, nowOps });
   check("bar has no paragraphs / helper text", await js("document.querySelectorAll('.panel p:not(.transcript):not(.utterance)').length===0"));
 
   // ---- 5. text input: click focuses (only then), hide releases focus ----

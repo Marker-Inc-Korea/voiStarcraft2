@@ -40,10 +40,20 @@ test("terminal skin stays legible at the lowest opacity: scrim/legible/glow grow
   assert.deepEqual(K.legibility("cosmic", 0.28), { legible: "0.88", scrim: "0.44", glow: "0.50" }); // unchanged round-1 formulas
   assert.equal(K.legibility("nonsense", 0.28).scrim, K.legibility("cosmic", 0.28).scrim);
 });
-test("cssVars feed opacity/blur through unchanged for both skins; chamfer only for terminal", () => {
-  const glass = { ...S.defaults().glass, alpha: 0.5, blur: 20 };
-  for (const skin of K.SKINS) { const v = K.cssVars(skin, glass); assert.equal(v["--glass-alpha"], "0.5"); assert.equal(v["--glass-blur"], "20px"); }
-  assert.equal(K.chamferFor("cosmic"), 0); assert.ok(K.chamferFor("terminal") > 0); assert.equal(K.chamferFor("x"), 0); assert.equal(K.normalize("x"), "cosmic");
+test("cssVars feed opacity/blur through unchanged for both skins; every skin is rounded (no chamfer concept)", () => {
+  const glass = { ...S.defaults().glass, alpha: 0.5, blur: 20, radius: 26 };
+  for (const skin of K.SKINS) { const v = K.cssVars(skin, glass); assert.equal(v["--glass-alpha"], "0.5"); assert.equal(v["--glass-blur"], "20px"); assert.equal(v["--radius"], "26px"); }
+  assert.equal(K.CHAMFER, undefined); assert.equal(K.chamferFor, undefined);
+  for (const skin of K.SKINS) { const m = K.smoothFor(skin); assert.ok(m > 0 && m <= 1, skin); }
+  assert.equal(K.smoothFor("x"), K.smoothFor("cosmic")); assert.equal(K.normalize("x"), "cosmic");
+});
+test("both skins produce a rounded HUD shape through the same geometry main hit-tests", () => {
+  const H = require("../renderer/hud_shape.js");
+  for (const skin of K.SKINS) {
+    const s = H.shape("bottom", 900, 90, { slantDeg: 14, radius: 22, smooth: K.smoothFor(skin) });
+    assert.equal((s.path.match(/C/g) || []).length, 4, skin);
+    for (const v of s.vertices) assert.equal(H.containsPoint(s.points, v[0], v[1]), false, `${skin} corner is rounded`);
+  }
 });
 test("terminal stylesheet: phosphor green monospace, scanlines, CRT glow, block cursor, chamfer, no cosmic canvas", () => {
   const css = fs.readFileSync(path.join(__dirname, "..", "renderer", "style.css"), "utf8");
