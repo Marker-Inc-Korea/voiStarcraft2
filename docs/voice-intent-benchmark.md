@@ -33,15 +33,15 @@ Our own code is not the bottleneck: client time e ≤ 0.3 ms, rule matching ≈ 
 | operation | ≤ 10 s | 2620 / 3626 | 3962 / **10984** | under load 70 well inside the budget; at load 225 the p95 (one tail call) exceeds 10 s: **load-inflated, not verifiable as met/unmet on a quiet machine** |
 | macro | ≤ 10 s | 2093 / 2189 | 3813 / 7976 | inside the budget in both runs |
 
-Accuracy on the same calls (pooled over every `server_vad` run, same scorer as the earlier rounds, shipped schema + real ASR; `pooled_accuracy_by_silence_ms` in `round3_stage_tables.json`; unsafe = 0 in every cell, 0 of 1,090 scored utterances):
+Accuracy on the same calls (pooled over every `server_vad` run, same scorer as the earlier rounds, shipped schema + real ASR; `pooled_accuracy_by_silence_ms` in `round3_stage_tables.json`; unsafe = 0 in every cell, 0 of 960 scored utterances (energy-endpointing run excluded)):
 
 | silence | rule words | micro (model path) | operation | macro | no-intent calls |
 |---|---|---|---|---|---|
 | 250 (r2+r3, 240 utt) | 38/41 = 93% | 42/48 = 88% | 56/70 = 80% | 61/68 = 90% | 12 |
 | 350 (r2, 120 utt) | 19/22 = 86% | 25/26 = 96% | 34/36 = 94% | 31/36 = 86% | 0 |
-| 450 (r1+r2+r3, 360 utt) | 56/61 = 92% | 79/80 = 99% | 102/108 = 94% | 100/108 = 93% | 3 |
+| 450 (r1+r2+r3, 360 utt) | 56/61 = 92% | 79/80 = 99% | 102/108 = 94% | 100/108 = 93% | 2 |
 
-Short silence (250, 300) cuts utterances (no-intent: 12 at 250, 19 at 300, vs 3 at 450) and costs accuracy on operation (80% vs 94%) and micro (88% vs 99%). Cells are n ≈ 22–108, so a 350 vs 450 difference is within noise. **Decision: keep 450** (the shipped default). The saving of lowering it is ≤ 1 ms per ms and accuracy is the user's first priority.
+Short silence (250, 300) cuts utterances (no-intent: 12 at 250, 19 at 300, vs 2 at 450; the accuracy cells above exclude those no-intent calls, which are listed in their own column and score ≈ 0) and costs accuracy on operation (80% vs 94%) and micro (88% vs 99%). Cells are n ≈ 22–108, so a 350 vs 450 difference is within noise. **Decision: keep 450** (the shipped default). The saving of lowering it is ≤ 1 ms per ms and accuracy is the user's first priority.
 
 ## R3-C. Adopt / drop table
 
