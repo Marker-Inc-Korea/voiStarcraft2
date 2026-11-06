@@ -45,11 +45,11 @@ test("cssVars feed opacity/blur through unchanged for both skins; chamfer only f
   for (const skin of K.SKINS) { const v = K.cssVars(skin, glass); assert.equal(v["--glass-alpha"], "0.5"); assert.equal(v["--glass-blur"], "20px"); }
   assert.equal(K.chamferFor("cosmic"), 0); assert.ok(K.chamferFor("terminal") > 0); assert.equal(K.chamferFor("x"), 0); assert.equal(K.normalize("x"), "cosmic");
 });
-test("terminal stylesheet: phosphor green monospace, scanlines, CRT glow, block cursor, chamfer, no cosmic canvas", () => {
+test("terminal stylesheet: phosphor green monospace, scanlines, CRT glow, block cursor, rounded geometry, no cosmic canvas", () => {
   const css = fs.readFileSync(path.join(__dirname, "..", "renderer", "style.css"), "utf8");
   const html = fs.readFileSync(path.join(__dirname, "..", "renderer", "index.html"), "utf8");
   const terminal = css.slice(css.indexOf("TERMINAL SKIN"));
-  for (const needle of ["#2cff7a", '"SF Mono", Menlo, "IBM Plex Mono"', "repeating-linear-gradient(180deg", "radial-gradient(120% 130%", "@keyframes blink", ".cursor", 'content: ">"', "clip-path: polygon(", "outline-brackets", "var(--term-glow)", "var(--scrim)"]) assert.ok(css.includes(needle), needle);
+  for (const needle of ["#2cff7a", '"SF Mono", Menlo, "IBM Plex Mono"', "repeating-linear-gradient(180deg", "radial-gradient(120% 130%", "@keyframes blink", ".cursor", 'content: ">"', "var(--term-glow)", "var(--scrim)"]) assert.ok(css.includes(needle), needle);
   assert.match(terminal, /body\[data-skin="terminal"\] #space[^{]*\{ display: none/);
   assert.match(terminal, /prefers-reduced-motion: reduce[\s\S]*\.cursor/);
   assert.match(html, /<i class="cursor"><\/i>/); assert.match(html, /id="term-word"/);
