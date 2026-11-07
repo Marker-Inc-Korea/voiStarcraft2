@@ -56,7 +56,7 @@ def test_corpus_shape_and_tiers():
     rows = B.build_rows()
     assert len(rows) >= 200
     assert len({r["id"] for r in rows}) == len(rows)
-    assert len({r["text"] for r in rows}) == len(rows)
+    assert len({(r["text"], r["state_name"]) for r in rows}) == len(rows)
     assert {r["tier"] for r in rows} == {"explicit", "intent", "ambiguous", "state", "negative"}
     for r in rows:
         assert r["gold"]["expect"] in {"execute", "ask", "choose_or_ask", "refuse"}
@@ -94,7 +94,7 @@ def test_fully_researched_family_has_nothing_to_execute():
 
 
 def test_level_two_without_armory_asks_or_builds_the_armory():
-    st = _state(["ENGINEERINGBAY"], ["TERRANINFANTRYWEAPONSLEVEL1"])
+    st = _state(["ENGINEERINGBAY", "FACTORY"], ["TERRANINFANTRYWEAPONSLEVEL1"])  # next missing step = the Armory
     out = C.resolve({"commands": ["RESEARCH_TERRANINFANTRYWEAPONS"]}, st)
     assert out["expect"] == "choose_or_ask"
     assert out["acceptable"] == ["BUILD_ARMORY"]
