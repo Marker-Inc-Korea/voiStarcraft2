@@ -5557,6 +5557,30 @@ def _decide_realtime_intent(
         decided = _catalog_decision(transcript, tool_arguments, catalog_state)
         if decided is not None:
             return decided
+    if tool_arguments is not None and catalog_state is not None:
+        # State veto: a macro train/build call whose required structure is missing in the live state is turned into ONE
+        # question (the macro layer would only queue or stall it).  Never raises; None = the call proceeds.
+        from starcraft_commander import realtime_catalog
+
+        if realtime_intent.classify_tier(tool_arguments) == realtime_intent.TIER_MACRO:
+            vetoed = realtime_catalog.veto_macro_call(transcript, catalog_state)  # type: ignore[arg-type]
+            if vetoed is not None:
+                message = vetoed.narration_ko
+                return _RealtimeDecision(
+                    "clarification",
+                    realtime_intent.TIER_CLARIFICATION,
+                    "state_veto",
+                    {
+                        "source": "ui",
+                        "status": "clarification_required",
+                        "goal": message,
+                        "assistant_message": message,
+                        "clarification_prompt": message,
+                        "catalog_resolution": vetoed.to_dict(),
+                    },
+                    command_id=vetoed.command_id,
+                    narration=message,
+                )
     if tool_arguments is not None:
         tier = realtime_intent.classify_tier(tool_arguments)
         if tier == realtime_intent.TIER_CLARIFICATION:
@@ -13092,7 +13116,11 @@ class _WebGuiRequestHandler(BaseHTTPRequestHandler):
         try:
             catalog_state = (
                 self._catalog_state_snapshot()
-                if isinstance(tool_arguments, Mapping) and tool_arguments.get("catalog") not in (None, "", {})
+                if isinstance(tool_arguments, Mapping)
+                and (
+                    tool_arguments.get("catalog") not in (None, "", {})
+                    or realtime_intent.default_catalog_mode() != "off"
+                )
                 else None
             )
             decision = _decide_realtime_intent(

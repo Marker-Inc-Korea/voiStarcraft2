@@ -69,7 +69,15 @@ _NEGATION_RE: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE,
 )
 # Reasons for which the honest answer is "the prerequisite is missing, build it first?" (an ask), not a dead end.
-_PREREQUISITE_REASONS: Final[frozenset[str]] = frozenset({"missing_prerequisite"})
+_PREREQUISITE_REASONS: Final[frozenset[str]] = frozenset(
+    {"missing_prerequisite", "producer_needs_techlab", "no_ready_idle_producer"}
+)
+# Reasons for which a macro train/build call (MicroMachine would only queue or stall) is stopped and the user is asked
+# instead: the structure that makes the command possible does not exist.  Transient reasons (busy, no money, no geyser
+# yet) stay with the macro layer, which queues them.
+STATE_VETO_REASONS: Final[frozenset[str]] = frozenset(
+    {"missing_prerequisite", "producer_needs_techlab", "no_ready_idle_producer", "wrong_issuer", "no_matching_caster"}
+)
 _NOTES: Final[tuple[tuple[str, re.Pattern[str], str], ...]] = (
     ("morph_siegemode", re.compile(r"사거리|range", re.IGNORECASE),
      "API에 탱크 사거리 업그레이드는 없어 시즈 모드를 선택했습니다"),
@@ -271,7 +279,8 @@ def decide_entry(
         text = _refusal_ko(entry, ev)
         if head in _PREREQUISITE_REASONS:
             needed = _needed_structures_ko(entry, ev.reason)
-            question = f"{text} — 먼저 {needed}을(를) 지을까요?" if needed else text
+            what = "기술실을 달" if head == "producer_needs_techlab" else f"{needed}을(를) 지을" if needed else ""
+            question = f"{text} — 먼저 {what}까요?" if what else text
             return Resolution(KIND_ASK, entry.id, reason=ev.reason, reason_ko=text, narration_ko=question, source=source)
         return Resolution(KIND_REFUSE, entry.id, reason=ev.reason, reason_ko=text, narration_ko=text, source=source)
     if len(groups) > 1:
@@ -358,6 +367,21 @@ def resolve_intent(
         return Resolution(KIND_REFUSE, first.command_id, reason=first.reason, reason_ko=first.reason_ko, narration_ko=first.narration_ko)
     question, alts = _ask_which([cat.get_command(d.command_id) for d in decided])
     return Resolution(KIND_ASK, alts[0], alternatives=alts, reason="ambiguous", reason_ko=question, narration_ko=question, source="intent")
+
+
+def veto_macro_call(transcript: str, state: cat.CatalogState | None) -> Resolution | None:
+    """State veto for a macro train/build tool call: ``Resolution`` (ask) when the transcript names one train/build command
+    whose required structure is missing in ``state``; ``None`` otherwise (the macro layer proceeds)."""
+
+    if state is None or not str(transcript or "").strip() or _unsafe_text(transcript) or phrase_is_negated(transcript):
+        return None
+    scored = [(e, sc) for e, sc in cat.search_scored(transcript, limit=4) if sc >= MIN_SCORE and e.category in {"train", "build"}]
+    if not scored or (len(scored) > 1 and scored[0][1] - scored[1][1] < DECISIVE_MARGIN):
+        return None
+    result = decide_entry(scored[0][0], transcript, state, source="state_veto")
+    if result.kind == KIND_ASK and result.reason.partition(":")[0].strip() in STATE_VETO_REASONS:
+        return result
+    return None
 
 
 def resolve_catalog_call(

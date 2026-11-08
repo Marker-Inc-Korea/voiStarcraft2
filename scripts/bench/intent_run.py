@@ -183,11 +183,13 @@ def decision_to_prediction(decision) -> dict:
     return {"kind": "none", "command": None, "commands": [], "reason": decision.kind}
 
 
-def decide(transcript: str, tool_args: dict | None, row: dict | None = None) -> dict:
+def decide(transcript: str, tool_args: dict | None, row: dict | None = None, state_guard: bool = True) -> dict:
+    """``state_guard=False`` = V0 (the shipped product: no server-side state, no catalog)."""
+
     from starcraft_commander import web_gui as WG
 
     transcript = " ".join((transcript or "").split())[:2000]
-    state = catalog_state_for_row(row) if row is not None else None
+    state = catalog_state_for_row(row) if (row is not None and state_guard) else None
     try:
         return decision_to_prediction(WG._decide_realtime_intent(transcript, tool_args, catalog_state=state))
     except (ValueError, TypeError, KeyError) as exc:
@@ -219,6 +221,7 @@ async def run_llm(rows: list[dict], model: str, reps: int, variant: str, concurr
                   kind: str = "tx") -> dict[str, list[dict]]:
     import pipelines as P  # noqa: E402 (after BENCH_SCHEMA_MODULE is set in main)
 
+    C_variant = variant
     cfg = P.tx_config(model, variant) if kind == "tx" else P.rtx_config(model, variant)
     run_one = P.run_text if kind == "tx" else P.run_realtime_text
     sem = asyncio.Semaphore(concurrency)
@@ -230,7 +233,7 @@ async def run_llm(rows: list[dict], model: str, reps: int, variant: str, concurr
         args = res.get("tool_args")
         # An abstained fast rule is not a model answer: the product asks the model only when the deterministic layer
         # is silent, but a tool call with the same transcript goes through the very same decision function.
-        pred = decide(row["text"], args, row) if isinstance(args, dict) else {"kind": "none", "command": None, "commands": [],
+        pred = decide(row["text"], args, row, state_guard=(C_variant != "both")) if isinstance(args, dict) else {"kind": "none", "command": None, "commands": [],
                                                                               "reason": res.get("error") or "no tool call"}
         pred["latency_ms"] = res.get("total_ms")
         pred["tokens"] = (res.get("tokens") or {}).get("total")
@@ -251,7 +254,7 @@ def rescore_llm(path: Path) -> Path:
     for r in rows:
         old = data["predictions"].get(r["id"], {})
         args = old.get("tool_args")
-        pred = decide(r["text"], args, r) if isinstance(args, dict) else {"kind": "none", "command": None, "commands": [],
+        pred = decide(r["text"], args, r, state_guard=(data["meta"].get("variant") != "both")) if isinstance(args, dict) else {"kind": "none", "command": None, "commands": [],
                                                                           "reason": old.get("reason", "no tool call")}
         pred.update({k: old.get(k) for k in ("latency_ms", "tokens", "tool_args")})
         preds[r["id"]] = pred

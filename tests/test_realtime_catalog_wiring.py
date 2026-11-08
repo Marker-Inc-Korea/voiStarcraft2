@@ -236,7 +236,7 @@ INTENT_TABLE = [
     ("유닛 뽑아", "full", A, set()),
     # refuse with a truthful reason: the state does not allow it, nothing executes
     ("스팀팩 연구해", "bio", R, {"research_stimpack"}),  # already researched
-    ("토르 뽑아", "bio", R, {"train_thor"}),  # no factory
+    ("토르 뽑아", "bio", A, {"train_thor"}),  # no factory: nothing executes, ONE question (build it first?)
     # nothing matches / not a command / injection: executes nothing
     ("오늘 날씨 어때", "full", N, set()),
     ("안녕", "full", N, set()),
@@ -316,12 +316,27 @@ def test_a_negated_utterance_never_executes_whatever_the_model_extracted(phrase)
     assert result.kind in {R, N}, result
 
 
-def test_a_state_that_refuses_never_executes_and_says_why_in_korean() -> None:
+def test_a_state_that_refuses_never_executes_and_says_why_in_korean() -> None:  # also: a missing structure asks once
     result = resolve("스팀팩 연구해", "bio")
     assert result.kind == R and result.command_id == "research_stimpack"
     assert "이미" in result.reason_ko
     result = resolve("토르 뽑아", "bio")
-    assert result.kind == R and ("군수공장" in result.reason_ko or "공장" in result.reason_ko)
+    assert result.kind == A and "군수공장" in result.reason_ko and result.narration_ko.count("?") == 1
+
+
+def test_macro_train_call_for_a_missing_producer_is_vetoed_by_the_state_into_one_question() -> None:
+    from starcraft_commander import web_gui
+
+    bot, done = build_world("bio")  # no factory
+    state = state_of(bot, done)
+    macro = {"command_layer": "macro", "goal": "토르 뽑아", "macro": {"production_targets": ["TERRAN_THOR"], "task_type": "sustain_production"}}
+    decision = web_gui._decide_realtime_intent("토르 뽑아", macro, catalog_state=state)
+    assert decision.kind == "clarification" and decision.command_id == "train_thor" and "군수공장" in decision.narration
+    full, done_full = build_world("full")
+    ok = web_gui._decide_realtime_intent("토르 뽑아", macro, catalog_state=state_of(full, done_full))
+    assert ok.kind == "executed" and ok.tier == "macro"
+    no_state = web_gui._decide_realtime_intent("토르 뽑아", macro)
+    assert no_state.kind == "executed"  # no snapshot = shipped behaviour, never a guess
 
 
 # --------------------------------------------------------------------------- tool args -> provider output -> narration
