@@ -14,7 +14,7 @@ import pytest
 pytest.importorskip("sc2.ids.ability_id")
 pytest.importorskip("s2clientprotocol")
 
-from scripts.sc2_accuracy import audit, fixtures_production, harness  # noqa: E402
+from scripts.sc2_accuracy import audit, fixtures_effects, fixtures_production, harness  # noqa: E402
 from scripts.sc2_accuracy.lowering import _plan_actions  # noqa: E402
 from sc2.dicts.generic_redirect_abilities import GENERIC_REDIRECT_ABILITIES  # noqa: E402
 from sc2.ids.ability_id import AbilityId  # noqa: E402
@@ -156,6 +156,7 @@ def world(entry, issuer: str, missing: str = ""):
         bot.add_unit(U.MARINE, x=21.0, y=21.0, health=10.0, health_max=45.0)
     if mode == "explicit_point" and missing != "target":
         kwargs["location"] = "enemy_main"
+    fixtures_effects.complete(bot, entry, issuer, missing)  # cargo / mineral preconditions of effect, behavior, other rows
     return bot, kwargs
 
 
