@@ -28,7 +28,7 @@ KIND_ASK: Final[str] = "ask"
 KIND_REFUSE: Final[str] = "refuse"
 KIND_NONE: Final[str] = "none"
 
-CATALOG_MODES: Final[tuple[str, ...]] = ("off", "v1", "v2")
+CATALOG_MODES: Final[tuple[str, ...]] = ("off", "v1", "v2", "v3")
 # A hit is decisive when it beats the runner-up by at least this many score points (search_scored scale: 10 points per
 # matched character, +5 per cue part, 10 000 for an exact alias).
 DECISIVE_MARGIN: Final[int] = 15
@@ -134,6 +134,11 @@ class Resolution:
 
 # --------------------------------------------------------------------------- names
 
+
+def _family(entry: cat.CommandEntry) -> str:
+    """Same-family key: a multi-level upgrade / add-on / caster variant of one thing is one family."""
+
+    return entry.id
 
 def command_title(entry: cat.CommandEntry) -> str:
     """Short Korean name of a command: its first alias without the trailing verb ("보병 공격력 업그레이드" -> 보병 공격력)."""
@@ -398,7 +403,7 @@ def resolve_catalog_call(
     plain phrase and the resolver chooses.  Without a state snapshot nothing executes.
     """
 
-    if mode not in {"v1", "v2"}:
+    if mode not in {"v1", "v2", "v3"}:
         raise ValueError(f"unknown catalog mode {mode!r}")
     if not isinstance(catalog, Mapping):
         return Resolution(KIND_NONE, reason="no_catalog_call")
@@ -416,11 +421,25 @@ def resolve_catalog_call(
             KIND_NONE, command_id=command_id if mode == "v1" else "", reason="no_state",
             narration_ko="지금 게임 상태를 읽을 수 없어 실행하지 않았습니다.",
         )
-    if mode == "v1":
+    if mode in {"v1", "v3"}:
         try:
             entry = cat.get_command(command_id)
         except KeyError:
             return Resolution(KIND_NONE, reason="unknown_command", narration_ko="알 수 없는 명령입니다.")
+        if mode == "v3" and transcript:
+            # V3: the model named the command; the server checks that the HEARD words agree before anything runs.
+            heard = resolve_intent(transcript, state, location=location, queue=queue)
+            named = _family(entry)
+            agrees = heard.kind in {KIND_EXECUTE, KIND_ASK, KIND_REFUSE} and bool(heard.command_id) and (
+                _family(cat.get_command(heard.command_id)) == named
+                or any(_family(cat.get_command(a)) == named for a in heard.alternatives)
+            )
+            if not agrees:
+                question = f"'{transcript[:40]}'은(는) {command_title(entry)}이(가) 맞나요? 어떤 명령인지 다시 말씀해 주세요."
+                return Resolution(
+                    KIND_ASK, entry.id, reason="phrase_disagrees_with_command", reason_ko=question, narration_ko=question,
+                    source="command_id_checked",
+                )
         return decide_entry(entry, transcript or intent, state, location=location, queue=queue, source="command_id")
     phrase = intent or transcript
     result = resolve_intent(phrase, state, location=location or phrase_location(transcript), queue=queue)

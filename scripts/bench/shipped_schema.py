@@ -49,7 +49,7 @@ def parse_variant(variant: str) -> tuple[str, bool, bool]:
     """'both_h_tcn' -> ('both', hints=True, named_tool_choice=True). Unknown base names raise ValueError."""
     parts = variant.split("_")
     base, flags = parts[0], parts[1:]
-    if base not in BASE_VARIANTS or any(f not in ("h", "tcn", "cv1", "cv2") for f in flags):
+    if base not in BASE_VARIANTS or any(f not in ("h", "tcn", "cv1", "cv2", "cv3") for f in flags):
         raise ValueError(f"unknown prompt variant {variant!r}")
     return base, "h" in flags, "tcn" in flags
 
@@ -57,7 +57,7 @@ def parse_variant(variant: str) -> tuple[str, bool, bool]:
 def catalog_mode(variant: str) -> str:
     """'both_cv2' -> 'v2' (catalog.intent + server resolver); 'both_cv1' -> 'v1' (catalog.command_id enum); else 'off' (V0)."""
     flags = variant.split("_")[1:]
-    return "v1" if "cv1" in flags else "v2" if "cv2" in flags else "off"
+    return "v1" if "cv1" in flags else "v2" if "cv2" in flags else "v3" if "cv3" in flags else "off"
 
 
 def variant_has_hints(variant: str) -> bool:

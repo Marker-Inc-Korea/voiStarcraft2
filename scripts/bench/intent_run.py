@@ -249,6 +249,8 @@ def rescore_llm(path: Path) -> Path:
     """Re-run the CURRENT decision function over the stored raw tool calls (no model calls)."""
 
     data = json.loads(path.read_text(encoding="utf-8"))
+    if str(data["meta"].get("variant", "")).endswith("_cv3"):
+        os.environ["VOI_REALTIME_CATALOG_MODE"] = "v3"
     rows = load_rows()
     preds = {}
     for r in rows:
@@ -324,7 +326,9 @@ def main(argv=None) -> int:
                     help="tx = chat-completions proxy; rtx = real Realtime model over a websocket with TEXT input")
     args = ap.parse_args(argv)
     if args.system in ("llm", "rtx"):
-        os.environ["BENCH_SCHEMA_MODULE"] = "shipped_schema"  # pipelines.py builds the SHIPPED tool/prompt (read at import)
+        os.environ["BENCH_SCHEMA_MODULE"] = "shipped_schema"
+        if args.variant.endswith("_cv3"):
+            os.environ["VOI_REALTIME_CATALOG_MODE"] = "v3"  # the server side of V3 reads it (consistency check)  # pipelines.py builds the SHIPPED tool/prompt (read at import)
     rows = load_rows()
     if args.tiers:
         rows = [r for r in rows if r["tier"] in args.tiers.split(",")]
