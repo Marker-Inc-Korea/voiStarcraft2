@@ -85,3 +85,64 @@ def structure_caster_tokens(tokens: Iterable[str]) -> frozenset[str]:
         token for token in tokens
         if token in _ROWS and all(c in _STRUCTURE_TYPES for c in _ROWS[token]["casters"])  # type: ignore[union-attr]
     )
+
+
+# --------------------------------------------------------------------------- caster / target readiness
+# Observable rules only (Unit.cargo_*, visible enemies, own SCVs).  A field the observation does not carry
+# (cargo_max == 0, e.g. offline fakes) is never a reason to refuse.  Refusal codes are the keys the narrator's
+# SC2_CASTER_BLOCKER_KOREAN_REASONS / SC2_TARGET_REQUIRED_KOREAN_REASONS (or sc2_catalog.REFUSAL_KO) translate.
+
+_LOAD_TOKENS: Final[frozenset[str]] = frozenset({"bunker_load", "command_center_load_all"})
+_UNLOAD_TOKENS: Final[frozenset[str]] = frozenset({"bunker_unload_all", "command_center_unload_all"})
+_PASSENGER_TOKENS: Final[frozenset[str]] = frozenset({"bunker_stimpack"})
+
+
+def _number(entity: object, attribute: str) -> float | None:
+    value = getattr(entity, attribute, None)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def cargo_blockers(token: str, unit: object) -> tuple[str, ...]:
+    """Reasons a Bunker / Command Center cannot run a cargo ability now (empty = ready or not observable)."""
+
+    if token not in _LOAD_TOKENS | _UNLOAD_TOKENS | _PASSENGER_TOKENS:
+        return ()
+    capacity = _number(unit, "cargo_max")
+    if not capacity or capacity <= 0:
+        return ()
+    used = _number(unit, "cargo_used") or 0.0
+    if token in _LOAD_TOKENS and capacity - used <= 0:
+        return ("no_cargo_space",)
+    if token in _UNLOAD_TOKENS and used <= 0:
+        return ("no_cargo_to_unload",)
+    if token in _PASSENGER_TOKENS and used <= 0:
+        return ("empty_transport",)
+    return ()
+
+
+def target_refusal(token: str, bot: object) -> str:
+    """``target_required: <reason>`` when ``token`` has no valid target in the live observation, else ``""``."""
+
+    if token == "command_center_load_all":
+        scvs = [u for u in _units(bot, "units") if _type_name(u) == "SCV"]
+        return "" if scvs else "target_required: no_scv_to_load"
+    if token == "tactical_nuke":
+        # A nuke is a one-shot strike: never fired at a location without a visible enemy to hit.
+        enemies = _units(bot, "enemy_units") + _units(bot, "enemy_structures")
+        return "" if enemies else "target_required: no_enemy_target"
+    return ""
+
+
+def _units(bot: object, group: str) -> list[object]:
+    value = getattr(bot, group, None)
+    try:
+        return list(value) if value is not None and not isinstance(value, (str, bytes)) else []
+    except TypeError:
+        return []
+
+
+def _type_name(entity: object) -> str:
+    type_id = getattr(entity, "type_id", None)
+    return str(getattr(type_id, "name", "") or getattr(entity, "name", "") or "").upper()

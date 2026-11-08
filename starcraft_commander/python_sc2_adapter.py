@@ -1159,6 +1159,7 @@ class PythonSC2BotAdapter:
         claimed: set[int] = set()
         for unit in units[:requested]:
             target, refusal = self._ability_target(mode, unit, explicit_point, claimed)
+            refusal = sc2_effects.target_refusal(token, self.bot) or refusal
             if refusal:
                 detail = refusal
                 continue
@@ -4175,6 +4176,7 @@ def _caster_blockers(token: str, unit: object) -> tuple[str, ...]:
             used = _observed_number(unit, "cargo_used")
             if used is not None and used <= 0:
                 blockers.append("no_cargo_to_unload")
+    blockers.extend(sc2_effects.cargo_blockers(token, unit))
     return tuple(blockers)
 
 
