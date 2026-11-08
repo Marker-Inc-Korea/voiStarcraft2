@@ -1302,6 +1302,23 @@ _OTHER_INTENT_RE: Final[re.Pattern[str]] = re.compile(
     r"retreat|research|move|send)\b",
     re.IGNORECASE,
 )
+# A unit name next to a production verb ("시즈탱크 뽑아", "train a siege tank") is a TRAIN request, not the unit's
+# mode/ability: the plain ability rules would execute something else than what was said (benchmark R5-A).
+_OPPOSITE_INTENT_RE: Final[re.Pattern[str]] = re.compile(
+    r"뽑|찍어|생산|양산|\b(?:train|produce|make|build|queue)\b",
+    re.IGNORECASE,
+)
+# "꺼 / 끄고 / off" after a switchable ability is the OFF ability of the same unit ("밴시 클로킹 꺼" = decloak,
+# "시즈모드 꺼" = unsiege). Executing the ON ability here would do the opposite of what was said.
+_SWITCH_OFF_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:꺼|끄(?:고|자|라|기|면|세요)?|끔|끈|오프)(?![가-힣])|\b(?:off|turn\s+off|switch\s+off)\b",
+    re.IGNORECASE,
+)
+_OFF_ABILITY: Final[dict[str, str]] = {
+    "siege_mode": "unsiege",
+    "banshee_cloak": "banshee_decloak",
+    "ghost_cloak": "ghost_decloak",
+}
 _QUESTION_RE: Final[re.Pattern[str]] = re.compile(
     r"\?|뭐|무엇|어떻게|어때|인가요|있어|할까|\b(?:what|how|why|can|should)\b",
     re.IGNORECASE,
@@ -1359,7 +1376,12 @@ def match_micro_fast_path(transcript: str) -> dict[str, object] | None:
     text = " ".join(transcript.split())
     if not text or len(text) > 80:
         return None
-    if _NEGATION_RE.search(text) or _OTHER_INTENT_RE.search(text) or _QUESTION_RE.search(text):
+    if (
+        _NEGATION_RE.search(text)
+        or _OTHER_INTENT_RE.search(text)
+        or _QUESTION_RE.search(text)
+        or _OPPOSITE_INTENT_RE.search(text)
+    ):
         return None
     matches = [rule for rule in _MICRO_RULES if rule.pattern.search(text)]
     if not matches:
@@ -1383,7 +1405,13 @@ def match_micro_fast_path(transcript: str) -> dict[str, object] | None:
         return None
     if first.ability in {"siege_mode"} and any(rule.ability == "unsiege" for rule in matches):
         return None
-    item: dict[str, object] = {"ability": first.ability}
+    ability = first.ability
+    if _SWITCH_OFF_RE.search(text):
+        ability = _OFF_ABILITY.get(ability, "")
+        if not ability:  # stim cannot be switched off: never execute it
+            return None
+        first = next(rule for rule in _MICRO_RULES if rule.ability == ability)
+    item: dict[str, object] = {"ability": ability}
     if first.unit_classes:
         item["unit_classes"] = list(first.unit_classes)
     return {
@@ -1577,6 +1605,7 @@ def _fast_micro(text: str, bare: str) -> FastPathMatch | None:
         or _FAST_STRUCT_WORD_RE.search(text)
         or _FAST_ATTACKISH_RE.search(text)
         or _FAST_PROD_VERB_RE.search(text)
+        or _OPPOSITE_INTENT_RE.search(text)
         or _FAST_CONTRA_RE.search(text)
         or _FAST_MICRO_BLOCK_RE.search(text)
     ):
@@ -1587,6 +1616,13 @@ def _fast_micro(text: str, bare: str) -> FastPathMatch | None:
     first_family, ability, units = hits[0]
     if any(family != first_family for family, _a, _u in hits):
         return None
+    if _SWITCH_OFF_RE.search(text):
+        off = _OFF_ABILITY.get(ability, "")
+        if not off:  # stim cannot be switched off: never execute it
+            return None
+        ability = off
+        if off == "unsiege":
+            units = ("TERRAN_SIEGETANK",)
     item: dict[str, object] = {"ability": ability}
     if units:
         item["unit_classes"] = list(units)
