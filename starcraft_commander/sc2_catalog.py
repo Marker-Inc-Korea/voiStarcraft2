@@ -424,12 +424,12 @@ def _cue_score(command_id: str, needle: str) -> int:
     return best
 
 
-def search(text: str, limit: int = 5) -> tuple[CommandEntry, ...]:
-    """Ranked intent lookup for free text (``탱크 사거리 늘려줘``, ``밴시 투명해지게 연구해줘``).
+def search_scored(text: str, limit: int = 5) -> tuple[tuple[CommandEntry, int], ...]:
+    """Ranked intent lookup with the score of each hit (same ranking as :func:`search`).
 
-    Score: exact alias/id first, then plain-language cues (``sc2_catalog_cues``: every part of a cue must occur; an entry
-    veto removes the command), then an alias contained in the phrase.  Ties are returned together on purpose: the
-    interpreter picks by state (``evaluate``) or asks once.
+    Score: exact alias/id 10000, plain-language cues (``sc2_catalog_cues``: every part of a cue must occur; an entry
+    veto removes the command), then an alias contained in the phrase.  Equal scores are returned together on purpose
+    (sorted by id): the interpreter picks by state (``evaluate``), by margin, or asks once.
     """
 
     needle = normalize_alias(text)
@@ -457,7 +457,13 @@ def search(text: str, limit: int = 5) -> tuple[CommandEntry, ...]:
             if current is None or current[0] < cue:
                 scored[entry.id] = (cue, entry)
     ranked = sorted(scored.values(), key=lambda item: (-item[0], item[1].id))
-    return tuple(entry for _, entry in ranked[:limit])
+    return tuple((entry, score) for score, entry in ranked[:limit])
+
+
+def search(text: str, limit: int = 5) -> tuple[CommandEntry, ...]:
+    """Ranked intent lookup for free text (``탱크 사거리 늘려줘``, ``밴시 투명해지게 연구해줘``); see :func:`search_scored`."""
+
+    return tuple(entry for entry, _ in search_scored(text, limit))
 
 
 def catalog_tool_enums() -> dict[str, tuple[str, ...]]:
