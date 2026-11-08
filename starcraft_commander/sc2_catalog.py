@@ -140,7 +140,7 @@ _ANNOTATIONS: Final[dict[str, _Ann]] = {
     "morph_vikingfightermode": _a("바이킹 전투기 모드|바이킹 이륙|바이킹 날아", "viking fighter mode|viking air mode", "바이킹을 공중 전투기 모드로 되돌립니다", "Viking -> Fighter.", "viking_fighter_mode"),
     # ---- research
     "research_advancedballistics": _a("고급 탄도학|해방선 사거리|해방선 사거리 연구|전투순양함 사거리", "advanced ballistics|liberator range", "해방선 방어 구역 사거리를 늘립니다", "Liberator AG range.", "ADVANCEDBALLISTICS"),
-    "research_bansheecloakingfield": _a("밴시 은신 연구|밴시 클로킹 연구|은폐장 연구|밴시 은폐 연구", "banshee cloaking field|cloak research|banshee cloak", "밴시가 은폐할 수 있게 연구합니다", "Cloaking Field.", "BANSHEECLOAKINGFIELD"),
+    "research_bansheecloakingfield": _a("밴시 은신 연구|밴시 클로킹 연구|은폐장 연구|밴시 은폐 연구", "banshee cloaking field|cloak research|banshee cloak research", "밴시가 은폐할 수 있게 연구합니다", "Cloaking Field.", "BANSHEECLOAKINGFIELD"),
     "research_bansheehyperflightrotors": _a("밴시 속도 연구|하이퍼플라이트 로터|밴시 이속", "hyperflight rotors|banshee speed", "밴시 이동 속도를 올립니다", "Banshee speed.", "BANSHEEHYPERFLIGHTROTORS"),
     "research_battlecruiserweaponrefit": _a("야마토 연구|전투순양함 무기 개조|야마토포 연구|전투순양함 특수화", "weapon refit|yamato research", "전투순양함 야마토/도약 사용을 연구합니다", "BC weapon refit (Yamato).", "BATTLECRUISERWEAPONREFIT"),
     "research_combatshield": _a("전투 방패 연구|컴뱃 쉴드|해병 체력 연구|전투방패", "combat shield|combat shield research", "해병 체력을 +10 올립니다", "Combat Shield.", "COMBATSHIELD"),
