@@ -74,6 +74,16 @@ _NOTES: Final[tuple[tuple[str, re.Pattern[str], str], ...]] = (
     ("morph_siegemode", re.compile(r"사거리|range", re.IGNORECASE),
      "API에 탱크 사거리 업그레이드는 없어 시즈 모드를 선택했습니다"),
 )
+# "꺼 / 끄고 / off" after a switchable ability means the OFF command of the same unit (decloak, unsiege, release fire):
+# executing the ON command would do the opposite of what was said.
+_SWITCH_OFF_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:꺼|끄(?:고|자|라|기|면|세요)?|끔|끈|오프)(?![가-힣])|\b(?:off|turn\s+off|switch\s+off)\b", re.IGNORECASE
+)
+_OFF_COMMAND: Final[dict[str, str]] = {
+    "behavior_cloakon": "behavior_cloakoff",
+    "behavior_holdfireon": "behavior_holdfireoff",
+    "morph_siegemode": "morph_unsiege",
+}
 _VERB_TAIL: Final[re.Pattern[str]] = re.compile(r"\s*(?:지어|뽑아|달아|생산|올려|연구|업그레이드|풀어|켜|해제)$")
 _GENERIC_NOUN: Final[dict[str, str]] = {"research": "연구", "train": "생산", "build": "건설"}
 _PREFIX: Final[dict[str, str]] = {
@@ -303,6 +313,9 @@ def resolve_intent(
     if phrase_is_negated(phrase):
         return Resolution(KIND_NONE, reason="negated", narration_ko="부정 표현이라 실행하지 않았습니다.")
     scored = [(e, s) for e, s in cat.search_scored(phrase, limit=8) if s >= MIN_SCORE]
+    if _SWITCH_OFF_RE.search(phrase):
+        scored = [(cat.get_command(_OFF_COMMAND.get(e.id, e.id)), s) for e, s in scored]
+        scored = list({e.id: (e, s) for e, s in scored}.values())
     if category_hint:
         scored = [(e, s) for e, s in scored if e.category == category_hint]
     if not scored:
@@ -321,14 +334,22 @@ def resolve_intent(
         return decide_entry(tied[0], phrase, state, location=location, queue=queue, source="intent")
     decided = [decide_entry(e, phrase, state, location=location, queue=queue, source="intent") for e in tied]
     viable = [d for d in decided if d.kind == KIND_EXECUTE]
+    if len(viable) == 1 and len(viable) < len(decided):
+        # Another equally plausible reading is blocked by the game state.  Never silently run the lesser one: say what
+        # is blocked and ask whether the runnable one was meant.
+        only = viable[0]
+        blocked = next(d for d in decided if d is not only)
+        text = (
+            f"{blocked.reason_ko or command_title(cat.get_command(blocked.command_id)) + '은(는) 지금 할 수 없습니다'}"
+            f" — {command_title(cat.get_command(only.command_id))}(으)로 할까요?"
+        )
+        return Resolution(
+            KIND_ASK, only.command_id, alternatives=(only.command_id,), reason="blocked_reading", reason_ko=text,
+            narration_ko=text, source="intent",
+        )
     if len(viable) == 1:
         only = viable[0]
-        others = [d for d in decided if d is not only]
-        why = "; ".join(f"{command_title(cat.get_command(d.command_id))}은(는) 지금 할 수 없음" for d in others)
-        return Resolution(
-            KIND_EXECUTE, only.command_id, narration_ko=f"{only.narration_ko} — {why}", level=only.level, upgrade=only.upgrade,
-            issuer=only.issuer, location=only.location, queue=queue, ability=only.ability, note_ko=why, source="intent",
-        )
+        return only
     if len(viable) > 1:
         question, alts = _ask_which([cat.get_command(d.command_id) for d in viable])
         return Resolution(KIND_ASK, alts[0], alternatives=alts, reason="ambiguous", reason_ko=question, narration_ko=question, source="intent")

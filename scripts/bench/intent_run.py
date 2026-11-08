@@ -201,6 +201,20 @@ def run_offline(rows: list[dict]) -> dict[str, dict]:
     return {r["id"]: decide(r["text"], None, r) for r in rows}
 
 
+def run_resolver_only(rows: list[dict]) -> dict[str, dict]:
+    """V2 with a PERFECT model: ``catalog.intent`` = the user's exact words, the rest is the server (rule layers first,
+    then the resolver against the row's state).  Upper bound of V2 and the cost-free regression gate of the resolver."""
+
+    out = {}
+    for r in rows:
+        pred = decide(r["text"], None, r)
+        if pred["kind"] == "none":  # the deterministic layer abstained: the model lane would now be asked
+            call = {"command_layer": "operation", "goal": r["text"][:200], "catalog": {"intent": r["text"]}}
+            pred = decide(r["text"], call, r)
+        out[r["id"]] = pred
+    return out
+
+
 async def run_llm(rows: list[dict], model: str, reps: int, variant: str, concurrency: int,
                   kind: str = "tx") -> dict[str, list[dict]]:
     import pipelines as P  # noqa: E402 (after BENCH_SCHEMA_MODULE is set in main)
@@ -296,7 +310,7 @@ def save(name: str, rows: list[dict], preds: dict[str, dict], meta: dict) -> Pat
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("system", choices=["offline", "llm", "report", "rescore"])
+    ap.add_argument("system", choices=["offline", "resolver", "llm", "report", "rescore"])
     ap.add_argument("--model", default="gemini-3.5-flash-lite")
     ap.add_argument("--variant", default="both", help="shipped prompt variant; 'both' = product prompt")
     ap.add_argument("--reps", type=int, default=1)
@@ -317,6 +331,10 @@ def main(argv=None) -> int:
     if args.system == "report":
         data = json.loads(Path(args.pred).read_text(encoding="utf-8"))
         print(table(data["aggregate"]))
+        return 0
+    if args.system == "resolver":
+        save("resolver_v2_perfect_model", rows, run_resolver_only(rows),
+             {"system": "V2 resolver with a perfect model (intent = user's words); deterministic layer first", "rows": len(rows)})
         return 0
     if args.system == "offline":
         save("offline", rows, run_offline(rows), {"system": "offline deterministic layer (no model)", "rows": len(rows)})
